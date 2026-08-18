@@ -21,6 +21,7 @@ const DEFAULT_LEAD_TIME_SECONDS = 2;
 const SAMPLE_WINDOW_MS = 2000;
 const ROLLOVER_HIGH_POSITION = 0.8;
 const ROLLOVER_LOW_POSITION = 0.2;
+const CHAT_COLLAPSED_EVENT_LIMIT = 3;
 
 export interface LiveRangeTelemetrySample {
     position: number;
@@ -246,8 +247,13 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
     snapshot,
     surface = 'chat',
 }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
     if (!snapshot || (snapshot.events.length === 0 && surface !== 'panel')) return null;
-    const events = surface === 'pill' ? snapshot.events.slice(0, 3) : snapshot.events;
+    const isCollapsible = surface === 'chat'
+        && snapshot.events.length > CHAT_COLLAPSED_EVENT_LIMIT;
+    const events = surface === 'pill' || (isCollapsible && !isExpanded)
+        ? snapshot.events.slice(0, CHAT_COLLAPSED_EVENT_LIMIT)
+        : snapshot.events;
 
     return (
         <div className={`ai-chat__range-todo ai-chat__range-todo--${surface}`} aria-label="Live range to-do list">
@@ -269,24 +275,38 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
                     No planned events.
                 </div>
             ) : (
-                <ul className="ai-chat__range-todo-list">
-                    {events.map((event) => (
-                        <li key={event.id} className={`ai-chat__range-todo-item ai-chat__range-todo-item--${event.status}`}>
-                            <div className="ai-chat__range-todo-item-main">
-                                <span className="ai-chat__range-todo-item-name">{event.content.title}</span>
-                                <span className="ai-chat__range-todo-item-status">{event.status}</span>
-                            </div>
-                            {event.content.description && (
-                                <div className="ai-chat__range-todo-detail">{event.content.description}</div>
-                            )}
-                            <div className="ai-chat__range-todo-metrics">
-                                <span>Target {formatPosition(event.normalized_position)}</span>
-                                <span>{event.eta_seconds === null ? 'ETA --' : `ETA ${event.eta_seconds.toFixed(1)}s`}</span>
-                                <span>Lead {event.lead_time_seconds.toFixed(1)}s</span>
-                            </div>
-                        </li>
-                    ))}
-                </ul>
+                <>
+                    <ul className="ai-chat__range-todo-list">
+                        {events.map((event) => (
+                            <li key={event.id} className={`ai-chat__range-todo-item ai-chat__range-todo-item--${event.status}`}>
+                                <div className="ai-chat__range-todo-item-main">
+                                    <span className="ai-chat__range-todo-item-name">{event.content.title}</span>
+                                    <span className="ai-chat__range-todo-item-status">{event.status}</span>
+                                </div>
+                                {event.content.description && (
+                                    <div className="ai-chat__range-todo-detail">{event.content.description}</div>
+                                )}
+                                <div className="ai-chat__range-todo-metrics">
+                                    <span>Target {formatPosition(event.normalized_position)}</span>
+                                    <span>{event.eta_seconds === null ? 'ETA --' : `ETA ${event.eta_seconds.toFixed(1)}s`}</span>
+                                    <span>Lead {event.lead_time_seconds.toFixed(1)}s</span>
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                    {isCollapsible && (
+                        <button
+                            type="button"
+                            className="ai-chat__range-todo-toggle"
+                            aria-expanded={isExpanded}
+                            onClick={() => setIsExpanded((expanded) => !expanded)}
+                        >
+                            {isExpanded
+                                ? 'Show less'
+                                : `Show ${snapshot.events.length - CHAT_COLLAPSED_EVENT_LIMIT} more`}
+                        </button>
+                    )}
+                </>
             )}
         </div>
     );
@@ -342,13 +362,13 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         }
         const event = {
             ...parsed.event,
-            eta_seconds: this.runtime.current_position === null
+            eta_seconds: (this.runtime.current_position === null
                 ? null
                 : calculateLiveRangeEta(
                     this.runtime.current_position,
                     parsed.event.normalized_position,
                     this.runtime.rolling_rate,
-                ),
+                )) ?? parsed.event.eta_seconds,
         };
         const next = this.commit({
             ...this.runtime,
@@ -375,13 +395,13 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         this.previousSample = null;
         const eventsWithEta = events.map((event) => ({
             ...event,
-            eta_seconds: this.runtime.current_position === null
+            eta_seconds: (this.runtime.current_position === null
                 ? null
                 : calculateLiveRangeEta(
                     this.runtime.current_position,
                     event.normalized_position,
                     this.runtime.rolling_rate,
-                ),
+                )) ?? event.eta_seconds,
         }));
         const next = this.commit({
             events: eventsWithEta,
@@ -455,13 +475,13 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
             }
             next = {
                 ...next,
-                eta_seconds: this.runtime.current_position === null
+                eta_seconds: (this.runtime.current_position === null
                     ? null
                     : calculateLiveRangeEta(
                         this.runtime.current_position,
                         next.normalized_position,
                         this.runtime.rolling_rate,
-                    ),
+                    )) ?? next.eta_seconds,
                 started_at: undefined,
                 lap: undefined,
             };
@@ -507,13 +527,13 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
             ...event,
             status: 'pending',
             due: undefined,
-            eta_seconds: this.runtime.current_position === null
+            eta_seconds: (this.runtime.current_position === null
                 ? null
                 : calculateLiveRangeEta(
                     this.runtime.current_position,
                     event.normalized_position,
                     this.runtime.rolling_rate,
-                ),
+                )) ?? event.eta_seconds,
             updated_at: now,
             started_at: undefined,
             lap: undefined,
@@ -559,7 +579,11 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         this.previousSample = currentSample;
         const events = this.runtime.events.map((event): RuntimeEvent => {
             if (event.status !== 'pending') return event;
-            const eta = calculateLiveRangeEta(position, event.normalized_position, rate);
+            const measuredEta = calculateLiveRangeEta(position, event.normalized_position, rate);
+            const estimatedEta = event.eta_seconds === null
+                ? null
+                : Math.max(0, event.eta_seconds - Math.max(0, now - event.updated_at) / 1000);
+            const eta = measuredEta ?? estimatedEta;
             const crossed = previousSample
                 ? crossedLiveRangeTodoPosition(previousSample, currentSample, event.normalized_position)
                 : false;
@@ -629,6 +653,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
             'id',
             'normalized_position',
             'lead_time_seconds',
+            'eta_seconds',
             'content',
             'taskStart',
         ]);
@@ -641,6 +666,12 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
             ? DEFAULT_LEAD_TIME_SECONDS
             : parseLeadTime(value.lead_time_seconds);
         if (leadTime === null) return { error: `Event '${id}' lead_time_seconds must be zero or greater.` };
+        const etaSeconds = value.eta_seconds === undefined
+            ? null
+            : parseLeadTime(value.eta_seconds);
+        if (etaSeconds === null && value.eta_seconds !== undefined) {
+            return { error: `Event '${id}' eta_seconds must be zero or greater.` };
+        }
         const parsedContent = parseContent(value.content);
         if (!parsedContent.content) return { error: `Event '${id}': ${parsedContent.error}` };
         if (typeof value.taskStart !== 'function') {
@@ -654,7 +685,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
                 content: parsedContent.content as LiveRangeTodoContent,
                 taskStart: value.taskStart as LiveRangeTodoEventInput['taskStart'],
                 status: 'pending',
-                eta_seconds: null,
+                eta_seconds: etaSeconds,
                 created_at: now,
                 updated_at: now,
             },

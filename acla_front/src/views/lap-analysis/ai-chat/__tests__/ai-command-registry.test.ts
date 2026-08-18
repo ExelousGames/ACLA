@@ -527,6 +527,12 @@ describe('live range to-do add tool', () => {
             )],
         }],
         ['invalid arguments', { events: [scheduledItem('bad', 'analyze_telemetry', { value: undefined })] }],
+        ['AI-provided ETA', {
+            events: [{
+                ...scheduledItem('bad'),
+                event: { ...scheduledItem('bad').event, eta_seconds: 10 },
+            }],
+        }],
         ['duplicate ids', { events: [scheduledItem('same'), scheduledItem('same')] }],
     ])('rejects an invalid atomic batch: %s', async (_label, payload) => {
         const directory = createAiToolComponentRefDirectory();
@@ -685,6 +691,10 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         const displayDriverExpertComparison = jest.fn();
         reserve(directory, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
             displayDriverExpertComparison,
+            getOpportunityTelemetryRows: () => [{
+                Graphics_normalized_car_position: 0.1,
+                Graphics_estimated_lap_time: 100_000,
+            }],
         } satisfies Partial<AiChatHandle>);
 
         const operation = analystLiveRegistry(directory)
@@ -725,6 +735,13 @@ describe('filtered Driver/Expert comparison queue tool', () => {
             'analysis-comparison:late-first',
             'analysis-comparison:early-second',
         ]);
+        const queuedEvents = runner.get().todo_list?.events.slice(2) ?? [];
+        expect(queuedEvents.map(({ id }) => id)).toEqual([
+            'analysis-comparison:late-first',
+            'analysis-comparison:early-second',
+        ]);
+        expect(queuedEvents[0].eta_seconds).toBeCloseTo(30);
+        expect(queuedEvents[1].eta_seconds).toBeCloseTo(60);
         expect(displayDriverExpertComparison).not.toHaveBeenCalled();
 
         runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_laps: 1 });

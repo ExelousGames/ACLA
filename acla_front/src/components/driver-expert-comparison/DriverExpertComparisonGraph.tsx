@@ -17,6 +17,9 @@ const TELEMETRY_POD_HEIGHT = 102;
 const TELEMETRY_POD_GAP = 14;
 const DRIVER_MARKER_HALO_RADIUS = 11;
 const EXPERT_MARKER_HALO_RADIUS = 10;
+const FOLLOW_CAMERA_SCALE = 1.4;
+const DRIVER_CAMERA_ANCHOR_Y_RATIO = 2 / 3;
+const EXPERT_CAMERA_ANCHOR_Y_RATIO = 1 / 3;
 const PEDAL_START_ANGLE = -60;
 const PEDAL_SWEEP_ANGLE = 60;
 const PEDAL_CENTER = { x: 66, y: 58 };
@@ -113,6 +116,7 @@ interface ReplayFrame {
     expertGear?: number;
     driverTrajectory?: PlottingTrajectoryPoint;
     expertTrajectory?: PlottingTrajectoryPoint;
+    driverDirection?: PlottingTrajectoryPoint;
 }
 
 interface PositionedTrajectoryPoint extends PlottingTrajectoryPoint {
@@ -133,10 +137,13 @@ interface TelemetryPodPosition {
     y: number;
 }
 
-interface FollowedCompetitor {
-    marker: PositionedTrajectoryPoint;
-    pod: TelemetryPodPosition;
-    haloRadius: number;
+interface FollowCamera {
+    transform: string;
+    target: ComparisonIdentity;
+    anchorX: number;
+    anchorY: number;
+    rotationRadians: number;
+    project: (point: PositionedTrajectoryPoint | undefined) => PositionedTrajectoryPoint | undefined;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -490,6 +497,42 @@ const interpolateTrajectory = (
     };
 };
 
+const trajectoryDirection = (
+    stream: readonly ReplayStreamPoint<PlottingTrajectoryPoint>[],
+    current: PlottingTrajectoryPoint | undefined,
+    lower: number,
+    upper: number,
+): PlottingTrajectoryPoint | undefined => {
+    if (!current) return undefined;
+
+    const directionTo = (
+        point: PlottingTrajectoryPoint | undefined,
+    ): PlottingTrajectoryPoint | undefined => {
+        if (!point) return undefined;
+        const x = point.x - current.x;
+        const y = point.y - current.y;
+        return Math.hypot(x, y) > POSITION_EPSILON ? { x, y } : undefined;
+    };
+    const directionFrom = (
+        point: PlottingTrajectoryPoint | undefined,
+    ): PlottingTrajectoryPoint | undefined => {
+        if (!point) return undefined;
+        const x = current.x - point.x;
+        const y = current.y - point.y;
+        return Math.hypot(x, y) > POSITION_EPSILON ? { x, y } : undefined;
+    };
+
+    for (let index = upper; index < stream.length; index += 1) {
+        const direction = directionTo(stream[index].trajectory);
+        if (direction) return direction;
+    }
+    for (let index = lower; index >= 0; index -= 1) {
+        const direction = directionFrom(stream[index].trajectory);
+        if (direction) return direction;
+    }
+    return undefined;
+};
+
 const steppedGear = (
     stream: readonly ReplayStreamPoint<PlottingTrajectoryPoint>[],
     lower: number,
@@ -512,6 +555,12 @@ const buildReplayFrame = (
     if (!replay) return {};
     const driverIndexes = getFrameIndexes(replay.driver, elapsedTimeMs);
     const expertIndexes = getFrameIndexes(replay.expert, elapsedTimeMs);
+    const driverTrajectory = interpolateTrajectory(
+        replay.driver,
+        elapsedTimeMs,
+        driverIndexes.lower,
+        driverIndexes.upper,
+    );
     return {
         driverTrackPosition: interpolateScalar(
             replay.driver,
@@ -557,17 +606,18 @@ const buildReplayFrame = (
         ),
         driverGear: steppedGear(replay.driver, driverIndexes.lower),
         expertGear: steppedGear(replay.expert, expertIndexes.lower),
-        driverTrajectory: interpolateTrajectory(
-            replay.driver,
-            elapsedTimeMs,
-            driverIndexes.lower,
-            driverIndexes.upper,
-        ),
+        driverTrajectory,
         expertTrajectory: interpolateTrajectory(
             replay.expert,
             elapsedTimeMs,
             expertIndexes.lower,
             expertIndexes.upper,
+        ),
+        driverDirection: trajectoryDirection(
+            replay.driver,
+            driverTrajectory,
+            driverIndexes.lower,
+            driverIndexes.upper,
         ),
     };
 };
@@ -622,15 +672,15 @@ const createTrackGeometry = (
         const point = sample.trajectory;
         return point ? [point] : [];
     });
-    const allPoints = [...driverPoints, ...expertPoints];
-    if (!allPoints.length) {
+    const referencePoints = driverPoints.length ? driverPoints : expertPoints;
+    if (!referencePoints.length) {
         return { driver: [], expert: [], project: () => undefined };
     }
 
-    const minX = Math.min(...allPoints.map(({ x }) => x));
-    const maxX = Math.max(...allPoints.map(({ x }) => x));
-    const minY = Math.min(...allPoints.map(({ y }) => y));
-    const maxY = Math.max(...allPoints.map(({ y }) => y));
+    const minX = Math.min(...referencePoints.map(({ x }) => x));
+    const maxX = Math.max(...referencePoints.map(({ x }) => x));
+    const minY = Math.min(...referencePoints.map(({ y }) => y));
+    const maxY = Math.max(...referencePoints.map(({ y }) => y));
     const spanX = maxX - minX;
     const spanY = maxY - minY;
     const usableWidth = TRACK_VIEWBOX_WIDTH - (TRACK_PADDING * 2);
@@ -679,36 +729,61 @@ const positionTelemetryPod = (
     y: marker.svgY + TELEMETRY_POD_GAP,
 });
 
-const getFollowCameraTransform = (
-    competitors: readonly FollowedCompetitor[],
+const getFollowCamera = (
+    driverMarker: PositionedTrajectoryPoint | undefined,
+    expertMarker: PositionedTrajectoryPoint | undefined,
+    driverDirection: PlottingTrajectoryPoint | undefined,
     viewportHeight: number,
-): string => {
-    if (!competitors.length) return 'matrix(1 0 0 1 0 0)';
+): FollowCamera | undefined => {
+    const target = driverMarker ?? expertMarker;
+    if (!target) return undefined;
 
-    const minX = Math.min(...competitors.flatMap(({ marker, pod, haloRadius }) => [
-        marker.svgX - haloRadius,
-        pod.x,
-    ]));
-    const maxX = Math.max(...competitors.flatMap(({ marker, pod, haloRadius }) => [
-        marker.svgX + haloRadius,
-        pod.x + TELEMETRY_POD_WIDTH,
-    ]));
-    const minY = Math.min(...competitors.flatMap(({ marker, pod, haloRadius }) => [
-        marker.svgY - haloRadius,
-        pod.y,
-    ]));
-    const maxY = Math.max(...competitors.flatMap(({ marker, pod, haloRadius }) => [
-        marker.svgY + haloRadius,
-        pod.y + TELEMETRY_POD_HEIGHT,
-    ]));
-    const usableWidth = TRACK_VIEWBOX_WIDTH - (TRACK_PADDING * 2);
-    const usableHeight = viewportHeight - (TRACK_PADDING * 2);
-    const scale = Math.min(usableWidth / (maxX - minX), usableHeight / (maxY - minY));
-    const translateX = (TRACK_VIEWBOX_WIDTH / 2) - (((minX + maxX) / 2) * scale);
-    const translateY = (viewportHeight / 2) - (((minY + maxY) / 2) * scale);
+    const targetIdentity: ComparisonIdentity = driverMarker ? 'driver' : 'expert';
+    const haloRadius = driverMarker ? DRIVER_MARKER_HALO_RADIUS : EXPERT_MARKER_HALO_RADIUS;
+    const anchorX = TRACK_VIEWBOX_WIDTH / 2;
+    const requestedAnchorY = viewportHeight * (
+        driverMarker ? DRIVER_CAMERA_ANCHOR_Y_RATIO : EXPERT_CAMERA_ANCHOR_Y_RATIO
+    );
+    const minimumAnchorY = driverMarker
+        ? TRACK_PADDING + TELEMETRY_POD_HEIGHT + TELEMETRY_POD_GAP
+        : TRACK_PADDING + haloRadius;
+    const maximumAnchorY = driverMarker
+        ? viewportHeight - TRACK_PADDING - haloRadius
+        : viewportHeight - TRACK_PADDING - TELEMETRY_POD_HEIGHT - TELEMETRY_POD_GAP;
+    const anchorY = minimumAnchorY <= maximumAnchorY
+        ? clamp(requestedAnchorY, minimumAnchorY, maximumAnchorY)
+        : viewportHeight / 2;
+
+    // Plotting Y points up while projected SVG Y points down. Rotate the projected
+    // driver tangent onto the top of the viewport so the camera always looks ahead.
+    const projectedHeadingAngle = driverMarker && driverDirection
+        ? Math.atan2(-driverDirection.y, driverDirection.x)
+        : undefined;
+    const rotationRadians = projectedHeadingAngle === undefined
+        ? 0
+        : (-Math.PI / 2) - projectedHeadingAngle;
+    const cosine = Math.cos(rotationRadians) * FOLLOW_CAMERA_SCALE;
+    const sine = Math.sin(rotationRadians) * FOLLOW_CAMERA_SCALE;
+    const a = cosine;
+    const b = sine;
+    const c = -sine;
+    const d = cosine;
+    const e = anchorX - ((a * target.svgX) + (c * target.svgY));
+    const f = anchorY - ((b * target.svgX) + (d * target.svgY));
     const cameraNumber = (value: number): string => Number(value.toFixed(6)).toString();
 
-    return `matrix(${cameraNumber(scale)} 0 0 ${cameraNumber(scale)} ${cameraNumber(translateX)} ${cameraNumber(translateY)})`;
+    return {
+        transform: `matrix(${cameraNumber(a)} ${cameraNumber(b)} ${cameraNumber(c)} ${cameraNumber(d)} ${cameraNumber(e)} ${cameraNumber(f)})`,
+        target: targetIdentity,
+        anchorX,
+        anchorY,
+        rotationRadians,
+        project: (point) => point ? {
+            ...point,
+            svgX: (a * point.svgX) + (c * point.svgY) + e,
+            svgY: (b * point.svgX) + (d * point.svgY) + f,
+        } : undefined,
+    };
 };
 
 const getTelemetryLeaderEnd = (
@@ -932,25 +1007,20 @@ const TrackReplay: React.FC<{
         return () => observer.disconnect();
     }, []);
 
-    const driverMarker = geometry.project(frame.driverTrajectory);
-    const expertMarker = geometry.project(frame.expertTrajectory);
+    const driverWorldMarker = geometry.project(frame.driverTrajectory);
+    const expertWorldMarker = geometry.project(frame.expertTrajectory);
     const driverPath = trajectoryPath(geometry.driver);
     const expertPath = trajectoryPath(geometry.expert);
+    const camera = getFollowCamera(
+        driverWorldMarker,
+        expertWorldMarker,
+        frame.driverDirection,
+        viewportHeight,
+    );
+    const driverMarker = camera?.project(driverWorldMarker);
+    const expertMarker = camera?.project(expertWorldMarker);
     const driverPod = driverMarker ? positionTelemetryPod(driverMarker, 'driver') : undefined;
     const expertPod = expertMarker ? positionTelemetryPod(expertMarker, 'expert') : undefined;
-    const followedCompetitors: FollowedCompetitor[] = [
-        ...(driverMarker && driverPod ? [{
-            marker: driverMarker,
-            pod: driverPod,
-            haloRadius: DRIVER_MARKER_HALO_RADIUS,
-        }] : []),
-        ...(expertMarker && expertPod ? [{
-            marker: expertMarker,
-            pod: expertPod,
-            haloRadius: EXPERT_MARKER_HALO_RADIUS,
-        }] : []),
-    ];
-    const cameraTransform = getFollowCameraTransform(followedCompetitors, viewportHeight);
     const hasTrajectory = Boolean(driverPath || expertPath);
     const unavailableOffsetY = (viewportHeight - TRACK_VIEWBOX_HEIGHT) / 2;
 
@@ -1020,86 +1090,102 @@ const TrackReplay: React.FC<{
                     height={viewportHeight}
                     rx="9"
                 />
-                {hasTrajectory ? (
-                    <g
-                        className={styles.cameraLayer}
-                        transform={cameraTransform}
-                        data-testid="comparison-camera-layer"
-                    >
-                        {driverPath && (
-                            <>
-                                <path className={styles.trackShadow} d={driverPath} />
+                {hasTrajectory && camera ? (
+                    <>
+                        <g
+                            className={styles.cameraLayer}
+                            transform={camera.transform}
+                            data-testid="comparison-camera-layer"
+                            data-camera-target={camera.target}
+                            data-camera-anchor-x={formatNumber(camera.anchorX)}
+                            data-camera-anchor-y={formatNumber(camera.anchorY)}
+                            data-camera-rotation={formatNumber(
+                                (camera.rotationRadians * 180) / Math.PI,
+                            )}
+                            data-heading-x={frame.driverDirection
+                                ? formatNumber(frame.driverDirection.x)
+                                : undefined}
+                            data-heading-y={frame.driverDirection
+                                ? formatNumber(frame.driverDirection.y)
+                                : undefined}
+                        >
+                            {driverPath && (
+                                <>
+                                    <path className={styles.trackShadow} d={driverPath} />
+                                    <path
+                                        className={styles.driverPath}
+                                        d={driverPath}
+                                        filter={`url(#${filterId}-driver-glow)`}
+                                        data-testid="driver-track-path"
+                                    />
+                                </>
+                            )}
+                            {expertPath && (
                                 <path
-                                    className={styles.driverPath}
-                                    d={driverPath}
-                                    filter={`url(#${filterId}-driver-glow)`}
-                                    data-testid="driver-track-path"
+                                    className={styles.expertPath}
+                                    d={expertPath}
+                                    filter={`url(#${filterId}-expert-glow)`}
+                                    data-testid="expert-track-path"
                                 />
-                            </>
-                        )}
-                        {expertPath && (
-                            <path
-                                className={styles.expertPath}
-                                d={expertPath}
-                                filter={`url(#${filterId}-expert-glow)`}
-                                data-testid="expert-track-path"
-                            />
-                        )}
-                        {driverMarker && driverPod
-                            && renderPod('driver', driverPod, driverMarker)}
-                        {expertMarker && expertPod
-                            && renderPod('expert', expertPod, expertMarker)}
-                        {driverMarker && (
-                            <g
-                                className={styles.positionMarker}
-                                data-testid="driver-position-marker"
-                                data-x={formatNumber(driverMarker.x)}
-                                data-y={formatNumber(driverMarker.y)}
-                                data-track-position={frame.driverTrackPosition === undefined
-                                    ? undefined
-                                    : formatNumber(frame.driverTrackPosition)}
-                            >
-                                <circle
-                                    className={styles.markerHalo}
-                                    cx={driverMarker.svgX}
-                                    cy={driverMarker.svgY}
-                                    r={DRIVER_MARKER_HALO_RADIUS}
-                                    fill={DRIVER_COMPARISON_COLOR}
-                                />
-                                <circle
-                                    cx={driverMarker.svgX}
-                                    cy={driverMarker.svgY}
-                                    r="5.5"
-                                    fill={DRIVER_COMPARISON_COLOR}
-                                />
-                            </g>
-                        )}
-                        {expertMarker && (
-                            <g
-                                className={styles.positionMarker}
-                                data-testid="expert-position-marker"
-                                data-x={formatNumber(expertMarker.x)}
-                                data-y={formatNumber(expertMarker.y)}
-                                data-track-position={frame.expertTrackPosition === undefined
-                                    ? undefined
-                                    : formatNumber(frame.expertTrackPosition)}
-                            >
-                                <circle
-                                    className={styles.markerHalo}
-                                    cx={expertMarker.svgX}
-                                    cy={expertMarker.svgY}
-                                    r={EXPERT_MARKER_HALO_RADIUS}
-                                    fill={EXPERT_COMPARISON_COLOR}
-                                />
-                                <circle
-                                    cx={expertMarker.svgX}
-                                    cy={expertMarker.svgY}
-                                    r="5"
-                                    fill={EXPERT_COMPARISON_COLOR}
-                                />
-                            </g>
-                        )}
-                    </g>
+                            )}
+                        </g>
+                        <g className={styles.cameraOverlay} data-testid="comparison-camera-overlay">
+                            {driverMarker && driverPod
+                                && renderPod('driver', driverPod, driverMarker)}
+                            {expertMarker && expertPod
+                                && renderPod('expert', expertPod, expertMarker)}
+                            {driverMarker && (
+                                <g
+                                    className={styles.positionMarker}
+                                    data-testid="driver-position-marker"
+                                    data-x={formatNumber(driverMarker.x)}
+                                    data-y={formatNumber(driverMarker.y)}
+                                    data-track-position={frame.driverTrackPosition === undefined
+                                        ? undefined
+                                        : formatNumber(frame.driverTrackPosition)}
+                                >
+                                    <circle
+                                        className={styles.markerHalo}
+                                        cx={driverMarker.svgX}
+                                        cy={driverMarker.svgY}
+                                        r={DRIVER_MARKER_HALO_RADIUS}
+                                        fill={DRIVER_COMPARISON_COLOR}
+                                    />
+                                    <circle
+                                        cx={driverMarker.svgX}
+                                        cy={driverMarker.svgY}
+                                        r="5.5"
+                                        fill={DRIVER_COMPARISON_COLOR}
+                                    />
+                                </g>
+                            )}
+                            {expertMarker && (
+                                <g
+                                    className={styles.positionMarker}
+                                    data-testid="expert-position-marker"
+                                    data-x={formatNumber(expertMarker.x)}
+                                    data-y={formatNumber(expertMarker.y)}
+                                    data-track-position={frame.expertTrackPosition === undefined
+                                        ? undefined
+                                        : formatNumber(frame.expertTrackPosition)}
+                                >
+                                    <circle
+                                        className={styles.markerHalo}
+                                        cx={expertMarker.svgX}
+                                        cy={expertMarker.svgY}
+                                        r={EXPERT_MARKER_HALO_RADIUS}
+                                        fill={EXPERT_COMPARISON_COLOR}
+                                    />
+                                    <circle
+                                        cx={expertMarker.svgX}
+                                        cy={expertMarker.svgY}
+                                        r="5"
+                                        fill={EXPERT_COMPARISON_COLOR}
+                                    />
+                                </g>
+                            )}
+                        </g>
+                    </>
                 ) : (
                     <g
                         className={styles.trackUnavailable}

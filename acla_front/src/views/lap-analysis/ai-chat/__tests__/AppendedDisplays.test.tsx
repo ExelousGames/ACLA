@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import {
     LiveRangeTodoListDisplay,
     ProcedurePlan,
@@ -96,5 +96,44 @@ describe('appended AI display components', () => {
         expect(screen.getByText('Turn exit')).toBeInTheDocument();
         expect(screen.getByText('Use all the road')).toBeInTheDocument();
         expect(screen.getByText('running')).toBeInTheDocument();
+    });
+
+    it('collapses long live range to-do lists in chat', () => {
+        render(
+            <LiveRangeTodoListDisplay
+                surface="chat"
+                snapshot={{
+                    created_at: 1,
+                    updated_at: 2,
+                    current_position: 0.1,
+                    rolling_rate: 0.05,
+                    events: Array.from({ length: 5 }, (_, index) => ({
+                        id: `range-${index + 1}`,
+                        normalized_position: (index + 1) / 10,
+                        lead_time_seconds: 2,
+                        content: { title: `Event ${index + 1}` },
+                        status: 'pending' as const,
+                        eta_seconds: index + 1,
+                        created_at: 1,
+                        updated_at: 2,
+                    })),
+                }}
+            />,
+        );
+
+        expect(screen.getByText('Event 3')).toBeInTheDocument();
+        expect(screen.queryByText('Event 4')).not.toBeInTheDocument();
+        const showMore = screen.getByRole('button', { name: 'Show 2 more' });
+        expect(showMore).toHaveAttribute('aria-expanded', 'false');
+
+        fireEvent.click(showMore);
+
+        expect(screen.getByText('Event 5')).toBeInTheDocument();
+        const showLess = screen.getByRole('button', { name: 'Show less' });
+        expect(showLess).toHaveAttribute('aria-expanded', 'true');
+
+        fireEvent.click(showLess);
+
+        expect(screen.queryByText('Event 4')).not.toBeInTheDocument();
     });
 });

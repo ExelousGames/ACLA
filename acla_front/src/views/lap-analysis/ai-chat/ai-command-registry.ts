@@ -35,6 +35,10 @@ import type {
     ProcedurePlanState,
     AiToolQueryResult,
 } from 'components/ai-engineering-tools';
+import {
+    calculateForwardCircularDistance,
+    getLiveRangeNormalizedPosition,
+} from 'components/ai-engineering-tools';
 import type { BaselineCollectionHandle } from 'views/live-session/BaselineCollection';
 import type { AiChatHandle } from './ai-chat';
 import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
@@ -765,8 +769,41 @@ type EligibleFilteredComparison = {
     normalizedPosition: number;
     replayDurationMs: number;
     leadTimeSeconds: number;
+    estimatedLapTimeMs: number | null;
     overlay: DriverExpertComparisonSnapshot;
     section?: string;
+};
+
+const getPositiveFiniteNumber = (value: unknown): number | null => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const getLatestLiveArrivalTiming = (
+    aiChat: AiChatHandle,
+    todoList: LiveRangeTodoListHandle,
+): { currentPosition: number | null; estimatedLapTimeMs: number | null } => {
+    const rows = aiChat.getOpportunityTelemetryRows?.() ?? [];
+    let currentPosition: number | null = null;
+    let estimatedLapTimeMs: number | null = null;
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        if (currentPosition === null) {
+            currentPosition = getLiveRangeNormalizedPosition(row) ?? null;
+        }
+        if (estimatedLapTimeMs === null) {
+            estimatedLapTimeMs = [
+                row.Graphics_estimated_lap_time,
+                row.Graphics_last_time,
+                row.Graphics_best_time,
+            ].map(getPositiveFiniteNumber).find((value) => value !== null) ?? null;
+        }
+        if (currentPosition !== null && estimatedLapTimeMs !== null) break;
+    }
+    if (currentPosition === null) {
+        currentPosition = todoList.get().todo_list?.current_position ?? null;
+    }
+    return { currentPosition, estimatedLapTimeMs };
 };
 
 const createFilteredComparisonResult = (
@@ -817,12 +854,20 @@ const queueFilteredDriverExpertComparisons = (
         const title = segment.title
             ? `${segment.title}: Driver vs Expert`
             : 'Driver vs Expert';
+        const end = segment.normalizedPositionRange?.end;
+        const segmentDistance = typeof end === 'number' && Number.isFinite(end)
+            && end >= 0 && end <= 1
+            ? calculateForwardCircularDistance(start, end)
+            : 0;
         eligible.push({
             segmentId: segment.id,
             eventId,
             normalizedPosition: start,
             replayDurationMs,
             leadTimeSeconds: (replayDurationMs / 1000) + 2,
+            estimatedLapTimeMs: segmentDistance > 0
+                ? replayDurationMs / segmentDistance
+                : null,
             overlay: {
                 title,
                 comparison: segment.comparison!,
@@ -838,6 +883,7 @@ const queueFilteredDriverExpertComparisons = (
             context,
             AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
         );
+        const liveTiming = getLatestLiveArrivalTiming(aiChat, todoList);
         const existingIds = new Set(
             todoList.get().todo_list?.events.map((event) => event.id) ?? [],
         );
@@ -851,10 +897,19 @@ const queueFilteredDriverExpertComparisons = (
                 return;
             }
             existingIds.add(comparison.eventId);
+            const lapTimeMs = liveTiming.estimatedLapTimeMs
+                ?? comparison.estimatedLapTimeMs;
+            const etaSeconds = liveTiming.currentPosition !== null && lapTimeMs !== null
+                ? calculateForwardCircularDistance(
+                    liveTiming.currentPosition,
+                    comparison.normalizedPosition,
+                ) * lapTimeMs / 1000
+                : null;
             todoList.addEvent({
                 id: comparison.eventId,
                 normalized_position: comparison.normalizedPosition,
                 lead_time_seconds: comparison.leadTimeSeconds,
+                ...(etaSeconds !== null ? { eta_seconds: etaSeconds } : {}),
                 content: {
                     title: comparison.overlay.title,
                     ...(comparison.section

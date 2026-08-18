@@ -44,6 +44,44 @@ describe('live range helpers', () => {
 });
 
 describe('LiveRangeTodoListRunner executable events', () => {
+    it('preserves a tool-provided ETA until rolling telemetry can refine it', () => {
+        const runner = new LiveRangeTodoListRunner('live-range');
+
+        runner.addEvent({
+            ...event('estimated', 0.4),
+            eta_seconds: 30,
+        });
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.1,
+            Graphics_completed_laps: 1,
+        });
+
+        expect(runner.get().todo_list?.events[0]).toMatchObject({
+            id: 'estimated',
+        });
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeCloseTo(30, 1);
+    });
+
+    it('uses a tool-provided ETA for lead-time scheduling without a rolling rate', () => {
+        const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+        const taskStart = jest.fn();
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent({
+            ...event('estimated', 0.4, taskStart),
+            lead_time_seconds: 2,
+            eta_seconds: 5,
+        });
+
+        now.mockReturnValue(5_000);
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.1,
+            Graphics_completed_laps: 1,
+        });
+
+        expect(taskStart).toHaveBeenCalledTimes(1);
+        now.mockRestore();
+    });
+
     it('waits for telemetry, invokes taskStart, and omits functions from snapshots', async () => {
         const taskStart = jest.fn();
         const runner = new LiveRangeTodoListRunner('live-range');

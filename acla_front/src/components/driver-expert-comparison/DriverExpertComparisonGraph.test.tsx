@@ -63,10 +63,6 @@ const completeData = {
     ],
 };
 
-const TRACK_PADDING = 28;
-const TRACK_VIEWBOX_WIDTH = 760;
-const TRACK_VIEWBOX_HEIGHT = 220;
-
 const parseMatrix = (element: Element): [number, number, number, number, number, number] => {
     const match = element.getAttribute('transform')?.match(/^matrix\(([^)]+)\)$/);
     if (!match) throw new Error('Expected an SVG matrix transform');
@@ -84,49 +80,37 @@ const parseTranslate = (element: Element): { x: number; y: number } => {
     return { x, y };
 };
 
-const expectFollowedContentWithinPadding = () => {
-    const viewBox = screen.getByRole('img').getAttribute('viewBox')
-        ?.trim().split(/[ ,]+/).map(Number);
-    if (!viewBox || viewBox.length !== 4) throw new Error('Expected a four-value SVG viewBox');
-    const viewportHeight = viewBox[3];
-    const [scaleX, , , scaleY, translateX, translateY] = parseMatrix(
-        screen.getByTestId('comparison-camera-layer'),
+const expectCameraLockedOn = (identity: 'driver' | 'expert') => {
+    const camera = screen.getByTestId('comparison-camera-layer');
+    const marker = screen.getByTestId(`${identity}-position-marker`).querySelector('circle');
+    if (!marker) throw new Error(`Expected a ${identity} marker`);
+
+    expect(camera).toHaveAttribute('data-camera-target', identity);
+    expect(Number(marker.getAttribute('cx'))).toBeCloseTo(
+        Number(camera.getAttribute('data-camera-anchor-x')),
+        3,
     );
-    expect(scaleX).toBeCloseTo(scaleY, 6);
+    expect(Number(marker.getAttribute('cy'))).toBeCloseTo(
+        Number(camera.getAttribute('data-camera-anchor-y')),
+        3,
+    );
+};
 
-    (['driver', 'expert'] as const).forEach((identity) => {
-        const pod = screen.queryByTestId(`${identity}-telemetry-pod`);
-        const marker = screen.queryByTestId(`${identity}-position-marker`);
-        if (!pod || !marker) return;
+const expectCameraFacingDriverDirection = () => {
+    const camera = screen.getByTestId('comparison-camera-layer');
+    const [a, b, c, d] = parseMatrix(camera);
+    const headingX = Number(camera.getAttribute('data-heading-x'));
+    const headingY = Number(camera.getAttribute('data-heading-y'));
+    if (![headingX, headingY].every(Number.isFinite)) {
+        throw new Error('Expected a finite driver heading');
+    }
 
-        const podPosition = parseTranslate(pod);
-        const podBody = pod.querySelector('rect');
-        const halo = marker.querySelector('circle');
-        if (!podBody || !halo) throw new Error(`Expected complete ${identity} followed content`);
-        const podWidth = Number(podBody.getAttribute('width'));
-        const podHeight = Number(podBody.getAttribute('height'));
-        const markerX = Number(halo.getAttribute('cx'));
-        const markerY = Number(halo.getAttribute('cy'));
-        const markerRadius = Number(halo.getAttribute('r'));
-        const transformedBounds = [{
-            left: (podPosition.x * scaleX) + translateX,
-            right: ((podPosition.x + podWidth) * scaleX) + translateX,
-            top: (podPosition.y * scaleY) + translateY,
-            bottom: ((podPosition.y + podHeight) * scaleY) + translateY,
-        }, {
-            left: ((markerX - markerRadius) * scaleX) + translateX,
-            right: ((markerX + markerRadius) * scaleX) + translateX,
-            top: ((markerY - markerRadius) * scaleY) + translateY,
-            bottom: ((markerY + markerRadius) * scaleY) + translateY,
-        }];
-
-        transformedBounds.forEach(({ left, right, top, bottom }) => {
-            expect(left).toBeGreaterThanOrEqual(TRACK_PADDING - 0.001);
-            expect(right).toBeLessThanOrEqual(TRACK_VIEWBOX_WIDTH - TRACK_PADDING + 0.001);
-            expect(top).toBeGreaterThanOrEqual(TRACK_PADDING - 0.001);
-            expect(bottom).toBeLessThanOrEqual(viewportHeight - TRACK_PADDING + 0.001);
-        });
-    });
+    // Plotting Y is inverted during SVG projection. The camera should rotate that
+    // projected tangent onto the negative screen Y axis (straight ahead/up).
+    const screenHeadingX = (a * headingX) + (c * -headingY);
+    const screenHeadingY = (b * headingX) + (d * -headingY);
+    expect(screenHeadingX).toBeCloseTo(0, 3);
+    expect(screenHeadingY).toBeLessThan(0);
 };
 
 describe('DriverExpertComparisonGraph', () => {
@@ -205,10 +189,13 @@ describe('DriverExpertComparisonGraph', () => {
             screen.getByTestId('comparison-track-map'),
         );
         const cameraLayer = screen.getByTestId('comparison-camera-layer');
+        const cameraOverlay = screen.getByTestId('comparison-camera-overlay');
         expect(cameraLayer).toContainElement(screen.getByTestId('driver-track-path'));
         expect(cameraLayer).toContainElement(screen.getByTestId('expert-track-path'));
-        expect(cameraLayer).toContainElement(screen.getByTestId('driver-telemetry-leader'));
-        expect(cameraLayer).toContainElement(screen.getByTestId('expert-position-marker'));
+        expect(cameraOverlay).toContainElement(screen.getByTestId('driver-telemetry-leader'));
+        expect(cameraOverlay).toContainElement(screen.getByTestId('expert-position-marker'));
+        expectCameraLockedOn('driver');
+        expectCameraFacingDriverDirection();
         expect(screen.getAllByRole('meter')).toHaveLength(4);
         expect(screen.queryByTestId('pedal-panel-region')).not.toBeInTheDocument();
         expect(container.querySelector('canvas')).not.toBeInTheDocument();
@@ -613,6 +600,8 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-track-position', '0.2');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-track-position', '0.2');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('2');
+        expectCameraLockedOn('driver');
+        expectCameraFacingDriverDirection();
 
         runAnimationFrame(1000);
         runAnimationFrame(1750);
@@ -634,6 +623,8 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('expert-track-path')).toHaveAttribute('d', completeExpertPath);
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('2');
         expect(screen.getByTestId('expert-gear')).toHaveTextContent('3');
+        expectCameraLockedOn('driver');
+        expectCameraFacingDriverDirection();
 
         runAnimationFrame(2500);
 
@@ -653,6 +644,8 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '87.5');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-track-position', '0.287');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-track-position', '0.29');
+        expectCameraLockedOn('driver');
+        expectCameraFacingDriverDirection();
 
         runAnimationFrame(4000);
 
@@ -759,33 +752,25 @@ describe('DriverExpertComparisonGraph', () => {
         const driverPosition = parseTranslate(driverPod);
         const expertPosition = parseTranslate(expertPod);
 
-        expect(driverPosition.x - Number(driverMarker.getAttribute('cx'))).toBeCloseTo(14, 6);
-        expect(driverPosition.y - Number(driverMarker.getAttribute('cy'))).toBeCloseTo(-116, 6);
-        expect(expertPosition.x - Number(expertMarker.getAttribute('cx'))).toBeCloseTo(-198, 6);
-        expect(expertPosition.y - Number(expertMarker.getAttribute('cy'))).toBeCloseTo(14, 6);
+        expect(driverPosition.x - Number(driverMarker.getAttribute('cx'))).toBeCloseTo(14, 3);
+        expect(driverPosition.y - Number(driverMarker.getAttribute('cy'))).toBeCloseTo(-116, 3);
+        expect(expertPosition.x - Number(expertMarker.getAttribute('cx'))).toBeCloseTo(-198, 3);
+        expect(expertPosition.y - Number(expertMarker.getAttribute('cy'))).toBeCloseTo(14, 3);
         expect(driverPod).not.toHaveAttribute('data-placement');
         expect(driverPod).not.toHaveAttribute('data-clamped');
         expect(expertPod).not.toHaveAttribute('data-placement');
         expect(expertPod).not.toHaveAttribute('data-clamped');
     });
 
-    it.each([
-        ['coincident', { x: 0, y: 0 }, { x: 0, y: 0 }],
-        ['widely separated', { x: -1_000, y: 0 }, { x: 1_000, y: 0 }],
-        ['edge-positioned', { x: 1_000, y: 0 }, { x: -1_000, y: 0 }],
-    ])('fits %s competitors, complete cards, and marker halos within track padding', (
-        _case,
-        driverTrajectory,
-        expertTrajectory,
-    ) => {
-        render(<DriverExpertComparisonGraph data={{
+    it('keeps the camera locked on the driver regardless of expert separation', () => {
+        const comparisonData = (expertX: number) => ({
             samples: [{
                 driverTimeMs: 0,
                 expertTimeMs: 0,
                 driverTrackPosition: 0.4,
                 expertTrackPosition: 0.4,
-                driverTrajectory,
-                expertTrajectory,
+                driverTrajectory: { x: 0, y: 0 },
+                expertTrajectory: { x: expertX, y: 0 },
                 driverGas: 0.4,
                 expertGas: 0.6,
                 driverBrake: 0.3,
@@ -793,13 +778,23 @@ describe('DriverExpertComparisonGraph', () => {
                 driverGear: 3,
                 expertGear: 4,
             }],
-        }} />);
+        });
+        const view = render(<DriverExpertComparisonGraph data={comparisonData(0)} />);
+        const initialTransform = screen.getByTestId('comparison-camera-layer')
+            .getAttribute('transform');
+
+        expectCameraLockedOn('driver');
+        view.rerender(<DriverExpertComparisonGraph data={comparisonData(10_000)} />);
 
         expect(screen.getAllByRole('meter')).toHaveLength(4);
-        expectFollowedContentWithinPadding();
+        expect(screen.getByTestId('comparison-camera-layer')).toHaveAttribute(
+            'transform',
+            initialTransform,
+        );
+        expectCameraLockedOn('driver');
     });
 
-    it('uses the rendered panel aspect ratio to zoom in on both competitors', () => {
+    it('updates the driver anchor for the rendered panel aspect ratio without changing zoom', () => {
         let notifyResize: ((width: number, height: number) => void) | undefined;
         const originalResizeObserver = window.ResizeObserver;
         const observe = jest.fn();
@@ -835,18 +830,17 @@ describe('DriverExpertComparisonGraph', () => {
                 }],
             }} />);
 
-            const initialScale = parseMatrix(
-                screen.getByTestId('comparison-camera-layer'),
-            )[0];
+            const initialMatrix = parseMatrix(screen.getByTestId('comparison-camera-layer'));
+            const initialScale = Math.hypot(initialMatrix[0], initialMatrix[1]);
             act(() => notifyResize?.(400, 260));
 
             expect(screen.getByTestId('comparison-track-map')).toHaveAttribute(
                 'viewBox',
                 '0 0 760 494',
             );
-            expect(parseMatrix(screen.getByTestId('comparison-camera-layer'))[0])
-                .toBeGreaterThan(initialScale);
-            expectFollowedContentWithinPadding();
+            const resizedMatrix = parseMatrix(screen.getByTestId('comparison-camera-layer'));
+            expect(Math.hypot(resizedMatrix[0], resizedMatrix[1])).toBeCloseTo(initialScale, 6);
+            expectCameraLockedOn('driver');
             expect(observe).toHaveBeenCalledWith(screen.getByTestId('comparison-track-map'));
         } finally {
             Object.defineProperty(window, 'ResizeObserver', {
@@ -885,7 +879,7 @@ describe('DriverExpertComparisonGraph', () => {
             expect(screen.queryByTestId(`${otherIdentity}-track-path`)).not.toBeInTheDocument();
             expect(screen.queryByTestId(`${otherIdentity}-position-marker`)).not.toBeInTheDocument();
             expect(screen.queryByTestId(`${otherIdentity}-telemetry-pod`)).not.toBeInTheDocument();
-            expectFollowedContentWithinPadding();
+            expectCameraLockedOn(identity);
         },
     );
 

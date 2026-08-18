@@ -878,6 +878,25 @@
   color: var(--lp-gray-dim);
   font-variant-numeric: tabular-nums;
 }
+.ai-chat__range-todo-toggle {
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid rgba(0, 230, 118, 0.28);
+  border-radius: var(--lp-radius-sm);
+  background: rgba(0, 230, 118, 0.06);
+  padding: 7px 10px;
+  color: var(--lp-green);
+  font-family: var(--lp-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.ai-chat__range-todo-toggle:hover,
+.ai-chat__range-todo-toggle:focus-visible {
+  border-color: rgba(0, 230, 118, 0.55);
+  background: rgba(0, 230, 118, 0.12);
+}
 .ai-chat__range-todo-error {
   margin-top: 7px;
   color: var(--lp-red);

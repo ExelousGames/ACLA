@@ -210,6 +210,10 @@
     transition: none;
 }
 
+.cameraOverlay {
+    pointer-events: none;
+}
+
 .trackShadow,
 .driverPath,
 .expertPath {

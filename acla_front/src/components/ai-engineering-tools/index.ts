@@ -49,6 +49,8 @@ export {
     default as LiveRangeTodoList,
     LiveRangeTodoListDisplay,
     LiveRangeTodoListRunner,
+    calculateForwardCircularDistance,
+    getLiveRangeNormalizedPosition,
 } from './LiveRangeTodoList';
 export type { LiveRangeTelemetrySample, LiveRangeTodoListProps } from './LiveRangeTodoList';
 export type {

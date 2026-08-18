@@ -11,6 +11,7 @@ export interface LiveRangeTodoEventInput {
     id: string;
     normalized_position: number;
     lead_time_seconds?: number;
+    eta_seconds?: number;
     content: LiveRangeTodoContent;
     taskStart: (signal: AbortSignal) => unknown | Promise<unknown>;
 }
