@@ -22,7 +22,6 @@ import apiService from 'services/api.service';
 import type {
     BaselineCollectionHandle,
     BaselineCollectionPayload,
-    BaselineCollectionStatus,
 } from './BaselineCollection';
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 import {
@@ -49,7 +48,6 @@ import type {
 } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import type { LiveSessionAnalysisResultPage } from './live-session-analysis-results';
 import {
-    createAiToolDeferred,
     createAiToolOperation,
     createAiToolOperationFrom,
     type AiToolOperation,
@@ -94,7 +92,7 @@ export interface LiveSessionHandle extends NamedAiToolComponentHandle {
     ): AiToolOperation<QueryTelemetryMetricResult<TReduce>>;
     getEventLogForAi(args: Record<string, any>): AiToolOperation<LiveEventLogAiResult>;
     getNextCornerForAi(): AiToolOperation<LiveNextCornerAiResult>;
-    collectLiveBaselineForAi(args: Record<string, any>): AiToolOperation<BaselineCollectionPayload, BaselineCollectionStatus>;
+    collectLiveBaselineForAi(args: Record<string, any>): AiToolOperation<BaselineCollectionPayload>;
     restartLiveBaselineForAi(): AiToolOperation<LiveBaselineRestartAiResult>;
     analyzeLiveRecordedAnalysisForAi(args: Record<string, any>): AiToolOperation<LiveBaselineAnalysisAiResult>;
     analyzeTelemetryForAi(args: Record<string, any>): AiToolOperation<LiveTelemetryAnalysisAiResult>;
@@ -309,41 +307,14 @@ const LiveSessionView = ({ name }: { name: string }) => {
                 const mountedHandle = componentRefs?.findComponentRef<BaselineCollectionHandle>(
                     AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                 )?.current;
-                if (mountedHandle) return mountedHandle.startCollection(options);
+                if (mountedHandle) {
+                    return createAiToolOperation(mountedHandle.startCollection(options).result);
+                }
 
-                const statusDeferred = [0, 1, 25, 50, 75, 100]
-                    .map(() => createAiToolDeferred<BaselineCollectionStatus>());
-                const result = (async () => {
-                    try {
-                        const handle = await getBaselineHandle(componentRefs);
-                        const operation = handle.startCollection(options);
-                        operation.statuses.forEach((status, index) => {
-                            void status.then(
-                                (value) => statusDeferred[index]?.resolve(value),
-                                (error) => statusDeferred[index]?.reject(error),
-                            );
-                        });
-                        operation.statuses.slice(statusDeferred.length).forEach((status) => {
-                            void status.catch(() => undefined);
-                        });
-                        const value = await operation.result;
-                        statusDeferred.forEach((deferred, index) => {
-                            if (!deferred.settled) deferred.resolve({
-                                ...(value instanceof Error
-                                    ? { status: 'waiting_for_start' as const, progress_percent: 0, car: null, track: null, message: value.message }
-                                    : value),
-                                event: index <= 1 ? 'baseline_collecting' : 'baseline_progress',
-                                milestone: [0, 1, 25, 50, 75, 100][index],
-                                skipped: true,
-                            });
-                        });
-                        return value;
-                    } catch (error) {
-                        statusDeferred.forEach((deferred) => deferred.reject(error));
-                        throw error;
-                    }
-                })();
-                return createAiToolOperation(result, statusDeferred.map((status) => status.promise));
+                return createAiToolOperationFrom<BaselineCollectionPayload>(async () => {
+                    const handle = await getBaselineHandle(componentRefs);
+                    return handle.startCollection(options).result;
+                });
             },
             restartLiveBaselineForAi: () => createAiToolOperationFrom(async () => {
                 const handle = componentRefs?.findComponentRef<BaselineCollectionHandle>(

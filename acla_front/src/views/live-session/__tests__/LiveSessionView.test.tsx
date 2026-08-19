@@ -345,6 +345,49 @@ describe('LiveSessionView', () => {
         await expect(operation.result).rejects.toBe(failure);
     });
 
+    it('exposes only the terminal baseline result without progress statuses', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const completed = {
+            progress_percent: 100,
+            status: 'complete' as const,
+            car: 'Ferrari 296',
+            track: 'brands_hatch',
+            message: 'Baseline complete. Cached lap record is ready.',
+        };
+        const startCollection = jest.fn(() => ({
+            result: Promise.resolve(completed),
+            statuses: [Promise.resolve({
+                ...completed,
+                progress_percent: 50,
+                status: 'collecting' as const,
+                event: 'baseline_progress' as const,
+                milestone: 50,
+            })],
+        }));
+
+        render(
+            <AiToolComponentRefProvider>
+                <LiveSessionContext.Provider value={createRuntime('acc') as any}>
+                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                </LiveSessionContext.Provider>
+                <RegistrationObserver />
+            </AiToolComponentRefProvider>,
+        );
+        act(() => {
+            componentDirectory!.registerComponentRef({ current: {
+                    getComponentName: () => AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                    startCollection,
+                } as any });
+        });
+        const handle = componentDirectory!
+            .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+
+        const operation = handle.collectLiveBaselineForAi({ timeout_seconds: 12 });
+
+        expect(operation.statuses).toEqual([]);
+        await expect(operation.result).resolves.toEqual(completed);
+    });
+
     it('rejects restart without mounting a collector when collection is not in progress', async () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
 

@@ -8,6 +8,10 @@ import type {
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
 } from 'components/ai-engineering-tools';
+import {
+    AI_TOOL_COMPONENT_NAMES,
+    createAiToolComponentRefDirectory,
+} from 'contexts/AiToolComponentRefContext';
 
 const event = (
     id: string,
@@ -44,6 +48,22 @@ describe('live range helpers', () => {
 });
 
 describe('LiveRangeTodoListRunner executable events', () => {
+    it('removes its registration completely after the final task finishes', async () => {
+        const directory = createAiToolComponentRefDirectory();
+        const runner = new LiveRangeTodoListRunner(
+            AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        );
+        runner.addComponentRef(directory);
+        runner.addEvent(event('one', 0.2));
+
+        makeDue(runner, 0.25);
+        await flushPromises();
+
+        expect(directory.findComponentRef(
+            AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        )).toBeNull();
+    });
+
     it('preserves a tool-provided ETA until rolling telemetry can refine it', () => {
         const runner = new LiveRangeTodoListRunner('live-range');
 

@@ -74,21 +74,25 @@ jest.mock('views/lap-analysis/recording-state', () => {
     };
 });
 
-jest.mock('components/ai-engineering-tools', () => ({
-    Goal: () => null,
-    ProcedurePlanWorkflow: () => null,
-    LiveRangeTodoList: () => null,
-    buildProcedurePlan: jest.fn(() => null),
-    isProcedurePlanClearEvent: jest.fn(() => false),
-    isProcedurePlanOptOutRequest: jest.fn(() => false),
-    isProcedurePlanStartEvent: jest.fn(() => false),
-    serializeProcedurePlan: jest.fn((value) => value),
-    createAiToolOperationFrom: (callback: () => unknown) => ({
-        result: Promise.resolve().then(callback),
-        statuses: [],
-    }),
-    mapAiToolOperation: jest.fn((operation) => operation),
-}));
+jest.mock('components/ai-engineering-tools', () => {
+    const actual = jest.requireActual('components/ai-engineering-tools');
+    return {
+        Goal: () => null,
+        ProcedurePlanWorkflow: () => null,
+        LiveRangeTodoList: () => null,
+        LiveRangeTodoListRunner: actual.LiveRangeTodoListRunner,
+        buildProcedurePlan: jest.fn(() => null),
+        isProcedurePlanClearEvent: jest.fn(() => false),
+        isProcedurePlanOptOutRequest: jest.fn(() => false),
+        isProcedurePlanStartEvent: jest.fn(() => false),
+        serializeProcedurePlan: jest.fn((value) => value),
+        createAiToolOperationFrom: (callback: () => unknown) => ({
+            result: Promise.resolve().then(callback),
+            statuses: [],
+        }),
+        mapAiToolOperation: jest.fn((operation) => operation),
+    };
+});
 
 jest.mock('services/api.service', () => ({
     __esModule: true,
@@ -231,12 +235,71 @@ describe('AiChat conversation lifecycle', () => {
         expect(getLatestMainVoiceOptions().clientSessionId).not.toBe(firstRecordedClientSessionId);
     });
 
+    it('initializes the live range runner on demand and removes it when empty', () => {
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+
+        expect(mockRegisterComponentRef).not.toHaveBeenCalled();
+        let runner: any;
+        act(() => {
+            runner = mockRegisteredAiChatHandle.initializeLiveRangeTodoList();
+        });
+        expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
+        const runnerRef = mockRegisterComponentRef.mock.calls[0][0];
+        expect(runnerRef.current.getComponentName()).toBe('live-range-todo-list');
+        act(() => {
+            runner.addEvent({
+                id: 'completed-event',
+                normalized_position: 0.5,
+                content: { title: 'Completed event' },
+                taskStart: jest.fn(),
+            });
+            runner.clear();
+        });
+        expect(mockUnregisterComponentRef).toHaveBeenCalledWith(runnerRef);
+
+        let replacementRunner: any;
+        act(() => {
+            replacementRunner = mockRegisteredAiChatHandle.initializeLiveRangeTodoList();
+        });
+        expect(replacementRunner).not.toBe(runner);
+        expect(mockRegisterComponentRef).toHaveBeenCalledTimes(2);
+
+        view.unmount();
+    });
+
     it('starts a conversation when mounted under StrictMode', async () => {
         render(
             <React.StrictMode>
                 <AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />
             </React.StrictMode>,
         );
+
+        expect(mockRegisterComponentRef).not.toHaveBeenCalled();
+        let activeRunner: any;
+        act(() => {
+            activeRunner = mockRegisteredAiChatHandle.initializeLiveRangeTodoList();
+            activeRunner.addEvent({
+                id: 'strict-mode-event',
+                normalized_position: 0.5,
+                content: { title: 'Strict mode event' },
+                taskStart: jest.fn(),
+            });
+            activeRunner.updateEvents([{
+                id: 'strict-mode-event',
+                content: { description: 'Updated after StrictMode replay' },
+            }]);
+        });
+        expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
+        expect(mockUnregisterComponentRef).not.toHaveBeenCalled();
+        expect(activeRunner.getSnapshot()?.events).toEqual([
+            expect.objectContaining({
+                id: 'strict-mode-event',
+                content: {
+                    title: 'Strict mode event',
+                    description: 'Updated after StrictMode replay',
+                },
+            }),
+        ]);
 
         fireEvent.click(screen.getByRole('button', { name: 'Toggle voice session' }));
 

@@ -1,7 +1,5 @@
-import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import React, { useEffect, useRef, useState } from 'react';
 import { InvalidLiveRangeTodoListError } from 'contexts/AiToolComponentError';
-import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
 import {
     isOverlayFiniteOrNull,
@@ -343,7 +341,7 @@ export const liveRangeTodoListOverlayRenderer: AiOverlayRenderer<LiveRangeTodoLi
 };
 
 export interface LiveRangeTodoListProps {
-    name: string;
+    runner: LiveRangeTodoListRunner;
     onSnapshotChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void;
     surface?: 'panel' | 'chat' | 'pill';
 }
@@ -360,7 +358,8 @@ const toAiResult = (result: LiveRangeTodoListToolResult): LiveRangeTodoListAiRes
 };
 
 export class LiveRangeTodoListRunner
-extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
+extends AiToolComponentBase<LiveRangeTodoListSnapshot | null>
+implements LiveRangeTodoListHandle {
     private runtime: RuntimeSnapshot;
     private samples: LiveRangeTelemetrySample[] = [];
     private previousSample: LiveRangeTelemetrySample | null = null;
@@ -381,6 +380,30 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
             updated_at: now,
         };
         this.onChange = onChange;
+    }
+
+    getForAi() {
+        return createAiToolOperation(toAiResult(this.get()));
+    }
+
+    getComponentType(): string {
+        return 'live_range_todo';
+    }
+
+    getOverlayBehavior(snapshot: LiveRangeTodoListSnapshot | null) {
+        return {
+            placement: 'pinned' as const,
+            requestedStatus: 'expanded' as const,
+            remove: snapshot === null || snapshot.events.length === 0,
+        };
+    }
+
+    getOverlayMetadata() {
+        return {};
+    }
+
+    handleOverlayRendererEvent(): void {
+        // The live range list has no renderer-originated events.
     }
 
     addEvent(eventInput: LiveRangeTodoEventInput): LiveRangeTodoListToolResult {
@@ -661,7 +684,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         const visibleSnapshot = snapshot.events.length > 0 ? snapshot : null;
         this.publishSnapshot(visibleSnapshot);
         this.onChange?.(visibleSnapshot);
-        if (snapshot.events.length === 0) this.deleteComponentRef();
+        if (snapshot.events.length === 0) this.dispose();
         return snapshot;
     }
 
@@ -787,64 +810,28 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
 }
 
 const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
-    name,
+    runner,
     onSnapshotChange,
     surface = 'chat',
 }) => {
-    const { currentTelemetry, sessionGame } = useContext(LiveSessionContext);
-    const [snapshot, setSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
+    const [snapshot, setSnapshot] = useState<LiveRangeTodoListSnapshot | null>(
+        () => runner.getSnapshot(),
+    );
     const snapshotChangeRef = useRef(onSnapshotChange);
     snapshotChangeRef.current = onSnapshotChange;
-    const previousSessionGameRef = useRef(sessionGame);
-    const runnerRef = useRef<LiveRangeTodoListRunner | null>(null);
-    if (!runnerRef.current) {
-        runnerRef.current = new LiveRangeTodoListRunner(name, (next) => {
+
+    useEffect(() => {
+        const publish = (next: LiveRangeTodoListSnapshot | null) => {
             setSnapshot(next);
             snapshotChangeRef.current?.(next);
-        });
-    }
-
-    const handle = useMemo<LiveRangeTodoListHandle>(() => ({
-        getComponentName: () => name,
-        addEvent: (event) => runnerRef.current!.addEvent(event),
-        replaceEvents: (events) => runnerRef.current!.replaceEvents(events),
-        updateEvents: (updates) => runnerRef.current!.updateEvents(updates),
-        removeEvents: (ids) => runnerRef.current!.removeEvents(ids),
-        resetEvents: (ids) => runnerRef.current!.resetEvents(ids),
-        clear: () => runnerRef.current!.clear(),
-        get: () => runnerRef.current!.get(),
-        getForAi: () => createAiToolOperation(toAiResult(runnerRef.current!.get())),
-        getComponentType: () => 'live_range_todo',
-        getSnapshot: () => runnerRef.current!.getSnapshot(),
-        subscribe: (listener) => runnerRef.current!.subscribe(listener),
-        getOverlayBehavior: (next) => ({
-            placement: 'pinned',
-            requestedStatus: 'expanded',
-            remove: next === null || next.events.length === 0,
-        }),
-        getOverlayMetadata: () => ({}),
-        handleOverlayRendererEvent: () => undefined,
-    }), [name]);
-    const componentRef = useRef<LiveRangeTodoListHandle | null>(handle);
-    componentRef.current = handle;
-    useRegisterAiToolComponentRef(componentRef);
-
-    useEffect(() => () => {
-        runnerRef.current?.dispose();
-        snapshotChangeRef.current?.(null);
-    }, []);
-
-    useEffect(() => {
-        const previousSessionGame = previousSessionGameRef.current;
-        previousSessionGameRef.current = sessionGame;
-        if (previousSessionGame === sessionGame) return;
-        if (sessionGame === null) return;
-        runnerRef.current?.reset();
-    }, [sessionGame]);
-
-    useEffect(() => {
-        runnerRef.current?.acceptTelemetry(currentTelemetry);
-    }, [currentTelemetry]);
+        };
+        publish(runner.getSnapshot());
+        const unsubscribe = runner.subscribe(publish);
+        return () => {
+            unsubscribe();
+            snapshotChangeRef.current?.(null);
+        };
+    }, [runner]);
 
     return <LiveRangeTodoListDisplay snapshot={snapshot} surface={surface} />;
 };

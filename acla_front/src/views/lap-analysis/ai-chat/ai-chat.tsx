@@ -33,6 +33,7 @@ import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay'
 import {
     Goal,
     LiveRangeTodoList,
+    LiveRangeTodoListRunner,
     ProcedurePlanWorkflow,
     buildProcedurePlan,
     isProcedurePlanClearEvent,
@@ -41,10 +42,10 @@ import {
     type AiToolDispatcher,
     type GoalHandle,
     type AiToolOperation,
+    type LiveRangeTodoListHandle,
     type ProcedurePlanHandle,
     type ProcedurePlanState,
     type GoalSnapshot,
-    type LiveRangeTodoListSnapshot,
     createAiToolOperationFrom,
 } from 'components/ai-engineering-tools';
 import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
@@ -188,7 +189,7 @@ export interface AiChatHandle extends NamedAiToolComponentHandle {
     setLivePerformanceAnalystEnabled(enabled: boolean): void;
     createGoal(args: Record<string, unknown>, dispatchTool: AiToolDispatcher): ReturnType<GoalHandle['createGoal']>;
     createProcedurePlan(args: Record<string, unknown>, dispatchTool: AiToolDispatcher): ReturnType<ProcedurePlanHandle['createProcedurePlan']>;
-    mountLiveRangeTodoList(): void;
+    initializeLiveRangeTodoList(): LiveRangeTodoListHandle;
     setAgentTagActive(tag: string, active: boolean): void;
     getOpportunityTelemetryRows(): Record<string, any>[];
     getOpportunityAgentState(): OpportunityAgentState;
@@ -209,7 +210,7 @@ export type ShowMapAiResult = { status: string; [key: string]: unknown };
 type ActiveWorkflow =
     | { kind: 'goal'; key: number; dispatchTool: AiToolDispatcher }
     | { kind: 'procedure_plan'; key: number; dispatchTool: AiToolDispatcher }
-    | { kind: 'live_range_todo'; key: number };
+    | { kind: 'live_range_todo'; key: number; runner: LiveRangeTodoListRunner };
 
 type PendingWorkflow =
     | Omit<Extract<ActiveWorkflow, { kind: 'goal' }>, 'key'>
@@ -330,7 +331,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
     const [, setProcedurePlanState] = useState<ProcedurePlanState | null>(null);
     const [, setGoalSnapshot] = useState<GoalSnapshot | null>(null);
-    const [, setLiveRangeTodoListSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
     const [activeWorkflow, setActiveWorkflow] = useState<ActiveWorkflow | null>(null);
     const workflowKeyRef = useRef(0);
 
@@ -415,6 +415,20 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const activeToolHandlersRef = useRef<Record<string, FrontendToolHandler>>({});
     const conversationDisposedRef = useRef(false);
     const pendingTimersRef = useRef<Set<number>>(new Set());
+    const liveRangeTodoListRunnerRef = useRef<LiveRangeTodoListRunner | null>(null);
+    const liveRangeTodoListSessionGameRef = useRef(liveSession.sessionGame);
+
+    useEffect(() => {
+        liveRangeTodoListRunnerRef.current?.acceptTelemetry(liveSession.currentTelemetry);
+    }, [liveSession.currentTelemetry]);
+
+    useEffect(() => {
+        const previousSessionGame = liveRangeTodoListSessionGameRef.current;
+        liveRangeTodoListSessionGameRef.current = liveSession.sessionGame;
+        if (previousSessionGame === liveSession.sessionGame) return;
+        if (liveSession.sessionGame === null) return;
+        liveRangeTodoListRunnerRef.current?.reset();
+    }, [liveSession.sessionGame]);
 
     const scheduleConversationTimeout = useCallback((callback: () => void, delay = 0) => {
         const timeoutId = window.setTimeout(() => {
@@ -434,6 +448,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             overlayInvalidationTokenRef.current += 1;
             activeAgentSessionRef.current = null;
             activeToolHandlersRef.current = {};
+            const liveRangeTodoListRunner = liveRangeTodoListRunnerRef.current;
+            liveRangeTodoListRunnerRef.current = null;
+            liveRangeTodoListRunner?.dispose();
             pendingTimers.forEach((timeoutId) => window.clearTimeout(timeoutId));
             pendingTimers.clear();
         };
@@ -443,7 +460,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         const next = { ...workflow, key: ++workflowKeyRef.current } as ActiveWorkflow;
         flushSync(() => {
             setGoalSnapshot(null);
-            setLiveRangeTodoListSnapshot(null);
             procedurePlanRef.current = null;
             setProcedurePlanState(null);
             setActiveWorkflow(next);
@@ -1119,9 +1135,29 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         }
     }, [componentRefs, mountWorkflow]);
 
-    const mountLiveRangeTodoList = useCallback(() => {
-        mountWorkflow({ kind: 'live_range_todo' });
-    }, [mountWorkflow]);
+    const initializeLiveRangeTodoList = useCallback((): LiveRangeTodoListHandle => {
+        let runner = liveRangeTodoListRunnerRef.current;
+        if (!runner) {
+            runner = new LiveRangeTodoListRunner(
+                AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+                (snapshot) => {
+                    if (snapshot !== null || liveRangeTodoListRunnerRef.current !== runner) return;
+                    liveRangeTodoListRunnerRef.current = null;
+                    setActiveWorkflow((current) => (
+                        current?.kind === 'live_range_todo' && current.runner === runner
+                            ? null
+                            : current
+                    ));
+                },
+            );
+            liveRangeTodoListRunnerRef.current = runner;
+            runner.addComponentRef(componentRefs);
+        }
+        if (activeWorkflow?.kind !== 'live_range_todo' || activeWorkflow.runner !== runner) {
+            mountWorkflow({ kind: 'live_range_todo', runner });
+        }
+        return runner;
+    }, [activeWorkflow, componentRefs, mountWorkflow]);
 
     const resetLivePerformanceAnalystRuntime = useCallback(() => {
         const analystAgent = livePerformanceAnalystStateRef.current;
@@ -1130,7 +1166,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         procedurePlanOptedOutRef.current = false;
         setActiveWorkflow(null);
         setGoalSnapshot(null);
-        setLiveRangeTodoListSnapshot(null);
+        const liveRangeTodoListRunner = liveRangeTodoListRunnerRef.current;
+        liveRangeTodoListRunnerRef.current = null;
+        liveRangeTodoListRunner?.dispose();
         procedurePlanRef.current = null;
         setProcedurePlanState(null);
     }, [setLivePerformanceAnalystAgentEnabled]);
@@ -1279,7 +1317,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
         createGoal,
         createProcedurePlan,
-        mountLiveRangeTodoList,
+        initializeLiveRangeTodoList,
         setAgentTagActive: setAgentTag,
         getOpportunityTelemetryRows,
         getOpportunityAgentState: () => opportunityAgentStateRef.current,
@@ -1304,7 +1342,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         getCircuitMapByTrack,
         getLabelName,
         getOpportunityTelemetryRows,
-        mountLiveRangeTodoList,
+        initializeLiveRangeTodoList,
         name,
         sessionMode,
         setAgentTag,
@@ -2160,8 +2198,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                     {activeWorkflow?.kind === 'live_range_todo' && (
                         <LiveRangeTodoList
                             key={activeWorkflow.key}
-                            name={AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST}
-                            onSnapshotChange={setLiveRangeTodoListSnapshot}
+                            runner={activeWorkflow.runner}
                             surface="chat"
                         />
                     )}

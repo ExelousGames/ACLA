@@ -677,7 +677,7 @@ export const SESSION_TOOLS = [
     },
     {
         name: 'analyze_telemetry',
-        description: 'Classify driving actions over a telemetry scope and return engineer labels with definitions and optional solutions. Use only for live or recorded raw telemetry windows.',
+        description: 'Classify driving actions over a telemetry scope and return engineer labels with definitions and optional solutions. Use this to do a quick analysis of a telemetry window without launching a dedicated ai analysis agent.',
         properties: {
             scope: {
                 ...SESSION_TOOL_QUERY_SCOPE_SCHEMA,
@@ -685,28 +685,6 @@ export const SESSION_TOOLS = [
             },
         },
         required: ['scope'],
-    },
-    {
-        name: 'classify_live_section',
-        description: 'Classify the active Live Performance Analyst focus section after the driver passes through it again. This session tool brings the telemetry window to the AI service, records a compact comparison in section history, and returns only compact labels, stats, focus, and comparison data.',
-        properties: {
-            section_id: {
-                type: 'string',
-                description: 'Known track section id from the live analyst observation.',
-            },
-            section_name: {
-                type: 'string',
-                description: 'Optional section name if an id is not available.',
-            },
-            lap: {
-                oneOf: [
-                    { type: 'string', enum: ['last'] },
-                    { type: 'integer' },
-                ],
-                description: 'Lap to classify for the active focus section. Use "last" for the most recent completed pass, or a specific lap number when supplied by the observation.',
-            },
-        },
-        required: [],
     },
 ] as const;
 
@@ -741,7 +719,6 @@ const LIVE_AGENT_SESSION_TOOL_NAMES: SessionToolName[] = [
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
-    'classify_live_section',
 ];
 
 const LIVE_PERFORMANCE_ANALYST_TOOL_NAMES: SessionToolName[] = [

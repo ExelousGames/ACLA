@@ -7,12 +7,11 @@ import { JsonataQueryEditor, type JsonataQueryEditorProps } from './JsonataQuery
 const defaultProps = (): JsonataQueryEditorProps => ({
     id: 'jsonata-query',
     value: 'elements',
+    resetValue: 'elements',
     labels: ['MSP', 'Wheel lock'],
-    isDirty: false,
     isEvaluating: false,
     diagnostic: null,
     diagnosticFocusRequest: 0,
-    onChange: jest.fn(),
     onApply: jest.fn(),
     onReset: jest.fn(),
 });
@@ -36,6 +35,8 @@ describe('JsonataQueryEditor', () => {
         expect(screen.getByRole('region', { name: 'Edit query' })).toBeInTheDocument();
         expect(await screen.findByRole('textbox', { name: 'Query expression' }))
             .toHaveAttribute('aria-busy', 'false');
+        expect(screen.getByRole('textbox', { name: 'Query expression' }))
+            .toHaveAttribute('contenteditable', 'true');
         expect(container.querySelector('.cm-lineNumbers')).toBeInTheDocument();
         expect(getEditorView().state.doc.toString()).toBe('elements');
     });
@@ -62,16 +63,23 @@ describe('JsonataQueryEditor', () => {
         await act(async () => resolveApply());
     });
 
-    it('keeps draft changes editable and focuses an actionable Apply diagnostic', async () => {
+    it('keeps rapid draft changes editable without waiting for a parent value update', async () => {
         const props = defaultProps();
         const view = render(<JsonataQueryEditor {...props} />);
         await screen.findByRole('textbox', { name: 'Query expression' });
         const editor = getEditorView();
 
         act(() => editor.dispatch({
-            changes: { from: 0, to: editor.state.doc.length, insert: 'elements[id = ]' },
+            changes: { from: editor.state.doc.length, insert: '[id = ' },
         }));
-        expect((props.onChange as jest.Mock).mock.calls.at(-1)?.[0]).toBe('elements[id = ]');
+        act(() => editor.dispatch({
+            changes: { from: editor.state.doc.length, insert: ']' },
+        }));
+
+        expect(getEditorView().state.doc.toString()).toBe('elements[id = ]');
+        expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        expect(props.onApply).toHaveBeenCalledWith('elements[id = ]');
 
         view.rerender(<JsonataQueryEditor
             {...props}
@@ -101,7 +109,6 @@ describe('JsonataQueryEditor', () => {
         view.rerender(<JsonataQueryEditor {...props} value="elements[id = 'one']" />);
 
         expect(getEditorView().state.doc.toString()).toBe("elements[id = 'one']");
-        expect(props.onChange).not.toHaveBeenCalled();
     });
 
     it('cancels deferred editor work when unmounted', () => {

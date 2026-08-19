@@ -62,6 +62,7 @@ import {
 } from 'components/driver-expert-comparison';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import type { DriverExpertComparisonSnapshot } from 'components/driver-expert-comparison';
+import { OVERLAY_COMPARISON_COMPLETION_PAUSE_MS } from 'views/floating-chat/ai-overlay-types';
 
 export type {
     ApplyAnalysisResultQueryInput,
@@ -732,20 +733,21 @@ const validateLiveRangeTodoBatch = (
     });
 };
 
-const getOrMountLiveRangeTodoList = (
+const getOrInitializeLiveRangeTodoList = (
     context: FrontendAiCommandContext,
 ): LiveRangeTodoListHandle => {
     const directory = getDirectory(context);
     const mounted = directory.findComponentRef<LiveRangeTodoListHandle>(
         AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
     )?.current;
-    if (mounted) return mounted;
-    getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
-        .mountLiveRangeTodoList();
-    return resolveNamedComponentHandle<LiveRangeTodoListHandle>(
-        directory,
-        AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-    );
+    if (mounted) {
+        directory.findComponentRef<AiChatHandle>(AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+            ?.current
+            ?.initializeLiveRangeTodoList?.();
+        return mounted;
+    }
+    return getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        .initializeLiveRangeTodoList();
 };
 
 const createScheduledTaskStart = (
@@ -762,6 +764,34 @@ const createScheduledTaskStart = (
     if (result instanceof Error) throw result;
     return result;
 };
+
+const createLiveRangeAbortError = (): Error => {
+    const error = new Error('The live range to-do task was aborted.');
+    error.name = 'AbortError';
+    return error;
+};
+
+const waitForLiveRangeReplay = (
+    durationMs: number,
+    signal: AbortSignal,
+): Promise<void> => new Promise((resolve, reject) => {
+    if (signal.aborted) {
+        reject(createLiveRangeAbortError());
+        return;
+    }
+
+    let timer: ReturnType<typeof setTimeout>;
+    const handleAbort = () => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', handleAbort);
+        reject(createLiveRangeAbortError());
+    };
+    timer = setTimeout(() => {
+        signal.removeEventListener('abort', handleAbort);
+        resolve();
+    }, durationMs + OVERLAY_COMPARISON_COMPLETION_PAUSE_MS);
+    signal.addEventListener('abort', handleAbort, { once: true });
+});
 
 type EligibleFilteredComparison = {
     segmentId: string;
@@ -878,7 +908,7 @@ const queueFilteredDriverExpertComparisons = (
     });
 
     if (eligible.length > 0) {
-        const todoList = getOrMountLiveRangeTodoList(context);
+        const todoList = getOrInitializeLiveRangeTodoList(context);
         const aiChat = getComponent<AiChatHandle>(
             context,
             AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
@@ -916,7 +946,11 @@ const queueFilteredDriverExpertComparisons = (
                         ? { description: `Section: ${comparison.section}` }
                         : {}),
                 },
-                taskStart: () => aiChat.displayDriverExpertComparison(comparison.overlay),
+                taskStart: async (signal) => {
+                    if (signal.aborted) throw createLiveRangeAbortError();
+                    aiChat.displayDriverExpertComparison(comparison.overlay);
+                    await waitForLiveRangeReplay(comparison.replayDurationMs, signal);
+                },
             });
             result.queued_timing.push({
                 segment_id: comparison.segmentId,
@@ -951,7 +985,7 @@ const definitionList = Object.freeze([
         componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
         execute: (context, args, dispatchNested) => {
             const prepared = validateLiveRangeTodoBatch(args);
-            const todoList = getOrMountLiveRangeTodoList(context);
+            const todoList = getOrInitializeLiveRangeTodoList(context);
             const existingIds = new Set(
                 todoList.get().todo_list?.events.map((event) => event.id) ?? [],
             );

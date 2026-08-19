@@ -450,7 +450,7 @@ describe('live range to-do add tool', () => {
         });
     });
 
-    it('asks AI Chat to mount only when the list is missing', async () => {
+    it('asks AI Chat to initialize the list when it is missing', async () => {
         const directory = createAiToolComponentRefDirectory();
         const addEvent = jest.fn(() => todoResult([{ id: 'mounted' }]) as any);
         const todoHandle: Partial<LiveRangeTodoListHandle> = {
@@ -463,18 +463,19 @@ describe('live range to-do add tool', () => {
                 running_count: 0,
             }),
         };
-        const mountLiveRangeTodoList = jest.fn(() => {
+        const initializeLiveRangeTodoList = jest.fn(() => {
             reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
+            return todoHandle as LiveRangeTodoListHandle;
         });
         reserve(directory, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
-            mountLiveRangeTodoList,
+            initializeLiveRangeTodoList,
         } satisfies Partial<AiChatHandle>);
 
         const operation = childLiveRegistry(directory).add_event_to_live_range_todo_list({
             events: [scheduledItem('mounted')],
         });
 
-        expect(mountLiveRangeTodoList).toHaveBeenCalledTimes(1);
+        expect(initializeLiveRangeTodoList).toHaveBeenCalledTimes(1);
         expect(addEvent).toHaveBeenCalledTimes(1);
         await expect(operation.result).resolves.toMatchObject({ event_count: 1 });
     });
@@ -596,6 +597,10 @@ describe('live range to-do add tool', () => {
 });
 
 describe('filtered Driver/Expert comparison queue tool', () => {
+    afterEach(() => {
+        jest.useRealTimers();
+    });
+
     const comparison = (durationMs: number) => ({
         samples: durationMs > 0 ? [{
             driverTimeMs: 0,
@@ -622,6 +627,7 @@ describe('filtered Driver/Expert comparison queue tool', () => {
     });
 
     it('appends eligible segments in filtered order and publishes overlays only when due', async () => {
+        jest.useFakeTimers();
         const directory = createAiToolComponentRefDirectory();
         const runner = new LiveRangeTodoListRunner(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
         const existingTask = jest.fn();
@@ -751,9 +757,16 @@ describe('filtered Driver/Expert comparison queue tool', () => {
             comparison: fiveSecondComparison,
             game: 'acc',
         });
-        for (let index = 0; index < 4; index += 1) await Promise.resolve();
 
         runner.acceptTelemetry({ Graphics_normalized_car_position: 0.8, Graphics_completed_laps: 1 });
+        expect(displayDriverExpertComparison).toHaveBeenCalledTimes(1);
+
+        jest.advanceTimersByTime(5_799);
+        for (let index = 0; index < 4; index += 1) await Promise.resolve();
+        expect(displayDriverExpertComparison).toHaveBeenCalledTimes(1);
+
+        jest.advanceTimersByTime(1);
+        for (let index = 0; index < 4; index += 1) await Promise.resolve();
         expect(displayDriverExpertComparison).toHaveBeenNthCalledWith(2, {
             title: 'Driver vs Expert',
             comparison: secondComparison,
@@ -761,20 +774,22 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         });
         expect(existingTask).not.toHaveBeenCalled();
         expect(duplicateTask).not.toHaveBeenCalled();
+        runner.dispose();
     });
 
-    it('asks AI Chat to mount the list when an eligible comparison has no active list', async () => {
+    it('asks AI Chat to initialize the list for an eligible comparison', async () => {
         const directory = createAiToolComponentRefDirectory();
         const addEvent = jest.fn();
         const todoHandle: Partial<LiveRangeTodoListHandle> = {
             addEvent,
             get: () => todoResult() as any,
         };
-        const mountLiveRangeTodoList = jest.fn(() => {
+        const initializeLiveRangeTodoList = jest.fn(() => {
             reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
+            return todoHandle as LiveRangeTodoListHandle;
         });
         reserve(directory, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
-            mountLiveRangeTodoList,
+            initializeLiveRangeTodoList,
             displayDriverExpertComparison: jest.fn(),
         } satisfies Partial<AiChatHandle>);
         reserve(directory, 'visualization:analysis-results', {
@@ -796,7 +811,7 @@ describe('filtered Driver/Expert comparison queue tool', () => {
             .add_filtered_driver_expert_comparisons_to_live_range_todo_list({}).result)
             .resolves.toMatchObject({ queued_count: 1 });
 
-        expect(mountLiveRangeTodoList).toHaveBeenCalledTimes(1);
+        expect(initializeLiveRangeTodoList).toHaveBeenCalledTimes(1);
         expect(addEvent).toHaveBeenCalledWith(expect.objectContaining({
             id: 'analysis-comparison:mounted-comparison',
             normalized_position: 0.25,

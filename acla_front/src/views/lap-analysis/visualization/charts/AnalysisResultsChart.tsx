@@ -785,11 +785,11 @@ interface ActivePageQueryState {
     selectedView: ActivePageQueryViewKey;
     committedView: ActivePageQueryViewKey;
     draftExpression: string;
+    resetExpression: string;
     committedExpression: string;
     matchedElements: AnalysisResultElement[];
     error: AnalysisResultsQueryErrorDetail | null;
     errorFocusRequest: number;
-    isDirty: boolean;
     isEvaluating: boolean;
     getCommittedSnapshot: () => {
         isEvaluating: boolean;
@@ -798,12 +798,10 @@ interface ActivePageQueryState {
         matchedElements: AnalysisResultElement[];
     };
     selectView: (view: ActivePageQueryViewKey) => void;
-    setDraftExpression: (expression: string) => void;
     applyExpression: (
         expression: string,
         isCurrent?: () => boolean,
     ) => Promise<ActivePageQueryEvaluationResult>;
-    applyDraft: () => Promise<void>;
     resetDraft: () => void;
 }
 
@@ -965,11 +963,6 @@ const useActivePageQueryState = (
         return result;
     }, [elements, evaluate, selectedView, templateByKey]);
 
-    const applyDraft = React.useCallback(async () => {
-        if (isEvaluatingRef.current) return;
-        await applyExpression(draftExpression);
-    }, [applyExpression, draftExpression]);
-
     const resetDraft = React.useCallback(() => {
         setDraftExpression(resetExpression);
         setError(null);
@@ -986,17 +979,15 @@ const useActivePageQueryState = (
         selectedView,
         committedView,
         draftExpression,
+        resetExpression,
         committedExpression,
         matchedElements: matchedElementsAreCurrent ? matchedElements : EMPTY_ANALYSIS_RESULT_ELEMENTS,
         error,
         errorFocusRequest,
-        isDirty: draftExpression !== resetExpression,
         isEvaluating: isEvaluating || !matchedElementsAreCurrent,
         getCommittedSnapshot,
         selectView,
-        setDraftExpression,
         applyExpression,
-        applyDraft,
         resetDraft,
     };
 };
@@ -1628,13 +1619,12 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 <JsonataQueryEditor
                     id={`${id}-active-page-query`}
                     value={activeQuery.draftExpression}
+                    resetValue={activeQuery.resetExpression}
                     labels={activePageLabels}
-                    isDirty={activeQuery.isDirty}
                     isEvaluating={activeQuery.isEvaluating}
                     diagnostic={activeQuery.error}
                     diagnosticFocusRequest={activeQuery.errorFocusRequest}
-                    onChange={activeQuery.setDraftExpression}
-                    onApply={activeQuery.applyDraft}
+                    onApply={activeQuery.applyExpression}
                     onReset={activeQuery.resetDraft}
                 />
                 <ScrollArea type="hover" className={styles.list}>

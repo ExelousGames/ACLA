@@ -14,13 +14,12 @@ import styles from './JsonataQueryEditor.module.css';
 export interface JsonataQueryEditorProps {
     id: string;
     value: string;
+    resetValue: string;
     labels: readonly string[];
-    isDirty: boolean;
     isEvaluating: boolean;
     diagnostic: AnalysisResultsQueryErrorDetail | null;
     diagnosticFocusRequest: number;
-    onChange: (value: string) => void;
-    onApply: () => void | Promise<void>;
+    onApply: (value: string) => void | Promise<unknown>;
     onReset: () => void;
 }
 
@@ -33,12 +32,11 @@ const diagnosticText = (diagnostic: AnalysisResultsQueryErrorDetail): string => 
 export const JsonataQueryEditor: React.FC<JsonataQueryEditorProps> = ({
     id,
     value,
+    resetValue,
     labels,
-    isDirty,
     isEvaluating,
     diagnostic,
     diagnosticFocusRequest,
-    onChange,
     onApply,
     onReset,
 }) => {
@@ -48,7 +46,9 @@ export const JsonataQueryEditor: React.FC<JsonataQueryEditorProps> = ({
     const handledFocusRequestRef = React.useRef(0);
     const applyPendingRef = React.useRef(false);
     const [isEditorMounted, setIsEditorMounted] = React.useState(false);
+    const [draftValue, setDraftValue] = React.useState(value);
     latestDiagnosticRef.current = diagnostic;
+    const isDirty = draftValue !== resetValue;
     const labelId = `${id}-label`;
     const inputId = `${id}-input`;
     const diagnosticId = `${id}-diagnostic`;
@@ -67,10 +67,14 @@ export const JsonataQueryEditor: React.FC<JsonataQueryEditorProps> = ({
     const submit = React.useCallback(() => {
         if (isEvaluating || applyPendingRef.current) return;
         applyPendingRef.current = true;
-        void Promise.resolve(onApply()).finally(() => {
+        void Promise.resolve(onApply(draftValue)).finally(() => {
             applyPendingRef.current = false;
         });
-    }, [isEvaluating, onApply]);
+    }, [draftValue, isEvaluating, onApply]);
+    const reset = React.useCallback(() => {
+        setDraftValue(resetValue);
+        onReset();
+    }, [onReset, resetValue]);
     const interactionExtensions = React.useMemo(() => [
         EditorView.contentAttributes.of({
             id: inputId,
@@ -88,6 +92,10 @@ export const JsonataQueryEditor: React.FC<JsonataQueryEditorProps> = ({
     }, []);
 
     React.useEffect(() => {
+        setDraftValue(value);
+    }, [value]);
+
+    React.useEffect(() => {
         const editor = editorRef.current;
         if (!editor) return;
         const diagnostics = diagnostic
@@ -98,12 +106,12 @@ export const JsonataQueryEditor: React.FC<JsonataQueryEditorProps> = ({
 
     React.useLayoutEffect(() => {
         const editor = editorRef.current;
-        if (!editor || editor.state.doc.toString() === value) return;
+        if (!editor || editor.state.doc.toString() === draftValue) return;
         editor.dispatch({
-            changes: { from: 0, to: editor.state.doc.length, insert: value },
+            changes: { from: 0, to: editor.state.doc.length, insert: draftValue },
             annotations: ExternalChange.of(true),
         });
-    }, [value]);
+    }, [draftValue]);
 
     React.useEffect(() => {
         if (
@@ -145,10 +153,12 @@ export const JsonataQueryEditor: React.FC<JsonataQueryEditorProps> = ({
             {isEditorMounted ? (
                 <CodeMirror
                     className={styles.editor}
-                    value={value}
+                    value={draftValue}
                     minHeight="84px"
                     maxHeight="260px"
                     theme="dark"
+                    editable
+                    readOnly={false}
                     basicSetup={{
                         lineNumbers: false,
                         bracketMatching: false,
@@ -156,7 +166,7 @@ export const JsonataQueryEditor: React.FC<JsonataQueryEditorProps> = ({
                         foldGutter: false,
                     }}
                     extensions={[...editorExtensions, ...interactionExtensions]}
-                    onChange={onChange}
+                    onChange={setDraftValue}
                     onKeyDownCapture={(event) => {
                         if (event.ctrlKey && event.key === 'Enter') {
                             event.preventDefault();
@@ -184,7 +194,7 @@ export const JsonataQueryEditor: React.FC<JsonataQueryEditorProps> = ({
                     type="button"
                     className={styles.button}
                     disabled={isEvaluating}
-                    onClick={onReset}
+                    onClick={reset}
                 >
                     Reset
                 </button>

@@ -62,7 +62,6 @@ describe('SessionToolsController', () => {
         ]));
         expect(names).not.toEqual(expect.arrayContaining([
             'start_agent_session',
-            'classify_live_section',
             'restart_live_baseline',
         ]));
     });
@@ -83,7 +82,6 @@ describe('SessionToolsController', () => {
             'create_goal',
             'retry_goal_task',
             'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
-            'classify_live_section',
         ]));
         expect(names).not.toContain('start_agent_session');
         expect(tools.every((tool) => (
