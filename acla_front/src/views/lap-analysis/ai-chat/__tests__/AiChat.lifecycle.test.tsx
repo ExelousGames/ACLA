@@ -243,6 +243,136 @@ describe('AiChat conversation lifecycle', () => {
         await waitFor(() => expect(mockVoiceStart).toHaveBeenCalledTimes(1));
     });
 
+    it('merges consecutive spoken transcript fragments into one driver bubble', () => {
+        jest.useFakeTimers();
+        jest.setSystemTime(new Date('2026-08-19T12:00:00'));
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        const onEvent = getLatestMainVoiceOptions().onEvent;
+
+        try {
+            act(() => {
+                onEvent({ kind: 'user_transcript', text: '  Brake earlier ', source: 'voice' });
+            });
+            const originalBubble = view.container.querySelector('.ai-chat__msg--driver');
+            const originalTimestamp = originalBubble
+                ?.querySelector('.ai-chat__msg-stamp')
+                ?.textContent;
+
+            jest.setSystemTime(new Date('2026-08-19T13:00:00'));
+            act(() => {
+                onEvent({ kind: 'user_transcript', text: ' then ease off  ', source: 'voice' });
+            });
+
+            const mergedBubble = view.container.querySelector('.ai-chat__msg--driver');
+            expect(view.container.querySelectorAll('.ai-chat__msg--driver')).toHaveLength(1);
+            expect(screen.getByText('Brake earlier then ease off')).toBeInTheDocument();
+            expect(mergedBubble).toBe(originalBubble);
+            expect(mergedBubble?.querySelector('.ai-chat__msg-stamp')?.textContent)
+                .toBe(originalTimestamp);
+        } finally {
+            view.unmount();
+            jest.useRealTimers();
+        }
+    });
+
+    it('starts a new driver bubble after an assistant bubble', () => {
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        const onEvent = getLatestMainVoiceOptions().onEvent;
+
+        act(() => {
+            onEvent({ kind: 'user_transcript', text: 'First driver turn', source: 'voice' });
+            onEvent({ kind: 'assistant_transcript', text: 'Assistant reply' });
+            onEvent({ kind: 'user_transcript', text: 'Second driver turn', source: 'voice' });
+        });
+
+        expect(view.container.querySelectorAll('.ai-chat__msg--driver')).toHaveLength(2);
+        expect(screen.getByText('First driver turn')).toBeInTheDocument();
+        expect(screen.getByText('Second driver turn')).toBeInTheDocument();
+    });
+
+    it('starts a new driver bubble after a tool bubble', () => {
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        const onEvent = getLatestMainVoiceOptions().onEvent;
+
+        act(() => {
+            onEvent({ kind: 'user_transcript', text: 'Check the map', source: 'voice' });
+            onEvent({
+                kind: 'tool_call',
+                runId: 'tool-run-1',
+                name: 'show_map',
+                title: 'Showing map',
+                status: 'completed',
+                final: true,
+            });
+            onEvent({ kind: 'user_transcript', text: 'Now compare laps', source: 'voice' });
+        });
+
+        expect(view.container.querySelectorAll('.ai-chat__msg--driver')).toHaveLength(2);
+        expect(screen.getByText('Showing map')).toBeInTheDocument();
+        expect(screen.getByText('Now compare laps')).toBeInTheDocument();
+    });
+
+    it('keeps typed transcript echoes as separate driver bubbles', () => {
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        const onEvent = getLatestMainVoiceOptions().onEvent;
+
+        act(() => {
+            onEvent({ kind: 'user_transcript', text: 'Typed first', source: 'typed' });
+            onEvent({ kind: 'user_transcript', text: 'Typed second', source: 'typed' });
+        });
+
+        expect(view.container.querySelectorAll('.ai-chat__msg--driver')).toHaveLength(2);
+        expect(screen.getByText('Typed first')).toBeInTheDocument();
+        expect(screen.getByText('Typed second')).toBeInTheDocument();
+    });
+
+    it('keeps main and agent transcript merging isolated', async () => {
+        render(
+            <AiChat
+                name="dashboard-assistant"
+                activeScreen={{ assistantMode: 'live', label: 'Live Session' }}
+            />,
+        );
+
+        act(() => {
+            getLatestMainVoiceOptions().onEvent({
+                kind: 'user_transcript',
+                text: 'Main fragment one',
+                source: 'voice',
+            });
+        });
+        await act(async () => {
+            await mockRegisteredAiChatHandle.startAgentSession('track_guide').result;
+        });
+        act(() => {
+            getLatestMainVoiceOptions().onEvent({
+                kind: 'user_transcript',
+                text: 'Main fragment two',
+                source: 'voice',
+            });
+            getLatestAgentVoiceOptions().onEvent({
+                kind: 'user_transcript',
+                text: 'Agent fragment one',
+                source: 'voice',
+            });
+            getLatestAgentVoiceOptions().onEvent({
+                kind: 'user_transcript',
+                text: 'Agent fragment two',
+                source: 'voice',
+            });
+        });
+
+        expect(screen.getByText('Agent fragment one Agent fragment two')).toBeInTheDocument();
+        expect(screen.queryByText('Main fragment one Main fragment two')).not.toBeInTheDocument();
+
+        await act(async () => {
+            await mockRegisteredAiChatHandle.stopAgentSession().result;
+        });
+
+        expect(screen.getByText('Main fragment one Main fragment two')).toBeInTheDocument();
+        expect(screen.queryByText('Agent fragment one Agent fragment two')).not.toBeInTheDocument();
+    });
+
     it('preserves shell preferences across automatic resets', async () => {
         const idleGif = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
         localStorage.setItem('acla-emotion-gifs', JSON.stringify({ idle: idleGif }));

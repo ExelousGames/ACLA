@@ -918,15 +918,30 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             if (isProcedurePlanOptOutRequest(event.text)) {
                 optOutProcedurePlan();
             }
-            setTargetMessages(prev => prev
-                .filter(m => !m.isLoading)
-                .concat({
+            setTargetMessages(prev => {
+                const messagesWithoutLoading = prev.filter(m => !m.isLoading);
+                const transcript = event.text.trim();
+                const lastMessage = messagesWithoutLoading[messagesWithoutLoading.length - 1];
+
+                if (
+                    event.source !== 'typed'
+                    && lastMessage?.isUser
+                    && (lastMessage.kind ?? 'chat') === 'chat'
+                ) {
+                    return messagesWithoutLoading.slice(0, -1).concat({
+                        ...lastMessage,
+                        content: `${lastMessage.content} ${transcript}`,
+                    });
+                }
+
+                return messagesWithoutLoading.concat({
                     id: generateUniqueId('user-voice'),
-                    content: event.text,
+                    content: transcript,
                     isUser: true,
                     timestamp: new Date(),
                     kind: 'chat',
-                }));
+                });
+            });
             return;
         }
         if (event.kind === 'assistant_transcript') {
