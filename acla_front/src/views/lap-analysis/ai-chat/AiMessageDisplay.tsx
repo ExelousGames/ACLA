@@ -1,4 +1,9 @@
 import React from 'react';
+import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
+import {
+    isOverlayNonEmptyString,
+    isOverlayRecord,
+} from 'views/floating-chat/overlay-renderer-validation';
 import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
 import ToolMessageDisplay, { type ToolMessageDisplayData } from './ToolMessageDisplay';
 
@@ -83,6 +88,71 @@ const AiMessageDisplay: React.FC<AiMessageDisplayProps> = ({
             </div>
         </div>
     );
+};
+
+export interface AiMessageOverlaySnapshot {
+    text: string;
+}
+
+const TYPE_INTERVAL_MS = 28;
+
+const TypedMessage: React.FC<{
+    snapshot: AiMessageOverlaySnapshot;
+    revision: number;
+    onComplete(): void;
+}> = ({ snapshot, revision, onComplete }) => {
+    const [text, setText] = React.useState('');
+    const onCompleteRef = React.useRef(onComplete);
+
+    React.useEffect(() => {
+        onCompleteRef.current = onComplete;
+    }, [onComplete]);
+
+    React.useEffect(() => {
+        const target = snapshot.text.trim();
+        setText('');
+        if (!target) {
+            onCompleteRef.current();
+            return undefined;
+        }
+        let index = 0;
+        const timer = window.setInterval(() => {
+            index += 1;
+            setText(target.slice(0, index));
+            if (index >= target.length) {
+                window.clearInterval(timer);
+                onCompleteRef.current();
+            }
+        }, TYPE_INTERVAL_MS);
+        return () => window.clearInterval(timer);
+    }, [revision, snapshot.text]);
+
+    return (
+        <div className="overlay-card__message" data-testid="overlay-ai-message">
+            {text}
+            {text.length < snapshot.text.trim().length && <span className="overlay-card__caret" />}
+        </div>
+    );
+};
+
+export const aiMessageDisplayOverlayRenderer: AiOverlayRenderer<AiMessageOverlaySnapshot> = {
+    componentType: 'ai_message',
+    validateSnapshot: (snapshot): snapshot is AiMessageOverlaySnapshot => (
+        isOverlayRecord(snapshot) && isOverlayNonEmptyString(snapshot.text)
+    ),
+    renderOverlay: (snapshot, status, context) => status === 'folded'
+        ? snapshot.text
+        : (
+            <TypedMessage
+                snapshot={snapshot}
+                revision={context.revision}
+                onComplete={() => context.emitRendererEvent('visual_complete')}
+            />
+        ),
+    dimensions: {
+        expanded: { width: 420, height: 92 },
+        folded: { width: 280, height: 58 },
+    },
 };
 
 export default AiMessageDisplay;

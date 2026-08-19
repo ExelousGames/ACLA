@@ -151,8 +151,12 @@ const DynamicVisualizationManager = forwardRef<VisualizationManagerHandle, Dynam
         disableMap: () => staticMapRef.current?.disableMap() ?? unavailable(staticMapName),
     }), [staticMapName]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
-    useRegisterAiToolComponentRef(name, handle);
-    useRegisterAiToolComponentRef(staticMapName, staticMapHandle);
+    const registeredHandleRef = useRef(handle);
+    registeredHandleRef.current = handle;
+    const registeredStaticMapRef = useRef(staticMapHandle);
+    registeredStaticMapRef.current = staticMapHandle;
+    useRegisterAiToolComponentRef(registeredHandleRef);
+    useRegisterAiToolComponentRef(registeredStaticMapRef);
 
     return (
         <DynamicVisualizationManagerImpl

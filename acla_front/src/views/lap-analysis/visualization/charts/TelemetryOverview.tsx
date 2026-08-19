@@ -39,7 +39,9 @@ const TelemetryOverview = forwardRef<TelemetryOverviewHandle, VisualizationProps
         ),
     }), [name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
-    useRegisterAiToolComponentRef(name, handle);
+    const registeredHandleRef = React.useRef(handle);
+    registeredHandleRef.current = handle;
+    useRegisterAiToolComponentRef(registeredHandleRef);
 
     const telemetryData = data;
 

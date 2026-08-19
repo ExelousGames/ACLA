@@ -1,4 +1,9 @@
 import React from 'react';
+import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
+import {
+    isOverlayNonEmptyString,
+    isOverlayRecord,
+} from 'views/floating-chat/overlay-renderer-validation';
 
 export type ToolMessageDisplayData = {
     runId?: string;
@@ -75,6 +80,26 @@ const ToolMessageDisplay: React.FC<ToolMessageDisplayProps> = ({
             )}
         </div>
     );
+};
+
+export type ToolStatusOverlaySnapshot = ToolMessageDisplayData & { runId: string };
+
+export const toolMessageDisplayOverlayRenderer: AiOverlayRenderer<ToolStatusOverlaySnapshot> = {
+    componentType: 'tool_status',
+    validateSnapshot: (snapshot): snapshot is ToolStatusOverlaySnapshot => (
+        isOverlayRecord(snapshot)
+        && isOverlayNonEmptyString(snapshot.runId)
+        && isOverlayNonEmptyString(snapshot.name)
+        && isOverlayNonEmptyString(snapshot.title)
+        && (snapshot.status === 'started' || snapshot.status === 'completed')
+    ),
+    renderOverlay: (snapshot, status) => status === 'folded'
+        ? `${snapshot.status === 'started' ? 'Running' : 'Finished'}: ${snapshot.title}`
+        : <ToolMessageDisplay tool={snapshot} surface="pill" />,
+    dimensions: {
+        expanded: { width: 420, height: 118 },
+        folded: { width: 300, height: 58 },
+    },
 };
 
 export default ToolMessageDisplay;

@@ -1,4 +1,5 @@
 import type { AiToolOperation } from './ai-tool-operation';
+import type { AiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
 
 export type LiveRangeTodoStatus = 'pending' | 'running';
 
@@ -60,8 +61,7 @@ export type LiveRangeTodoListAiResult = {
     message?: string;
 };
 
-export interface LiveRangeTodoListHandle {
-    getComponentName(): string;
+export interface LiveRangeTodoListHandle extends AiOverlayComponentHandle<LiveRangeTodoListSnapshot | null> {
     addEvent: (event: LiveRangeTodoEventInput) => LiveRangeTodoListToolResult;
     replaceEvents: (events: readonly LiveRangeTodoEventInput[]) => LiveRangeTodoListToolResult;
     updateEvents: (updates: readonly LiveRangeTodoEventUpdate[]) => LiveRangeTodoListToolResult;

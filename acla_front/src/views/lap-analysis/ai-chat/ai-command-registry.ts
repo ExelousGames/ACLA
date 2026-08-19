@@ -61,7 +61,7 @@ import {
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
-import type { DriverExpertComparisonSnapshot } from 'views/floating-chat/overlay-display-types';
+import type { DriverExpertComparisonSnapshot } from 'components/driver-expert-comparison';
 
 export type {
     ApplyAnalysisResultQueryInput,

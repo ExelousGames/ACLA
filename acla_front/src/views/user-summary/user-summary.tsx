@@ -224,7 +224,7 @@ const UserSummary = ({ name }: { name: string }) => {
             }, args))),
         };
     }
-    useRegisterAiToolComponentRef(name, componentRef.current);
+    useRegisterAiToolComponentRef(componentRef);
 
 
     return (

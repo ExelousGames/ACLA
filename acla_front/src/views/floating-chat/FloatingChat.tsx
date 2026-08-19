@@ -1,50 +1,45 @@
 import React from 'react';
 import '../lap-analysis/ai-chat/ai-chat.css';
 import './floating-chat.css';
-import { getOverlayDisplayDefinition } from './overlay-display-registry';
-import {
-    advanceOverlayTimers,
-    applyOverlayComponentEvent,
-    applyOverlayDisplayRequest,
-    beginOverlayPresentation,
-    endOverlayPresentation,
-    getActiveFullSizeOverlayInstance,
-    getNextOverlayDeadline,
-    initialOverlayPresentationState,
-    orderOverlayInstances,
-    overlayPresentationReducer,
-    setOverlayEnabled,
-    type OverlayDisplayInstance,
-    type OverlayTransitionResult,
-} from './overlay-presentation-manager';
 import type {
-    OverlayComponentEvent,
-    OverlayDisplayAcknowledgement,
-    OverlayDisplayRequest,
-    OverlayLifecycleEvent,
-    OverlayPresentationChange,
-    OverlayShellMetadata,
-} from './overlay-display-types';
+    AiOverlayPresentationAcknowledgement,
+    AiOverlayPresentationCard,
+    AiOverlayPresentationSnapshot,
+    AiOverlayRendererEvent,
+    AiOverlayShellMetadata,
+} from './ai-overlay-types';
+import { isJsonSafe } from './ai-overlay-types';
+import {
+    getAiOverlayRenderer,
+    registerBuiltInAiOverlayRenderers,
+} from './overlay-renderer-modules';
 
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const IDLE_WIDTH = 300;
 const SPEAKING_WIDTH = 420;
-const FULL_SIZE_WIDTH = 760;
-const FULL_SIZE_HEIGHT = 500;
 
 interface ElectronOverlayRendererApi {
-    onOverlayDisplayCommand?: (listener: (request: OverlayDisplayRequest) => void) => (() => void);
-    acknowledgeOverlayDisplayRequest?: (acknowledgement: OverlayDisplayAcknowledgement) => void;
-    emitOverlayLifecycle?: (event: OverlayLifecycleEvent) => void;
+    onOverlayPresentation?: (
+        listener: (presentation: AiOverlayPresentationSnapshot) => void,
+    ) => (() => void);
+    acknowledgeOverlayPresentation?: (
+        acknowledgement: AiOverlayPresentationAcknowledgement,
+    ) => void;
+    emitOverlayRendererEvent?: (event: AiOverlayRendererEvent) => void;
     reportOverlayReady?: () => void;
-    onOverlayEnabledChange?: (listener: (enabled: boolean) => void) => (() => void);
-    onOverlayPresentationChange?: (listener: (change: OverlayPresentationChange) => void) => (() => void);
     resizeFloatingChat?: (width: number, height: number) => void;
 }
 
 const getElectronApi = (): ElectronOverlayRendererApi | undefined => (
     (window as unknown as { electronAPI?: ElectronOverlayRendererApi }).electronAPI
 );
+
+let rendererRegistrationError: Error | null = null;
+try {
+    registerBuiltInAiOverlayRenderers();
+} catch (error) {
+    rendererRegistrationError = error instanceof Error ? error : new Error(String(error));
+}
 
 const readEmotionGifs = (): Record<string, string> => {
     try {
@@ -55,20 +50,55 @@ const readEmotionGifs = (): Record<string, string> => {
     }
 };
 
+const validatePresentation = (presentation: AiOverlayPresentationSnapshot): string | null => {
+    if (rendererRegistrationError) return rendererRegistrationError.message;
+    if (!presentation || typeof presentation !== 'object' || !isJsonSafe(presentation)) {
+        return 'Malformed overlay presentation.';
+    }
+    if (!presentation.presentationId?.trim()
+        || !Number.isInteger(presentation.presentationRevision)
+        || presentation.presentationRevision < 1
+        || presentation.session?.presentationId !== presentation.presentationId
+        || !Array.isArray(presentation.cards)) {
+        return 'Malformed overlay presentation identity.';
+    }
+    const componentNames = new Set<string>();
+    for (const card of presentation.cards) {
+        if (!card.componentName?.trim() || !card.componentType?.trim()) {
+            return 'Overlay cards require componentName and componentType.';
+        }
+        if (componentNames.has(card.componentName)) {
+            return `Duplicate live overlay componentName '${card.componentName}'.`;
+        }
+        componentNames.add(card.componentName);
+        try {
+            const renderer = getAiOverlayRenderer(card.componentType);
+            if (!renderer.validateSnapshot(card.snapshot)) {
+                return `Invalid snapshot for overlay componentType '${card.componentType}'.`;
+            }
+            if (!renderer.dimensions[card.status]) {
+                return `Overlay componentType '${card.componentType}' does not support '${card.status}'.`;
+            }
+        } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+        }
+    }
+    return null;
+};
+
 const resolveIdentity = (
-    base: OverlayShellMetadata | undefined,
-    speaking: OverlayDisplayInstance | undefined,
-): OverlayShellMetadata => ({
+    base: AiOverlayShellMetadata | undefined,
+    speaking: AiOverlayPresentationCard | undefined,
+): AiOverlayShellMetadata => ({
     name: speaking?.metadata.name ?? base?.name ?? 'Kestrel',
     emotion: speaking?.metadata.emotion ?? base?.emotion ?? 'idle',
     agentTags: speaking?.metadata.agentTags ?? base?.agentTags ?? [],
 });
 
 const OverlayIdentity: React.FC<{
-    identity: OverlayShellMetadata;
+    identity: AiOverlayShellMetadata;
     emotionGifs: Record<string, string>;
-    idle: boolean;
-}> = ({ identity, emotionGifs, idle }) => {
+}> = ({ identity, emotionGifs }) => {
     const avatar = emotionGifs[identity.emotion || 'idle'] || emotionGifs.idle;
     return (
         <div className="overlay-shell__drag" title="Drag overlay">
@@ -80,77 +110,75 @@ const OverlayIdentity: React.FC<{
                 {(identity.agentTags || []).map((tag) => (
                     <span className="overlay-shell__tag" key={tag}>{tag}</span>
                 ))}
-                {idle && <span className="overlay-shell__idle-label">Overlay ready</span>}
             </div>
         </div>
     );
 };
 
+const useRenderContext = (
+    presentationId: string,
+    card: AiOverlayPresentationCard,
+) => React.useMemo(() => ({
+    componentName: card.componentName,
+    revision: card.revision,
+    emitRendererEvent: (event: string) => getElectronApi()?.emitOverlayRendererEvent?.({
+        presentationId,
+        componentName: card.componentName,
+        revision: card.revision,
+        event,
+    }),
+}), [card.componentName, card.revision, presentationId]);
+
 const SpeakingContext: React.FC<{
-    instance: OverlayDisplayInstance;
-    onComponentEvent: (instanceId: string, event: OverlayComponentEvent) => void;
-}> = ({ instance, onComponentEvent }) => {
-    const definition = getOverlayDisplayDefinition('ai_message');
-    const emitComponentEvent = React.useCallback((event: OverlayComponentEvent) => {
-        onComponentEvent(instance.instanceId, event);
-    }, [instance.instanceId, onComponentEvent]);
+    presentationId: string;
+    card: AiOverlayPresentationCard;
+}> = ({ presentationId, card }) => {
+    const renderer = getAiOverlayRenderer(card.componentType);
+    const context = useRenderContext(presentationId, card);
     return (
         <section
             className="overlay-shell__speaking"
-            data-instance-id={instance.instanceId}
-            data-display-type={instance.type}
-            data-policy={instance.policy}
+            data-component-name={card.componentName}
+            data-display-type={card.componentType}
         >
             <div className="overlay-shell__response">
-                {definition.renderExpanded({
-                    snapshot: instance.snapshot as never,
-                    revision: instance.revision,
-                    emitComponentEvent,
-                })}
+                {renderer.renderOverlay(card.snapshot, card.status, context)}
             </div>
         </section>
     );
 };
 
 const GeneratedDisplayItem: React.FC<{
-    instance: OverlayDisplayInstance;
-    fullSizeActive: boolean;
+    presentationId: string;
+    card: AiOverlayPresentationCard;
     hiddenByFullSize: boolean;
-    onComponentEvent: (instanceId: string, event: OverlayComponentEvent) => void;
-}> = ({ instance, fullSizeActive, hiddenByFullSize, onComponentEvent }) => {
-    const definition = getOverlayDisplayDefinition(instance.type) as ReturnType<typeof getOverlayDisplayDefinition>;
-    const emitComponentEvent = React.useCallback((event: OverlayComponentEvent) => {
-        onComponentEvent(instance.instanceId, event);
-    }, [instance.instanceId, onComponentEvent]);
-    const renderProps = {
-        snapshot: instance.snapshot as never,
-        revision: instance.revision,
-        emitComponentEvent,
-    };
+}> = ({ presentationId, card, hiddenByFullSize }) => {
+    const renderer = getAiOverlayRenderer(card.componentType);
+    const context = useRenderContext(presentationId, card);
+    const fullSizeActive = card.status === 'full_size';
     return (
         <article
             className={[
                 'overlay-list-item',
-                instance.folded ? 'overlay-list-item--folded' : '',
+                card.status === 'folded' ? 'overlay-list-item--folded' : '',
                 fullSizeActive ? 'overlay-list-item--full-size-active' : '',
                 hiddenByFullSize ? 'overlay-list-item--full-size-hidden' : '',
             ].filter(Boolean).join(' ')}
-            data-instance-id={instance.instanceId}
-            data-display-type={instance.type}
-            data-policy={instance.policy}
+            data-component-name={card.componentName}
+            data-display-type={card.componentType}
+            data-placement={card.placement}
             data-full-size-active={fullSizeActive ? 'true' : undefined}
             aria-hidden={hiddenByFullSize || undefined}
         >
-            <header className="overlay-list-item__header">
-                <div className="overlay-list-item__summary">
-                    {definition.renderSummary(instance.snapshot as never)}
-                </div>
-            </header>
-            {!instance.folded && (
+            {card.status === 'folded' ? (
+                <header className="overlay-list-item__header">
+                    <div className="overlay-list-item__summary">
+                        {renderer.renderOverlay(card.snapshot, card.status, context)}
+                    </div>
+                </header>
+            ) : (
                 <div className="overlay-list-item__body">
-                    {fullSizeActive && definition.renderFullSize
-                        ? definition.renderFullSize(renderProps)
-                        : definition.renderExpanded(renderProps)}
+                    {renderer.renderOverlay(card.snapshot, card.status, context)}
                 </div>
             )}
         </article>
@@ -158,84 +186,60 @@ const GeneratedDisplayItem: React.FC<{
 };
 
 const FloatingChat: React.FC = () => {
-    const [state, dispatch] = React.useReducer(
-        overlayPresentationReducer,
-        initialOverlayPresentationState,
-    );
-    const stateRef = React.useRef(state);
+    const [presentation, setPresentation] = React.useState<AiOverlayPresentationSnapshot | null>(null);
+    const presentationRef = React.useRef(presentation);
     const shellRef = React.useRef<HTMLElement>(null);
     const emotionGifs = React.useMemo(readEmotionGifs, []);
 
     React.useEffect(() => {
-        stateRef.current = state;
-    }, [state]);
-
-    const commit = React.useCallback((result: OverlayTransitionResult) => {
-        stateRef.current = result.state;
-        dispatch({ type: 'replace', state: result.state });
-        const api = getElectronApi();
-        result.events.forEach((event) => api?.emitOverlayLifecycle?.(event));
-        return result;
-    }, []);
+        presentationRef.current = presentation;
+    }, [presentation]);
 
     React.useEffect(() => {
         const api = getElectronApi();
-        const removeCommand = api?.onOverlayDisplayCommand?.((request) => {
-            const result = commit(applyOverlayDisplayRequest(stateRef.current, request));
-            if (result.acknowledgement) api.acknowledgeOverlayDisplayRequest?.(result.acknowledgement);
-        });
-        const removeEnabled = api?.onOverlayEnabledChange?.((enabled) => {
-            commit(setOverlayEnabled(stateRef.current, enabled));
-        });
-        const removePresentation = api?.onOverlayPresentationChange?.((change) => {
-            if (change.kind === 'started') {
-                commit(beginOverlayPresentation(stateRef.current, change.presentation));
-                return;
+        const removePresentation = api?.onOverlayPresentation?.((next) => {
+            const validationError = validatePresentation(next);
+            const current = presentationRef.current;
+            const stale = current?.presentationId === next.presentationId
+                && next.presentationRevision <= current.presentationRevision;
+            const error = stale ? 'Stale overlay presentation revision.' : validationError;
+            api.acknowledgeOverlayPresentation?.({
+                presentationId: next?.presentationId || 'unknown',
+                presentationRevision: next?.presentationRevision || 0,
+                accepted: !error,
+                ...(error ? { error } : {}),
+            });
+            if (!error) {
+                presentationRef.current = next;
+                setPresentation(next);
             }
-            commit(endOverlayPresentation(stateRef.current, change.presentationId));
         });
         api?.reportOverlayReady?.();
-        return () => {
-            removeCommand?.();
-            removeEnabled?.();
-            removePresentation?.();
-        };
-    }, [commit]);
+        return () => removePresentation?.();
+    }, []);
 
-    React.useEffect(() => {
-        const deadline = getNextOverlayDeadline(state.instances);
-        if (deadline === null) return undefined;
-        const timer = window.setTimeout(() => {
-            commit(advanceOverlayTimers(stateRef.current));
-        }, Math.max(0, deadline - Date.now()));
-        return () => window.clearTimeout(timer);
-    }, [commit, state.instances]);
-
-    const speaking = state.instances.find((instance) => instance.type === 'ai_message');
-    const generatedDisplays = React.useMemo(
-        () => orderOverlayInstances(state.instances.filter((instance) => instance.type !== 'ai_message')),
-        [state.instances],
-    );
-    const fullSizeInstance = React.useMemo(
-        () => getActiveFullSizeOverlayInstance(generatedDisplays),
-        [generatedDisplays],
-    );
+    const cards = React.useMemo(() => presentation?.cards ?? [], [presentation]);
+    const speaking = cards.find((card) => card.shellSlot === 'speech');
+    const generatedDisplays = cards.filter((card) => card.shellSlot !== 'speech');
+    const fullSizeCard = generatedDisplays.find((card) => card.status === 'full_size');
     const idle = !speaking && generatedDisplays.length === 0;
-    const identity = resolveIdentity(state.presentation?.displayIdentity, speaking);
-    const shellWidth = fullSizeInstance ? FULL_SIZE_WIDTH : Math.max(
-        idle ? IDLE_WIDTH : SPEAKING_WIDTH,
-        ...generatedDisplays.map((instance) => {
-            const definition = getOverlayDisplayDefinition(instance.type);
-            return (instance.folded ? definition.dimensions.folded : definition.dimensions.expanded).width;
-        }),
-    );
+    const identity = resolveIdentity(presentation?.session.displayIdentity, speaking);
+    const widths = generatedDisplays.map((card) => (
+        getAiOverlayRenderer(card.componentType).dimensions[card.status]?.width ?? SPEAKING_WIDTH
+    ));
+    const shellWidth = fullSizeCard
+        ? getAiOverlayRenderer(fullSizeCard.componentType).dimensions.full_size!.width
+        : Math.max(idle ? IDLE_WIDTH : SPEAKING_WIDTH, ...widths);
+    const fullSizeHeight = fullSizeCard
+        ? getAiOverlayRenderer(fullSizeCard.componentType).dimensions.full_size!.height
+        : undefined;
 
     React.useLayoutEffect(() => {
         const shell = shellRef.current;
         if (!shell) return undefined;
         const resize = () => {
-            if (fullSizeInstance) {
-                getElectronApi()?.resizeFloatingChat?.(FULL_SIZE_WIDTH, FULL_SIZE_HEIGHT);
+            if (fullSizeCard && fullSizeHeight) {
+                getElectronApi()?.resizeFloatingChat?.(shellWidth, fullSizeHeight);
                 return;
             }
             const bounds = shell.getBoundingClientRect();
@@ -248,14 +252,7 @@ const FloatingChat: React.FC = () => {
         const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize);
         observer?.observe(shell);
         return () => observer?.disconnect();
-    }, [fullSizeInstance, generatedDisplays, idle, speaking, shellWidth]);
-
-    const handleComponentEvent = React.useCallback((
-        instanceId: string,
-        event: OverlayComponentEvent,
-    ) => {
-        commit(applyOverlayComponentEvent(stateRef.current, instanceId, event));
-    }, [commit]);
+    }, [cards, fullSizeCard, fullSizeHeight, shellWidth]);
 
     return (
         <main className="floating-overlay-stage" aria-live="polite">
@@ -263,37 +260,29 @@ const FloatingChat: React.FC = () => {
                 className={[
                     'overlay-shell',
                     idle ? 'overlay-shell--idle' : '',
-                    fullSizeInstance ? 'overlay-shell--full-size' : '',
+                    fullSizeCard ? 'overlay-shell--full-size' : '',
                 ].filter(Boolean).join(' ')}
                 ref={shellRef}
-                style={{
-                    width: shellWidth,
-                    height: fullSizeInstance ? FULL_SIZE_HEIGHT : undefined,
-                }}
-                data-presentation-id={state.presentation?.presentationId || ''}
-                data-full-size-instance-id={fullSizeInstance?.instanceId}
+                style={{ width: shellWidth, height: fullSizeHeight }}
+                data-presentation-id={presentation?.presentationId || ''}
+                data-full-size-component-name={fullSizeCard?.componentName}
             >
                 <header className="overlay-shell__header">
-                    <OverlayIdentity identity={identity} emotionGifs={emotionGifs} idle={idle} />
+                    <OverlayIdentity identity={identity} emotionGifs={emotionGifs} />
                 </header>
-                {speaking && (
-                    <SpeakingContext
-                        instance={speaking}
-                        onComponentEvent={handleComponentEvent}
-                    />
+                {speaking && presentation && (
+                    <SpeakingContext presentationId={presentation.presentationId} card={speaking} />
                 )}
-                {generatedDisplays.length > 0 && (
+                {generatedDisplays.length > 0 && presentation && (
                     <div className="overlay-display-list">
-                        {generatedDisplays.map((instance) => (
+                        {generatedDisplays.map((card) => (
                             <GeneratedDisplayItem
-                                key={instance.instanceId}
-                                instance={instance}
-                                fullSizeActive={instance.instanceId === fullSizeInstance?.instanceId}
+                                key={card.componentName}
+                                presentationId={presentation.presentationId}
+                                card={card}
                                 hiddenByFullSize={Boolean(
-                                    fullSizeInstance
-                                    && instance.instanceId !== fullSizeInstance.instanceId
+                                    fullSizeCard && card.componentName !== fullSizeCard.componentName
                                 )}
-                                onComponentEvent={handleComponentEvent}
                             />
                         ))}
                     </div>

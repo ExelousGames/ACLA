@@ -109,7 +109,9 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
         },
     }), [name]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
-    useRegisterAiToolComponentRef(name, handle);
+    const registeredHandleRef = useRef(handle);
+    registeredHandleRef.current = handle;
+    useRegisterAiToolComponentRef(registeredHandleRef);
 
     const trackKey = useMemo(() => getAccTelemetryTrackKey(
         liveSession.currentTelemetry?.Static_track,

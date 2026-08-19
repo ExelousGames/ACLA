@@ -1,7 +1,6 @@
 import type { MutableRefObject } from 'react';
 import type {
     AiToolComponentRefDirectory,
-    AiToolComponentRefOwner,
     NamedAiToolComponentHandle,
 } from 'contexts/AiToolComponentRefContext';
 
@@ -19,7 +18,7 @@ export type AiToolComponentSnapshotListener<TSnapshot> = (
  */
 export abstract class AiToolComponentBase<TSnapshot>
 implements NamedAiToolComponentHandle {
-    private readonly componentRefOwner: AiToolComponentRefOwner;
+    private readonly componentRef: MutableRefObject<this | null> = { current: this };
     private componentRefDirectory: AiToolComponentRefDirectory | null = null;
     private readonly snapshotListeners = new Set<AiToolComponentSnapshotListener<TSnapshot>>();
     private snapshot: TSnapshot;
@@ -30,7 +29,6 @@ implements NamedAiToolComponentHandle {
         initialSnapshot: TSnapshot,
     ) {
         this.snapshot = initialSnapshot;
-        this.componentRefOwner = Symbol(`ai-tool-component:${componentName}`);
     }
 
     getComponentName(): string {
@@ -51,22 +49,16 @@ implements NamedAiToolComponentHandle {
     addComponentRef(
         directory: AiToolComponentRefDirectory,
     ): MutableRefObject<this | null> {
-        const ref = directory.createComponentRef(
-            this.componentName,
-            this.componentRefOwner,
-            this,
-        ) as MutableRefObject<this | null>;
+        this.componentRef.current = this;
+        directory.registerComponentRef(this.componentRef);
         this.componentRefDirectory = directory;
-        return ref;
+        return this.componentRef;
     }
 
     deleteComponentRef(): boolean {
         const directory = this.componentRefDirectory;
         if (!directory) return false;
-        const released = directory.releaseComponentRef(
-            this.componentName,
-            this.componentRefOwner,
-        );
+        const released = directory.unregisterComponentRef(this.componentRef);
         this.componentRefDirectory = null;
         return released;
     }

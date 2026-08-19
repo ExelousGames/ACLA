@@ -2,6 +2,12 @@ import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 import { InvalidLiveRangeTodoListError } from 'contexts/AiToolComponentError';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
+import {
+    isOverlayFiniteOrNull,
+    isOverlayNonEmptyString,
+    isOverlayRecord,
+} from 'views/floating-chat/overlay-renderer-validation';
 import { AiToolComponentBase } from './AiToolComponentBase';
 import type {
     LiveRangeTodoContent,
@@ -310,6 +316,30 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
             )}
         </div>
     );
+};
+
+export const liveRangeTodoListOverlayRenderer: AiOverlayRenderer<LiveRangeTodoListSnapshot> = {
+    componentType: 'live_range_todo',
+    validateSnapshot: (snapshot): snapshot is LiveRangeTodoListSnapshot => (
+        isOverlayRecord(snapshot)
+        && Array.isArray(snapshot.events)
+        && snapshot.events.length > 0
+        && snapshot.events.every((event) => (
+            isOverlayRecord(event)
+            && isOverlayNonEmptyString(event.id)
+            && isOverlayRecord(event.content)
+            && isOverlayNonEmptyString(event.content.title)
+        ))
+        && isOverlayFiniteOrNull(snapshot.current_position)
+        && isOverlayFiniteOrNull(snapshot.rolling_rate)
+    ),
+    renderOverlay: (snapshot, status) => status === 'folded'
+        ? `${snapshot.events.length} live range event${snapshot.events.length === 1 ? '' : 's'}`
+        : <LiveRangeTodoListDisplay snapshot={snapshot} surface="pill" />,
+    dimensions: {
+        expanded: { width: 420, height: 210 },
+        folded: { width: 340, height: 58 },
+    },
 };
 
 export interface LiveRangeTodoListProps {
@@ -784,8 +814,20 @@ const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
         clear: () => runnerRef.current!.clear(),
         get: () => runnerRef.current!.get(),
         getForAi: () => createAiToolOperation(toAiResult(runnerRef.current!.get())),
+        getComponentType: () => 'live_range_todo',
+        getSnapshot: () => runnerRef.current!.getSnapshot(),
+        subscribe: (listener) => runnerRef.current!.subscribe(listener),
+        getOverlayBehavior: (next) => ({
+            placement: 'pinned',
+            requestedStatus: 'expanded',
+            remove: next === null || next.events.length === 0,
+        }),
+        getOverlayMetadata: () => ({}),
+        handleOverlayRendererEvent: () => undefined,
     }), [name]);
-    useRegisterAiToolComponentRef(name, handle);
+    const componentRef = useRef<LiveRangeTodoListHandle | null>(handle);
+    componentRef.current = handle;
+    useRegisterAiToolComponentRef(componentRef);
 
     useEffect(() => () => {
         runnerRef.current?.dispose();

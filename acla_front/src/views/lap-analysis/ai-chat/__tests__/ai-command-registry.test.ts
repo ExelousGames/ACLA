@@ -92,10 +92,10 @@ void assertQueryContractTypes;
 
 const register = (name: string, handle: object) => {
     const directory = createAiToolComponentRefDirectory();
-    directory.reserveComponentRef(name, Symbol(name), {
+    directory.registerComponentRef({ current: {
         getComponentName: () => name,
         ...handle,
-    } as any);
+    } as any });
     return directory;
 };
 
@@ -358,10 +358,10 @@ const reserve = (
     name: string,
     handle: object,
 ) => {
-    directory.reserveComponentRef(name, Symbol(name), {
+    directory.registerComponentRef({ current: {
         getComponentName: () => name,
         ...handle,
-    } as any);
+    } as any });
 };
 
 const todoResult = (events: readonly { id: string }[] = []) => ({

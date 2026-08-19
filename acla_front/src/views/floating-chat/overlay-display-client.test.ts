@@ -1,158 +1,92 @@
-import { overlayDisplayClient, overlaySessionClient } from './overlay-display-client';
-import type { OverlayLifecycleEvent } from './overlay-display-types';
+import {
+    overlaySessionClient,
+    sendOverlayPresentation,
+    subscribeOverlayRendererEvents,
+} from './overlay-display-client';
+import type {
+    AiOverlayPresentationSnapshot,
+    AiOverlayRendererEvent,
+} from './ai-overlay-types';
 
-describe('overlay display client', () => {
-    const descriptor = {
-        aiSessionId: 'ai-live-1',
-        mode: 'live' as const,
-        displayIdentity: { name: 'Kestrel', agentTags: ['Live'] },
-    };
-    const presentation = { ...descriptor, presentationId: 'presentation-live-1' };
-    let lifecycleListener: ((event: OverlayLifecycleEvent) => void) | null;
-    const sendOverlayDisplayRequest = jest.fn();
-    const removeLifecycleListener = jest.fn();
+const session = {
+    presentationId: 'presentation-1',
+    aiSessionId: 'ai-1',
+    mode: 'live' as const,
+    displayIdentity: { name: 'Kestrel' },
+};
 
-    beforeEach(() => {
-        lifecycleListener = null;
-        sendOverlayDisplayRequest.mockReset().mockImplementation(async (request) => ({
-            presentationId: request.presentationId,
-            requestId: request.requestId,
+const snapshot = (): AiOverlayPresentationSnapshot => ({
+    presentationId: session.presentationId,
+    presentationRevision: 1,
+    session,
+    cards: [],
+});
+
+describe('overlay renderer transport', () => {
+    const sendOverlayPresentationMock = jest.fn();
+    let rendererEventListener: ((event: AiOverlayRendererEvent) => void) | null = null;
+
+    beforeEach(async () => {
+        sendOverlayPresentationMock.mockReset().mockResolvedValue({
+            presentationId: session.presentationId,
+            presentationRevision: 1,
             accepted: true,
-            instanceId: 'map:singleton',
-        }));
-        removeLifecycleListener.mockReset();
-        Object.defineProperty(window, 'electronAPI', {
-            configurable: true,
-            value: {
-                sendOverlayDisplayRequest,
-                onOverlayLifecycle: (listener: (event: OverlayLifecycleEvent) => void) => {
-                    lifecycleListener = listener;
-                    return () => {
-                        lifecycleListener = null;
-                        removeLifecycleListener();
-                    };
-                },
-                createOverlaySession: jest.fn(async () => ({ success: true, presentation })),
-                destroyOverlaySession: jest.fn(async () => ({ success: true, ended: true })),
-                setOverlayEnabled: jest.fn(async (enabled: boolean) => ({ success: true, enabled })),
-                isOverlayEnabled: jest.fn(async () => true),
-            },
         });
+        rendererEventListener = null;
+        (window as any).electronAPI = {
+            sendOverlayPresentation: sendOverlayPresentationMock,
+            onOverlayRendererEvent: (listener: typeof rendererEventListener) => {
+                rendererEventListener = listener;
+                return () => { rendererEventListener = null; };
+            },
+            createOverlaySession: jest.fn().mockResolvedValue({ success: true, presentation: session }),
+            destroyOverlaySession: jest.fn().mockResolvedValue({ success: true, ended: true }),
+            setOverlayEnabled: jest.fn().mockResolvedValue({ success: true, enabled: true }),
+            isOverlayEnabled: jest.fn().mockResolvedValue(true),
+        };
+        await overlaySessionClient.destroy().catch(() => undefined);
     });
 
-    it('returns acknowledged stable instance IDs and sends complete JSON snapshots', async () => {
-        const instanceId = await overlayDisplayClient.forPresentation(presentation.presentationId).upsert('map', {
-            status: 'unavailable',
-            title: 'Circuit map',
-            reason: 'No track selected',
-        }, { metadata: { name: 'Kestrel', agentTags: ['Track Guide'] } });
-
-        expect(instanceId).toBe('map:singleton');
-        expect(sendOverlayDisplayRequest).toHaveBeenCalledWith(expect.objectContaining({
-            presentationId: presentation.presentationId,
-            command: {
-                operation: 'upsert',
-                type: 'map',
-                snapshot: {
-                    status: 'unavailable',
-                    title: 'Circuit map',
-                    reason: 'No track selected',
-                },
-                options: { metadata: { name: 'Kestrel', agentTags: ['Track Guide'] } },
-            },
-        }));
+    it('sends one JSON presentation snapshot and validates its acknowledgement', async () => {
+        const presentation = snapshot();
+        await expect(sendOverlayPresentation(presentation)).resolves.toMatchObject({ accepted: true });
+        expect(sendOverlayPresentationMock).toHaveBeenCalledWith(presentation);
+        expect(sendOverlayPresentationMock.mock.calls[0][0]).not.toBe(presentation);
     });
 
-    it('sends and acknowledges scoped and current-presentation full-size requests', async () => {
-        await overlayDisplayClient
-            .forPresentation(presentation.presentationId)
-            .requestFullSize({ instanceId: 'driver_expert_comparison:multiple:one' });
-        expect(sendOverlayDisplayRequest).toHaveBeenLastCalledWith(expect.objectContaining({
-            presentationId: presentation.presentationId,
-            command: {
-                operation: 'request_full_size',
-                target: { instanceId: 'driver_expert_comparison:multiple:one' },
-            },
-        }));
-
-        await overlaySessionClient.create(descriptor);
-        await overlayDisplayClient.requestFullSize({ instanceId: 'driver_expert_comparison:multiple:two' });
-        expect(sendOverlayDisplayRequest).toHaveBeenLastCalledWith(expect.objectContaining({
-            presentationId: presentation.presentationId,
-            command: {
-                operation: 'request_full_size',
-                target: { instanceId: 'driver_expert_comparison:multiple:two' },
-            },
-        }));
-        await overlaySessionClient.destroy(presentation.presentationId);
+    it('rejects non-serializable presentation data before IPC', async () => {
+        const presentation = snapshot();
+        presentation.cards = [{ snapshot: () => undefined } as any];
+        await expect(sendOverlayPresentation(presentation)).rejects.toThrow('JSON-safe');
+        expect(sendOverlayPresentationMock).not.toHaveBeenCalled();
     });
 
-    it('correlates lifecycle listeners and removes the Electron subscription when idle', () => {
-        const first = jest.fn();
-        const second = jest.fn();
-        const scoped = overlayDisplayClient.forPresentation(presentation.presentationId);
-        const unsubscribeFirst = scoped.subscribeLifecycle('map:singleton', first);
-        const unsubscribeSecond = scoped.subscribeLifecycle('other:singleton', second);
-        lifecycleListener?.({
-            eventId: 'event-1',
-            presentationId: presentation.presentationId,
-            instanceId: 'map:singleton',
-            type: 'map',
-            kind: 'updated',
-            at: 1,
+    it('forwards renderer events to manager subscribers', () => {
+        const listener = jest.fn();
+        const unsubscribe = subscribeOverlayRendererEvents(listener);
+        const event: AiOverlayRendererEvent = {
+            presentationId: session.presentationId,
+            componentName: 'message:one',
+            revision: 2,
+            event: 'visual_complete',
+        };
+        rendererEventListener?.(event);
+        expect(listener).toHaveBeenCalledWith(event);
+        unsubscribe();
+        expect(rendererEventListener).toBeNull();
+    });
+
+    it('publishes session replacement and teardown to subscribers', async () => {
+        const listener = jest.fn();
+        const unsubscribe = overlaySessionClient.subscribe(listener);
+        await overlaySessionClient.create({
+            aiSessionId: session.aiSessionId,
+            mode: session.mode,
+            displayIdentity: session.displayIdentity,
         });
-        expect(first).toHaveBeenCalledTimes(1);
-        expect(second).not.toHaveBeenCalled();
-
-        unsubscribeFirst();
-        expect(removeLifecycleListener).not.toHaveBeenCalled();
-        unsubscribeSecond();
-        expect(removeLifecycleListener).toHaveBeenCalledTimes(1);
-    });
-
-    it('supports abortable lifecycle waits without leaking subscriptions', async () => {
-        const controller = new AbortController();
-        const waiting = overlayDisplayClient.forPresentation(presentation.presentationId).waitForLifecycle(
-            'map:singleton',
-            'exited',
-            { signal: controller.signal },
-        );
-        controller.abort();
-        await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
-        expect(removeLifecycleListener).toHaveBeenCalledTimes(1);
-    });
-
-    it('creates typed presentations while keeping the global visibility setting independent', async () => {
-        expect(overlaySessionClient.available()).toBe(true);
-        await expect(overlaySessionClient.create(descriptor)).resolves.toEqual(presentation);
-        expect(overlaySessionClient.current()).toEqual(presentation);
-        await expect(overlaySessionClient.setEnabled(true)).resolves.toBeUndefined();
-        await expect(overlaySessionClient.isEnabled()).resolves.toBe(true);
-        await expect(overlaySessionClient.destroy(presentation.presentationId)).resolves.toBeUndefined();
-        expect(overlaySessionClient.current()).toBeNull();
-    });
-
-    it('isolates lifecycle listeners for identical instance IDs in different presentations', () => {
-        const current = jest.fn();
-        const stale = jest.fn();
-        const removeCurrent = overlayDisplayClient
-            .forPresentation(presentation.presentationId)
-            .subscribeLifecycle('ai_message:singleton', current);
-        const removeStale = overlayDisplayClient
-            .forPresentation('presentation-old')
-            .subscribeLifecycle('ai_message:singleton', stale);
-
-        lifecycleListener?.({
-            eventId: 'event-current',
-            presentationId: presentation.presentationId,
-            instanceId: 'ai_message:singleton',
-            type: 'ai_message',
-            kind: 'updated',
-            at: 1,
-        });
-        expect(current).toHaveBeenCalledTimes(1);
-        expect(stale).not.toHaveBeenCalled();
-        removeCurrent();
-        removeStale();
+        expect(listener).toHaveBeenLastCalledWith(session);
+        await overlaySessionClient.destroy(session.presentationId);
+        expect(listener).toHaveBeenLastCalledWith(null);
+        unsubscribe();
     });
 });

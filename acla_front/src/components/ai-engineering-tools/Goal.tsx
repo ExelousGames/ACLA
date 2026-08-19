@@ -1,6 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { NamedAiToolComponentHandle } from 'contexts/AiToolComponentRefContext';
 import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import type {
+    AiOverlayComponentHandle,
+    AiOverlayRenderer,
+} from 'views/floating-chat/ai-overlay-types';
+import {
+    isOverlayNonEmptyString,
+    isOverlayRecord,
+} from 'views/floating-chat/overlay-renderer-validation';
 import {
     AiToolComponentErrorConstructor,
     DuplicateGoalStepIdError,
@@ -16,6 +24,7 @@ import {
     RecursiveGoalDeterminationError,
     RecursiveGoalStepError,
 } from 'contexts/AiToolComponentError';
+import { serializeError, type SerializedError } from 'errors/AiToolError';
 import { AiToolComponentBase } from './AiToolComponentBase';
 import {
     createAiToolDeferred,
@@ -105,6 +114,7 @@ export type GoalTaskResult = {
     attempt: number;
     status: 'completed' | 'error';
     source_result?: GoalStepSourceResultMetadata;
+    error?: SerializedError;
 };
 
 export type GoalDeterminationResult = {
@@ -146,7 +156,7 @@ export type GoalRunResult = Pick<
 
 export type GoalAiResult = Omit<GoalRunResult, 'name'> & { goal: string };
 
-export interface GoalHandle extends NamedAiToolComponentHandle {
+export interface GoalHandle extends NamedAiToolComponentHandle, AiOverlayComponentHandle<GoalSnapshot | null> {
     createGoal(input: GoalRequest): AiToolOperation<GoalAiResult>;
     retryFailedTask(): AiToolOperation<GoalAiResult>;
     getSnapshot(): GoalSnapshot | null;
@@ -589,6 +599,7 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 attempt,
                 status: execution.error ? 'error' : 'completed',
                 ...(sourceResult ? { source_result: sourceResult } : {}),
+                ...(execution.error ? { error: serializeError(execution.error) } : {}),
             });
             if (execution.error) {
                 this.failedStepIndex = index;
@@ -881,6 +892,25 @@ export const GoalDisplay: React.FC<GoalDisplayProps> = ({ snapshot, surface = 'c
     );
 };
 
+export const goalOverlayRenderer: AiOverlayRenderer<GoalSnapshot> = {
+    componentType: 'goal',
+    validateSnapshot: (snapshot): snapshot is GoalSnapshot => (
+        isOverlayRecord(snapshot)
+        && isOverlayNonEmptyString(snapshot.name)
+        && ['running', 'achieved', 'missed', 'error'].includes(String(snapshot.status))
+        && Array.isArray(snapshot.steps)
+        && (snapshot.target === null || (typeof snapshot.target === 'number' && Number.isFinite(snapshot.target)))
+        && (snapshot.actual === null || (typeof snapshot.actual === 'number' && Number.isFinite(snapshot.actual)))
+    ),
+    renderOverlay: (snapshot, status) => status === 'folded'
+        ? `${snapshot.status}: ${snapshot.name}`
+        : <GoalDisplay snapshot={snapshot} surface="pill" />,
+    dimensions: {
+        expanded: { width: 420, height: 230 },
+        folded: { width: 340, height: 58 },
+    },
+};
+
 const Goal: React.FC<GoalProps> = ({
     name,
     dispatchTool,
@@ -908,10 +938,21 @@ const Goal: React.FC<GoalProps> = ({
             runnerRef.current!.retryFailedTask(),
             toGoalAiResult,
         ),
+        getComponentType: () => 'goal',
         getSnapshot: () => runnerRef.current?.getSnapshot() ?? null,
+        subscribe: (listener) => runnerRef.current!.subscribe(listener),
+        getOverlayBehavior: (next) => ({
+            placement: 'flow',
+            requestedStatus: 'expanded',
+            remove: next === null,
+        }),
+        getOverlayMetadata: () => ({}),
+        handleOverlayRendererEvent: () => undefined,
         clear: () => runnerRef.current?.clear(),
     }), [name]);
-    useRegisterAiToolComponentRef(name, handle);
+    const componentRef = useRef<GoalHandle | null>(handle);
+    componentRef.current = handle;
+    useRegisterAiToolComponentRef(componentRef);
 
     useEffect(() => () => runnerRef.current?.dispose(), []);
 

@@ -10,3 +10,16 @@ declare module "*.module.css" {
 }
 
 declare module "*.css";
+
+declare namespace NodeJS {
+    interface Require {
+        context(
+            directory: string,
+            useSubdirectories: boolean,
+            pattern: RegExp,
+        ): {
+            keys(): string[];
+            (key: string): unknown;
+        };
+    }
+}

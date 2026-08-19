@@ -12,7 +12,19 @@ import {
     type AiToolDeferred,
     type AiToolOperation,
 } from './ai-tool-operation';
-import { ProcedurePlanReplacedError } from 'contexts/AiToolComponentError';
+import {
+    ProcedurePlanReplacedError,
+    ProcedurePlanStepFailedError,
+} from 'contexts/AiToolComponentError';
+import { serializeError, type SerializedError } from 'errors/AiToolError';
+import type {
+    AiOverlayComponentHandle,
+    AiOverlayRenderer,
+} from 'views/floating-chat/ai-overlay-types';
+import {
+    isOverlayNonEmptyString,
+    isOverlayRecord,
+} from 'views/floating-chat/overlay-renderer-validation';
 
 export const PROCEDURE_PLAN_STEP_STATUSES = [
     'pending',
@@ -65,7 +77,7 @@ export type ProcedurePlanTaskResult = {
     status: 'completed' | 'failed';
     run_id: string;
     output?: unknown;
-    error?: string;
+    error?: SerializedError;
 };
 
 export type ProcedurePlanRunResult = {
@@ -79,7 +91,7 @@ export type ProcedurePlanRunResult = {
     reason?: string;
 };
 
-export interface ProcedurePlanHandle extends NamedAiToolComponentHandle {
+export interface ProcedurePlanHandle extends NamedAiToolComponentHandle, AiOverlayComponentHandle<ProcedurePlanSnapshot | null> {
     createProcedurePlan(plan: ProcedurePlanState): AiToolOperation<ProcedurePlanRunResult>;
     advancePlanStep(reason?: string): AiToolOperation<ProcedurePlanRunResult>;
     clearProcedurePlan(reason?: string): AiToolOperation<ProcedurePlanRunResult>;
@@ -274,11 +286,20 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
                 );
             }
             if (!this.plan) return this.result('cleared');
-            const taskResult = this.toTaskResult(request, runId, output, executionError);
+            const stepError = executionError === undefined
+                ? undefined
+                : new ProcedurePlanStepFailedError(
+                    this.getComponentName(),
+                    executionError instanceof Error && executionError.message
+                        ? executionError.message
+                        : 'The procedure plan step failed.',
+                    { cause: executionError },
+                );
+            const taskResult = this.toTaskResult(request, runId, output, stepError);
             this.lastRunId = runId;
             this.taskResults.push(taskResult);
-            if (executionError !== undefined) {
-                this.onError(serializeProcedurePlanRequest(request), executionError);
+            if (stepError) {
+                this.onError(serializeProcedurePlanRequest(request), stepError);
                 this.publish({
                     ...this.plan!,
                     requests: this.plan!.requests.map((item, index) => (
@@ -303,7 +324,7 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
         request: ProcedurePlanRequestSnapshot,
         runId: string,
         output: import('./Goal').NestedAiToolResult | null,
-        error: unknown,
+        error: ProcedurePlanStepFailedError | undefined,
     ): ProcedurePlanTaskResult {
         return {
             title: request.title,
@@ -312,7 +333,7 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
             run_id: runId,
             ...(error === undefined
                 ? { output }
-                : { error: error instanceof Error ? error.message : String(error) }),
+                : { error: serializeError(error) }),
         };
     }
 
@@ -645,6 +666,27 @@ const ProcedurePlan: React.FC<ProcedurePlanProps> = ({
     );
 };
 
+export const procedurePlanOverlayRenderer: AiOverlayRenderer<ProcedurePlanSnapshot> = {
+    componentType: 'procedure_plan',
+    validateSnapshot: (snapshot): snapshot is ProcedurePlanSnapshot => (
+        isOverlayRecord(snapshot)
+        && isOverlayNonEmptyString(snapshot.goal)
+        && Array.isArray(snapshot.requests)
+        && snapshot.requests.every((request) => (
+            isOverlayRecord(request) && isOverlayNonEmptyString(request.title)
+        ))
+        && typeof snapshot.currentStep === 'number'
+        && Number.isInteger(snapshot.currentStep)
+    ),
+    renderOverlay: (snapshot, status) => status === 'folded'
+        ? snapshot.requests[snapshot.currentStep]?.title || snapshot.goal
+        : <ProcedurePlan plan={snapshot} surface="pill" />,
+    dimensions: {
+        expanded: { width: 420, height: 220 },
+        folded: { width: 320, height: 58 },
+    },
+};
+
 export const ProcedurePlanWorkflow: React.FC<ProcedurePlanWorkflowProps> = ({
     name,
     dispatchTool,
@@ -668,8 +710,20 @@ export const ProcedurePlanWorkflow: React.FC<ProcedurePlanWorkflowProps> = ({
         advancePlanStep: (reason) => runnerRef.current!.advance(reason),
         clearProcedurePlan: (reason) => runnerRef.current!.clear(reason),
         getProcedurePlan: () => runnerRef.current!.get(),
+        getComponentType: () => 'procedure_plan',
+        getSnapshot: () => runnerRef.current!.getSnapshot(),
+        subscribe: (listener) => runnerRef.current!.subscribe(listener),
+        getOverlayBehavior: (snapshot) => ({
+            placement: 'flow',
+            requestedStatus: 'expanded',
+            remove: snapshot === null,
+        }),
+        getOverlayMetadata: () => ({}),
+        handleOverlayRendererEvent: () => undefined,
     }), [name]);
-    useRegisterAiToolComponentRef(name, handle);
+    const componentRef = useRef<ProcedurePlanHandle | null>(handle);
+    componentRef.current = handle;
+    useRegisterAiToolComponentRef(componentRef);
 
     useEffect(() => () => runnerRef.current?.dispose(), []);
 

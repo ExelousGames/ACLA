@@ -17,6 +17,7 @@ import {
     TelemetryAnalysisFailedError,
     InvalidToolCallError,
 } from 'views/lap-analysis/ai-chat/ai-tool-base';
+import { BaselineCollectionNotStartedError } from 'contexts/AiToolComponentError';
 import apiService from 'services/api.service';
 import type {
     BaselineCollectionHandle,
@@ -345,7 +346,15 @@ const LiveSessionView = ({ name }: { name: string }) => {
                 return createAiToolOperation(result, statusDeferred.map((status) => status.promise));
             },
             restartLiveBaselineForAi: () => createAiToolOperationFrom(async () => {
-                const handle = await getBaselineHandle(componentRefs);
+                const handle = componentRefs?.findComponentRef<BaselineCollectionHandle>(
+                    AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                )?.current;
+                if (!handle) {
+                    throw new BaselineCollectionNotStartedError(
+                        AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                        'Baseline collection is not in progress. Start a new collection instead.',
+                    );
+                }
                 const restart = handle.restartCollection();
                 const restarted = await restart.result;
                 if (restarted instanceof Error) return restarted;
@@ -407,7 +416,7 @@ const LiveSessionView = ({ name }: { name: string }) => {
             }),
         };
     }
-    useRegisterAiToolComponentRef(name, componentRef.current!);
+    useRegisterAiToolComponentRef(componentRef);
 
 
     const { restorationError, sessionGame } = liveSession;

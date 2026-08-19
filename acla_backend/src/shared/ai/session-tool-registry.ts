@@ -355,7 +355,7 @@ export const SESSION_TOOLS = [
     },
     {
         name: 'collect_live_baseline',
-        description: 'Collect one complete live baseline lap through the dedicated baseline UI component and return the cached baseline lap record when complete.',
+        description: 'Start recording one complete live baseline lap through the dedicated baseline UI component and return the cached baseline lap record when complete. If a previous baseline lap exists, this starts a new recording and replaces it; an existing completed baseline is not treated as an already-started error.',
         properties: {
             timeout_seconds: {
                 type: 'integer',
@@ -366,7 +366,7 @@ export const SESSION_TOOLS = [
     },
     {
         name: 'restart_live_baseline',
-        description: 'Restart the dedicated live baseline collection buffer so the next collect_live_baseline call records a fresh baseline lap.',
+        description: 'Restart baseline recording only while it is waiting for a lap start or actively collecting. Returns an error when recording is not in progress; use collect_live_baseline to start a new recording after a completed baseline lap.',
         properties: {},
         required: [],
     },

@@ -10,7 +10,10 @@ import {
     useAiToolComponentRefDirectory,
 } from 'contexts/AiToolComponentRefContext';
 import type { LiveSessionHandle } from '../LiveSessionView';
-import { BaselineCollectionAlreadyStartedError } from 'contexts/AiToolComponentError';
+import {
+    BaselineCollectionAlreadyStartedError,
+    BaselineCollectionNotStartedError,
+} from 'contexts/AiToolComponentError';
 import { createAiToolOperationFrom } from 'components/ai-engineering-tools';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 
@@ -327,14 +330,10 @@ describe('LiveSessionView', () => {
             </AiToolComponentRefProvider>,
         );
         act(() => {
-            componentDirectory!.reserveComponentRef(
-                AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
-                Symbol('baseline-collection-test'),
-                {
+            componentDirectory!.registerComponentRef({ current: {
                     getComponentName: () => AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                     startCollection,
-                } as any,
-            );
+                } as any });
         });
         const handle = componentDirectory!
             .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
@@ -344,6 +343,32 @@ describe('LiveSessionView', () => {
         expect(startCollection).toHaveBeenCalledWith({ timeoutMs: 12_000 });
         expect(operation.statuses).toHaveLength(0);
         await expect(operation.result).rejects.toBe(failure);
+    });
+
+    it('rejects restart without mounting a collector when collection is not in progress', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+
+        render(
+            <AiToolComponentRefProvider>
+                <LiveSessionContext.Provider value={createRuntime('acc') as any}>
+                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                </LiveSessionContext.Provider>
+                <RegistrationObserver />
+            </AiToolComponentRefProvider>,
+        );
+        const handle = componentDirectory!
+            .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+        expect(componentDirectory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
+
+        const operation = handle.restartLiveBaselineForAi();
+
+        await expect(operation.result).rejects.toMatchObject({
+            name: 'BaselineCollectionNotStartedError',
+            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            message: 'Baseline collection is not in progress. Start a new collection instead.',
+        });
+        await expect(operation.result).rejects.toBeInstanceOf(BaselineCollectionNotStartedError);
+        expect(componentDirectory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
     });
 
     it('returns only the analysis status to AI', async () => {
@@ -382,14 +407,10 @@ describe('LiveSessionView', () => {
             </AiToolComponentRefProvider>,
         );
         act(() => {
-            componentDirectory!.reserveComponentRef(
-                AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
-                Symbol('baseline-analysis-test'),
-                {
+            componentDirectory!.registerComponentRef({ current: {
                     getComponentName: () => AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                     requestAnalysis,
-                } as any,
-            );
+                } as any });
         });
         const handle = componentDirectory!
             .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;

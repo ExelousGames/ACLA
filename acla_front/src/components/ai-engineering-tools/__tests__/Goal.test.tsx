@@ -280,6 +280,14 @@ describe('GoalRunner central dispatch callback', () => {
                     run_id: expect.any(String),
                     status: 'failed',
                 },
+                error: {
+                    name: 'GoalStepFailedError',
+                    message: 'not ready',
+                    cause: {
+                        name: 'Error',
+                        message: 'not ready',
+                    },
+                },
             },
         ]);
         const failedSnapshot = runner.getSnapshot();
@@ -295,7 +303,20 @@ describe('GoalRunner central dispatch callback', () => {
         expect(retryResult.status).toBe('achieved');
         expect(retryResult.task_results.map(({ source_result: _sourceResult, ...result }) => result))
             .toEqual([
-                { step_id: 'collect', tool_name: 'collect', attempt: 1, status: 'error' },
+                {
+                    step_id: 'collect',
+                    tool_name: 'collect',
+                    attempt: 1,
+                    status: 'error',
+                    error: {
+                        name: 'GoalStepFailedError',
+                        message: 'not ready',
+                        cause: {
+                            name: 'Error',
+                            message: 'not ready',
+                        },
+                    },
+                },
                 { step_id: 'collect', tool_name: 'collect', attempt: 2, status: 'completed' },
                 { step_id: 'analyze', tool_name: 'analyze', attempt: 1, status: 'completed' },
             ]);

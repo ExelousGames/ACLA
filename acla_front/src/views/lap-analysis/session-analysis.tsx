@@ -414,7 +414,7 @@ const SessionAnalysis = ({ name }: { name: string }) => {
             }),
         };
     }
-    useRegisterAiToolComponentRef(name, componentRef.current);
+    useRegisterAiToolComponentRef(componentRef);
 
     const { activeTab, mapSelected, sessionSelected, setActiveTab } = analysisContext;
 

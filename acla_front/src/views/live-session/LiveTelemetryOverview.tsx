@@ -41,7 +41,9 @@ const LiveTelemetryOverview = forwardRef<LiveTelemetryOverviewHandle, LiveTeleme
         ),
     }), [name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
-    useRegisterAiToolComponentRef(name, handle);
+    const registeredHandleRef = React.useRef(handle);
+    registeredHandleRef.current = handle;
+    useRegisterAiToolComponentRef(registeredHandleRef);
     const entries = useMemo(() => {
         const term = search.trim().toLowerCase();
         return Object.entries(telemetry)

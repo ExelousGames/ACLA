@@ -28,10 +28,6 @@ export class ComponentRefUnavailableError extends AiToolComponentRefError {
     override name = 'ComponentRefUnavailableError';
 }
 
-export class ComponentNameMismatchError extends AiToolComponentRefError {
-    override name = 'ComponentNameMismatchError';
-}
-
 export class DuplicateComponentNameError extends AiToolComponentRefError {
     override name = 'DuplicateComponentNameError';
 }
@@ -116,6 +112,10 @@ export abstract class ProcedurePlanComponentError extends AiToolComponentError {
     override name = 'ProcedurePlanComponentError';
 }
 
+export class ProcedurePlanStepFailedError extends ProcedurePlanComponentError {
+    override name = 'ProcedurePlanStepFailedError';
+}
+
 export class ProcedurePlanReplacedError extends ProcedurePlanComponentError {
     override name = 'ProcedurePlanReplacedError';
 }
@@ -138,6 +138,10 @@ export abstract class BaselineCollectionComponentError extends AiToolComponentEr
 
 export class BaselineCollectionAlreadyStartedError extends BaselineCollectionComponentError {
     override name = 'BaselineCollectionAlreadyStartedError';
+}
+
+export class BaselineCollectionNotStartedError extends BaselineCollectionComponentError {
+    override name = 'BaselineCollectionNotStartedError';
 }
 
 export class BaselineCollectionVisualizationRequiredError extends BaselineCollectionComponentError {

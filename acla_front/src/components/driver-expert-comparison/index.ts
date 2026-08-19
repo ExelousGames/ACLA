@@ -15,3 +15,4 @@ export type {
     DriverExpertComparisonSample,
     DriverExpertTrajectoryPoint,
 } from './DriverExpertComparisonGraph';
+export type { DriverExpertComparisonSnapshot } from './DriverExpertComparisonOverlay';

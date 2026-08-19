@@ -3,6 +3,18 @@ import {
     getSessionToolsForSessionContext,
 } from './session-tool-registry';
 
+describe('live baseline tools', () => {
+    it('directs new recordings through collect and limits restart to active recordings', () => {
+        const collect = SESSION_TOOLS.find(({ name }) => name === 'collect_live_baseline') as any;
+        const restart = SESSION_TOOLS.find(({ name }) => name === 'restart_live_baseline') as any;
+
+        expect(collect?.description).toContain('If a previous baseline lap exists');
+        expect(collect?.description).toContain('starts a new recording');
+        expect(restart?.description).toContain('only while it is waiting for a lap start or actively collecting');
+        expect(restart?.description).toContain('use collect_live_baseline');
+    });
+});
+
 describe('session live range to-do tools', () => {
     it('exposes one strict executable-event batch schema plus the read tool', () => {
         const names = SESSION_TOOLS.map((tool) => tool.name);

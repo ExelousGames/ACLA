@@ -1,6 +1,12 @@
 import React from 'react';
 import { useDesktopGame } from 'contexts/DesktopGameContext';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
+import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
+import {
+    isOverlayNonEmptyString,
+    isOverlayRecord,
+} from 'views/floating-chat/overlay-renderer-validation';
+import type { DriverExpertComparisonSnapshot } from './DriverExpertComparisonOverlay';
 import { unwrapLapTelemetrySequence } from './lapTelemetrySequence';
 import styles from './DriverExpertComparisonGraph.module.css';
 
@@ -1304,6 +1310,41 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
             </div>
         </section>
     );
+};
+
+export const driverExpertComparisonOverlayRenderer: AiOverlayRenderer<DriverExpertComparisonSnapshot> = {
+    componentType: 'driver_expert_comparison',
+    validateSnapshot: (snapshot): snapshot is DriverExpertComparisonSnapshot => (
+        isOverlayRecord(snapshot)
+        && isOverlayNonEmptyString(snapshot.title)
+        && Boolean(normalizeDriverExpertComparisonData(snapshot.comparison))
+        && (
+            snapshot.game === undefined
+            || snapshot.game === null
+            || snapshot.game === 'ac'
+            || snapshot.game === 'acc'
+            || snapshot.game === 'iracing'
+        )
+    ),
+    renderOverlay: (snapshot, status) => {
+        if (status === 'folded') return snapshot.title;
+        return (
+            <DriverExpertComparisonGraph
+                className={status === 'full_size'
+                    ? 'floating-pill-comparison floating-pill-comparison--full-size'
+                    : 'floating-pill-comparison'}
+                data={snapshot.comparison}
+                game={snapshot.game}
+                title={snapshot.title}
+                layout={{ trajectoryHeight: status === 'full_size' ? '100%' : 280 }}
+            />
+        );
+    },
+    dimensions: {
+        expanded: { width: 760, height: 500 },
+        folded: { width: 360, height: 58 },
+        full_size: { width: 760, height: 500 },
+    },
 };
 
 export default DriverExpertComparisonGraph;

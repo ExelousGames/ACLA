@@ -48,7 +48,9 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
         ),
     }), [name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
-    useRegisterAiToolComponentRef(name, handle);
+    const registeredHandleRef = React.useRef(handle);
+    registeredHandleRef.current = handle;
+    useRegisterAiToolComponentRef(registeredHandleRef);
     const filtered = useMemo(() => {
         const term = search.trim().toLowerCase();
         return events.filter((event) => !term || JSON.stringify(event).toLowerCase().includes(term)).slice().reverse();

@@ -124,6 +124,30 @@ describe('adaptAnalysisResultsComparison', () => {
         expect(result.samples[0]).not.toHaveProperty('expertGas');
     });
 
+    it('skips isolated invalid Driver rows while retaining valid comparison coverage', () => {
+        const result = adaptAnalysisResultsComparison({
+            baselineRecords: [
+                driverRow(0.1, 100, { x: 10, y: 10, z: 10 }),
+                driverRow(0.2, 200, { x: 20, y: 20, z: 20 }),
+                driverRow(0.25, 225, { x: 25, y: 25, z: 25 }, {
+                    Graphics_current_time: undefined,
+                }),
+                driverRow(0.27, 200, { x: 27, y: 27, z: 27 }),
+                driverRow(0.15, 250, { x: 15, y: 15, z: 15 }),
+                driverRow(0.3, 300, { x: 30, y: 30, z: 30 }),
+            ],
+            expertReferenceData: [
+                expertRow(0.1, 1_000),
+                expertRow(0.2, 1_100),
+                expertRow(0.3, 1_200),
+            ],
+        });
+
+        expect(result.samples).toHaveLength(3);
+        expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual([100, 200, 300]);
+        expect(result.samples.map((sample) => sample.driverTrackPosition)).toEqual([0.1, 0.2, 0.3]);
+    });
+
     it('steps gear from the preceding Driver sample and advances repeated positions in source order', () => {
         const result = adaptAnalysisResultsComparison({
             baselineRecords: [

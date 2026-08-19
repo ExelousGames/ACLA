@@ -193,7 +193,9 @@ const LiveTelemetryWorkspace = forwardRef<VisualizationManagerHandle, LiveTeleme
         closeVisualization: (options) => managerRef.current?.closeVisualization(options) ?? unavailable(name),
     }), [name]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
-    useRegisterAiToolComponentRef(name, handle);
+    const registeredHandleRef = useRef(handle);
+    registeredHandleRef.current = handle;
+    useRegisterAiToolComponentRef(registeredHandleRef);
 
     return <LiveTelemetryWorkspaceImpl ref={managerRef} name={name} />;
 });

@@ -6,6 +6,7 @@ import {
     isProcedurePlanOptOutRequest,
     type ProcedurePlanState,
 } from '../ProcedurePlan';
+import { ProcedurePlanStepFailedError } from '../../../contexts/AiToolComponentError';
 import { createAiToolOperationFrom, resolvedAiToolOperation } from '../ai-tool-operation';
 
 const plan = (): ProcedurePlanState => ({
@@ -74,13 +75,41 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
 
     it('keeps a failed step available for retry', async () => {
         let attempts = 0;
+        const onError = jest.fn();
+        const rootError = new Error('offline');
         const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {
-            if (name === 'read' && ++attempts === 1) throw new Error('offline');
+            if (name === 'read' && ++attempts === 1) throw rootError;
             return { status: 'complete' };
         }));
-        const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
+        const runner = new ProcedurePlanRunner('procedure-plan', dispatch, undefined, onError);
 
-        await expect(runner.replace(plan()).result).resolves.toMatchObject({ status: 'failed' });
+        const failedResult = await runner.replace(plan()).result;
+        expect(failedResult).not.toBeInstanceOf(Error);
+        if (failedResult instanceof Error) throw failedResult;
+        expect(failedResult).toMatchObject({
+            status: 'failed',
+            task_results: [{
+                title: 'Read telemetry',
+                tool_name: 'read',
+                status: 'failed',
+                error: {
+                    name: 'ProcedurePlanStepFailedError',
+                    message: 'offline',
+                    cause: {
+                        name: 'Error',
+                        message: 'offline',
+                    },
+                },
+            }],
+        });
+        expect(onError).toHaveBeenCalledWith(
+            expect.objectContaining({ title: 'Read telemetry' }),
+            expect.any(ProcedurePlanStepFailedError),
+        );
+        expect(onError.mock.calls[0][1]).toMatchObject({
+            componentName: 'procedure-plan',
+            cause: rootError,
+        });
         await expect(runner.retryFailedStep()).resolves.toMatchObject({ status: 'complete' });
         expect(attempts).toBe(2);
     });

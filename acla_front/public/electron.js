@@ -541,8 +541,9 @@ let overlayEnabled = false;
 let overlayRendererReady = false;
 let currentOverlayPresentation = null;
 let overlayPresentationSequence = 0;
-const overlayPendingRequests = new Map();
-const overlayCommandQueue = [];
+let lastOverlayPresentationSnapshot = null;
+const overlayPendingPresentations = new Map();
+const overlayPresentationQueue = [];
 const OVERLAY_ACK_TIMEOUT_MS = 15000;
 
 function isOverlayRendererSender(event) {
@@ -555,6 +556,27 @@ function isOverlayRendererSender(event) {
 
 function isSerializableOverlayValue(value) {
   try {
+    const seen = new Set();
+    const visit = (candidate) => {
+      if (candidate === null || typeof candidate === 'string' || typeof candidate === 'boolean') return true;
+      if (typeof candidate === 'number') return Number.isFinite(candidate);
+      if (Array.isArray(candidate)) {
+        if (seen.has(candidate)) return false;
+        seen.add(candidate);
+        const valid = candidate.every(visit);
+        seen.delete(candidate);
+        return valid;
+      }
+      if (typeof candidate !== 'object') return false;
+      const prototype = Object.getPrototypeOf(candidate);
+      if (prototype !== Object.prototype && prototype !== null) return false;
+      if (seen.has(candidate)) return false;
+      seen.add(candidate);
+      const valid = Object.values(candidate).every(visit);
+      seen.delete(candidate);
+      return valid;
+    };
+    if (!visit(value)) return false;
     const json = JSON.stringify(value);
     return typeof json === 'string' && json.length <= 5_000_000;
   } catch {
@@ -562,13 +584,28 @@ function isSerializableOverlayValue(value) {
   }
 }
 
-function validateOverlayRequest(request) {
-  if (!request || typeof request !== 'object' || Array.isArray(request)) return 'Malformed overlay request.';
-  if (typeof request.presentationId !== 'string' || !request.presentationId.trim()) return 'Overlay presentationId is required.';
-  if (typeof request.requestId !== 'string' || !request.requestId.trim()) return 'Overlay requestId is required.';
-  if (!request.command || typeof request.command !== 'object' || Array.isArray(request.command)) return 'Overlay command is required.';
-  if (!['upsert', 'set_policy', 'request_full_size', 'exit'].includes(request.command.operation)) return 'Unknown overlay operation.';
-  if (!isSerializableOverlayValue(request)) return 'Overlay request must be JSON-safe.';
+function overlayPresentationKey(presentation) {
+  return `${presentation.presentationId}\u0000${presentation.presentationRevision}`;
+}
+
+function validateOverlayPresentationSnapshot(presentation) {
+  if (!presentation || typeof presentation !== 'object' || Array.isArray(presentation)) return 'Malformed overlay presentation.';
+  if (typeof presentation.presentationId !== 'string' || !presentation.presentationId.trim()) return 'Overlay presentationId is required.';
+  if (!Number.isInteger(presentation.presentationRevision) || presentation.presentationRevision < 1) return 'Overlay presentationRevision must be a positive integer.';
+  if (!presentation.session || presentation.session.presentationId !== presentation.presentationId) return 'Overlay session identity does not match.';
+  if (!Array.isArray(presentation.cards)) return 'Overlay cards must be an array.';
+  const names = new Set();
+  for (const card of presentation.cards) {
+    if (!card || typeof card !== 'object' || Array.isArray(card)) return 'Malformed overlay card.';
+    if (typeof card.componentName !== 'string' || !card.componentName.trim()) return 'Overlay card componentName is required.';
+    if (typeof card.componentType !== 'string' || !card.componentType.trim()) return 'Overlay card componentType is required.';
+    if (names.has(card.componentName)) return `Duplicate overlay componentName '${card.componentName}'.`;
+    names.add(card.componentName);
+    if (!Number.isInteger(card.revision) || card.revision < 1) return 'Overlay card revision must be a positive integer.';
+    if (!['expanded', 'folded', 'full_size'].includes(card.status)) return 'Unknown overlay display status.';
+    if (!['pinned', 'flow'].includes(card.placement)) return 'Unknown overlay placement.';
+  }
+  if (!isSerializableOverlayValue(presentation)) return 'Overlay presentation must be JSON-safe.';
   return null;
 }
 
@@ -583,50 +620,64 @@ function validateOverlaySessionDescriptor(descriptor) {
   return null;
 }
 
-function settleOverlayRequest(requestId, acknowledgement) {
-  const pending = overlayPendingRequests.get(requestId);
+function settleOverlayPresentation(key, acknowledgement) {
+  const pending = overlayPendingPresentations.get(key);
   if (!pending) return;
-  overlayPendingRequests.delete(requestId);
+  overlayPendingPresentations.delete(key);
   if (pending.timer) clearTimeout(pending.timer);
+  if (acknowledgement?.accepted
+    && pending.presentation.presentationId === currentOverlayPresentation?.presentationId
+    && (
+      lastOverlayPresentationSnapshot?.presentationId !== pending.presentation.presentationId
+      || pending.presentation.presentationRevision >= lastOverlayPresentationSnapshot.presentationRevision
+    )) {
+    lastOverlayPresentationSnapshot = pending.presentation;
+  }
   pending.resolve(acknowledgement);
 }
 
-function rejectOverlayRequests(error, presentationId = null) {
-  const retainedCommands = presentationId
-    ? overlayCommandQueue.filter((request) => request.presentationId !== presentationId)
+function rejectOverlayPresentations(error, presentationId = null) {
+  const retainedPresentations = presentationId
+    ? overlayPresentationQueue.filter((presentation) => presentation.presentationId !== presentationId)
     : [];
-  overlayCommandQueue.splice(0, overlayCommandQueue.length, ...retainedCommands);
-  Array.from(overlayPendingRequests.entries()).forEach(([requestId, pending]) => {
+  overlayPresentationQueue.splice(0, overlayPresentationQueue.length, ...retainedPresentations);
+  Array.from(overlayPendingPresentations.entries()).forEach(([key, pending]) => {
     if (presentationId && pending.presentationId !== presentationId) return;
     if (pending.timer) clearTimeout(pending.timer);
-    pending.resolve({ presentationId: pending.presentationId, requestId, accepted: false, error });
-    overlayPendingRequests.delete(requestId);
+    pending.resolve({
+      presentationId: pending.presentationId,
+      presentationRevision: pending.presentationRevision,
+      accepted: false,
+      error,
+    });
+    overlayPendingPresentations.delete(key);
   });
 }
 
-function forwardOverlayRequest(request) {
-  const pending = overlayPendingRequests.get(request.requestId);
+function forwardOverlayPresentation(presentation) {
+  const key = overlayPresentationKey(presentation);
+  const pending = overlayPendingPresentations.get(key);
   if (!pending || !floatingChatWindow || floatingChatWindow.isDestroyed()) return;
-  if (request.presentationId !== currentOverlayPresentation?.presentationId) {
-    settleOverlayRequest(request.requestId, {
-      presentationId: request.presentationId,
-      requestId: request.requestId,
+  if (presentation.presentationId !== currentOverlayPresentation?.presentationId) {
+    settleOverlayPresentation(key, {
+      presentationId: presentation.presentationId,
+      presentationRevision: presentation.presentationRevision,
       accepted: false,
-      error: `Overlay presentation '${request.presentationId}' is no longer active.`,
+      error: `Overlay presentation '${presentation.presentationId}' is no longer active.`,
     });
     return;
   }
   if (!pending.timer) {
     pending.timer = setTimeout(() => {
-      settleOverlayRequest(request.requestId, {
-        presentationId: request.presentationId,
-        requestId: request.requestId,
+      settleOverlayPresentation(key, {
+        presentationId: presentation.presentationId,
+        presentationRevision: presentation.presentationRevision,
         accepted: false,
         error: 'Overlay acknowledgement timed out.',
       });
     }, OVERLAY_ACK_TIMEOUT_MS);
   }
-  floatingChatWindow.webContents.send('overlay-display-command', request);
+  floatingChatWindow.webContents.send('overlay-presentation-snapshot', presentation);
 }
 
 function syncOverlayVisibility() {
@@ -638,10 +689,10 @@ function syncOverlayVisibility() {
   }
 }
 
-function flushOverlayCommandQueue() {
+function flushOverlayPresentationQueue() {
   if (!overlayRendererReady || !floatingChatWindow || floatingChatWindow.isDestroyed()) return;
-  while (overlayCommandQueue.length > 0) {
-    forwardOverlayRequest(overlayCommandQueue.shift());
+  while (overlayPresentationQueue.length > 0) {
+    forwardOverlayPresentation(overlayPresentationQueue.shift());
   }
 }
 
@@ -702,7 +753,7 @@ function createFloatingChatWindow() {
   floatingChatWindow.on('closed', () => {
     floatingChatWindow = null;
     overlayRendererReady = false;
-    rejectOverlayRequests('Overlay renderer shut down before acknowledging the request.');
+    rejectOverlayPresentations('Overlay renderer shut down before acknowledging the presentation.');
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('floating-chat-closed');
     }
@@ -718,18 +769,13 @@ ipcMain.handle('overlay-session-create', (_event, descriptor) => {
     createFloatingChatWindow();
     const previousPresentationId = currentOverlayPresentation?.presentationId;
     if (previousPresentationId) {
-      rejectOverlayRequests('Overlay presentation was replaced.', previousPresentationId);
+      rejectOverlayPresentations('Overlay presentation was replaced.', previousPresentationId);
     }
+    lastOverlayPresentationSnapshot = null;
     currentOverlayPresentation = {
       ...JSON.parse(JSON.stringify(descriptor)),
       presentationId: `overlay-presentation-${Date.now().toString(36)}-${(++overlayPresentationSequence).toString(36)}`,
     };
-    if (overlayRendererReady) {
-      floatingChatWindow.webContents.send('overlay-presentation-changed', {
-        kind: 'started',
-        presentation: currentOverlayPresentation,
-      });
-    }
     syncOverlayVisibility();
     return { success: true, presentation: currentOverlayPresentation };
   } catch (error) {
@@ -745,61 +791,61 @@ ipcMain.handle('overlay-session-destroy', (_event, presentationId) => {
   if (currentOverlayPresentation?.presentationId !== presentationId) {
     return { success: true, ended: false };
   }
-  rejectOverlayRequests('Overlay presentation ended before acknowledging the request.', presentationId);
+  rejectOverlayPresentations('Overlay presentation ended before acknowledging the presentation.', presentationId);
   currentOverlayPresentation = null;
-  if (overlayRendererReady && floatingChatWindow && !floatingChatWindow.isDestroyed()) {
-    floatingChatWindow.webContents.send('overlay-presentation-changed', {
-      kind: 'ended',
-      presentationId,
-    });
-  }
+  lastOverlayPresentationSnapshot = null;
   return { success: true, ended: true };
 });
 
 ipcMain.handle('overlay-session-set-enabled', (_event, enabled) => {
   overlayEnabled = Boolean(enabled);
   if (overlayEnabled) createFloatingChatWindow();
-  if (overlayRendererReady) floatingChatWindow.webContents.send('overlay-enabled-changed', overlayEnabled);
   syncOverlayVisibility();
   return { success: true, enabled: overlayEnabled };
 });
 
 ipcMain.handle('overlay-session-is-enabled', () => overlayEnabled);
 
-ipcMain.handle('overlay-display-request', (event, request) => {
-  const validationError = validateOverlayRequest(request);
+ipcMain.handle('overlay-presentation-submit', (event, presentation) => {
+  const validationError = validateOverlayPresentationSnapshot(presentation);
   if (validationError) {
     return {
-      presentationId: request?.presentationId || 'unknown',
-      requestId: request?.requestId || 'unknown',
+      presentationId: presentation?.presentationId || 'unknown',
+      presentationRevision: presentation?.presentationRevision || 0,
       accepted: false,
       error: validationError,
     };
   }
-  if (request.presentationId !== currentOverlayPresentation?.presentationId) {
+  if (presentation.presentationId !== currentOverlayPresentation?.presentationId) {
     return {
-      presentationId: request.presentationId,
-      requestId: request.requestId,
+      presentationId: presentation.presentationId,
+      presentationRevision: presentation.presentationRevision,
       accepted: false,
-      error: `Overlay presentation '${request.presentationId}' is no longer active.`,
+      error: `Overlay presentation '${presentation.presentationId}' is no longer active.`,
     };
   }
   if (!floatingChatWindow || floatingChatWindow.isDestroyed()) {
-    return { presentationId: request.presentationId, requestId: request.requestId, accepted: false, error: 'Overlay window is unavailable.' };
+    return { presentationId: presentation.presentationId, presentationRevision: presentation.presentationRevision, accepted: false, error: 'Overlay window is unavailable.' };
   }
   if (isOverlayRendererSender(event)) {
-    return { presentationId: request.presentationId, requestId: request.requestId, accepted: false, error: 'Overlay renderer cannot submit producer commands.' };
+    return { presentationId: presentation.presentationId, presentationRevision: presentation.presentationRevision, accepted: false, error: 'Overlay renderer cannot submit presentations.' };
   }
-  if (overlayPendingRequests.has(request.requestId)) {
-    return { presentationId: request.presentationId, requestId: request.requestId, accepted: false, error: 'Duplicate overlay requestId.' };
+  const key = overlayPresentationKey(presentation);
+  if (overlayPendingPresentations.has(key)) {
+    return { presentationId: presentation.presentationId, presentationRevision: presentation.presentationRevision, accepted: false, error: 'Duplicate overlay presentation revision.' };
   }
-
   return new Promise((resolve) => {
-    overlayPendingRequests.set(request.requestId, { presentationId: request.presentationId, resolve, timer: null });
+    overlayPendingPresentations.set(key, {
+      presentationId: presentation.presentationId,
+      presentationRevision: presentation.presentationRevision,
+      presentation: JSON.parse(JSON.stringify(presentation)),
+      resolve,
+      timer: null,
+    });
     if (overlayRendererReady) {
-      forwardOverlayRequest(request);
+      forwardOverlayPresentation(presentation);
     } else {
-      overlayCommandQueue.push(request);
+      overlayPresentationQueue.push(presentation);
     }
   });
 });
@@ -807,57 +853,35 @@ ipcMain.handle('overlay-display-request', (event, request) => {
 ipcMain.on('overlay-renderer-ready', (event) => {
   if (!isOverlayRendererSender(event)) return;
   overlayRendererReady = true;
-  floatingChatWindow.webContents.send('overlay-enabled-changed', overlayEnabled);
-  if (currentOverlayPresentation) {
-    floatingChatWindow.webContents.send('overlay-presentation-changed', {
-      kind: 'started',
-      presentation: currentOverlayPresentation,
-    });
+  if (overlayPresentationQueue.length === 0 && lastOverlayPresentationSnapshot) {
+    floatingChatWindow.webContents.send('overlay-presentation-snapshot', lastOverlayPresentationSnapshot);
   }
-  flushOverlayCommandQueue();
+  flushOverlayPresentationQueue();
   syncOverlayVisibility();
 });
 
-ipcMain.on('overlay-display-acknowledgement', (event, acknowledgement) => {
+ipcMain.on('overlay-presentation-acknowledgement', (event, acknowledgement) => {
   if (!isOverlayRendererSender(event)) return;
-  if (!acknowledgement || typeof acknowledgement.requestId !== 'string') return;
-  const pending = overlayPendingRequests.get(acknowledgement.requestId);
+  if (!acknowledgement || typeof acknowledgement.presentationId !== 'string'
+    || !Number.isInteger(acknowledgement.presentationRevision)) return;
+  const key = overlayPresentationKey(acknowledgement);
+  const pending = overlayPendingPresentations.get(key);
   if (!pending || acknowledgement.presentationId !== pending.presentationId) return;
-  settleOverlayRequest(acknowledgement.requestId, acknowledgement);
+  settleOverlayPresentation(key, acknowledgement);
 });
 
-ipcMain.on('overlay-lifecycle-event', (event, lifecycleEvent) => {
-  if (!isOverlayRendererSender(event) || !isSerializableOverlayValue(lifecycleEvent)) return;
-  if (typeof lifecycleEvent?.presentationId !== 'string') return;
+ipcMain.on('overlay-renderer-event', (event, rendererEvent) => {
+  if (!isOverlayRendererSender(event) || !isSerializableOverlayValue(rendererEvent)) return;
+  if (typeof rendererEvent?.presentationId !== 'string'
+    || rendererEvent.presentationId !== currentOverlayPresentation?.presentationId
+    || typeof rendererEvent.componentName !== 'string'
+    || !rendererEvent.componentName.trim()
+    || !Number.isInteger(rendererEvent.revision)
+    || typeof rendererEvent.event !== 'string'
+    || !rendererEvent.event.trim()) return;
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('overlay-lifecycle-event', lifecycleEvent);
+    mainWindow.webContents.send('overlay-renderer-event', rendererEvent);
   }
-});
-
-ipcMain.handle('open-floating-chat', () => {
-  try {
-    createFloatingChatWindow();
-    overlayEnabled = true;
-    if (overlayRendererReady) floatingChatWindow.webContents.send('overlay-enabled-changed', true);
-    syncOverlayVisibility();
-    return { success: true };
-  } catch (error) {
-    console.error('Failed to open floating chat window:', error);
-    return { success: false, error: error?.message || 'Unknown error' };
-  }
-});
-
-ipcMain.handle('close-floating-chat', () => {
-  overlayEnabled = false;
-  if (floatingChatWindow && !floatingChatWindow.isDestroyed() && overlayRendererReady) {
-    floatingChatWindow.webContents.send('overlay-enabled-changed', false);
-  }
-  syncOverlayVisibility();
-  return { success: true };
-});
-
-ipcMain.handle('is-floating-chat-open', () => {
-  return overlayEnabled;
 });
 
 // Track the widest card and total stack height. Horizontal resizing keeps
@@ -906,7 +930,7 @@ app.on('ready', () => {
 
 app.on('before-quit', () => {
   isAppQuitting = true;
-  rejectOverlayRequests('Application is shutting down.');
+  rejectOverlayPresentations('Application is shutting down.');
   if (floatingChatWindow && !floatingChatWindow.isDestroyed()) {
     floatingChatWindow.close();
   }

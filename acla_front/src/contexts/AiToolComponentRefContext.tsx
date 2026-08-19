@@ -7,10 +7,10 @@ import React, {
     useRef,
     useState,
 } from 'react';
+import AiOverlayManager from 'views/floating-chat/AiOverlayManager';
 import {
     AiToolComponentRefError,
     ComponentMountTimeoutError,
-    ComponentNameMismatchError,
     ComponentRefUnavailableError,
     DuplicateComponentNameError,
 } from './AiToolComponentError';
@@ -18,7 +18,6 @@ import {
 export {
     AiToolComponentRefError,
     ComponentMountTimeoutError,
-    ComponentNameMismatchError,
     ComponentRefUnavailableError,
     DuplicateComponentNameError,
 } from './AiToolComponentError';
@@ -42,102 +41,104 @@ export interface NamedAiToolComponentHandle {
     getComponentName(): string;
 }
 
-export type AiToolComponentRefOwner = symbol;
-
-type DirectoryEntry = {
-    owner: AiToolComponentRefOwner;
-    ref: MutableRefObject<NamedAiToolComponentHandle | null>;
-};
+export type AiToolComponentRef<THandle extends NamedAiToolComponentHandle = NamedAiToolComponentHandle> =
+    MutableRefObject<THandle | null>;
 
 type ComponentWaiter = {
-    resolve: (ref: MutableRefObject<NamedAiToolComponentHandle | null>) => void;
+    resolve: (ref: AiToolComponentRef) => void;
     reject: (error: AiToolComponentRefError) => void;
     timeoutId: ReturnType<typeof setTimeout>;
 };
 
 export interface AiToolComponentRefDirectory {
-    findComponentRef<THandle extends NamedAiToolComponentHandle>(
-        name: string,
-    ): MutableRefObject<THandle | null> | null;
-    reserveComponentRef<THandle extends NamedAiToolComponentHandle>(
-        name: string,
-        owner: AiToolComponentRefOwner,
-        handle: THandle,
-    ): MutableRefObject<THandle | null>;
-    createComponentRef<THandle extends NamedAiToolComponentHandle>(
-        name: string,
-        owner: AiToolComponentRefOwner,
-        handle: THandle,
-    ): MutableRefObject<THandle | null>;
+    findComponentRef<THandle extends NamedAiToolComponentHandle>(name: string): AiToolComponentRef<THandle> | null;
+    registerComponentRef<THandle extends NamedAiToolComponentHandle>(ref: AiToolComponentRef<THandle>): void;
+    unregisterComponentRef(ref: AiToolComponentRef): boolean;
     awaitComponentRef<THandle extends NamedAiToolComponentHandle>(
         name: string,
         timeoutMs?: number,
-    ): Promise<MutableRefObject<THandle | null>>;
-    releaseComponentRef(name: string, owner: AiToolComponentRefOwner): boolean;
+    ): Promise<AiToolComponentRef<THandle>>;
     getComponentNames(): string[];
+    getComponentRefs(): AiToolComponentRef[];
 }
 
 export const createAiToolComponentRefDirectory = (
     onChange: () => void = () => undefined,
 ): AiToolComponentRefDirectory => {
-    const entries = new Map<string, DirectoryEntry>();
+    const entries = new Map<string, AiToolComponentRef>();
+    const namesByRef = new Map<AiToolComponentRef, string>();
     const waiters = new Map<string, Set<ComponentWaiter>>();
 
     const findComponentRef = <THandle extends NamedAiToolComponentHandle>(name: string) => (
-        (entries.get(name)?.ref as MutableRefObject<THandle | null> | undefined) ?? null
+        (entries.get(name) as AiToolComponentRef<THandle> | undefined) ?? null
     );
 
-    const reserveComponentRef = <THandle extends NamedAiToolComponentHandle>(
-        name: string,
-        owner: AiToolComponentRefOwner,
-        handle: THandle,
-    ): MutableRefObject<THandle | null> => {
-        const reportedName = handle.getComponentName();
-        if (reportedName !== name) {
-            throw new ComponentNameMismatchError(
-                name,
-                `Component '${reportedName}' cannot register as '${name}'.`,
+    const registerComponentRef = <THandle extends NamedAiToolComponentHandle>(
+        ref: AiToolComponentRef<THandle>,
+    ): void => {
+        const handle = ref.current;
+        if (!handle) {
+            throw new ComponentRefUnavailableError(
+                '(unmounted)',
+                'A component reference must be mounted before it can be registered.',
+            );
+        }
+        const componentName = handle.getComponentName();
+        if (!componentName.trim()) {
+            throw new ComponentRefUnavailableError(
+                componentName,
+                'A component must return a non-empty runtime name.',
             );
         }
 
-        const existing = entries.get(name);
-        if (existing && existing.owner !== owner) {
+        const directoryRef = ref as AiToolComponentRef;
+        const registeredName = namesByRef.get(directoryRef);
+        if (registeredName === componentName && entries.get(componentName) === ref) return;
+        if (registeredName) {
+            entries.delete(registeredName);
+            namesByRef.delete(directoryRef);
+        }
+
+        const existing = entries.get(componentName);
+        if (existing && existing !== ref) {
             throw new DuplicateComponentNameError(
-                name,
-                `A mounted component already owns '${name}'.`,
+                componentName,
+                `A mounted component already owns '${componentName}'.`,
             );
         }
 
-        if (existing) {
-            existing.ref.current = handle;
-            return existing.ref as MutableRefObject<THandle | null>;
-        }
-
-        const ref: MutableRefObject<NamedAiToolComponentHandle | null> = { current: handle };
-        entries.set(name, { owner, ref });
-
-        const pending = waiters.get(name);
+        entries.set(componentName, directoryRef);
+        namesByRef.set(directoryRef, componentName);
+        const pending = waiters.get(componentName);
         if (pending) {
             pending.forEach((waiter) => {
                 clearTimeout(waiter.timeoutId);
-                waiter.resolve(ref);
+                waiter.resolve(directoryRef);
             });
-            waiters.delete(name);
+            waiters.delete(componentName);
         }
         onChange();
-        return ref as MutableRefObject<THandle | null>;
+    };
+
+    const unregisterComponentRef = (ref: AiToolComponentRef): boolean => {
+        const componentName = namesByRef.get(ref);
+        if (!componentName || entries.get(componentName) !== ref) return false;
+        entries.delete(componentName);
+        namesByRef.delete(ref);
+        onChange();
+        return true;
     };
 
     const awaitComponentRef = <THandle extends NamedAiToolComponentHandle>(
         name: string,
         timeoutMs = AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS,
-    ): Promise<MutableRefObject<THandle | null>> => {
+    ): Promise<AiToolComponentRef<THandle>> => {
         const existing = findComponentRef<THandle>(name);
         if (existing?.current) return Promise.resolve(existing);
 
         return new Promise((resolve, reject) => {
             const waiter: ComponentWaiter = {
-                resolve: (ref) => resolve(ref as MutableRefObject<THandle | null>),
+                resolve: (ref) => resolve(ref as AiToolComponentRef<THandle>),
                 reject,
                 timeoutId: setTimeout(() => {
                     const current = waiters.get(name);
@@ -155,22 +156,13 @@ export const createAiToolComponentRefDirectory = (
         });
     };
 
-    const releaseComponentRef = (name: string, owner: AiToolComponentRefOwner): boolean => {
-        const existing = entries.get(name);
-        if (!existing || existing.owner !== owner) return false;
-        existing.ref.current = null;
-        entries.delete(name);
-        onChange();
-        return true;
-    };
-
     return {
         findComponentRef,
-        reserveComponentRef,
-        createComponentRef: reserveComponentRef,
+        registerComponentRef,
+        unregisterComponentRef,
         awaitComponentRef,
-        releaseComponentRef,
         getComponentNames: () => Array.from(entries.keys()).sort(),
+        getComponentRefs: () => Array.from(entries.values()),
     };
 };
 
@@ -196,6 +188,7 @@ export const AiToolComponentRefProvider = ({ children }: { children: React.React
 
     return (
         <AiToolComponentRefContext.Provider value={value}>
+            <AiOverlayManager directory={directoryRef.current} directoryRevision={revision} />
             {children}
         </AiToolComponentRefContext.Provider>
     );
@@ -204,9 +197,7 @@ export const AiToolComponentRefProvider = ({ children }: { children: React.React
 export const useAiToolComponentRefs = () => {
     const value = useContext(AiToolComponentRefContext);
     const directory = value.directory;
-    if (!directory) {
-        throw new Error('AiToolComponentRefProvider is required.');
-    }
+    if (!directory) throw new Error('AiToolComponentRefProvider is required.');
     return { directory, revision: value.revision };
 };
 
@@ -219,35 +210,17 @@ export const useAiToolComponentRefDirectory = (): AiToolComponentRefDirectory =>
 );
 
 export const useRegisterAiToolComponentRef = <THandle extends NamedAiToolComponentHandle>(
-    name: string,
-    handle: THandle,
+    ref: AiToolComponentRef<THandle>,
 ) => {
     const { directory } = useContext(AiToolComponentRefContext);
-    const ownerRef = useRef<AiToolComponentRefOwner>(Symbol(`ai-tool-component:${name}`));
-    const mountedNameRef = useRef(name);
-    const handleRef = useRef(handle);
-    handleRef.current = handle;
-
-    if (mountedNameRef.current !== name) {
-        throw new ComponentNameMismatchError(
-            mountedNameRef.current,
-            `Mounted component '${mountedNameRef.current}' cannot be renamed to '${name}'. Remount it with key={name}.`,
-        );
-    }
 
     useLayoutEffect(() => {
         if (!directory) return undefined;
-        const owner = ownerRef.current;
-        directory.reserveComponentRef(name, owner, handleRef.current);
+        directory.registerComponentRef(ref);
         return () => {
-            directory.releaseComponentRef(name, owner);
+            directory.unregisterComponentRef(ref);
         };
-    }, [directory, name]);
-
-    useLayoutEffect(() => {
-        if (!directory) return;
-        directory.reserveComponentRef(name, ownerRef.current, handle);
-    }, [directory, handle, name]);
+    }, [directory, ref]);
 };
 
 export const resolveNamedComponentHandle = <THandle extends NamedAiToolComponentHandle>(
@@ -259,12 +232,6 @@ export const resolveNamedComponentHandle = <THandle extends NamedAiToolComponent
         throw new ComponentRefUnavailableError(
             name,
             `Component '${name}' is not mounted in the active dashboard.`,
-        );
-    }
-    if (handle.getComponentName() !== name) {
-        throw new ComponentNameMismatchError(
-            name,
-            `Component '${name}' reported the name '${handle.getComponentName()}'.`,
         );
     }
     return handle;
@@ -281,12 +248,6 @@ export const awaitNamedComponentHandle = async <THandle extends NamedAiToolCompo
         throw new ComponentRefUnavailableError(
             name,
             `Component '${name}' unmounted before it could receive the command.`,
-        );
-    }
-    if (handle.getComponentName() !== name) {
-        throw new ComponentNameMismatchError(
-            name,
-            `Component '${name}' reported the name '${handle.getComponentName()}'.`,
         );
     }
     return handle;

@@ -20,6 +20,7 @@ import {
     BaselineAnalysisCancelledError,
     BaselineCollectionAlreadyStartedError,
     BaselineCollectionIncompleteError,
+    BaselineCollectionNotStartedError,
     BaselineLapRecordRequiredError,
     RecordedAnalysisFailedError,
 } from 'contexts/AiToolComponentError';
@@ -51,6 +52,8 @@ import {
     type AiToolDeferred,
     type AiToolOperation,
 } from 'components/ai-engineering-tools';
+import type { AiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
+import { OVERLAY_HOLD_MS } from 'views/floating-chat/ai-overlay-types';
 
 export type BaselineCollectionTag = {
     status: 'waiting_for_start' | 'collecting' | 'complete';
@@ -107,7 +110,7 @@ export type BaselineCollectionStatus = BaselineCollectionPayload & {
 
 export type BaselineCollectionOptions = { timeoutMs?: number };
 
-export interface BaselineCollectionHandle extends NamedAiToolComponentHandle {
+export interface BaselineCollectionHandle extends NamedAiToolComponentHandle, AiOverlayComponentHandle<BaselineCollectionTag | null> {
     startCollection(options?: BaselineCollectionOptions): AiToolOperation<BaselineCollectionPayload, BaselineCollectionStatus>;
     restartCollection(): AiToolOperation<BaselineCollectionPayload>;
     requestAnalysis(options?: { limit?: number }): AiToolOperation<BaselineAnalysisPayload>;
@@ -592,7 +595,9 @@ const BaselineCollection = ({ name }: { name: string }) => {
 
     const startCollection = useCallback((options: BaselineCollectionOptions = {}) => {
         const status = tagRef.current?.status ?? recorderRef.current.status;
-        if (enabledRef.current && status !== 'complete') {
+        const collectionInProgress = enabledRef.current
+            && (status === 'waiting_for_start' || status === 'collecting');
+        if (collectionInProgress) {
             return createAiToolOperationFrom<BaselineCollectionPayload>(() => {
                 throw new BaselineCollectionAlreadyStartedError(
                     name,
@@ -641,6 +646,15 @@ const BaselineCollection = ({ name }: { name: string }) => {
 
     const restartCollection = useCallback(() => {
         try {
+            const status = tagRef.current?.status ?? recorderRef.current.status;
+            const collectionInProgress = enabledRef.current
+                && (status === 'waiting_for_start' || status === 'collecting');
+            if (!collectionInProgress) {
+                throw new BaselineCollectionNotStartedError(
+                    name,
+                    'Baseline collection is not in progress. Start a new collection instead.',
+                );
+            }
             settlePendingCollectionOperations(new BaselineAnalysisCancelledError(
                 name,
                 'Baseline collection was cancelled because collection restarted.',
@@ -795,10 +809,22 @@ const BaselineCollection = ({ name }: { name: string }) => {
         restartCollection,
         requestAnalysis: (options) => createAiToolOperation(requestAnalysis(options)),
         getTag: () => tagRef.current,
+        getComponentType: () => 'baseline_progress',
+        getSnapshot: () => tagRef.current,
+        getOverlayBehavior: (next) => ({
+            placement: 'flow',
+            requestedStatus: 'expanded',
+            foldAfterMs: OVERLAY_HOLD_MS,
+            remove: next === null,
+        }),
+        getOverlayMetadata: () => ({}),
+        handleOverlayRendererEvent: () => undefined,
         getLapRecord: () => lapRecordRef.current,
         subscribe,
     }), [name, requestAnalysis, restartCollection, startCollection, subscribe]);
-    useRegisterAiToolComponentRef(name, handle);
+    const componentRef = useRef<BaselineCollectionHandle | null>(handle);
+    componentRef.current = handle;
+    useRegisterAiToolComponentRef(componentRef);
 
     useEffect(() => {
         if (!enabledRef.current || !enabled) return;

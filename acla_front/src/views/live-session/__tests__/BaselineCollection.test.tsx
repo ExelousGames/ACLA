@@ -17,6 +17,7 @@ import {
     AnalysisResultsVisualizationNotReadyError,
     AnalysisResultsVisualizationUnavailableError,
     BaselineCollectionAlreadyStartedError,
+    BaselineCollectionNotStartedError,
     RecordedAnalysisFailedError,
     VisualizationRequestFailedError,
 } from 'contexts/AiToolComponentError';
@@ -101,10 +102,10 @@ const getHandle = () => directory!
     .current!;
 
 const reserve = (name: string, value: Record<string, any>) => {
-    directory!.reserveComponentRef(name, Symbol(name), {
+    directory!.registerComponentRef({ current: {
         getComponentName: () => name,
         ...value,
-    } as any);
+    } as any });
 };
 
 const installAnalysisComponents = ({
@@ -217,6 +218,23 @@ describe('BaselineCollection visualization', () => {
         expect(screen.getByLabelText('Baseline collection progress')).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Request Analysis' }))
             .not.toBeInTheDocument();
+    });
+
+    it('rejects restart when collection is not in progress', async () => {
+        render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
+        const handle = getHandle();
+
+        const restart = handle.restartCollection();
+
+        await expect(restart.result).rejects.toMatchObject({
+            name: 'BaselineCollectionNotStartedError',
+            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            message: 'Baseline collection is not in progress. Start a new collection instead.',
+        });
+        await expect(restart.result).rejects.toBeInstanceOf(BaselineCollectionNotStartedError);
+        expect(handle.getTag()).toBeNull();
+        expect(handle.getLapRecord()).toBeNull();
+        expect(screen.getByRole('button', { name: 'Start Baseline Collection' })).toBeEnabled();
     });
 
     it('rejects duplicate starts while waiting and allows restart to clear the operation', async () => {
@@ -444,25 +462,25 @@ describe('BaselineCollection visualization', () => {
         expect(handle.getTag()).toMatchObject({ status: 'complete', progress_percent: 100 });
     });
 
-    it('restarts the mounted collector and waits for a fresh lap start', () => {
+    it('rejects restart after completion and preserves the recorded baseline', async () => {
         const view = render(<Harness telemetry={{}} />);
         const handle = getHandle();
         act(() => { handle.startCollection(); });
         view.rerender(<Harness telemetry={makeSample(0, 0.001, 10)} />);
         view.rerender(<Harness telemetry={makeSample(0, 0.9, 90_000)} />);
         view.rerender(<Harness telemetry={makeSample(1, 0.001, 5)} />);
-        expect(handle.getLapRecord()).not.toBeNull();
+        const completedBaseline = handle.getLapRecord();
+        expect(completedBaseline).not.toBeNull();
 
-        act(() => { handle.restartCollection(); });
-        expect(handle.getLapRecord()).toBeNull();
-        expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start', baseline_lap: null });
-        expect(screen.queryByRole('button', { name: /Analysis/ })).not.toBeInTheDocument();
+        const restart = handle.restartCollection();
 
-        view.rerender(<Harness telemetry={makeSample(1, 0.002, 20)} />);
-        expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start' });
-        view.rerender(<Harness telemetry={makeSample(1, 0.4, 40_000)} />);
-        view.rerender(<Harness telemetry={makeSample(2, 0.001, 5)} />);
-        expect(handle.getTag()).toMatchObject({ status: 'collecting', baseline_lap: 2 });
+        await expect(restart.result).rejects.toMatchObject({
+            name: 'BaselineCollectionNotStartedError',
+            message: 'Baseline collection is not in progress. Start a new collection instead.',
+        });
+        expect(handle.getLapRecord()).toBe(completedBaseline);
+        expect(handle.getTag()).toMatchObject({ status: 'complete', baseline_lap: 0 });
+        expect(screen.getByRole('button', { name: 'Request Analysis' })).toBeEnabled();
     });
 
     it('unregisters and discards partial or completed state when closed, then reopens fresh', () => {
@@ -725,7 +743,7 @@ describe('BaselineCollection visualization', () => {
         expect(screen.getByRole('button', { name: 'Retry Analysis' })).toBeEnabled();
     });
 
-    it('shows errors, allows retry, and resets the analysis state on restart', async () => {
+    it('shows errors, allows retry, and resets the analysis state on a new collection', async () => {
         mockPost.mockRejectedValueOnce({ data: { message: 'classifier unavailable' } });
         const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
         const handle = completeBaselineLap(view);
@@ -758,7 +776,7 @@ describe('BaselineCollection visualization', () => {
             screen.getByRole('button', { name: 'Analysis Complete' }),
         ).toBeDisabled());
 
-        act(() => { handle.restartCollection(); });
+        act(() => { handle.startCollection(); });
         expect(screen.queryByRole('button', { name: 'Analysis Complete' })).not.toBeInTheDocument();
 
         view.rerender(<Harness telemetry={makeSample(6, 0.4, 40_000)} />);

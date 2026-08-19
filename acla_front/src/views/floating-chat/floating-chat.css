@@ -122,12 +122,6 @@ html, body, #root, .App {
     white-space: nowrap;
 }
 
-.overlay-shell__idle-label {
-    color: rgba(243, 238, 251, .68);
-    font-size: 11px;
-    font-weight: 500;
-}
-
 .overlay-shell__speaking {
     position: relative;
     display: flex;

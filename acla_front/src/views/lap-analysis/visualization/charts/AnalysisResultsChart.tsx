@@ -1426,7 +1426,9 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         waitForRenderedSelection,
     ]);
     React.useImperativeHandle(forwardedRef, () => handle, [handle]);
-    useRegisterAiToolComponentRef(name, handle);
+    const registeredHandleRef = React.useRef(handle);
+    registeredHandleRef.current = handle;
+    useRegisterAiToolComponentRef(registeredHandleRef);
     const selectedTrendParent = TREND_PARENT_OPTIONS.find(({ value }) => value === trendParent)!;
     const trendTaxonomy = React.useMemo<OverallTrendQueryTaxonomy>(() => ({
         parent: {

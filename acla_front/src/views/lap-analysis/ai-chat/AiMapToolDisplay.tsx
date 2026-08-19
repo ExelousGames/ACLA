@@ -1,5 +1,7 @@
 import React, { useMemo } from 'react';
 import { CircuitMapBinSample, CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
+import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
+import { isOverlayRecord } from 'views/floating-chat/overlay-renderer-validation';
 
 export type AiMapSectionSelection = {
     start?: number;
@@ -195,6 +197,20 @@ const AiMapToolDisplay: React.FC<AiMapToolDisplayProps> = ({ display, surface = 
             </div>
         </div>
     );
+};
+
+export const aiMapToolDisplayOverlayRenderer: AiOverlayRenderer<AiMapDisplayPayload> = {
+    componentType: 'map',
+    validateSnapshot: (snapshot): snapshot is AiMapDisplayPayload => (
+        isOverlayRecord(snapshot) && (snapshot.status === 'ready' || snapshot.status === 'unavailable')
+    ),
+    renderOverlay: (snapshot, status) => status === 'folded'
+        ? snapshot.title || snapshot.map?.circuit_name || 'Circuit map'
+        : <AiMapToolDisplay display={snapshot} surface="pill" />,
+    dimensions: {
+        expanded: { width: 420, height: 260 },
+        folded: { width: 300, height: 58 },
+    },
 };
 
 export default AiMapToolDisplay;

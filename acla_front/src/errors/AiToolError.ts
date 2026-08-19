@@ -101,6 +101,10 @@ export const serializeErrorCause = (cause: unknown): SerializedErrorCause => (
     serializeCause(cause, 0, new Set())
 );
 
+export const serializeError = (error: Error): SerializedError => (
+    serializeCause(error, 0, new Set()) as SerializedError
+);
+
 export class AiToolError extends Error {
     override name = 'AiToolError';
 

@@ -35,6 +35,7 @@ interface InterpolatedDriverPoint {
 }
 
 const POSITION_EPSILON = 1e-9;
+const FINISH_LINE_BACKWARD_JUMP = 0.5;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -127,19 +128,33 @@ const buildDriverPoints = (
         normalizedPosition: number;
         sourceIndex: number;
     }> = [];
+    let previousTimeMs: number | undefined;
+    let previousPosition: number | undefined;
     for (let sourceIndex = 0; sourceIndex < baselineRecords.length; sourceIndex += 1) {
         const row = baselineRecords[sourceIndex];
-        if (!isRecord(row)) return undefined;
+        if (!isRecord(row)) continue;
         const timeMs = finiteNumber(row.Graphics_current_time);
         const position = getDriverTrackPosition(row);
         if (
             timeMs === undefined
             || position === undefined
         ) {
-            return undefined;
+            continue;
+        }
+        if (previousPosition !== undefined && previousTimeMs !== undefined) {
+            const crossedFinishLine = previousPosition - position > FINISH_LINE_BACKWARD_JUMP;
+            if (
+                (position < previousPosition && !crossedFinishLine)
+                || (timeMs <= previousTimeMs && !crossedFinishLine)
+            ) {
+                continue;
+            }
         }
         rows.push({ row, timeMs, normalizedPosition: position, sourceIndex });
+        previousTimeMs = timeMs;
+        previousPosition = position;
     }
+    if (!rows.length) return undefined;
 
     const sequence = unwrapLapTelemetrySequence(
         rows.map((entry) => entry.timeMs),

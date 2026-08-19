@@ -11,6 +11,8 @@ const mockOverlayCreate = jest.fn();
 const mockOverlayDestroy = jest.fn<Promise<void>, [string]>(() => Promise.resolve());
 const mockOverlaySetEnabled = jest.fn<Promise<void>, [boolean]>(() => Promise.resolve());
 const mockFindComponentRef = jest.fn(() => null);
+const mockRegisterComponentRef = jest.fn();
+const mockUnregisterComponentRef = jest.fn();
 let mockRegisteredAiChatHandle: any;
 
 jest.mock('../use-voice-conversation', () => ({
@@ -51,11 +53,15 @@ jest.mock('contexts/AiToolComponentRefContext', () => {
     return {
         ...actual,
         useAiToolComponentRefs: () => ({
-            directory: { findComponentRef: mockFindComponentRef },
+            directory: {
+                findComponentRef: mockFindComponentRef,
+                registerComponentRef: mockRegisterComponentRef,
+                unregisterComponentRef: mockUnregisterComponentRef,
+            },
             revision: 0,
         }),
-        useRegisterAiToolComponentRef: (_name: string, handle: unknown) => {
-            mockRegisteredAiChatHandle = handle;
+        useRegisterAiToolComponentRef: (ref: { current: unknown }) => {
+            mockRegisteredAiChatHandle = ref.current;
         },
     };
 });
@@ -94,12 +100,6 @@ jest.mock('utils/environment', () => ({
 }));
 
 jest.mock('views/floating-chat/overlay-display-client', () => ({
-    overlayDisplayClient: {
-        forPresentation: () => ({
-            upsert: jest.fn(() => Promise.resolve('instance-1')),
-            exit: jest.fn(() => Promise.resolve()),
-        }),
-    },
     overlaySessionClient: {
         available: () => true,
         current: () => null,
@@ -159,6 +159,8 @@ describe('AiChat conversation lifecycle', () => {
         mockOverlayDestroy.mockReset();
         mockOverlayDestroy.mockResolvedValue(undefined);
         mockOverlaySetEnabled.mockClear();
+        mockRegisterComponentRef.mockClear();
+        mockUnregisterComponentRef.mockClear();
         mockFindComponentRef.mockClear();
         mockRegisteredAiChatHandle = undefined;
         delete (window as any).electronAPI;
