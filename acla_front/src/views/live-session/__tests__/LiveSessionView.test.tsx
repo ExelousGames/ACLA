@@ -22,6 +22,12 @@ jest.mock('contexts/DesktopGameContext', () => ({
 }));
 
 jest.mock('../LiveTelemetryWorkspace', () => () => <div>Live workspace</div>);
+jest.mock('views/lap-analysis/LiveSessionDetectionManager', () => () => (
+    <div data-testid="live-session-detection-manager" />
+));
+jest.mock('views/lap-analysis/liveAnalysisSessionRecording', () => ({ recorderHostId }: { recorderHostId?: string }) => (
+    <div data-testid="live-analysis-session-recording" data-host={recorderHostId} />
+));
 
 import { useDesktopGame } from 'contexts/DesktopGameContext';
 import LiveSessionView from '../LiveSessionView';
@@ -343,6 +349,19 @@ describe('LiveSessionView', () => {
         expect(startCollection).toHaveBeenCalledWith({ timeoutMs: 12_000 });
         expect(operation.statuses).toHaveLength(0);
         await expect(operation.result).rejects.toBe(failure);
+    });
+
+    it('owns the live-session detection and recording runtimes', () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+
+        renderView(createRuntime('acc'));
+
+        expect(screen.getByTestId('live-session-detection-manager')).toBeInTheDocument();
+        expect(screen.getByTestId('live-analysis-session-recording')).toHaveAttribute(
+            'data-host',
+            'live-session-recorder-host',
+        );
+        expect(screen.getByTestId('live-session-recorder-host')).toBeInTheDocument();
     });
 
     it('exposes only the terminal baseline result without progress statuses', async () => {

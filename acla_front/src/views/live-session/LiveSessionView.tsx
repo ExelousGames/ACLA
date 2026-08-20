@@ -33,6 +33,8 @@ import { openAnalysisResultsVisualization } from 'views/lap-analysis/visualizati
 import { LiveSessionContext } from './LiveSessionContext';
 import LiveSessionGameStatus, { LIVE_SESSION_GAME_LABELS } from './LiveSessionGameStatus';
 import LiveTelemetryWorkspace from './LiveTelemetryWorkspace';
+import LiveAnalysisSessionRecording from 'views/lap-analysis/liveAnalysisSessionRecording';
+import LiveSessionDetectionManager from 'views/lap-analysis/LiveSessionDetectionManager';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import type {
@@ -394,6 +396,8 @@ const LiveSessionView = ({ name }: { name: string }) => {
 
     return (
         <section className="live-session-view" aria-label="Live Session">
+            <LiveSessionDetectionManager />
+            <LiveAnalysisSessionRecording recorderHostId={LIVE_SESSION_RECORDER_HOST_ID} />
             {sessionGame === null ? (
                 <div className="live-session-waiting" data-testid="live-session-gate">
                     <LiveSessionGameStatus />

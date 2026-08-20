@@ -28,26 +28,18 @@ jest.mock('./DashboardAssistant', () => ({ activeDashboardTab }: { activeDashboa
 jest.mock('views/live-session/LiveSessionContext', () => ({
     LiveSessionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
-jest.mock('views/lap-analysis/LiveSessionDetectionManager', () => () => null);
-jest.mock('views/lap-analysis/liveAnalysisSessionRecording', () => ({ recorderHostId }: { recorderHostId?: string }) => (
-    <div data-testid="recorder-runtime" data-host={recorderHostId} />
-));
-jest.mock('views/live-session/LiveSessionView', () => ({
-    LIVE_SESSION_RECORDER_HOST_ID: 'live-session-recorder-host',
-}));
 
 import MainDashboard from './MainDashboard';
 
 describe('MainDashboard desktop composition', () => {
     beforeEach(() => mockUseEnvironment.mockReturnValue('electron'));
 
-    it('selects Live Session by default and keeps one dashboard-level assistant and recorder runtime', () => {
+    it('selects Live Session by default and keeps one dashboard-level assistant', () => {
         render(<MainDashboard onTaskCreated={jest.fn()} />);
 
         expect(screen.getByTestId('active-dashboard-tab')).toHaveTextContent('liveSession');
         expect(screen.getAllByLabelText('AI Assistant')).toHaveLength(1);
         expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-active-tab', 'liveSession');
-        expect(screen.getByTestId('recorder-runtime')).toHaveAttribute('data-host', 'live-session-recorder-host');
     });
 
     it('tracks the active named owner without remounting the dashboard assistant', () => {
