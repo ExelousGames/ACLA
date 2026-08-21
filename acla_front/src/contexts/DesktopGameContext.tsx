@@ -1,7 +1,10 @@
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
 import { useEnvironment } from './EnvironmentContext';
 
-export type DesktopGame = 'ac' | 'acc' | 'iracing';
+export const DESKTOP_GAMES = ['acc', 'ac', 'iracing'] as const;
+export type DesktopGame = (typeof DESKTOP_GAMES)[number];
+export const isDesktopGame = (value: unknown): value is DesktopGame =>
+    typeof value === 'string' && (DESKTOP_GAMES as readonly string[]).includes(value);
 export type DesktopGameDetectionStatus =
     | 'checking'
     | 'detected'

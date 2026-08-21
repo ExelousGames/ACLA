@@ -1,19 +1,34 @@
 import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
-import { PythonShellOptions } from 'services/pythonService';
-import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
-import { getNextRecordingState, RecordingEvent, RecordingState } from 'views/lap-analysis/recording-state';
-import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
+import { getNextRecordingState, RecordingEvent, RecordingState, StopReason } from 'views/lap-analysis/recording-state';
+import {
+    detectLiveSessionType,
+    getTelemetryCar,
+    getTelemetryLap,
+    getTelemetryPosition,
+    getTelemetryTrack,
+} from 'views/lap-analysis/session-intelligence/live-performance-analyst';
+import {
+    getCornersForTrack,
+    getNextCorner as getNextTrackCorner,
+} from 'views/lap-analysis/session-intelligence/track-corners';
+import type { CornerLookahead } from 'views/lap-analysis/session-intelligence/types';
 import {
     LocalTelemetryFileValidation,
     LiveRecordingMetadata,
     LiveSessionRecorderControl,
     LiveSessionRestorationStatus,
     LiveSessionRuntime,
+    LiveSessionSnapshot,
     LiveSessionStaticData,
     LiveTelemetry,
     PERSISTED_LIVE_SESSION_DRAFT_VERSION,
+    RecordedFileReadEvent,
+    RecordingStartResult,
+    RecordingStopResult,
+    RecordingViewUpdate,
+    StandardTelemetrySample,
 } from './live-session-types';
 import {
     getPersistedLiveSessionDraft,
@@ -29,28 +44,10 @@ import {
 } from './live-session-analysis-results';
 import { normalizeAnalysisResultsData } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
 
-const TELEMETRY_WRITE_TIMEOUT_MS = 6000;
-const LIVE_TELEMETRY_UI_UPDATE_MS = 100;
-const LIVE_SAMPLE_COUNT_UI_UPDATE_MS = 250;
-
 const RESTORED_RECORDING_ERROR = 'The local recording file is missing or unreadable. Upload is unavailable; discard this draft to clear it.';
 
 const isAbsoluteFilePath = (filePath: string): boolean =>
     /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(filePath);
-
-type TelemetryWriterEvent = {
-    status?: string;
-    request_id?: string;
-    message?: string;
-    written?: number;
-    [key: string]: unknown;
-};
-
-type PendingTelemetryWrite = {
-    resolve: () => void;
-    reject: (error: Error) => void;
-    timeoutId: number;
-};
 
 const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
@@ -59,35 +56,54 @@ const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
 };
 
 const missingProvider = () => console.warn('No provider for LiveSessionContext');
+const getEmptyLiveSessionSnapshot = (): LiveSessionSnapshot => ({
+    status: 'empty',
+    track: '',
+    car: '',
+    current_lap: 0,
+    completed_laps: 0,
+    normalized_position: 0,
+    sample_count: 0,
+    live_session_type: 'unknown',
+    completed_lap_count: 0,
+});
 
 const defaultRuntime: LiveSessionRuntime = {
     sessionGame: null,
     currentTelemetry: {},
+    currentTelemetrySampleIndex: -1,
     telemetryStatus: null,
     staticData: {},
     recordingState: RecordingState.CHECKING,
     recordingMetadata: null,
     recordingFileKey: null,
+    recordingActive: false,
+    recordingGame: null,
     recordedSampleCount: 0,
     restorationStatus: 'idle',
     restorationError: null,
     recordingFileValidation: null,
-    sessionIntelligence: new SessionIntelligence(),
     recorderControl: null,
     analysisResultPages: [],
     activeAnalysisResultPageId: null,
+    getNextCorner: () => null,
+    getLiveSessionSnapshot: getEmptyLiveSessionSnapshot,
     startLiveSession: missingProvider,
     endLiveSession: missingProvider,
-    setCurrentTelemetry: missingProvider,
-    setStaticData: missingProvider,
     setRecordingMetadata: missingProvider,
     transitionRecordingState: missingProvider,
-    appendTelemetrySample: async () => missingProvider(),
-    readRecordedTelemetry: async () => {
+    startRecordingSession: async () => {
         missingProvider();
-        return [];
+        return { ok: false, error: { type: 'unsupported-recording-game', message: 'Recording is unavailable.' } };
     },
-    finalizeRecordingWrites: async () => missingProvider(),
+    stopRecordingSession: async () => {
+        missingProvider();
+        return null;
+    },
+    streamRecordedTelemetry: async () => {
+        missingProvider();
+        return { rowCount: 0, totalBytes: 0 };
+    },
     clearRecordingSession: missingProvider,
     clearPersistedDraft: missingProvider,
     registerRecorderControl: missingProvider,
@@ -117,11 +133,14 @@ export const LiveSessionProvider = ({
     const normalizedOwnerEmail = normalizeLiveSessionOwnerEmail(ownerEmail);
     const [sessionGame, setSessionGame] = useState<DesktopGame | null>(null);
     const [currentTelemetry, setCommittedTelemetry] = useState<LiveTelemetry>({});
+    const [currentTelemetrySampleIndex, setCurrentTelemetrySampleIndex] = useState(-1);
     const [telemetryStatus, setTelemetryStatus] = useState<ACC_STATUS | null>(null);
     const [staticData, setStaticDataState] = useState<LiveSessionStaticData>({});
     const [recordingState, setRecordingState] = useState(RecordingState.CHECKING);
     const [recordingMetadata, setRecordingMetadataState] = useState<LiveRecordingMetadata | null>(null);
     const [recordingFileKey, setRecordingFileKeyState] = useState<string | null>(null);
+    const [recordingActive, setRecordingActive] = useState(false);
+    const [recordingGame, setRecordingGame] = useState<DesktopGame | null>(null);
     const [recordedSampleCount, setRecordedSampleCount] = useState(0);
     const [restorationStatus, setRestorationStatus] = useState<LiveSessionRestorationStatus>(
         normalizedOwnerEmail ? 'restoring' : 'idle',
@@ -132,7 +151,6 @@ export const LiveSessionProvider = ({
     const [analysisResultPages, setAnalysisResultPages] = useState<LiveSessionAnalysisResultPage[]>([]);
     const [activeAnalysisResultPageId, setActiveAnalysisResultPageId] = useState<string | null>(null);
 
-    const sessionIntelligenceRef = useRef(new SessionIntelligence());
     const sessionGameRef = useRef<DesktopGame | null>(null);
     const ownerEmailRef = useRef(normalizedOwnerEmail);
     const recordingStateRef = useRef(RecordingState.CHECKING);
@@ -140,17 +158,14 @@ export const LiveSessionProvider = ({
     const sessionGenerationRef = useRef(0);
     const latestTelemetryRef = useRef<LiveTelemetry>({});
     const committedTelemetryRef = useRef<LiveTelemetry>({});
-    const telemetryFlushTimeoutRef = useRef<number | null>(null);
+    const latestTelemetrySampleIndexRef = useRef(-1);
+    const committedTelemetrySampleIndexRef = useRef(-1);
     const recordingFileKeyRef = useRef<string | null>(null);
-    const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
-    const telemetryWriterSessionRef = useRef<PythonStreamSession<TelemetryWriterEvent> | null>(null);
-    const telemetryWriterCleanupRef = useRef<(() => void) | null>(null);
-    const telemetryWriterFileKeyRef = useRef<string | null>(null);
-    const telemetryWriterPendingRef = useRef<Map<string, PendingTelemetryWrite>>(new Map());
-    const telemetryWriterSequenceRef = useRef(0);
+    const recordingActiveRef = useRef(false);
+    const recordingGameRef = useRef<DesktopGame | null>(null);
+    const recordingStartPromiseRef = useRef<Promise<RecordingStartResult> | null>(null);
+    const recordingStopPromiseRef = useRef<Promise<RecordingStopResult | null> | null>(null);
     const sampleCountRef = useRef(0);
-    const committedSampleCountRef = useRef(0);
-    const sampleCountFlushTimeoutRef = useRef<number | null>(null);
     const analysisResultPagesRef = useRef<LiveSessionAnalysisResultPage[]>([]);
     const activeAnalysisResultPageIdRef = useRef<string | null>(null);
     const persistDraftRef = useRef<() => void>(() => undefined);
@@ -246,37 +261,48 @@ export const LiveSessionProvider = ({
         clearAnalysisResultPages();
     }, [clearAnalysisResultPages]);
 
-    const flushCurrentTelemetry = useCallback(() => {
-        if (telemetryFlushTimeoutRef.current !== null) {
-            window.clearTimeout(telemetryFlushTimeoutRef.current);
-            telemetryFlushTimeoutRef.current = null;
-        }
-
-        const nextTelemetry = latestTelemetryRef.current && typeof latestTelemetryRef.current === 'object'
-            ? latestTelemetryRef.current
-            : {};
-        if (committedTelemetryRef.current === nextTelemetry) return;
-        if (Object.keys(nextTelemetry).length === 0 && Object.keys(committedTelemetryRef.current).length === 0) return;
-
-        committedTelemetryRef.current = nextTelemetry;
-        setCommittedTelemetry(nextTelemetry);
+    const getLatestTelemetrySample = useCallback(() => {
+        const latest = latestTelemetryRef.current;
+        return latest && Object.keys(latest).length > 0 ? latest : null;
     }, []);
 
-    const setCurrentTelemetry = useCallback((data: LiveTelemetry) => {
-        const nextTelemetry = data && typeof data === 'object' ? data : {};
-        latestTelemetryRef.current = nextTelemetry;
+    const getLiveSessionSnapshot = useCallback((): LiveSessionSnapshot => {
+        const latest = getLatestTelemetrySample();
+        if (!latest) return getEmptyLiveSessionSnapshot();
 
-        if (telemetryFlushTimeoutRef.current === null) {
-            telemetryFlushTimeoutRef.current = window.setTimeout(flushCurrentTelemetry, LIVE_TELEMETRY_UI_UPDATE_MS);
-        }
-        if (Object.keys(nextTelemetry).length > 0) {
-            sessionIntelligenceRef.current.tick(nextTelemetry);
-        }
-    }, [flushCurrentTelemetry]);
+        const currentLap = getTelemetryLap(latest);
+        return {
+            status: 'ready',
+            track: getTelemetryTrack(latest),
+            car: getTelemetryCar(latest),
+            current_lap: currentLap,
+            completed_laps: currentLap,
+            normalized_position: getTelemetryPosition(latest) ?? 0,
+            sample_count: sampleCountRef.current,
+            live_session_type: detectLiveSessionType(latest),
+            completed_lap_count: currentLap,
+        };
+    }, [getLatestTelemetrySample]);
 
-    const setStaticData = useCallback((data: LiveSessionStaticData) => {
-        setStaticDataState(data && typeof data === 'object' ? data : {});
-    }, []);
+    const getNextCorner = useCallback((): CornerLookahead | null => {
+        const latest = getLatestTelemetrySample();
+        if (!latest) return null;
+        const currentPosition = getTelemetryPosition(latest) ?? 0;
+        const corner = getNextTrackCorner(
+            getCornersForTrack(getTelemetryTrack(latest)),
+            currentPosition,
+        );
+        if (!corner) return null;
+
+        const distanceAhead = corner.from > currentPosition
+            ? corner.from - currentPosition
+            : 1.0 - currentPosition + corner.from;
+        return {
+            name: corner.name,
+            trackPosition: corner.from,
+            distanceAhead,
+        };
+    }, [getLatestTelemetrySample]);
 
     const setRecordingMetadata = useCallback((metadata: LiveRecordingMetadata | null) => {
         recordingMetadataRef.current = metadata;
@@ -298,303 +324,241 @@ export const LiveSessionProvider = ({
         persistDraftRef.current();
     }, []);
 
-    const flushSampleCount = useCallback(() => {
-        if (sampleCountFlushTimeoutRef.current !== null) {
-            window.clearTimeout(sampleCountFlushTimeoutRef.current);
-            sampleCountFlushTimeoutRef.current = null;
-        }
-        if (committedSampleCountRef.current === sampleCountRef.current) return;
-        committedSampleCountRef.current = sampleCountRef.current;
-        setRecordedSampleCount(sampleCountRef.current);
-    }, []);
-
-    const incrementSampleCount = useCallback(() => {
-        sampleCountRef.current += 1;
-        if (sampleCountFlushTimeoutRef.current === null) {
-            sampleCountFlushTimeoutRef.current = window.setTimeout(flushSampleCount, LIVE_SAMPLE_COUNT_UI_UPDATE_MS);
-        }
-    }, [flushSampleCount]);
-
     const resetSampleCount = useCallback(() => {
-        if (sampleCountFlushTimeoutRef.current !== null) {
-            window.clearTimeout(sampleCountFlushTimeoutRef.current);
-            sampleCountFlushTimeoutRef.current = null;
-        }
         sampleCountRef.current = 0;
-        committedSampleCountRef.current = 0;
         setRecordedSampleCount(0);
     }, []);
-
-    const disposeTelemetryWriter = useCallback(async ({ force = false }: { force?: boolean } = {}) => {
-        telemetryWriterCleanupRef.current?.();
-        telemetryWriterCleanupRef.current = null;
-        const session = telemetryWriterSessionRef.current;
-        telemetryWriterSessionRef.current = null;
-        telemetryWriterFileKeyRef.current = null;
-
-        for (const [requestId, pending] of Array.from(telemetryWriterPendingRef.current.entries())) {
-            telemetryWriterPendingRef.current.delete(requestId);
-            window.clearTimeout(pending.timeoutId);
-            pending.reject(new Error('Telemetry writer disposed'));
+    const applyRecordingTerminal = useCallback((result: RecordingStopResult) => {
+        if (!result || (recordingGameRef.current && result.game !== recordingGameRef.current)) return;
+        recordingActiveRef.current = false;
+        recordingGameRef.current = null;
+        setRecordingActive(false);
+        setRecordingGame(null);
+        if (typeof result.filePath === 'string' && isAbsoluteFilePath(result.filePath)) {
+            setRecordingFileKey(result.filePath);
         }
-
-        if (session) {
-            try {
-                await session.dispose({ force });
-            } catch (error) {
-                console.warn('Failed to dispose telemetry writer session', error);
-            }
+        if (typeof result.writtenSamples === 'number' && Number.isSafeInteger(result.writtenSamples)) {
+            sampleCountRef.current = result.writtenSamples;
+            setRecordedSampleCount(result.writtenSamples);
         }
-    }, []);
+        const hasPublishedFile = Boolean(result.filePath || recordingFileKeyRef.current);
+        const nextState = hasPublishedFile ? RecordingState.UPLOAD_READY : RecordingState.READY;
+        recordingStateRef.current = nextState;
+        setRecordingState(nextState);
+        persistDraftRef.current();
+    }, [setRecordingFileKey]);
 
-    const handleTelemetryWriterEvent = useCallback((event: PythonStreamEvent<TelemetryWriterEvent>) => {
-        if (!event) return;
-        const requestId = typeof event.request_id === 'string' ? event.request_id : undefined;
-        const pending = requestId ? telemetryWriterPendingRef.current.get(requestId) : undefined;
-
-        if (event.status === 'ok' && requestId && pending) {
-            telemetryWriterPendingRef.current.delete(requestId);
-            pending.resolve();
-            return;
-        }
-        if (event.status === 'error') {
-            const error = new Error(typeof event.message === 'string' ? event.message : 'Telemetry writer error');
-            if (requestId && pending) {
-                telemetryWriterPendingRef.current.delete(requestId);
-                pending.reject(error);
-            } else {
-                for (const [pendingId, item] of Array.from(telemetryWriterPendingRef.current.entries())) {
-                    telemetryWriterPendingRef.current.delete(pendingId);
-                    item.reject(error);
-                }
-            }
-            return;
-        }
-        if (event.status === 'shutdown') {
-            if (requestId && pending) {
-                telemetryWriterPendingRef.current.delete(requestId);
-                pending.resolve();
-            }
-            void disposeTelemetryWriter({ force: true });
-        }
-    }, [disposeTelemetryWriter]);
-
-    const ensureTelemetryWriter = useCallback(async (fileKey: string, sessionGeneration: number) => {
-        if (telemetryWriterSessionRef.current && telemetryWriterFileKeyRef.current === fileKey) {
-            await telemetryWriterSessionRef.current.waitUntilReady();
-            return telemetryWriterSessionRef.current;
-        }
-
-        await disposeTelemetryWriter({ force: true });
-        try {
-            const session = await createPythonStreamSession<TelemetryWriterEvent>({
-                scriptName: 'append_telemetry_data.py',
-                pythonOptions: {
-                    mode: 'text',
-                    pythonOptions: ['-u'],
-                    scriptPath: 'src/py-scripts',
-                    args: [fileKey],
-                },
-                readyTimeoutMs: 8000,
+    const startRecordingSession = useCallback(async (game: DesktopGame): Promise<RecordingStartResult> => {
+        if (sessionGameRef.current !== game) throw new Error('Recording game must match the active live session.');
+        if (recordingActiveRef.current) throw new Error('A recording session is already active.');
+        if (typeof window.electronAPI?.startRecordingSession !== 'function') {
+            return Promise.resolve({
+                ok: false,
+                error: { type: 'unsupported-recording-game', message: 'Desktop recording is unavailable.' },
             });
-            if (
-                sessionGeneration !== sessionGenerationRef.current
-                || sessionGameRef.current === null
-            ) {
-                await session.dispose({ force: true });
-                throw new Error('Live session ended');
-            }
-            telemetryWriterSessionRef.current = session;
-            telemetryWriterFileKeyRef.current = fileKey;
-            telemetryWriterCleanupRef.current = session.onMessage(handleTelemetryWriterEvent);
-            await session.waitUntilReady();
-            return session;
-        } catch (error) {
-            await disposeTelemetryWriter({ force: true });
-            throw error;
         }
-    }, [disposeTelemetryWriter, handleTelemetryWriterEvent]);
+        recordingActiveRef.current = true;
+        recordingGameRef.current = game;
+        setRecordingActive(true);
+        setRecordingGame(game);
+        latestTelemetrySampleIndexRef.current = -1;
+        committedTelemetrySampleIndexRef.current = -1;
+        setCurrentTelemetrySampleIndex(-1);
 
-    const finalizeRecordingWrites = useCallback(async () => {
-        try {
-            await writeQueueRef.current;
-        } catch (error) {
-            console.warn('Telemetry write queue rejected during finalization', error);
-        } finally {
-            writeQueueRef.current = Promise.resolve();
-        }
-        flushSampleCount();
-        await disposeTelemetryWriter({ force: false });
-    }, [disposeTelemetryWriter, flushSampleCount]);
-
-    const appendTelemetrySample = useCallback(async (data: LiveTelemetry) => {
-        const sessionGeneration = sessionGenerationRef.current;
-        const enqueueWrite = async () => {
-            if (
-                sessionGeneration !== sessionGenerationRef.current
-                || sessionGameRef.current === null
-            ) {
-                return;
-            }
-            let fileKey = recordingFileKeyRef.current;
-            if (!fileKey) {
-                const created = await window.electronAPI.writeTempFile({
-                    content: '',
-                    prefix: 'telemetry_live',
-                    extension: '.jsonl',
-                });
-                if (!created.success || !created.path || !isAbsoluteFilePath(created.path)) {
-                    throw new Error(created.error || 'Unable to create persistent telemetry file');
+        const startPromise = Promise.resolve()
+            .then(() => window.electronAPI.startRecordingSession({ game }))
+            .then((result) => {
+                if (!result.ok) {
+                    recordingActiveRef.current = false;
+                    recordingGameRef.current = null;
+                    setRecordingActive(false);
+                    setRecordingGame(null);
+                    return result;
                 }
-                fileKey = created.path;
-                setRecordingFileKey(fileKey);
+                if (result.game !== game || !isAbsoluteFilePath(result.filePath)) {
+                    throw new Error('Recording startup returned mismatched session data.');
+                }
+                setRecordingFileKey(result.filePath);
                 resetSampleCount();
-            }
-
-            const session = await ensureTelemetryWriter(fileKey, sessionGeneration);
-            if (
-                sessionGeneration !== sessionGenerationRef.current
-                || sessionGameRef.current === null
-            ) {
-                return;
-            }
-            const requestId = `telemetry-append-${Date.now()}-${++telemetryWriterSequenceRef.current}`;
-            let resolveAck!: () => void;
-            let rejectAck!: (error: Error) => void;
-            const ackPromise = new Promise<void>((resolve, reject) => {
-                resolveAck = resolve;
-                rejectAck = reject;
-            });
-            const timeoutId = window.setTimeout(() => {
-                const pending = telemetryWriterPendingRef.current.get(requestId);
-                if (pending) {
-                    telemetryWriterPendingRef.current.delete(requestId);
-                    pending.reject(new Error('Telemetry writer append timed out'));
+                transitionRecordingState({ type: 'recordingStarted' });
+                return result;
+            })
+            .catch((error) => {
+                recordingActiveRef.current = false;
+                recordingGameRef.current = null;
+                setRecordingActive(false);
+                setRecordingGame(null);
+                throw error;
+            })
+            .finally(() => {
+                if (recordingStartPromiseRef.current === startPromise) {
+                    recordingStartPromiseRef.current = null;
                 }
-            }, TELEMETRY_WRITE_TIMEOUT_MS);
-
-            telemetryWriterPendingRef.current.set(requestId, {
-                resolve: () => {
-                    window.clearTimeout(timeoutId);
-                    resolveAck();
-                },
-                reject: (error) => {
-                    window.clearTimeout(timeoutId);
-                    rejectAck(error);
-                },
-                timeoutId,
             });
+        recordingStartPromiseRef.current = startPromise;
+        return startPromise;
+    }, [resetSampleCount, setRecordingFileKey, transitionRecordingState]);
 
-            try {
-                await session.send('append', { data }, requestId);
-                await ackPromise;
-                incrementSampleCount();
-            } catch (error) {
-                const pending = telemetryWriterPendingRef.current.get(requestId);
-                if (pending) {
-                    telemetryWriterPendingRef.current.delete(requestId);
-                    pending.reject(error instanceof Error ? error : new Error(String(error)));
+    const stopRecordingSession = useCallback(async (reason: StopReason = 'manual'): Promise<RecordingStopResult | null> => {
+        if (recordingStopPromiseRef.current) return recordingStopPromiseRef.current;
+        const startPromise = recordingStartPromiseRef.current;
+        if (!recordingActiveRef.current && !startPromise) return null;
+        if (typeof window.electronAPI?.stopRecordingSession !== 'function') {
+            throw new Error('Desktop recording stop is unavailable.');
+        }
+        recordingStopPromiseRef.current = Promise.resolve(startPromise)
+            .catch(() => null)
+            .then(() => {
+                if (!recordingActiveRef.current) return null;
+                return window.electronAPI.stopRecordingSession();
+            })
+            .then((result) => {
+                if (!result) return null;
+                applyRecordingTerminal(result);
+                if (reason === 'error' && !recordingFileKeyRef.current) {
+                    transitionRecordingState({ type: 'recordingStopped', reason: 'error' });
+                }
+                return result;
+            })
+            .catch((error) => {
+                const game = recordingGameRef.current;
+                if (game) {
+                    applyRecordingTerminal({
+                        game,
+                        error: error instanceof Error ? error.message : String(error),
+                    });
                 }
                 throw error;
-            }
-        };
-
-        const nextWrite = writeQueueRef.current.then(enqueueWrite);
-        writeQueueRef.current = nextWrite.catch((error) => {
-            if (!(error instanceof Error && (
-                error.message === 'Telemetry writer disposed'
-                || error.message === 'Live session ended'
-            ))) {
-                console.error('Telemetry write failed', error);
-            }
-        });
-        return nextWrite.catch((error) => {
-            if (error instanceof Error && (
-                error.message === 'Telemetry writer disposed'
-                || error.message === 'Live session ended'
-            )) return;
-            throw error;
-        });
-    }, [ensureTelemetryWriter, incrementSampleCount, resetSampleCount, setRecordingFileKey]);
-
-    const readRecordedTelemetry = useCallback(async (
-        onProgress?: (read: number, total: number | null, bytesRead?: number, totalBytes?: number) => void,
-    ): Promise<LiveTelemetry[]> => {
-        const fileKey = recordingFileKeyRef.current;
-        if (!fileKey) return [];
-
-        try {
-            const options: PythonShellOptions = {
-                mode: 'text',
-                pythonOptions: ['-u'],
-                scriptPath: 'src/py-scripts',
-                args: [fileKey],
-            };
-            const { shellId } = await window.electronAPI.runPythonScript('read_telemetry_data.py', options);
-            return new Promise((resolve) => {
-                let completeReceived = false;
-                const allData: LiveTelemetry[] = [];
-                let removeMessageListener: (() => void) | null = null;
-                let removeEndListener: (() => void) | null = null;
-                const cleanup = () => {
-                    removeMessageListener?.();
-                    removeEndListener?.();
-                    removeMessageListener = null;
-                    removeEndListener = null;
-                };
-
-                removeMessageListener = window.electronAPI.onPythonMessage((returnedShellId: number, message: string) => {
-                    if (returnedShellId !== shellId) return;
-                    try {
-                        const parsed = JSON.parse(message);
-                        if (parsed.type === 'progress') {
-                            onProgress?.(parsed.read, parsed.total ?? null, parsed.bytesRead, parsed.totalBytes);
-                        } else if (parsed.type === 'chunk' && Array.isArray(parsed.data)) {
-                            allData.push(...parsed.data);
-                        } else if (parsed.type === 'complete') {
-                            completeReceived = true;
-                            if (Array.isArray(parsed.data)) allData.push(...parsed.data);
-                            resolve(allData);
-                            cleanup();
-                        }
-                    } catch {
-                        // Ignore non-JSON process output.
-                    }
-                });
-                removeEndListener = window.electronAPI.onPythonEnd('live-session-recording-reader', (returnedShellId: number) => {
-                    if (returnedShellId !== shellId || completeReceived) return;
-                    resolve(allData);
-                    cleanup();
-                });
+            })
+            .finally(() => {
+                recordingStopPromiseRef.current = null;
             });
-        } catch (error) {
-            console.error('Error reading live recording data', error);
-            return [];
+        return recordingStopPromiseRef.current;
+    }, [applyRecordingTerminal, transitionRecordingState]);
+
+    useEffect(() => {
+        const removeView = window.electronAPI?.onRecordingViewUpdate?.((update: RecordingViewUpdate) => {
+            if (update.game !== sessionGameRef.current) return;
+            const sampleIndex = update.sequence - 1;
+            latestTelemetryRef.current = update.sample;
+            committedTelemetryRef.current = update.sample;
+            latestTelemetrySampleIndexRef.current = sampleIndex;
+            committedTelemetrySampleIndexRef.current = sampleIndex;
+            setCommittedTelemetry(update.sample);
+            setCurrentTelemetrySampleIndex(sampleIndex);
+            setStaticDataState((previous) => ({
+                ...previous,
+                ...(typeof update.sample.Static_track === 'string'
+                    ? { Static_track: update.sample.Static_track }
+                    : {}),
+                ...(typeof update.sample.Static_car_model === 'string'
+                    ? { Static_car_model: update.sample.Static_car_model }
+                    : {}),
+            }));
+            sampleCountRef.current = update.committedCount;
+            setRecordedSampleCount(update.committedCount);
+        });
+        const removeEnded = window.electronAPI?.onRecordingSessionEnded?.((result: RecordingStopResult) => {
+            applyRecordingTerminal(result);
+        });
+        return () => {
+            removeView?.();
+            removeEnded?.();
+        };
+    }, [applyRecordingTerminal]);
+
+    const runRecordedFileRead = useCallback(async (
+        filePath: string,
+        game: DesktopGame,
+        purpose: 'validate' | 'consume',
+        onChunk?: (rows: StandardTelemetrySample[]) => void | Promise<void>,
+        onProgress?: (rowsRead: number, totalRows: number | null, bytesRead: number, totalBytes: number) => void,
+    ): Promise<{ rowCount: number; totalBytes: number }> => {
+        if (!window.electronAPI?.startRecordedFileRead || !window.electronAPI?.onRecordedFileReadEvent) {
+            throw new Error('Recorded-file reader is unavailable.');
         }
+        let readId: string | null = null;
+        const queued: RecordedFileReadEvent[] = [];
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            let removeListener: () => void = () => undefined;
+            const cleanup = () => removeListener();
+            const finishError = (error: Error) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(error);
+            };
+            const handleEvent = (event: RecordedFileReadEvent): void | Promise<void> => {
+                if (!readId) {
+                    queued.push(event);
+                    return;
+                }
+                if (event.readId !== readId || settled) return;
+                if (event.type === 'chunk') {
+                    try {
+                        return Promise.resolve(onChunk?.(event.rows)).catch((error) => {
+                            finishError(error instanceof Error ? error : new Error(String(error)));
+                            if (readId) void window.electronAPI.cancelRecordedFileRead?.(readId).catch(() => undefined);
+                        });
+                    } catch (error) {
+                        finishError(error instanceof Error ? error : new Error(String(error)));
+                        if (readId) void window.electronAPI.cancelRecordedFileRead?.(readId).catch(() => undefined);
+                        return;
+                    }
+                }
+                else if (event.type === 'progress') {
+                    onProgress?.(event.rowsRead, null, event.bytesRead, event.totalBytes);
+                } else if (event.type === 'complete') {
+                    settled = true;
+                    cleanup();
+                    resolve({ rowCount: event.rowCount, totalBytes: event.totalBytes });
+                } else if (event.type === 'error') {
+                    finishError(new Error(event.message));
+                }
+            };
+            removeListener = window.electronAPI.onRecordedFileReadEvent(handleEvent);
+            void window.electronAPI.startRecordedFileRead({ filePath, game, purpose }).then((result) => {
+                readId = result.readId;
+                for (const event of queued.splice(0)) void handleEvent(event);
+            }).catch((error) => finishError(error instanceof Error ? error : new Error(String(error))));
+        });
     }, []);
+
+    const streamRecordedTelemetry = useCallback(async (
+        onChunk: (rows: StandardTelemetrySample[]) => void | Promise<void>,
+        onProgress?: (rowsRead: number, totalRows: number | null, bytesRead: number, totalBytes: number) => void,
+    ) => {
+        const filePath = recordingFileKeyRef.current;
+        const game = sessionGameRef.current;
+        if (!filePath || !game) return { rowCount: 0, totalBytes: 0 };
+        if (recordingMetadataRef.current?.gameRecordedFrom !== game) {
+            throw new Error('Recorded-file game does not match the authoritative session metadata.');
+        }
+        return runRecordedFileRead(filePath, game, 'consume', onChunk, onProgress);
+    }, [runRecordedFileRead]);
 
     const clearRecordingSession = useCallback(() => {
         setRecordingFileKey(null);
         setRecordingMetadata(null);
         resetSampleCount();
-        writeQueueRef.current = Promise.resolve();
-        sessionIntelligenceRef.current.reset();
+        latestTelemetrySampleIndexRef.current = -1;
+        committedTelemetrySampleIndexRef.current = -1;
+        setCurrentTelemetrySampleIndex(-1);
         clearAnalysisResultPages();
-        void disposeTelemetryWriter({ force: true });
-    }, [clearAnalysisResultPages, disposeTelemetryWriter, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
+    }, [clearAnalysisResultPages, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
 
     const resetLiveSession = useCallback((nextGame: DesktopGame | null) => {
         sessionGenerationRef.current += 1;
         sessionGameRef.current = nextGame;
         setSessionGame(nextGame);
 
-        if (telemetryFlushTimeoutRef.current !== null) {
-            window.clearTimeout(telemetryFlushTimeoutRef.current);
-            telemetryFlushTimeoutRef.current = null;
-        }
         latestTelemetryRef.current = {};
         committedTelemetryRef.current = {};
+        latestTelemetrySampleIndexRef.current = -1;
+        committedTelemetrySampleIndexRef.current = -1;
         setCommittedTelemetry({});
+        setCurrentTelemetrySampleIndex(-1);
         setTelemetryStatus(null);
         setStaticDataState({});
         recordingStateRef.current = RecordingState.CHECKING;
@@ -602,94 +566,116 @@ export const LiveSessionProvider = ({
         setRecordingMetadata(null);
         setRecordingFileKey(null);
         resetSampleCount();
-        writeQueueRef.current = Promise.resolve();
-        sessionIntelligenceRef.current.reset();
         clearAnalysisResultPages();
         setRestorationError(null);
-        void disposeTelemetryWriter({ force: true });
-    }, [clearAnalysisResultPages, disposeTelemetryWriter, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
+    }, [clearAnalysisResultPages, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
 
     const startLiveSession = useCallback((game: DesktopGame) => {
-        if (sessionGameRef.current !== null) return;
-        draftPersistenceSuppressedRef.current = false;
-        resetLiveSession(game);
-        setRestorationStatus('not-found');
-    }, [resetLiveSession]);
+        if (sessionGameRef.current) return;
+        const beginSession = () => {
+            if (sessionGameRef.current) return;
+            draftPersistenceSuppressedRef.current = false;
+            resetLiveSession(game);
+            setRestorationStatus('not-found');
+        };
+        if (recordingActiveRef.current || recordingStopPromiseRef.current) {
+            void stopRecordingSession('complete').then(beginSession, beginSession);
+        } else {
+            beginSession();
+        }
+    }, [resetLiveSession, stopRecordingSession]);
 
     const endLiveSession = useCallback(() => {
-        resetLiveSession(null);
-        setRestorationStatus(normalizedOwnerEmail ? 'not-found' : 'idle');
-    }, [normalizedOwnerEmail, resetLiveSession]);
+        const finishSession = () => {
+            resetLiveSession(null);
+            setRestorationStatus(normalizedOwnerEmail ? 'not-found' : 'idle');
+        };
+        if (recordingActiveRef.current || recordingStopPromiseRef.current) {
+            void stopRecordingSession('complete').then(finishSession, finishSession);
+        } else {
+            finishSession();
+        }
+    }, [normalizedOwnerEmail, resetLiveSession, stopRecordingSession]);
 
     useEffect(() => {
         let cancelled = false;
         persistDraftRef.current();
-        ownerEmailRef.current = normalizedOwnerEmail;
-        draftPersistenceSuppressedRef.current = false;
-        resetLiveSession(null);
+        const initializeOwner = () => {
+            if (cancelled) return;
+            ownerEmailRef.current = normalizedOwnerEmail;
+            draftPersistenceSuppressedRef.current = false;
+            resetLiveSession(null);
 
-        if (!normalizedOwnerEmail) {
-            setRestorationStatus('idle');
-            return () => {
-                cancelled = true;
-            };
-        }
+            if (!normalizedOwnerEmail) {
+                setRestorationStatus('idle');
+                return;
+            }
 
-        setRestorationStatus('restoring');
-        const draft = getPersistedLiveSessionDraft(normalizedOwnerEmail);
-        if (!draft) {
-            setRestorationStatus('not-found');
-            return () => {
-                cancelled = true;
-            };
-        }
+            setRestorationStatus('restoring');
+            const draft = getPersistedLiveSessionDraft(normalizedOwnerEmail);
+            if (!draft) {
+                setRestorationStatus('not-found');
+                return;
+            }
 
-        const restoreDraft = async () => {
-            let validation: LocalTelemetryFileValidation;
-            try {
-                if (!window.electronAPI?.validateTelemetryFile) {
-                    throw new Error('Local telemetry validation is unavailable');
+            const restoreDraft = async () => {
+                let validation: LocalTelemetryFileValidation;
+                try {
+                    const summary = await runRecordedFileRead(
+                        draft.telemetryFilePath,
+                        draft.sessionGame,
+                        'validate',
+                    );
+                    validation = {
+                        exists: true,
+                        readable: true,
+                        hasData: summary.rowCount > 0,
+                        size: summary.totalBytes,
+                    };
+                } catch (error) {
+                    validation = {
+                        exists: false,
+                        readable: false,
+                        hasData: false,
+                        size: 0,
+                        error: error instanceof Error ? error.message : String(error),
+                    };
                 }
-                validation = await window.electronAPI.validateTelemetryFile(draft.telemetryFilePath);
-            } catch (error) {
-                validation = {
-                    exists: false,
-                    readable: false,
-                    hasData: false,
-                    size: 0,
-                    error: error instanceof Error ? error.message : String(error),
-                };
-            }
-            if (cancelled || ownerEmailRef.current !== normalizedOwnerEmail) return;
+                if (cancelled || ownerEmailRef.current !== normalizedOwnerEmail) return;
 
-            resetLiveSession(draft.sessionGame);
-            setRecordingMetadata(draft.recordingMetadata);
-            setRecordingFileKey(draft.telemetryFilePath);
-            sampleCountRef.current = draft.recordedSampleCount;
-            committedSampleCountRef.current = draft.recordedSampleCount;
-            setRecordedSampleCount(draft.recordedSampleCount);
-            setStaticDataState({
-                track: draft.recordingMetadata.mapName,
-                car_model: draft.recordingMetadata.carName,
-            });
-            recordingStateRef.current = RecordingState.UPLOAD_READY;
-            setRecordingState(RecordingState.UPLOAD_READY);
-            setRecordingFileValidation(validation);
+                resetLiveSession(draft.sessionGame);
+                setRecordingMetadata(draft.recordingMetadata);
+                setRecordingFileKey(draft.telemetryFilePath);
+                sampleCountRef.current = draft.recordedSampleCount;
+                setRecordedSampleCount(draft.recordedSampleCount);
+                setStaticDataState({
+                    Static_track: draft.recordingMetadata.mapName,
+                    Static_car_model: draft.recordingMetadata.carName,
+                });
+                recordingStateRef.current = RecordingState.UPLOAD_READY;
+                setRecordingState(RecordingState.UPLOAD_READY);
+                setRecordingFileValidation(validation);
 
-            if (!validation.exists || !validation.readable) {
-                setRestorationStatus('error');
-                setRestorationError(RESTORED_RECORDING_ERROR);
-            } else {
-                setRestorationStatus('restored');
-                setRestorationError(null);
-            }
+                if (!validation.exists || !validation.readable) {
+                    setRestorationStatus('error');
+                    setRestorationError(RESTORED_RECORDING_ERROR);
+                } else {
+                    setRestorationStatus('restored');
+                    setRestorationError(null);
+                }
+            };
+            void restoreDraft();
         };
 
-        void restoreDraft();
+        if (recordingActiveRef.current || recordingStopPromiseRef.current) {
+            void stopRecordingSession('complete').then(initializeOwner, initializeOwner);
+        } else {
+            initializeOwner();
+        }
         return () => {
             cancelled = true;
         };
-    }, [normalizedOwnerEmail, resetLiveSession, setRecordingFileKey, setRecordingMetadata]);
+    }, [normalizedOwnerEmail, resetLiveSession, runRecordedFileRead, setRecordingFileKey, setRecordingMetadata, stopRecordingSession]);
 
     useEffect(() => {
         persistCurrentDraft();
@@ -704,7 +690,7 @@ export const LiveSessionProvider = ({
 
     useEffect(() => {
         const nextStatus = normalizeAccStatus(
-            currentTelemetry?.Graphics_status ?? currentTelemetry?.Graphics?.status,
+            currentTelemetry?.Graphics_status,
         );
         if (Object.keys(currentTelemetry).length === 0) {
             setTelemetryStatus(null);
@@ -721,36 +707,36 @@ export const LiveSessionProvider = ({
 
     useEffect(() => () => {
         persistDraftRef.current();
-        if (telemetryFlushTimeoutRef.current !== null) window.clearTimeout(telemetryFlushTimeoutRef.current);
-        if (sampleCountFlushTimeoutRef.current !== null) window.clearTimeout(sampleCountFlushTimeoutRef.current);
-        void disposeTelemetryWriter({ force: true });
-    }, [disposeTelemetryWriter]);
+        if (recordingActiveRef.current) void stopRecordingSession('complete');
+    }, [stopRecordingSession]);
 
     const value = useMemo<LiveSessionRuntime>(() => ({
         sessionGame,
         currentTelemetry,
+        currentTelemetrySampleIndex,
         telemetryStatus,
         staticData,
         recordingState,
         recordingMetadata,
         recordingFileKey,
+        recordingActive,
+        recordingGame,
         recordedSampleCount,
         restorationStatus,
         restorationError,
         recordingFileValidation,
-        sessionIntelligence: sessionIntelligenceRef.current,
         recorderControl,
         analysisResultPages,
         activeAnalysisResultPageId,
+        getNextCorner,
+        getLiveSessionSnapshot,
         startLiveSession,
         endLiveSession,
-        setCurrentTelemetry,
-        setStaticData,
         setRecordingMetadata,
         transitionRecordingState,
-        appendTelemetrySample,
-        readRecordedTelemetry,
-        finalizeRecordingWrites,
+        startRecordingSession,
+        stopRecordingSession,
+        streamRecordedTelemetry,
         clearRecordingSession,
         clearPersistedDraft,
         registerRecorderControl,
@@ -758,13 +744,13 @@ export const LiveSessionProvider = ({
         selectAnalysisResultPage,
         updateActiveAnalysisResultPage,
     }), [
-        appendTelemetrySample,
         clearRecordingSession,
         clearPersistedDraft,
         currentTelemetry,
+        currentTelemetrySampleIndex,
         endLiveSession,
-        finalizeRecordingWrites,
-        readRecordedTelemetry,
+        getLiveSessionSnapshot,
+        getNextCorner,
         recordedSampleCount,
         restorationStatus,
         restorationError,
@@ -773,14 +759,17 @@ export const LiveSessionProvider = ({
         analysisResultPages,
         activeAnalysisResultPageId,
         recordingFileKey,
+        recordingActive,
+        recordingGame,
         recordingMetadata,
         recordingState,
         setRecordingMetadata,
-        setCurrentTelemetry,
-        setStaticData,
         sessionGame,
         startLiveSession,
+        startRecordingSession,
         staticData,
+        stopRecordingSession,
+        streamRecordedTelemetry,
         telemetryStatus,
         transitionRecordingState,
         registerRecorderControl,

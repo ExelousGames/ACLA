@@ -115,6 +115,10 @@ input {
     box-sizing: border-box;
 }
 
+.TabsContent[data-state="inactive"] {
+    display: none;
+}
+
 .Container {
     height: 100%;
     flex: 1;

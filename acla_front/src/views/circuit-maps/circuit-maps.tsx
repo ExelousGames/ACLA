@@ -1,11 +1,15 @@
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Box, Button, Flex, Heading, Select, Spinner, Text, TextField } from '@radix-ui/themes';
 import { CheckIcon, Cross2Icon, PauseIcon, PlayIcon, PlusIcon, ReloadIcon, TrashIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
 import { fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 'services/circuitMapService';
 import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
-import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import {
+    AI_TOOL_COMPONENT_NAMES,
+    useOptionalAiToolComponentSnapshot,
+} from 'contexts/AiToolComponentRefContext';
+import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
 import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CIRCUIT_MAP_GAMES,
@@ -68,7 +72,9 @@ const getSamplesForMode = (samplesByMode: CircuitMapSamplesByMode, mode: Circuit
 );
 
 const CircuitMaps = () => {
-    const liveSession = useContext(LiveSessionContext);
+    const liveSession = useOptionalAiToolComponentSnapshot<LiveSessionRuntime>(
+        AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+    );
     const { refreshCircuitMaps, upsertCachedCircuitMap } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
@@ -95,14 +101,17 @@ const CircuitMaps = () => {
     const [isSaving, setIsSaving] = useState(false);
 
     const isAcc = game === 'acc';
-    const isAccLive = isAcc && liveSession.telemetryStatus === ACC_STATUS.ACC_LIVE;
+    const isAccLive = isAcc && liveSession?.telemetryStatus === ACC_STATUS.ACC_LIVE;
     const sampleCount = countCircuitMapSamples(samplesByMode);
-    const currentAccTrackKey = getAccTrackKey(liveSession.currentTelemetry, liveSession.staticData);
+    const currentAccTrackKey = getAccTrackKey(
+        liveSession?.currentTelemetry ?? {},
+        liveSession?.staticData ?? {},
+    );
     const liveCapture = useMemo(() => (
-        isAccLive && liveSession.currentTelemetry && typeof liveSession.currentTelemetry === 'object'
+        isAccLive && liveSession?.currentTelemetry && typeof liveSession.currentTelemetry === 'object'
             ? extractAccCaptureSample(liveSession.currentTelemetry, liveSequenceRef.current)
             : null
-    ), [isAccLive, liveSession.currentTelemetry]);
+    ), [isAccLive, liveSession?.currentTelemetry]);
 
     const loadMapList = useCallback(async (nextGame: CircuitMapGame = game) => {
         setListState('loading');

@@ -141,6 +141,13 @@ type BaselineRecorderState = {
     completedRecord: BaselineLapRecord | null;
 };
 
+type BaselineTelemetryCache = {
+    identity: string;
+    lap: number | null;
+    rows: Record<string, any>[];
+    sampleKeys: Set<string>;
+};
+
 const BASELINE_START_POSITION_EPSILON = 0.005;
 const BASELINE_WRAP_THRESHOLD = 0.65;
 
@@ -165,6 +172,40 @@ const isTelemetrySample = (value: unknown): value is Record<string, any> => (
     && !Array.isArray(value)
     && Object.keys(value as Record<string, any>).length > 0
 );
+
+const createEmptyTelemetryCache = (): BaselineTelemetryCache => ({
+    identity: '',
+    lap: null,
+    rows: [],
+    sampleKeys: new Set(),
+});
+
+const cacheCurrentLapTelemetry = (
+    cache: BaselineTelemetryCache,
+    sample: Record<string, any>,
+): void => {
+    const position = getTelemetryPosition(sample);
+    if (position === undefined) return;
+
+    const lap = getTelemetryLap(sample);
+    const track = getTelemetryTrack(sample);
+    const car = getTelemetryCar(sample);
+    const identity = track && car ? `${track}:${car}` : '';
+    const identityChanged = Boolean(identity && cache.identity && cache.identity !== identity);
+    if (cache.lap !== lap || identityChanged) {
+        cache.identity = identity;
+        cache.lap = lap;
+        cache.rows = [];
+        cache.sampleKeys = new Set();
+    } else if (identity) {
+        cache.identity = identity;
+    }
+
+    const sampleKey = getSampleKey(sample, lap, position);
+    if (cache.sampleKeys.has(sampleKey)) return;
+    cache.sampleKeys.add(sampleKey);
+    cache.rows.push(cloneSample(sample));
+};
 
 const getUniqueTelemetryRows = (
     rows: readonly Record<string, any>[],
@@ -456,7 +497,6 @@ export const buildBaselineCollectionToolPayload = (
 const BaselineCollection = ({ name }: { name: string }) => {
     const {
         currentTelemetry,
-        sessionIntelligence,
         appendAnalysisResultPage,
     } = useContext(LiveSessionContext);
     const componentRefs = useAiToolComponentRefDirectory();
@@ -470,6 +510,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
     const tagRef = useRef<BaselineCollectionTag | null>(null);
     const lapRecordRef = useRef<BaselineLapRecord | null>(null);
     const recorderRef = useRef<BaselineRecorderState>(createEmptyRecorderState());
+    const telemetryCacheRef = useRef<BaselineTelemetryCache>(createEmptyTelemetryCache());
     const tagListenersRef = useRef<Set<(tag: BaselineCollectionTag | null) => void>>(new Set());
     const pendingCollectionOperationsRef = useRef<Set<PendingBaselineOperation>>(new Set());
     const analysisRequestRef = useRef<Promise<BaselineAnalysisPayload> | null>(null);
@@ -562,8 +603,10 @@ const BaselineCollection = ({ name }: { name: string }) => {
         const currentPosition = getTelemetryPosition(sample);
         if (currentPosition === undefined) return null;
 
+        cacheCurrentLapTelemetry(telemetryCacheRef.current, sample);
+
         const seeded = getContinuationRows(
-            sessionIntelligence.getRowsForLap(currentLap),
+            telemetryCacheRef.current.rows,
             currentLap,
             completedRecord.lap,
         );
@@ -584,7 +627,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
             car: getTelemetryCar(sample) || completedRecord.car,
             completedRecord: null,
         });
-    }, [beginCollection, sessionIntelligence]);
+    }, [beginCollection]);
 
     const subscribe = useCallback((listener: (tag: BaselineCollectionTag | null) => void) => {
         tagListenersRef.current.add(listener);
@@ -827,6 +870,10 @@ const BaselineCollection = ({ name }: { name: string }) => {
     useRegisterAiToolComponentRef(componentRef);
 
     useEffect(() => {
+        if (isTelemetrySample(currentTelemetry)) {
+            cacheCurrentLapTelemetry(telemetryCacheRef.current, currentTelemetry);
+        }
+
         if (!enabledRef.current || !enabled) return;
         if (!isTelemetrySample(currentTelemetry)) {
             publishTag(buildBaselineCollectionTag(buildRecorderSnapshot(recorderRef.current)));
@@ -913,6 +960,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
     useEffect(() => () => {
         enabledRef.current = false;
         recorderRef.current = createEmptyRecorderState();
+        telemetryCacheRef.current = createEmptyTelemetryCache();
         tagRef.current = null;
         lapRecordRef.current = null;
         settlePendingCollectionOperations(new BaselineAnalysisCancelledError(

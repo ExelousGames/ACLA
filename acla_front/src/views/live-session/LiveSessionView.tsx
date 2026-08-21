@@ -1,10 +1,10 @@
-import React, { useContext, useRef } from 'react';
+import React, { useContext, useLayoutEffect, useRef } from 'react';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import {
     AI_TOOL_COMPONENT_NAMES,
     AiToolComponentRefDirectory,
     ComponentRefUnavailableError,
-    NamedAiToolComponentHandle,
+    ObservableAiToolComponentHandle,
     awaitNamedComponentHandle,
     resolveNamedComponentHandle,
     useOptionalAiToolComponentRefDirectory,
@@ -30,14 +30,20 @@ import {
 } from 'views/lap-analysis/recorded-session-analysis';
 import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
 import { openAnalysisResultsVisualization } from 'views/lap-analysis/visualization/open-analysis-results-visualization';
-import { LiveSessionContext } from './LiveSessionContext';
+import { getVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
+import { LiveSessionContext, LiveSessionProvider } from './LiveSessionContext';
 import LiveSessionGameStatus, { LIVE_SESSION_GAME_LABELS } from './LiveSessionGameStatus';
 import LiveTelemetryWorkspace from './LiveTelemetryWorkspace';
 import LiveAnalysisSessionRecording from 'views/lap-analysis/liveAnalysisSessionRecording';
 import LiveSessionDetectionManager from 'views/lap-analysis/LiveSessionDetectionManager';
 import { RecordingState } from 'views/lap-analysis/recording-state';
-import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
+import { getTelemetryLap } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
+import {
+    createTelemetryScopeCollector,
+    reduceTelemetrySamples,
+} from 'views/lap-analysis/session-intelligence/telemetry-query';
 import type {
+    CornerLookahead,
     QueryResult,
     QueryScope,
     ReduceOp,
@@ -49,6 +55,9 @@ import type {
     TelemetryMetricReduce,
 } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import type { LiveSessionAnalysisResultPage } from './live-session-analysis-results';
+import type { LiveSessionRuntime, LiveSessionSnapshot } from './live-session-types';
+import type { LiveEventLogHandle } from './LiveEventLog';
+import type { EventSearchParams } from './event-log/EventLog';
 import {
     createAiToolOperation,
     createAiToolOperationFrom,
@@ -57,6 +66,7 @@ import {
 import './live-session.css';
 
 export const LIVE_SESSION_RECORDER_HOST_ID = 'live-session-recorder-host';
+const LIVE_EVENT_LOG_COMPONENT_NAME = getVisualizationComponentName('event-log');
 
 export type LiveEventLogAiResult = { status: 'complete'; events: unknown[] };
 export type LiveNextCornerAiResult = {
@@ -79,14 +89,13 @@ export type LiveTelemetryAnalysisAiResult = {
     chart_id: string | null;
     component_name: string | null;
 };
-export interface LiveSessionHandle extends NamedAiToolComponentHandle {
+export interface LiveSessionHandle extends ObservableAiToolComponentHandle<LiveSessionRuntime> {
     getRecordingState(): RecordingState;
-    getSessionIntelligence(): SessionIntelligence;
     getCurrentTelemetry(): Record<string, any>;
-    queryTelemetryMetric<TReduce extends ReduceOp>(args: TelemetryQuery<TReduce>): QueryResult<TReduce>;
-    getTelemetryForScope(scope: QueryScope): Record<string, any>[];
+    queryTelemetryMetric<TReduce extends ReduceOp>(args: TelemetryQuery<TReduce>): Promise<QueryResult<TReduce>>;
+    getTelemetryForScope(scope: QueryScope): Promise<Record<string, any>[]>;
     getEventLog(args: Record<string, any>): any[];
-    getNextCorner(): any;
+    getNextCorner(): CornerLookahead | null;
     getLiveSessionSnapshot(): LiveSessionSnapshot;
     getLatestAnalysisResultPage(): LiveSessionAnalysisResultPage | null;
     queryTelemetryMetricForAi<TReduce extends TelemetryMetricReduce>(
@@ -212,32 +221,6 @@ const getBaselineHandle = async (
     );
 };
 
-type LiveSessionSnapshot = ReturnType<SessionIntelligence['getLiveSessionSnapshot']>;
-
-const EMPTY_LIVE_SNAPSHOT: LiveSessionSnapshot = {
-    status: 'empty',
-    track: '',
-    car: '',
-    current_lap: 0,
-    completed_laps: 0,
-    normalized_position: 0,
-    sample_count: 0,
-    live_session_type: 'unknown',
-    baseline_ready: false,
-    baseline_collection_started: false,
-    baseline_progress_percent: 0,
-    baseline_lap: null,
-    completed_lap_count: 0,
-};
-
-const getLiveSnapshot = (
-    sessionIntelligence: Partial<Pick<SessionIntelligence, 'getLiveSessionSnapshot'>> | null,
-): LiveSessionSnapshot => (
-    typeof sessionIntelligence?.getLiveSessionSnapshot === 'function'
-        ? sessionIntelligence.getLiveSessionSnapshot()
-        : EMPTY_LIVE_SNAPSHOT
-);
-
 const LimitedLiveWorkspace = ({ game }: { game: Exclude<DesktopGame, 'acc'> }) => (
     <div
         className="live-session-limited-workspace"
@@ -254,41 +237,89 @@ const LimitedLiveWorkspace = ({ game }: { game: Exclude<DesktopGame, 'acc'> }) =
     </div>
 );
 
-const LiveSessionView = ({ name }: { name: string }) => {
+export const LiveSessionContent = ({ name }: { name: string }) => {
     const liveSession = useContext(LiveSessionContext);
     const componentRefs = useOptionalAiToolComponentRefDirectory();
+    const componentRefsRef = useRef(componentRefs);
+    componentRefsRef.current = componentRefs;
     const liveSessionRef = useRef(liveSession);
     liveSessionRef.current = liveSession;
+    const assistantSnapshotListenersRef = useRef(new Set<() => void>());
     const componentRef = useRef<LiveSessionHandle | null>(null);
 
+    const getMountedEventLog = () => componentRefsRef.current
+        ?.findComponentRef<LiveEventLogHandle>(LIVE_EVENT_LOG_COMPONENT_NAME)
+        ?.current ?? null;
+    const findLiveEvents = (args: Record<string, any>) => {
+        const eventLog = getMountedEventLog();
+        if (!eventLog) return [];
+        return eventLog.findEvents({
+            eventType: args.eventType ?? args.event_type,
+            scope: args.scope ?? 'last',
+            n: args.n,
+        } as EventSearchParams);
+    };
+    const resolveLiveTelemetryScope = (
+        scope: QueryScope,
+    ): Exclude<QueryScope, { type: 'event' }> | null => {
+        if (scope.type !== 'event') return scope;
+        const matches = findLiveEvents({
+            eventType: scope.eventType,
+            scope: scope.which === 'current' ? 'lap_current' : 'last',
+        });
+        const event = matches[matches.length - 1];
+        return event
+            ? { type: 'range', start: event.startSampleIdx, end: event.endSampleIdx + 1 }
+            : null;
+    };
+    const getTelemetryForLiveScope = async (scope: QueryScope) => {
+        const resolvedScope = resolveLiveTelemetryScope(scope);
+        if (!resolvedScope) return [];
+
+        const runtime = liveSessionRef.current;
+        const collector = createTelemetryScopeCollector(
+            resolvedScope,
+            getTelemetryLap(runtime.currentTelemetry),
+        );
+        await runtime.streamRecordedTelemetry((rows) => collector.addRows(rows));
+        return collector.getRows();
+    };
+    const queryLiveTelemetry = async <TReduce extends ReduceOp>(args: TelemetryQuery<TReduce>) => {
+        const samples = await getTelemetryForLiveScope(args.scope);
+        return reduceTelemetrySamples(samples, args.fields, args.reduce);
+    };
     if (componentRef.current === null) {
         componentRef.current = {
             getComponentName: () => name,
+            getAssistantSnapshot: () => liveSessionRef.current,
+            subscribeAssistantSnapshot: (listener) => {
+                assistantSnapshotListenersRef.current.add(listener);
+                return () => assistantSnapshotListenersRef.current.delete(listener);
+            },
             getRecordingState: () => liveSessionRef.current.recordingState,
-            getSessionIntelligence: () => liveSessionRef.current.sessionIntelligence,
             getCurrentTelemetry: () => liveSessionRef.current.currentTelemetry,
-            queryTelemetryMetric: (args) => liveSessionRef.current.sessionIntelligence.query(args),
-            getTelemetryForScope: (scope) => liveSessionRef.current.sessionIntelligence.getRowsForScope(scope),
-            getEventLog: (args) => liveSessionRef.current.sessionIntelligence.findEvents(args as any),
-            getNextCorner: () => liveSessionRef.current.sessionIntelligence.getNextCorner(),
-            getLiveSessionSnapshot: () => getLiveSnapshot(liveSessionRef.current.sessionIntelligence),
+            queryTelemetryMetric: (args) => queryLiveTelemetry(args),
+            getTelemetryForScope: (scope) => getTelemetryForLiveScope(scope),
+            getEventLog: (args) => findLiveEvents(args),
+            getNextCorner: () => liveSessionRef.current.getNextCorner(),
+            getLiveSessionSnapshot: () => liveSessionRef.current.getLiveSessionSnapshot(),
             getLatestAnalysisResultPage: () => {
                 const pages = liveSessionRef.current.analysisResultPages;
                 return pages[pages.length - 1] ?? null;
             },
-            queryTelemetryMetricForAi: (args) => createAiToolOperationFrom(() => {
+            queryTelemetryMetricForAi: (args) => createAiToolOperationFrom(async () => {
                 const query = validateTelemetryMetricArguments(args);
                 return {
                     status: 'ready' as const,
-                    data: liveSessionRef.current.sessionIntelligence.query(query),
+                    data: await queryLiveTelemetry(query),
                 };
             }),
             getEventLogForAi: (args) => createAiToolOperationFrom(() => ({
                 status: 'complete',
-                events: liveSessionRef.current.sessionIntelligence.findEvents(args as any),
+                events: findLiveEvents(args),
             })),
             getNextCornerForAi: () => createAiToolOperationFrom(() => {
-                const corner = liveSessionRef.current.sessionIntelligence.getNextCorner();
+                const corner = liveSessionRef.current.getNextCorner();
                 if (!corner) throw new NoCornerDataError('No upcoming corner data is available.');
                 return {
                     status: 'complete',
@@ -344,12 +375,12 @@ const LiveSessionView = ({ name }: { name: string }) => {
                 return { status: analysis.status };
             }),
             analyzeTelemetryForAi: (args) => createAiToolOperationFrom(async () => {
-                const rows = liveSessionRef.current.sessionIntelligence.getRowsForScope(args.scope);
+                const rows = await getTelemetryForLiveScope(args.scope);
                 if (rows.length === 0) {
                     throw new NoTelemetryForScopeError('No telemetry rows matched the requested scope.');
                 }
                 try {
-                    const snapshot = getLiveSnapshot(liveSessionRef.current.sessionIntelligence);
+                    const snapshot = liveSessionRef.current.getLiveSessionSnapshot();
                     const response = await apiService.post('/racing-session/analyze-live-recorded-analysis', {
                         track: snapshot.track,
                         car: snapshot.car,
@@ -390,6 +421,9 @@ const LiveSessionView = ({ name }: { name: string }) => {
         };
     }
     useRegisterAiToolComponentRef(componentRef);
+    useLayoutEffect(() => {
+        assistantSnapshotListenersRef.current.forEach((listener) => listener());
+    }, [liveSession]);
 
 
     const { restorationError, sessionGame } = liveSession;
@@ -433,5 +467,22 @@ const LiveSessionView = ({ name }: { name: string }) => {
         </section>
     );
 };
+
+const getAuthenticatedOwnerEmail = (): string | null => {
+    if (typeof window === 'undefined') return null;
+    return window.localStorage.getItem('username');
+};
+
+const LiveSessionView = ({
+    name,
+    ownerEmail = getAuthenticatedOwnerEmail(),
+}: {
+    name: string;
+    ownerEmail?: string | null;
+}) => (
+    <LiveSessionProvider ownerEmail={ownerEmail}>
+        <LiveSessionContent name={name} />
+    </LiveSessionProvider>
+);
 
 export default LiveSessionView;

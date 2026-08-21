@@ -115,9 +115,8 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
 
     const trackKey = useMemo(() => getAccTelemetryTrackKey(
         liveSession.currentTelemetry?.Static_track,
-        liveSession.currentTelemetry?.Static?.track,
-        liveSession.staticData.track,
-    ), [liveSession.currentTelemetry, liveSession.staticData.track]);
+        liveSession.staticData.Static_track,
+    ), [liveSession.currentTelemetry, liveSession.staticData.Static_track]);
     const trackLayout = useMemo(() => circuitMap ? buildCircuitTrackLayout(circuitMap) : EMPTY_CIRCUIT_TRACK_LAYOUT, [circuitMap]);
     const currentFrame = frames[frames.length - 1];
     const bounds = useMemo(() => getBounds(frames, trackLayout), [frames, trackLayout]);

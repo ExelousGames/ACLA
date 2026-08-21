@@ -2,8 +2,11 @@ import React from 'react';
 import { act, render } from '@testing-library/react';
 import { RecordingState } from './recording-state';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
+import { ACC_STATUS } from 'data/live-analysis/live-map-data';
+import type { PythonStreamEvent } from 'services/pythonStreaming';
 
-let mockDetectedGame: 'ac' | 'acc' | 'iracing' | null = null;
+let mockDetectedGame: DesktopGame | null = null;
 let mockDetectionStatus = 'not-detected';
 
 jest.mock('contexts/DesktopGameContext', () => ({
@@ -39,17 +42,11 @@ const createRuntime = () => ({
     recordingMetadata: null,
     recordingFileKey: null,
     recordedSampleCount: 0,
-    sessionIntelligence: {},
     recorderControl: null,
     startLiveSession: jest.fn(),
     endLiveSession: jest.fn(),
-    setCurrentTelemetry: jest.fn(),
-    setStaticData: jest.fn(),
     setRecordingMetadata: jest.fn(),
     transitionRecordingState: jest.fn(),
-    appendTelemetrySample: jest.fn(),
-    readRecordedTelemetry: jest.fn(),
-    finalizeRecordingWrites: jest.fn(),
     clearRecordingSession: jest.fn(),
     registerRecorderControl: jest.fn(),
 });
@@ -61,14 +58,19 @@ describe('LiveSessionDetectionManager desktop game gating', () => {
         waitUntilReady: jest.Mock;
     };
     let removeMessageListener: jest.Mock;
+    let processStreamUpdate: ((event: PythonStreamEvent<Record<string, unknown>>) => void) | null;
 
     beforeEach(() => {
         mockDetectedGame = null;
         mockDetectionStatus = 'not-detected';
         removeMessageListener = jest.fn();
+        processStreamUpdate = null;
         stream = {
             dispose: jest.fn().mockResolvedValue(undefined),
-            onMessage: jest.fn().mockReturnValue(removeMessageListener),
+            onMessage: jest.fn().mockImplementation((callback) => {
+                processStreamUpdate = callback;
+                return removeMessageListener;
+            }),
             waitUntilReady: jest.fn().mockResolvedValue(undefined),
         };
         mockedCreatePythonStreamSession.mockReset();
@@ -101,12 +103,50 @@ describe('LiveSessionDetectionManager desktop game gating', () => {
         expect(mockedCreatePythonStreamSession).toHaveBeenCalledTimes(1);
     });
 
+    it('uses checker updates only to detect ACC session availability', async () => {
+        mockDetectedGame = 'acc';
+        const runtime = createRuntime();
+        renderManager(runtime);
+        await flushPromises();
+
+        act(() => {
+            processStreamUpdate?.({
+                status: 'update',
+                data: {
+                    Graphics_status: ACC_STATUS.ACC_LIVE,
+                    Static_track: 'Monza',
+                    Static_car_model: 'Ferrari 296 GT3',
+                },
+            });
+        });
+
+        expect(runtime.transitionRecordingState).toHaveBeenCalledWith({ type: 'sessionAvailable' });
+        expect(runtime.transitionRecordingState).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats checker control messages as availability state, not telemetry', async () => {
+        mockDetectedGame = 'acc';
+        const runtime = createRuntime();
+        renderManager(runtime);
+        await flushPromises();
+
+        act(() => {
+            processStreamUpdate?.({
+                status: 'update',
+                data: { available: false, checking: true },
+            });
+        });
+
+        expect(runtime.transitionRecordingState).toHaveBeenCalledWith({ type: 'sessionUnavailable' });
+        expect(runtime.transitionRecordingState).toHaveBeenCalledTimes(1);
+    });
+
     it.each([
         ['Assetto Corsa', 'ac', 'detected'],
         ['iRacing', 'iracing', 'detected'],
         ['no detected game', null, 'not-detected'],
         ['a detector error', null, 'error'],
-    ] as const)('does not start ACC telemetry for %s', async (_label, detectedGame, detectionStatus) => {
+    ] as const)('does not start the ACC session checker for %s', async (_label, detectedGame, detectionStatus) => {
         mockDetectedGame = detectedGame;
         mockDetectionStatus = detectionStatus;
         const runtime = createRuntime();

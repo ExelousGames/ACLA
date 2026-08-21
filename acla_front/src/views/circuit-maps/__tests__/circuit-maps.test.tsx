@@ -3,11 +3,14 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CircuitMaps from '../circuit-maps';
 import apiService from 'services/api.service';
-import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
-import { LiveSessionRuntime } from 'views/live-session/live-session-types';
+import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
+import {
+    AI_TOOL_COMPONENT_NAMES,
+    AiToolComponentRefProvider,
+    useRegisterAiToolComponentRef,
+} from 'contexts/AiToolComponentRefContext';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { RecordingState } from 'views/lap-analysis/recording-state';
-import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 
 const mockRefreshCircuitMaps = jest.fn();
 const mockUpsertCachedCircuitMap = jest.fn();
@@ -68,28 +71,40 @@ const mockedApi = apiService as jest.Mocked<typeof apiService>;
 const baseContext: LiveSessionRuntime = {
     sessionGame: null,
     currentTelemetry: {},
+    currentTelemetrySampleIndex: -1,
     telemetryStatus: null,
     staticData: {},
     recordingState: RecordingState.CHECKING,
     recordingMetadata: null,
     recordingFileKey: null,
+    recordingActive: false,
+    recordingGame: null,
     recordedSampleCount: 0,
     restorationStatus: 'idle',
     restorationError: null,
     recordingFileValidation: null,
-    sessionIntelligence: new SessionIntelligence(),
     recorderControl: null,
     analysisResultPages: [],
     activeAnalysisResultPageId: null,
+    getNextCorner: jest.fn(() => null),
+    getLiveSessionSnapshot: jest.fn(() => ({
+        status: 'empty',
+        track: '',
+        car: '',
+        current_lap: 0,
+        completed_laps: 0,
+        normalized_position: 0,
+        sample_count: 0,
+        live_session_type: 'unknown',
+        completed_lap_count: 0,
+    })),
     startLiveSession: jest.fn(),
     endLiveSession: jest.fn(),
-    setCurrentTelemetry: jest.fn(),
-    setStaticData: jest.fn(),
     setRecordingMetadata: jest.fn(),
     transitionRecordingState: jest.fn(),
-    appendTelemetrySample: jest.fn(),
-    readRecordedTelemetry: jest.fn(),
-    finalizeRecordingWrites: jest.fn(),
+    startRecordingSession: jest.fn(),
+    stopRecordingSession: jest.fn(),
+    streamRecordedTelemetry: jest.fn(),
     clearRecordingSession: jest.fn(),
     clearPersistedDraft: jest.fn(),
     registerRecorderControl: jest.fn(),
@@ -98,11 +113,27 @@ const baseContext: LiveSessionRuntime = {
     updateActiveAnalysisResultPage: jest.fn(),
 };
 
+const LiveSessionReference = ({ snapshot }: { snapshot: LiveSessionRuntime }) => {
+    const snapshotRef = React.useRef(snapshot);
+    snapshotRef.current = snapshot;
+    const componentRef = React.useRef<any>(null);
+    if (componentRef.current === null) {
+        componentRef.current = {
+            getComponentName: () => AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+            getAssistantSnapshot: () => snapshotRef.current,
+            subscribeAssistantSnapshot: () => () => undefined,
+        };
+    }
+    useRegisterAiToolComponentRef(componentRef);
+    return null;
+};
+
 const renderCircuitMaps = (context: Partial<LiveSessionRuntime> = {}) => (
     render(
-        <LiveSessionContext.Provider value={{ ...baseContext, ...context }}>
+        <AiToolComponentRefProvider>
+            <LiveSessionReference snapshot={{ ...baseContext, ...context }} />
             <CircuitMaps />
-        </LiveSessionContext.Provider>
+        </AiToolComponentRefProvider>
     )
 );
 

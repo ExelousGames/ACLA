@@ -1,9 +1,9 @@
-import { TelemetrySample } from './types';
+import { TelemetrySample } from 'views/lap-analysis/session-intelligence/types';
+import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
 import { EventLog } from './EventLog';
 import { CornerSensor } from './sensors/CornerSensor';
 import { CrashSensor } from './sensors/CrashSensor';
 import { OvertakeSensor } from './sensors/OvertakeSensor';
-import { getCornersForTrack } from './track-corners';
 
 export class SensorManager {
     private cornerSensor = new CornerSensor();
@@ -21,11 +21,9 @@ export class SensorManager {
             this.overtakeSensor.tick(sample, sampleIdx),
         ];
 
-        for (const event of candidates) {
-            if (event) {
-                log.push(event);
-            }
-        }
+        candidates.forEach((event) => {
+            if (event) log.push(event);
+        });
     }
 
     reset(): void {

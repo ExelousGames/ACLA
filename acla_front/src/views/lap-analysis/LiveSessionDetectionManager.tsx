@@ -13,23 +13,6 @@ const toAccStatus = (value: unknown): ACC_STATUS | null => {
     return ACC_STATUS[numeric as ACC_STATUS] !== undefined ? numeric as ACC_STATUS : null;
 };
 
-const getStaticPayload = (data: Record<string, any>): Record<string, unknown> | null => {
-    if (data.Static && typeof data.Static === 'object') {
-        return data.Static;
-    }
-
-    const track = typeof data.Static_track === 'string' ? data.Static_track : undefined;
-    const carModel = typeof data.Static_car_model === 'string' ? data.Static_car_model : undefined;
-    if (!track && !carModel) {
-        return null;
-    }
-
-    return {
-        ...(track ? { track } : {}),
-        ...(carModel ? { car_model: carModel } : {}),
-    };
-};
-
 export default function LiveSessionDetectionManager() {
     const liveSession = useContext(LiveSessionContext);
     const liveSessionRef = useRef(liveSession);
@@ -51,16 +34,8 @@ export default function LiveSessionDetectionManager() {
             const graphics = data.Graphics ?? {};
             const status = toAccStatus(graphics.status ?? data.Graphics_status);
 
-            if (data && typeof data === 'object') {
-                ctx.setCurrentTelemetry(data);
-            }
-
             if (status !== null) {
                 if (status === ACC_STATUS.ACC_LIVE) {
-                    const staticPayload = getStaticPayload(data);
-                    if (staticPayload) {
-                        ctx.setStaticData(staticPayload);
-                    }
                     ctx.transitionRecordingState({ type: 'sessionAvailable' });
                 } else if (status === ACC_STATUS.ACC_OFF) {
                     ctx.transitionRecordingState({ type: 'sessionUnavailable' });
@@ -69,10 +44,6 @@ export default function LiveSessionDetectionManager() {
             }
 
             if (data.checking === true || data.available === false) {
-                ctx.transitionRecordingState({ type: 'sessionUnavailable' });
-            }
-        } else if (event.status === 'ready') {
-            if (ctx.telemetryStatus == null) {
                 ctx.transitionRecordingState({ type: 'sessionUnavailable' });
             }
         } else if (event.status === 'error') {
@@ -147,6 +118,7 @@ export default function LiveSessionDetectionManager() {
 
     const shouldMaintainSessionCheckingStream =
         liveSession.sessionGame === 'acc'
+        && !liveSession.recordingActive
         && liveSession.restorationStatus !== 'restoring'
         && (
             liveSession.recordingState === RecordingState.CHECKING

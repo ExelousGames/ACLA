@@ -15,6 +15,15 @@ export interface TelemetrySample {
     [key: string]: any;
 }
 
+export interface TelemetrySource {
+    readonly length: number;
+    readonly size: number;
+    get(globalIdx: number): TelemetrySample | null;
+    slice(from: number, to: number): TelemetrySample[];
+    last(count: number): TelemetrySample[];
+    sliceByTime(ms: number): TelemetrySample[];
+}
+
 export type ReduceOp = 'raw' | 'avg' | 'min' | 'max' | 'stats';
 
 export type QueryScope =

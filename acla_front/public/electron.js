@@ -1,11 +1,18 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain } = require('electron');
 const { PythonShell } = require('python-shell');
 const path = require('path');
 const isDev = require('electron-is-dev');
 const { spawn, execFile, execSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const { detectSupportedDesktopGame } = require('./desktop-game-detection');
+const { RecordingSessionManager } = require('../electron/recording/recording-session-manager');
+const {
+  DESKTOP_GAME_SET,
+  recordingStartFailure,
+  validateRecordingStartConfig,
+} = require('../electron/recording/recording-protocol');
 
 function getPythonExecutable() {
   const manualOverride = process.env.ACLA_PYTHON_PATH;
@@ -40,6 +47,81 @@ function getPythonExecutable() {
 const devMode = app.isPackaged ? false : isDev;
 let mainWindow;
 let isAppQuitting = false;
+let recordingManager = null;
+let latestDetectedGame = null;
+let recordingIpcRegistered = false;
+let quitAfterRecordingShutdown = false;
+const recordedFileReads = new Map();
+
+function getRecordingDirectory() {
+  return path.join(app.getPath('userData'), 'acla-temp');
+}
+
+function isCurrentMainRenderer(sender) {
+  return Boolean(
+    sender
+    && mainWindow
+    && !mainWindow.isDestroyed()
+    && mainWindow.webContents === sender
+    && !sender.isDestroyed?.(),
+  );
+}
+
+function isPathInside(parentDirectory, candidatePath) {
+  const relative = path.relative(path.resolve(parentDirectory), path.resolve(candidatePath));
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function isRegularFileSync(filePath) {
+  try {
+    return path.isAbsolute(filePath) && fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function getReaderLaunchConfig(game) {
+  const readerDirectory = path.join(app.getAppPath(), 'electron', 'recording', 'readers', game);
+  const readerEntryPath = path.join(readerDirectory, `${game}-reader-worker.js`);
+  if (!isRegularFileSync(readerEntryPath)) {
+    return recordingStartFailure(
+      'unsupported-recording-game',
+      `Live recording for ${game} is not installed yet.`,
+    );
+  }
+  const configPath = path.join(readerDirectory, `${game}-reader-config.js`);
+  if (!isRegularFileSync(configPath)) {
+    return recordingStartFailure(
+      'unsupported-recording-game',
+      `The launch configuration for ${game} is unavailable.`,
+    );
+  }
+  try {
+    const producer = require(configPath);
+    if (typeof producer.getReaderLaunchConfig !== 'function') {
+      return recordingStartFailure('unsupported-recording-game', `The ${game} reader cannot be launched.`);
+    }
+    return await producer.getReaderLaunchConfig({ app, readerEntryPath });
+  } catch (error) {
+    return recordingStartFailure(
+      'unsupported-recording-game',
+      `The ${game} reader cannot be launched: ${error?.message || String(error)}`,
+    );
+  }
+}
+
+function getOrCreateRecordingManager() {
+  if (!recordingManager) {
+    recordingManager = new RecordingSessionManager({
+      utilityProcess,
+      MessageChannelMain,
+      getMainWindow: () => mainWindow,
+      getReaderLaunchConfig,
+      recordingDirectory: getRecordingDirectory(),
+    });
+  }
+  return recordingManager;
+}
 
 function getWindowsTasklist() {
   return new Promise((resolve, reject) => {
@@ -60,11 +142,196 @@ ipcMain.handle('detect-desktop-game', async () => {
   }
 
   const tasklistOutput = await getWindowsTasklist();
+  latestDetectedGame = detectSupportedDesktopGame(tasklistOutput);
   return {
     supported: true,
-    detectedGame: detectSupportedDesktopGame(tasklistOutput),
+    detectedGame: latestDetectedGame,
   };
 });
+
+function cleanupRecordedFileRead(readId, { kill = true } = {}) {
+  const entry = recordedFileReads.get(readId);
+  if (!entry) return;
+  recordedFileReads.delete(readId);
+  entry.utility.off?.('message', entry.onMessage);
+  entry.utility.off?.('exit', entry.onExit);
+  entry.utility.off?.('error', entry.onError);
+  if (kill) {
+    try { entry.utility.kill(); } catch { /* already exited */ }
+  }
+}
+
+function cancelRecordedFileReadsForOwner(ownerWebContentsId) {
+  for (const [readId, entry] of Array.from(recordedFileReads.entries())) {
+    if (entry.ownerWebContentsId !== ownerWebContentsId) continue;
+    try { entry.utility.postMessage({ type: 'cancel', readId }); } catch { /* utility failed */ }
+    cleanupRecordedFileRead(readId);
+  }
+}
+
+function waitForRecordedReadSignal(entry, key, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      entry.waiters.delete(key);
+      reject(new Error(`Recorded-file reader ${key} handshake timed out.`));
+    }, timeoutMs);
+    entry.waiters.set(key, {
+      resolve: (value) => {
+        clearTimeout(timer);
+        entry.waiters.delete(key);
+        resolve(value);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        entry.waiters.delete(key);
+        reject(error);
+      },
+    });
+  });
+}
+
+function registerRecordingIpc() {
+  if (recordingIpcRegistered) return;
+  recordingIpcRegistered = true;
+
+  ipcMain.handle('recording-session-start', async (event, config) => {
+    if (!isCurrentMainRenderer(event.sender)) throw new Error('Recording requests are allowed only from the active workspace.');
+    const failure = validateRecordingStartConfig(config);
+    if (failure) return failure;
+
+    const tasklistOutput = process.platform === 'win32' ? await getWindowsTasklist() : '';
+    latestDetectedGame = process.platform === 'win32'
+      ? detectSupportedDesktopGame(tasklistOutput)
+      : latestDetectedGame;
+    if (latestDetectedGame !== config.game) {
+      throw new Error('The requested recording game does not match the active simulator.');
+    }
+    return getOrCreateRecordingManager().startSession({
+      game: config.game,
+      ownerWebContentsId: event.sender.id,
+    });
+  });
+
+  ipcMain.handle('recording-session-stop', async (event) => {
+    if (!isCurrentMainRenderer(event.sender)) throw new Error('Recording stop is allowed only from the active workspace.');
+    if (!recordingManager) throw new Error('No recording session is active.');
+    return recordingManager.stopSession(event.sender.id);
+  });
+
+  ipcMain.handle('recorded-file-read-start', async (event, request) => {
+    if (!isCurrentMainRenderer(event.sender)) throw new Error('Recorded-file reads are allowed only from the active workspace.');
+    if (!request || typeof request !== 'object' || Array.isArray(request)
+      || Object.keys(request).length !== 3
+      || typeof request.filePath !== 'string' || !path.isAbsolute(request.filePath)
+      || !DESKTOP_GAME_SET.has(request.game)
+      || (request.purpose !== 'validate' && request.purpose !== 'consume')) {
+      throw new TypeError('Recorded-file read request is invalid.');
+    }
+    const recordingDirectory = getRecordingDirectory();
+    let resolvedPath;
+    let resolvedRecordingDirectory;
+    try {
+      resolvedPath = fs.realpathSync(path.resolve(request.filePath));
+      resolvedRecordingDirectory = fs.realpathSync(recordingDirectory);
+    } catch {
+      throw new Error('Recorded file is outside the authorized recording directory or is not a regular file.');
+    }
+    if (!isPathInside(resolvedRecordingDirectory, resolvedPath) || !isRegularFileSync(resolvedPath)) {
+      throw new Error('Recorded file is outside the authorized recording directory or is not a regular file.');
+    }
+    const committedRowLimit = recordingManager?.hasActiveSession()
+      ? recordingManager.getActiveRecordedFileReadLimit({
+        ownerWebContentsId: event.sender.id,
+        game: request.game,
+        filePath: resolvedPath,
+      })
+      : null;
+
+    const readId = crypto.randomUUID();
+    const workerPath = path.join(app.getAppPath(), 'electron', 'recording', 'workers', 'recorded-file-reader-worker.js');
+    if (!isRegularFileSync(workerPath)) throw new Error('Recorded-file reader is not installed.');
+    const utility = utilityProcess.fork(workerPath, [], {
+      serviceName: 'ACLA Recorded File Reader',
+      stdio: 'pipe',
+    });
+    const channel = new MessageChannelMain();
+    const entry = {
+      readId,
+      utility,
+      ownerWebContentsId: event.sender.id,
+      waiters: new Map(),
+      onMessage: null,
+      onExit: null,
+      onError: null,
+    };
+    entry.onMessage = (rawMessage) => {
+      const message = rawMessage?.data ?? rawMessage;
+      if (message?.readId !== readId) return;
+      entry.waiters.get(message.type)?.resolve(message);
+      if (message.type === 'failed') {
+        for (const waiter of entry.waiters.values()) {
+          waiter.reject(new Error(message.error || 'Recorded-file reader failed.'));
+        }
+      }
+      if (message.type === 'complete' || message.type === 'failed') cleanupRecordedFileRead(readId, { kill: false });
+    };
+    entry.onExit = () => {
+      for (const waiter of entry.waiters.values()) waiter.reject(new Error('Recorded-file reader exited unexpectedly.'));
+      cleanupRecordedFileRead(readId, { kill: false });
+    };
+    entry.onError = (error) => {
+      for (const waiter of entry.waiters.values()) waiter.reject(error);
+      cleanupRecordedFileRead(readId);
+    };
+    utility.on?.('message', entry.onMessage);
+    utility.on?.('exit', entry.onExit);
+    utility.on?.('error', entry.onError);
+    recordedFileReads.set(readId, entry);
+
+    try {
+      const readyPromise = waitForRecordedReadSignal(entry, 'ready');
+      const preloadReadyPromise = waitForRecordedReadSignal(entry, 'preload-ready');
+      utility.postMessage({
+        type: 'initialize',
+        readId,
+        filePath: resolvedPath,
+        game: request.game,
+        purpose: request.purpose,
+        recordingDirectory: resolvedRecordingDirectory,
+        ...(committedRowLimit !== null ? { rowLimit: committedRowLimit } : {}),
+        portRoles: ['eventsToPreload'],
+      }, [channel.port1]);
+      mainWindow.webContents.postMessage(
+        'recorded-file-read-port',
+        { readId, game: request.game },
+        [channel.port2],
+      );
+      await readyPromise;
+      await preloadReadyPromise;
+      setImmediate(() => {
+        if (recordedFileReads.get(readId) === entry) {
+          try {
+            utility.postMessage({ type: 'start', readId });
+          } catch (error) {
+            entry.onError(error);
+          }
+        }
+      });
+      return { readId };
+    } catch (error) {
+      cleanupRecordedFileRead(readId);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('recorded-file-read-cancel', async (event, readId) => {
+    if (!isCurrentMainRenderer(event.sender)) throw new Error('Recorded-file cancellation is allowed only from the active workspace.');
+    if (typeof readId !== 'string' || !readId) throw new TypeError('Recorded-file read id is invalid.');
+    const entry = recordedFileReads.get(readId);
+    if (!entry || entry.ownerWebContentsId !== event.sender.id) throw new Error('Recorded-file read was not found.');
+    try { entry.utility.postMessage({ type: 'cancel', readId }); } finally { cleanupRecordedFileRead(readId); }
+  });
+}
 
 // Store active Python shells, Multiple concurrent Python processes
 const activeShells = new Map();
@@ -159,10 +426,20 @@ function createWindow() {
       // As an app developer, you need to choose which APIs to expose from your preload script using the contextBridge API.
       // !!!!!! We don't directly expose the whole ipcRenderer.send API for security reasons. Make sure to limit the renderer's access to Electron APIs as much as possible.
       preload: path.join(__dirname, '../src/common/preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
     }
   });
 
   mainWindow.loadURL(devMode ? 'http://localhost:3000' : `file://${path.join(__dirname, '../build/index.html')}`);
+  const ownerWebContentsId = mainWindow.webContents.id;
+  mainWindow.webContents.on('destroyed', () => {
+    cancelRecordedFileReadsForOwner(ownerWebContentsId);
+    if (recordingManager?.isOwnedBy(ownerWebContentsId)) {
+      void recordingManager.shutdownAll();
+    }
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
     if (process.platform !== 'darwin' && !isAppQuitting) app.quit();
@@ -727,6 +1004,9 @@ function createFloatingChatWindow() {
     useContentSize: true,
     webPreferences: {
       preload: path.join(__dirname, '../src/common/preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
     },
   });
 
@@ -923,13 +1203,25 @@ ipcMain.handle('stop-speech-recognition', async (event) => {
 });
 
 app.on('ready', () => {
+  registerRecordingIpc();
   createWindow();
   // Check speech recognition availability on startup
   checkSpeechRecognitionAvailability();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (!quitAfterRecordingShutdown && recordingManager?.hasActiveSession()) {
+    event.preventDefault();
+    isAppQuitting = true;
+    for (const readId of Array.from(recordedFileReads.keys())) cleanupRecordedFileRead(readId);
+    void recordingManager.shutdownAll().finally(() => {
+      quitAfterRecordingShutdown = true;
+      app.quit();
+    });
+    return;
+  }
   isAppQuitting = true;
+  for (const readId of Array.from(recordedFileReads.keys())) cleanupRecordedFileRead(readId);
   rejectOverlayPresentations('Application is shutting down.');
   if (floatingChatWindow && !floatingChatWindow.isDestroyed()) {
     floatingChatWindow.close();

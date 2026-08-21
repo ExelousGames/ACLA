@@ -27,7 +27,7 @@ jest.mock('services/api.service', () => ({
     default: { post: jest.fn() },
 }));
 
-import SessionAnalysis, { SessionAnalysisProvider } from '../session-analysis';
+import { SessionAnalysisContent, SessionAnalysisProvider } from '../session-analysis';
 import {
     ExpertLineGuidanceFailedError,
     LapComparisonFailedError,
@@ -66,7 +66,7 @@ const createAnalysisContext = (overrides: Partial<AnalysisContextType> = {}): An
 const Harness = ({ value }: { value: AnalysisContextType }) => (
     <AiToolComponentRefProvider>
         <AnalysisContext.Provider value={value}>
-            <SessionAnalysis name={AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS} />
+            <SessionAnalysisContent name={AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS} />
         </AnalysisContext.Provider>
         <DirectoryObserver />
     </AiToolComponentRefProvider>
@@ -84,6 +84,9 @@ describe('SessionAnalysis named component handle', () => {
         expect(ref.current!.getComponentName()).toBe(AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS);
         expect(ref.current!.getMapSelected()).toBe('Monza');
         expect(ref.current!.getSelectedSession()).toBeNull();
+        expect(ref.current!.getAssistantSnapshot().mapSelected).toBe('Monza');
+        const onSnapshotChange = jest.fn();
+        const unsubscribe = ref.current!.subscribeAssistantSnapshot(onSnapshotChange);
 
         view.rerender(<Harness value={createAnalysisContext({
             activeTab: 'session',
@@ -106,6 +109,9 @@ describe('SessionAnalysis named component handle', () => {
             sampleCount: 800,
             playbackTimeSeconds: 12.5,
         });
+        expect(ref.current!.getAssistantSnapshot().sessionSelected?.SessionId).toBe('session-17');
+        expect(onSnapshotChange).toHaveBeenCalled();
+        unsubscribe();
     });
 
     it.each([

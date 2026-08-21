@@ -1,6 +1,11 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { AnalysisContext } from 'views/lap-analysis/analysis-context';
+import {
+    AI_TOOL_COMPONENT_NAMES,
+    AiToolComponentRefProvider,
+    useRegisterAiToolComponentRef,
+} from 'contexts/AiToolComponentRefContext';
+import type { AnalysisContextType } from 'views/lap-analysis/analysis-context';
 import { DASHBOARD_TABS } from './dashboard-navigation';
 import DashboardAssistant from './DashboardAssistant';
 
@@ -14,6 +19,25 @@ jest.mock('views/lap-analysis/ai-chat/ai-chat', () => (props: Record<string, unk
         data-screen-label={(props.activeScreen as any)?.label}
     />
 ));
+
+const RecordedScreenReference = ({ snapshot }: { snapshot: AnalysisContextType }) => {
+    const snapshotRef = React.useRef(snapshot);
+    snapshotRef.current = snapshot;
+    const listenersRef = React.useRef(new Set<() => void>());
+    const componentRef = React.useRef<any>(null);
+    if (componentRef.current === null) {
+        componentRef.current = {
+            getComponentName: () => AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+            getAssistantSnapshot: () => snapshotRef.current,
+            subscribeAssistantSnapshot: (listener: () => void) => {
+                listenersRef.current.add(listener);
+                return () => listenersRef.current.delete(listener);
+            },
+        };
+    }
+    useRegisterAiToolComponentRef(componentRef);
+    return null;
+};
 
 describe('DashboardAssistant', () => {
     it.each([
@@ -35,15 +59,16 @@ describe('DashboardAssistant', () => {
 
     it('tracks the recorded screen within the Analysis dashboard tab', () => {
         render(
-            <AnalysisContext.Provider value={{
-                activeTab: 'session',
-                sessionSelected: {
-                    SessionId: 'session-12',
-                    session_name: 'Race 12',
-                },
-            } as any}>
+            <AiToolComponentRefProvider>
+                <RecordedScreenReference snapshot={{
+                    activeTab: 'session',
+                    sessionSelected: {
+                        SessionId: 'session-12',
+                        session_name: 'Race 12',
+                    },
+                } as any} />
                 <DashboardAssistant activeDashboardTab={DASHBOARD_TABS.ANALYSIS} />
-            </AnalysisContext.Provider>,
+            </AiToolComponentRefProvider>,
         );
 
         expect(screen.getByTestId('dashboard-ai-chat')).toHaveAttribute('data-session-mode', 'recorded');

@@ -1,9 +1,10 @@
 import { ChatBubbleIcon, ChevronLeftIcon, ChevronRightIcon } from '@radix-ui/react-icons';
-import React, { useContext, useState } from 'react';
+import React, { useState } from 'react';
 import {
     AI_TOOL_COMPONENT_NAMES,
+    useOptionalAiToolComponentSnapshot,
 } from 'contexts/AiToolComponentRefContext';
-import { AnalysisContext } from 'views/lap-analysis/analysis-context';
+import type { AnalysisContextType } from 'views/lap-analysis/analysis-context';
 import AiChat from 'views/lap-analysis/ai-chat/ai-chat';
 import type { AssistantActiveScreen } from 'views/lap-analysis/assistant-session-mode';
 import { DASHBOARD_TABS } from './dashboard-navigation';
@@ -13,11 +14,15 @@ interface DashboardAssistantProps {
 }
 
 const DashboardAssistant = ({ activeDashboardTab }: DashboardAssistantProps) => {
-    const analysisContext = useContext(AnalysisContext);
+    const analysisContext = useOptionalAiToolComponentSnapshot<AnalysisContextType>(
+        activeDashboardTab === DASHBOARD_TABS.ANALYSIS
+            ? AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS
+            : null,
+    );
     const [isOpen, setIsOpen] = useState(false);
     const isRecordedSession = activeDashboardTab === DASHBOARD_TABS.ANALYSIS
-        && analysisContext.activeTab === 'session'
-        && Boolean(analysisContext.sessionSelected?.SessionId);
+        && analysisContext?.activeTab === 'session'
+        && Boolean(analysisContext?.sessionSelected?.SessionId);
 
     const activeScreen: AssistantActiveScreen = activeDashboardTab === DASHBOARD_TABS.LIVE_SESSION
         ? {
@@ -34,8 +39,8 @@ const DashboardAssistant = ({ activeDashboardTab }: DashboardAssistantProps) => 
             : isRecordedSession
                 ? {
                     assistantMode: 'recorded',
-                    label: analysisContext.sessionSelected?.session_name || 'Recorded Session',
-                    recordedSessionId: analysisContext.sessionSelected?.SessionId,
+                    label: analysisContext?.sessionSelected?.session_name || 'Recorded Session',
+                    recordedSessionId: analysisContext?.sessionSelected?.SessionId,
                     componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
                 }
                 : {

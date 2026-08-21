@@ -1,8 +1,8 @@
-import React, { useState, useRef, useEffect, useContext, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { flushSync } from 'react-dom';
 import './ai-chat.css';
-import { AnalysisContext } from 'views/lap-analysis/analysis-context';
-import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import type { AnalysisContextType } from 'views/lap-analysis/analysis-context';
+import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useUserSummary } from 'contexts/UserSummaryContext';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
@@ -60,6 +60,7 @@ import {
     awaitNamedComponentHandle,
     resolveNamedComponentHandle,
     useAiToolComponentRefs,
+    useOptionalAiToolComponentSnapshot,
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
 import {
@@ -349,22 +350,28 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const messagesScrollRef = useRef<HTMLDivElement>(null);
     const shouldAutoScrollMessagesRef = useRef(true);
-    const recordedAnalysisContext = useContext(AnalysisContext);
-    const liveSession = useContext(LiveSessionContext);
+    const recordedAnalysisContext = useOptionalAiToolComponentSnapshot<AnalysisContextType>(
+        activeScreen.componentName === AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS
+            ? AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS
+            : null,
+    );
+    const liveSession = useOptionalAiToolComponentSnapshot<LiveSessionRuntime>(
+        sessionMode === 'live' ? AI_TOOL_COMPONENT_NAMES.LIVE_SESSION : null,
+    );
     const liveSessionEnded = sessionMode === 'live'
-        && liveSession.recordingState === RecordingState.UPLOAD_READY;
+        && liveSession?.recordingState === RecordingState.UPLOAD_READY;
     const analysisContext = useMemo(() => ({
-        ...recordedAnalysisContext,
-        mapSelected: sessionMode === 'recorded' ? recordedAnalysisContext.mapSelected : null,
-        sessionSelected: sessionMode === 'recorded' ? recordedAnalysisContext.sessionSelected : null,
-        liveData: liveSession.currentTelemetry,
-        TelemetryDataLiveStatus: liveSession.telemetryStatus,
-        recordingState: liveSession.recordingState,
-        recordingMetadata: liveSession.recordingMetadata,
-        recordedSessionDataFilePath: liveSession.recordingFileKey,
-        recordedTelemetryDataCount: liveSession.recordedSampleCount,
-        recordedSessioStaticsData: liveSession.staticData,
-        sessionIntelligence: liveSession.sessionIntelligence,
+        ...(recordedAnalysisContext ?? {}),
+        mapSelected: sessionMode === 'recorded' ? recordedAnalysisContext?.mapSelected ?? null : null,
+        sessionSelected: sessionMode === 'recorded' ? recordedAnalysisContext?.sessionSelected ?? null : null,
+        liveData: liveSession?.currentTelemetry ?? {},
+        TelemetryDataLiveStatus: liveSession?.telemetryStatus ?? null,
+        recordingState: liveSession?.recordingState ?? null,
+        recordingMetadata: liveSession?.recordingMetadata ?? null,
+        recordedSessionDataFilePath: liveSession?.recordingFileKey ?? null,
+        recordedTelemetryDataCount: liveSession?.recordedSampleCount ?? 0,
+        recordedSessioStaticsData: liveSession?.staticData ?? {},
+        getLiveSessionSnapshot: liveSession?.getLiveSessionSnapshot,
     }), [liveSession, recordedAnalysisContext, sessionMode]);
     const {
         userSummary,
@@ -416,19 +423,20 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const conversationDisposedRef = useRef(false);
     const pendingTimersRef = useRef<Set<number>>(new Set());
     const liveRangeTodoListRunnerRef = useRef<LiveRangeTodoListRunner | null>(null);
-    const liveRangeTodoListSessionGameRef = useRef(liveSession.sessionGame);
+    const liveRangeTodoListSessionGameRef = useRef(liveSession?.sessionGame ?? null);
 
     useEffect(() => {
-        liveRangeTodoListRunnerRef.current?.acceptTelemetry(liveSession.currentTelemetry);
-    }, [liveSession.currentTelemetry]);
+        liveRangeTodoListRunnerRef.current?.acceptTelemetry(liveSession?.currentTelemetry ?? {});
+    }, [liveSession?.currentTelemetry]);
 
     useEffect(() => {
         const previousSessionGame = liveRangeTodoListSessionGameRef.current;
-        liveRangeTodoListSessionGameRef.current = liveSession.sessionGame;
-        if (previousSessionGame === liveSession.sessionGame) return;
-        if (liveSession.sessionGame === null) return;
+        const sessionGame = liveSession?.sessionGame ?? null;
+        liveRangeTodoListSessionGameRef.current = sessionGame;
+        if (previousSessionGame === sessionGame) return;
+        if (sessionGame === null) return;
         liveRangeTodoListRunnerRef.current?.reset();
-    }, [liveSession.sessionGame]);
+    }, [liveSession?.sessionGame]);
 
     const scheduleConversationTimeout = useCallback((callback: () => void, delay = 0) => {
         const timeoutId = window.setTimeout(() => {
@@ -628,9 +636,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         const normalize = (value: unknown) => (
             typeof value === 'string' && value.trim() ? value.trim() : undefined
         );
-        const selectedMap = recordedAnalysisContext.sessionSelected?.map
-            || recordedAnalysisContext.mapSelected
-            || liveSession.sessionIntelligence.getLiveSessionSnapshot().track;
+        const selectedMap = recordedAnalysisContext?.sessionSelected?.map
+            || recordedAnalysisContext?.mapSelected
+            || liveSession?.getLiveSessionSnapshot().track;
         const candidates = [
             args.map_id,
             args.source_track_key,
@@ -723,9 +731,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         displayMapInChat,
         getCircuitMapById,
         getCircuitMapByTrack,
-        liveSession.sessionIntelligence,
-        recordedAnalysisContext.mapSelected,
-        recordedAnalysisContext.sessionSelected?.map,
+        liveSession?.getLiveSessionSnapshot,
+        recordedAnalysisContext?.mapSelected,
+        recordedAnalysisContext?.sessionSelected?.map,
     ]);
 
     const setAgentTag = useCallback((tag: string, active: boolean) => {
@@ -1362,8 +1370,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         sessionId: resolvedSessionId,
         sessionMode,
         conversationRole: 'main',
-        sessionGame: liveSession.sessionGame,
-    }), [componentRefs, liveSession.sessionGame, resolvedSessionId, sessionMode]);
+        sessionGame: liveSession?.sessionGame ?? null,
+    }), [componentRefs, liveSession?.sessionGame, resolvedSessionId, sessionMode]);
 
     const selectedChatLlmModelOption = getChatLlmModelOption(selectedChatLlmModel);
     const voiceConversation = useVoiceConversation({
@@ -1390,11 +1398,11 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         sessionMode,
         conversationRole: 'agent',
         agentMode: activeAgentSession?.agentMode,
-        sessionGame: liveSession.sessionGame,
+        sessionGame: liveSession?.sessionGame ?? null,
     }), [
         activeAgentSession?.agentMode,
         componentRefs,
-        liveSession.sessionGame,
+        liveSession?.sessionGame,
         resolvedSessionId,
         sessionMode,
     ]);
@@ -1522,7 +1530,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 conversationRole: 'agent',
                 activeAgentSession: current,
                 analysisContext,
-                sessionIntelligence: analysisContext?.sessionIntelligence,
+                getLiveSessionSnapshot: analysisContext?.getLiveSessionSnapshot,
                 opportunityAgentState: opportunityAgentStateRef.current,
                 livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
                 startTrackGuide,

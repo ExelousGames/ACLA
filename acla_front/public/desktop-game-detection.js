@@ -1,10 +1,10 @@
+const { DESKTOP_GAMES: GAME_PRIORITY } = require('../electron/recording/recording-protocol');
+
 const SUPPORTED_GAME_EXECUTABLES = {
   acc: ['ac2-win64-shipping.exe'],
   ac: ['acs.exe', 'acs_x86.exe'],
   iracing: ['iracingsim64dx11.exe'],
 };
-
-const GAME_PRIORITY = ['acc', 'ac', 'iracing'];
 
 function parseTasklistImageNames(output) {
   if (typeof output !== 'string') {

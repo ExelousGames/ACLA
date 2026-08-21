@@ -6,6 +6,7 @@ import React, {
     useMemo,
     useRef,
     useState,
+    useSyncExternalStore,
 } from 'react';
 import AiOverlayManager from 'views/floating-chat/AiOverlayManager';
 import {
@@ -39,6 +40,11 @@ export const AI_TOOL_COMPONENT_NAMES = Object.freeze({
 
 export interface NamedAiToolComponentHandle {
     getComponentName(): string;
+}
+
+export interface ObservableAiToolComponentHandle<TSnapshot> extends NamedAiToolComponentHandle {
+    getAssistantSnapshot(): TSnapshot;
+    subscribeAssistantSnapshot(listener: () => void): () => void;
 }
 
 export type AiToolComponentRef<THandle extends NamedAiToolComponentHandle = NamedAiToolComponentHandle> =
@@ -199,6 +205,24 @@ export const useAiToolComponentRefs = () => {
     const directory = value.directory;
     if (!directory) throw new Error('AiToolComponentRefProvider is required.');
     return { directory, revision: value.revision };
+};
+
+export const useOptionalAiToolComponentSnapshot = <TSnapshot,>(
+    name: string | null | undefined,
+): TSnapshot | null => {
+    const { directory } = useContext(AiToolComponentRefContext);
+    const handle = name && directory
+        ? directory.findComponentRef<ObservableAiToolComponentHandle<TSnapshot>>(name)?.current ?? null
+        : null;
+    const subscribe = React.useCallback((listener: () => void) => (
+        handle?.subscribeAssistantSnapshot(listener) ?? (() => undefined)
+    ), [handle]);
+    const getSnapshot = React.useCallback(
+        () => handle?.getAssistantSnapshot() ?? null,
+        [handle],
+    );
+
+    return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 };
 
 export const useOptionalAiToolComponentRefDirectory = (): AiToolComponentRefDirectory | null => (

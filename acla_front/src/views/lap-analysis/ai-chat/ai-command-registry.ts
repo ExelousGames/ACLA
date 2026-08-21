@@ -1,5 +1,4 @@
 import type { CircuitMapDto, CircuitMapGame } from 'views/circuit-maps/circuit-map-types';
-import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
     CreateGoalToolUnavailableError,
@@ -42,6 +41,7 @@ import {
 import type { BaselineCollectionHandle } from 'views/live-session/BaselineCollection';
 import type { AiChatHandle } from './ai-chat';
 import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
+import type { LiveSessionSnapshot } from 'views/live-session/live-session-types';
 import type { SessionAnalysisHandle } from 'views/lap-analysis/session-analysis';
 import type { UserSummaryHandle } from 'views/user-summary/user-summary';
 import type { AiMapDisplayPayload } from './AiMapToolDisplay';
@@ -151,7 +151,7 @@ export interface AiCommandRegistryContext extends FrontendAiCommandContext {
     recordingState?: RecordingState | null;
     activeAgentSession?: AgentSessionInfo | null;
     analysisContext?: any;
-    sessionIntelligence?: SessionIntelligence | null;
+    getLiveSessionSnapshot?: (() => LiveSessionSnapshot) | null;
     opportunityAgentState: OpportunityAgentState;
     livePerformanceAnalystState?: LivePerformanceAnalystState;
     startTrackGuide: () => void;
@@ -212,7 +212,7 @@ const getBaselineReadiness = (context: AiCommandRegistryContext) => {
 };
 
 const buildLiveAnalystSnapshot = (context: AiCommandRegistryContext) => {
-    const snapshot = context.sessionIntelligence?.getLiveSessionSnapshot() as Record<string, any> | undefined;
+    const snapshot = context.getLiveSessionSnapshot?.();
     const { record, tag, ready } = getBaselineReadiness(context);
     return {
         ...(snapshot ?? {}),
@@ -281,8 +281,9 @@ export const startAgentRuntime = async (
         return { status: 'started', agent_mode: agentMode, interval_seconds: intervalSeconds, initial };
     }
 
-    const intelligence = context.sessionIntelligence;
-    if (!intelligence) throw new NoLiveSessionError('Live session intelligence is unavailable.');
+    if (!context.getLiveSessionSnapshot) {
+        throw new NoLiveSessionError('Live session snapshot is unavailable.');
+    }
     const state = context.livePerformanceAnalystState ?? { enabled: false };
     if (state.enabled) {
         return {

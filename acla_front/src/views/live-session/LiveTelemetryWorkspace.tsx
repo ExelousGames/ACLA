@@ -110,7 +110,6 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
     }
 
     protected renderPanelContent(instance: LiveVisualizationInstance) {
-        const events = this.context.sessionIntelligence.getAllEvents();
         if (instance.type === 'live-trajectory-map') {
             return <LiveTrajectoryMap key={instance.name} name={instance.name} />;
         }
@@ -130,7 +129,7 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
                 <LiveEventLog
                     key={instance.name}
                     name={instance.name}
-                    events={Array.isArray(instance.data) ? instance.data : events}
+                    initialEvents={Array.isArray(instance.data) ? instance.data : undefined}
                     onUpdate={(data) => this.updateVisualization(instance.name, data).success}
                     onDisable={() => this.closeVisualization({ name: instance.name }).success}
                 />

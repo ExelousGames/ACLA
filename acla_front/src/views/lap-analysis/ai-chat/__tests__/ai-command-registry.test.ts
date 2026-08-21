@@ -109,12 +109,17 @@ describe('frontend AI tool registry', () => {
         await expect(startAgentRuntime('live_performance_analyst', {
             sessionMode: 'live',
             recordingState: RecordingState.RECORDING,
-            sessionIntelligence: {
-                getLiveSessionSnapshot: () => ({
-                    status: 'ready',
-                    track: 'brands_hatch',
-                }),
-            } as any,
+            getLiveSessionSnapshot: () => ({
+                status: 'ready',
+                track: 'brands_hatch',
+                car: '',
+                current_lap: 0,
+                completed_laps: 0,
+                normalized_position: 0,
+                sample_count: 1,
+                live_session_type: 'unknown',
+                completed_lap_count: 0,
+            }),
             opportunityAgentState: {
                 intervalId: null,
                 inFlight: false,

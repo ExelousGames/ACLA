@@ -4,12 +4,11 @@ import {
     QueryResult,
     FieldStats,
     QueryScope,
-    EventType,
     ReduceOp,
+    TelemetrySource,
     TelemetryValueByReduce,
 } from './types';
-import { TelemetryBuffer } from './TelemetryBuffer';
-import { EventLog } from './EventLog';
+import { getTelemetryLap } from './live-performance-analyst';
 
 // ── Field groups ──────────────────────────────────────────────────────────────
 // LLM uses group names; executor expands to raw Physics_* field names.
@@ -71,7 +70,7 @@ function resolveFieldAlias(field: string): string {
 }
 
 // Expand group aliases to raw field names. Unknown names passed through as-is.
-function expandFields(fields: string[]): string[] {
+export function expandFields(fields: string[]): string[] {
     const expanded: string[] = [];
     for (const f of fields) {
         const field = resolveFieldAlias(f);
@@ -85,12 +84,102 @@ function expandFields(fields: string[]): string[] {
     return Array.from(new Set(expanded));
 }
 
+export interface TelemetryScopeCollector {
+    addRows(rows: TelemetrySample[]): void;
+    getRows(): TelemetrySample[];
+}
+
+const getSampleTimestamp = (sample: TelemetrySample): number | null => {
+    const value = sample.Physics_timestamp ?? sample.timestamp;
+    const timestamp = Number(value);
+    return value != null && Number.isFinite(timestamp) ? timestamp : null;
+};
+
+/**
+ * Collects only the rows needed by a resolved scope while a JSONL file is
+ * delivered in chunks. Row indexes are zero-based and match writer sequence
+ * numbers minus one.
+ */
+export function createTelemetryScopeCollector(
+    scope: Exclude<QueryScope, { type: 'event' }>,
+    currentLap: number,
+): TelemetryScopeCollector {
+    let rowsSeen = 0;
+    let selected: TelemetrySample[] = [];
+    let selectedStart = 0;
+    const fallbackCount = scope.type === 'last_seconds'
+        ? Math.max(0, Math.ceil(scope.seconds * 1000 / 50))
+        : 0;
+    let fallbackRows: TelemetrySample[] = [];
+    let lastRowHadTimestamp = false;
+
+    const addRows = (rows: TelemetrySample[]) => {
+        for (const sample of rows) {
+            const rowIndex = rowsSeen;
+            rowsSeen += 1;
+
+            switch (scope.type) {
+                case 'now':
+                    selected = [sample];
+                    selectedStart = 0;
+                    break;
+
+                case 'range':
+                    if (rowIndex >= scope.start && rowIndex < scope.end) selected.push(sample);
+                    break;
+
+                case 'lap': {
+                    const targetLap = scope.lap === 'current'
+                        ? currentLap
+                        : scope.lap === 'last'
+                            ? currentLap - 1
+                            : scope.lap;
+                    if (getTelemetryLap(sample) === targetLap) selected.push(sample);
+                    break;
+                }
+
+                case 'last_seconds': {
+                    fallbackRows.push(sample);
+                    if (fallbackRows.length > fallbackCount) {
+                        fallbackRows.splice(0, fallbackRows.length - fallbackCount);
+                    }
+
+                    selected.push(sample);
+                    const timestamp = getSampleTimestamp(sample);
+                    lastRowHadTimestamp = timestamp !== null;
+                    if (timestamp !== null) {
+                        const cutoff = timestamp - scope.seconds * 1000;
+                        while (selectedStart < selected.length) {
+                            const candidateTimestamp = getSampleTimestamp(selected[selectedStart]);
+                            if (candidateTimestamp !== null && candidateTimestamp >= cutoff) break;
+                            selectedStart += 1;
+                        }
+                        if (selectedStart > 1024 && selectedStart * 2 > selected.length) {
+                            selected = selected.slice(selectedStart);
+                            selectedStart = 0;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    };
+
+    return {
+        addRows,
+        getRows: () => (
+            scope.type === 'last_seconds' && !lastRowHadTimestamp
+                ? fallbackRows.slice()
+                : selected.slice(selectedStart)
+        ),
+    };
+}
+
 // ── Scope resolver ────────────────────────────────────────────────────────────
 
 export function resolveScope(
     scope: QueryScope,
-    buffer: TelemetryBuffer,
-    log: EventLog,
+    buffer: TelemetrySource,
     currentLap: number,
 ): TelemetrySample[] {
     switch (scope.type) {
@@ -100,35 +189,21 @@ export function resolveScope(
         case 'last_seconds':
             return buffer.sliceByTime(scope.seconds * 1000);
 
-        case 'event': {
-            const events = log.find({
-                eventType: scope.eventType as EventType,
-                scope: scope.which === 'last' ? 'last' : 'last',
-                currentLap,
-            });
-            if (events.length === 0) return [];
-            const ev = events[events.length - 1];
-            return buffer.slice(ev.startSampleIdx, ev.endSampleIdx + 1);
-        }
+        // Event ranges are owned and resolved by the mounted event-log
+        // visualization before the live-session query is executed.
+        case 'event':
+            return [];
 
         case 'lap': {
-            if (scope.lap === 'current') {
-                const evs = log.byLap(currentLap);
-                if (evs.length === 0) return buffer.last(200);
-                const start = evs[0].startSampleIdx;
-                return buffer.slice(start, buffer.length);
-            }
-            if (scope.lap === 'last') {
-                const evs = log.byLap(currentLap - 1);
-                if (evs.length === 0) return [];
-                const start = evs[0].startSampleIdx;
-                const end = evs[evs.length - 1].endSampleIdx;
-                return buffer.slice(start, end + 1);
-            }
-            // Numeric lap
-            const evs = log.byLap(scope.lap);
-            if (evs.length === 0) return [];
-            return buffer.slice(evs[0].startSampleIdx, evs[evs.length - 1].endSampleIdx + 1);
+            const targetLap = scope.lap === 'current'
+                ? currentLap
+                : scope.lap === 'last'
+                    ? currentLap - 1
+                    : scope.lap;
+            const oldestAvailableIndex = buffer.length - buffer.size;
+            return buffer
+                .slice(oldestAvailableIndex, buffer.length)
+                .filter((sample) => getTelemetryLap(sample) === targetLap);
         }
 
         case 'range':
@@ -150,8 +225,8 @@ function extractValues(samples: TelemetrySample[], field: string): number[] {
 function computeStats(values: number[]): FieldStats {
     if (values.length === 0) return { avg: 0, min: 0, max: 0, stddev: 0 };
     const avg = values.reduce((a, b) => a + b, 0) / values.length;
-    const min = Math.min(...values);
-    const max = Math.max(...values);
+    const min = values.reduce((current, value) => Math.min(current, value), values[0]);
+    const max = values.reduce((current, value) => Math.max(current, value), values[0]);
     const variance = values.reduce((a, b) => a + (b - avg) ** 2, 0) / values.length;
     return { avg, min, max, stddev: Math.sqrt(variance) };
 }
@@ -161,8 +236,12 @@ const REDUCERS: {
 } = {
     raw: (values) => values,
     avg: (values) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0,
-    min: (values) => values.length ? Math.min(...values) : 0,
-    max: (values) => values.length ? Math.max(...values) : 0,
+    min: (values) => values.length
+        ? values.reduce((current, value) => Math.min(current, value), values[0])
+        : 0,
+    max: (values) => values.length
+        ? values.reduce((current, value) => Math.max(current, value), values[0])
+        : 0,
     stats: computeStats,
 };
 
@@ -174,19 +253,27 @@ function reduceField<TReduce extends ReduceOp>(
     return REDUCERS[op](extractValues(samples, field));
 }
 
+/** Reduces already-selected samples using the canonical aliases and groups. */
+export function reduceTelemetrySamples<TReduce extends ReduceOp>(
+    samples: TelemetrySample[],
+    fields: string[],
+    op: TReduce,
+): QueryResult<TReduce> {
+    const rawFields = expandFields(fields);
+    const result: QueryResult<TReduce> = {};
+    for (const field of rawFields) {
+        result[field] = reduceField(samples, field, op);
+    }
+    return result;
+}
+
 // ── Public executor ───────────────────────────────────────────────────────────
 
 export function executeQuery<TReduce extends ReduceOp>(
     query: TelemetryQuery<TReduce>,
-    buffer: TelemetryBuffer,
-    log: EventLog,
+    buffer: TelemetrySource,
     currentLap: number,
 ): QueryResult<TReduce> {
-    const samples = resolveScope(query.scope, buffer, log, currentLap);
-    const rawFields = expandFields(query.fields);
-    const result: QueryResult<TReduce> = {};
-    for (const field of rawFields) {
-        result[field] = reduceField(samples, field, query.reduce);
-    }
-    return result;
+    const samples = resolveScope(query.scope, buffer, currentLap);
+    return reduceTelemetrySamples(samples, query.fields, query.reduce);
 }

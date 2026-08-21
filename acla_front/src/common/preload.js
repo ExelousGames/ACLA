@@ -1,4 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const { DESKTOP_GAME_SET, isRecordingStartFailure } = require('../../electron/recording/recording-protocol');
+const { validateStandardTelemetrySample } = require('../../electron/recording/telemetry-contract');
 /**
  * Electron's main process is a Node.js environment that has full operating system access. 
  * On top of Electron modules, you can also access Node.js built-ins, as well as any packages installed via npm. 
@@ -8,10 +10,276 @@ const { contextBridge, ipcRenderer } = require('electron');
  */
 
 
+const recordingViewCallbacks = new Set();
+const recordingEndedCallbacks = new Set();
+const recordedFileCallbacks = new Set();
+const recordedFilePorts = new Map();
+let activeRecordingPort = null;
+let recordingEndDelivered = false;
+
+const fanOut = (callbacks, payload) => {
+    for (const callback of Array.from(callbacks)) {
+        try {
+            callback(payload);
+        } catch (error) {
+            console.error('Electron bridge callback failed', error);
+        }
+    }
+};
+
+const fanOutAsync = async (callbacks, payload) => {
+    for (const callback of Array.from(callbacks)) {
+        try {
+            await callback(payload);
+        } catch (error) {
+            console.error('Electron bridge callback failed', error);
+        }
+    }
+};
+
+const subscribe = (callbacks, callback, name) => {
+    if (typeof callback !== 'function') throw new TypeError(`${name} requires a callback function`);
+    callbacks.add(callback);
+    let subscribed = true;
+    return () => {
+        if (!subscribed) return;
+        subscribed = false;
+        callbacks.delete(callback);
+    };
+};
+
+const isValidGame = (game) => DESKTOP_GAME_SET.has(game);
+const isSafeCount = (value) => Number.isSafeInteger(value) && value >= 0;
+
+const closeLivePort = (terminal) => {
+    const active = activeRecordingPort;
+    if (!active) return;
+    active.terminal = true;
+    activeRecordingPort = null;
+    try { active.port.close(); } catch { /* already closed */ }
+    // A direct error does not yet contain the writer's final partial-file
+    // summary. The main lifecycle event delivers that richer result once.
+    if (terminal && !terminal.error && !recordingEndDelivered) {
+        recordingEndDelivered = true;
+        fanOut(recordingEndedCallbacks, terminal);
+    }
+};
+
+const validateViewMessage = (message, state) => {
+    if (!message || typeof message !== 'object' || message.game !== state.game) return false;
+    if (message.type === 'frame') {
+        const keys = Object.keys(message);
+        if (keys.length !== 6
+            || !['type', 'game', 'sample', 'sequence', 'committedSequence', 'committedCount']
+                .every((key) => Object.prototype.hasOwnProperty.call(message, key))
+            || !validateStandardTelemetrySample(message.sample).ok
+            || !isSafeCount(message.sequence)
+            || !isSafeCount(message.committedSequence)
+            || !isSafeCount(message.committedCount)
+            || message.sequence !== state.latestSequence + 1
+            || message.committedSequence < state.committedSequence
+            || message.committedCount !== message.committedSequence) return false;
+        state.latestSequence = message.sequence;
+        state.committedSequence = message.committedSequence;
+        return true;
+    }
+    if (message.type === 'terminal') {
+        if (typeof message.error === 'string' && message.error.length > 0) {
+            return Object.keys(message).length === 3;
+        }
+        return Object.keys(message).length === 4
+            && typeof message.filePath === 'string'
+            && message.filePath.length > 0
+            && isSafeCount(message.writtenSamples)
+            && message.writtenSamples >= state.committedSequence;
+    }
+    return false;
+};
+
+ipcRenderer.on('recording-view-port', (event, descriptor) => {
+    const port = event?.ports?.[0];
+    if (!descriptor || Object.keys(descriptor).length !== 1
+        || !isValidGame(descriptor.game) || event?.ports?.length !== 1
+        || !port || activeRecordingPort) {
+        try { port?.close(); } catch { /* invalid transfer */ }
+        return;
+    }
+
+    const state = {
+        game: descriptor.game,
+        port,
+        terminal: false,
+        latestSequence: 0,
+        committedSequence: 0,
+    };
+    activeRecordingPort = state;
+    recordingEndDelivered = false;
+    port.onmessage = (messageEvent) => {
+        const message = messageEvent?.data;
+        if (!validateViewMessage(message, state)) {
+            closeLivePort({ game: state.game, error: 'Invalid live recording update.' });
+            return;
+        }
+        if (message.type === 'frame') fanOut(recordingViewCallbacks, message);
+        else closeLivePort(message);
+    };
+    port.onmessageerror = () => closeLivePort({ game: state.game, error: 'Live recording port failed.' });
+    port.onclose = () => {
+        if (activeRecordingPort === state && !state.terminal) {
+            activeRecordingPort = null;
+        }
+    };
+    port.start();
+    port.postMessage({ type: 'ready', game: state.game });
+});
+
+const validateEndedResult = (result) => Boolean(
+    result
+    && isValidGame(result.game)
+    && ((typeof result.filePath === 'string' && isSafeCount(result.writtenSamples))
+        || (typeof result.error === 'string' && result.error.length > 0)),
+);
+
+ipcRenderer.on('recording-session-ended', (_event, result) => {
+    if (!validateEndedResult(result)) return;
+    if (activeRecordingPort?.game === result.game) closeLivePort(result);
+    else if (!recordingEndDelivered) {
+        recordingEndDelivered = true;
+        fanOut(recordingEndedCallbacks, result);
+    }
+});
+
+const validateRecordedFileEvent = (payload, readId, game) => {
+    if (!payload || payload.readId !== readId || typeof payload.type !== 'string') return false;
+    switch (payload.type) {
+        case 'format':
+            return Object.keys(payload).length === 4
+                && payload.format === 'standard-flat' && payload.game === game;
+        case 'chunk':
+            return Object.keys(payload).length === 4
+                && Array.isArray(payload.rows)
+                && payload.rows.length > 0
+                && isSafeCount(payload.chunkIndex)
+                && payload.rows.every((row) => validateStandardTelemetrySample(row).ok);
+        case 'progress':
+            return Object.keys(payload).length === 5
+                && isSafeCount(payload.rowsRead)
+                && isSafeCount(payload.bytesRead)
+                && isSafeCount(payload.totalBytes)
+                && payload.bytesRead <= payload.totalBytes;
+        case 'complete':
+            return Object.keys(payload).length === 6
+                && payload.format === 'standard-flat'
+                && payload.game === game
+                && isSafeCount(payload.rowCount)
+                && isSafeCount(payload.totalBytes);
+        case 'error':
+            return Object.keys(payload).every((key) => ['type', 'readId', 'message', 'row', 'byteOffset'].includes(key))
+                && typeof payload.message === 'string'
+                && payload.message.length > 0
+                && (payload.row === undefined || isSafeCount(payload.row))
+                && (payload.byteOffset === undefined || isSafeCount(payload.byteOffset));
+        default:
+            return false;
+    }
+};
+
+const closeRecordedFilePort = (readId) => {
+    const state = recordedFilePorts.get(readId);
+    if (!state) return;
+    state.terminal = true;
+    recordedFilePorts.delete(readId);
+    try { state.port.close(); } catch { /* already closed */ }
+};
+
+ipcRenderer.on('recorded-file-read-port', (event, descriptor) => {
+    const port = event?.ports?.[0];
+    if (!descriptor || Object.keys(descriptor).length !== 2
+        || typeof descriptor.readId !== 'string' || !descriptor.readId
+        || !isValidGame(descriptor.game) || event?.ports?.length !== 1
+        || !port || recordedFilePorts.has(descriptor.readId)) {
+        try { port?.close(); } catch { /* invalid transfer */ }
+        return;
+    }
+    const state = { port, game: descriptor.game, terminal: false };
+    recordedFilePorts.set(descriptor.readId, state);
+    port.onmessage = async (messageEvent) => {
+        const payload = messageEvent?.data;
+        if (!validateRecordedFileEvent(payload, descriptor.readId, descriptor.game)) {
+            fanOut(recordedFileCallbacks, {
+                type: 'error',
+                readId: descriptor.readId,
+                message: 'Invalid recorded-file event.',
+            });
+            closeRecordedFilePort(descriptor.readId);
+            return;
+        }
+        if (payload.type === 'chunk') {
+            const { chunkIndex, ...publicPayload } = payload;
+            await fanOutAsync(recordedFileCallbacks, publicPayload);
+            if (recordedFilePorts.get(descriptor.readId) === state && !state.terminal) {
+                port.postMessage({ type: 'chunk-consumed', readId: descriptor.readId, chunkIndex });
+            }
+            return;
+        }
+        fanOut(recordedFileCallbacks, payload);
+        if (payload.type === 'complete' || payload.type === 'error') closeRecordedFilePort(descriptor.readId);
+    };
+    port.onmessageerror = () => {
+        fanOut(recordedFileCallbacks, { type: 'error', readId: descriptor.readId, message: 'Recorded-file port failed.' });
+        closeRecordedFilePort(descriptor.readId);
+    };
+    port.onclose = () => {
+        if (recordedFilePorts.get(descriptor.readId) === state && !state.terminal) {
+            recordedFilePorts.delete(descriptor.readId);
+            fanOut(recordedFileCallbacks, {
+                type: 'error',
+                readId: descriptor.readId,
+                message: 'Recorded-file port closed unexpectedly.',
+            });
+        }
+    };
+    port.start();
+    port.postMessage({ type: 'ready', readId: descriptor.readId });
+});
+
+const validateRecordingStartResult = (result) => {
+    if (isRecordingStartFailure(result)) return result;
+    if (result?.ok === true && Object.keys(result).length === 4 && isValidGame(result.game)
+        && typeof result.filePath === 'string' && result.filePath.length > 0
+        && Number.isFinite(result.startedAt)) return result;
+    throw new Error('Main process returned an invalid recording start result.');
+};
+
+const cleanupPrivatePorts = () => {
+    closeLivePort(null);
+    for (const readId of Array.from(recordedFilePorts.keys())) closeRecordedFilePort(readId);
+};
+globalThis.addEventListener?.('unload', cleanupPrivatePorts, { once: true });
+
 //contextBridge.exposeInMainWorld makes the function available in the global electronAPI object within the renderer.
 contextBridge.exposeInMainWorld('electronAPI', {
 
     detectDesktopGame: () => ipcRenderer.invoke('detect-desktop-game'),
+
+    startRecordingSession: async (config) => validateRecordingStartResult(
+        await ipcRenderer.invoke('recording-session-start', config),
+    ),
+    stopRecordingSession: () => ipcRenderer.invoke('recording-session-stop'),
+    onRecordingViewUpdate: (callback) => subscribe(recordingViewCallbacks, callback, 'onRecordingViewUpdate'),
+    onRecordingSessionEnded: (callback) => subscribe(recordingEndedCallbacks, callback, 'onRecordingSessionEnded'),
+    startRecordedFileRead: async (request) => {
+        const result = await ipcRenderer.invoke('recorded-file-read-start', request);
+        if (!result || typeof result.readId !== 'string' || !result.readId) {
+            throw new Error('Main process returned an invalid recorded-file read id.');
+        }
+        return result;
+    },
+    cancelRecordedFileRead: async (readId) => {
+        await ipcRenderer.invoke('recorded-file-read-cancel', readId);
+        closeRecordedFilePort(readId);
+    },
+    onRecordedFileReadEvent: (callback) => subscribe(recordedFileCallbacks, callback, 'onRecordedFileReadEvent'),
 
     //run script in main process using async
     runPythonScript: (scriptPath, options) => ipcRenderer.invoke('run-python-script', scriptPath, options),

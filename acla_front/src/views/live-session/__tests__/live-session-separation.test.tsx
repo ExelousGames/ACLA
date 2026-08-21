@@ -3,6 +3,22 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
+import type { RecordingViewUpdate, StandardTelemetrySample } from '../live-session-types';
+
+let recordingViewHandler: ((update: RecordingViewUpdate) => void) | null = null;
+let recordingViewSequence = 0;
+
+const publishRecordingViewSample = (sample: StandardTelemetrySample) => {
+    recordingViewSequence += 1;
+    recordingViewHandler?.({
+        type: 'frame',
+        game: 'acc',
+        sample,
+        sequence: recordingViewSequence,
+        committedSequence: recordingViewSequence,
+        committedCount: recordingViewSequence,
+    });
+};
 
 const RecordedSelectionProvider = ({ children }: { children: React.ReactNode }) => {
     const [mapSelected, setMap] = useState<string | null>(null);
@@ -11,6 +27,12 @@ const RecordedSelectionProvider = ({ children }: { children: React.ReactNode }) 
             {children}
         </AnalysisContext.Provider>
     );
+};
+
+let capturedLiveSession: React.ContextType<typeof LiveSessionContext>;
+const LiveSessionCapture = () => {
+    capturedLiveSession = useContext(LiveSessionContext);
+    return null;
 };
 
 const SeparationHarness = () => {
@@ -25,8 +47,13 @@ const SeparationHarness = () => {
             <button onClick={() => live.startLiveSession('iracing')}>Capture iRacing</button>
             <button onClick={() => live.setRecordingMetadata({ sessionName: 'Live Run', mapName: 'Monza', carName: 'GT3', gameRecordedFrom: 'acc' })}>Start live metadata</button>
             <button onClick={() => {
-                live.setCurrentTelemetry({ Graphics_status: ACC_STATUS.ACC_LIVE, speed: 120 });
-                live.setStaticData({ track: 'Monza', car_model: 'GT3' });
+                publishRecordingViewSample({
+                    Graphics_status: ACC_STATUS.ACC_LIVE,
+                    Graphics_normalized_car_position: 0.1,
+                    Static_track: 'Monza',
+                    Static_car_model: 'GT3',
+                    speed: 120,
+                });
                 live.setRecordingMetadata({ sessionName: 'Live Run', mapName: 'Monza', carName: 'GT3', gameRecordedFrom: 'acc' });
                 live.transitionRecordingState({ type: 'sessionAvailable' });
             }}>Populate live state</button>
@@ -64,14 +91,66 @@ const SeparationHarness = () => {
                     }</output>
                 </>
             ) : null}
-            <output data-testid="telemetry-speed">{live.currentTelemetry.speed || 'none'}</output>
-            <output data-testid="static-track">{live.staticData.track || 'none'}</output>
+            <output data-testid="telemetry-speed">{String(live.currentTelemetry.speed || 'none')}</output>
+            <output data-testid="next-corner">{live.getNextCorner()?.name || 'none'}</output>
+            <output data-testid="static-track">{live.staticData.Static_track || 'none'}</output>
             <output data-testid="recording-state">{live.recordingState}</output>
         </>
     );
 };
 
 describe('live session state separation', () => {
+    beforeEach(() => {
+        recordingViewHandler = null;
+        recordingViewSequence = 0;
+        Object.defineProperty(window, 'electronAPI', {
+            configurable: true,
+            value: {
+                onRecordingViewUpdate: jest.fn((handler) => {
+                    recordingViewHandler = handler;
+                    return jest.fn();
+                }),
+                onRecordingSessionEnded: jest.fn().mockReturnValue(jest.fn()),
+            },
+        });
+    });
+
+    it('derives snapshot and corner data from only the latest telemetry sample', () => {
+        render(
+            <LiveSessionProvider>
+                <LiveSessionCapture />
+            </LiveSessionProvider>,
+        );
+
+        act(() => {
+            capturedLiveSession.startLiveSession('acc');
+            [1, 2, 3].forEach((lap) => publishRecordingViewSample({
+                Static_track: 'monza',
+                Static_car_model: 'Ferrari 296',
+                Static_num_cars: 1,
+                Graphics_completed_laps: lap,
+                Graphics_normalized_car_position: 0.1,
+            }));
+        });
+
+        expect('telemetry' in capturedLiveSession).toBe(false);
+        expect(capturedLiveSession.getLiveSessionSnapshot()).toEqual({
+            status: 'ready',
+            track: 'monza',
+            car: 'Ferrari 296',
+            current_lap: 3,
+            completed_laps: 3,
+            normalized_position: 0.1,
+            sample_count: 3,
+            live_session_type: 'solo_practice',
+            completed_lap_count: 3,
+        });
+        expect(capturedLiveSession.getNextCorner()).toMatchObject({
+            name: 'T2 Seconda Variante',
+            trackPosition: 0.18,
+        });
+    });
+
     it('never changes recorded Analysis selection when live metadata starts or resets', () => {
         render(
             <LiveSessionProvider>
@@ -157,7 +236,6 @@ describe('live session state separation', () => {
     });
 
     it('clears telemetry, static data, metadata, and recording state on full reset', () => {
-        jest.useFakeTimers();
         render(
             <LiveSessionProvider>
                 <RecordedSelectionProvider>
@@ -168,8 +246,8 @@ describe('live session state separation', () => {
 
         fireEvent.click(screen.getByText('Capture ACC'));
         fireEvent.click(screen.getByText('Populate live state'));
-        act(() => jest.advanceTimersByTime(150));
         expect(screen.getByTestId('telemetry-speed')).toHaveTextContent('120');
+        expect(screen.getByTestId('next-corner')).toHaveTextContent('T2 Seconda Variante');
         expect(screen.getByTestId('static-track')).toHaveTextContent('Monza');
 
         fireEvent.click(screen.getByText('Reset live recording'));
@@ -177,9 +255,9 @@ describe('live session state separation', () => {
         expect(screen.getByTestId('session-game')).toHaveTextContent('none');
         expect(screen.getByTestId('live-session-name')).toHaveTextContent('none');
         expect(screen.getByTestId('telemetry-speed')).toHaveTextContent('none');
+        expect(screen.getByTestId('next-corner')).toHaveTextContent('none');
         expect(screen.getByTestId('static-track')).toHaveTextContent('none');
         expect(screen.getByTestId('recording-state')).toHaveTextContent('CHECKING');
-        jest.useRealTimers();
     });
 
     it('does not persist the selected game after the provider unmounts', () => {

@@ -1,12 +1,12 @@
 import './session-analysis.css';
 
 import { Box, Tabs } from '@radix-ui/themes';
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import apiService from 'services/api.service';
 import {
     AI_TOOL_COMPONENT_NAMES,
-    NamedAiToolComponentHandle,
+    ObservableAiToolComponentHandle,
     useOptionalAiToolComponentRefDirectory,
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
@@ -25,7 +25,7 @@ import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
-import { AnalysisContext } from './analysis-context';
+import { AnalysisContext, AnalysisContextType } from './analysis-context';
 import {
     RecordedAiAnalysisState,
     createEmptyRecordedPlaybackSummary,
@@ -97,7 +97,7 @@ const requestSessionAnalysisOperation = async <T,>(
     }
 };
 
-export interface SessionAnalysisHandle extends NamedAiToolComponentHandle {
+export interface SessionAnalysisHandle extends ObservableAiToolComponentHandle<AnalysisContextType> {
     getSelectedSession(): RacingSessionDetailedInfoDto | null;
     getMapSelected(): string | null;
     getRecordedAiAnalysis(): RecordedAiAnalysisState;
@@ -286,16 +286,22 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     return <AnalysisContext.Provider value={contextValue}>{children}</AnalysisContext.Provider>;
 };
 
-const SessionAnalysis = ({ name }: { name: string }) => {
+export const SessionAnalysisContent = ({ name }: { name: string }) => {
     const analysisContext = useContext(AnalysisContext);
     const componentRefs = useOptionalAiToolComponentRefDirectory();
     const analysisContextRef = useRef(analysisContext);
     analysisContextRef.current = analysisContext;
+    const assistantSnapshotListenersRef = useRef(new Set<() => void>());
     const componentRef = useRef<SessionAnalysisHandle | null>(null);
 
     if (componentRef.current === null) {
         componentRef.current = {
             getComponentName: () => name,
+            getAssistantSnapshot: () => analysisContextRef.current,
+            subscribeAssistantSnapshot: (listener) => {
+                assistantSnapshotListenersRef.current.add(listener);
+                return () => assistantSnapshotListenersRef.current.delete(listener);
+            },
             getSelectedSession: () => analysisContextRef.current.sessionSelected,
             getMapSelected: () => analysisContextRef.current.mapSelected,
             getRecordedAiAnalysis: () => analysisContextRef.current.recordedAiAnalysis,
@@ -415,6 +421,9 @@ const SessionAnalysis = ({ name }: { name: string }) => {
         };
     }
     useRegisterAiToolComponentRef(componentRef);
+    useLayoutEffect(() => {
+        assistantSnapshotListenersRef.current.forEach((listener) => listener());
+    }, [analysisContext]);
 
     const { activeTab, mapSelected, sessionSelected, setActiveTab } = analysisContext;
 
@@ -433,5 +442,11 @@ const SessionAnalysis = ({ name }: { name: string }) => {
         </Tabs.Root>
     );
 };
+
+const SessionAnalysis = ({ name }: { name: string }) => (
+    <SessionAnalysisProvider>
+        <SessionAnalysisContent name={name} />
+    </SessionAnalysisProvider>
+);
 
 export default SessionAnalysis;

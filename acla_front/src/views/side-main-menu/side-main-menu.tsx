@@ -19,12 +19,28 @@ type SideMainMenuProps = {
 const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
     const environment = useEnvironment();
     const dashboardTabs = getDashboardTabs(environment);
-    const tabsRootProps = activeTab !== undefined
-        ? { value: activeTab, onValueChange: onTabChange }
-        : { defaultValue: getDefaultDashboardTab(environment) };
+    const defaultTab = getDefaultDashboardTab(environment);
+    const [uncontrolledTab, setUncontrolledTab] = React.useState(defaultTab);
+    const selectedTab = activeTab ?? uncontrolledTab;
+    const [openedTabs, setOpenedTabs] = React.useState<Set<string>>(
+        () => new Set([selectedTab]),
+    );
+    React.useEffect(() => {
+        setOpenedTabs((current) => current.has(selectedTab)
+            ? current
+            : new Set([...Array.from(current), selectedTab]));
+    }, [selectedTab]);
+    const isOpened = (value: string) => openedTabs.has(value) || selectedTab === value;
+    const handleTabChange = (value: string) => {
+        setOpenedTabs((current) => current.has(value)
+            ? current
+            : new Set([...Array.from(current), value]));
+        if (activeTab === undefined) setUncontrolledTab(value);
+        onTabChange?.(value);
+    };
 
     return (
-        <Tabs.Root className="TabsRoot" {...tabsRootProps}>
+        <Tabs.Root className="TabsRoot" value={selectedTab} onValueChange={handleTabChange}>
 
         <ScrollArea.Root className="ScrollAreaRoot">
 
@@ -48,25 +64,31 @@ const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
         </ScrollArea.Root>
 
         <Box className="Container">
-            {environment === 'electron' ? (
-                <Tabs.Content className="TabsContent" value="liveSession">
+            {environment === 'electron' && isOpened('liveSession') ? (
+                <Tabs.Content className="TabsContent" value="liveSession" forceMount>
                     <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
                 </Tabs.Content>
             ) : null}
 
-            <Tabs.Content className="TabsContent" value="analysis">
-                <SessionAnalysis name={AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS} />
-            </Tabs.Content>
+            {isOpened('analysis') ? (
+                <Tabs.Content className="TabsContent" value="analysis" forceMount>
+                    <SessionAnalysis name={AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS} />
+                </Tabs.Content>
+            ) : null}
 
-            <Tabs.Content className="TabsContent" value="userSummary">
-                <UserSummary name={AI_TOOL_COMPONENT_NAMES.USER_SUMMARY} />
-            </Tabs.Content>
+            {isOpened('userSummary') ? (
+                <Tabs.Content className="TabsContent" value="userSummary" forceMount>
+                    <UserSummary name={AI_TOOL_COMPONENT_NAMES.USER_SUMMARY} />
+                </Tabs.Content>
+            ) : null}
 
-            <Tabs.Content className="TabsContent" value="circuitMaps">
-                <CircuitMaps />
-            </Tabs.Content>
+            {isOpened('circuitMaps') ? (
+                <Tabs.Content className="TabsContent" value="circuitMaps" forceMount>
+                    <CircuitMaps />
+                </Tabs.Content>
+            ) : null}
 
-            <Tabs.Content className="TabsContent" value="adminPanel">
+            {isOpened('adminPanel') ? <Tabs.Content className="TabsContent" value="adminPanel" forceMount>
                 <ProtectedComponent
                     requiredPermission={{ action: 'create', resource: 'user' }}
                     fallback="Admin access required"
@@ -76,9 +98,9 @@ const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
                         <Button>Create New User</Button>
                     </Box>
                 </ProtectedComponent>
-            </Tabs.Content>
+            </Tabs.Content> : null}
 
-            <Tabs.Content className="TabsContent" value="adminonly">
+            {isOpened('adminonly') ? <Tabs.Content className="TabsContent" value="adminonly" forceMount>
                 <ProtectedComponent
                     requiredRole="admin"
                     fallback="Admin access required"
@@ -87,7 +109,7 @@ const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
                         <Text>Admin Only Section</Text>
                     </Box>
                 </ProtectedComponent>
-            </Tabs.Content>
+            </Tabs.Content> : null}
         </Box >
 
         </Tabs.Root>

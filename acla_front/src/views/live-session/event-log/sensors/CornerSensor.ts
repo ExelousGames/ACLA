@@ -1,5 +1,5 @@
-import { CornerDefinition, SessionEvent, TelemetrySample } from '../types';
-import { getCornerAtPosition } from '../track-corners';
+import { CornerDefinition, SessionEvent, TelemetrySample } from 'views/lap-analysis/session-intelligence/types';
+import { getCornerAtPosition } from 'views/lap-analysis/session-intelligence/track-corners';
 
 export class CornerSensor {
     private corners: CornerDefinition[] = [];
@@ -13,23 +13,19 @@ export class CornerSensor {
     }
 
     tick(sample: TelemetrySample, sampleIdx: number): SessionEvent | null {
-        const pos: number = sample['Graphics_normalized_car_position'] ?? 0;
-        const lap: number = sample['Graphics_completed_laps'] ?? 0;
-        const now = Date.now();
-
-        const corner = getCornerAtPosition(this.corners, pos);
+        const position: number = sample.Graphics_normalized_car_position ?? 0;
+        const lap: number = sample.Graphics_completed_laps ?? 0;
+        const corner = getCornerAtPosition(this.corners, position);
 
         if (!this.activeCorner && corner) {
-            // Entered a corner
             this.activeCorner = corner;
             this.enterSampleIdx = sampleIdx;
             this.enterLap = lap;
-            this.enterPosition = pos;
+            this.enterPosition = position;
             return null;
         }
 
         if (this.activeCorner && !corner) {
-            // Exited the corner — emit the range event
             const event: SessionEvent = {
                 id: `corner-${sampleIdx}`,
                 type: 'CORNER',
@@ -37,7 +33,7 @@ export class CornerSensor {
                 endSampleIdx: sampleIdx,
                 lap: this.enterLap,
                 trackPosition: this.enterPosition,
-                timestamp: now,
+                timestamp: Date.now(),
                 metadata: { name: this.activeCorner.name },
             };
             this.activeCorner = null;

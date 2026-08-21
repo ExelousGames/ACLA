@@ -81,10 +81,8 @@ const getDetectorPresentation = ({
 
 const getSessionPresentation = (game: DesktopGame): StatusPresentation => ({
     title: `${LIVE_SESSION_GAME_LABELS[game]} session`,
-    detail: game === 'acc'
-        ? 'Game locked for this live session.'
-        : 'Game locked. ACC recording controls are unavailable in this limited workspace.',
-    visualState: game === 'acc' ? 'ready' : 'limited',
+    detail: 'Game locked for this live session. Recording availability is checked when requested.',
+    visualState: detectedGamePresentation[game].visualState,
 });
 
 const LiveSessionGameStatus = () => {

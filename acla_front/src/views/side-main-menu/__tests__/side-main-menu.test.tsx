@@ -23,10 +23,10 @@ jest.mock('radix-ui', () => ({
         Corner: (props: any) => <div {...props} />,
     },
     Tabs: {
-        Root: ({ children, ...props }: any) => <div {...props}>{children}</div>,
+        Root: ({ children, onValueChange: _onValueChange, ...props }: any) => <div {...props}>{children}</div>,
         List: ({ children, ...props }: any) => <div role="tablist" {...props}>{children}</div>,
         Trigger: ({ children, ...props }: any) => <button role="tab" {...props}>{children}</button>,
-        Content: ({ children, ...props }: any) => <div {...props}>{children}</div>,
+        Content: ({ children, forceMount: _forceMount, ...props }: any) => <div {...props}>{children}</div>,
     },
 }));
 

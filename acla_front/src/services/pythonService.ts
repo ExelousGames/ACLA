@@ -1,6 +1,13 @@
 import { PythonShell } from 'python-shell';
 import path from 'path';
 import { IpcRendererEvent } from 'electron';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
+import type {
+    RecordedFileReadEvent,
+    RecordingStartResult,
+    RecordingStopResult,
+    RecordingViewUpdate,
+} from 'views/live-session/live-session-types';
 
 // Function with additional property
 export interface CallbackFunction {
@@ -19,8 +26,19 @@ declare global {
         electronAPI: {
             detectDesktopGame: () => Promise<{
                 supported: boolean;
-                detectedGame: 'ac' | 'acc' | 'iracing' | null;
+                detectedGame: DesktopGame | null;
             }>;
+            startRecordingSession: (config: { game: DesktopGame }) => Promise<RecordingStartResult>;
+            stopRecordingSession: () => Promise<RecordingStopResult>;
+            onRecordingViewUpdate: (callback: (update: RecordingViewUpdate) => void) => () => void;
+            onRecordingSessionEnded: (callback: (result: RecordingStopResult) => void) => () => void;
+            startRecordedFileRead: (request: {
+                filePath: string;
+                game: DesktopGame;
+                purpose: 'validate' | 'consume';
+            }) => Promise<{ readId: string }>;
+            cancelRecordedFileRead: (readId: string) => Promise<void>;
+            onRecordedFileReadEvent: (callback: (event: RecordedFileReadEvent) => void | Promise<void>) => () => void;
 
             /**
              * Run python script in main process

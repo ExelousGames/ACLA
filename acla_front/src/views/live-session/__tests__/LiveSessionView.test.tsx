@@ -15,7 +15,6 @@ import {
     BaselineCollectionNotStartedError,
 } from 'contexts/AiToolComponentError';
 import { createAiToolOperationFrom } from 'components/ai-engineering-tools';
-import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: jest.fn(),
@@ -30,7 +29,7 @@ jest.mock('views/lap-analysis/liveAnalysisSessionRecording', () => ({ recorderHo
 ));
 
 import { useDesktopGame } from 'contexts/DesktopGameContext';
-import LiveSessionView from '../LiveSessionView';
+import { LiveSessionContent } from '../LiveSessionView';
 
 const mockedUseDesktopGame = useDesktopGame as jest.Mock;
 
@@ -95,6 +94,7 @@ const detectionCases: Array<{
 const createRuntime = (sessionGame: DesktopGame | null = null) => ({
     sessionGame,
     currentTelemetry: {},
+    currentTelemetrySampleIndex: -1,
     telemetryStatus: null,
     staticData: {},
     recordingState: RecordingState.CHECKING,
@@ -104,19 +104,26 @@ const createRuntime = (sessionGame: DesktopGame | null = null) => ({
     restorationStatus: 'idle',
     restorationError: null,
     recordingFileValidation: null,
-    sessionIntelligence: {},
     analysisResultPages: [],
     activeAnalysisResultPageId: null,
+    getNextCorner: jest.fn((): ReturnType<LiveSessionHandle['getNextCorner']> => null),
+    getLiveSessionSnapshot: jest.fn(() => ({
+        status: 'empty' as const,
+        track: '',
+        car: '',
+        current_lap: 0,
+        completed_laps: 0,
+        normalized_position: 0,
+        sample_count: 0,
+        live_session_type: 'unknown' as const,
+        completed_lap_count: 0,
+    })),
     recorderControl: { openUploadFlow: jest.fn() },
     startLiveSession: jest.fn(),
     endLiveSession: jest.fn(),
-    setCurrentTelemetry: jest.fn(),
-    setStaticData: jest.fn(),
     setRecordingMetadata: jest.fn(),
     transitionRecordingState: jest.fn(),
-    appendTelemetrySample: jest.fn(),
-    readRecordedTelemetry: jest.fn(),
-    finalizeRecordingWrites: jest.fn(),
+    streamRecordedTelemetry: jest.fn(async () => ({ rowCount: 0, totalBytes: 0 })),
     clearRecordingSession: jest.fn(),
     clearPersistedDraft: jest.fn(),
     registerRecorderControl: jest.fn(),
@@ -124,7 +131,7 @@ const createRuntime = (sessionGame: DesktopGame | null = null) => ({
 
 const renderView = (runtime = createRuntime()) => render(
     <LiveSessionContext.Provider value={runtime as any}>
-        <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+        <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
     </LiveSessionContext.Provider>,
 );
 
@@ -134,11 +141,11 @@ const RegistrationObserver = () => {
     return null;
 };
 
-const renderRegisteredView = (runtime: ReturnType<typeof createRuntime>) => {
+const renderRegisteredView = (runtime: any) => {
     render(
         <AiToolComponentRefProvider>
             <LiveSessionContext.Provider value={runtime as any}>
-                <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
             </LiveSessionContext.Provider>
             <RegistrationObserver />
         </AiToolComponentRefProvider>,
@@ -148,8 +155,7 @@ const renderRegisteredView = (runtime: ReturnType<typeof createRuntime>) => {
 };
 
 const createTelemetryRuntime = () => {
-    const sessionIntelligence = new SessionIntelligence();
-    sessionIntelligence.tick({
+    const rows = [{
         Static_track: 'brands_hatch',
         Graphics_completed_laps: 1,
         Graphics_normalized_car_position: 0.1,
@@ -161,8 +167,7 @@ const createTelemetryRuntime = () => {
         Physics_wheel_pressure_rear_right: 30,
         status: 5,
         message: 6,
-    });
-    sessionIntelligence.tick({
+    }, {
         Static_track: 'brands_hatch',
         Graphics_completed_laps: 1,
         Graphics_normalized_car_position: 0.2,
@@ -174,10 +179,17 @@ const createTelemetryRuntime = () => {
         Physics_wheel_pressure_rear_right: 31,
         status: 7,
         message: 8,
-    });
+    }];
     return {
         ...createRuntime('acc'),
-        sessionIntelligence,
+        currentTelemetry: rows[rows.length - 1],
+        currentTelemetrySampleIndex: rows.length - 1,
+        streamRecordedTelemetry: jest.fn(async (onChunk: (rows: Record<string, any>[]) => void | Promise<void>) => {
+            await onChunk(rows.slice(0, 1));
+            await onChunk(rows.slice(1));
+            return { rowCount: rows.length, totalBytes: 100 };
+        }),
+        rows,
     };
 };
 
@@ -198,28 +210,22 @@ describe('LiveSessionView', () => {
             gameRecordedFrom: 'acc',
         };
         runtime.currentTelemetry = { Physics_speed_kmh: 210 };
-        runtime.sessionIntelligence = {
-            getLiveSessionSnapshot: () => ({
-                status: 'ready',
-                track: 'Monza',
-                car: 'BMW M4 GT3',
-                current_lap: 4,
-                completed_laps: 3,
-                normalized_position: 0.42,
-                sample_count: 1250,
-                live_session_type: 'practice',
-                baseline_ready: true,
-                baseline_collection_started: true,
-                baseline_progress_percent: 100,
-                baseline_lap: 3,
-                completed_lap_count: 3,
-            }),
-        };
+        runtime.getLiveSessionSnapshot = jest.fn(() => ({
+            status: 'ready',
+            track: 'Monza',
+            car: 'BMW M4 GT3',
+            current_lap: 4,
+            completed_laps: 3,
+            normalized_position: 0.42,
+            sample_count: 1250,
+            live_session_type: 'solo_practice',
+            completed_lap_count: 3,
+        }));
 
         render(
             <AiToolComponentRefProvider>
                 <LiveSessionContext.Provider value={runtime as any}>
-                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
             </AiToolComponentRefProvider>,
@@ -235,6 +241,7 @@ describe('LiveSessionView', () => {
         });
         expect(handle.getRecordingState()).toBe(RecordingState.RECORDING);
         expect(handle.getCurrentTelemetry()).toEqual({ Physics_speed_kmh: 210 });
+        expect(handle.getAssistantSnapshot()).toBe(runtime);
     });
 
     it.each([
@@ -330,7 +337,7 @@ describe('LiveSessionView', () => {
         render(
             <AiToolComponentRefProvider>
                 <LiveSessionContext.Provider value={createRuntime('acc') as any}>
-                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
             </AiToolComponentRefProvider>,
@@ -349,6 +356,84 @@ describe('LiveSessionView', () => {
         expect(startCollection).toHaveBeenCalledWith({ timeoutMs: 12_000 });
         expect(operation.statuses).toHaveLength(0);
         await expect(operation.result).rejects.toBe(failure);
+    });
+
+    it('resolves telemetry scopes from the recorded writer file', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const runtime = createTelemetryRuntime();
+        const handle = renderRegisteredView(runtime);
+
+        await expect(handle.getTelemetryForScope({ type: 'lap', lap: 'current' }))
+            .resolves.toEqual(runtime.rows);
+        expect(runtime.streamRecordedTelemetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses recorded row indexes for resolved event scopes', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const runtime = createTelemetryRuntime();
+        const handle = renderRegisteredView(runtime);
+        act(() => {
+            componentDirectory!.registerComponentRef({ current: {
+                getComponentName: () => 'visualization:event-log',
+                findEvents: jest.fn(() => [{
+                    id: 'corner-1',
+                    type: 'CORNER',
+                    startSampleIdx: 0,
+                    endSampleIdx: 0,
+                    lap: 1,
+                    trackPosition: 0.1,
+                    timestamp: 0,
+                }]),
+            } as any });
+        });
+
+        await expect(handle.getTelemetryForScope({
+            type: 'event',
+            eventType: 'CORNER',
+            which: 'last',
+        })).resolves.toEqual([runtime.rows[0]]);
+    });
+
+    it('returns an empty historical scope before a writer file exists', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const handle = renderRegisteredView(createRuntime('acc'));
+
+        await expect(handle.getTelemetryForScope({ type: 'now' })).resolves.toEqual([]);
+        await expect(handle.queryTelemetryMetric({
+            fields: ['speed'],
+            scope: { type: 'now' },
+            reduce: 'avg',
+        })).resolves.toEqual({ Physics_speed_kmh: 0 });
+    });
+
+    it('uses the next corner owned by LiveSessionContext', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const runtime = createTelemetryRuntime();
+        runtime.getNextCorner.mockReturnValue({
+            name: 'T2 Seconda Variante',
+            trackPosition: 0.18,
+            distanceAhead: 0.08,
+        });
+        const handle = renderRegisteredView(runtime);
+
+        const corner = handle.getNextCorner();
+        expect(corner).toMatchObject({
+            name: 'T2 Seconda Variante',
+            trackPosition: 0.18,
+        });
+        expect(corner?.distanceAhead).toBeCloseTo(0.08);
+
+        const aiResult = await handle.getNextCornerForAi().result;
+        if (aiResult instanceof Error) throw aiResult;
+        expect(aiResult).toMatchObject({
+            status: 'complete',
+            corner: {
+                name: 'T2 Seconda Variante',
+                track_position: 0.18,
+            },
+        });
+        expect(aiResult.corner.distance_ahead).toBeCloseTo(0.08);
+        expect(runtime.getNextCorner).toHaveBeenCalledTimes(2);
     });
 
     it('owns the live-session detection and recording runtimes', () => {
@@ -387,7 +472,7 @@ describe('LiveSessionView', () => {
         render(
             <AiToolComponentRefProvider>
                 <LiveSessionContext.Provider value={createRuntime('acc') as any}>
-                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
             </AiToolComponentRefProvider>,
@@ -413,7 +498,7 @@ describe('LiveSessionView', () => {
         render(
             <AiToolComponentRefProvider>
                 <LiveSessionContext.Provider value={createRuntime('acc') as any}>
-                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
             </AiToolComponentRefProvider>,
@@ -463,7 +548,7 @@ describe('LiveSessionView', () => {
         render(
             <AiToolComponentRefProvider>
                 <LiveSessionContext.Provider value={createRuntime('acc') as any}>
-                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
             </AiToolComponentRefProvider>,
@@ -494,7 +579,7 @@ describe('LiveSessionView', () => {
         render(
             <AiToolComponentRefProvider>
                 <LiveSessionContext.Provider value={runtime}>
-                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
             </AiToolComponentRefProvider>,
@@ -554,7 +639,7 @@ describe('LiveSessionView', () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: null, detectionStatus: 'error', error: 'tasklist failed' });
         view.rerender(
             <LiveSessionContext.Provider value={runtime as any}>
-                <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
             </LiveSessionContext.Provider>,
         );
 

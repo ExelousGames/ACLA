@@ -86,7 +86,8 @@
       "node_modules/**/*",
       "public/electron.js",
       "public/desktop-game-detection.js",
-      "src/common/preload.js"
+      "src/common/preload.js",
+      "electron/**/*"
     ],
     "extraResources": [
       {

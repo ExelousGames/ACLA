@@ -1,4 +1,5 @@
 import { RecordingState } from 'views/lap-analysis/recording-state';
+import { isDesktopGame } from 'contexts/DesktopGameContext';
 import {
     PERSISTED_LIVE_SESSION_DRAFT_VERSION,
     PersistedLiveSessionDraft,
@@ -39,9 +40,6 @@ const readManifest = (storage: Storage): PersistedLiveSessionDraftManifest => {
     }
 };
 
-const isSupportedGame = (value: unknown): value is PersistedLiveSessionDraft['sessionGame'] =>
-    value === 'acc' || value === 'ac' || value === 'iracing';
-
 const isRecordingState = (value: unknown): value is RecordingState =>
     Object.values(RecordingState).includes(value as RecordingState);
 
@@ -51,12 +49,13 @@ const isDraft = (value: unknown, ownerEmail: string): value is PersistedLiveSess
     const metadata = draft.recordingMetadata;
     return draft.version === PERSISTED_LIVE_SESSION_DRAFT_VERSION
         && normalizeLiveSessionOwnerEmail(draft.ownerEmail) === ownerEmail
-        && isSupportedGame(draft.sessionGame)
+        && isDesktopGame(draft.sessionGame)
         && Boolean(metadata)
         && typeof metadata?.sessionName === 'string'
         && typeof metadata?.mapName === 'string'
         && typeof metadata?.carName === 'string'
-        && isSupportedGame(metadata?.gameRecordedFrom)
+        && isDesktopGame(metadata?.gameRecordedFrom)
+        && metadata?.gameRecordedFrom === draft.sessionGame
         && typeof draft.telemetryFilePath === 'string'
         && draft.telemetryFilePath.length > 0
         && typeof draft.recordedSampleCount === 'number'
