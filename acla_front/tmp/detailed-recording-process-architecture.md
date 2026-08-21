@@ -210,7 +210,6 @@ type ManagedRecording = {
   writer: UtilityProcess;
   view: UtilityProcess;
   readyWorkers: Set<'reader' | 'writer' | 'view'>;
-  writtenSamples: number;
   stopPromise: Promise<StopResult> | null;
 };
 ```
