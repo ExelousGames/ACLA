@@ -109,7 +109,7 @@ The manager constructor must be side-effect free. Only `RecordingSessionManager.
 
 The selected live telemetry reader is game-specific. For ACC, `acc-reader-worker.js` starts and owns the Python reader; its Python child handle is private reader state. Telemetry never passes through the Electron main process. A game without a shipped reader never enters this diagram because reader entry-point resolution returns an `ok: false` result before any pipeline resource is created.
 
-When another simulator's recording support is implemented, it supplies a different reader that may use a different language, SDK, process model, or transport. That reader must map its raw data to [`telemetry-fields.md`](telemetry-fields.md), implement the shared reader protocol, and emit validated `SourceFrame` events whose `sample` uses only the standard names. The same message-channel roles, writer and saving behavior, view worker, renderer port, manager, and shutdown sequence remain in use.
+When another simulator's recording support is implemented, it supplies a different reader that may use a different language, SDK, process model, or transport. That reader must map its raw data to [`telemetry-fields.md`](telemetry-fields.md), implement the shared reader protocol, and emit validated `SourceFrame` events whose `sample` uses only the standard names. The same message-channel roles, writer and saving behavior, view worker, preload-owned renderer port, manager, and shutdown sequence remain in use.
 
 ## Shared Telemetry and Reader Contract
 
@@ -175,6 +175,79 @@ new RecordingSessionManager({
 
 All five properties are required. The constructor validates shapes and that `recordingDirectory` is a non-empty absolute path, then stores them without invoking callbacks, forking, creating channels/directories, or resolving Python.
 
+### What `MessageChannelMain` means in this architecture
+
+[`MessageChannelMain`](https://www.electronjs.org/docs/latest/api/message-channel-main/) is Electron's main-process equivalent of the browser's `MessageChannel`. It is a small endpoint factory, not a worker, process, event name, shared queue, or application-wide message bus. Each call to `new MessageChannelMain()` synchronously creates exactly two connected [`MessagePortMain`](https://www.electronjs.org/docs/latest/api/message-port-main/) endpoints:
+
+```js
+const { port1, port2 } = new MessageChannelMain();
+```
+
+There is no separate channel object that carries later application messages. Sending on `port1` makes a message available on `port2`, and sending on `port2` makes a message available on `port1`. The two ports are technically bidirectional, point-to-point endpoints; this architecture assigns each pair a narrower logical direction so ownership and validation remain obvious.
+
+`MessageChannelMain` is injected into `RecordingSessionManager` so manager tests can supply a fake constructor and assert exactly when pairs are created and where their endpoints go. Production passes Electron's main-process `MessageChannelMain` export. Merely injecting or storing the constructor creates no port. `startSession()` calls it four times only after the game and reader launch config have resolved successfully.
+
+The four pairs have these exact roles:
+
+| Pair created in main | Endpoint transferred to first owner | Endpoint transferred to second owner | Allowed application traffic |
+| --- | --- | --- | --- |
+| `readerToWriter` | reader: `frameToWriter` | writer: `frameFromReader` | Reader sends validated `SourceFrame` and end-of-stream events to writer. |
+| `readerToView` | reader: `frameToView` | view: `frameFromReader` | Reader sends the same validated `SourceFrame` and end-of-stream events to view. This is a distinct send; `MessageChannelMain` does not broadcast one send to multiple pairs. |
+| `writerToView` | writer: `progressToView` | view: `progressFromWriter` | Writer sends committed sequence ranges, committed counts, final progress, and write failure. |
+| `viewToPreload` | view: `updatesToPreload` | owning preload: `updatesFromView` | View sends display batches and its terminal event; preload sends the ready acknowledgement in the reverse direction on the same pair. |
+
+The `port1` and `port2` labels have no semantic difference. The implementation makes the allocation deterministic as follows, and tests assert this mapping:
+
+```js
+const readerToWriter = new MessageChannelMain();
+const readerToView = new MessageChannelMain();
+const writerToView = new MessageChannelMain();
+const viewToPreload = new MessageChannelMain();
+
+writer.postMessage(
+  {
+    type: 'initialize',
+    game,
+    recordingDirectory,
+    portRoles: ['frameFromReader', 'progressToView'],
+  },
+  [readerToWriter.port2, writerToView.port1],
+);
+
+view.postMessage(
+  {
+    type: 'initialize',
+    game,
+    portRoles: ['frameFromReader', 'progressFromWriter', 'updatesToPreload'],
+  },
+  [readerToView.port2, writerToView.port2, viewToPreload.port1],
+);
+
+mainWindow.webContents.postMessage(
+  'recording-view-port',
+  { game },
+  [viewToPreload.port2],
+);
+
+reader.postMessage(
+  {
+    type: 'initialize',
+    game,
+    readerOptions,
+    portRoles: ['frameToWriter', 'frameToView'],
+  },
+  [readerToWriter.port1, readerToView.port1],
+);
+```
+
+`UtilityProcess.postMessage(message, transfer)` transfers an endpoint from the main process to a utility process. The utility receives it in `process.parentPort`'s initialization event as `event.ports[index]`; `portRoles[index]` defines which role that index must implement. `webContents.postMessage(channel, message, transfer)` transfers the preload endpoint to the renderer process, where Electron exposes it on the IPC event as a native DOM `MessagePort`. Ordinary `ipcMain.handle`/`ipcRenderer.invoke` calls cannot transfer these ports.
+
+Transfer moves ownership; it is not a copy of the endpoint. After a successful transfer, the manager must neither send through nor close the transferred endpoint, and transferred ports must not be placed in `ManagedRecording`. During partial-startup rollback, main closes only endpoints that have not yet been transferred; each receiving process closes the endpoints it owns before it acknowledges shutdown.
+
+Every receiver must validate the initialization descriptor and exact port count/order, attach `message` and `close` handlers, and then call `start()` so queued messages can drain. Utility-process endpoints use the `MessagePortMain` Node/EventEmitter API (`port.on('message', event => event.data)`); the preload endpoint uses the DOM `MessagePort` API. Payloads are passed under structured-clone semantics, so receivers get values rather than shared JavaScript object identity.
+
+These direct ports are the recording data plane. The reader's high-frequency telemetry therefore travels reader-to-writer and reader-to-view without being relayed by `RecordingSessionManager`, `ipcMain`, or React. Utility-process parent messages and normal request/response IPC remain the lower-volume control plane for initialization, readiness, stop requests, final summaries, and process failure. Ports queue until started but are not durable storage and provide no application-level commit acknowledgement, retry, or disk backpressure; writer commit messages provide the only authoritative saved-sample progress. A `close` event before the expected terminal protocol message is treated as a pipeline failure, while normal shutdown sends the terminal message before the owner closes its endpoint.
+
 `getReaderLaunchConfig(game)` is called only after a start request has passed renderer, live-session, and `DesktopGame` validation. It resolves the game-specific worker entry point and everything that worker needs to launch. Its shared output is:
 
 ```ts
@@ -222,13 +295,13 @@ Startup sequence:
 
 1. Validate that the request came from the current main live-workspace renderer, then validate `config.game` before manager creation. A missing, non-string, or otherwise malformed value returns `{ ok: false, error: { type: 'malformed-recording-game', message } }`; a well-formed string outside `DesktopGame` returns the same shape with `type: 'unknown-recording-game'`. Verify that the selected game matches the renderer's active detected game and live session.
 2. Resolve the selected game's reader launch config. If the reader entry point or any required launch path is missing, return `{ ok: false, error: { type: 'unsupported-recording-game', message } }`. This failure creates no active recording state, worker, channel, directory, or file.
-3. Fork the shared writer and view utilities plus the resolved game-specific reader utility with `stdio: 'pipe'` and separate service names. A synchronous fork failure terminates utilities already created by this attempt.
+3. Start the writer, view, and selected game-reader utility processes, giving each a distinct service name and piped standard I/O. If starting any process throws immediately, terminate every process that was already started during this startup attempt.
 4. Attach lifecycle/error/exit listeners before initialization.
-5. Construct four `MessageChannelMain` pairs: reader/writer, reader/view, writer/view, and view/renderer.
-6. Initialize writer with `game` and the recording directory; transfer its reader-input and view-progress endpoints. The writer chooses the filename and opens it exclusively. No schema version or envelope field is added to telemetry rows.
-7. Initialize view with `game`, transfer its reader-input, writer-progress-input, and renderer-output endpoints, and transfer the renderer endpoint through `webContents.postMessage`.
-8. Wait for writer file-open readiness and the view/renderer direct-port handshake.
-9. Initialize the selected reader with `game`, the matching reader launch config, and the remaining writer/view endpoints.
+5. Construct the four `MessageChannelMain` pairs and assign their endpoints exactly as defined above: reader/writer, reader/view, writer/view, and view/preload. Pair creation itself sends nothing and attaches no main-process telemetry listener.
+6. Initialize writer with `game` and the recording directory; transfer `frameFromReader` and `progressToView`. The writer validates the descriptor and port order, installs handlers, starts the ports, chooses the filename, and opens it exclusively. No schema version or envelope field is added to telemetry rows.
+7. Initialize view with `game`; transfer `frameFromReader`, `progressFromWriter`, and `updatesToPreload`. Transfer the connected `updatesFromView` endpoint to the owning preload through `webContents.postMessage('recording-view-port', { game }, [port])`. Both receivers validate, install handlers, and start their owned ports.
+8. Wait for writer file-open readiness and the ready acknowledgement that preload sends back through `updatesFromView` after installing its handlers. The view reports that acknowledgement to the manager over the control plane.
+9. Initialize the selected reader with `game` and the matching reader launch config; transfer `frameToWriter` and `frameToView`. The reader validates and starts both ports before opening its game-specific telemetry source.
 10. In this phase the resolved ACC reader starts its Python telemetry process and reports ready after the Python process emits its first valid telemetry frame; it does not inspect `Graphics_status` or another field to determine whether the frame is live.
 11. Resolve with `{ ok: true, game, filePath, startedAt }`, relaying the writer-owned path without adding it to manager state.
 
@@ -409,7 +482,7 @@ The recording port is deliberately private because it is a capability: possessio
 The start and delivery sequence is:
 
 1. React registers its view-update and ended callbacks, then calls `window.electronAPI.startRecordingSession({ game })`.
-2. Preload invokes the main-process start handler. The main process validates the sender and game, lazily creates the pipeline, and transfers the view/renderer endpoint with `webContents.postMessage('recording-view-port', descriptor, [port])`.
+2. Preload invokes the main-process start handler. The main process validates the sender and game, lazily creates the pipeline, and transfers the `updatesFromView` endpoint of the view/preload pair with `webContents.postMessage('recording-view-port', descriptor, [port])`.
 3. Preload validates and stores the transferred port, installs its message and close handlers, and sends the ready acknowledgement. The raw port never crosses `contextBridge`.
 4. The shared view worker sends batches over the direct port. Preload validates each batch and fans it out to the registered callbacks; React updates `SessionIntelligence` and UI state.
 5. Stop still travels through request/response IPC because the main process owns lifecycle coordination. After shutdown, the main process sends one `recording-session-ended` event to the owning preload; the validated result is delivered once to ended subscribers, and preload releases the active recording port and callback state.
@@ -420,7 +493,7 @@ The preload bridge does **not** read ACC shared memory, parse a recorded file it
 
 There is one shared view worker for every `DesktopGame` that has a reader. In this phase it receives `SourceFrame` messages from the ACC Python reader; future game-specific readers use the same port and batching path. It receives commit sequence ranges and committed counts directly from the shared writer. It buffers display frames for 100 ms, tracks the latest unchanged standard sample/commit sequence/committed count, and sends one renderer message containing every standard sample for `SessionIntelligence` plus the latest sample for React. Shared UI data always comes from standard keys such as `Static_track` and `Static_car_model`, regardless of game. It flushes immediately on final events.
 
-The preload bridge described above keeps the transferred port private and is the only renderer-side endpoint of the view/renderer channel. The view worker does not call React or `ipcRenderer` directly. An unexpected renderer-port closure is a group failure; normal finalization sends a terminal message before closing it.
+The preload bridge described above keeps `updatesFromView` private and is the only renderer-side owner in the view/preload pair. The view worker does not call React or `ipcRenderer` directly. An unexpected preload-port closure is a group failure; normal finalization sends a terminal message before closing it.
 
 The recording API becomes:
 
@@ -501,7 +574,11 @@ A later **Start Recording** always creates three new utilities, four new channel
   - no recording startup path constructs or depends on a custom `Error` subclass
   - main-process and preload/renderer tests assert the failure object's `ok`, `error.type`, and `error.message` survive IPC unchanged
   - unsupported requests resolve/check reader config but create no directories, files, processes, workers, or channels
-  - a valid ACC request creates exactly three forks and four channels with the correct endpoints
+  - a valid ACC request creates exactly three forks and four `MessageChannelMain` pairs only after reader resolution; pair construction alone does not send or receive application data
+  - exact endpoint allocation and role order: reader/writer, reader/view, writer/view, and view/preload; all eight endpoints are transferred exactly once to the named owners and none are retained in `ManagedRecording`
+  - utility and preload receivers validate the initialization descriptor and port count/order, attach message/close handlers before `start()`, and reject a missing, extra, duplicated, or swapped endpoint
+  - frames bypass the main process, the reader performs two explicit sends rather than relying on broadcast behavior, and only writer progress acknowledges durable samples
+  - expected terminal-message-before-close behavior, unexpected port close as group failure, and ownership-correct partial-startup cleanup
   - reader config/game mismatch rolls back startup
   - path relay without manager path ownership
   - readiness, stale-owner/wrong-game rejection, conflicts, owner-scoped identifier-free stop, worker failure, renderer destruction, and quit
