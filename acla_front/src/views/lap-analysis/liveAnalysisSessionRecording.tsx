@@ -483,7 +483,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                 <div className="live-recording-bar__status">
                     <div className="live-recording-bar__status-row">
                         <span className="live-recording-bar__status-label">MAP</span>
-                        <span className="live-recording-bar__status-value">{analysisContext.recordingMetadata?.mapName || analysisContext.staticData.Static_track || '—'}</span>
+                        <span className="live-recording-bar__status-value">{analysisContext.staticData.Static_track || '—'}</span>
                     </div>
                     <div className="live-recording-bar__status-row">
                         <span className="live-recording-bar__status-label">SAMPLES</span>

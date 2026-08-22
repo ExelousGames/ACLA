@@ -1,6 +1,5 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { EditorView } from '@codemirror/view';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: () => ({
@@ -153,24 +152,6 @@ const renderedResultIds = (): string[] => (
 
 const selectView = (value: string): void => {
     fireEvent.change(screen.getByRole('combobox', { name: 'View' }), { target: { value } });
-};
-
-const getQueryEditor = (): HTMLElement => (
-    screen.getByRole('textbox', { name: 'Query expression' })
-);
-
-const getQueryExpression = (): string => {
-    const view = EditorView.findFromDOM(getQueryEditor());
-    if (!view) throw new Error('Expected the JSONata CodeMirror editor to be mounted.');
-    return view.state.doc.toString();
-};
-
-const setQueryExpression = (value: string): void => {
-    const view = EditorView.findFromDOM(getQueryEditor());
-    if (!view) throw new Error('Expected the JSONata CodeMirror editor to be mounted.');
-    act(() => view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: value },
-    }));
 };
 
 const selectTrendParent = (value: string): void => {
@@ -484,9 +465,8 @@ describe('AnalysisResultsChart', () => {
         expect(onSelectPage).toHaveBeenCalledWith('array-page-2');
         expect(screen.getByRole('button', { name: 'Lap Results' })).toHaveAttribute('aria-pressed', 'true');
         expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
-        await screen.findByRole('textbox', { name: 'Query expression' });
-        expect(getQueryExpression()).toBe(query);
-        expect(renderedResultIds()).toEqual(['latest-match']);
+        expect(screen.queryByRole('textbox', { name: 'Query expression' })).not.toBeInTheDocument();
+        await waitFor(() => expect(renderedResultIds()).toEqual(['latest-match']));
     });
 
     it('applies an explicit displayed page number by retained-array position', async () => {
@@ -535,7 +515,7 @@ describe('AnalysisResultsChart', () => {
             used_most_recent_fallback: false,
         }));
         expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
-        expect(renderedResultIds()).toEqual(['page-one-match']);
+        await waitFor(() => expect(renderedResultIds()).toEqual(['page-one-match']));
     });
 
     it('treats recorded analysis as one implicit page', async () => {
@@ -570,8 +550,7 @@ describe('AnalysisResultsChart', () => {
             requested_page_number: 12,
             used_most_recent_fallback: true,
         });
-        await screen.findByRole('textbox', { name: 'Query expression' });
-        expect(getQueryExpression()).toBe(query);
+        expect(screen.queryByRole('textbox', { name: 'Query expression' })).not.toBeInTheDocument();
         expect(renderedResultIds()).toEqual(['recorded-match']);
     });
 
@@ -593,7 +572,7 @@ describe('AnalysisResultsChart', () => {
             });
     });
 
-    it('keeps successful results while showing an attempted invalid AI query diagnostic', async () => {
+    it('keeps successful results after an invalid AI query without exposing query controls', async () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         render(
             <AnalysisResultsChart
@@ -625,8 +604,8 @@ describe('AnalysisResultsChart', () => {
             });
         });
 
-        expect(getQueryExpression()).toBe(invalidQuery);
-        expect(screen.getByTestId('active-page-query-error')).toBeInTheDocument();
+        expect(screen.queryByRole('textbox', { name: 'Query expression' })).not.toBeInTheDocument();
+        expect(screen.queryByTestId('active-page-query-error')).not.toBeInTheDocument();
         expect(renderedResultIds()).toEqual(['preserved']);
         expect(chartRef.current!.getFilteredSegments()).toMatchObject({
             committedQuery: 'elements[id = "preserved"]',
@@ -851,7 +830,7 @@ describe('AnalysisResultsChart', () => {
         expect(onSelectPage).not.toHaveBeenCalled();
         expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
         expect(screen.getByText(/Baseline: Monza.*GT4.*Lap 7/)).toBeInTheDocument();
-        expect(screen.getByRole('region', { name: 'Edit query' })).toBeInTheDocument();
+        expect(screen.queryByRole('region', { name: 'Edit query' })).not.toBeInTheDocument();
         await waitFor(() => expect(screen.getByTestId('analysis-result-second-page-result'))
             .toHaveTextContent('Second page mistake'));
         expect(screen.queryByTestId('analysis-result-first-page-result')).not.toBeInTheDocument();
@@ -964,11 +943,12 @@ describe('AnalysisResultsChart', () => {
         selectView('all-results');
         await waitFor(() => expect(chartRef.current!.getFilteredSegments().appliedView)
             .toBe('all-results'));
-        const appliedPreset = chartRef.current!.getFilteredSegments();
-        setQueryExpression('elements^(>normalizedPositionRange.start)');
-        expect(chartRef.current!.getFilteredSegments()).toEqual(appliedPreset);
-
-        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await act(async () => {
+            await chartRef.current!.applyAnalysisResultQuery({
+                query: 'elements^(>normalizedPositionRange.start)',
+                page_number: 1,
+            }).result;
+        });
         await waitFor(() => expect(chartRef.current!.getFilteredSegments().appliedView).toBe('custom'));
         const custom = chartRef.current!.getFilteredSegments();
         expect(custom).toMatchObject({
@@ -990,8 +970,12 @@ describe('AnalysisResultsChart', () => {
             segments: [{ id: 'second-page-only' }],
         }));
 
-        setQueryExpression('elements[id = "missing"]');
-        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await act(async () => {
+            await chartRef.current!.applyAnalysisResultQuery({
+                query: 'elements[id = "missing"]',
+                page_number: 2,
+            }).result;
+        });
         await waitFor(() => expect(chartRef.current!.getFilteredSegments()).toMatchObject({
             status: 'empty',
             activePageId: 'filtered-second',
@@ -1509,7 +1493,7 @@ describe('AnalysisResultsChart', () => {
         expect(screen.queryByText(/end_index|67890/)).not.toBeInTheDocument();
     });
 
-    it('defaults to Mistakes and exposes four complete templates plus Custom in one View selector', async () => {
+    it('defaults to Mistakes and exposes preset views without an editable query field', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="default-filter"
@@ -1537,6 +1521,9 @@ describe('AnalysisResultsChart', () => {
         ]);
         expect(screen.queryByRole('combobox', { name: 'Sort by' })).not.toBeInTheDocument();
         expect(screen.queryByRole('combobox', { name: 'Showing' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('textbox', { name: 'Query expression' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument();
         await waitFor(() => {
             const queryError = screen.queryByTestId('active-page-query-error');
             if (queryError) throw new Error(queryError.textContent ?? 'Query evaluation failed.');
@@ -1604,12 +1591,13 @@ describe('AnalysisResultsChart', () => {
             'third-fastest',
             'least-time',
         ]));
-        expect(getQueryExpression()).toContain('>deltaMs');
+        expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('time-lost-mistakes');
     });
 
-    it('keeps draft edits isolated, resets them, and applies custom queries by button or Ctrl+Enter', async () => {
+    it('keeps custom queries available to the programmatic API without exposing manual editing', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
         render(
-            <AnalysisResultsChart name="visualization:analysis-results"
+            <AnalysisResultsChart ref={chartRef} name="visualization:analysis-results"
                 id="dynamic-sort-name"
                 data={{
                     elements: [
@@ -1621,34 +1609,24 @@ describe('AnalysisResultsChart', () => {
         );
 
         await waitFor(() => expect(renderedResultIds()).toEqual(['practice', 'racing']));
-        const queryInput = getQueryEditor();
-        const templateExpression = getQueryExpression();
+        expect(screen.queryByRole('textbox', { name: 'Query expression' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument();
 
-        setQueryExpression('elements[id = "racing"]');
-        expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
-        expect(renderedResultIds()).toEqual(['practice', 'racing']);
-
-        fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-        await waitFor(() => expect(getQueryExpression()).toBe(templateExpression));
-        expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument();
-
-        setQueryExpression('elements[id = "racing"]');
-        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await act(async () => {
+            await chartRef.current!.applyAnalysisResultQuery({
+                query: 'elements[id = "racing"]',
+            }).result;
+        });
         await waitFor(() => expect(renderedResultIds()).toEqual(['racing']));
         expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('custom');
-
-        setQueryExpression('elements[id = "practice"]');
-        fireEvent.keyDown(queryInput, { key: 'Enter', ctrlKey: true });
-        await waitFor(() => expect(renderedResultIds()).toEqual(['practice']));
-
-        setQueryExpression('elements');
-        fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-        await waitFor(() => expect(getQueryExpression()).toBe('elements[id = "practice"]'));
     });
 
-    it('preserves the last valid matches and focuses the diagnostic after a failed manual Apply', async () => {
+    it('preserves the last valid matches after a failed programmatic query', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
         render(
             <AnalysisResultsChart
+                ref={chartRef}
                 name="visualization:analysis-results"
                 id="invalid-custom-query"
                 data={{ elements: [{ id: 'mistake', labels: ['MSP'] }] }}
@@ -1656,13 +1634,13 @@ describe('AnalysisResultsChart', () => {
         );
         await waitFor(() => expect(renderedResultIds()).toEqual(['mistake']));
 
-        setQueryExpression('5');
-        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await act(async () => {
+            await expect(chartRef.current!.applyAnalysisResultQuery({ query: '5' }).result)
+                .rejects.toMatchObject({ name: 'AnalysisResultsQueryError' });
+        });
 
-        const diagnostic = await screen.findByTestId('active-page-query-error');
-        expect(diagnostic).toHaveTextContent('INVALID_ACTIVE_PAGE_QUERY_RESULT');
-        expect(diagnostic).toHaveFocus();
-        expect(getQueryExpression()).toBe('5');
+        expect(screen.queryByTestId('active-page-query-error')).not.toBeInTheDocument();
+        expect(screen.queryByRole('textbox', { name: 'Query expression' })).not.toBeInTheDocument();
         expect(renderedResultIds()).toEqual(['mistake']);
         expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('mistakes');
     });
@@ -1869,8 +1847,9 @@ describe('AnalysisResultsChart', () => {
     });
 
     it('re-evaluates the committed custom expression against canonical live data', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const { rerender } = render(
-            <AnalysisResultsChart name="visualization:analysis-results"
+            <AnalysisResultsChart ref={chartRef} name="visualization:analysis-results"
                 id="live-ranking"
                 data={{
                     elements: [
@@ -1881,13 +1860,16 @@ describe('AnalysisResultsChart', () => {
                 }}
             />,
         );
-        await screen.findByRole('button', { name: 'Apply' });
-        setQueryExpression('elements[labels[$ in ["MSR", "Mistake (Racing)"]]]');
-        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await waitFor(() => expect(renderedResultIds()).toEqual(['one', 'two', 'practice']));
+        await act(async () => {
+            await chartRef.current!.applyAnalysisResultQuery({
+                query: 'elements[labels[$ in ["MSR", "Mistake (Racing)"]]]',
+            }).result;
+        });
         await waitFor(() => expect(renderedResultIds()).toEqual(['one', 'two']));
 
         rerender(
-            <AnalysisResultsChart name="visualization:analysis-results"
+            <AnalysisResultsChart ref={chartRef} name="visualization:analysis-results"
                 id="live-ranking"
                 data={{
                     elements: [
@@ -1953,8 +1935,10 @@ describe('AnalysisResultsChart', () => {
     });
 
     it('fails closed when automatic evaluation is invalid for a new input generation', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const view = render(
             <AnalysisResultsChart
+                ref={chartRef}
                 name="visualization:analysis-results"
                 id="automatic-query-failure"
                 data={{ elements: [{ id: 'old', labels: ['MSP'] }] }}
@@ -1962,27 +1946,32 @@ describe('AnalysisResultsChart', () => {
         );
         await waitFor(() => expect(renderedResultIds()).toEqual(['old']));
 
-        setQueryExpression('$exists(elements[id = "old"]) ? elements : 5');
-        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await act(async () => {
+            await chartRef.current!.applyAnalysisResultQuery({
+                query: '$exists(elements[id = "old"]) ? elements : 5',
+            }).result;
+        });
         await waitFor(() => expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('custom'));
 
         view.rerender(
             <AnalysisResultsChart
+                ref={chartRef}
                 name="visualization:analysis-results"
                 id="automatic-query-failure"
                 data={{ elements: [{ id: 'new', labels: ['MSP'] }] }}
             />,
         );
 
-        const diagnostic = await screen.findByTestId('active-page-query-error');
-        expect(diagnostic).toHaveTextContent('INVALID_ACTIVE_PAGE_QUERY_RESULT');
-        expect(renderedResultIds()).toEqual([]);
+        await waitFor(() => expect(renderedResultIds()).toEqual([]));
+        expect(screen.queryByTestId('active-page-query-error')).not.toBeInTheDocument();
         expect(screen.getByText('0 of 1 total')).toBeInTheDocument();
     });
 
-    it('suppresses stale manual completions after a newer page generation commits', async () => {
+    it('suppresses stale programmatic completions after a newer page generation commits', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const view = render(
             <AnalysisResultsChart
+                ref={chartRef}
                 name="visualization:analysis-results"
                 id="stale-query"
                 data={{ elements: [{ id: 'old', labels: ['MSP'] }] }}
@@ -2003,11 +1992,13 @@ describe('AnalysisResultsChart', () => {
             .mockImplementationOnce(() => pageResult);
 
         try {
-            setQueryExpression('elements');
-            fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+            const staleOperation = chartRef.current!.applyAnalysisResultQuery({ query: 'elements' });
+            const staleResult = staleOperation.result.catch((error) => error);
+            await waitFor(() => expect(evaluator).toHaveBeenCalledTimes(1));
 
             view.rerender(
                 <AnalysisResultsChart
+                    ref={chartRef}
                     name="visualization:analysis-results"
                     id="stale-query"
                     data={{ elements: [{ id: 'new', labels: ['MSP'] }] }}
@@ -2017,6 +2008,9 @@ describe('AnalysisResultsChart', () => {
             await waitFor(() => expect(renderedResultIds()).toEqual(['new']));
 
             await act(async () => resolveManual([{ id: 'old' }]));
+            await expect(staleResult).resolves.toMatchObject({
+                name: 'VisualizationControlFailedError',
+            });
             expect(renderedResultIds()).toEqual(['new']);
             expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('mistakes');
         } finally {
@@ -2026,8 +2020,10 @@ describe('AnalysisResultsChart', () => {
 
     it('regenerates a selected taxonomy template without rewriting Custom', async () => {
         const originalGetLabelName = mockGetLabelName;
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const renderChart = () => (
             <AnalysisResultsChart
+                ref={chartRef}
                 name="visualization:analysis-results"
                 id="taxonomy-refresh"
                 data={{ elements: [{ id: 'fresh', labels: ['Fresh Training'] }] }}
@@ -2043,15 +2039,16 @@ describe('AnalysisResultsChart', () => {
             view.rerender(renderChart());
             await waitFor(() => expect(renderedResultIds()).toEqual(['fresh']));
 
-            setQueryExpression('elements');
-            fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+            await act(async () => {
+                await chartRef.current!.applyAnalysisResultQuery({ query: 'elements' }).result;
+            });
             await waitFor(() => expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('custom'));
 
             mockGetLabelName = (labelId) => (
                 labelId === 'MSP' ? 'Newest Training' : originalGetLabelName(labelId)
             );
             view.rerender(renderChart());
-            await waitFor(() => expect(getQueryExpression()).toBe('elements'));
+            await waitFor(() => expect(chartRef.current!.getFilteredSegments().committedQuery).toBe('elements'));
             expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('custom');
         } finally {
             mockGetLabelName = originalGetLabelName;

@@ -56,7 +56,6 @@ import {
     type QueryAnalysisResultInput,
     type QueryAnalysisResultOutput,
 } from './analysisResultsQuery';
-import { JsonataQueryEditor } from './JsonataQueryEditor';
 
 const formatPosition = (value: number): string => `${(value * 100).toFixed(1)}%`;
 
@@ -783,14 +782,7 @@ type ActivePageQueryEvaluationResult =
 
 interface ActivePageQueryState {
     selectedView: ActivePageQueryViewKey;
-    committedView: ActivePageQueryViewKey;
-    draftExpression: string;
-    resetExpression: string;
-    committedExpression: string;
     matchedElements: AnalysisResultElement[];
-    error: AnalysisResultsQueryErrorDetail | null;
-    errorFocusRequest: number;
-    isEvaluating: boolean;
     getCommittedSnapshot: () => {
         isEvaluating: boolean;
         committedView: ActivePageQueryViewKey;
@@ -802,7 +794,6 @@ interface ActivePageQueryState {
         expression: string,
         isCurrent?: () => boolean,
     ) => Promise<ActivePageQueryEvaluationResult>;
-    resetDraft: () => void;
 }
 
 const useActivePageQueryState = (
@@ -812,14 +803,7 @@ const useActivePageQueryState = (
     const initialTemplate = templates.find(({ key }) => key === 'mistakes') ?? templates[0];
     const initialExpression = initialTemplate?.expression ?? 'elements';
     const [selectedView, setSelectedView] = React.useState<ActivePageQueryViewKey>('mistakes');
-    const [committedView, setCommittedView] = React.useState<ActivePageQueryViewKey>('mistakes');
-    const [draftExpression, setDraftExpression] = React.useState(initialExpression);
-    const [committedExpression, setCommittedExpression] = React.useState(initialExpression);
-    const [lastCustomExpression, setLastCustomExpression] = React.useState(initialExpression);
     const [matchedElements, setMatchedElements] = React.useState<AnalysisResultElement[]>([]);
-    const [error, setError] = React.useState<AnalysisResultsQueryErrorDetail | null>(null);
-    const [errorFocusRequest, setErrorFocusRequest] = React.useState(0);
-    const [isEvaluating, setIsEvaluating] = React.useState(false);
     const isEvaluatingRef = React.useRef(false);
     const generationRef = React.useRef(0);
     const matchedElementsSourceRef = React.useRef<AnalysisResultElement[] | null>(null);
@@ -838,7 +822,6 @@ const useActivePageQueryState = (
     const selectedTemplate = selectedView === 'custom'
         ? null
         : templateByKey.get(selectedView) ?? null;
-    const resetExpression = selectedTemplate?.expression ?? lastCustomExpression;
 
     const evaluate = React.useCallback(async (
         expression: string,
@@ -852,8 +835,6 @@ const useActivePageQueryState = (
         const generation = generationRef.current + 1;
         generationRef.current = generation;
         isEvaluatingRef.current = true;
-        setIsEvaluating(true);
-        setError(null);
         if (options.failClosed) setMatchedElements([]);
 
         try {
@@ -866,16 +847,12 @@ const useActivePageQueryState = (
 
             committedExpressionRef.current = expression;
             committedViewRef.current = options.view;
-            setCommittedExpression(expression);
-            setCommittedView(options.view);
             if (options.custom) {
                 lastCustomExpressionRef.current = expression;
-                setLastCustomExpression(expression);
             }
             matchedElementsSourceRef.current = elements;
             matchedElementsRef.current = resolved;
             setMatchedElements(resolved);
-            setError(null);
             return { status: 'applied', matchedElements: resolved };
         } catch (evaluationError) {
             if (
@@ -883,8 +860,6 @@ const useActivePageQueryState = (
                 || options.isCurrent?.() === false
             ) return { status: 'stale' };
             const queryError = toAnalysisResultsQueryError(evaluationError);
-            setError(queryError.detail);
-            if (!options.failClosed) setErrorFocusRequest((request) => request + 1);
             if (options.failClosed) {
                 matchedElementsSourceRef.current = elements;
                 matchedElementsRef.current = [];
@@ -894,7 +869,6 @@ const useActivePageQueryState = (
         } finally {
             if (generation === generationRef.current) {
                 isEvaluatingRef.current = false;
-                setIsEvaluating(false);
             }
         }
     }, [elements]);
@@ -908,9 +882,6 @@ const useActivePageQueryState = (
         skipNextAutomaticRef.current = null;
 
         const expression = selectedTemplate?.expression ?? lastCustomExpressionRef.current;
-        if (selectedTemplate && committedExpressionRef.current !== expression) {
-            setDraftExpression(expression);
-        }
         void evaluate(expression, {
             failClosed: true,
             custom: selectedView === 'custom',
@@ -928,16 +899,8 @@ const useActivePageQueryState = (
         matchedElementsRef.current = [];
         setMatchedElements([]);
         isEvaluatingRef.current = true;
-        setIsEvaluating(true);
-        setError(null);
         setSelectedView(view);
-        if (view === 'custom') {
-            setDraftExpression(lastCustomExpressionRef.current);
-            return;
-        }
-        const template = templateByKey.get(view);
-        if (template) setDraftExpression(template.expression);
-    }, [templateByKey]);
+    }, []);
 
     const applyExpression = React.useCallback(async (
         expression: string,
@@ -949,7 +912,6 @@ const useActivePageQueryState = (
         const nextView: ActivePageQueryViewKey = matchingTemplate?.expression === expression
             ? matchingTemplate.key
             : 'custom';
-        setDraftExpression(expression);
         const result = await evaluate(expression, {
             failClosed: false,
             custom: nextView === 'custom',
@@ -963,11 +925,6 @@ const useActivePageQueryState = (
         return result;
     }, [elements, evaluate, selectedView, templateByKey]);
 
-    const resetDraft = React.useCallback(() => {
-        setDraftExpression(resetExpression);
-        setError(null);
-    }, [resetExpression]);
-
     const matchedElementsAreCurrent = matchedElementsSourceRef.current === elements;
     const getCommittedSnapshot = React.useCallback(() => ({
         isEvaluating: isEvaluatingRef.current || matchedElementsSourceRef.current !== elements,
@@ -977,18 +934,10 @@ const useActivePageQueryState = (
     }), [elements]);
     return {
         selectedView,
-        committedView,
-        draftExpression,
-        resetExpression,
-        committedExpression,
         matchedElements: matchedElementsAreCurrent ? matchedElements : EMPTY_ANALYSIS_RESULT_ELEMENTS,
-        error,
-        errorFocusRequest,
-        isEvaluating: isEvaluating || !matchedElementsAreCurrent,
         getCommittedSnapshot,
         selectView,
         applyExpression,
-        resetDraft,
     };
 };
 
@@ -1103,10 +1052,6 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const activeQuery = useActivePageQueryState(elements, activeQueryTemplates);
     const activeQueryRef = React.useRef(activeQuery);
     activeQueryRef.current = activeQuery;
-    const activePageLabels = React.useMemo(
-        () => Array.from(new Set(elements.flatMap((element) => element.labels))),
-        [elements],
-    );
     const waitForAnalysisResultPage = React.useCallback((pageId: string): Promise<void> => {
         if (committedPageIdsRef.current.has(pageId)) return Promise.resolve();
         if (!mountedRef.current) {
@@ -1616,17 +1561,6 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                     </label>
                 </Flex>
                 </Flex>
-                <JsonataQueryEditor
-                    id={`${id}-active-page-query`}
-                    value={activeQuery.draftExpression}
-                    resetValue={activeQuery.resetExpression}
-                    labels={activePageLabels}
-                    isEvaluating={activeQuery.isEvaluating}
-                    diagnostic={activeQuery.error}
-                    diagnosticFocusRequest={activeQuery.errorFocusRequest}
-                    onApply={activeQuery.applyExpression}
-                    onReset={activeQuery.resetDraft}
-                />
                 <ScrollArea type="hover" className={styles.list}>
                 <Box className={styles.graph}>
                     <DataGraph spec={labelFrequencySpec} />

@@ -120,6 +120,24 @@ describe('recording session controls', () => {
         view.host.remove();
     });
 
+    it('gets the floating bar map from Static_track in the live session context', () => {
+        const runtime = createRuntime({
+            recordingMetadata: {
+                sessionName: 'Race',
+                mapName: 'Stale Track',
+                carName: 'GT3',
+                gameRecordedFrom: 'acc',
+            },
+        });
+        const view = renderRecorder(runtime);
+
+        expect(view.host).toHaveTextContent('MAP');
+        expect(view.host).toHaveTextContent('Monza');
+        expect(view.host).not.toHaveTextContent('Stale Track');
+        view.unmount();
+        view.host.remove();
+    });
+
     it('drives coming-soon behavior from the discriminated unsupported result', async () => {
         const runtime = createRuntime({
             sessionGame: 'iracing',
