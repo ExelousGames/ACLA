@@ -11,6 +11,11 @@ import {
 } from 'contexts/AiToolComponentRefContext';
 import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
 import {
+    liveTelemetryStore,
+    useCurrentTelemetry,
+    useTelemetryStatus,
+} from 'views/live-session/live-telemetry-store';
+import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CIRCUIT_MAP_GAMES,
     CircuitMapBinSample,
@@ -49,6 +54,7 @@ const EMPTY_SAMPLES: CircuitMapSamplesByMode = {
 const getAccTrackKey = (liveData: any, staticData: any): string | null => (
     liveData?.Static_track
     || liveData?.Static?.track
+    || staticData?.Static_track
     || staticData?.track
     || null
 );
@@ -75,6 +81,8 @@ const CircuitMaps = () => {
     const liveSession = useOptionalAiToolComponentSnapshot<LiveSessionRuntime>(
         AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
     );
+    const currentTelemetry = useCurrentTelemetry();
+    const telemetryStatus = useTelemetryStatus();
     const { refreshCircuitMaps, upsertCachedCircuitMap } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
@@ -101,17 +109,15 @@ const CircuitMaps = () => {
     const [isSaving, setIsSaving] = useState(false);
 
     const isAcc = game === 'acc';
-    const isAccLive = isAcc && liveSession?.telemetryStatus === ACC_STATUS.ACC_LIVE;
+    const isAccLive = isAcc && telemetryStatus === ACC_STATUS.ACC_LIVE;
     const sampleCount = countCircuitMapSamples(samplesByMode);
     const currentAccTrackKey = getAccTrackKey(
-        liveSession?.currentTelemetry ?? {},
+        currentTelemetry,
         liveSession?.staticData ?? {},
     );
     const liveCapture = useMemo(() => (
-        isAccLive && liveSession?.currentTelemetry && typeof liveSession.currentTelemetry === 'object'
-            ? extractAccCaptureSample(liveSession.currentTelemetry, liveSequenceRef.current)
-            : null
-    ), [isAccLive, liveSession?.currentTelemetry]);
+        isAccLive ? extractAccCaptureSample(currentTelemetry, liveSequenceRef.current) : null
+    ), [currentTelemetry, isAccLive]);
 
     const loadMapList = useCallback(async (nextGame: CircuitMapGame = game) => {
         setListState('loading');
@@ -167,19 +173,29 @@ const CircuitMaps = () => {
     }, []);
 
     useEffect(() => {
-        if (!isCapturing || !isAccLive || !liveCapture) {
-            return;
-        }
+        return liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') {
+                liveSequenceRef.current = 0;
+                lastCaptureSignatureRef.current = '';
+                return;
+            }
+            if (
+                event.type !== 'frame'
+                || !isCapturing
+                || !isAcc
+                || event.telemetryStatus !== ACC_STATUS.ACC_LIVE
+            ) return;
 
-        const signature = `${liveCapture.bin}:${liveCapture.position.x}:${liveCapture.position.y}:${liveCapture.position.z}`;
-        if (signature === lastCaptureSignatureRef.current) {
-            return;
-        }
+            const liveCapture = extractAccCaptureSample(event.sample, liveSequenceRef.current);
+            if (!liveCapture) return;
+            const signature = `${liveCapture.bin}:${liveCapture.position.x}:${liveCapture.position.y}:${liveCapture.position.z}`;
+            if (signature === lastCaptureSignatureRef.current) return;
 
-        lastCaptureSignatureRef.current = signature;
-        liveSequenceRef.current += 1;
-        setSamplesByMode((previous) => upsertCaptureModeSample(previous, captureMode, liveCapture));
-    }, [captureMode, isAccLive, isCapturing, liveCapture]);
+            lastCaptureSignatureRef.current = signature;
+            liveSequenceRef.current += 1;
+            setSamplesByMode((previous) => upsertCaptureModeSample(previous, captureMode, liveCapture));
+        }, { replayLatest: true });
+    }, [captureMode, isAcc, isCapturing]);
 
     const loadMap = useCallback(async (mapId: string) => {
         setSelectedMapId(mapId);

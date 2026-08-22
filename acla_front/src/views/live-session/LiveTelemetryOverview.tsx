@@ -5,6 +5,7 @@ import { LiveTelemetry } from './live-session-types';
 import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 import { runVisualizationBooleanCallback } from 'views/lap-analysis/visualization/visualization-component-callbacks';
 import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
+import { useCurrentTelemetry } from './live-telemetry-store';
 
 export interface LiveTelemetryOverviewHandle extends NamedAiToolComponentHandle {
     updateLiveTelemetry(data: LiveTelemetry): true;
@@ -13,7 +14,7 @@ export interface LiveTelemetryOverviewHandle extends NamedAiToolComponentHandle 
 
 interface LiveTelemetryOverviewProps {
     name: string;
-    telemetry: LiveTelemetry;
+    telemetry?: LiveTelemetry;
     onUpdate?: (data: LiveTelemetry) => boolean;
     onDisable?: () => boolean;
 }
@@ -24,6 +25,8 @@ const LiveTelemetryOverview = forwardRef<LiveTelemetryOverviewHandle, LiveTeleme
     onUpdate,
     onDisable,
 }, forwardedRef) => {
+    const currentTelemetry = useCurrentTelemetry();
+    const displayedTelemetry = telemetry ?? currentTelemetry;
     const [search, setSearch] = useState('');
     const handle = useMemo<LiveTelemetryOverviewHandle>(() => ({
         getComponentName: () => name,
@@ -46,10 +49,10 @@ const LiveTelemetryOverview = forwardRef<LiveTelemetryOverviewHandle, LiveTeleme
     useRegisterAiToolComponentRef(registeredHandleRef);
     const entries = useMemo(() => {
         const term = search.trim().toLowerCase();
-        return Object.entries(telemetry)
+        return Object.entries(displayedTelemetry)
             .filter(([key]) => !term || key.toLowerCase().includes(term))
             .sort(([left], [right]) => left.localeCompare(right));
-    }, [search, telemetry]);
+    }, [displayedTelemetry, search]);
 
     return (
         <Box className="live-optional-panel">

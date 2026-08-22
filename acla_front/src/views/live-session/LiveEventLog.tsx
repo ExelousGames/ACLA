@@ -1,7 +1,6 @@
 import React, {
     forwardRef,
     useCallback,
-    useContext,
     useEffect,
     useImperativeHandle,
     useMemo,
@@ -15,9 +14,9 @@ import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'conte
 import { runVisualizationBooleanCallback } from 'views/lap-analysis/visualization/visualization-component-callbacks';
 import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
 import { getTelemetryLap, getTelemetryTrack } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
-import { LiveSessionContext } from './LiveSessionContext';
 import { EventLog, EventSearchParams } from './event-log/EventLog';
 import { SensorManager } from './event-log/SensorManager';
+import { liveTelemetryStore } from './live-telemetry-store';
 
 const EVENT_COLORS: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
     CORNER: 'blue',
@@ -47,7 +46,6 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
     onUpdate,
     onDisable,
 }, forwardedRef) => {
-    const { currentTelemetry, currentTelemetrySampleIndex } = useContext(LiveSessionContext);
     const [search, setSearch] = useState('');
     const [events, setEvents] = useState<SessionEvent[]>(() => initialEvents.slice());
     const eventLogRef = useRef(new EventLog(initialEvents));
@@ -74,29 +72,28 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
     }, [initialEvents]);
 
     useEffect(() => {
-        const hasTelemetry = currentTelemetry && Object.keys(currentTelemetry).length > 0;
-        if (!hasTelemetry || currentTelemetrySampleIndex < 0) {
-            if (lastSampleIndexRef.current >= 0) resetTracking();
-            return;
-        }
+        return liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type !== 'frame') {
+                resetTracking();
+                return;
+            }
+            if (event.sampleIndex <= lastSampleIndexRef.current) return;
 
-        if (currentTelemetrySampleIndex === lastSampleIndexRef.current) return;
-        if (currentTelemetrySampleIndex < lastSampleIndexRef.current) resetTracking();
+            const track = getTelemetryTrack(event.sample);
+            if (track && track !== trackRef.current) {
+                trackRef.current = track;
+                sensorManagerRef.current.setTrack(track);
+            }
 
-        const track = getTelemetryTrack(currentTelemetry);
-        if (track && track !== trackRef.current) {
-            trackRef.current = track;
-            sensorManagerRef.current.setTrack(track);
-        }
-
-        currentLapRef.current = getTelemetryLap(currentTelemetry);
-        const eventCount = eventLogRef.current.length;
-        sensorManagerRef.current.tick(currentTelemetry, currentTelemetrySampleIndex, eventLogRef.current);
-        lastSampleIndexRef.current = currentTelemetrySampleIndex;
-        if (eventLogRef.current.length !== eventCount) {
-            setEvents(eventLogRef.current.all());
-        }
-    }, [currentTelemetry, currentTelemetrySampleIndex, resetTracking]);
+            currentLapRef.current = getTelemetryLap(event.sample);
+            const eventCount = eventLogRef.current.length;
+            sensorManagerRef.current.tick(event.sample, event.sampleIndex, eventLogRef.current);
+            lastSampleIndexRef.current = event.sampleIndex;
+            if (eventLogRef.current.length !== eventCount) {
+                setEvents(eventLogRef.current.all());
+            }
+        }, { replayLatest: true });
+    }, [resetTracking]);
 
     const handle = useMemo<LiveEventLogHandle>(() => ({
         getComponentName: () => name,

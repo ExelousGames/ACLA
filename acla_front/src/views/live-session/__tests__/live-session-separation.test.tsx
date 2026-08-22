@@ -4,6 +4,7 @@ import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import type { RecordingViewUpdate, StandardTelemetrySample } from '../live-session-types';
+import { liveTelemetryStore, useCurrentTelemetry } from '../live-telemetry-store';
 
 let recordingViewHandler: ((update: RecordingViewUpdate) => void) | null = null;
 let recordingViewSequence = 0;
@@ -30,14 +31,22 @@ const RecordedSelectionProvider = ({ children }: { children: React.ReactNode }) 
 };
 
 let capturedLiveSession: React.ContextType<typeof LiveSessionContext>;
+let contextOnlyRenderCount = 0;
 const LiveSessionCapture = () => {
     capturedLiveSession = useContext(LiveSessionContext);
     return null;
 };
 
+const ContextOnlyProbe = () => {
+    const live = useContext(LiveSessionContext);
+    contextOnlyRenderCount += 1;
+    return <output data-testid="all-static-data">{JSON.stringify(live.staticData)}</output>;
+};
+
 const SeparationHarness = () => {
     const recorded = useContext(AnalysisContext);
     const live = useContext(LiveSessionContext);
+    const currentTelemetry = useCurrentTelemetry();
     const [showLivePanel, setShowLivePanel] = useState(true);
 
     return (
@@ -52,7 +61,7 @@ const SeparationHarness = () => {
                     Graphics_normalized_car_position: 0.1,
                     Static_track: 'Monza',
                     Static_car_model: 'GT3',
-                    speed: 120,
+                    Physics_speed_kmh: 120,
                 });
                 live.setRecordingMetadata({ sessionName: 'Live Run', mapName: 'Monza', carName: 'GT3', gameRecordedFrom: 'acc' });
                 live.transitionRecordingState({ type: 'sessionAvailable' });
@@ -91,7 +100,7 @@ const SeparationHarness = () => {
                     }</output>
                 </>
             ) : null}
-            <output data-testid="telemetry-speed">{String(live.currentTelemetry.speed || 'none')}</output>
+            <output data-testid="telemetry-speed">{String(currentTelemetry.Physics_speed_kmh || 'none')}</output>
             <output data-testid="next-corner">{live.getNextCorner()?.name || 'none'}</output>
             <output data-testid="static-track">{live.staticData.Static_track || 'none'}</output>
             <output data-testid="recording-state">{live.recordingState}</output>
@@ -101,6 +110,8 @@ const SeparationHarness = () => {
 
 describe('live session state separation', () => {
     beforeEach(() => {
+        liveTelemetryStore.resetSession();
+        contextOnlyRenderCount = 0;
         recordingViewHandler = null;
         recordingViewSequence = 0;
         Object.defineProperty(window, 'electronAPI', {
@@ -149,6 +160,72 @@ describe('live session state separation', () => {
             name: 'T2 Seconda Variante',
             trackPosition: 0.18,
         });
+    });
+
+    it('locks every first-seen static key and isolates context from 120 dynamic frames', () => {
+        const frameSequences: number[] = [];
+        liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'frame') frameSequences.push(event.update.sequence);
+        });
+        render(
+            <LiveSessionProvider>
+                <LiveSessionCapture />
+                <ContextOnlyProbe />
+            </LiveSessionProvider>,
+        );
+
+        act(() => {
+            capturedLiveSession.startLiveSession('acc');
+            publishRecordingViewSample({
+                Static_track: 'monza',
+                Static_car_model: 'Ferrari 296',
+                Static_num_cars: 24,
+                Graphics_status: ACC_STATUS.ACC_LIVE,
+                Physics_speed_kmh: 1,
+            });
+        });
+        expect(screen.getByTestId('all-static-data')).toHaveTextContent('"Static_num_cars":24');
+        const rendersAfterStaticCapture = contextOnlyRenderCount;
+        const eventsBeforeDynamicFrames = frameSequences.length;
+
+        act(() => {
+            for (let frame = 0; frame < 120; frame += 1) {
+                publishRecordingViewSample({
+                    Static_track: 'changed-track',
+                    Static_car_model: 'changed-car',
+                    Static_num_cars: 99,
+                    Graphics_status: ACC_STATUS.ACC_LIVE,
+                    Physics_speed_kmh: frame,
+                });
+            }
+        });
+
+        expect(contextOnlyRenderCount).toBe(rendersAfterStaticCapture);
+        expect(frameSequences).toHaveLength(eventsBeforeDynamicFrames + 120);
+        expect(capturedLiveSession.staticData).toMatchObject({
+            Static_track: 'monza',
+            Static_car_model: 'Ferrari 296',
+            Static_num_cars: 24,
+        });
+
+        act(() => publishRecordingViewSample({
+            Static_track: 'still-ignored',
+            Static_weather: 'dry',
+            Graphics_status: ACC_STATUS.ACC_LIVE,
+        }));
+        expect(capturedLiveSession.staticData).toMatchObject({
+            Static_track: 'monza',
+            Static_weather: 'dry',
+        });
+
+        act(() => {
+            capturedLiveSession.transitionRecordingState({ type: 'sessionUnavailable' });
+            capturedLiveSession.transitionRecordingState({ type: 'sessionAvailable' });
+        });
+        expect(capturedLiveSession.staticData.Static_track).toBe('monza');
+
+        act(() => capturedLiveSession.endLiveSession());
+        expect(capturedLiveSession.staticData).toEqual({});
     });
 
     it('never changes recorded Analysis selection when live metadata starts or resets', () => {

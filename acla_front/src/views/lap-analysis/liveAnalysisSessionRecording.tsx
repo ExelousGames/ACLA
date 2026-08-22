@@ -8,6 +8,7 @@ import apiService from 'services/api.service';
 import { RecordingState, StopReason } from './recording-state';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import type { LiveRecordingMetadata } from 'views/live-session/live-session-types';
+import { liveTelemetryStore, useCommittedSampleCount } from 'views/live-session/live-telemetry-store';
 
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
 const POST_SUCCESS_DIALOG_CLOSE_MS = 800;
@@ -36,6 +37,7 @@ type LiveAnalysisSessionRecordingProps = {
 
 export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAnalysisSessionRecordingProps) {
     const analysisContext = useContext(LiveSessionContext);
+    const recordedSampleCount = useCommittedSampleCount();
     const auth = useAuth();
     const state = analysisContext.recordingState;
     const registerRecorderControl = analysisContext.registerRecorderControl;
@@ -77,7 +79,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         : null;
     const hasRecordedData = Boolean(analysisContext.recordingFileKey)
         && (restoredFileIsUploadable ?? (
-            analysisContext.recordedSampleCount > 0
+            recordedSampleCount > 0
             || state === RecordingState.RECORDING
         ));
 
@@ -124,8 +126,8 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             startInFlightRef.current = false;
             return;
         }
-        const rawTrackName = ctx.staticData?.Static_track || ctx.currentTelemetry?.Static_track;
-        const rawCarName = ctx.staticData?.Static_car_model || ctx.currentTelemetry?.Static_car_model;
+        const rawTrackName = ctx.staticData?.Static_track;
+        const rawCarName = ctx.staticData?.Static_car_model;
         const trackName = typeof rawTrackName === 'string' && rawTrackName ? rawTrackName : 'Unknown Track';
         const carName = typeof rawCarName === 'string' && rawCarName ? rawCarName : 'Unknown Car';
         const newSessionName = `Racing Session ${new Date().toLocaleString()}`;
@@ -202,7 +204,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                 && initialContext.recordingFileValidation.readable
                 && initialContext.recordingFileValidation.hasData
             : (
-                initialContext.recordedSampleCount > 0
+                liveTelemetryStore.getSnapshot().committedSampleCount > 0
                 || initialContext.recordingState === RecordingState.RECORDING
             );
         const canAttemptUpload = Boolean(initialContext.recordingFileKey) && validationAllowsUpload;
@@ -486,7 +488,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                     <div className="live-recording-bar__status-row">
                         <span className="live-recording-bar__status-label">SAMPLES</span>
                         <span className="live-recording-bar__status-value live-recording-bar__status-value--mono">
-                            {analysisContext.recordedSampleCount.toLocaleString()}
+                            {recordedSampleCount.toLocaleString()}
                         </span>
                     </div>
                 </div>

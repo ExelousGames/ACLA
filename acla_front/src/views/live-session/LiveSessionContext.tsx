@@ -1,6 +1,5 @@
 import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
-import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { getNextRecordingState, RecordingEvent, RecordingState, StopReason } from 'views/lap-analysis/recording-state';
 import {
     detectLiveSessionType,
@@ -22,7 +21,6 @@ import {
     LiveSessionRuntime,
     LiveSessionSnapshot,
     LiveSessionStaticData,
-    LiveTelemetry,
     PERSISTED_LIVE_SESSION_DRAFT_VERSION,
     RecordedFileReadEvent,
     RecordingStartResult,
@@ -43,17 +41,12 @@ import {
     LiveSessionAnalysisResultPage,
 } from './live-session-analysis-results';
 import { normalizeAnalysisResultsData } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
+import { liveTelemetryStore } from './live-telemetry-store';
 
 const RESTORED_RECORDING_ERROR = 'The local recording file is missing or unreadable. Upload is unavailable; discard this draft to clear it.';
 
 const isAbsoluteFilePath = (filePath: string): boolean =>
     /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(filePath);
-
-const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
-    const numeric = typeof value === 'string' ? Number(value) : value;
-    if (typeof numeric !== 'number' || Number.isNaN(numeric)) return null;
-    return ACC_STATUS[numeric as ACC_STATUS] !== undefined ? numeric as ACC_STATUS : null;
-};
 
 const missingProvider = () => console.warn('No provider for LiveSessionContext');
 const getEmptyLiveSessionSnapshot = (): LiveSessionSnapshot => ({
@@ -70,16 +63,12 @@ const getEmptyLiveSessionSnapshot = (): LiveSessionSnapshot => ({
 
 const defaultRuntime: LiveSessionRuntime = {
     sessionGame: null,
-    currentTelemetry: {},
-    currentTelemetrySampleIndex: -1,
-    telemetryStatus: null,
     staticData: {},
     recordingState: RecordingState.CHECKING,
     recordingMetadata: null,
     recordingFileKey: null,
     recordingActive: false,
     recordingGame: null,
-    recordedSampleCount: 0,
     restorationStatus: 'idle',
     restorationError: null,
     recordingFileValidation: null,
@@ -132,16 +121,12 @@ export const LiveSessionProvider = ({
 }) => {
     const normalizedOwnerEmail = normalizeLiveSessionOwnerEmail(ownerEmail);
     const [sessionGame, setSessionGame] = useState<DesktopGame | null>(null);
-    const [currentTelemetry, setCommittedTelemetry] = useState<LiveTelemetry>({});
-    const [currentTelemetrySampleIndex, setCurrentTelemetrySampleIndex] = useState(-1);
-    const [telemetryStatus, setTelemetryStatus] = useState<ACC_STATUS | null>(null);
     const [staticData, setStaticDataState] = useState<LiveSessionStaticData>({});
     const [recordingState, setRecordingState] = useState(RecordingState.CHECKING);
     const [recordingMetadata, setRecordingMetadataState] = useState<LiveRecordingMetadata | null>(null);
     const [recordingFileKey, setRecordingFileKeyState] = useState<string | null>(null);
     const [recordingActive, setRecordingActive] = useState(false);
     const [recordingGame, setRecordingGame] = useState<DesktopGame | null>(null);
-    const [recordedSampleCount, setRecordedSampleCount] = useState(0);
     const [restorationStatus, setRestorationStatus] = useState<LiveSessionRestorationStatus>(
         normalizedOwnerEmail ? 'restoring' : 'idle',
     );
@@ -155,17 +140,12 @@ export const LiveSessionProvider = ({
     const ownerEmailRef = useRef(normalizedOwnerEmail);
     const recordingStateRef = useRef(RecordingState.CHECKING);
     const recordingMetadataRef = useRef<LiveRecordingMetadata | null>(null);
-    const sessionGenerationRef = useRef(0);
-    const latestTelemetryRef = useRef<LiveTelemetry>({});
-    const committedTelemetryRef = useRef<LiveTelemetry>({});
-    const latestTelemetrySampleIndexRef = useRef(-1);
-    const committedTelemetrySampleIndexRef = useRef(-1);
+    const staticDataRef = useRef<LiveSessionStaticData>({});
     const recordingFileKeyRef = useRef<string | null>(null);
     const recordingActiveRef = useRef(false);
     const recordingGameRef = useRef<DesktopGame | null>(null);
     const recordingStartPromiseRef = useRef<Promise<RecordingStartResult> | null>(null);
     const recordingStopPromiseRef = useRef<Promise<RecordingStopResult | null> | null>(null);
-    const sampleCountRef = useRef(0);
     const analysisResultPagesRef = useRef<LiveSessionAnalysisResultPage[]>([]);
     const activeAnalysisResultPageIdRef = useRef<string | null>(null);
     const persistDraftRef = useRef<() => void>(() => undefined);
@@ -247,7 +227,7 @@ export const LiveSessionProvider = ({
             sessionGame: currentGame,
             recordingMetadata: currentMetadata,
             telemetryFilePath: currentFilePath,
-            recordedSampleCount: sampleCountRef.current,
+            recordedSampleCount: liveTelemetryStore.getSnapshot().committedSampleCount,
             lastRuntimeState: currentState,
             updatedAt: new Date().toISOString(),
         });
@@ -262,7 +242,7 @@ export const LiveSessionProvider = ({
     }, [clearAnalysisResultPages]);
 
     const getLatestTelemetrySample = useCallback(() => {
-        const latest = latestTelemetryRef.current;
+        const latest = liveTelemetryStore.getSnapshot().currentTelemetry;
         return latest && Object.keys(latest).length > 0 ? latest : null;
     }, []);
 
@@ -278,7 +258,7 @@ export const LiveSessionProvider = ({
             current_lap: currentLap,
             completed_laps: currentLap,
             normalized_position: getTelemetryPosition(latest) ?? 0,
-            sample_count: sampleCountRef.current,
+            sample_count: liveTelemetryStore.getSnapshot().committedSampleCount,
             live_session_type: detectLiveSessionType(latest),
             completed_lap_count: currentLap,
         };
@@ -325,8 +305,7 @@ export const LiveSessionProvider = ({
     }, []);
 
     const resetSampleCount = useCallback(() => {
-        sampleCountRef.current = 0;
-        setRecordedSampleCount(0);
+        liveTelemetryStore.restoreCommittedSampleCount(0);
     }, []);
     const applyRecordingTerminal = useCallback((result: RecordingStopResult) => {
         if (!result || (recordingGameRef.current && result.game !== recordingGameRef.current)) return;
@@ -338,8 +317,7 @@ export const LiveSessionProvider = ({
             setRecordingFileKey(result.filePath);
         }
         if (typeof result.writtenSamples === 'number' && Number.isSafeInteger(result.writtenSamples)) {
-            sampleCountRef.current = result.writtenSamples;
-            setRecordedSampleCount(result.writtenSamples);
+            liveTelemetryStore.finalizeCommittedSampleCount(result.writtenSamples);
         }
         const hasPublishedFile = Boolean(result.filePath || recordingFileKeyRef.current);
         const nextState = hasPublishedFile ? RecordingState.UPLOAD_READY : RecordingState.READY;
@@ -361,9 +339,7 @@ export const LiveSessionProvider = ({
         recordingGameRef.current = game;
         setRecordingActive(true);
         setRecordingGame(game);
-        latestTelemetrySampleIndexRef.current = -1;
-        committedTelemetrySampleIndexRef.current = -1;
-        setCurrentTelemetrySampleIndex(-1);
+        liveTelemetryStore.beginStream();
 
         const startPromise = Promise.resolve()
             .then(() => window.electronAPI.startRecordingSession({ game }))
@@ -439,24 +415,19 @@ export const LiveSessionProvider = ({
     useEffect(() => {
         const removeView = window.electronAPI?.onRecordingViewUpdate?.((update: RecordingViewUpdate) => {
             if (update.game !== sessionGameRef.current) return;
-            const sampleIndex = update.sequence - 1;
-            latestTelemetryRef.current = update.sample;
-            committedTelemetryRef.current = update.sample;
-            latestTelemetrySampleIndexRef.current = sampleIndex;
-            committedTelemetrySampleIndexRef.current = sampleIndex;
-            setCommittedTelemetry(update.sample);
-            setCurrentTelemetrySampleIndex(sampleIndex);
-            setStaticDataState((previous) => ({
-                ...previous,
-                ...(typeof update.sample.Static_track === 'string'
-                    ? { Static_track: update.sample.Static_track }
-                    : {}),
-                ...(typeof update.sample.Static_car_model === 'string'
-                    ? { Static_car_model: update.sample.Static_car_model }
-                    : {}),
-            }));
-            sampleCountRef.current = update.committedCount;
-            setRecordedSampleCount(update.committedCount);
+            let nextStaticData = staticDataRef.current;
+            Object.entries(update.sample).forEach(([key, value]) => {
+                if (!key.startsWith('Static_') || Object.prototype.hasOwnProperty.call(nextStaticData, key)) {
+                    return;
+                }
+                if (nextStaticData === staticDataRef.current) nextStaticData = { ...staticDataRef.current };
+                nextStaticData[key] = value;
+            });
+            if (!liveTelemetryStore.publishFrame(update, nextStaticData)) return;
+            if (nextStaticData !== staticDataRef.current) {
+                staticDataRef.current = nextStaticData;
+                setStaticDataState(nextStaticData);
+            }
         });
         const removeEnded = window.electronAPI?.onRecordingSessionEnded?.((result: RecordingStopResult) => {
             applyRecordingTerminal(result);
@@ -542,24 +513,16 @@ export const LiveSessionProvider = ({
         setRecordingFileKey(null);
         setRecordingMetadata(null);
         resetSampleCount();
-        latestTelemetrySampleIndexRef.current = -1;
-        committedTelemetrySampleIndexRef.current = -1;
-        setCurrentTelemetrySampleIndex(-1);
+        liveTelemetryStore.beginStream();
         clearAnalysisResultPages();
     }, [clearAnalysisResultPages, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
 
     const resetLiveSession = useCallback((nextGame: DesktopGame | null) => {
-        sessionGenerationRef.current += 1;
         sessionGameRef.current = nextGame;
         setSessionGame(nextGame);
 
-        latestTelemetryRef.current = {};
-        committedTelemetryRef.current = {};
-        latestTelemetrySampleIndexRef.current = -1;
-        committedTelemetrySampleIndexRef.current = -1;
-        setCommittedTelemetry({});
-        setCurrentTelemetrySampleIndex(-1);
-        setTelemetryStatus(null);
+        liveTelemetryStore.resetSession();
+        staticDataRef.current = {};
         setStaticDataState({});
         recordingStateRef.current = RecordingState.CHECKING;
         setRecordingState(RecordingState.CHECKING);
@@ -646,12 +609,13 @@ export const LiveSessionProvider = ({
                 resetLiveSession(draft.sessionGame);
                 setRecordingMetadata(draft.recordingMetadata);
                 setRecordingFileKey(draft.telemetryFilePath);
-                sampleCountRef.current = draft.recordedSampleCount;
-                setRecordedSampleCount(draft.recordedSampleCount);
-                setStaticDataState({
+                liveTelemetryStore.restoreCommittedSampleCount(draft.recordedSampleCount);
+                const restoredStaticData = {
                     Static_track: draft.recordingMetadata.mapName,
                     Static_car_model: draft.recordingMetadata.carName,
-                });
+                };
+                staticDataRef.current = restoredStaticData;
+                setStaticDataState(restoredStaticData);
                 recordingStateRef.current = RecordingState.UPLOAD_READY;
                 setRecordingState(RecordingState.UPLOAD_READY);
                 setRecordingFileValidation(validation);
@@ -681,7 +645,6 @@ export const LiveSessionProvider = ({
         persistCurrentDraft();
     }, [
         persistCurrentDraft,
-        recordedSampleCount,
         recordingFileKey,
         recordingMetadata,
         recordingState,
@@ -689,15 +652,11 @@ export const LiveSessionProvider = ({
     ]);
 
     useEffect(() => {
-        const nextStatus = normalizeAccStatus(
-            currentTelemetry?.Graphics_status,
+        return liveTelemetryStore.subscribeSelector(
+            (snapshot) => snapshot.committedSampleCount,
+            () => persistDraftRef.current(),
         );
-        if (Object.keys(currentTelemetry).length === 0) {
-            setTelemetryStatus(null);
-        } else if (nextStatus !== null) {
-            setTelemetryStatus(nextStatus);
-        }
-    }, [currentTelemetry]);
+    }, []);
 
     useEffect(() => {
         const persistBeforeUnload = () => persistDraftRef.current();
@@ -712,16 +671,12 @@ export const LiveSessionProvider = ({
 
     const value = useMemo<LiveSessionRuntime>(() => ({
         sessionGame,
-        currentTelemetry,
-        currentTelemetrySampleIndex,
-        telemetryStatus,
         staticData,
         recordingState,
         recordingMetadata,
         recordingFileKey,
         recordingActive,
         recordingGame,
-        recordedSampleCount,
         restorationStatus,
         restorationError,
         recordingFileValidation,
@@ -746,12 +701,9 @@ export const LiveSessionProvider = ({
     }), [
         clearRecordingSession,
         clearPersistedDraft,
-        currentTelemetry,
-        currentTelemetrySampleIndex,
         endLiveSession,
         getLiveSessionSnapshot,
         getNextCorner,
-        recordedSampleCount,
         restorationStatus,
         restorationError,
         recordingFileValidation,
@@ -770,7 +722,6 @@ export const LiveSessionProvider = ({
         staticData,
         stopRecordingSession,
         streamRecordedTelemetry,
-        telemetryStatus,
         transitionRecordingState,
         registerRecorderControl,
         appendAnalysisResultPage,

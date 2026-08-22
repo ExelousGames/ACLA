@@ -118,7 +118,7 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
                 <LiveTelemetryOverview
                     key={instance.name}
                     name={instance.name}
-                    telemetry={(instance.data as Record<string, any>) ?? this.context.currentTelemetry}
+                    telemetry={instance.data as Record<string, any> | undefined}
                     onUpdate={(data) => this.updateVisualization(instance.name, data).success}
                     onDisable={() => this.closeVisualization({ name: instance.name }).success}
                 />

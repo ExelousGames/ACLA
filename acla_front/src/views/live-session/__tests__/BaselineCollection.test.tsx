@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useLayoutEffect } from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import apiService from 'services/api.service';
 import {
@@ -13,6 +13,7 @@ import BaselineCollection, {
     type BaselineCollectionHandle,
 } from '../BaselineCollection';
 import { LiveSessionContext } from '../LiveSessionContext';
+import { liveTelemetryStore } from '../live-telemetry-store';
 import {
     AnalysisResultsVisualizationNotReadyError,
     AnalysisResultsVisualizationUnavailableError,
@@ -70,6 +71,7 @@ const makeSample = (lap: number, position: number, currentTime: number, lastTime
 let directory: AiToolComponentRefDirectory | null = null;
 let appendedPages: any[] = [];
 const appendAnalysisResultPage = jest.fn();
+let telemetrySequence = 0;
 
 const DirectoryObserver = () => {
     directory = useAiToolComponentRefDirectory();
@@ -82,17 +84,28 @@ const Harness = ({
 }: {
     telemetry: Record<string, any>;
     show?: boolean;
-}) => (
-    <AiToolComponentRefProvider>
-        <DirectoryObserver />
-        <LiveSessionContext.Provider value={{
-            currentTelemetry: telemetry,
-            appendAnalysisResultPage,
-        } as any}>
-            {show && <BaselineCollection name={AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION} />}
-        </LiveSessionContext.Provider>
-    </AiToolComponentRefProvider>
-);
+}) => {
+    useLayoutEffect(() => {
+        if (Object.keys(telemetry).length === 0) return;
+        telemetrySequence += 1;
+        liveTelemetryStore.publishFrame({
+            type: 'frame',
+            game: 'acc',
+            sample: telemetry,
+            sequence: telemetrySequence,
+            committedSequence: telemetrySequence,
+            committedCount: telemetrySequence,
+        }, telemetry);
+    }, [telemetry]);
+    return (
+        <AiToolComponentRefProvider>
+            <DirectoryObserver />
+            <LiveSessionContext.Provider value={{ appendAnalysisResultPage } as any}>
+                {show && <BaselineCollection name={AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION} />}
+            </LiveSessionContext.Provider>
+        </AiToolComponentRefProvider>
+    );
+};
 
 const getHandle = () => directory!
     .findComponentRef<BaselineCollectionHandle>(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)!
@@ -167,6 +180,8 @@ const completeBaselineLap = (
 
 describe('BaselineCollection visualization', () => {
     beforeEach(() => {
+        liveTelemetryStore.resetSession();
+        telemetrySequence = 0;
         directory = null;
         appendedPages = [];
         appendAnalysisResultPage.mockReset().mockImplementation((input: any) => {

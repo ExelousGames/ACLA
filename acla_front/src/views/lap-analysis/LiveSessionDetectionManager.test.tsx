@@ -35,13 +35,10 @@ const flushPromises = async () => {
 
 const createRuntime = () => ({
     sessionGame: mockDetectedGame,
-    currentTelemetry: {},
-    telemetryStatus: null,
     staticData: {},
     recordingState: RecordingState.CHECKING,
     recordingMetadata: null,
     recordingFileKey: null,
-    recordedSampleCount: 0,
     recorderControl: null,
     startLiveSession: jest.fn(),
     endLiveSession: jest.fn(),

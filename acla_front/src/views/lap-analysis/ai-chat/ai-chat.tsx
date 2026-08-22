@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import './ai-chat.css';
 import type { AnalysisContextType } from 'views/lap-analysis/analysis-context';
 import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
+import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useUserSummary } from 'contexts/UserSummaryContext';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
@@ -364,12 +365,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         ...(recordedAnalysisContext ?? {}),
         mapSelected: sessionMode === 'recorded' ? recordedAnalysisContext?.mapSelected ?? null : null,
         sessionSelected: sessionMode === 'recorded' ? recordedAnalysisContext?.sessionSelected ?? null : null,
-        liveData: liveSession?.currentTelemetry ?? {},
-        TelemetryDataLiveStatus: liveSession?.telemetryStatus ?? null,
         recordingState: liveSession?.recordingState ?? null,
         recordingMetadata: liveSession?.recordingMetadata ?? null,
         recordedSessionDataFilePath: liveSession?.recordingFileKey ?? null,
-        recordedTelemetryDataCount: liveSession?.recordedSampleCount ?? 0,
         recordedSessioStaticsData: liveSession?.staticData ?? {},
         getLiveSessionSnapshot: liveSession?.getLiveSessionSnapshot,
     }), [liveSession, recordedAnalysisContext, sessionMode]);
@@ -426,8 +424,21 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const liveRangeTodoListSessionGameRef = useRef(liveSession?.sessionGame ?? null);
 
     useEffect(() => {
-        liveRangeTodoListRunnerRef.current?.acceptTelemetry(liveSession?.currentTelemetry ?? {});
-    }, [liveSession?.currentTelemetry]);
+        if (sessionMode !== 'live') return;
+        return liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') {
+                liveRangeTodoListRunnerRef.current?.reset();
+                opportunityForecastRowsRef.current = [];
+                return;
+            }
+            if (event.type !== 'frame') return;
+            liveRangeTodoListRunnerRef.current?.acceptTelemetry(event.sample);
+            opportunityForecastRowsRef.current = [
+                ...opportunityForecastRowsRef.current,
+                event.sample,
+            ].slice(-MAX_OVERTAKE_AGENT_ROWS);
+        }, { replayLatest: true });
+    }, [sessionMode]);
 
     useEffect(() => {
         const previousSessionGame = liveRangeTodoListSessionGameRef.current;
@@ -505,17 +516,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         setMainMessages(updater);
     }, []);
     const setMessages = setFocusedMessages;
-
-    useEffect(() => {
-        const liveData = analysisContext?.liveData as Record<string, any> | null;
-        if (!liveData || Object.keys(liveData).length === 0) {
-            return;
-        }
-        opportunityForecastRowsRef.current = [
-            ...opportunityForecastRowsRef.current,
-            liveData,
-        ].slice(-MAX_OVERTAKE_AGENT_ROWS);
-    }, [analysisContext?.liveData]);
 
     // Utility function to generate unique message IDs
     const generateUniqueId = useCallback((prefix: string = 'msg') => {
@@ -1696,74 +1696,81 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }, [analysisContext?.latestGuidanceMessage, generateUniqueId, setMessages, TrackGuideEnabled]);
 
     useEffect(() => {
-        const liveData = analysisContext?.liveData as Record<string, any> | null;
         if (!TrackGuideEnabled) {
             trackGuideRunTokenRef.current += 1;
             trackGuideLastPosRef.current = undefined;
             trackGuideTriggeredRef.current.clear();
             return;
         }
-        if (!liveData || Object.keys(liveData).length === 0) return;
+        return liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') {
+                trackGuideRunTokenRef.current += 1;
+                trackGuideLastPosRef.current = undefined;
+                trackGuideTriggeredRef.current.clear();
+                return;
+            }
+            if (event.type !== 'frame') return;
+            const liveData = event.sample;
+            const currentPos = getNormalizedCarPos(liveData);
+            const lastPos = trackGuideLastPosRef.current;
+            if (currentPos === undefined) return;
+            trackGuideLastPosRef.current = currentPos;
+            if (lastPos === undefined) return;
 
-        const currentPos = getNormalizedCarPos(liveData);
-        const lastPos = trackGuideLastPosRef.current;
-        if (currentPos === undefined) return;
-        trackGuideLastPosRef.current = currentPos;
-        if (lastPos === undefined) return;
+            const trackName = getTrackNameForGuide(liveData);
+            if (!trackName) return;
 
-        const trackName = getTrackNameForGuide(liveData);
-        if (!trackName) return;
+            const triggeredCorners = findTriggeredCorners(
+                getCornersForTrack(trackName),
+                lastPos,
+                currentPos,
+            );
+            if (triggeredCorners.length === 0) return;
 
-        const triggeredCorners = findTriggeredCorners(
-            getCornersForTrack(trackName),
-            lastPos,
-            currentPos,
-        );
-        if (triggeredCorners.length === 0) return;
+            const lap = Number(
+                liveData.Graphics_completed_laps
+                ?? liveData.Graphics_completed_lap
+                ?? 0
+            );
+            triggeredCorners.forEach((triggeredCorner) => {
+                const triggerPosition = triggeredCorner.guideFrom ?? triggeredCorner.from;
+                const triggerKey = `${lap}:${triggerPosition}:${triggeredCorner.name}`;
+                if (trackGuideTriggeredRef.current.has(triggerKey)) return;
 
-        const lap = Number(
-            liveData.Graphics_completed_laps
-            ?? liveData.Graphics_completed_lap
-            ?? 0
-        );
-        triggeredCorners.forEach((triggeredCorner) => {
-            const triggerPosition = triggeredCorner.guideFrom ?? triggeredCorner.from;
-            const triggerKey = `${lap}:${triggerPosition}:${triggeredCorner.name}`;
-            if (trackGuideTriggeredRef.current.has(triggerKey)) return;
+                trackGuideTriggeredRef.current.add(triggerKey);
+                const guideToken = trackGuideRunTokenRef.current;
 
-            trackGuideTriggeredRef.current.add(triggerKey);
-            const guideToken = trackGuideRunTokenRef.current;
-
-            apiService.post('/racing-session/track-corner-knowledge', {
-                track_name: trackName,
-                corner_name: normalizeCornerNameForKnowledge(triggeredCorner.name),
-                normalized_position: triggerPosition,
-                trigger_position: triggerPosition,
-                current_telemetry: liveData,
-            }).then((response) => {
-                if (guideToken !== trackGuideRunTokenRef.current) return;
-                const message = extractCornerKnowledgeMessage(response.data);
-                if (message) {
-                    addGuidanceMessage(message);
-                }
-            }).catch((error) => {
-                if (guideToken !== trackGuideRunTokenRef.current) return;
-                const errorDetail = error?.data?.message || error?.data?.detail;
-                if (
-                    error?.status === 404
-                    && typeof errorDetail === 'string'
-                    && (
-                        errorDetail.includes('not in corpus')
-                        || (errorDetail.includes('corner') && errorDetail.includes('not found'))
-                    )
-                ) {
-                    addGuidanceMessage("Track guide doesn't support the current track right now.");
-                    return;
-                }
-                console.warn('Track guide agent knowledge request failed:', error);
+                apiService.post('/racing-session/track-corner-knowledge', {
+                    track_name: trackName,
+                    corner_name: normalizeCornerNameForKnowledge(triggeredCorner.name),
+                    normalized_position: triggerPosition,
+                    trigger_position: triggerPosition,
+                    current_telemetry: liveData,
+                }).then((response) => {
+                    if (guideToken !== trackGuideRunTokenRef.current) return;
+                    const message = extractCornerKnowledgeMessage(response.data);
+                    if (message) {
+                        addGuidanceMessage(message);
+                    }
+                }).catch((error) => {
+                    if (guideToken !== trackGuideRunTokenRef.current) return;
+                    const errorDetail = error?.data?.message || error?.data?.detail;
+                    if (
+                        error?.status === 404
+                        && typeof errorDetail === 'string'
+                        && (
+                            errorDetail.includes('not in corpus')
+                            || (errorDetail.includes('corner') && errorDetail.includes('not found'))
+                        )
+                    ) {
+                        addGuidanceMessage("Track guide doesn't support the current track right now.");
+                        return;
+                    }
+                    console.warn('Track guide agent knowledge request failed:', error);
+                });
             });
-        });
-    }, [addGuidanceMessage, analysisContext?.liveData, TrackGuideEnabled]);
+        }, { replayLatest: true });
+    }, [addGuidanceMessage, TrackGuideEnabled]);
 
     // Auto-manage imitation guidance chart visibility
     useEffect(() => {

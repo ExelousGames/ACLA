@@ -58,6 +58,7 @@ import type { LiveSessionAnalysisResultPage } from './live-session-analysis-resu
 import type { LiveSessionRuntime, LiveSessionSnapshot } from './live-session-types';
 import type { LiveEventLogHandle } from './LiveEventLog';
 import type { EventSearchParams } from './event-log/EventLog';
+import { liveTelemetryStore } from './live-telemetry-store';
 import {
     createAiToolOperation,
     createAiToolOperationFrom,
@@ -279,7 +280,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
         const runtime = liveSessionRef.current;
         const collector = createTelemetryScopeCollector(
             resolvedScope,
-            getTelemetryLap(runtime.currentTelemetry),
+            getTelemetryLap(liveTelemetryStore.getSnapshot().currentTelemetry),
         );
         await runtime.streamRecordedTelemetry((rows) => collector.addRows(rows));
         return collector.getRows();
@@ -297,7 +298,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                 return () => assistantSnapshotListenersRef.current.delete(listener);
             },
             getRecordingState: () => liveSessionRef.current.recordingState,
-            getCurrentTelemetry: () => liveSessionRef.current.currentTelemetry,
+            getCurrentTelemetry: () => liveTelemetryStore.getSnapshot().currentTelemetry,
             queryTelemetryMetric: (args) => queryLiveTelemetry(args),
             getTelemetryForScope: (scope) => getTelemetryForLiveScope(scope),
             getEventLog: (args) => findLiveEvents(args),

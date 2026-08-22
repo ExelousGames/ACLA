@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useLayoutEffect } from 'react';
 import { render, screen } from '@testing-library/react';
 import LiveEventLog, { LiveEventLogHandle } from '../LiveEventLog';
-import { LiveSessionContext } from '../LiveSessionContext';
+import { liveTelemetryStore } from '../live-telemetry-store';
 
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');
@@ -47,16 +47,23 @@ const Harness = ({
     speed: number;
     sampleIndex: number;
     eventLogRef: React.RefObject<LiveEventLogHandle | null>;
-}) => (
-    <LiveSessionContext.Provider value={{
-        currentTelemetry: telemetry(speed),
-        currentTelemetrySampleIndex: sampleIndex,
-    } as any}>
-        {open ? <LiveEventLog ref={eventLogRef} name="visualization:event-log" /> : null}
-    </LiveSessionContext.Provider>
-);
+}) => {
+    useLayoutEffect(() => {
+        liveTelemetryStore.publishFrame({
+            type: 'frame',
+            game: 'acc',
+            sample: telemetry(speed),
+            sequence: sampleIndex + 1,
+            committedSequence: sampleIndex + 1,
+            committedCount: sampleIndex + 1,
+        }, { Static_track: 'brands_hatch' });
+    }, [sampleIndex, speed]);
+    return open ? <LiveEventLog ref={eventLogRef} name="visualization:event-log" /> : null;
+};
 
 describe('LiveEventLog telemetry ownership', () => {
+    beforeEach(() => liveTelemetryStore.resetSession());
+
     it('tracks context telemetry only while the visualization is mounted', () => {
         const eventLogRef = React.createRef<LiveEventLogHandle>();
         const { rerender } = render(

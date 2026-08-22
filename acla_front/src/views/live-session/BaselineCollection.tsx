@@ -45,6 +45,7 @@ import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segm
 import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
 import BaselineProgressDisplay from './BaselineProgressDisplay';
 import { LiveSessionContext } from './LiveSessionContext';
+import { liveTelemetryStore } from './live-telemetry-store';
 import {
     createAiToolDeferred,
     createAiToolOperation,
@@ -496,14 +497,12 @@ export const buildBaselineCollectionToolPayload = (
 
 const BaselineCollection = ({ name }: { name: string }) => {
     const {
-        currentTelemetry,
         appendAnalysisResultPage,
     } = useContext(LiveSessionContext);
     const componentRefs = useAiToolComponentRefDirectory();
-    const currentTelemetryRef = useRef(currentTelemetry);
-    currentTelemetryRef.current = currentTelemetry;
+    const currentTelemetryRef = useRef(liveTelemetryStore.getSnapshot().currentTelemetry);
 
-    const [enabled, setEnabled] = useState(false);
+    const [, setEnabled] = useState(false);
     const [tag, setTag] = useState<BaselineCollectionTag | null>(null);
     const [analysisState, setAnalysisState] = useState<BaselineAnalysisState>('idle');
     const enabledRef = useRef(false);
@@ -870,92 +869,98 @@ const BaselineCollection = ({ name }: { name: string }) => {
     useRegisterAiToolComponentRef(componentRef);
 
     useEffect(() => {
-        if (isTelemetrySample(currentTelemetry)) {
-            cacheCurrentLapTelemetry(telemetryCacheRef.current, currentTelemetry);
-        }
-
-        if (!enabledRef.current || !enabled) return;
-        if (!isTelemetrySample(currentTelemetry)) {
-            publishTag(buildBaselineCollectionTag(buildRecorderSnapshot(recorderRef.current)));
-            return;
-        }
-
-        const state = recorderRef.current;
-        const lap = getTelemetryLap(currentTelemetry);
-        const position = getTelemetryPosition(currentTelemetry) ?? state.currentPosition;
-        const sampleKey = getSampleKey(currentTelemetry, lap, position);
-        if (state.sampleKeys.has(sampleKey)) return;
-
-        state.track = getTelemetryTrack(currentTelemetry) || state.track;
-        state.car = getTelemetryCar(currentTelemetry) || state.car;
-        state.currentLap = lap;
-        state.currentPosition = position;
-        let completedRecordToEmit: BaselineLapRecord | null = null;
-
-        if (state.status === 'waiting_for_start') {
-            if (position > BASELINE_START_POSITION_EPSILON) {
-                state.canStartAtBoundary = true;
-            } else if (state.canStartAtBoundary) {
-                state.status = 'collecting';
-                state.startLap = lap;
-                state.startPosition = 0;
-                state.rows = [cloneSample(currentTelemetry)];
+        return liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') {
+                currentTelemetryRef.current = {};
+                telemetryCacheRef.current = createEmptyTelemetryCache();
+                return;
             }
-        } else if (state.status === 'collecting') {
-            const positionWrapped = state.lastPosition !== null
-                && state.lastPosition - position > BASELINE_WRAP_THRESHOLD;
-            if (
-                state.lapCounterAdvancePending
-                && state.startLap !== null
-                && lap > state.startLap
-                && !positionWrapped
-            ) {
-                state.startLap = lap;
-                state.lapCounterAdvancePending = false;
+            if (event.type !== 'frame') return;
+
+            const sample = event.sample;
+            currentTelemetryRef.current = sample;
+            if (isTelemetrySample(sample)) {
+                cacheCurrentLapTelemetry(telemetryCacheRef.current, sample);
+            }
+            if (!enabledRef.current || !isTelemetrySample(sample)) return;
+
+            const state = recorderRef.current;
+            const lap = getTelemetryLap(sample);
+            const position = getTelemetryPosition(sample) ?? state.currentPosition;
+            const sampleKey = getSampleKey(sample, lap, position);
+            if (state.sampleKeys.has(sampleKey)) return;
+
+            state.track = getTelemetryTrack(sample) || state.track;
+            state.car = getTelemetryCar(sample) || state.car;
+            state.currentLap = lap;
+            state.currentPosition = position;
+            let completedRecordToEmit: BaselineLapRecord | null = null;
+
+            if (state.status === 'waiting_for_start') {
+                if (position > BASELINE_START_POSITION_EPSILON) {
+                    state.canStartAtBoundary = true;
+                } else if (state.canStartAtBoundary) {
+                    state.status = 'collecting';
+                    state.startLap = lap;
+                    state.startPosition = 0;
+                    state.rows = [cloneSample(sample)];
+                }
+            } else if (state.status === 'collecting') {
+                const positionWrapped = state.lastPosition !== null
+                    && state.lastPosition - position > BASELINE_WRAP_THRESHOLD;
+                if (
+                    state.lapCounterAdvancePending
+                    && state.startLap !== null
+                    && lap > state.startLap
+                    && !positionWrapped
+                ) {
+                    state.startLap = lap;
+                    state.lapCounterAdvancePending = false;
+                }
+
+                if (hasCompletedRecordingLap(state, lap, position)) {
+                    const snapshot = buildRecorderSnapshot({
+                        ...state,
+                        status: 'complete',
+                        currentLap: lap,
+                        currentPosition: position,
+                    });
+                    const completedRecord: BaselineLapRecord = {
+                        id: [
+                            state.track,
+                            state.car,
+                            String(state.startLap ?? 0),
+                            String(state.rows.length),
+                        ].join(':'),
+                        lap: state.startLap ?? 0,
+                        lap_time_ms: getCompletedBaselineLapTimeMs(sample, state.rows),
+                        captured_at: Date.now(),
+                        track: state.track,
+                        car: state.car,
+                        sample_count: state.rows.length,
+                        snapshot,
+                        records: state.rows.map(cloneSample),
+                    };
+                    state.status = 'complete';
+                    state.completedRecord = completedRecord;
+                    lapRecordRef.current = completedRecord;
+                    completedRecordToEmit = completedRecord;
+                } else {
+                    state.rows.push(cloneSample(sample));
+                }
             }
 
-            if (hasCompletedRecordingLap(state, lap, position)) {
-                const snapshot = buildRecorderSnapshot({
-                    ...state,
-                    status: 'complete',
-                    currentLap: lap,
-                    currentPosition: position,
-                });
-                const completedRecord: BaselineLapRecord = {
-                    id: [
-                        state.track,
-                        state.car,
-                        String(state.startLap ?? 0),
-                        String(state.rows.length),
-                    ].join(':'),
-                    lap: state.startLap ?? 0,
-                    lap_time_ms: getCompletedBaselineLapTimeMs(currentTelemetry, state.rows),
-                    captured_at: Date.now(),
-                    track: state.track,
-                    car: state.car,
-                    sample_count: state.rows.length,
-                    snapshot,
-                    records: state.rows.map(cloneSample),
-                };
-                state.status = 'complete';
-                state.completedRecord = completedRecord;
-                lapRecordRef.current = completedRecord;
-                completedRecordToEmit = completedRecord;
-            } else {
-                state.rows.push(cloneSample(currentTelemetry));
+            state.lastPosition = position;
+            state.sampleKeys.add(sampleKey);
+            const snapshot = state.completedRecord?.snapshot ?? buildRecorderSnapshot(state);
+            const nextTag = buildBaselineCollectionTag(snapshot);
+            publishTag(nextTag);
+            settleCollectionStatus(nextTag);
+            if (completedRecordToEmit) {
+                settlePendingCollectionOperations(buildBaselineCollectionToolPayload(null, completedRecordToEmit));
             }
-        }
-
-        state.lastPosition = position;
-        state.sampleKeys.add(sampleKey);
-        const snapshot = state.completedRecord?.snapshot ?? buildRecorderSnapshot(state);
-        const nextTag = buildBaselineCollectionTag(snapshot);
-        publishTag(nextTag);
-        settleCollectionStatus(nextTag);
-        if (completedRecordToEmit) {
-            settlePendingCollectionOperations(buildBaselineCollectionToolPayload(null, completedRecordToEmit));
-        }
-    }, [currentTelemetry, enabled, publishTag, settleCollectionStatus, settlePendingCollectionOperations]);
+        }, { replayLatest: true });
+    }, [publishTag, settleCollectionStatus, settlePendingCollectionOperations]);
 
     useEffect(() => () => {
         enabledRef.current = false;

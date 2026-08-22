@@ -8,6 +8,11 @@ import {
 } from '../live-session-draft-storage';
 import { PERSISTED_LIVE_SESSION_DRAFT_VERSION, RecordingStartResult } from '../live-session-types';
 import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
+import {
+    liveTelemetryStore,
+    useCommittedSampleCount,
+    useTelemetrySampleIndex,
+} from '../live-telemetry-store';
 
 const telemetryPath = 'C:\\Users\\driver\\AppData\\Roaming\\Kestrel\\acla-temp\\telemetry_live_1.jsonl';
 let recordedFileHandler: ((event: any) => void) | null = null;
@@ -33,12 +38,13 @@ const saveDraft = (ownerEmail: string, lastRuntimeState: RecordingState, sampleC
 
 const RuntimeProbe = () => {
     const runtime = useContext(LiveSessionContext);
+    const recordedSampleCount = useCommittedSampleCount();
     return (
         <>
             <output data-testid="game">{runtime.sessionGame || 'none'}</output>
             <output data-testid="state">{runtime.recordingState}</output>
             <output data-testid="name">{runtime.recordingMetadata?.sessionName || 'none'}</output>
-            <output data-testid="samples">{runtime.recordedSampleCount}</output>
+            <output data-testid="samples">{recordedSampleCount}</output>
             <output data-testid="file">{runtime.recordingFileKey || 'none'}</output>
             <output data-testid="restoration">{runtime.restorationStatus}</output>
             <output data-testid="error">{runtime.restorationError || 'none'}</output>
@@ -49,11 +55,12 @@ const RuntimeProbe = () => {
 
 const RecordingHarness = () => {
     const runtime = useContext(LiveSessionContext);
+    const sampleIndex = useTelemetrySampleIndex();
     return (
         <>
             <output data-testid="harness-game">{runtime.sessionGame || 'none'}</output>
             <output data-testid="harness-active">{String(runtime.recordingActive)}</output>
-            <output data-testid="harness-sample-index">{runtime.currentTelemetrySampleIndex}</output>
+            <output data-testid="harness-sample-index">{sampleIndex}</output>
             <button type="button" onClick={() => runtime.startLiveSession('acc')}>Start</button>
             <button type="button" onClick={runtime.endLiveSession}>End</button>
             <button type="button" onClick={() => runtime.setRecordingMetadata({
@@ -92,6 +99,7 @@ const ClearDraftHarness = () => {
 
 describe('live session draft persistence', () => {
     beforeEach(() => {
+        liveTelemetryStore.resetSession();
         window.localStorage.clear();
         recordedFileHandler = null;
         recordingViewHandler = null;

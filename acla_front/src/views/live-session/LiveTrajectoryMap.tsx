@@ -11,6 +11,7 @@ import {
 } from 'views/lap-analysis/visualization/charts/circuitTrackLayout';
 import { parseTelemetryFrame, TelemetryFrame, Vec3 } from 'views/lap-analysis/visualization/charts/mapTelemetry';
 import { LiveSessionContext } from './LiveSessionContext';
+import { liveTelemetryStore, useTelemetryStatus } from './live-telemetry-store';
 import 'views/lap-analysis/visualization/charts/MapVisualization.css';
 import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 
@@ -86,6 +87,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     height = '100%',
 }, forwardedRef) => {
     const liveSession = useContext(LiveSessionContext);
+    const telemetryStatus = useTelemetryStatus();
     const { getCircuitMapByTrack } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -114,23 +116,29 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     useRegisterAiToolComponentRef(registeredHandleRef);
 
     const trackKey = useMemo(() => getAccTelemetryTrackKey(
-        liveSession.currentTelemetry?.Static_track,
         liveSession.staticData.Static_track,
-    ), [liveSession.currentTelemetry, liveSession.staticData.Static_track]);
+    ), [liveSession.staticData.Static_track]);
     const trackLayout = useMemo(() => circuitMap ? buildCircuitTrackLayout(circuitMap) : EMPTY_CIRCUIT_TRACK_LAYOUT, [circuitMap]);
     const currentFrame = frames[frames.length - 1];
     const bounds = useMemo(() => getBounds(frames, trackLayout), [frames, trackLayout]);
 
     useEffect(() => {
-        if (liveSession.telemetryStatus !== ACC_STATUS.ACC_LIVE) return;
-        const parsed = parseTelemetryFrame(liveSession.currentTelemetry, telemetrySequenceRef.current);
-        if (!parsed) return;
-        telemetrySequenceRef.current += 1;
-        setFrames((previous) => {
-            const next = [...previous, parsed];
-            return next.length > LIVE_TRAIL_LIMIT ? next.slice(-LIVE_TRAIL_LIMIT) : next;
-        });
-    }, [liveSession.currentTelemetry, liveSession.telemetryStatus]);
+        return liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') {
+                telemetrySequenceRef.current = 0;
+                setFrames([]);
+                return;
+            }
+            if (event.type !== 'frame' || event.telemetryStatus !== ACC_STATUS.ACC_LIVE) return;
+            const parsed = parseTelemetryFrame(event.sample, telemetrySequenceRef.current);
+            if (!parsed) return;
+            telemetrySequenceRef.current += 1;
+            setFrames((previous) => {
+                const next = [...previous, parsed];
+                return next.length > LIVE_TRAIL_LIMIT ? next.slice(-LIVE_TRAIL_LIMIT) : next;
+            });
+        }, { replayLatest: true });
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -238,7 +246,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
         });
     }, [canvasSize, currentFrame, frames, project, trackLayout]);
 
-    const live = liveSession.telemetryStatus === ACC_STATUS.ACC_LIVE;
+    const live = telemetryStatus === ACC_STATUS.ACC_LIVE;
     return (
         <Card className="map-visualization-card live-trajectory-map" style={{ width, height }} data-testid="live-trajectory-map">
             <Box ref={wrapperRef} className="map-visualization">

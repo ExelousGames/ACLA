@@ -1,4 +1,3 @@
-import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { RecordingEvent, RecordingState, StopReason } from 'views/lap-analysis/recording-state';
 import type {
@@ -122,16 +121,12 @@ export interface LiveSessionSnapshot {
 
 export interface LiveSessionRuntime {
     sessionGame: DesktopGame | null;
-    currentTelemetry: LiveTelemetry;
-    currentTelemetrySampleIndex: number;
-    telemetryStatus: ACC_STATUS | null;
     staticData: LiveSessionStaticData;
     recordingState: RecordingState;
     recordingMetadata: LiveRecordingMetadata | null;
     recordingFileKey: string | null;
     recordingActive: boolean;
     recordingGame: DesktopGame | null;
-    recordedSampleCount: number;
     restorationStatus: LiveSessionRestorationStatus;
     restorationError: string | null;
     recordingFileValidation: LocalTelemetryFileValidation | null;

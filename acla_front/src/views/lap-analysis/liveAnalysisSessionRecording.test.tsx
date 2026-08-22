@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import { RecordingState } from './recording-state';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
+import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 
 const mockApiPost = jest.fn();
 
@@ -43,15 +44,12 @@ jest.mock('@radix-ui/themes', () => {
 
 const createRuntime = (overrides: Record<string, unknown> = {}) => ({
     sessionGame: 'acc' as const,
-    currentTelemetry: { Static_track: 'Monza', Static_car_model: 'GT3' },
-    telemetryStatus: null,
-        staticData: { Static_track: 'Monza', Static_car_model: 'GT3' },
+    staticData: { Static_track: 'Monza', Static_car_model: 'GT3' },
     recordingState: RecordingState.READY,
     recordingMetadata: null,
     recordingFileKey: null,
     recordingActive: false,
     recordingGame: null,
-    recordedSampleCount: 0,
     restorationStatus: 'idle',
     restorationError: null,
     recordingFileValidation: null,
@@ -83,7 +81,8 @@ const createRuntime = (overrides: Record<string, unknown> = {}) => ({
     ...overrides,
 });
 
-const renderRecorder = (runtime: ReturnType<typeof createRuntime>) => {
+const renderRecorder = (runtime: ReturnType<typeof createRuntime>, committedCount = 0) => {
+    liveTelemetryStore.restoreCommittedSampleCount(committedCount);
     const host = document.createElement('div');
     host.id = `recorder-host-${Math.random()}`;
     document.body.appendChild(host);
@@ -97,6 +96,7 @@ const renderRecorder = (runtime: ReturnType<typeof createRuntime>) => {
 
 describe('recording session controls', () => {
     beforeEach(() => {
+        liveTelemetryStore.resetSession();
         jest.clearAllMocks();
         Object.defineProperty(window, 'electronAPI', {
             configurable: true,
@@ -165,7 +165,6 @@ describe('recording session controls', () => {
         const runtime = createRuntime({
             recordingState: RecordingState.UPLOAD_READY,
             recordingFileKey: 'C:\\recordings\\iracing.jsonl',
-            recordedSampleCount: 2,
             sessionGame: 'iracing',
             recordingMetadata: {
                 sessionName: 'Race',
@@ -175,7 +174,7 @@ describe('recording session controls', () => {
             },
             streamRecordedTelemetry,
         });
-        const view = renderRecorder(runtime);
+        const view = renderRecorder(runtime, 2);
 
         fireEvent.click(await screen.findByRole('button', { name: 'Upload Session' }));
         const buttons = await screen.findAllByRole('button', { name: 'Upload Session' });

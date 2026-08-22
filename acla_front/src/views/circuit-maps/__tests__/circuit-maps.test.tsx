@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CircuitMaps from '../circuit-maps';
 import apiService from 'services/api.service';
@@ -11,6 +11,7 @@ import {
 } from 'contexts/AiToolComponentRefContext';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { RecordingState } from 'views/lap-analysis/recording-state';
+import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 
 const mockRefreshCircuitMaps = jest.fn();
 const mockUpsertCachedCircuitMap = jest.fn();
@@ -70,16 +71,12 @@ const mockedApi = apiService as jest.Mocked<typeof apiService>;
 
 const baseContext: LiveSessionRuntime = {
     sessionGame: null,
-    currentTelemetry: {},
-    currentTelemetrySampleIndex: -1,
-    telemetryStatus: null,
     staticData: {},
     recordingState: RecordingState.CHECKING,
     recordingMetadata: null,
     recordingFileKey: null,
     recordingActive: false,
     recordingGame: null,
-    recordedSampleCount: 0,
     restorationStatus: 'idle',
     restorationError: null,
     recordingFileValidation: null,
@@ -139,6 +136,7 @@ const renderCircuitMaps = (context: Partial<LiveSessionRuntime> = {}) => (
 
 describe('CircuitMaps', () => {
     beforeEach(() => {
+        liveTelemetryStore.resetSession();
         jest.clearAllMocks();
         mockedApi.get.mockResolvedValue({ data: { list: [] }, status: 200 } as any);
         mockedApi.post.mockResolvedValue({ data: { id: 'map-1' }, status: 201 } as any);
@@ -175,13 +173,20 @@ describe('CircuitMaps', () => {
     });
 
     it('saves a new global map payload without user ownership', async () => {
-        renderCircuitMaps({
-            telemetryStatus: ACC_STATUS.ACC_LIVE,
-            currentTelemetry: {
+        renderCircuitMaps();
+        act(() => {
+            liveTelemetryStore.publishFrame({
+                type: 'frame',
+                game: 'acc',
+                sequence: 1,
+                committedSequence: 1,
+                committedCount: 1,
+                sample: {
                 Graphics_status: ACC_STATUS.ACC_LIVE,
                 Graphics_normalized_car_position: 0.1,
                 Graphics_car_coordinates: JSON.stringify([{ x: 1, y: 0, z: 2 }]),
-            },
+                },
+            });
         });
 
         await userEvent.type(screen.getByLabelText('Circuit name'), 'Global Test Circuit');
@@ -232,6 +237,50 @@ describe('CircuitMaps', () => {
                 }],
             },
         });
+    });
+
+    it('processes all 120 live capture frames published in one React batch', async () => {
+        renderCircuitMaps();
+        await waitFor(() => expect(mockedApi.get).toHaveBeenCalledWith('/circuit-map/list', { game: 'acc' }));
+        act(() => {
+            liveTelemetryStore.publishFrame({
+                type: 'frame',
+                game: 'acc',
+                sample: {
+                    Graphics_status: ACC_STATUS.ACC_LIVE,
+                    Graphics_normalized_car_position: 0,
+                    Graphics_car_coordinates: JSON.stringify([{ x: 1, y: 1, z: 2 }]),
+                },
+                sequence: 1,
+                committedSequence: 1,
+                committedCount: 1,
+            });
+        });
+        await userEvent.click(screen.getByRole('button', { name: /start capture/i }));
+        act(() => liveTelemetryStore.beginStream());
+
+        act(() => {
+            for (let sequence = 1; sequence <= 120; sequence += 1) {
+                liveTelemetryStore.publishFrame({
+                    type: 'frame',
+                    game: 'acc',
+                    sample: {
+                        Graphics_status: ACC_STATUS.ACC_LIVE,
+                        Graphics_normalized_car_position: (sequence - 1) / 1000,
+                        Graphics_car_coordinates: JSON.stringify([{
+                            x: sequence + 1,
+                            y: 1,
+                            z: sequence + 2,
+                        }]),
+                    },
+                    sequence,
+                    committedSequence: sequence,
+                    committedCount: sequence,
+                });
+            }
+        });
+
+        expect(screen.getByText('120 samples')).toBeInTheDocument();
     });
 
     it('switches Other games into manual edit mode', async () => {

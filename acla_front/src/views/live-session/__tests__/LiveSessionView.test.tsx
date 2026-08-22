@@ -15,6 +15,7 @@ import {
     BaselineCollectionNotStartedError,
 } from 'contexts/AiToolComponentError';
 import { createAiToolOperationFrom } from 'components/ai-engineering-tools';
+import { liveTelemetryStore } from '../live-telemetry-store';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: jest.fn(),
@@ -93,14 +94,10 @@ const detectionCases: Array<{
 
 const createRuntime = (sessionGame: DesktopGame | null = null) => ({
     sessionGame,
-    currentTelemetry: {},
-    currentTelemetrySampleIndex: -1,
-    telemetryStatus: null,
     staticData: {},
     recordingState: RecordingState.CHECKING,
     recordingMetadata: null,
     recordingFileKey: null,
-    recordedSampleCount: 0,
     restorationStatus: 'idle',
     restorationError: null,
     recordingFileValidation: null,
@@ -180,10 +177,16 @@ const createTelemetryRuntime = () => {
         status: 7,
         message: 8,
     }];
+    liveTelemetryStore.publishFrame({
+        type: 'frame',
+        game: 'acc',
+        sample: rows[rows.length - 1],
+        sequence: 1,
+        committedSequence: 1,
+        committedCount: rows.length,
+    }, { Static_track: 'brands_hatch' });
     return {
         ...createRuntime('acc'),
-        currentTelemetry: rows[rows.length - 1],
-        currentTelemetrySampleIndex: rows.length - 1,
         streamRecordedTelemetry: jest.fn(async (onChunk: (rows: Record<string, any>[]) => void | Promise<void>) => {
             await onChunk(rows.slice(0, 1));
             await onChunk(rows.slice(1));
@@ -195,6 +198,7 @@ const createTelemetryRuntime = () => {
 
 describe('LiveSessionView', () => {
     beforeEach(() => {
+        liveTelemetryStore.resetSession();
         mockedUseDesktopGame.mockReset();
         componentDirectory = null;
     });
@@ -209,7 +213,14 @@ describe('LiveSessionView', () => {
             carName: 'BMW M4 GT3',
             gameRecordedFrom: 'acc',
         };
-        runtime.currentTelemetry = { Physics_speed_kmh: 210 };
+        liveTelemetryStore.publishFrame({
+            type: 'frame',
+            game: 'acc',
+            sample: { Physics_speed_kmh: 210 },
+            sequence: 1,
+            committedSequence: 1,
+            committedCount: 1,
+        });
         runtime.getLiveSessionSnapshot = jest.fn(() => ({
             status: 'ready',
             track: 'Monza',
@@ -242,6 +253,41 @@ describe('LiveSessionView', () => {
         expect(handle.getRecordingState()).toBe(RecordingState.RECORDING);
         expect(handle.getCurrentTelemetry()).toEqual({ Physics_speed_kmh: 210 });
         expect(handle.getAssistantSnapshot()).toBe(runtime);
+    });
+
+    it('keeps assistant snapshots isolated while lossless subscribers receive every frame', () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const runtime = createRuntime('acc');
+        const handle = renderRegisteredView(runtime);
+        const assistantListener = jest.fn();
+        const frameSequences: number[] = [];
+        handle.subscribeAssistantSnapshot(assistantListener);
+        liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'frame') frameSequences.push(event.update.sequence);
+        });
+
+        act(() => {
+            for (let sequence = 1; sequence <= 120; sequence += 1) {
+                liveTelemetryStore.publishFrame({
+                    type: 'frame',
+                    game: 'acc',
+                    sample: {
+                        Graphics_status: 2,
+                        Graphics_sequence: sequence,
+                        Physics_speed_kmh: sequence,
+                    },
+                    sequence,
+                    committedSequence: sequence,
+                    committedCount: sequence,
+                });
+            }
+        });
+
+        expect(assistantListener).not.toHaveBeenCalled();
+        expect(frameSequences).toEqual(Array.from({ length: 120 }, (_, index) => index + 1));
+        expect(handle.getAssistantSnapshot()).not.toHaveProperty('currentTelemetry');
+        expect(handle.getAssistantSnapshot()).not.toHaveProperty('telemetryStatus');
+        expect(handle.getAssistantSnapshot()).not.toHaveProperty('recordedSampleCount');
     });
 
     it.each([
