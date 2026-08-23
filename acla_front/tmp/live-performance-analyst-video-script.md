@@ -12,7 +12,7 @@ Approximate spoken length: 8 minutes, including pauses for the on-screen demonst
 
 [The AI starts the goal feature. ]
 
-This is Kestrel, the sim racing data analysis assistant. I just used its Live Performance Analyst agent. It works with all sensors and advanced lap understanding inside Kestrel, turns that telemetry graph data into language you can understand.
+This is Kestrel, the sim racing data analysis assistant. I just used its Live Performance Analyst agent. It works with all sensors and advanced lap understanding inside Kestrel, turns that telemetry graphs into language you can understand. This is not another ai coaching program, this is the assitant that can turns youself into your own racing analyst.
 
 In this demonstration, I’ll show the complete workflow—from recording a lap, to finding the section that needs attention, to carrying that insight back onto the track.
 
