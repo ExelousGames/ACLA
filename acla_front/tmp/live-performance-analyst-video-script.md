@@ -4,15 +4,15 @@ Approximate spoken length: 8 minutes, including pauses for the on-screen demonst
 
 ## 0:00–0:45 — Opening
 
-[Cold open on the end of a practice lap. Cut quickly to the Live Analyst identifying a segment, then reveal the driver-versus-expert comparison in the overlay.]
+[Start a practice lap and call for live performance analyst. ask the ai to watch for a lap]
 
-You have just finished a practice lap. You know there is more time in it—but where did you lose it, why did you lose it, and what should you change on the next lap?
+[Talk to AI: Can you do analysis on me.]
+[Talk to AI: Live performance analyst please.]
+[Talk to AI: i will do 1 lap, and analysis that lap for me]
 
-Instead of digging through the data alone, you can ask:
+[The AI starts the goal feature. ]
 
-[Ask: “Where am I losing time, and what should I work on next?”]
-
-This is Kestrel’s Live Performance Analyst. It works with the practice-lap data already inside Kestrel, turns that data into focused evidence, and can place the useful result in an overlay above the simulator.
+This is Kestrel, the sim racing data analysis assistant. I just used its Live Performance Analyst agent. It works with all sensors and advanced lap understanding inside Kestrel, turns that telemetry graph data into language you can understand.
 
 In this demonstration, I’ll show the complete workflow—from recording a lap, to finding the section that needs attention, to carrying that insight back onto the track.
 
