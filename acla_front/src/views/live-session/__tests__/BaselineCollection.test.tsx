@@ -62,7 +62,7 @@ const makeSample = (lap: number, position: number, currentTime: number, lastTime
     Static_track: 'brands_hatch',
     Static_car_model: 'Ferrari 296',
     Static_num_cars: 1,
-    Graphics_completed_laps: lap,
+    Graphics_completed_lap: lap,
     Graphics_normalized_car_position: position,
     Graphics_current_time: currentTime,
     ...(lastTime === undefined ? {} : { Graphics_last_time: lastTime }),
@@ -273,7 +273,7 @@ describe('BaselineCollection visualization', () => {
         act(() => { restart = handle.restartCollection(); });
         await expect(original.result).rejects.toMatchObject({ name: 'BaselineAnalysisCancelledError' });
         await expect(restart.result).resolves.toMatchObject({ status: 'waiting_for_start' });
-        expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start', baseline_lap: null });
+        expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start', baseline_lap_id: null });
     });
 
     it('rejects duplicate starts during collection without disrupting the original operation', async () => {
@@ -300,7 +300,7 @@ describe('BaselineCollection visualization', () => {
 
         await expect(original.result).resolves.toMatchObject({ status: 'complete' });
         expect(handle.getLapRecord()).toMatchObject({
-            lap: 0,
+            lap_id: 0,
             sample_count: 3,
         });
         expect(handle.getLapRecord()?.records.map((row) => row.Graphics_normalized_car_position))
@@ -329,7 +329,7 @@ describe('BaselineCollection visualization', () => {
         expect(handle.getTag()).toMatchObject({
             status: 'collecting',
             progress_percent: 45,
-            baseline_lap: 6,
+            baseline_lap_id: 6,
         });
 
         view.rerender(<Harness telemetry={makeSample(6, 0.45, 45_000)} />);
@@ -339,7 +339,7 @@ describe('BaselineCollection visualization', () => {
 
         await expect(continued.result).resolves.toMatchObject({ status: 'complete' });
         expect(handle.getLapRecord()).not.toBe(cachedBaseline);
-        expect(handle.getLapRecord()).toMatchObject({ lap: 6, sample_count: 5 });
+        expect(handle.getLapRecord()).toMatchObject({ lap_id: 6, sample_count: 5 });
         expect(handle.getLapRecord()?.records.map((row) => row.Graphics_normalized_car_position))
             .toEqual([0.001, 0.2, 0.45, 0.7, 0.98]);
     });
@@ -356,7 +356,7 @@ describe('BaselineCollection visualization', () => {
         sendCachedSample(makeSample(3, 0.5, 50_000));
         sendCachedSample(makeSample(3, 0.99, 99_000));
         sendCachedSample(makeSample(3, 0.002, 20));
-        expect(handle.getLapRecord()).toMatchObject({ lap: 3, sample_count: 3 });
+        expect(handle.getLapRecord()).toMatchObject({ lap_id: 3, sample_count: 3 });
 
         sendCachedSample(makeSample(3, 0.2, 20_000));
         sendCachedSample(makeSample(3, 0.4, 40_000));
@@ -366,20 +366,20 @@ describe('BaselineCollection visualization', () => {
         expect(handle.getTag()).toMatchObject({
             status: 'collecting',
             progress_percent: 40,
-            baseline_lap: 3,
+            baseline_lap_id: 3,
         });
 
         view.rerender(<Harness telemetry={makeSample(3, 0.4, 40_000)} />);
         view.rerender(<Harness telemetry={makeSample(4, 0.41, 41_000)} />);
         expect(handle.getLapRecord()).toBeNull();
-        expect(handle.getTag()).toMatchObject({ status: 'collecting', baseline_lap: 4 });
+        expect(handle.getTag()).toMatchObject({ status: 'collecting', baseline_lap_id: 4 });
 
         view.rerender(<Harness telemetry={makeSample(4, 0.8, 80_000)} />);
         view.rerender(<Harness telemetry={makeSample(4, 0.99, 99_000)} />);
         view.rerender(<Harness telemetry={makeSample(5, 0.002, 20, 99_500)} />);
 
         await expect(continued.result).resolves.toMatchObject({ status: 'complete' });
-        expect(handle.getLapRecord()).toMatchObject({ lap: 4, sample_count: 6 });
+        expect(handle.getLapRecord()).toMatchObject({ lap_id: 4, sample_count: 6 });
         expect(handle.getLapRecord()?.records.map((row) => row.Graphics_normalized_car_position))
             .toEqual([0.002, 0.2, 0.4, 0.41, 0.8, 0.99]);
     });
@@ -399,7 +399,7 @@ describe('BaselineCollection visualization', () => {
         expect(handle.getTag()).toMatchObject({
             status: 'collecting',
             progress_percent: 1,
-            baseline_lap: 6,
+            baseline_lap_id: 6,
         });
 
         view.rerender(<Harness telemetry={makeSample(6, 0.4, 40_000)} />);
@@ -408,7 +408,7 @@ describe('BaselineCollection visualization', () => {
 
         await expect(restarted.result).resolves.toMatchObject({ status: 'complete' });
         expect(handle.getLapRecord()).not.toBe(cachedBaseline);
-        expect(handle.getLapRecord()).toMatchObject({ lap: 6, sample_count: 3 });
+        expect(handle.getLapRecord()).toMatchObject({ lap_id: 6, sample_count: 3 });
     });
 
     it('waits for the next boundary, records one lap, reports progress, and resolves the operation', async () => {
@@ -430,14 +430,14 @@ describe('BaselineCollection visualization', () => {
 
         view.rerender(<Harness telemetry={makeSample(5, 0.001, 5)} />);
         view.rerender(<Harness telemetry={makeSample(5, 0.4, 40_000)} />);
-        expect(handle.getTag()).toMatchObject({ status: 'collecting', progress_percent: 40, baseline_lap: 5 });
+        expect(handle.getTag()).toMatchObject({ status: 'collecting', progress_percent: 40, baseline_lap_id: 5 });
 
         view.rerender(<Harness telemetry={makeSample(5, 0.98, 98_000)} />);
         view.rerender(<Harness telemetry={makeSample(6, 0.001, 5)} />);
         view.rerender(<Harness telemetry={makeSample(6, 0.2, 20_000)} />);
 
         expect(handle.getLapRecord()).toMatchObject({
-            lap: 5,
+            lap_id: 5,
             lap_time_ms: 98_000,
             track: 'brands_hatch',
             car: 'Ferrari 296',
@@ -446,6 +446,8 @@ describe('BaselineCollection visualization', () => {
         expect(handle.getLapRecord()?.records.map((row) => row.Graphics_normalized_car_position))
             .toEqual([0.001, 0.4, 0.98]);
         expect(handle.getTag()).toMatchObject({ status: 'complete', progress_percent: 100 });
+        expect(screen.queryByLabelText('Baseline collection progress')).not.toBeInTheDocument();
+        expect(handle.getOverlayBehavior(handle.getTag())).toMatchObject({ remove: true });
         expect(screen.getByRole('button', { name: 'Request Analysis' })).toBeEnabled();
         await expect(operation.result).resolves.toEqual({
             progress_percent: 100,
@@ -469,7 +471,7 @@ describe('BaselineCollection visualization', () => {
         view.rerender(<Harness telemetry={makeSample(3, 0.99, 99_000)} />);
         view.rerender(<Harness telemetry={makeSample(3, 0.002, 20)} />);
 
-        expect(handle.getLapRecord()).toMatchObject({ lap: 3, sample_count: 3 });
+        expect(handle.getLapRecord()).toMatchObject({ lap_id: 3, sample_count: 3 });
         expect(handle.getTag()).toMatchObject({ status: 'complete', progress_percent: 100 });
     });
 
@@ -490,7 +492,7 @@ describe('BaselineCollection visualization', () => {
             message: 'Baseline collection is not in progress. Start a new collection instead.',
         });
         expect(handle.getLapRecord()).toBe(completedBaseline);
-        expect(handle.getTag()).toMatchObject({ status: 'complete', baseline_lap: 0 });
+        expect(handle.getTag()).toMatchObject({ status: 'complete', baseline_lap_id: 0 });
         expect(screen.getByRole('button', { name: 'Request Analysis' })).toBeEnabled();
     });
 
@@ -512,7 +514,7 @@ describe('BaselineCollection visualization', () => {
         expect(secondHandle).not.toBe(firstHandle);
         expect(secondHandle.getTag()).toBeNull();
         act(() => { secondHandle.startCollection(); });
-        expect(secondHandle.getTag()).toMatchObject({ status: 'waiting_for_start', baseline_lap: null });
+        expect(secondHandle.getTag()).toMatchObject({ status: 'waiting_for_start', baseline_lap_id: null });
         expect(screen.getByLabelText('Baseline collection progress')).toBeInTheDocument();
 
         view.rerender(<Harness telemetry={makeSample(0, 0.9, 90_000)} />);
@@ -542,7 +544,7 @@ describe('BaselineCollection visualization', () => {
             {
                 track: record.track,
                 car: record.car,
-                baseline_lap: record.lap,
+                baseline_lap_id: record.lap_id,
                 records: record.records,
             },
             { timeout: 120000 },
@@ -556,7 +558,7 @@ describe('BaselineCollection visualization', () => {
         expect(appendAnalysisResultPage).toHaveBeenCalledWith({
             baseline: {
                 id: record.id,
-                lap: record.lap,
+                lap_id: record.lap_id,
                 lap_time_ms: 98_765,
                 captured_at: record.captured_at,
                 track: 'brands_hatch',
@@ -602,7 +604,7 @@ describe('BaselineCollection visualization', () => {
             source: 'baseline_lap_record',
             baseline: {
                 id: record.id,
-                lap: record.lap,
+                lap_id: record.lap_id,
                 lap_time_ms: 98_765,
                 track: 'brands_hatch',
                 car: 'Ferrari 296',

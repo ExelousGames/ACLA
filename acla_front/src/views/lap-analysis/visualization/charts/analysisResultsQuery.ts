@@ -56,7 +56,7 @@ export type OverallTrendQueryPage = {
     createdAt: number;
     sourceIndex: number;
     baseline: {
-        lap: number;
+        lap_id: number;
         lapTimeMs: number | null;
         track: string;
         car: string;
@@ -112,7 +112,7 @@ export interface OverallTrendQueryCategoryCount {
 export interface OverallTrendQueryLapResult {
     pageId: string;
     label: string;
-    lap: number;
+    lap_id: number;
     lapTimeMs: number | null;
     totalCount: number;
     categoryCounts: OverallTrendQueryCategoryCount[];
@@ -514,10 +514,13 @@ const normalizeAnalysisResultBaseline = (
     path: string,
 ): OverallTrendQueryPage['baseline'] => {
     const baseline = assertPlainRecord(value, path);
-    const lap = requireFiniteNumber(
-        requireDataProperty(baseline, 'lap', path),
-        `${path}.lap`,
+    const lapId = requireFiniteNumber(
+        requireDataProperty(baseline, 'lap_id', path),
+        `${path}.lap_id`,
     );
+    if (!Number.isInteger(lapId) || lapId < 0) {
+        throw invalidInputError(`${path}.lap_id must be a non-negative integer.`);
+    }
 
     const camelLapTime = readDataProperty(baseline, 'lapTimeMs', path);
     const snakeLapTime = readDataProperty(baseline, 'lap_time_ms', path);
@@ -541,7 +544,7 @@ const normalizeAnalysisResultBaseline = (
     }
 
     return {
-        lap,
+        lap_id: lapId,
         lapTimeMs,
         track: requireString(
             requireDataProperty(baseline, 'track', path),
@@ -564,10 +567,6 @@ const normalizeOverallTrendPage = (
         requireDataProperty(input, 'baseline', path),
         `${path}.baseline`,
     );
-    if (baseline.lap <= 0) {
-        throw invalidInputError(`${path}.baseline.lap must be positive.`);
-    }
-
     return {
         id: requireNonEmptyString(requireDataProperty(input, 'id', path), `${path}.id`),
         createdAt: requireFiniteNumber(
@@ -1082,52 +1081,53 @@ export const buildOverallTrendQueryDefinition = (
         };
     });
 
+    // Keep the generated literals flat so taxonomy size does not consume JSONata stack depth.
+    const categoryIdValues = categories.map(({ id }) => id);
+    const categoryLabelValues = categories.map(({ label }) => label);
+    const firstCategoryAliases = categories.map(({ aliases }) => aliases[0] ?? null);
+    const secondCategoryAliases = categories.map(({ aliases }) => aliases[1] ?? null);
+    const thirdCategoryAliases = categories.map(({ aliases }) => aliases[2] ?? null);
     const expression = `(
   $parentLabels := ${JSON.stringify(parentAliases)};
-  $categories := ${JSON.stringify(categories)};
-  $matchesParent := function($element) {
-    $exists($element.labels[$ in $parentLabels])
-  };
-  $matchesCategory := function($element, $category) {
-    $exists($element.labels[$ in $category.aliases])
-  };
+  $categories := $zip(
+    ${JSON.stringify(categoryIdValues)},
+    ${JSON.stringify(categoryLabelValues)},
+    ${JSON.stringify(firstCategoryAliases)},
+    ${JSON.stringify(secondCategoryAliases)},
+    ${JSON.stringify(thirdCategoryAliases)}
+  );
   $orderedPages := pages;
   $laps := [$map($orderedPages, function($page) {(
-    $mistakes := $filter(
-      $page.elements,
-      function($element) { $matchesParent($element) }
-    );
-    $categoryCounts := [$map($categories, function($category) {
+    $mistakes := $page.elements[labels[$ in $parentLabels]];
+    $categoryCounts := [$map($categories, function($category) {(
+      $categoryId := $category[0];
+      $categoryLabel := $category[1];
+      $categoryAliases := [$category[2], $category[3], $category[4]];
       {
-        "id": $category.id,
-        "label": $category.label,
-        "count": $count($filter(
-          $mistakes,
-          function($element) { $matchesCategory($element, $category) }
-        ))
+        "id": $categoryId,
+        "label": $categoryLabel,
+        "count": $count($mistakes[labels[$ in $categoryAliases]])
       }
-    })];
+    )})];
     {
       "pageId": $page.id,
-      "lap": $page.baseline.lap,
+      "lap_id": $page.baseline.lap_id,
       "lapTimeMs": $page.baseline.lapTimeMs,
       "totalCount": $count($mistakes),
       "categoryCounts": $categoryCounts
     }
   )})];
-  $totals := [$map($categories, function($category) {(
-    $occurrences := $sum([0, $laps.categoryCounts[id = $category.id].count]);
+  $positiveCategoryIds := $distinct($laps.categoryCounts[count > 0].id);
+  $positiveTotals := [$map($positiveCategoryIds, function($categoryId) {(
+    $matchingCounts := $laps.categoryCounts[id = $categoryId];
+    $categoryLabel := $matchingCounts[0].label;
     {
-      "id": $category.id,
-      "label": $category.label,
-      "foldedLabel": $lowercase($category.label),
-      "occurrences": $occurrences
+      "id": $categoryId,
+      "label": $categoryLabel,
+      "foldedLabel": $lowercase($categoryLabel),
+      "occurrences": $sum($matchingCounts.count)
     }
-  )})];
-  $positiveTotals := $filter(
-    $totals,
-    function($category) { $category.occurrences > 0 }
-  )^(<foldedLabel, <label, <id);
+  )})]^(<foldedLabel, <label, <id);
   {
     "laps": $laps,
     "categories": [$map($positiveTotals, function($category) {
@@ -1237,9 +1237,9 @@ const requireOverallTrendCount = (value: unknown, path: string): number => {
     return value;
 };
 
-const requireOverallTrendLap = (value: unknown, path: string): number => {
-    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-        throw invalidOverallTrendResultError(`${path} must be a finite positive number.`);
+const requireOverallTrendLapId = (value: unknown, path: string): number => {
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        throw invalidOverallTrendResultError(`${path} must be a non-negative integer.`);
     }
     return value;
 };
@@ -1290,7 +1290,7 @@ export const resolveOverallTrendQueryResult = (
         const path = `Overall Trends query result.laps[${lapIndex}]`;
         const lapObject = requireOverallTrendResultObject(rawLap, path, [
             'pageId',
-            'lap',
+            'lap_id',
             'lapTimeMs',
             'totalCount',
             'categoryCounts',
@@ -1313,13 +1313,13 @@ export const resolveOverallTrendQueryResult = (
             );
         }
 
-        const lap = requireOverallTrendLap(
-            requireOverallTrendResultProperty(lapObject, 'lap', path),
-            `${path}.lap`,
+        const lapId = requireOverallTrendLapId(
+            requireOverallTrendResultProperty(lapObject, 'lap_id', path),
+            `${path}.lap_id`,
         );
-        if (lap !== page.baseline.lap) {
+        if (lapId !== page.baseline.lap_id) {
             throw invalidOverallTrendResultError(
-                `${path}.lap does not match canonical page '${pageId}'.`,
+                `${path}.lap_id does not match canonical page '${pageId}'.`,
             );
         }
         const lapTimeMs = requireOverallTrendLapTime(
@@ -1402,8 +1402,8 @@ export const resolveOverallTrendQueryResult = (
         });
         return {
             pageId: page.id,
-            label: `Analysis ${lapIndex + 1} \u00b7 Lap ${page.baseline.lap}`,
-            lap: page.baseline.lap,
+            label: `Analysis ${lapIndex + 1} \u00b7 Lap ${page.baseline.lap_id}`,
+            lap_id: page.baseline.lap_id,
             lapTimeMs: page.baseline.lapTimeMs,
             totalCount,
             categoryCounts,

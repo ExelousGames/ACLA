@@ -272,7 +272,7 @@ describe('AnalysisResultsChart', () => {
         const pages = [{
             id: 'active-page',
             createdAt: 1,
-            baseline: { lap: 1, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 1, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
             elements: [
                 { id: 'active-mistake', labels: ['MSP'] },
                 { id: 'active-unrelated', labels: ['Telemetry'] },
@@ -280,7 +280,7 @@ describe('AnalysisResultsChart', () => {
         }, {
             id: 'latest-page',
             createdAt: 2,
-            baseline: { lap: 2, lap_time_ms: 98_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 2, lap_time_ms: 98_000, track: 'Spa', car: 'GT3' },
             elements: [
                 { id: 'latest-one', labels: ['MSP'] },
                 { id: 'latest-two', labels: ['MSR'] },
@@ -310,12 +310,12 @@ describe('AnalysisResultsChart', () => {
             data: 2,
         });
         await expect(chartRef.current!.queryAnalysisResult({
-            query: 'analyses.{"lap": baseline.lap, "segmentCount": $count(elements)}',
+            query: 'analyses.{"lap_id": baseline.lap_id, "segmentCount": $count(elements)}',
         }).result).resolves.toEqual({
             status: 'ready',
             data: [
-                { lap: 1, segmentCount: 2 },
-                { lap: 2, segmentCount: 3 },
+                { lap_id: 1, segmentCount: 2 },
+                { lap_id: 2, segmentCount: 3 },
             ],
         });
         await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
@@ -363,7 +363,7 @@ describe('AnalysisResultsChart', () => {
                         id: 'zero-lap-page',
                         createdAt: 1,
                         baseline: {
-                            lap: 0,
+                            lap_id: 0,
                             lap_time_ms: 98_000,
                             track: 'Spa',
                             car: 'GT3',
@@ -376,7 +376,8 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        await screen.findByTestId('overall-trend-query-error');
+        await screen.findByTestId('lap-time-trend-graph');
+        expect(screen.queryByTestId('overall-trend-query-error')).not.toBeInTheDocument();
         expect(screen.getByText('1 analyzed lap')).toBeInTheDocument();
         expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent(
             'Not enough analyzed laps to determine a trend.',
@@ -407,12 +408,12 @@ describe('AnalysisResultsChart', () => {
         const pages: AnalysisResultsPaginationPage[] = [{
             id: 'array-page-1',
             createdAt: 999,
-            baseline: { lap: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'first-only', labels: ['MSP'] }],
         }, {
             id: 'array-page-2',
             createdAt: -999,
-            baseline: { lap: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
             elements: [
                 { id: 'latest-match', labels: ['MSP'] },
                 { id: 'latest-other', labels: ['Telemetry'] },
@@ -474,12 +475,12 @@ describe('AnalysisResultsChart', () => {
         const pages: AnalysisResultsPaginationPage[] = [{
             id: 'displayed-page-1',
             createdAt: 200,
-            baseline: { lap: 4, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 4, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'page-one-match', labels: ['MSP'] }],
         }, {
             id: 'displayed-page-2',
             createdAt: 100,
-            baseline: { lap: 5, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 5, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'page-two-match', labels: ['MSP'] }],
         }];
         const Harness = () => {
@@ -618,12 +619,12 @@ describe('AnalysisResultsChart', () => {
         const pages: AnalysisResultsPaginationPage[] = [{
             id: 'stale-page-1',
             createdAt: 2,
-            baseline: { lap: 1, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 1, lap_time_ms: null, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'newest-wins', labels: ['MSP'] }],
         }, {
             id: 'stale-page-2',
             createdAt: 1,
-            baseline: { lap: 2, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 2, lap_time_ms: null, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'stale-result', labels: ['MSP'] }],
         }];
         const onSelectPage = jest.fn();
@@ -710,7 +711,7 @@ describe('AnalysisResultsChart', () => {
                         id: 'requested-page',
                         createdAt: 1,
                         baseline: {
-                            lap: 1,
+                            lap_id: 1,
                             lap_time_ms: 100_000,
                             track: 'Spa',
                             car: 'GT3',
@@ -776,12 +777,12 @@ describe('AnalysisResultsChart', () => {
         const pages = [{
             id: 'page-2',
             createdAt: 2,
-            baseline: { lap: 7, lap_time_ms: 98_000, track: 'Monza', car: 'GT4' },
+            baseline: { lap_id: 7, lap_time_ms: 98_000, track: 'Monza', car: 'GT4' },
             elements: [{ id: 'second-page-result', labels: ['MSP', 'MSP2'], title: 'Second page mistake' }],
         }, {
             id: 'page-1',
             createdAt: 1,
-            baseline: { lap: 4, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 4, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'first-page-result', labels: ['MSP', 'MSP1'], title: 'First page mistake' }],
         }];
 
@@ -890,7 +891,7 @@ describe('AnalysisResultsChart', () => {
         const pages: AnalysisResultsPaginationPage[] = [{
             id: 'filtered-first',
             createdAt: 1,
-            baseline: { lap: 1, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 1, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
             elements: [{
                 id: 'early',
                 labels: ['MSP'],
@@ -904,7 +905,7 @@ describe('AnalysisResultsChart', () => {
         }, {
             id: 'filtered-second',
             createdAt: 2,
-            baseline: { lap: 2, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 2, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
             elements: [{
                 id: 'second-page-only',
                 labels: ['MSR'],
@@ -1026,29 +1027,29 @@ describe('AnalysisResultsChart', () => {
         const pages = [{
             id: 'latest',
             createdAt: 400,
-            baseline: { lap: 21, lap_time_ms: 95_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 21, lap_time_ms: 95_000, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'latest-mistake', labels: ['MSP', 'MSP1'] }],
         }, {
             id: 'first',
             createdAt: 100,
-            baseline: { lap: 3, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 3, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'first-mistake', labels: ['MSP', 'MSP1'] }],
         }, {
             id: 'missing',
             createdAt: 300,
-            baseline: { lap: 14, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 14, lap_time_ms: null, track: 'Spa', car: 'GT3' },
             elements: [],
         }, {
             id: 'slower',
             createdAt: 200,
-            baseline: { lap: 9, lap_time_ms: 105_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 9, lap_time_ms: 105_000, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'slower-mistake', labels: ['MSR', 'MSR1'] }],
         }];
         const model = buildLapTimeTrendData([
             {
                 pageId: 'first',
                 label: 'Analysis 1 · Lap 3',
-                lap: 3,
+                lap_id: 3,
                 lapTimeMs: 100_000,
                 totalCount: 0,
                 categoryCounts: [],
@@ -1056,7 +1057,7 @@ describe('AnalysisResultsChart', () => {
             {
                 pageId: 'slower',
                 label: 'Analysis 2 · Lap 9',
-                lap: 9,
+                lap_id: 9,
                 lapTimeMs: 105_000,
                 totalCount: 0,
                 categoryCounts: [],
@@ -1064,7 +1065,7 @@ describe('AnalysisResultsChart', () => {
             {
                 pageId: 'missing',
                 label: 'Analysis 3 · Lap 14',
-                lap: 14,
+                lap_id: 14,
                 lapTimeMs: null,
                 totalCount: 0,
                 categoryCounts: [],
@@ -1072,7 +1073,7 @@ describe('AnalysisResultsChart', () => {
             {
                 pageId: 'latest',
                 label: 'Analysis 4 · Lap 21',
-                lap: 21,
+                lap_id: 21,
                 lapTimeMs: 95_000,
                 totalCount: 0,
                 categoryCounts: [],
@@ -1116,7 +1117,7 @@ describe('AnalysisResultsChart', () => {
         const pages = [{
             id: 'later-page',
             createdAt: 200,
-            baseline: { lap: 12, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 12, lap_time_ms: null, track: 'Spa', car: 'GT3' },
             elements: [
                 { id: 'b-wheel-1', labels: ['MSP', 'MSP2'] },
                 { id: 'b-wheel-2', labels: ['Mistake (Practice)', 'Wheel lock'] },
@@ -1125,7 +1126,7 @@ describe('AnalysisResultsChart', () => {
         }, {
             id: 'first-page',
             createdAt: 100,
-            baseline: { lap: 8, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 8, lap_time_ms: null, track: 'Spa', car: 'GT3' },
             elements: [
                 { id: 'a-late', labels: ['MSP', 'MSP1', 'Late turn-in', 'MSP1'] },
                 { id: 'a-wheel', labels: ['MSP', 'MSP2'] },
@@ -1135,7 +1136,7 @@ describe('AnalysisResultsChart', () => {
         }, {
             id: 'last-page',
             createdAt: 300,
-            baseline: { lap: 15, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 15, lap_time_ms: null, track: 'Spa', car: 'GT3' },
             elements: [
                 { id: 'c-wheel', labels: ['MSP', 'MSP2', 'Wheel lock'] },
                 { id: 'c-racing-1', labels: ['Mistake (Racing)', 'MSR1'] },
@@ -1196,7 +1197,7 @@ describe('AnalysisResultsChart', () => {
         let pages: AnalysisResultsPaginationPage[] = [{
             id: 'taxonomy-page',
             createdAt: 1,
-            baseline: { lap: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'fresh-labels', labels: ['Fresh Training', 'Fresh brake'] }],
         }];
         const renderChart = () => (
@@ -1228,7 +1229,7 @@ describe('AnalysisResultsChart', () => {
             pages = [...pages, {
                 id: 'retained-page',
                 createdAt: 2,
-                baseline: { lap: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
+                baseline: { lap_id: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
                 elements: [{ id: 'retained-mistake', labels: ['MSP', 'MSP1'] }],
             }];
             view.rerender(renderChart());
@@ -1252,7 +1253,7 @@ describe('AnalysisResultsChart', () => {
         const pages = [{
             id: 'trend-generation',
             createdAt: 1,
-            baseline: { lap: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
             elements: [
                 { id: 'training', labels: ['MSP', 'MSP1'] },
                 { id: 'racing-one', labels: ['MSR', 'MSR1'] },
@@ -1313,7 +1314,7 @@ describe('AnalysisResultsChart', () => {
         const pages = [{
             id: 'independent-state',
             createdAt: 1,
-            baseline: { lap: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
             elements: [
                 { id: 'training', labels: ['MSP', 'MSP1'] },
                 { id: 'racing-one', labels: ['MSR', 'MSR1'] },
@@ -1362,7 +1363,7 @@ describe('AnalysisResultsChart', () => {
         const initialPages = [{
             id: 'old-page',
             createdAt: 1,
-            baseline: { lap: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            baseline: { lap_id: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'old-mistake', labels: ['MSP', 'MSP1'] }],
         }];
         const renderChart = (pages: typeof initialPages) => (
@@ -1387,7 +1388,7 @@ describe('AnalysisResultsChart', () => {
             view.rerender(renderChart([{
                 id: 'new-page',
                 createdAt: 2,
-                baseline: { lap: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
+                baseline: { lap_id: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
                 elements: [{ id: 'new-mistake', labels: ['MSP', 'MSP2'] }],
             }]));
 
@@ -1430,7 +1431,7 @@ describe('AnalysisResultsChart', () => {
                     pages: [{
                         id: 'only-page',
                         createdAt: 1,
-                        baseline: { lap: 6, lap_time_ms: 98_567, track: 'Spa', car: 'GT3' },
+                        baseline: { lap_id: 6, lap_time_ms: 98_567, track: 'Spa', car: 'GT3' },
                         elements: [{ id: 'only-result', labels: ['MSP', 'MSP1'] }],
                     }],
                     activePageId: 'only-page',

@@ -83,7 +83,7 @@ const ClearDraftHarness = () => {
             <button type="button" onClick={() => runtime.appendAnalysisResultPage({
                 baseline: {
                     id: 'baseline-before-discard',
-                    lap: 1,
+                    lap_id: 1,
                     lap_time_ms: null,
                     captured_at: 1,
                     track: 'Monza',

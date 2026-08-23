@@ -154,7 +154,7 @@ const renderRegisteredView = (runtime: any) => {
 const createTelemetryRuntime = () => {
     const rows = [{
         Static_track: 'brands_hatch',
-        Graphics_completed_laps: 1,
+        Graphics_completed_lap: 1,
         Graphics_normalized_car_position: 0.1,
         Physics_timestamp: 0,
         Physics_speed_kmh: 100,
@@ -166,7 +166,7 @@ const createTelemetryRuntime = () => {
         message: 6,
     }, {
         Static_track: 'brands_hatch',
-        Graphics_completed_laps: 1,
+        Graphics_completed_lap: 1,
         Graphics_normalized_car_position: 0.2,
         Physics_timestamp: 100,
         Physics_speed_kmh: 120,
@@ -578,7 +578,7 @@ describe('LiveSessionView', () => {
             source: 'baseline_lap_record' as const,
             baseline: {
                 id: 'baseline-1',
-                lap: 2,
+                lap_id: 2,
                 lap_time_ms: 98_765,
                 captured_at: 1,
                 track: 'brands_hatch',
@@ -617,8 +617,8 @@ describe('LiveSessionView', () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
         const runtime: any = createRuntime('acc');
         runtime.analysisResultPages = [
-            { id: 'older-page', elements: [], baseline: { lap: 1 } },
-            { id: 'latest-page', elements: [], baseline: { lap: 2 } },
+            { id: 'older-page', elements: [], baseline: { lap_id: 1 } },
+            { id: 'latest-page', elements: [], baseline: { lap_id: 2 } },
         ];
         runtime.activeAnalysisResultPageId = 'older-page';
 

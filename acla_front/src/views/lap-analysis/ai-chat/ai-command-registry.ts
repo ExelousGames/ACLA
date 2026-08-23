@@ -219,7 +219,7 @@ const buildLiveAnalystSnapshot = (context: AiCommandRegistryContext) => {
         baseline_ready: ready,
         baseline_collection_started: ready || tag?.status === 'collecting',
         baseline_progress_percent: ready ? 100 : tag?.progress_percent ?? 0,
-        baseline_lap: record?.lap ?? tag?.baseline_lap ?? null,
+        baseline_lap_id: record?.lap_id ?? tag?.baseline_lap_id ?? null,
         baseline_record_sample_count: record?.sample_count ?? 0,
     };
 };

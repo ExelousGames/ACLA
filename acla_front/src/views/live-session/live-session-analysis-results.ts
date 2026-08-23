@@ -5,7 +5,7 @@ import {
 
 export interface LiveSessionBaselineMetadata {
     id: string;
-    lap: number;
+    lap_id: number;
     lap_time_ms: number | null;
     captured_at: number;
     track: string;

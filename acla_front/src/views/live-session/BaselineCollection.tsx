@@ -63,12 +63,12 @@ export type BaselineCollectionTag = {
     track: string | null;
     car: string | null;
     current_lap: number | null;
-    baseline_lap: number | null;
+    baseline_lap_id: number | null;
 };
 
 export type BaselineLapRecord = {
     id: string;
-    lap: number;
+    lap_id: number;
     lap_time_ms: number | null;
     captured_at: number;
     track: string;
@@ -323,7 +323,7 @@ const buildRecorderSnapshot = (state: BaselineRecorderState): Record<string, any
     baseline_ready: state.status === 'complete',
     baseline_collection_started: state.status !== 'waiting_for_start',
     baseline_progress_percent: getCollectionProgress(state),
-    baseline_lap: state.startLap,
+    baseline_lap_id: state.startLap,
     completed_lap_count: state.status === 'complete' ? 1 : 0,
 });
 
@@ -474,7 +474,7 @@ export const buildBaselineCollectionTag = (
         track: typeof snapshot.track === 'string' && snapshot.track ? snapshot.track : null,
         car: typeof snapshot.car === 'string' && snapshot.car ? snapshot.car : null,
         current_lap: toNullableFiniteNumber(snapshot.current_lap),
-        baseline_lap: toNullableFiniteNumber(snapshot.baseline_lap),
+        baseline_lap_id: toNullableFiniteNumber(snapshot.baseline_lap_id),
     };
 };
 
@@ -607,7 +607,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         const seeded = getContinuationRows(
             telemetryCacheRef.current.rows,
             currentLap,
-            completedRecord.lap,
+            completedRecord.lap_id,
         );
         if (seeded.rows.length === 0) return null;
 
@@ -621,7 +621,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
             currentPosition,
             lastPosition: currentPosition,
             canStartAtBoundary: true,
-            lapCounterAdvancePending: currentLap === completedRecord.lap,
+            lapCounterAdvancePending: currentLap === completedRecord.lap_id,
             track: getTelemetryTrack(sample) || completedRecord.track,
             car: getTelemetryCar(sample) || completedRecord.car,
             completedRecord: null,
@@ -733,7 +733,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
                         {
                             track: baseline.track,
                             car: baseline.car,
-                            baseline_lap: baseline.lap,
+                            baseline_lap_id: baseline.lap_id,
                             records: baseline.records,
                         },
                         { timeout: 120000 },
@@ -785,7 +785,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
                     elements,
                     baseline: {
                         id: baseline.id,
-                        lap: baseline.lap,
+                        lap_id: baseline.lap_id,
                         lap_time_ms: baseline.lap_time_ms,
                         captured_at: baseline.captured_at,
                         track: baseline.track,
@@ -816,7 +816,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
                     source: 'baseline_lap_record',
                     baseline: {
                         id: baseline.id,
-                        lap: baseline.lap,
+                        lap_id: baseline.lap_id,
                         lap_time_ms: baseline.lap_time_ms,
                         captured_at: baseline.captured_at,
                         track: baseline.track,
@@ -857,7 +857,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
             placement: 'flow',
             requestedStatus: 'expanded',
             foldAfterMs: OVERLAY_HOLD_MS,
-            remove: next === null,
+            remove: next === null || next.status === 'complete',
         }),
         getOverlayMetadata: () => ({}),
         handleOverlayRendererEvent: () => undefined,
@@ -932,7 +932,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
                             String(state.startLap ?? 0),
                             String(state.rows.length),
                         ].join(':'),
-                        lap: state.startLap ?? 0,
+                        lap_id: state.startLap ?? 0,
                         lap_time_ms: getCompletedBaselineLapTimeMs(sample, state.rows),
                         captured_at: Date.now(),
                         track: state.track,
@@ -989,7 +989,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         <div className="baseline-collection" data-testid="baseline-collection">
             {tag ? (
                 <>
-                    <BaselineProgressDisplay tag={tag} />
+                    {tag.status !== 'complete' && <BaselineProgressDisplay tag={tag} />}
                     {tag.status === 'complete' && lapRecordRef.current && (
                         <button
                             type="button"

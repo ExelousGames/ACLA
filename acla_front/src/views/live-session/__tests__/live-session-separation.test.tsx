@@ -72,7 +72,7 @@ const SeparationHarness = () => {
                 live.appendAnalysisResultPage({
                     baseline: {
                         id: `baseline-${pageNumber}`,
-                        lap: pageNumber,
+                        lap_id: pageNumber,
                         lap_time_ms: pageNumber * 90_000,
                         captured_at: pageNumber,
                         track: 'Monza',
@@ -139,7 +139,7 @@ describe('live session state separation', () => {
                 Static_track: 'monza',
                 Static_car_model: 'Ferrari 296',
                 Static_num_cars: 1,
-                Graphics_completed_laps: lap,
+                Graphics_completed_lap: lap,
                 Graphics_normalized_car_position: 0.1,
             }));
         });

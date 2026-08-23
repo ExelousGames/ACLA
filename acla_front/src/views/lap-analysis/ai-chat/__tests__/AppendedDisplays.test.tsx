@@ -18,7 +18,7 @@ describe('appended AI display components', () => {
                     track: 'brands_hatch',
                     car: 'Ferrari 296',
                     current_lap: 0,
-                    baseline_lap: 0,
+                    baseline_lap_id: 0,
                 }}
             />,
         );

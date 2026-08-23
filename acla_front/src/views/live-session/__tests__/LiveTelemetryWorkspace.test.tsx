@@ -97,7 +97,7 @@ describe('LiveTelemetryWorkspace named manager', () => {
             runtime.appendAnalysisResultPage({
                 baseline: {
                     id: 'baseline-1',
-                    lap: 3,
+                    lap_id: 3,
                     lap_time_ms: null,
                     captured_at: 1,
                     track: 'Spa',
@@ -162,7 +162,7 @@ describe('LiveTelemetryWorkspace named manager', () => {
             runtime.appendAnalysisResultPage({
                 baseline: {
                     id: 'acc-baseline',
-                    lap: 4,
+                    lap_id: 4,
                     lap_time_ms: 98_000,
                     captured_at: 1,
                     track: 'Spa',

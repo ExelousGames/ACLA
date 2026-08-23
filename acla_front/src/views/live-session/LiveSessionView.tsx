@@ -385,7 +385,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                     const response = await apiService.post('/racing-session/analyze-live-recorded-analysis', {
                         track: snapshot.track,
                         car: snapshot.car,
-                        baseline_lap: snapshot.current_lap,
+                        baseline_lap_id: snapshot.current_lap,
                         records: rows,
                     }, { timeout: 120000 });
                     const result = normalizeSegmentClassificationResult(

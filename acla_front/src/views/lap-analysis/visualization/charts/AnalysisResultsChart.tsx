@@ -99,7 +99,7 @@ export interface AnalysisResultsPaginationPage {
     id: string;
     createdAt: number;
     baseline: {
-        lap: number;
+        lap_id: number;
         lap_time_ms: number | null;
         track: string;
         car: string;
@@ -1514,7 +1514,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                             </Flex>
                             <Text className={styles.baselineContext} size="1" color="gray" as="span">
                                 Baseline: {activePage!.baseline.track || 'Unknown track'} ·{' '}
-                                {activePage!.baseline.car || 'Unknown car'} · Lap {activePage!.baseline.lap}
+                                {activePage!.baseline.car || 'Unknown car'} · Lap {activePage!.baseline.lap_id}
                             </Text>
                         </>
                     )}

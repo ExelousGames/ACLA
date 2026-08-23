@@ -32,7 +32,7 @@ jest.mock('@radix-ui/react-icons', () => ({
 
 const telemetry = (speed: number) => ({
     Static_track: 'brands_hatch',
-    Graphics_completed_laps: 2,
+    Graphics_completed_lap: 2,
     Graphics_normalized_car_position: 0.4,
     Physics_speed_kmh: speed,
 });

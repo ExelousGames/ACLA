@@ -36,8 +36,7 @@ export const detectLiveSessionType = (sample: TelemetrySample | null | undefined
 };
 
 export const getTelemetryLap = (sample: TelemetrySample | null | undefined): number => (
-    toFiniteNumber(sample?.Graphics_completed_laps)
-    ?? toFiniteNumber(sample?.Graphics_completed_lap)
+    toFiniteNumber(sample?.Graphics_completed_lap)
     ?? 0
 );
 

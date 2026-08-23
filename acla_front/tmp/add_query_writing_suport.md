@@ -55,7 +55,7 @@ Overall Trends queries receive all retained normalized pages:
       "createdAt": 0,
       "sourceIndex": 0,
       "baseline": {
-        "lap": 1,
+        "lap_id": 0,
         "lapTimeMs": 0,
         "track": "...",
         "car": "..."
@@ -185,7 +185,7 @@ Overall Trends uses a narrower result contract than the AI tool. A generated tre
 {
     laps: Array<{
         pageId: string;
-        lap: number;
+        lap_id: number;
         lapTimeMs: number | null;
         totalCount: number;
         categoryCounts: Array<{ id: string; label: string; count: number }>;
@@ -195,7 +195,7 @@ Overall Trends uses a narrower result contract than the AI tool. A generated tre
 ```
 
 - Require exactly one lap row for every current trend-input page, in `createdAt`/`sourceIndex` order. Resolve `pageId` against the current page map and rebuild display labels from canonical page data.
-- Require finite, non-negative integer counts; a finite positive `lap`, a finite non-negative `lapTimeMs` or `null`; and unique category IDs within every array.
+- Require finite, non-negative integer counts and `lap_id`; a finite non-negative `lapTimeMs` or `null`; and unique category IDs within every array.
 - Require category IDs and display labels to match the taxonomy values embedded in the selected generated query. Every lap's `categoryCounts` contains each recognized canonical child category exactly once, including zero counts; top-level `categories` contains exactly the positive-occurrence categories in deterministic label order. Do not accept projected labels as new taxonomy/UI content.
 - Require each top-level category occurrence total to equal the sum of that category's per-lap counts, and each per-lap category count to be no greater than that lap's parent-mistake `totalCount`.
 - Reject the whole result on an unknown/missing/duplicate page, unknown category, invalid scalar, inconsistent aggregate, or unexpected nesting. Never partially graph a malformed trend result.

@@ -4,17 +4,17 @@ Approximate spoken length: 8 minutes, including pauses for the on-screen demonst
 
 ## 0:00–0:45 — Opening
 
-[Open on Kestrel. Move from an active practice session to the Live Analyst conversation, a completed practice-lap analysis, and then the AI overlay.]
+[Cold open on the end of a practice lap. Cut quickly to the Live Analyst identifying a segment, then reveal the driver-versus-expert comparison in the overlay.]
 
-Most AI products begin with a blank chat box. You describe what you are looking at, copy information into the conversation, and hope the model has enough context to help.
+You have just finished a practice lap. You know there is more time in it—but where did you lose it, why did you lose it, and what should you change on the next lap?
 
-Kestrel takes a different approach. The AI is built around the application.
+Instead of digging through the data alone, you can ask:
 
-It can work with the driving data that Kestrel already has, review a recorded practice lap, and present useful information through the overlay.
+[Ask: “Where am I losing time, and what should I work on next?”]
 
-The goal is not to add a chatbot beside a telemetry application. The goal is to connect the AI to the application’s real workflow—from recording a practice lap, to analyzing it, to delivering the result where the driver can use it.
+This is Kestrel’s Live Performance Analyst. It works with the practice-lap data already inside Kestrel, turns that data into focused evidence, and can place the useful result in an overlay above the simulator.
 
-In this demonstration, I’ll show how to enable the Live Performance Analyst agent mode, how that mode focuses the AI on a live practice session and its practice laps, and how the resulting analysis can be presented through the overlay.
+In this demonstration, I’ll show the complete workflow—from recording a lap, to finding the section that needs attention, to carrying that insight back onto the track.
 
 ## 0:45–1:25 — The practice session provides the context
 

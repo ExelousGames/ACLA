@@ -2,6 +2,7 @@ import {
     createTelemetryScopeCollector,
     reduceTelemetrySamples,
 } from '../telemetry-query';
+import { getTelemetryLap } from '../live-performance-analyst';
 import type {
     FieldStats,
     QueryResult,
@@ -18,7 +19,7 @@ type MissingTelemetryQueryGeneric = TelemetryQuery;
 
 const sample = (lap: number, position: number, extra: Record<string, unknown> = {}) => ({
     Static_track: 'brands_hatch',
-    Graphics_completed_laps: lap,
+    Graphics_completed_lap: lap,
     Graphics_normalized_car_position: position,
     ...extra,
 });
@@ -42,6 +43,14 @@ const createTelemetryQuery = () => {
 };
 
 describe('telemetry query execution', () => {
+    it('uses the zero-based canonical completed-lap field', () => {
+        expect(getTelemetryLap({
+            Graphics_completed_lap: 0,
+            Graphics_completed_laps: 99,
+        })).toBe(0);
+        expect(getTelemetryLap({ Graphics_completed_laps: 99 })).toBe(0);
+    });
+
     it.each([
         [{ type: 'now' } as const, [4]],
         [{ type: 'range', start: 1, end: 4 } as const, [1, 2, 3]],

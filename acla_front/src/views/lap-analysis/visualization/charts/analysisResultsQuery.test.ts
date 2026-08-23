@@ -96,7 +96,7 @@ describe('analysisResultsQuery evaluator', () => {
                     createdAt: 20,
                     sourceIndex: 77,
                     baseline: {
-                        lap: 3,
+                        lap_id: 3,
                         lap_time_ms: 61_000,
                         track: 'Spa',
                         car: 'GT3',
@@ -108,7 +108,7 @@ describe('analysisResultsQuery evaluator', () => {
                     createdAt: 20,
                     sourceIndex: -5,
                     baseline: {
-                        lap: 4,
+                        lap_id: 4,
                         lapTimeMs: null,
                         track: 'Spa',
                         car: 'GT3',
@@ -144,7 +144,7 @@ describe('analysisResultsQuery evaluator', () => {
                     id: 'lap-one',
                     createdAt: 10,
                     baseline: {
-                        lap: 1,
+                        lap_id: 1,
                         lap_time_ms: 61_000,
                         track: 'Spa',
                         car: 'GT3',
@@ -165,10 +165,10 @@ describe('analysisResultsQuery evaluator', () => {
             input,
         )).resolves.toEqual({ analysisCount: 2, segmentCount: 2 });
         await expect(evaluateAllAnalysisResultsQuery(
-            'analyses.{"id": id, "lap": baseline.lap, "segmentCount": $count(elements)}',
+            'analyses.{"id": id, "lap_id": baseline.lap_id, "segmentCount": $count(elements)}',
             input,
         )).resolves.toEqual([
-            { id: 'lap-one', lap: 1, segmentCount: 2 },
+            { id: 'lap-one', lap_id: 1, segmentCount: 2 },
             { id: 'recorded-analysis', segmentCount: 0 },
         ]);
         await expect(evaluateAllAnalysisResultsQuery('$count(analyses)', {
@@ -182,7 +182,7 @@ describe('analysisResultsQuery evaluator', () => {
             id: 'zero-lap-analysis',
             createdAt: 10,
             baseline: {
-                lap: 0,
+                lap_id: 0,
                 lap_time_ms: 61_000,
                 track: 'Spa',
                 car: 'GT3',
@@ -195,12 +195,11 @@ describe('analysisResultsQuery evaluator', () => {
             { analyses: [analysis] },
         )).resolves.toBe(1);
         await expect(evaluateAllAnalysisResultsQuery(
-            'analyses[0].baseline.lap',
+            'analyses[0].baseline.lap_id',
             { analyses: [analysis] },
         )).resolves.toBe(0);
-        expect(() => normalizeOverallTrendQueryInput({ pages: [analysis] })).toThrow(
-            expect.objectContaining({ code: 'INVALID_QUERY_INPUT' }),
-        );
+        expect(normalizeOverallTrendQueryInput({ pages: [analysis] }).pages[0].baseline.lap_id)
+            .toBe(0);
     });
 
     it('rejects malformed all-analysis arrays, duplicate IDs, and unsafe element values', async () => {
@@ -544,7 +543,7 @@ describe('Overall Trends query path', () => {
                 createdAt: 20,
                 sourceIndex: 91,
                 baseline: {
-                    lap: 2,
+                    lap_id: 0,
                     lapTimeMs: null,
                     track: 'Spa',
                     car: 'GT3',
@@ -561,7 +560,7 @@ describe('Overall Trends query path', () => {
                 createdAt: 10,
                 sourceIndex: -10,
                 baseline: {
-                    lap: 1,
+                    lap_id: 1,
                     lapTimeMs: 60_000,
                     track: 'Spa',
                     car: 'GT3',
@@ -586,7 +585,7 @@ describe('Overall Trends query path', () => {
                 createdAt: 20,
                 sourceIndex: -100,
                 baseline: {
-                    lap: 3,
+                    lap_id: 3,
                     lapTimeMs: 59_500,
                     track: 'Spa',
                     car: 'GT3',
@@ -601,7 +600,7 @@ describe('Overall Trends query path', () => {
                 createdAt: 30,
                 sourceIndex: 0,
                 baseline: {
-                    lap: 4,
+                    lap_id: 4,
                     lapTimeMs: 0,
                     track: 'Spa',
                     car: 'GT3',
@@ -628,15 +627,15 @@ describe('Overall Trends query path', () => {
         expect(result.laps.map((lap) => ({
             pageId: lap.pageId,
             label: lap.label,
-            lap: lap.lap,
+            lap_id: lap.lap_id,
             lapTimeMs: lap.lapTimeMs,
             totalCount: lap.totalCount,
             counts: lap.categoryCounts.map(({ id, count }) => [id, count]),
         }))).toEqual([
             {
                 pageId: 'same-time-first',
-                label: 'Analysis 1 · Lap 2',
-                lap: 2,
+                label: 'Analysis 1 · Lap 0',
+                lap_id: 0,
                 lapTimeMs: null,
                 totalCount: 1,
                 counts: [['LOCK', 1], ['WIDE', 0], ['ZERO', 0]],
@@ -644,7 +643,7 @@ describe('Overall Trends query path', () => {
             {
                 pageId: 'earliest',
                 label: 'Analysis 2 · Lap 1',
-                lap: 1,
+                lap_id: 1,
                 lapTimeMs: 60_000,
                 totalCount: 2,
                 counts: [['LOCK', 2], ['WIDE', 1], ['ZERO', 0]],
@@ -652,7 +651,7 @@ describe('Overall Trends query path', () => {
             {
                 pageId: 'same-time-second',
                 label: 'Analysis 3 · Lap 3',
-                lap: 3,
+                lap_id: 3,
                 lapTimeMs: 59_500,
                 totalCount: 2,
                 counts: [['LOCK', 0], ['WIDE', 2], ['ZERO', 0]],
@@ -660,7 +659,7 @@ describe('Overall Trends query path', () => {
             {
                 pageId: 'empty',
                 label: 'Analysis 4 · Lap 4',
-                lap: 4,
+                lap_id: 4,
                 lapTimeMs: 0,
                 totalCount: 0,
                 counts: [['LOCK', 0], ['WIDE', 0], ['ZERO', 0]],
@@ -693,7 +692,7 @@ describe('Overall Trends query path', () => {
                 createdAt: 1,
                 sourceIndex: 0,
                 baseline: {
-                    lap: 7,
+                    lap_id: 7,
                     lapTimeMs: 70_000,
                     track: '鈴鹿',
                     car: 'GT4',
@@ -722,7 +721,7 @@ describe('Overall Trends query path', () => {
                 id: 'no-matches',
                 createdAt: 1,
                 sourceIndex: 0,
-                baseline: { lap: 1, lapTimeMs: null, track: '', car: '' },
+                baseline: { lap_id: 1, lapTimeMs: null, track: '', car: '' },
                 elements: [{ id: 'informational', labels: ['Informational'] }],
             }],
         };
@@ -731,7 +730,7 @@ describe('Overall Trends query path', () => {
             laps: [{
                 pageId: 'no-matches',
                 label: 'Analysis 1 · Lap 1',
-                lap: 1,
+                lap_id: 1,
                 lapTimeMs: null,
                 totalCount: 0,
                 categoryCounts: [
@@ -762,13 +761,54 @@ describe('Overall Trends query path', () => {
                 id: 'special',
                 createdAt: 1,
                 sourceIndex: 0,
-                baseline: { lap: 1, lapTimeMs: null, track: '', car: '' },
+                baseline: { lap_id: 1, lapTimeMs: null, track: '', car: '' },
                 elements: [{ id: 'special-element', labels: ['Parent\n雪', 'Child "\\輪"\n'] }],
             }],
         };
         await expect(evaluateAndResolve(duplicated, input)).resolves.toMatchObject({
             categories: [{ id: 'C', occurrences: 1 }],
         });
+    });
+
+    it('evaluates taxonomies with more categories than the JSONata stack guard', async () => {
+        const categoryCount = 52;
+        const largeTaxonomy: OverallTrendQueryTaxonomy = {
+            parent: { id: 'P', fallbackName: 'Parent' },
+            categories: Array.from({ length: categoryCount }, (_, index) => ({
+                id: `C${index}`,
+                fallbackName: `Category ${index}`,
+            })),
+        };
+        const input: OverallTrendQueryInput = {
+            pages: Array.from({ length: 3 }, (_, pageIndex) => ({
+                id: `large-taxonomy-${pageIndex}`,
+                createdAt: pageIndex,
+                sourceIndex: pageIndex,
+                baseline: {
+                    lap_id: pageIndex,
+                    lapTimeMs: 60_000 - pageIndex,
+                    track: '',
+                    car: '',
+                },
+                elements: Array.from({ length: 4 }, (_, elementIndex) => ({
+                    id: `matching-element-${pageIndex}-${elementIndex}`,
+                    labels: ['P', 'C51'],
+                })),
+            })),
+        };
+
+        const result = await evaluateAndResolve(largeTaxonomy, input);
+
+        expect(result.laps).toHaveLength(3);
+        expect(result.laps[0]).toMatchObject({
+            totalCount: 4,
+            categoryCounts: expect.arrayContaining([
+                { id: 'C51', label: 'Category 51', count: 4 },
+            ]),
+        });
+        expect(result.categories).toEqual([
+            { id: 'C51', label: 'Category 51', occurrences: 12 },
+        ]);
     });
 
     describe('strict result validation', () => {
@@ -870,9 +910,9 @@ describe('Overall Trends query path', () => {
         });
 
         it('rejects invalid or non-canonical lap values and lap times', () => {
-            for (const lap of [0, -1, Number.POSITIVE_INFINITY, Number.NaN, 1.5]) {
+            for (const lapId of [-1, Number.POSITIVE_INFINITY, Number.NaN, 1.5, 999]) {
                 const invalid = cloneValid();
-                invalid.laps[0].lap = lap;
+                invalid.laps[0].lap_id = lapId;
                 expectInvalid(invalid);
             }
             for (const lapTimeMs of [-1, Number.POSITIVE_INFINITY, Number.NaN, 123]) {

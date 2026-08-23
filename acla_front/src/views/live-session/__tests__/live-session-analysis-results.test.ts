@@ -7,7 +7,7 @@ describe('live session analysis result pages', () => {
         const page = createLiveSessionAnalysisResultPage({
             baseline: {
                 id: 'baseline-1',
-                lap: 7,
+                lap_id: 0,
                 lap_time_ms: 98_765,
                 captured_at: 123,
                 track: 'Spa',
@@ -18,6 +18,7 @@ describe('live session analysis result pages', () => {
         });
 
         expect(page.baseline.lap_time_ms).toBe(98_765);
+        expect(page.baseline.lap_id).toBe(0);
         expect(page.elements).toEqual([expect.objectContaining({ id: 'result-1' })]);
     });
 });
