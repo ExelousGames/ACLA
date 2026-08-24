@@ -21,7 +21,10 @@ import { BaselineCollectionNotStartedError } from 'contexts/AiToolComponentError
 import apiService from 'services/api.service';
 import type {
     BaselineCollectionHandle,
+    BaselineCollectionOptions,
     BaselineCollectionPayload,
+    BaselineCollectionQuery,
+    BaselineTelemetryCondition,
 } from './BaselineCollection';
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 import {
@@ -120,6 +123,55 @@ const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): 
 const isFiniteNumber = (value: unknown): value is number => (
     typeof value === 'number' && Number.isFinite(value)
 );
+
+const BASELINE_CONDITION_OPERATORS = ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] as const;
+
+const isBaselineTelemetryCondition = (value: unknown): value is BaselineTelemetryCondition => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const condition = value as Record<string, unknown>;
+    return hasExactKeys(condition, ['field', 'operator', 'value'])
+        && typeof condition.field === 'string'
+        && condition.field.length > 0
+        && condition.field.trim() === condition.field
+        && BASELINE_CONDITION_OPERATORS.includes(
+            condition.operator as typeof BASELINE_CONDITION_OPERATORS[number],
+        )
+        && isFiniteNumber(condition.value);
+};
+
+const isBaselineCollectionQuery = (value: unknown): value is BaselineCollectionQuery => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const query = value as Record<string, unknown>;
+    if (hasExactKeys(query, ['preset'])) return query.preset === 'full_lap';
+    return hasExactKeys(query, ['start_query', 'end_query'])
+        && isBaselineTelemetryCondition(query.start_query)
+        && isBaselineTelemetryCondition(query.end_query);
+};
+
+const validateBaselineCollectionArguments = (
+    args: Record<string, any>,
+): BaselineCollectionOptions => {
+    const value = args as Record<string, unknown>;
+    const keys = value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.keys(value)
+        : [];
+    const timeout = value?.timeout_seconds;
+    const validTimeout = timeout === undefined
+        || (isFiniteNumber(timeout) && Number.isInteger(timeout) && timeout > 0);
+    if (
+        keys.some((key) => key !== 'query' && key !== 'timeout_seconds')
+        || !isBaselineCollectionQuery(value?.query)
+        || !validTimeout
+    ) {
+        throw new InvalidToolCallError(
+            'collect_live_baseline requires query with either preset="full_lap" or both start_query and end_query; preset cannot be combined with start_query or end_query.',
+        );
+    }
+    return {
+        query: value.query,
+        timeoutMs: timeout === undefined ? 600000 : timeout * 1000,
+    };
+};
 
 const isQueryScope = (value: unknown): value is QueryScope => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -332,12 +384,12 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                 };
             }),
             collectLiveBaselineForAi: (args) => {
-                const timeoutSeconds = Number(args.timeout_seconds);
-                const options = {
-                    timeoutMs: Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
-                        ? timeoutSeconds * 1000
-                        : 600000,
-                };
+                let options: BaselineCollectionOptions;
+                try {
+                    options = validateBaselineCollectionArguments(args);
+                } catch (error) {
+                    return createAiToolOperationFrom<BaselineCollectionPayload>(() => { throw error; });
+                }
                 const mountedHandle = componentRefs?.findComponentRef<BaselineCollectionHandle>(
                     AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                 )?.current;

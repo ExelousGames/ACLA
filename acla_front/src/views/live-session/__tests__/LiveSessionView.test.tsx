@@ -397,11 +397,44 @@ describe('LiveSessionView', () => {
         const handle = componentDirectory!
             .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
 
-        const operation = handle.collectLiveBaselineForAi({ timeout_seconds: 12 });
+        const operation = handle.collectLiveBaselineForAi({
+            query: { preset: 'full_lap' },
+            timeout_seconds: 12,
+        });
 
-        expect(startCollection).toHaveBeenCalledWith({ timeoutMs: 12_000 });
+        expect(startCollection).toHaveBeenCalledWith({
+            query: { preset: 'full_lap' },
+            timeoutMs: 12_000,
+        });
         expect(operation.statuses).toHaveLength(0);
         await expect(operation.result).rejects.toBe(failure);
+    });
+
+    it.each([
+        ['missing query', {}],
+        ['unknown preset', { query: { preset: 'sector' } }],
+        ['preset mixed with a start query', {
+            query: {
+                preset: 'full_lap',
+                start_query: { field: 'Physics_speed_kmh', operator: 'gte', value: 100 },
+            },
+        }],
+        ['custom query missing its end condition', {
+            query: {
+                start_query: { field: 'Physics_speed_kmh', operator: 'gte', value: 100 },
+            },
+        }],
+    ])('rejects malformed baseline collection arguments: %s', async (_name, args) => {
+        mockedUseDesktopGame.mockReturnValue({
+            detectedGame: 'acc',
+            detectionStatus: 'detected',
+            error: null,
+        });
+        const view = renderRegisteredView(createRuntime('acc'));
+
+        await expect(view.collectLiveBaselineForAi(args).result).rejects.toMatchObject({
+            name: 'InvalidToolCallError',
+        });
     });
 
     it('resolves telemetry scopes from the recorded writer file', async () => {
@@ -502,7 +535,7 @@ describe('LiveSessionView', () => {
             status: 'complete' as const,
             car: 'Ferrari 296',
             track: 'brands_hatch',
-            message: 'Baseline complete. Cached lap record is ready.',
+            message: 'Baseline complete. Cached baseline record is ready.',
         };
         const startCollection = jest.fn(() => ({
             result: Promise.resolve(completed),
@@ -532,8 +565,21 @@ describe('LiveSessionView', () => {
         const handle = componentDirectory!
             .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
 
-        const operation = handle.collectLiveBaselineForAi({ timeout_seconds: 12 });
+        const operation = handle.collectLiveBaselineForAi({
+            query: {
+                start_query: { field: 'Physics_speed_kmh', operator: 'gte', value: 100 },
+                end_query: { field: 'Physics_brake', operator: 'gte', value: 0.8 },
+            },
+            timeout_seconds: 12,
+        });
 
+        expect(startCollection).toHaveBeenCalledWith({
+            query: {
+                start_query: { field: 'Physics_speed_kmh', operator: 'gte', value: 100 },
+                end_query: { field: 'Physics_brake', operator: 'gte', value: 0.8 },
+            },
+            timeoutMs: 12_000,
+        });
         expect(operation.statuses).toEqual([]);
         await expect(operation.result).resolves.toEqual(completed);
     });

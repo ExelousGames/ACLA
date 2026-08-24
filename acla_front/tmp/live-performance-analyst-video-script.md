@@ -39,14 +39,14 @@ The AI understands the request and provides the sequence for recording and analy
 
 [Ask: “Analyze multiple laps.”]
 
-In fact, I can adjust the baseline recording conditions in much more detail. The recording’s start and end conditions are customizable. There are several presets in the UI, but the AI can tune them further by controlling the internal settings. For example, I can start recording when I apply the throttle and stop when the car reaches 100 km/h. This is not today’s focus, so I would like to make a separate video about it.
+In fact, I can adjust the baseline recording conditions in much more detail. The recording’s start and end conditions are customizable. currently we have just one preset in the UI, but the AI can tune them further by controlling the internal settings. For example, I can start recording when I apply the throttle and stop when the car reaches 100 km/h. This is not today’s focus, I would like to make a separate video about it.
 
 
 ## A brief overview of practice-lap analysis
 
 [Complete the laps]
 
-The AI then analyzes the laps as requested. It compares the driver’s recorded lap with a reference lap and is trained to recognize the differences between the driver and the reference and assign labels to them.
+Once the recording is done, the AI then analyzes the laps as requested. It compares the driver’s recorded laps with a reference lap. The AI is trained to recognize the differences between the driver and the reference, then it will assign labels to them.
 
 [Briefly show the loading state, then open the results.]
 
@@ -54,7 +54,7 @@ The analysis results present as sections, with the driving behaviors identified 
 
 [Move quickly through two analysis sections.]
 
-There is more I want to show, such as how to use presets to manage the list, check the overall trend, or ask the AI to clean up the list. However, I would like to cover that in a separate video.
+There is more I want to show about the analysis result page, such as how to use presets to manage the list, check the overall trend, or ask the AI to clean up the list. However, I would like to cover that in a separate video.
 
 
 ## Showing the result in the overlay
@@ -65,11 +65,13 @@ Useful analysis results can also be shown outside the main Kestrel window. By de
 
 [Show an AI response appearing in the overlay.]
 
-Inspect a mistake by hovering over a result is good. However, displaying the comparison graphs in the overlay while driving could be useful too. With a simple command, you can ask Kestrel to present each mistake while you drive. If no specific page is requested, Kestrel displays the currently selected analysis result by default.
+Inspect a mistake by hovering over a result is good. However, displaying the comparison graphs in the overlay while driving could be useful too. So, I can ask Kestrel to present each mistake while you drive. If no specific page is requested, Kestrel displays the currently selected analysis result by default.
 
-[Ask AI: “I would like to see the mistake, with detailed markers, while driving. Show the selected driver-versus-expert comparison in the overlay.”]
+[Ask AI: “I would like to see the mistake, with actaul detailed mistake annotated, while driving. Show the selected driver-versus-expert comparison in the overlay.”]
 
-I think this is more useful than copying a text summary onto the screen. The driver can see the actual comparison associated with the analyzed lap section.
+This prompt asks ai to only show sections with detailed mistakes. because currently, AI doesnt have much samples to learn from. it's not confortable at identifying detailed mistakes all the time.
+
+I think this is more useful than copying a text summary onto the overlat. The driver can see the actual comparison associated with the analyzed lap section.
 
 ## The complete workflow
 
@@ -79,21 +81,14 @@ That is one of the Live Performance Analyst workflows.
 
 I asked the AI Assistant to enable the Live Performance Analyst.
 
-[Show: “Enable the Live Performance Analyst.”]
 
-The main assistant pauses, and a separate Live Analyst session takes over with a narrow job: review performance in this practice session.
+The main assistant pauses, and a separate Live Analyst session takes over with a narrow job: review performance in a live session.
 
 I then tell the analyst what I want it to review.
 
-[Show: “Analyze this practice lap and identify the first mistake i made in the corner.”]
-
 Kestrel analyzes the practice lap and displays the analysis results.
 
-[Open the recommended segment and its comparison.]
-
 Finally, I ask to see a useful result in the overlay.
-
-[Show: “Show me the mistake comparison in the overlay.”]
 
 That is one of the workflows I have developed.
 

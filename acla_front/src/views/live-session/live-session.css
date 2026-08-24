@@ -254,6 +254,25 @@
     color: var(--lp-green);
 }
 
+.baseline-collection__preset {
+    display: flex;
+    max-width: 280px;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--lp-gray);
+    font-size: 0.8rem;
+}
+
+.baseline-collection__preset select {
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius-sm);
+    background: rgba(22, 22, 40, 0.9);
+    color: var(--lp-white);
+    font: inherit;
+}
+
 .baseline-collection__start {
     align-self: flex-start;
     min-height: 32px;

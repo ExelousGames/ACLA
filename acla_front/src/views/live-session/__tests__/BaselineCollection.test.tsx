@@ -216,6 +216,9 @@ describe('BaselineCollection visualization', () => {
         const handle = getHandle();
 
         expect(handle.getTag()).toBeNull();
+        expect(screen.getByRole('combobox', { name: 'Baseline collection preset' }))
+            .toHaveValue('full_lap');
+        expect(screen.getByRole('option', { name: 'Full lap' })).toBeInTheDocument();
         act(() => {
             screen.getByRole('button', { name: 'Start Baseline Collection' }).click();
         });
@@ -229,6 +232,61 @@ describe('BaselineCollection visualization', () => {
         expect(screen.getByLabelText('Baseline collection progress')).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Request Analysis' }))
             .not.toBeInTheDocument();
+    });
+
+    it('records between custom telemetry start and end conditions', async () => {
+        const view = render(<Harness telemetry={makeSample(4, 0.2, 20_000)} />);
+        const handle = getHandle();
+        let operation!: ReturnType<BaselineCollectionHandle['startCollection']>;
+        act(() => {
+            operation = handle.startCollection({
+                query: {
+                    start_query: { field: 'Physics_speed_kmh', operator: 'gte', value: 150 },
+                    end_query: { field: 'Physics_brake', operator: 'gte', value: 0.8 },
+                },
+            });
+        });
+
+        view.rerender(<Harness telemetry={{
+            ...makeSample(4, 0.25, 25_000),
+            Physics_speed_kmh: 140,
+            Physics_brake: 0,
+        }} />);
+        expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start' });
+
+        view.rerender(<Harness telemetry={{
+            ...makeSample(4, 0.3, 30_000),
+            Physics_speed_kmh: 150,
+            Physics_brake: 0,
+        }} />);
+        view.rerender(<Harness telemetry={{
+            ...makeSample(4, 0.35, 35_000),
+            Physics_speed_kmh: 155,
+            Physics_brake: 0.8,
+        }} />);
+
+        await expect(operation.result).resolves.toMatchObject({ status: 'complete' });
+        expect(handle.getLapRecord()).toMatchObject({ lap_id: 4, sample_count: 2 });
+        expect(handle.getLapRecord()?.records.map((row) => row.Physics_speed_kmh))
+            .toEqual([150, 155]);
+    });
+
+    it('maps the full-lap preset to normalized positions zero and one', async () => {
+        const view = render(<Harness telemetry={makeSample(4, 0, 0)} />);
+        const handle = getHandle();
+        let operation!: ReturnType<BaselineCollectionHandle['startCollection']>;
+        act(() => {
+            operation = handle.startCollection({ query: { preset: 'full_lap' } });
+        });
+
+        expect(handle.getTag()).toMatchObject({ status: 'collecting', progress_percent: 1 });
+        view.rerender(<Harness telemetry={makeSample(4, 0.5, 50_000)} />);
+        view.rerender(<Harness telemetry={makeSample(4, 1, 100_000)} />);
+
+        await expect(operation.result).resolves.toMatchObject({ status: 'complete' });
+        expect(handle.getLapRecord()?.records.map((row) => (
+            row.Graphics_normalized_car_position
+        ))).toEqual([0, 0.5, 1]);
     });
 
     it('rejects restart when collection is not in progress', async () => {
@@ -454,7 +512,7 @@ describe('BaselineCollection visualization', () => {
             status: 'complete',
             car: 'Ferrari 296',
             track: 'brands_hatch',
-            message: 'Baseline complete. Cached lap record is ready.',
+            message: 'Baseline complete. Cached baseline record is ready.',
         });
         await expect(Promise.all(operation.statuses)).resolves.toEqual(expect.arrayContaining([
             expect.objectContaining({ event: 'baseline_progress', milestone: 100 }),
@@ -846,7 +904,7 @@ describe('BaselineCollection visualization', () => {
             await expect(getHandle().requestAnalysis().result).rejects.toMatchObject({
                 name: 'BaselineLapRecordRequiredError',
                 componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
-                message: 'Live recorded analysis requires a recorded baseline lap before it can run.',
+                message: 'Live recorded analysis requires a recorded baseline before it can run.',
             });
         });
         expect(mockPost).not.toHaveBeenCalled();

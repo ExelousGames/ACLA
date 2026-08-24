@@ -109,7 +109,30 @@ export type BaselineCollectionStatus = BaselineCollectionPayload & {
     skipped?: boolean;
 };
 
-export type BaselineCollectionOptions = { timeoutMs?: number };
+export type BaselineCollectionPreset = 'full_lap';
+
+export type BaselineTelemetryCondition = {
+    field: string;
+    operator: 'eq' | 'neq' | 'lt' | 'lte' | 'gt' | 'gte';
+    value: number;
+};
+
+export type BaselineCollectionQuery =
+    | {
+        preset: BaselineCollectionPreset;
+        start_query?: never;
+        end_query?: never;
+    }
+    | {
+        preset?: never;
+        start_query: BaselineTelemetryCondition;
+        end_query: BaselineTelemetryCondition;
+    };
+
+export type BaselineCollectionOptions = {
+    timeoutMs?: number;
+    query?: BaselineCollectionQuery;
+};
 
 export interface BaselineCollectionHandle extends NamedAiToolComponentHandle, AiOverlayComponentHandle<BaselineCollectionTag | null> {
     startCollection(options?: BaselineCollectionOptions): AiToolOperation<BaselineCollectionPayload, BaselineCollectionStatus>;
@@ -131,12 +154,11 @@ type BaselineRecorderState = {
     rows: Record<string, any>[];
     sampleKeys: Set<string>;
     startLap: number | null;
-    startPosition: number;
     currentLap: number;
     currentPosition: number;
     lastPosition: number | null;
-    canStartAtBoundary: boolean;
     lapCounterAdvancePending: boolean;
+    query: ResolvedBaselineCollectionQuery;
     track: string;
     car: string;
     completedRecord: BaselineLapRecord | null;
@@ -151,6 +173,38 @@ type BaselineTelemetryCache = {
 
 const BASELINE_START_POSITION_EPSILON = 0.005;
 const BASELINE_WRAP_THRESHOLD = 0.65;
+const NORMALIZED_POSITION_FIELD = 'Graphics_normalized_car_position';
+
+type ResolvedBaselineCollectionQuery = {
+    preset: BaselineCollectionPreset | null;
+    startQuery: BaselineTelemetryCondition;
+    endQuery: BaselineTelemetryCondition;
+};
+
+const FULL_LAP_QUERY: ResolvedBaselineCollectionQuery = {
+    preset: 'full_lap',
+    startQuery: {
+        field: NORMALIZED_POSITION_FIELD,
+        operator: 'eq',
+        value: 0,
+    },
+    endQuery: {
+        field: NORMALIZED_POSITION_FIELD,
+        operator: 'eq',
+        value: 1,
+    },
+};
+
+const resolveBaselineCollectionQuery = (
+    query: BaselineCollectionQuery | undefined,
+): ResolvedBaselineCollectionQuery => {
+    if (!query || query.preset === 'full_lap') return FULL_LAP_QUERY;
+    return {
+        preset: null,
+        startQuery: query.start_query,
+        endQuery: query.end_query,
+    };
+};
 
 type BaselineAnalysisState = 'idle' | 'analyzing' | 'complete' | 'error';
 
@@ -180,6 +234,43 @@ const createEmptyTelemetryCache = (): BaselineTelemetryCache => ({
     rows: [],
     sampleKeys: new Set(),
 });
+
+const getTelemetryConditionValue = (
+    sample: Record<string, any>,
+    field: string,
+): number | null => {
+    const value = field === NORMALIZED_POSITION_FIELD
+        ? getTelemetryPosition(sample)
+        : sample[field];
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const matchesTelemetryCondition = (
+    sample: Record<string, any>,
+    condition: BaselineTelemetryCondition,
+): boolean => {
+    const actual = getTelemetryConditionValue(sample, condition.field);
+    if (actual === null) return false;
+
+    switch (condition.operator) {
+        case 'eq': return actual === condition.value;
+        case 'neq': return actual !== condition.value;
+        case 'lt': return actual < condition.value;
+        case 'lte': return actual <= condition.value;
+        case 'gt': return actual > condition.value;
+        case 'gte': return actual >= condition.value;
+        default: return false;
+    }
+};
+
+const matchesBaselineStart = (
+    query: ResolvedBaselineCollectionQuery,
+    sample: Record<string, any>,
+    position: number,
+): boolean => query.preset === 'full_lap'
+    ? position <= BASELINE_START_POSITION_EPSILON
+    : matchesTelemetryCondition(sample, query.startQuery);
 
 const cacheCurrentLapTelemetry = (
     cache: BaselineTelemetryCache,
@@ -260,51 +351,71 @@ const getContinuationRows = (
 
 const createEmptyRecorderState = (
     currentTelemetry?: Record<string, any> | null,
+    query: ResolvedBaselineCollectionQuery = FULL_LAP_QUERY,
+    startWhenMatched = false,
 ): BaselineRecorderState => {
     const sample = isTelemetrySample(currentTelemetry) ? currentTelemetry : null;
     const lap = sample ? getTelemetryLap(sample) : 0;
     const position = sample ? getTelemetryPosition(sample) ?? 0 : 0;
+    const collecting = Boolean(
+        startWhenMatched
+        && sample
+        && matchesBaselineStart(query, sample, position),
+    );
 
     return {
-        status: 'waiting_for_start',
-        rows: [],
+        status: collecting ? 'collecting' : 'waiting_for_start',
+        rows: collecting && sample ? [cloneSample(sample)] : [],
         sampleKeys: new Set(sample ? [getSampleKey(sample, lap, position)] : []),
-        startLap: null,
-        startPosition: 0,
+        startLap: collecting ? lap : null,
         currentLap: lap,
         currentPosition: position,
         lastPosition: sample ? position : null,
-        canStartAtBoundary: !sample || position > BASELINE_START_POSITION_EPSILON,
         lapCounterAdvancePending: false,
+        query,
         track: sample ? getTelemetryTrack(sample) : '',
         car: sample ? getTelemetryCar(sample) : '',
         completedRecord: null,
     };
 };
 
-const hasCompletedRecordingLap = (
+const hasCompletedRecording = (
     state: BaselineRecorderState,
+    sample: Record<string, any>,
     lap: number,
     position: number,
 ): boolean => (
     state.startLap !== null
     && state.rows.length > 0
-    && (
-        lap > state.startLap
-        || (
-            state.lastPosition !== null
-            && state.lastPosition - position > BASELINE_WRAP_THRESHOLD
+    && (state.query.preset === 'full_lap'
+        ? (
+            position >= 1 - BASELINE_START_POSITION_EPSILON
+            || lap > state.startLap
+            || (
+                state.lastPosition !== null
+                && state.lastPosition - position > BASELINE_WRAP_THRESHOLD
+            )
         )
-    )
+        : matchesTelemetryCondition(sample, state.query.endQuery))
 );
 
 const getCollectionProgress = (state: BaselineRecorderState): number => {
     if (state.status === 'complete') return 100;
     if (state.status !== 'collecting') return 0;
 
-    const rawProgress = state.currentPosition >= state.startPosition
-        ? state.currentPosition - state.startPosition
-        : 1 - state.startPosition + state.currentPosition;
+    if (
+        state.query.startQuery.field !== NORMALIZED_POSITION_FIELD
+        || state.query.endQuery.field !== NORMALIZED_POSITION_FIELD
+    ) return 1;
+
+    const start = state.query.startQuery.value;
+    const end = state.query.endQuery.value;
+    const range = end >= start ? end - start : 1 - start + end;
+    if (range <= 0) return 1;
+    const travelled = state.currentPosition >= start
+        ? state.currentPosition - start
+        : 1 - start + state.currentPosition;
+    const rawProgress = travelled / range;
 
     return Math.max(1, Math.min(99, Math.round(rawProgress * 100)));
 };
@@ -464,8 +575,8 @@ export const buildBaselineCollectionTag = (
     const detail = ready
         ? 'Baseline complete. Classifier request is ready.'
         : snapshot.baseline_collection_started
-            ? `Lap ${Number(snapshot.current_lap ?? 0) + 1} baseline`
-            : 'Waiting for the next lap start';
+            ? `Collecting baseline on lap ${Number(snapshot.current_lap ?? 0) + 1}`
+            : 'Waiting for the baseline start condition';
 
     return {
         status,
@@ -483,7 +594,7 @@ export const buildBaselineCollectionToolPayload = (
     record: BaselineLapRecord | null,
 ): BaselineCollectionPayload => {
     const message = record
-        ? 'Baseline complete. Cached lap record is ready.'
+        ? 'Baseline complete. Cached baseline record is ready.'
         : tag?.detail ?? 'Waiting for baseline collection to start.';
 
     return {
@@ -505,6 +616,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
     const [, setEnabled] = useState(false);
     const [tag, setTag] = useState<BaselineCollectionTag | null>(null);
     const [analysisState, setAnalysisState] = useState<BaselineAnalysisState>('idle');
+    const [selectedPreset, setSelectedPreset] = useState<BaselineCollectionPreset>('full_lap');
     const enabledRef = useRef(false);
     const tagRef = useRef<BaselineCollectionTag | null>(null);
     const lapRecordRef = useRef<BaselineLapRecord | null>(null);
@@ -588,13 +700,15 @@ const BaselineCollection = ({ name }: { name: string }) => {
         return buildBaselineCollectionToolPayload(nextTag, null);
     }, [publishTag, settleCollectionStatus]);
 
-    const beginFreshCollection = useCallback(() => beginCollection(
-        createEmptyRecorderState(currentTelemetryRef.current),
+    const beginFreshCollection = useCallback((query: ResolvedBaselineCollectionQuery) => beginCollection(
+        createEmptyRecorderState(currentTelemetryRef.current, query, true),
     ), [beginCollection]);
 
     const beginContinuedCollection = useCallback((
         completedRecord: BaselineLapRecord,
+        query: ResolvedBaselineCollectionQuery,
     ): BaselineCollectionPayload | null => {
+        if (query.preset !== 'full_lap') return null;
         const sample = currentTelemetryRef.current;
         if (!isTelemetrySample(sample)) return null;
 
@@ -616,12 +730,11 @@ const BaselineCollection = ({ name }: { name: string }) => {
             rows: seeded.rows,
             sampleKeys: seeded.sampleKeys,
             startLap: currentLap,
-            startPosition: 0,
             currentLap,
             currentPosition,
             lastPosition: currentPosition,
-            canStartAtBoundary: true,
             lapCounterAdvancePending: currentLap === completedRecord.lap_id,
+            query,
             track: getTelemetryTrack(sample) || completedRecord.track,
             car: getTelemetryCar(sample) || completedRecord.car,
             completedRecord: null,
@@ -649,8 +762,9 @@ const BaselineCollection = ({ name }: { name: string }) => {
         }
 
         const completedRecord = status === 'complete' ? lapRecordRef.current : null;
-        if (!completedRecord || !beginContinuedCollection(completedRecord)) {
-            beginFreshCollection();
+        const query = resolveBaselineCollectionQuery(options.query);
+        if (!completedRecord || !beginContinuedCollection(completedRecord, query)) {
+            beginFreshCollection(query);
         }
         const result = createAiToolDeferred<BaselineCollectionPayload>();
         const statuses = [0, 1, 25, 50, 75, 100].map((milestone) => ({
@@ -701,7 +815,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
                 name,
                 'Baseline collection was cancelled because collection restarted.',
             ));
-            return createAiToolOperation(beginFreshCollection());
+            return createAiToolOperation(beginFreshCollection(recorderRef.current.query));
         } catch (error) {
             return createAiToolOperationFrom(() => { throw error; });
         }
@@ -717,7 +831,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
             setAnalysisState('error');
             return Promise.reject(new BaselineLapRecordRequiredError(
                 name,
-                'Live recorded analysis requires a recorded baseline lap before it can run.',
+                'Live recorded analysis requires a recorded baseline before it can run.',
             ));
         }
 
@@ -897,12 +1011,9 @@ const BaselineCollection = ({ name }: { name: string }) => {
             let completedRecordToEmit: BaselineLapRecord | null = null;
 
             if (state.status === 'waiting_for_start') {
-                if (position > BASELINE_START_POSITION_EPSILON) {
-                    state.canStartAtBoundary = true;
-                } else if (state.canStartAtBoundary) {
+                if (matchesBaselineStart(state.query, sample, position)) {
                     state.status = 'collecting';
                     state.startLap = lap;
-                    state.startPosition = 0;
                     state.rows = [cloneSample(sample)];
                 }
             } else if (state.status === 'collecting') {
@@ -918,29 +1029,36 @@ const BaselineCollection = ({ name }: { name: string }) => {
                     state.lapCounterAdvancePending = false;
                 }
 
-                if (hasCompletedRecordingLap(state, lap, position)) {
+                if (hasCompletedRecording(state, sample, lap, position)) {
+                    const includeCompletionSample = state.query.preset !== 'full_lap'
+                        || (!positionWrapped && (state.startLap === null || lap <= state.startLap));
+                    const completedRows = includeCompletionSample
+                        ? [...state.rows, cloneSample(sample)]
+                        : state.rows;
                     const snapshot = buildRecorderSnapshot({
                         ...state,
                         status: 'complete',
                         currentLap: lap,
                         currentPosition: position,
+                        rows: completedRows,
                     });
                     const completedRecord: BaselineLapRecord = {
                         id: [
                             state.track,
                             state.car,
                             String(state.startLap ?? 0),
-                            String(state.rows.length),
+                            String(completedRows.length),
                         ].join(':'),
                         lap_id: state.startLap ?? 0,
-                        lap_time_ms: getCompletedBaselineLapTimeMs(sample, state.rows),
+                        lap_time_ms: getCompletedBaselineLapTimeMs(sample, completedRows),
                         captured_at: Date.now(),
                         track: state.track,
                         car: state.car,
-                        sample_count: state.rows.length,
+                        sample_count: completedRows.length,
                         snapshot,
-                        records: state.rows.map(cloneSample),
+                        records: completedRows.map(cloneSample),
                     };
+                    state.rows = completedRows;
                     state.status = 'complete';
                     state.completedRecord = completedRecord;
                     lapRecordRef.current = completedRecord;
@@ -1005,11 +1123,27 @@ const BaselineCollection = ({ name }: { name: string }) => {
             ) : (
                 <div className="baseline-collection__idle" role="status">
                     <strong>Ready for baseline collection</strong>
-                    <span>Start collection, then keep this panel open until the lap is complete.</span>
+                    <span>Choose a preset, then keep this panel open until its stop condition is met.</span>
+                    <label className="baseline-collection__preset">
+                        <span>Collection preset</span>
+                        <select
+                            aria-label="Baseline collection preset"
+                            value={selectedPreset}
+                            onChange={(event) => setSelectedPreset(
+                                event.target.value as BaselineCollectionPreset,
+                            )}
+                        >
+                            <option value="full_lap">Full lap</option>
+                        </select>
+                    </label>
                     <button
                         type="button"
                         className="baseline-collection__start"
-                            onClick={() => { void startCollection().result.catch(() => undefined); }}
+                        onClick={() => {
+                            void startCollection({
+                                query: { preset: selectedPreset },
+                            }).result.catch(() => undefined);
+                        }}
                     >
                         Start Baseline Collection
                     </button>

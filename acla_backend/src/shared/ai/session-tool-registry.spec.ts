@@ -2,16 +2,52 @@ import {
     SESSION_TOOLS,
     getSessionToolsForSessionContext,
 } from './session-tool-registry';
+import {
+    TELEMETRY_METRIC_FIELD_DEFINITIONS,
+    TELEMETRY_METRIC_FIELD_SCHEMA,
+} from './telemetry-metric-fields';
 
 describe('live baseline tools', () => {
     it('directs new recordings through collect and limits restart to active recordings', () => {
         const collect = SESSION_TOOLS.find(({ name }) => name === 'collect_live_baseline') as any;
         const restart = SESSION_TOOLS.find(({ name }) => name === 'restart_live_baseline') as any;
 
-        expect(collect?.description).toContain('If a previous baseline lap exists');
+        expect(collect?.description).toContain('If a previous baseline exists');
         expect(collect?.description).toContain('starts a new recording');
-        expect(restart?.description).toContain('only while it is waiting for a lap start or actively collecting');
+        expect(restart?.description).toContain('only while it is waiting for its start condition or actively collecting');
         expect(restart?.description).toContain('use collect_live_baseline');
+    });
+
+    it('requires either the full-lap preset or mutually exclusive custom conditions', () => {
+        const collect = SESSION_TOOLS.find(({ name }) => name === 'collect_live_baseline') as any;
+        const [presetQuery, customQuery] = collect.properties.query.oneOf;
+
+        expect(collect.required).toEqual(['query']);
+        expect(presetQuery).toMatchObject({
+            required: ['preset'],
+            additionalProperties: false,
+            properties: {
+                preset: { enum: ['full_lap'] },
+            },
+        });
+        expect(Object.keys(presetQuery.properties)).toEqual(['preset']);
+        expect(customQuery).toMatchObject({
+            required: ['start_query', 'end_query'],
+            additionalProperties: false,
+        });
+        expect(Object.keys(customQuery.properties).sort()).toEqual(['end_query', 'start_query']);
+        [customQuery.properties.start_query, customQuery.properties.end_query]
+            .forEach((condition) => {
+                expect(condition).toMatchObject({
+                    required: ['field', 'operator', 'value'],
+                    additionalProperties: false,
+                    properties: {
+                        field: TELEMETRY_METRIC_FIELD_SCHEMA,
+                        operator: { enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
+                        value: { type: 'number' },
+                    },
+                });
+            });
     });
 });
 
@@ -464,14 +500,17 @@ describe('create_goal tool', () => {
 });
 
 describe('telemetry metric query tool', () => {
-    it('requires fields, scope, and a supported summarized reduction', () => {
+    it('requires the described supported fields, scope, and a summarized reduction', () => {
         const tool = SESSION_TOOLS.find(({ name }) => (
             name === 'query_telemetry_metric'
         ));
 
         expect(tool).toMatchObject({
             properties: {
-                fields: { type: 'array' },
+                fields: {
+                    type: 'array',
+                    items: TELEMETRY_METRIC_FIELD_SCHEMA,
+                },
                 scope: {
                     type: 'object',
                     required: ['type'],
@@ -483,6 +522,21 @@ describe('telemetry metric query tool', () => {
             },
             required: ['fields', 'scope', 'reduce'],
         });
+        expect(TELEMETRY_METRIC_FIELD_SCHEMA.enum).toEqual(
+            TELEMETRY_METRIC_FIELD_DEFINITIONS.map(({ name }) => name),
+        );
+        TELEMETRY_METRIC_FIELD_DEFINITIONS.forEach(({ name, description }) => {
+            expect(TELEMETRY_METRIC_FIELD_SCHEMA.description)
+                .toContain(`${name}: ${description}`);
+        });
+        expect(TELEMETRY_METRIC_FIELD_SCHEMA.enum).toEqual([
+            'Physics_speed_kmh',
+            'Physics_gear',
+            'Physics_rpm',
+            'Physics_brake',
+            'Physics_gas',
+            'Graphics_normalized_car_position',
+        ]);
     });
 });
 
