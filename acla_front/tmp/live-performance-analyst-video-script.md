@@ -12,14 +12,14 @@
 
 This is Kestrel, a sim-racing data analysis assistant. I just used its Live Performance Analyst, one of several purpose-built AI agents that communicates directly with sensors integrated into Kestrel. Equipped with extensive racing knowledge, it translates complex telemetry graphs into clear, easy-to-understand insights. Kestrel isn’t just another AI coaching program—it’s an assistant designed to help you become your own racing analyst.
 
-In this demonstration, I’ll show the complete workflow—from recording a lap to finding the section that needs attention and carrying that insight back onto the track.
+In this video, I’ll demonstrate the complete workflow—from recording a lap to finding the section that needs attention and carrying that insight back onto the track.
 
 
 ## Enabling the Live Performance Analyst agent mode
 
 [Keep the live practice recording active or paused. Open the AI Assistant and tap the mic to start the assistant connection.]
 
-Kestrel’s live session assistant can answer one-off live-session questions. For an ongoing performance review, I can switch to the dedicated Live Performance Analyst agent mode.
+Kestrel’s live session assistant can answer one-off live-session question. For an ongoing performance review, I will switch to the dedicated Live Performance Analyst agent mode.
 
 To enable it, I can ask:
 
@@ -29,13 +29,13 @@ To enable it, I can ask:
 
 The main assistant starts a separate agent session. The interface identifies it as Live Analyst and pauses the main conversation while this focused mode is active.
 
-This separation has a purpose. It allows the AI to concentrate on analyzing laps from the practice session. The analyst can stay focused on identifying patterns or mistakes.
+This separation has a purpose. It allows the AI to concentrate on analyzing laps from a ongoing session. it ensures the context is focused on live data analysis.
 
-[At startup, the analyst asks how do I want to analyze. I can give it a specific instruction, such as:]
+At startup, the analyst asks how do I want to analyze. I can give it a specific instruction, such as:
 
-[Say: “I will do one lap, and then you will analyze it.”]
+[Say: “I will do two laps, and then you will analyze it.”]
 
-The AI understands the request and provides the sequence for recording and analyzing the baseline. If I prefer, I can ask it to review multiple laps instead.
+The AI understands the request and provides the sequence for recording and analyzing the baseline.
 
 [Ask: “Analyze multiple laps.”]
 
