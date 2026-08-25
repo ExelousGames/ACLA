@@ -40,43 +40,62 @@ def test_non_rocm_training_does_not_change_miopen_mode(monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
-def _preprocessor_trainer(targets):
+def _preprocessor_trainer(targets, label_ids=None):
     trainer = SegmentClassifierTrainer.__new__(SegmentClassifierTrainer)
     trainer.device = torch.device("cpu")
     trainer.classifier_service = SimpleNamespace(
-        label_ids=["MSP", "MSP1"],
-        behavior_label_ids=["MSP"],
+        label_ids=list(label_ids or ["MSP", "MSP1"]),
     )
     sequence = SimpleNamespace(
         features=np.array([[40.0, 0.0], [41.0, 1.0]], dtype=np.float32),
         targets=np.array(targets, dtype=np.float32),
         loss_mask=np.ones((2, 2), dtype=np.float32),
     )
+    trainer._configure_training_labels = lambda cache_key: None
     trainer._iter_sequences = lambda cache_key: iter([sequence])
     trainer.scaler = None
     return trainer
 
 
 @pytest.mark.asyncio
-async def test_parent_only_training_warns_and_fits_preprocessors(caplog):
-    trainer = _preprocessor_trainer([[1.0, 0.0], [0.0, 0.0]])
+async def test_preprocessors_do_not_require_behavior_hierarchy():
+    trainer = _preprocessor_trainer(
+        [[1.0, 1.0], [0.0, 0.0]],
+        label_ids=["ST1", "silverstone"],
+    )
 
-    with caplog.at_level("WARNING", logger=trainer_module.LOGGER.name):
-        await trainer.fit_preprocessors("train")
+    await trainer.fit_preprocessors("train")
 
     assert trainer.scaler is not None
-    assert "training will continue with parent behavior labels only" in caplog.text
-    assert "child-label predictions from this model will not be reliable" in caplog.text
+    assert trainer.pos_weight.tolist() == pytest.approx([1.0, 1.0])
 
 
 @pytest.mark.asyncio
-async def test_child_annotated_training_does_not_warn(caplog):
-    trainer = _preprocessor_trainer([[1.0, 1.0], [0.0, 0.0]])
+async def test_preprocessors_configure_every_label_from_training_data(tmp_path):
+    chunk = [{
+        "labels": ["MSP", "ST1", "silverstone", "custom-label"],
+        "start_index": 0,
+        "end_index": 2,
+        "telemetry_data": [{"speed": 40.0}, {"speed": 41.0}],
+    }]
+    classifier = SegmentClassifierService(str(tmp_path))
+    classifier.feature_names = ["speed"]
+    trainer = SegmentClassifierTrainer.__new__(SegmentClassifierTrainer)
+    trainer.classifier_service = classifier
+    trainer.store = SimpleNamespace(
+        get_cached_data_chunks=lambda cache_key: iter([chunk]),
+    )
+    trainer.device = torch.device("cpu")
+    trainer.scaler = None
 
-    with caplog.at_level("WARNING", logger=trainer_module.LOGGER.name):
-        await trainer.fit_preprocessors("train")
+    await trainer.fit_preprocessors("train")
 
-    assert "No behavior sub-label annotations" not in caplog.text
+    assert classifier.label_ids == ["MSP", "ST1", "custom-label", "silverstone"]
+    sequence = next(trainer._iter_sequences("train"))
+    np.testing.assert_array_equal(
+        sequence.targets,
+        np.ones((2, len(classifier.label_ids)), dtype=np.float32),
+    )
 
 
 @pytest.mark.asyncio

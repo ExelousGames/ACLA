@@ -18,6 +18,7 @@ def _rows(start, end):
 
 def _configured_service(models_directory):
     service = SegmentClassifierService(str(models_directory))
+    service.configure_labels(["MSP", "MSP1", "ST1", "silverstone"])
     service.scaler = StandardScaler().fit(np.array([[0.0, 1.0], [2.0, 3.0]]))
     service.model = TemporalDetectionModel(
         input_dim=2,
@@ -63,7 +64,7 @@ def _fixed_logit_service(label_ids, label_weights, logits):
     return service
 
 
-def test_temporal_targets_follow_parent_and_child_ranges():
+def test_temporal_targets_include_all_labels_on_parent_and_child_ranges():
     chunk = [
         {
             "id": "parent-msp",
@@ -91,8 +92,7 @@ def test_temporal_targets_follow_parent_and_child_ranges():
     sequences = build_temporal_sequences(
         chunk,
         expected_features=["speed", "brake"],
-        label_ids=["MSP", "EA", "MSP1"],
-        child_parent={"MSP1": "MSP"},
+        label_ids=["MSP", "ST1", "silverstone", "EA", "ST2", "MSP1"],
     )
 
     assert len(sequences) == 1
@@ -100,8 +100,11 @@ def test_temporal_targets_follow_parent_and_child_ranges():
     assert sequence.start_index == 10
     assert sequence.features.shape == (8, 4)
     np.testing.assert_array_equal(sequence.targets[:, 0], [1, 1, 1, 1, 0, 0, 0, 0])
-    np.testing.assert_array_equal(sequence.targets[:, 1], [0, 0, 0, 0, 1, 1, 1, 1])
-    np.testing.assert_array_equal(sequence.targets[:, 2], [0, 1, 1, 0, 0, 0, 0, 0])
+    np.testing.assert_array_equal(sequence.targets[:, 1], [1, 1, 1, 1, 0, 0, 0, 0])
+    np.testing.assert_array_equal(sequence.targets[:, 2], [1, 1, 1, 1, 0, 0, 0, 0])
+    np.testing.assert_array_equal(sequence.targets[:, 3], [0, 0, 0, 0, 1, 1, 1, 1])
+    np.testing.assert_array_equal(sequence.targets[:, 4], [0, 0, 0, 0, 1, 1, 1, 1])
+    np.testing.assert_array_equal(sequence.targets[:, 5], [0, 1, 1, 0, 0, 0, 0, 0])
     np.testing.assert_array_equal(sequence.loss_mask, np.ones_like(sequence.targets))
 
 
@@ -125,7 +128,6 @@ def test_temporal_sequence_builder_splits_uncovered_gaps():
         chunk,
         expected_features=["speed", "brake"],
         label_ids=["MSP", "EA"],
-        child_parent={},
     )
 
     assert [(sequence.start_index, len(sequence.features)) for sequence in sequences] == [
@@ -201,6 +203,7 @@ def test_threshold_merge_uses_the_active_custom_threshold_and_requires_a_core():
 def test_detection_uses_default_threshold_and_allows_override():
     service = SegmentClassifierService.__new__(SegmentClassifierService)
     service.threshold = 0.5
+    service.label_ids = ["MSP"]
     service.behavior_label_ids = ["MSP"]
     service.child_parent = {}
     service.score_sequence = lambda dataframe: pd.DataFrame({"MSP": [0.1, 0.7, 0.1]})
@@ -210,9 +213,31 @@ def test_detection_uses_default_threshold_and_allows_override():
     assert service.detect_segments(dataframe, threshold=0.8) == []
 
 
+def test_detection_includes_every_trained_label_category():
+    service = SegmentClassifierService.__new__(SegmentClassifierService)
+    service.threshold = 0.5
+    service.configure_labels(["MSP1", "ST1", "silverstone", "custom-label"])
+    service.score_sequence = lambda dataframe: pd.DataFrame({
+        "MSP1": [0.9, 0.1, 0.1],
+        "ST1": [0.1, 0.7, 0.1],
+        "silverstone": [0.8, 0.8, 0.1],
+        "custom-label": [0.1, 0.1, 0.9],
+    })
+
+    detections = service.detect_segments(pd.DataFrame(_rows(0, 3)))
+
+    assert [item.label for item in detections] == [
+        "MSP1",
+        "ST1",
+        "silverstone",
+        "custom-label",
+    ]
+
+
 def test_detection_allows_overlap_and_reruns_behavior_crop_for_children():
     service = SegmentClassifierService.__new__(SegmentClassifierService)
     service.threshold = 0.5
+    service.label_ids = ["MSP", "EA", "MSP1"]
     service.behavior_label_ids = ["MSP", "EA"]
     service.child_parent = {"MSP1": "MSP"}
     call_lengths = []
@@ -271,7 +296,7 @@ def test_detection_thresholds_corrected_parent_and_child_probabilities():
     assert detections[0].subsegments == []
 
 
-def test_model_round_trip_uses_code_owned_configuration(tmp_path):
+def test_model_round_trip_preserves_trained_label_configuration(tmp_path):
     source = _configured_service(tmp_path)
     source.model.eval()
     inputs = torch.randn(1, 5, 2, device=source.device)

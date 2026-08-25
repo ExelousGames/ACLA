@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
 from app.shared.labels import (
-    BEHAVIOR_LABELS,
     LABEL_CATEGORIES,
     LABEL_MAPPING,
     LABEL_NAME_TO_ID,
@@ -14,10 +13,6 @@ from app.shared.labels import (
 )
 
 
-BEHAVIOR_PARENT_LABEL_IDS = tuple(
-    label_id for label_id in BEHAVIOR_LABELS
-    if label_id in LABEL_MAPPING
-)
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
 TRACK_LABEL_IDS = tuple(label_id for label_id in TRACK_LABELS if label_id in LABEL_MAPPING)
 TRACK_SECTION_LABEL_IDS = tuple(
@@ -83,29 +78,22 @@ def normalize_grouped_label_ids(
     return cleaned, rejected, added_parents
 
 
-def _dedupe_label_ids(label_ids: List[str]) -> List[str]:
-    seen = set()
-    deduped = []
-    for label_id in label_ids:
-        if label_id in seen:
+def _classifier_label_ids(raw_label_ids: Any) -> List[str]:
+    """Preserve every string label emitted by a trained classifier."""
+    if not isinstance(raw_label_ids, list):
+        return []
+
+    labels: List[str] = []
+    parents = _parent_lookup()
+    for raw_label_id in raw_label_ids:
+        if not isinstance(raw_label_id, str):
             continue
-        seen.add(label_id)
-        deduped.append(label_id)
-    return deduped
-
-
-def _behavior_parent_labels(label_ids: List[str]) -> List[str]:
-    return [
-        label_id for label_id in label_ids
-        if label_id in BEHAVIOR_PARENT_LABEL_IDS
-    ]
-
-
-def _track_label_ids(label_ids: List[str]) -> List[str]:
-    return [
-        label_id for label_id in label_ids
-        if label_id in TRACK_LABEL_IDS or label_id in TRACK_SECTION_LABEL_IDS
-    ]
+        parent_id = parents.get(raw_label_id)
+        if parent_id and parent_id not in labels:
+            labels.append(parent_id)
+        if raw_label_id not in labels:
+            labels.append(raw_label_id)
+    return labels
 
 
 def _track_id(raw: Any) -> str:
@@ -144,14 +132,6 @@ def _section_for_position(position: Any, track_id: str) -> Optional[str]:
         if _position_in_range(normalized_position, section_range):
             return section_id
     return None
-
-
-def _analysis_label_ids(label_ids: List[str]) -> List[str]:
-    return [
-        label_id for label_id in label_ids
-        if label_id not in TRACK_LABEL_IDS
-        and label_id not in TRACK_SECTION_LABEL_IDS
-    ]
 
 
 def _segment_track_section(
@@ -220,7 +200,7 @@ def build_track_area_segments(
     track_name: Optional[str],
     include_empty_sections: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Build behavior-label segments with track sections as metadata."""
+    """Build classifier-label segments with track sections as metadata."""
     track_id = _track_id(track_name)
     if not track_id or not telemetry_data or not _section_candidates(track_id):
         return build_parent_label_segments(raw_segments)
@@ -248,17 +228,15 @@ def build_track_area_segments(
             if child_end <= child_start:
                 continue
 
-            cleaned_labels, _, _ = normalize_grouped_label_ids(raw_segment.get("labels", []))
-            analysis_labels = _analysis_label_ids(cleaned_labels)
-            if not _behavior_parent_labels(analysis_labels):
+            labels = _classifier_label_ids(raw_segment.get("labels", []))
+            if not labels:
                 continue
 
             section_has_segments = True
-            labels = _dedupe_label_ids(analysis_labels)
             _append_or_merge_segment(segments, {
                 "id": f"{labels[0]}:{section_id}:{child_start}-{child_end}",
                 "labels": labels,
-                "track_section": _segment_track_section(cleaned_labels, section_id),
+                "track_section": _segment_track_section(labels, section_id),
                 "start_index": child_start,
                 "end_index": child_end,
             })
@@ -276,13 +254,12 @@ def build_track_area_segments(
 
 
 def build_parent_label_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Merge classifier windows into behavior-label display segments."""
+    """Merge classifier windows into label-preserving display segments."""
     segments: List[Dict[str, Any]] = []
 
     for raw_segment in raw_segments:
-        cleaned_labels, _, _ = normalize_grouped_label_ids(raw_segment.get("labels", []))
-        labels = _dedupe_label_ids(_analysis_label_ids(cleaned_labels))
-        if not _behavior_parent_labels(labels):
+        labels = _classifier_label_ids(raw_segment.get("labels", []))
+        if not labels:
             continue
 
         start_index = raw_segment.get("start_index")
@@ -293,7 +270,7 @@ def build_parent_label_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict
         segment = {
             "id": raw_segment.get("id"),
             "labels": labels,
-            "track_section": _segment_track_section(_track_label_ids(cleaned_labels), None),
+            "track_section": _segment_track_section(labels, None),
             "start_index": start_index,
             "end_index": end_index,
         }

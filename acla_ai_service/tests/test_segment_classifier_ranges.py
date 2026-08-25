@@ -23,7 +23,7 @@ def _detection(label, score, start, end, child_label):
     )
 
 
-def test_classify_ranges_selects_highest_parent_and_remaps_indices(tmp_path, monkeypatch):
+def test_classify_ranges_retains_every_detection_and_remaps_indices(tmp_path, monkeypatch):
     service = SegmentClassifierService(models_directory=tmp_path)
     service.behavior_label_ids = ["MSP", "RM"]
     calls = []
@@ -42,18 +42,20 @@ def test_classify_ranges_selects_highest_parent_and_remaps_indices(tmp_path, mon
     )
 
     assert calls == [5]
-    assert len(result) == 1
-    assert result[0].label == "MSP"
-    assert (result[0].start_index, result[0].end_index) == (3, 6)
-    assert result[0].telemetry_data == [{"row": value} for value in range(3, 6)]
-    assert [child.label for child in result[0].subsegments] == ["MSP1"]
+    assert [item.label for item in result] == ["RM", "MSP"]
+    assert [
+        (item.start_index, item.end_index)
+        for item in result
+    ] == [(2, 4), (3, 6)]
+    assert result[1].telemetry_data == [{"row": value} for value in range(3, 6)]
+    assert [child.label for child in result[1].subsegments] == ["MSP1"]
     assert (
-        result[0].subsegments[0].start_index,
-        result[0].subsegments[0].end_index,
+        result[1].subsegments[0].start_index,
+        result[1].subsegments[0].end_index,
     ) == (3, 6)
 
 
-def test_classify_ranges_uses_label_order_then_detection_order_for_ties(tmp_path, monkeypatch):
+def test_classify_ranges_preserves_detection_order_for_equal_scores(tmp_path, monkeypatch):
     service = SegmentClassifierService(models_directory=tmp_path)
     service.behavior_label_ids = ["MSP", "RM"]
     monkeypatch.setattr(
@@ -71,8 +73,10 @@ def test_classify_ranges_uses_label_order_then_detection_order_for_ties(tmp_path
         [{"start_index": 0, "end_index": 4}],
     )
 
-    assert result[0].label == "MSP"
-    assert [child.label for child in result[0].subsegments] == ["MSP1"]
+    assert [item.label for item in result] == ["RM", "MSP", "MSP"]
+    assert [child.label for child in result[0].subsegments] == ["RM1"]
+    assert [child.label for child in result[1].subsegments] == ["MSP1"]
+    assert [child.label for child in result[2].subsegments] == ["MSP2"]
 
 
 def test_classify_ranges_skips_invalid_ranges_without_detection_calls(tmp_path, monkeypatch):

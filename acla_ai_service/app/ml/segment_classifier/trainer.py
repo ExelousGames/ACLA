@@ -21,6 +21,7 @@ from app.ml.segment_classifier.service import (
     SegmentClassifierService,
     segment_classifier,
 )
+from app.shared.labels import normalize_label_ids
 from app.storage import get_shared_telemetry_store
 from app.storage.datasets.segment_dataset import (
     TemporalStreamingDataset,
@@ -43,7 +44,7 @@ def _chunk_records(chunk: Any) -> list[dict]:
 
 
 def _annotation_samples(records: Sequence[dict]) -> list[tuple[str, list[dict]]]:
-    """Keep each behavior annotation and its child annotations as one sample."""
+    """Keep each parent annotation and its child annotations as one sample."""
     children_by_parent: dict[str, list[dict]] = defaultdict(list)
     for record in records:
         parent_id = record.get("parent_id")
@@ -96,7 +97,7 @@ class SegmentClassifierTrainer:
         val_split: float = 0.2,
         session_ids: Optional[Collection[str]] = None,
     ) -> None:
-        """Split annotated behavior samples while keeping child ranges attached."""
+        """Split annotated samples while keeping child ranges attached."""
         if not 0 <= val_split < 1:
             raise ValueError(
                 "Validation split must be greater than or equal to 0 and less than 1."
@@ -124,10 +125,10 @@ class SegmentClassifierTrainer:
             names = ", ".join(sorted(selected))
             raise ValueError(f"No annotation sessions found for selection: {names}")
         if not samples:
-            raise ValueError("No annotated behavior samples found for classifier training.")
+            raise ValueError("No annotated samples found for classifier training.")
         if val_split > 0 and len(samples) < 2:
             raise ValueError(
-                "Validation requires at least two annotated behavior samples when "
+                "Validation requires at least two annotated samples when "
                 "Val split is greater than 0."
             )
 
@@ -166,11 +167,22 @@ class SegmentClassifierTrainer:
                 chunk,
                 expected_features=classifier.feature_names,
                 label_ids=classifier.label_ids,
-                child_parent=classifier.child_parent,
             )
+
+    def _configure_training_labels(self, cache_key: str) -> None:
+        label_ids = {
+            label_id
+            for chunk in self.store.get_cached_data_chunks(cache_key)
+            for record in _chunk_records(chunk)
+            for label_id in normalize_label_ids(record.get("labels"))
+        }
+        if not label_ids:
+            raise ValueError("No labels found in classifier training data.")
+        self.classifier_service.configure_labels(sorted(label_ids))
 
     async def fit_preprocessors(self, cache_key: str) -> None:
         classifier = self.classifier_service
+        self._configure_training_labels(cache_key)
         scaler = StandardScaler()
         positives = np.zeros(len(classifier.label_ids), dtype=np.float64)
         evaluated = np.zeros(len(classifier.label_ids), dtype=np.float64)
@@ -184,15 +196,8 @@ class SegmentClassifierTrainer:
 
         if sequence_count == 0:
             raise ValueError("No contiguous annotated telemetry sequences found in cache.")
-        behavior_count = len(classifier.behavior_label_ids)
-        if positives[:behavior_count].sum() == 0:
-            raise ValueError("No behavior annotations found in classifier training data.")
-        if positives[behavior_count:].sum() == 0:
-            LOGGER.warning(
-                "No behavior sub-label annotations found in classifier training data; "
-                "training will continue with parent behavior labels only, and child-label "
-                "predictions from this model will not be reliable."
-            )
+        if positives.sum() == 0:
+            raise ValueError("No label annotations found in classifier training data.")
 
         self.scaler = scaler
         negatives = evaluated - positives
@@ -218,7 +223,6 @@ class SegmentClassifierTrainer:
             self.scaler,
             classifier.feature_names,
             classifier.label_ids,
-            classifier.child_parent,
         )
 
     @staticmethod

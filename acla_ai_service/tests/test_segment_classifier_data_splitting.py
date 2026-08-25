@@ -167,7 +167,7 @@ async def test_zero_validation_split_keeps_every_session_in_training():
 async def test_positive_validation_split_requires_two_samples():
     store = _Store({"source": {"session-a": [_segment(1)]}})
 
-    with pytest.raises(ValueError, match="at least two annotated behavior samples"):
+    with pytest.raises(ValueError, match="at least two annotated samples"):
         await _trainer(store).prepare_training_data(
             "source",
             "train",

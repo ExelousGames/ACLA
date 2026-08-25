@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Dict, Iterable, Iterator, Sequence
 
 import numpy as np
 import pandas as pd
@@ -11,7 +11,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import IterableDataset
 
-from app.shared.labels import BEHAVIOR_LABELS, normalize_label_ids
+from app.shared.labels import normalize_label_ids
 from app.shared.segment import AnnotatedSegment
 
 
@@ -54,7 +54,6 @@ def build_temporal_sequences(
     *,
     expected_features: Sequence[str],
     label_ids: Sequence[str],
-    child_parent: Mapping[str, str],
 ) -> list[TemporalSequence]:
     """Rebuild contiguous session runs and their per-timestep targets."""
     annotations = []
@@ -87,7 +86,6 @@ def build_temporal_sequences(
                 rows_by_index.setdefault(index, row)
 
     label_index = {label_id: index for index, label_id in enumerate(label_ids)}
-    behavior_ids = tuple(label_id for label_id in BEHAVIOR_LABELS if label_id in label_index)
     sequences: list[TemporalSequence] = []
 
     for run_indices in _contiguous_index_runs(sorted(rows_by_index)):
@@ -103,20 +101,7 @@ def build_temporal_sequences(
         targets = np.zeros((len(frame), len(label_ids)), dtype=np.float32)
         loss_mask = np.ones_like(targets)
 
-        for annotation in parents:
-            start = max(run_start, int(annotation.start_index))
-            end = min(run_end, int(annotation.end_index))
-            if end <= start:
-                continue
-            local_start = start - run_start
-            local_end = end - run_start
-            for label_id in normalize_label_ids(annotation.labels):
-                if label_id in behavior_ids:
-                    targets[local_start:local_end, label_index[label_id]] = 1.0
-
         for annotation in annotations:
-            if not annotation.parent_id:
-                continue
             start = max(run_start, int(annotation.start_index))
             end = min(run_end, int(annotation.end_index))
             if end <= start:
@@ -124,7 +109,7 @@ def build_temporal_sequences(
             local_start = start - run_start
             local_end = end - run_start
             for label_id in normalize_label_ids(annotation.labels):
-                if label_id in child_parent:
+                if label_id in label_index:
                     targets[local_start:local_end, label_index[label_id]] = 1.0
 
         sequences.append(TemporalSequence(
@@ -145,14 +130,12 @@ class TemporalStreamingDataset(IterableDataset):
         scaler,
         expected_features: Sequence[str],
         label_ids: Sequence[str],
-        child_parent: Mapping[str, str],
     ) -> None:
         self.store = store
         self.cache_key = cache_key
         self.scaler = scaler
         self.expected_features = tuple(expected_features)
         self.label_ids = tuple(label_ids)
-        self.child_parent = dict(child_parent)
 
     def __iter__(self):
         for chunk in self.store.get_cached_data_chunks(self.cache_key):
@@ -160,7 +143,6 @@ class TemporalStreamingDataset(IterableDataset):
                 chunk,
                 expected_features=self.expected_features,
                 label_ids=self.label_ids,
-                child_parent=self.child_parent,
             ):
                 scaled = self.scaler.transform(sequence.features)
                 yield (

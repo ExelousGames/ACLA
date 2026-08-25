@@ -225,6 +225,27 @@ def test_main_label_without_subsegments_remains_a_single_label(monkeypatch):
     assert segments[0]["labels"] == ["MSP"]
 
 
+def test_non_behavior_and_custom_classifier_labels_are_preserved(monkeypatch):
+    segment = PredictedSegment(
+        id="segment-type",
+        label="ST1",
+        score=0.9,
+        start_index=0,
+        end_index=4,
+        subsegments=[PredictedSegment(
+            label="custom-label",
+            score=0.8,
+            start_index=0,
+            end_index=4,
+        )],
+    )
+
+    segments = _classify(monkeypatch, segment)
+
+    assert len(segments) == 1
+    assert segments[0]["labels"] == ["ST1", "custom-label"]
+
+
 def test_repeated_child_labels_are_deduplicated_in_service_order(monkeypatch):
     segments = _classify(
         monkeypatch,
