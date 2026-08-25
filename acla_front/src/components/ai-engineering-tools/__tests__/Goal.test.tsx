@@ -1,4 +1,7 @@
+import React from 'react';
+import { render, screen } from '@testing-library/react';
 import {
+    GoalDisplay,
     GoalRunner,
     buildGoalRequest,
     compareGoalValues,
@@ -26,6 +29,37 @@ const request = (): GoalRequest => ({
 const operationWithValue = (value: unknown) => (
     resolvedAiToolOperation(value as NestedAiToolResult)
 );
+
+describe('GoalDisplay', () => {
+    it('removes an achieved goal from chat while keeping it available on pill surfaces', () => {
+        const achievedSnapshot = {
+            name: 'Drive a clean lap',
+            status: 'achieved' as const,
+            steps: [],
+            determination: request().determination,
+            determination_result: {
+                tool_name: 'determine',
+                attempt: 1,
+                status: 'completed' as const,
+                value: 0,
+            },
+            target: 0,
+            actual: 0,
+            completed_steps: [],
+        };
+        const { rerender } = render(
+            <GoalDisplay snapshot={{ ...achievedSnapshot, status: 'running' }} surface="chat" />,
+        );
+
+        expect(screen.getByLabelText('Goal')).toBeInTheDocument();
+
+        rerender(<GoalDisplay snapshot={achievedSnapshot} surface="chat" />);
+        expect(screen.queryByLabelText('Goal')).not.toBeInTheDocument();
+
+        rerender(<GoalDisplay snapshot={achievedSnapshot} surface="pill" />);
+        expect(screen.getByLabelText('Goal')).toBeInTheDocument();
+    });
+});
 
 describe('Goal descriptors', () => {
     it('validates the clean-break determination shape and configurable tool names', () => {

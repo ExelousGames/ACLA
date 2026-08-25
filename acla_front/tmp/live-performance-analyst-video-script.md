@@ -10,7 +10,7 @@
 
 [The AI starts the goal feature.]
 
-This is Kestrel, a sim-racing data analysis assistant. I just used its Live Performance Analyst, one of several purpose-built AI agents that communicates directly with sensors integrated into Kestrel. Equipped with extensive racing knowledge, it translates complex telemetry graphs into clear, easy-to-understand insights. Kestrel isn’t just another AI coaching program—it’s an assistant designed to help you become your own racing analyst.
+This is Kestrel, a sim-racing data analysis assistant. I just used its Live Performance Analyst, one of purpose-built AI agents that communicates directly with sensors integrated into Kestrel. Equipped with extensive racing knowledge, it translates complex telemetry graphs into clear, easy-to-understand insights. Kestrel isn’t just another AI coaching program—it’s an assistant designed to help you become your own racing analyst.
 
 In this video, I’ll demonstrate the complete workflow—from recording a lap to finding the section that needs attention and carrying that insight back onto the track.
 

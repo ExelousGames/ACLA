@@ -137,6 +137,24 @@ describe('FloatingChat presentation renderer', () => {
         expect(resizeFloatingChat).toHaveBeenCalledWith(760, 500);
     });
 
+    it('renders standalone map visualizations edge to edge', () => {
+        const { container } = render(<FloatingChat />);
+        act(() => presentationListener?.(presentation([
+            card('map:track', 'map', {
+                status: 'unavailable',
+                title: 'Track map',
+                reason: 'No map loaded',
+            }),
+        ])));
+
+        expect(container.querySelector('.overlay-shell'))
+            .toHaveClass('overlay-shell--edge-to-edge');
+        expect(container.querySelector('.overlay-shell'))
+            .toHaveAttribute('data-edge-to-edge', 'true');
+        expect(container.querySelector('[data-component-name="map:track"]'))
+            .toHaveClass('overlay-list-item--edge-to-edge');
+    });
+
     it('finishes a speaking animation once across manager presentation updates', () => {
         render(<FloatingChat />);
         const messageCard = card('message:session', 'ai_message', { text: 'Hello driver' }, {

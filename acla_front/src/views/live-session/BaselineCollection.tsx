@@ -44,6 +44,7 @@ import { adaptAnalysisResultsComparison } from 'views/lap-analysis/visualization
 import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
 import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
 import BaselineProgressDisplay from './BaselineProgressDisplay';
+import './baseline-collection.css';
 import { LiveSessionContext } from './LiveSessionContext';
 import { liveTelemetryStore } from './live-telemetry-store';
 import {
@@ -1105,50 +1106,47 @@ const BaselineCollection = ({ name }: { name: string }) => {
 
     return (
         <div className="baseline-collection" data-testid="baseline-collection">
-            {tag ? (
-                <>
-                    {tag.status !== 'complete' && <BaselineProgressDisplay tag={tag} />}
-                    {tag.status === 'complete' && lapRecordRef.current && (
-                        <button
-                            type="button"
-                            className="baseline-collection__start"
-                            onClick={requestAnalysisFromButton}
-                            disabled={analysisState === 'analyzing' || analysisState === 'complete'}
-                            aria-busy={analysisState === 'analyzing'}
-                        >
-                            {analysisButtonLabel}
-                        </button>
-                    )}
-                </>
-            ) : (
-                <div className="baseline-collection__idle" role="status">
-                    <strong>Ready for baseline collection</strong>
-                    <span>Choose a preset, then keep this panel open until its stop condition is met.</span>
-                    <label className="baseline-collection__preset">
-                        <span>Collection preset</span>
-                        <select
-                            aria-label="Baseline collection preset"
-                            value={selectedPreset}
-                            onChange={(event) => setSelectedPreset(
-                                event.target.value as BaselineCollectionPreset,
-                            )}
-                        >
-                            <option value="full_lap">Full lap</option>
-                        </select>
-                    </label>
+            <BaselineProgressDisplay
+                tag={tag}
+                action={tag?.status === 'complete' && lapRecordRef.current ? (
                     <button
                         type="button"
-                        className="baseline-collection__start"
-                        onClick={() => {
-                            void startCollection({
-                                query: { preset: selectedPreset },
-                            }).result.catch(() => undefined);
-                        }}
+                        className="baseline-timeline__button baseline-timeline__button--analysis"
+                        onClick={requestAnalysisFromButton}
+                        disabled={analysisState === 'analyzing' || analysisState === 'complete'}
+                        aria-busy={analysisState === 'analyzing'}
                     >
-                        Start Baseline Collection
+                        {analysisButtonLabel}
                     </button>
-                </div>
-            )}
+                ) : !tag ? (
+                    <div className="baseline-timeline__start-controls">
+                        <label className="baseline-timeline__preset">
+                            <span>Preset</span>
+                            <select
+                                aria-label="Baseline collection preset"
+                                value={selectedPreset}
+                                onChange={(event) => setSelectedPreset(
+                                    event.target.value as BaselineCollectionPreset,
+                                )}
+                            >
+                                <option value="full_lap">Full lap</option>
+                            </select>
+                        </label>
+                        <button
+                            type="button"
+                            className="baseline-timeline__button baseline-timeline__button--start"
+                            onClick={() => {
+                                void startCollection({
+                                    query: { preset: selectedPreset },
+                                }).result.catch(() => undefined);
+                            }}
+                        >
+                            Start
+                            <span className="baseline-timeline__button-icon" aria-hidden="true">▶</span>
+                        </button>
+                    </div>
+                ) : undefined}
+            />
         </div>
     );
 };

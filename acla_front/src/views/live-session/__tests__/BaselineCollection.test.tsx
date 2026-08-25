@@ -216,20 +216,31 @@ describe('BaselineCollection visualization', () => {
         const handle = getHandle();
 
         expect(handle.getTag()).toBeNull();
+        expect(screen.getByText('Starting stage')).toBeInTheDocument();
+        expect(screen.getByText('Recording stage')).toBeInTheDocument();
+        expect(screen.getByText('End stage')).toBeInTheDocument();
         expect(screen.getByRole('combobox', { name: 'Baseline collection preset' }))
             .toHaveValue('full_lap');
         expect(screen.getByRole('option', { name: 'Full lap' })).toBeInTheDocument();
+        expect(screen.getByText('Starting stage').closest('section'))
+            .toHaveAttribute('data-state', 'active');
+        const startButton = screen.getByRole('button', { name: 'Start' });
+        expect(startButton).toHaveTextContent('Start▶');
         act(() => {
-            screen.getByRole('button', { name: 'Start Baseline Collection' }).click();
+            startButton.click();
         });
 
         expect(handle.getTag()).toMatchObject({
             status: 'waiting_for_start',
             progress_percent: 0,
         });
-        expect(screen.queryByRole('button', { name: 'Start Baseline Collection' }))
+        expect(screen.queryByRole('button', { name: 'Start' }))
             .not.toBeInTheDocument();
         expect(screen.getByLabelText('Baseline collection progress')).toBeInTheDocument();
+        expect(screen.getByText('Starting stage').closest('section'))
+            .toHaveAttribute('data-state', 'complete');
+        expect(screen.getByText('Recording stage').closest('section'))
+            .toHaveAttribute('data-state', 'active');
         expect(screen.queryByRole('button', { name: 'Request Analysis' }))
             .not.toBeInTheDocument();
     });
@@ -303,7 +314,7 @@ describe('BaselineCollection visualization', () => {
         await expect(restart.result).rejects.toBeInstanceOf(BaselineCollectionNotStartedError);
         expect(handle.getTag()).toBeNull();
         expect(handle.getLapRecord()).toBeNull();
-        expect(screen.getByRole('button', { name: 'Start Baseline Collection' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled();
     });
 
     it('rejects duplicate starts while waiting and allows restart to clear the operation', async () => {
@@ -504,7 +515,10 @@ describe('BaselineCollection visualization', () => {
         expect(handle.getLapRecord()?.records.map((row) => row.Graphics_normalized_car_position))
             .toEqual([0.001, 0.4, 0.98]);
         expect(handle.getTag()).toMatchObject({ status: 'complete', progress_percent: 100 });
-        expect(screen.queryByLabelText('Baseline collection progress')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Baseline collection progress')).toBeInTheDocument();
+        expect(screen.getByText('Baseline ready')).toBeInTheDocument();
+        expect(screen.getByText('End stage').closest('section'))
+            .toHaveAttribute('data-state', 'active');
         expect(handle.getOverlayBehavior(handle.getTag())).toMatchObject({ remove: true });
         expect(screen.getByRole('button', { name: 'Request Analysis' })).toBeEnabled();
         await expect(operation.result).resolves.toEqual({

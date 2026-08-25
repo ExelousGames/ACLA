@@ -113,21 +113,19 @@
 
 .main-dashboard-assistant .ai-chat__stage {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
 }
 
 .main-dashboard-assistant .ai-chat__mic-panel {
-    padding: 12px;
-    gap: 10px;
+    padding: 12px 10px;
+    gap: 6px;
 }
 
 .main-dashboard-assistant .ai-chat__mic-visual {
+    --mic-core-size: 64px;
+    --mic-core-radius: 32px;
     width: 96px;
     height: 96px;
-}
-
-.main-dashboard-assistant .ai-chat__mic-core {
-    width: 64px;
-    height: 64px;
 }
 
 .main-dashboard-assistant .ai-chat__mic-hint {

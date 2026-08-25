@@ -1,6 +1,6 @@
 import React from 'react';
-import { Box, Button, DropdownMenu, Flex, IconButton, Text } from '@radix-ui/themes';
-import { Cross2Icon, DragHandleDots2Icon, PlusIcon } from '@radix-ui/react-icons';
+import { Box, Button, DropdownMenu, Flex, Text } from '@radix-ui/themes';
+import { Cross2Icon, PlusIcon } from '@radix-ui/react-icons';
 import type { NamedAiToolComponentHandle } from 'contexts/AiToolComponentRefContext';
 import {
     AiToolComponentErrorConstructor,
@@ -473,22 +473,20 @@ abstract class VisualizationPanelManager<
                     onDragStart={(event) => this.handleDragStart(event, instance.id)}
                     onDragEnd={this.handleDragEnd}
                 >
-                    <Flex align="center" gap="2">
-                        <DragHandleDots2Icon className="drag-handle" />
-                        <Text size="2" weight={this.getPanelTitleWeight()}>{panelName}</Text>
-                    </Flex>
-                    <IconButton
-                        size="1"
-                        variant="ghost"
-                        onClick={() => this.removeVisualization(instance.id)}
-                        aria-label={this.getRemoveButtonAriaLabel(instance)}
-                    >
-                        <Cross2Icon />
-                    </IconButton>
+                    <Text size="2" weight={this.getPanelTitleWeight()}>{panelName}</Text>
                 </Box>
+                <button
+                    type="button"
+                    className="visualization-close-button"
+                    style={{ position: 'absolute', top: 11, right: 12, zIndex: 3 }}
+                    onClick={() => this.removeVisualization(instance.id)}
+                    aria-label={this.getRemoveButtonAriaLabel(instance)}
+                >
+                    <Cross2Icon />
+                </button>
                 <Box
+                    className="visualization-content"
                     data-testid={this.getPanelContentTestId(instance)}
-                    style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}
                 >
                     {this.renderPanelContent(instance)}
                 </Box>
@@ -551,9 +549,9 @@ abstract class VisualizationPanelManager<
                     {primaryVisualizations.map(this.renderVisualization)}
 
                     {secondaryVisualizations.length > 0 && (
-                        <Box className="visualizations-container">
+                        <div className="visualizations-container">
                             {secondaryVisualizations.map(this.renderVisualization)}
-                        </Box>
+                        </div>
                     )}
                 </Box>
             </Box>

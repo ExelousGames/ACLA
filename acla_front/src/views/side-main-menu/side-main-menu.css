@@ -19,16 +19,64 @@ input {
 .ScrollAreaRoot {
     width: 220px;
     flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
     background: rgba(14, 14, 24, 0.6);
     border-right: 1px solid var(--lp-border);
     --scrollbar-size: 8px;
     height: 100%;
     overflow: hidden;
+    transition: width 0.2s ease, background 0.2s ease;
+}
+
+.TabsRoot[data-menu-collapsed="true"] .ScrollAreaRoot {
+    width: 72px;
+    background: rgba(14, 14, 24, 0.82);
+}
+
+.SideMenuHeader {
+    min-height: 56px;
+    padding: 10px 12px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    border-bottom: 1px solid var(--lp-border);
+}
+
+.SideMenuToggle {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--lp-green);
+    background: var(--lp-green-dim);
+    border: none;
+    border-radius: var(--lp-radius-sm);
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.SideMenuToggle:hover {
+    color: var(--lp-white);
+    background: rgba(0, 230, 118, 0.18);
+    box-shadow: 0 0 12px var(--lp-green-dim);
+}
+
+.SideMenuToggle:focus-visible {
+    outline: 2px solid var(--lp-green);
+    outline-offset: 2px;
+}
+
+.TabsRoot[data-menu-collapsed="true"] .SideMenuHeader {
+    justify-content: center;
 }
 
 .ScrollAreaViewport {
     width: 100%;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
 }
 
@@ -41,20 +89,27 @@ input {
     flex-direction: column;
     overflow: hidden;
     max-height: 100%;
-    padding: 16px 12px;
-    gap: 4px;
+    padding: 12px;
+    gap: 6px;
     border: none;
+}
+
+@media (min-width: 769px) {
+    .TabsList { padding-left: 24px; }
+    .TabsRoot[data-menu-collapsed="true"] .TabsList { padding-left: 12px; }
 }
 
 .TabsTrigger {
     font-family: var(--lp-mono);
     background: transparent;
     padding: 12px 16px;
-    height: auto;
+    width: 100%;
+    min-height: 44px;
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    gap: 10px;
+    gap: 12px;
     font-size: 11px;
     letter-spacing: 2px;
     text-transform: uppercase;
@@ -67,14 +122,22 @@ input {
     position: relative;
 }
 
-.TabsTrigger::before {
-    content: '';
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: currentColor;
-    opacity: 0.4;
+.TabsTriggerIcon {
+    width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex-shrink: 0;
+    transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.TabsTriggerLabel {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: opacity 0.12s ease;
 }
 
 .TabsTrigger:first-child { border-top-left-radius: var(--lp-radius-sm); }
@@ -82,26 +145,67 @@ input {
 
 .TabsTrigger:hover {
     color: var(--lp-white);
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(255, 255, 255, 0.055);
     box-shadow: none;
+}
+
+.TabsTrigger:hover .TabsTriggerIcon {
+    transform: translateY(-1px);
 }
 
 .TabsTrigger[data-state="active"] {
     color: var(--lp-green);
     background: var(--lp-green-dim);
-    border-color: var(--lp-green);
-    box-shadow: 0 0 12px var(--lp-green-dim);
+    border-color: rgba(0, 230, 118, 0.18);
+    box-shadow: inset 0 0 12px rgba(0, 230, 118, 0.04), 0 0 12px var(--lp-green-dim);
 }
-.TabsTrigger[data-state="active"]::before {
-    opacity: 1;
-    box-shadow: 0 0 6px var(--lp-green-glow);
-    animation: hud-led-blink 1.4s ease-in-out infinite;
+
+.TabsTrigger[data-state="active"] .TabsTriggerIcon {
+    filter: drop-shadow(0 0 5px var(--lp-green-glow));
 }
 
 .TabsTrigger:focus { position: relative; }
 .TabsTrigger:focus-visible {
     outline: 2px solid var(--lp-green);
     outline-offset: 2px;
+}
+
+.TabsRoot[data-menu-collapsed="true"] .TabsTrigger {
+    justify-content: center;
+    gap: 0;
+    padding: 12px;
+}
+
+.TabsRoot[data-menu-collapsed="true"] .TabsTriggerLabel {
+    width: 0;
+    opacity: 0;
+    position: absolute;
+    pointer-events: none;
+}
+
+.SideMenuTooltip {
+    z-index: 1000;
+    padding: 7px 10px;
+    color: var(--lp-white, #ffffff);
+    background: var(--lp-bg-surface, #161628);
+    border: 1px solid var(--lp-border-strong, rgba(255, 255, 255, 0.12));
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+    font-family: var(--lp-mono, monospace);
+    font-size: 11px;
+    line-height: 1;
+    letter-spacing: 0.5px;
+    user-select: none;
+    animation: side-menu-tooltip-in 0.12s ease-out;
+}
+
+.SideMenuTooltipArrow {
+    fill: var(--lp-bg-surface, #161628);
+}
+
+@keyframes side-menu-tooltip-in {
+    from { opacity: 0; transform: translateX(-3px); }
+    to { opacity: 1; transform: translateX(0); }
 }
 
 .TabsContent {
@@ -129,6 +233,8 @@ input {
 
 @media (max-width: 768px) {
     .ScrollAreaRoot { width: 64px; }
-    .TabsTrigger { font-size: 0; padding: 12px; justify-content: center; letter-spacing: 0; }
-    .TabsTrigger::before { width: 10px; height: 10px; }
+    .SideMenuHeader { justify-content: center; padding-inline: 10px; }
+    .TabsList { padding-inline: 10px; }
+    .TabsTrigger { padding: 12px; justify-content: center; gap: 0; letter-spacing: 0; }
+    .TabsTriggerLabel { width: 0; opacity: 0; position: absolute; pointer-events: none; }
 }

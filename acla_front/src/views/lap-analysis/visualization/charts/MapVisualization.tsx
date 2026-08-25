@@ -810,7 +810,7 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
                     className="map-visualization__canvas"
                 />
 
-                <div className="map-visualization__hud map-visualization__hud--top">
+                <div className="map-visualization__hud map-visualization__hud--top map-visualization__hud--recorded">
                     <Flex align="center" gap="2" wrap="wrap">
                         <Badge color="blue" variant="soft">Recorded Telemetry</Badge>
                         <Text size="1" className="map-visualization__metric">

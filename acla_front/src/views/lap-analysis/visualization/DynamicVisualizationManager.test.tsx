@@ -25,7 +25,7 @@ jest.mock('@radix-ui/themes', () => {
     };
 });
 jest.mock('@radix-ui/react-icons', () => ({
-    Cross2Icon: () => <span>Close</span>, DragHandleDots2Icon: () => <span>Drag</span>, PlusIcon: () => <span>Add</span>,
+    Cross2Icon: () => <span>Close</span>, PlusIcon: () => <span>Add</span>,
 }));
 jest.mock('./charts/TelemetryOverview', () => ({ id, data }: any) => <div data-testid={`recorded-chart-${id}`}>Telemetry chart {data?.label}</div>);
 jest.mock('./charts/MapVisualization', () => {

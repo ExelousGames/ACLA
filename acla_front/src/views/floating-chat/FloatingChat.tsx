@@ -17,6 +17,10 @@ import {
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const IDLE_WIDTH = 300;
 const SPEAKING_WIDTH = 420;
+const MAP_TYPE = 'map';
+const EDGE_TO_EDGE_COMPONENT_TYPES = new Set([
+    MAP_TYPE,
+]);
 
 interface ElectronOverlayRendererApi {
     onOverlayPresentation?: (
@@ -156,12 +160,14 @@ const GeneratedDisplayItem: React.FC<{
     const renderer = getAiOverlayRenderer(card.componentType);
     const context = useRenderContext(presentationId, card);
     const fullSizeActive = card.status === 'full_size';
+    const edgeToEdge = EDGE_TO_EDGE_COMPONENT_TYPES.has(card.componentType);
     return (
         <article
             className={[
                 'overlay-list-item',
                 card.status === 'folded' ? 'overlay-list-item--folded' : '',
                 fullSizeActive ? 'overlay-list-item--full-size-active' : '',
+                edgeToEdge ? 'overlay-list-item--edge-to-edge' : '',
                 hiddenByFullSize ? 'overlay-list-item--full-size-hidden' : '',
             ].filter(Boolean).join(' ')}
             data-component-name={card.componentName}
@@ -222,6 +228,9 @@ const FloatingChat: React.FC = () => {
     const speaking = cards.find((card) => card.shellSlot === 'speech');
     const generatedDisplays = cards.filter((card) => card.shellSlot !== 'speech');
     const fullSizeCard = generatedDisplays.find((card) => card.status === 'full_size');
+    const edgeToEdgeOnly = !speaking
+        && generatedDisplays.length === 1
+        && EDGE_TO_EDGE_COMPONENT_TYPES.has(generatedDisplays[0].componentType);
     const idle = !speaking && generatedDisplays.length === 0;
     const identity = resolveIdentity(presentation?.session.displayIdentity, speaking);
     const widths = generatedDisplays.map((card) => (
@@ -261,11 +270,13 @@ const FloatingChat: React.FC = () => {
                     'overlay-shell',
                     idle ? 'overlay-shell--idle' : '',
                     fullSizeCard ? 'overlay-shell--full-size' : '',
+                    edgeToEdgeOnly ? 'overlay-shell--edge-to-edge' : '',
                 ].filter(Boolean).join(' ')}
                 ref={shellRef}
                 style={{ width: shellWidth, height: fullSizeHeight }}
                 data-presentation-id={presentation?.presentationId || ''}
                 data-full-size-component-name={fullSizeCard?.componentName}
+                data-edge-to-edge={edgeToEdgeOnly ? 'true' : undefined}
             >
                 <header className="overlay-shell__header">
                     <OverlayIdentity identity={identity} emotionGifs={emotionGifs} />

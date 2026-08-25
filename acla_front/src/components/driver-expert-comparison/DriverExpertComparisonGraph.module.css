@@ -44,10 +44,8 @@
     min-width: 0;
 }
 
-.eyebrow,
 .replayStatus,
 .progressValue,
-.panelHeader,
 .telemetryIdentity,
 .telemetryGearLabel,
 .telemetryGearValue,
@@ -56,14 +54,6 @@
     font-family: var(--lp-mono, 'Geist Mono', monospace);
     letter-spacing: 0.12em;
     text-transform: uppercase;
-}
-
-.eyebrow {
-    display: block;
-    margin-bottom: 2px;
-    color: #66839f;
-    font-size: 8px;
-    font-weight: 600;
 }
 
 .title {
@@ -159,47 +149,12 @@
     flex-direction: column;
 }
 
-.panelHeader {
-    min-height: 30px;
-    padding: 0 10px;
-    border-bottom: 1px solid rgba(111, 155, 194, 0.13);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    background: rgba(10, 26, 43, 0.58);
-}
-
-.panelHeader {
-    color: #8ca4bb;
-    font-size: 8px;
-    font-weight: 650;
-}
-
-.traceLabels {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-size: 7px;
-    letter-spacing: 0.07em;
-}
-
-.traceLabels span::before {
-    width: 9px;
-    height: 1px;
-    margin-right: 4px;
-    display: inline-block;
-    vertical-align: middle;
-    background: currentColor;
-    box-shadow: 0 0 5px currentColor;
-    content: '';
-}
-
 .trackSvg {
     width: 100%;
     min-height: 0;
     flex: 1 1 auto;
     display: block;
+    overflow: hidden;
 }
 
 .trackViewport {
@@ -212,6 +167,7 @@
 
 .cameraOverlay {
     pointer-events: none;
+    will-change: opacity;
 }
 
 .trackShadow,
@@ -378,9 +334,6 @@
         justify-content: flex-end;
     }
 
-    .traceLabels {
-        gap: 7px;
-    }
 }
 
 @media (prefers-reduced-motion: reduce) {

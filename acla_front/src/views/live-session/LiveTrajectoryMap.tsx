@@ -251,7 +251,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
         <Card className="map-visualization-card live-trajectory-map" style={{ width, height }} data-testid="live-trajectory-map">
             <Box ref={wrapperRef} className="map-visualization">
                 <canvas ref={canvasRef} className="map-visualization__canvas" />
-                <div className="map-visualization__hud map-visualization__hud--top">
+                <div className={`map-visualization__hud map-visualization__hud--top ${live ? 'map-visualization__hud--live' : 'map-visualization__hud--standby'}`}>
                     <Flex align="center" gap="2" wrap="wrap">
                         <Badge color={live ? 'green' : 'gray'} variant="soft">{live ? 'Live Telemetry' : 'Telemetry Standby'}</Badge>
                         <Text size="1" className="map-visualization__metric">{frames.length.toLocaleString()} visible samples</Text>

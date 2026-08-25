@@ -147,6 +147,8 @@ interface Message {
     isUser: boolean;
     timestamp: Date;
     isLoading?: boolean;
+    transcriptSource?: 'voice' | 'typed';
+    awaitingTypedEcho?: boolean;
     /** Default 'chat' — text bubble. 'tool' renders the distinct
      *  tool-call box (different background + readable title). */
     kind?: MessageKind;
@@ -218,9 +220,6 @@ type PendingWorkflow =
     | Omit<Extract<ActiveWorkflow, { kind: 'goal' }>, 'key'>
     | Omit<Extract<ActiveWorkflow, { kind: 'procedure_plan' }>, 'key'>
     | Omit<Extract<ActiveWorkflow, { kind: 'live_range_todo' }>, 'key'>;
-
-const formatClock = (d: Date) =>
-    `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 
 const OverlayIcon = ({ size = 14 }: { size?: number }) => (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -340,13 +339,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
 
     // Emotion GIF settings — keyed by Emotion, values are data URLs.
     const [showEmoteSettings, setShowEmoteSettings] = useState(false);
-
-    // Live clock for the transcript header (matches landing page vibe).
-    const [clock, setClock] = useState(formatClock(new Date()));
-    useEffect(() => {
-        const id = setInterval(() => setClock(formatClock(new Date())), 1000);
-        return () => clearInterval(id);
-    }, []);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const messagesScrollRef = useRef<HTMLDivElement>(null);
@@ -947,10 +939,27 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 const transcript = event.text.trim();
                 const lastMessage = messagesWithoutLoading[messagesWithoutLoading.length - 1];
 
+                if (event.source === 'typed') {
+                    const pendingEchoIndex = messagesWithoutLoading.findIndex(message => (
+                        message.isUser
+                        && message.awaitingTypedEcho
+                        && message.content === transcript
+                    ));
+                    if (pendingEchoIndex >= 0) {
+                        const next = messagesWithoutLoading.slice();
+                        next[pendingEchoIndex] = {
+                            ...next[pendingEchoIndex],
+                            awaitingTypedEcho: false,
+                        };
+                        return next;
+                    }
+                }
+
                 if (
                     event.source !== 'typed'
                     && lastMessage?.isUser
                     && (lastMessage.kind ?? 'chat') === 'chat'
+                    && lastMessage.transcriptSource !== 'typed'
                 ) {
                     return messagesWithoutLoading.slice(0, -1).concat({
                         ...lastMessage,
@@ -964,6 +973,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                     isUser: true,
                     timestamp: new Date(),
                     kind: 'chat',
+                    transcriptSource: event.source ?? 'voice',
                 });
             });
             return;
@@ -1827,9 +1837,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             optOutProcedurePlan();
         }
 
-        // The voice WS is the single chat surface. Backend echoes a
-        // user_transcript frame for typed input, so we don't append the
-        // user message locally — handleVoiceEvent will when the echo arrives.
+        // Add successful typed sends immediately. The backend may echo a
+        // user_transcript frame later; handleSessionVoiceEvent consumes that
+        // acknowledgement without rendering a duplicate bubble.
         const sent = activeVoiceConversation.sendUserText(text);
         if (!sent) {
             setMessages(prev => prev.concat({
@@ -1849,6 +1859,17 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             }));
             return;
         }
+        setMessages(prev => prev
+            .filter(message => !message.isLoading)
+            .concat({
+                id: generateUniqueId('user-typed'),
+                content: text,
+                isUser: true,
+                timestamp: new Date(),
+                kind: 'chat',
+                transcriptSource: 'typed',
+                awaitingTypedEcho: true,
+            }));
         setInputValue('');
     };
 
@@ -1864,27 +1885,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     };
 
     // ── Voice state → mic panel display ─────────────────────────────
-    const screenMode = sessionMode;
-    const transcriptLabel = activeAgentSession
-        ? `${getAgentDisplayName(activeAgentSession.agentMode).toUpperCase()} TRANSCRIPT`
-        : screenMode === 'front_desk'
-        ? 'FRONT DESK TRANSCRIPT'
-        : screenMode === 'recorded'
-        ? 'RECORDED TRANSCRIPT'
-        : screenMode === 'user_summary'
-            ? 'SUMMARY TRANSCRIPT'
-            : 'LIVE TRANSCRIPT';
-
-    const channelLabel =
-        vState === 'idle' ? 'CH-1 · OFFLINE' :
-        vState === 'connecting' ? 'CH-1 · CONNECTING' :
-        vState === 'error' ? 'CH-1 · ERROR' :
-        micDisabled ? 'CH-1 · MIC OFF' :
-        'CH-1 · OPEN';
-    const channelMod =
-        vState === 'idle' ? 'ai-chat__mic-channel--idle' :
-        vState === 'error' ? 'ai-chat__mic-channel--error' :
-        '';
     const coreMod =
         vState === 'idle' || vState === 'connecting' ? 'ai-chat__mic-core--idle' :
         vState === 'error' ? 'ai-chat__mic-core--error' :
@@ -1950,19 +1950,19 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         activeVoiceConversation.setMicDisabled(!micDisabled);
     };
 
-    // Wave bars: driver real mic level when listening so the bars visually
-    // confirm we're picking up audio; otherwise CSS-only decorative animation.
+    // Radial wave bars: driver mic level when listening; otherwise a subtle
+    // decorative pulse. Each spoke is anchored to the mic edge in CSS.
     const waveBars = useMemo(
-        () => Array.from({ length: 24 }, (_, i) => ({
-            delay: `${(i % 6) * 0.08}s`,
-            duration: `${0.7 + (i % 5) * 0.1}s`,
+        () => Array.from({ length: 48 }, (_, i) => ({
+            delay: `${(i % 8) * -0.07}s`,
+            duration: `${0.78 + (i % 7) * 0.06}s`,
         })),
         []
     );
     const liveLevels = useMemo(() => {
         // Stable per-bar response curve so adjacent bars don't all jump in sync.
-        return Array.from({ length: 24 }, (_, i) => {
-            const phase = (i / 24) * Math.PI * 2;
+        return Array.from({ length: 48 }, (_, i) => {
+            const phase = (i / 48) * Math.PI * 2;
             return 0.55 + 0.45 * Math.abs(Math.sin(phase));
         });
     }, []);
@@ -1971,96 +1971,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     return (
         <div className="ai-chat">
             <div className="ai-chat__grid-bg" aria-hidden="true" />
-
-            {/* Header */}
-            <div className="ai-chat__header">
-                <span className="ai-chat__eyebrow">
-                    <span className="ai-chat__eyebrow-dot" />
-                    {title}
-                </span>
-                <div className="ai-chat__header-meta">
-                    <select
-                        className="ai-chat__model-select"
-                        value={selectedChatLlmModel}
-                        onChange={(event) => setSelectedChatLlmModel(event.target.value)}
-                        disabled={modelPickerDisabled}
-                        aria-label="Chat LLM model"
-                        title={modelPickerDisabled
-                            ? 'End the current voice session before changing models'
-                            : 'Choose the model for the next voice chat session'}
-                    >
-                        {CHAT_LLM_MODEL_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                                {option.label}
-                            </option>
-                        ))}
-                    </select>
-                    {environment === 'electron' && (
-                        <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
-                    )}
-                    {activeVoiceConversation.error && (
-                        <span className="ai-chat__chip ai-chat__chip--red" title={activeVoiceConversation.error}>
-                            Voice Error
-                        </span>
-                    )}
-                    {activeAgentSession && (
-                        <span className="ai-chat__chip ai-chat__chip--amber">
-                            Main Paused
-                        </span>
-                    )}
-                    {activeAgentSession && (
-                        <button
-                            type="button"
-                            className="ai-chat__chip-btn ai-chat__chip-btn--red"
-                            onClick={() => stopAgentSession(activeAgentSession.clientSessionId)}
-                            title="End the focused agent session"
-                        >
-                            End Agent
-                        </button>
-                    )}
-                    <button
-                        type="button"
-                        className={`ai-chat__chip-btn ${micDisabled ? 'ai-chat__chip-btn--red' : ''}`}
-                        onClick={toggleMicDisabled}
-                        disabled={isLoading || liveSessionEnded}
-                        aria-pressed={micDisabled}
-                        title={micDisabled ? 'Enable microphone capture' : 'Disable microphone capture'}
-                    >
-                        {micDisabled ? 'Mic Off' : 'Mic On'}
-                    </button>
-                    {canOpenFloatingChat && (
-                        <button
-                            type="button"
-                            className={`ai-chat__chip-btn ai-chat__chip-btn--icon ${floatingChatOpen ? 'ai-chat__chip-btn--green' : ''}`}
-                            onClick={() => { void toggleFloatingChat(); }}
-                            aria-pressed={floatingChatOpen}
-                            title={floatingChatOpen
-                                ? 'Hide the always-on-top AI overlay'
-                                : 'Show the always-on-top AI overlay'}
-                        >
-                            <OverlayIcon size={14} />
-                            <span>{floatingChatOpen ? 'Overlay On' : 'Overlay Off'}</span>
-                        </button>
-                    )}
-                    <button
-                        type="button"
-                        className="ai-chat__chip-btn"
-                        onClick={() => setDebugMode(!debugMode)}
-                        aria-pressed={debugMode}
-                    >
-                        Debug
-                    </button>
-                    <button
-                        type="button"
-                        className="ai-chat__chip-btn"
-                        onClick={() => setShowEmoteSettings(!showEmoteSettings)}
-                        aria-pressed={showEmoteSettings}
-                        title="Emotion GIF settings"
-                    >
-                        Emotes
-                    </button>
-                </div>
-            </div>
 
             {/* Emotion GIF settings panel */}
             {showEmoteSettings && (
@@ -2102,22 +2012,36 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             {/* Stage: mic panel + transcript */}
             <div className="ai-chat__stage">
                 <aside className="ai-chat__mic-panel">
-                    <div className="ai-chat__mic-head">
-                        <span className={`ai-chat__mic-channel ${channelMod}`}>
+                    <div className="ai-chat__mic-card-head">
+                        <span className="ai-chat__eyebrow">
                             <span className="ai-chat__eyebrow-dot" />
-                            {channelLabel}
+                            {title}
                         </span>
-                        <span>VOICE LINK</span>
                     </div>
 
                     <div className="ai-chat__mic-visual">
-                        {voiceActive && (
-                            <>
-                                <span className="ai-chat__mic-ring" />
-                                <span className="ai-chat__mic-ring" />
-                                <span className="ai-chat__mic-ring" />
-                            </>
-                        )}
+                        <div
+                            className={`ai-chat__mic-wave ${useLiveBars ? 'ai-chat__mic-wave--live' : (vState === 'idle' || micDisabled) ? 'ai-chat__mic-wave--idle' : ''}`}
+                            aria-hidden="true"
+                        >
+                            {waveBars.map((bar, index) => {
+                                const level = useLiveBars
+                                    ? Math.min(1, activeVoiceConversation.micLevel * 1.8 * liveLevels[index])
+                                    : undefined;
+                                return (
+                                    <span
+                                        key={index}
+                                        className="ai-chat__mic-wave-bar"
+                                        style={{
+                                            '--wave-angle': `${(index / waveBars.length) * 360}deg`,
+                                            '--wave-delay': bar.delay,
+                                            '--wave-duration': bar.duration,
+                                            '--wave-scale': level === undefined ? undefined : Math.max(0.18, level),
+                                        } as React.CSSProperties}
+                                    />
+                                );
+                            })}
+                        </div>
                         <button
                             type="button"
                             className={`ai-chat__mic-core ${coreMod} ${micDisabled ? 'ai-chat__mic-core--muted' : ''}`}
@@ -2148,47 +2072,96 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                         <b>{statusBottom}</b>
                     </div>
 
-                    <div
-                        className={`ai-chat__mic-wave ${useLiveBars ? 'ai-chat__mic-wave--live' : (vState === 'idle' || micDisabled) ? 'ai-chat__mic-wave--idle' : ''}`}
-                        aria-hidden="true"
-                    >
-                        {waveBars.map((b, i) => {
-                            if (useLiveBars) {
-                                const lvl = Math.min(1, activeVoiceConversation.micLevel * 1.8 * liveLevels[i]);
-                                return (
-                                    <span
-                                        key={i}
-                                        className="ai-chat__mic-wave-bar"
-                                        style={{ height: `${Math.max(8, lvl * 100)}%`, transition: 'height 80ms linear' }}
-                                    />
-                                );
-                            }
-                            return (
-                                <span
-                                    key={i}
-                                    className="ai-chat__mic-wave-bar"
-                                    style={{ animationDelay: b.delay, animationDuration: b.duration }}
-                                />
-                            );
-                        })}
-                    </div>
-
                     <div className="ai-chat__mic-hint">
                         Push <kbd>PTT</kbd> or say <kbd>&ldquo;Hey Kestrel&rdquo;</kbd><br />
                         No menus. No screens. Just talk.
                     </div>
 
+                    <div className="ai-chat__header-meta ai-chat__mic-settings">
+                        <select
+                            className="ai-chat__model-select"
+                            value={selectedChatLlmModel}
+                            onChange={(event) => setSelectedChatLlmModel(event.target.value)}
+                            disabled={modelPickerDisabled}
+                            aria-label="Chat LLM model"
+                            title={modelPickerDisabled
+                                ? 'End the current voice session before changing models'
+                                : 'Choose the model for the next voice chat session'}
+                        >
+                            {CHAT_LLM_MODEL_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
+                                </option>
+                            ))}
+                        </select>
+                        {environment === 'electron' && (
+                            <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
+                        )}
+                        {activeVoiceConversation.error && (
+                            <span className="ai-chat__chip ai-chat__chip--red" title={activeVoiceConversation.error}>
+                                Voice Error
+                            </span>
+                        )}
+                        {activeAgentSession && (
+                            <span className="ai-chat__chip ai-chat__chip--amber">
+                                Main Paused
+                            </span>
+                        )}
+                        {activeAgentSession && (
+                            <button
+                                type="button"
+                                className="ai-chat__chip-btn ai-chat__chip-btn--red"
+                                onClick={() => stopAgentSession(activeAgentSession.clientSessionId)}
+                                title="End the focused agent session"
+                            >
+                                End Agent
+                            </button>
+                        )}
+                        <button
+                            type="button"
+                            className={`ai-chat__chip-btn ${micDisabled ? 'ai-chat__chip-btn--red' : ''}`}
+                            onClick={toggleMicDisabled}
+                            disabled={isLoading || liveSessionEnded}
+                            aria-pressed={micDisabled}
+                            title={micDisabled ? 'Enable microphone capture' : 'Disable microphone capture'}
+                        >
+                            {micDisabled ? 'Mic Off' : 'Mic On'}
+                        </button>
+                        {canOpenFloatingChat && (
+                            <button
+                                type="button"
+                                className={`ai-chat__chip-btn ai-chat__chip-btn--icon ${floatingChatOpen ? 'ai-chat__chip-btn--green' : ''}`}
+                                onClick={() => { void toggleFloatingChat(); }}
+                                aria-pressed={floatingChatOpen}
+                                title={floatingChatOpen
+                                    ? 'Hide the always-on-top AI overlay'
+                                    : 'Show the always-on-top AI overlay'}
+                            >
+                                <OverlayIcon size={14} />
+                                <span>{floatingChatOpen ? 'Overlay On' : 'Overlay Off'}</span>
+                            </button>
+                        )}
+                        <button
+                            type="button"
+                            className="ai-chat__chip-btn"
+                            onClick={() => setDebugMode(!debugMode)}
+                            aria-pressed={debugMode}
+                        >
+                            Debug
+                        </button>
+                        <button
+                            type="button"
+                            className="ai-chat__chip-btn"
+                            onClick={() => setShowEmoteSettings(!showEmoteSettings)}
+                            aria-pressed={showEmoteSettings}
+                            title="Emotion GIF settings"
+                        >
+                            Emotes
+                        </button>
+                    </div>
                 </aside>
 
                 <section className="ai-chat__transcript">
-                    <div className="ai-chat__transcript-head">
-                        <span className="ai-chat__transcript-title">
-                            <span className="ai-chat__eyebrow-dot" />
-                            {transcriptLabel}
-                        </span>
-                        <span className="ai-chat__transcript-time">{clock}</span>
-                    </div>
-
                     {activeWorkflow?.kind === 'goal' && (
                         <Goal
                             key={activeWorkflow.key}

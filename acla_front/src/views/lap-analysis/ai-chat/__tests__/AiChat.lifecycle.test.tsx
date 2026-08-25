@@ -6,6 +6,7 @@ import type { AssistantActiveScreen } from '../../assistant-session-mode';
 const mockVoiceCleanup = jest.fn();
 const mockVoiceStop = jest.fn();
 const mockVoiceStart = jest.fn(() => Promise.resolve());
+const mockVoiceSendUserText = jest.fn(() => false);
 const mockUseVoiceConversation = jest.fn();
 const mockOverlayCreate = jest.fn();
 const mockOverlayDestroy = jest.fn<Promise<void>, [string]>(() => Promise.resolve());
@@ -142,6 +143,8 @@ describe('AiChat conversation lifecycle', () => {
         mockVoiceCleanup.mockClear();
         mockVoiceStop.mockClear();
         mockVoiceStart.mockClear();
+        mockVoiceSendUserText.mockReset();
+        mockVoiceSendUserText.mockReturnValue(false);
         mockUseVoiceConversation.mockReset();
         mockUseVoiceConversation.mockImplementation(() => {
             React.useEffect(() => () => mockVoiceCleanup(), []);
@@ -153,7 +156,7 @@ describe('AiChat conversation lifecycle', () => {
                 start: mockVoiceStart,
                 stop: mockVoiceStop,
                 setMicDisabled: jest.fn(),
-                sendUserText: jest.fn(() => false),
+                sendUserText: mockVoiceSendUserText,
                 sendToolStatus: jest.fn(() => true),
                 sendToolResult: jest.fn(() => true),
             };
@@ -168,6 +171,19 @@ describe('AiChat conversation lifecycle', () => {
         mockFindComponentRef.mockClear();
         mockRegisteredAiChatHandle = undefined;
         delete (window as any).electronAPI;
+    });
+
+    it('omits the transcript label and clock from the assistant panel', () => {
+        const { container } = render(
+            <AiChat
+                name="dashboard-assistant"
+                activeScreen={{ assistantMode: 'live', label: 'Live Session' }}
+            />,
+        );
+
+        expect(screen.queryByText('LIVE TRANSCRIPT')).not.toBeInTheDocument();
+        expect(container.querySelector('.ai-chat__transcript-head')).toBeNull();
+        expect(container.querySelector('.ai-chat__transcript-time')).toBeNull();
     });
 
     it('serializes only the canonical mode fields for main and agent contexts', async () => {
@@ -387,6 +403,31 @@ describe('AiChat conversation lifecycle', () => {
         expect(view.container.querySelectorAll('.ai-chat__msg--driver')).toHaveLength(2);
         expect(screen.getByText('Typed first')).toBeInTheDocument();
         expect(screen.getByText('Typed second')).toBeInTheDocument();
+    });
+
+    it('shows a typed message immediately and deduplicates its backend echo', () => {
+        mockVoiceSendUserText.mockReturnValue(true);
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+
+        fireEvent.change(screen.getByPlaceholderText('Ask the front desk.'), {
+            target: { value: 'Show my latest lap' },
+        });
+        fireEvent.click(screen.getByTitle('Send'));
+
+        expect(mockVoiceSendUserText).toHaveBeenCalledWith('Show my latest lap');
+        expect(screen.getByText('Show my latest lap')).toBeInTheDocument();
+        expect(view.container.querySelectorAll('.ai-chat__msg--driver')).toHaveLength(1);
+        expect(screen.getByPlaceholderText('Ask the front desk.')).toHaveValue('');
+
+        act(() => {
+            getLatestMainVoiceOptions().onEvent({
+                kind: 'user_transcript',
+                text: 'Show my latest lap',
+                source: 'typed',
+            });
+        });
+
+        expect(view.container.querySelectorAll('.ai-chat__msg--driver')).toHaveLength(1);
     });
 
     it('keeps main and agent transcript merging isolated', async () => {

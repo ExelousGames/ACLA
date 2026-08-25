@@ -18,12 +18,19 @@ const BRAKE_COLOR = '#ff4d62';
 const TRACK_VIEWBOX_WIDTH = 760;
 const TRACK_VIEWBOX_HEIGHT = 220;
 const TRACK_PADDING = 28;
-const TELEMETRY_POD_WIDTH = 184;
-const TELEMETRY_POD_HEIGHT = 102;
+const TELEMETRY_POD_BASE_HORIZONTAL_TRIM = 12;
+const TELEMETRY_POD_BASE_WIDTH = 184 - (TELEMETRY_POD_BASE_HORIZONTAL_TRIM * 2);
+const TELEMETRY_POD_BASE_HEIGHT = 102;
+const TELEMETRY_POD_SCALE = 2.25;
+const TELEMETRY_POD_WIDTH = TELEMETRY_POD_BASE_WIDTH * TELEMETRY_POD_SCALE;
+const TELEMETRY_POD_HEIGHT = TELEMETRY_POD_BASE_HEIGHT * TELEMETRY_POD_SCALE;
+const TELEMETRY_POD_HORIZONTAL_TRIM = TELEMETRY_POD_BASE_HORIZONTAL_TRIM * TELEMETRY_POD_SCALE;
 const TELEMETRY_POD_GAP = 14;
 const DRIVER_MARKER_HALO_RADIUS = 11;
 const EXPERT_MARKER_HALO_RADIUS = 10;
-const FOLLOW_CAMERA_SCALE = 1.4;
+const FOLLOW_CAMERA_SCALE = 4;
+const OVERVIEW_HOLD_DURATION_MS = 1_000;
+const CAMERA_FOCUS_DURATION_MS = 750;
 const DRIVER_CAMERA_ANCHOR_Y_RATIO = 2 / 3;
 const EXPERT_CAMERA_ANCHOR_Y_RATIO = 1 / 3;
 const PEDAL_START_ANGLE = -60;
@@ -31,6 +38,8 @@ const PEDAL_SWEEP_ANGLE = 60;
 const PEDAL_CENTER = { x: 66, y: 58 };
 const PEDAL_RADIUS = 42;
 const PEDAL_GAUGE_SCALE = 0.62;
+const THROTTLE_GAUGE_X = 12;
+const BRAKE_GAUGE_X = 66;
 
 export interface DriverExpertTrajectoryPoint {
     x: number;
@@ -150,6 +159,16 @@ interface FollowCamera {
     anchorY: number;
     rotationRadians: number;
     project: (point: PositionedTrajectoryPoint | undefined) => PositionedTrajectoryPoint | undefined;
+}
+
+type TrackPresentationPhase = 'overview' | 'focusing' | 'following';
+
+interface ReplayTimeline {
+    elapsedTimeMs: number;
+    cameraProgress: number;
+    statusOpacity: number;
+    presentationPhase: TrackPresentationPhase;
+    isComplete: boolean;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -508,35 +527,86 @@ const trajectoryDirection = (
     current: PlottingTrajectoryPoint | undefined,
     lower: number,
     upper: number,
+    elapsedTimeMs: number,
 ): PlottingTrajectoryPoint | undefined => {
     if (!current) return undefined;
 
-    const directionTo = (
-        point: PlottingTrajectoryPoint | undefined,
+    const directionBetween = (
+        from: PlottingTrajectoryPoint | undefined,
+        to: PlottingTrajectoryPoint | undefined,
     ): PlottingTrajectoryPoint | undefined => {
-        if (!point) return undefined;
-        const x = point.x - current.x;
-        const y = point.y - current.y;
-        return Math.hypot(x, y) > POSITION_EPSILON ? { x, y } : undefined;
-    };
-    const directionFrom = (
-        point: PlottingTrajectoryPoint | undefined,
-    ): PlottingTrajectoryPoint | undefined => {
-        if (!point) return undefined;
-        const x = current.x - point.x;
-        const y = current.y - point.y;
-        return Math.hypot(x, y) > POSITION_EPSILON ? { x, y } : undefined;
+        if (!from || !to) return undefined;
+        const x = to.x - from.x;
+        const y = to.y - from.y;
+        const magnitude = Math.hypot(x, y);
+        return magnitude > POSITION_EPSILON
+            ? { x: x / magnitude, y: y / magnitude }
+            : undefined;
     };
 
-    for (let index = upper; index < stream.length; index += 1) {
-        const direction = directionTo(stream[index].trajectory);
-        if (direction) return direction;
+    const findDistinctTrajectoryIndex = (
+        startIndex: number,
+        step: -1 | 1,
+        origin: PlottingTrajectoryPoint,
+    ): number | undefined => {
+        for (
+            let index = startIndex;
+            index >= 0 && index < stream.length;
+            index += step
+        ) {
+            if (directionBetween(origin, stream[index].trajectory)) return index;
+        }
+        return undefined;
+    };
+
+    let previousIndex = lower;
+    while (previousIndex >= 0 && !stream[previousIndex].trajectory) previousIndex -= 1;
+    let nextIndex = upper;
+    while (nextIndex < stream.length && !stream[nextIndex].trajectory) nextIndex += 1;
+
+    const previous = previousIndex >= 0 ? stream[previousIndex].trajectory : undefined;
+    const next = nextIndex < stream.length ? stream[nextIndex].trajectory : undefined;
+    if (previous && next) {
+        const forwardIndex = findDistinctTrajectoryIndex(nextIndex, 1, previous);
+        if (forwardIndex !== undefined) {
+            const forwardPoint = stream[forwardIndex].trajectory;
+            const forward = directionBetween(previous, forwardPoint);
+            if (!forward) return undefined;
+
+            const followingIndex = findDistinctTrajectoryIndex(forwardIndex + 1, 1, forwardPoint!);
+            const following = followingIndex === undefined
+                ? undefined
+                : directionBetween(forwardPoint, stream[followingIndex].trajectory);
+            if (!following) return forward;
+
+            const startTime = normalizedSampleTime(stream, previousIndex);
+            const endTime = normalizedSampleTime(stream, forwardIndex);
+            const segmentProgress = endTime <= startTime
+                ? 1
+                : clamp((elapsedTimeMs - startTime) / (endTime - startTime), 0, 1);
+            const turnProgress = easeInOut(segmentProgress);
+            const forwardAngle = Math.atan2(forward.y, forward.x);
+            const followingAngle = Math.atan2(following.y, following.x);
+            const shortestTurn = Math.atan2(
+                Math.sin(followingAngle - forwardAngle),
+                Math.cos(followingAngle - forwardAngle),
+            );
+            const smoothedAngle = forwardAngle + (shortestTurn * turnProgress);
+            return { x: Math.cos(smoothedAngle), y: Math.sin(smoothedAngle) };
+        }
     }
-    for (let index = lower; index >= 0; index -= 1) {
-        const direction = directionFrom(stream[index].trajectory);
-        if (direction) return direction;
+
+    const originIndex = previous ? previousIndex : nextIndex;
+    const origin = previous ?? next;
+    if (!origin) return undefined;
+    const laterIndex = findDistinctTrajectoryIndex(originIndex + 1, 1, origin);
+    if (laterIndex !== undefined) {
+        return directionBetween(origin, stream[laterIndex].trajectory);
     }
-    return undefined;
+    const earlierIndex = findDistinctTrajectoryIndex(originIndex - 1, -1, origin);
+    return earlierIndex === undefined
+        ? undefined
+        : directionBetween(stream[earlierIndex].trajectory, origin);
 };
 
 const steppedGear = (
@@ -624,34 +694,43 @@ const buildReplayFrame = (
             driverTrajectory,
             driverIndexes.lower,
             driverIndexes.upper,
+            elapsedTimeMs,
         ),
     };
 };
 
-const useReplayElapsedTime = (
+const easeInOut = (value: number): number => value * value * (3 - (2 * value));
+
+const useReplayTimeline = (
     replay: DriverExpertReplay<PlottingTrajectoryPoint> | undefined,
     durationMs: number,
-): number => {
-    const shouldFinishImmediately = !replay || durationMs <= 0 || prefersReducedMotion();
-    const [elapsedTimeMs, setElapsedTimeMs] = React.useState(
-        shouldFinishImmediately ? durationMs : 0,
+    introduceCamera: boolean,
+): ReplayTimeline => {
+    const reduceMotion = prefersReducedMotion();
+    const introductionDurationMs = introduceCamera
+        ? OVERVIEW_HOLD_DURATION_MS + CAMERA_FOCUS_DURATION_MS
+        : 0;
+    const animationDurationMs = replay ? introductionDurationMs + durationMs : 0;
+    const shouldFinishImmediately = !replay || animationDurationMs <= 0 || reduceMotion;
+    const [animationElapsedTimeMs, setAnimationElapsedTimeMs] = React.useState(
+        shouldFinishImmediately ? animationDurationMs : 0,
     );
 
     React.useEffect(() => {
-        if (!replay || durationMs <= 0 || prefersReducedMotion()) {
-            setElapsedTimeMs(durationMs);
+        if (!replay || animationDurationMs <= 0 || prefersReducedMotion()) {
+            setAnimationElapsedTimeMs(animationDurationMs);
             return undefined;
         }
 
         let animationFrame: number | null = null;
         let startedAt: number | null = null;
-        setElapsedTimeMs(0);
+        setAnimationElapsedTimeMs(0);
 
         const animate = (timestamp: number) => {
             if (startedAt === null) startedAt = timestamp;
-            const nextElapsedTimeMs = clamp(timestamp - startedAt, 0, durationMs);
-            setElapsedTimeMs(nextElapsedTimeMs);
-            if (nextElapsedTimeMs < durationMs) {
+            const nextElapsedTimeMs = clamp(timestamp - startedAt, 0, animationDurationMs);
+            setAnimationElapsedTimeMs(nextElapsedTimeMs);
+            if (nextElapsedTimeMs < animationDurationMs) {
                 animationFrame = window.requestAnimationFrame(animate);
             } else {
                 animationFrame = null;
@@ -662,9 +741,27 @@ const useReplayElapsedTime = (
         return () => {
             if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
         };
-    }, [durationMs, replay]);
+    }, [animationDurationMs, replay]);
 
-    return elapsedTimeMs;
+    const focusProgress = !introduceCamera || reduceMotion
+        ? 1
+        : clamp(
+            (animationElapsedTimeMs - OVERVIEW_HOLD_DURATION_MS) / CAMERA_FOCUS_DURATION_MS,
+            0,
+            1,
+        );
+    const cameraProgress = easeInOut(focusProgress);
+    const presentationPhase: TrackPresentationPhase = focusProgress <= 0
+        ? 'overview'
+        : focusProgress < 1 ? 'focusing' : 'following';
+
+    return {
+        elapsedTimeMs: clamp(animationElapsedTimeMs - introductionDurationMs, 0, durationMs),
+        cameraProgress,
+        statusOpacity: cameraProgress,
+        presentationPhase,
+        isComplete: !replay || animationElapsedTimeMs >= animationDurationMs,
+    };
 };
 
 const createTrackGeometry = (
@@ -728,10 +825,13 @@ const positionTelemetryPod = (
     marker: PositionedTrajectoryPoint,
     identity: ComparisonIdentity,
 ): TelemetryPodPosition => (identity === 'driver' ? {
-    x: marker.svgX + TELEMETRY_POD_GAP,
+    x: marker.svgX + TELEMETRY_POD_GAP + TELEMETRY_POD_HORIZONTAL_TRIM,
     y: marker.svgY - TELEMETRY_POD_HEIGHT - TELEMETRY_POD_GAP,
 } : {
-    x: marker.svgX - TELEMETRY_POD_WIDTH - TELEMETRY_POD_GAP,
+    x: marker.svgX
+        - TELEMETRY_POD_WIDTH
+        - TELEMETRY_POD_GAP
+        - TELEMETRY_POD_HORIZONTAL_TRIM,
     y: marker.svgY + TELEMETRY_POD_GAP,
 });
 
@@ -740,6 +840,7 @@ const getFollowCamera = (
     expertMarker: PositionedTrajectoryPoint | undefined,
     driverDirection: PlottingTrajectoryPoint | undefined,
     viewportHeight: number,
+    progress = 1,
 ): FollowCamera | undefined => {
     const target = driverMarker ?? expertMarker;
     if (!target) return undefined;
@@ -765,25 +866,34 @@ const getFollowCamera = (
     const projectedHeadingAngle = driverMarker && driverDirection
         ? Math.atan2(-driverDirection.y, driverDirection.x)
         : undefined;
-    const rotationRadians = projectedHeadingAngle === undefined
+    const requestedRotationRadians = projectedHeadingAngle === undefined
         ? 0
         : (-Math.PI / 2) - projectedHeadingAngle;
-    const cosine = Math.cos(rotationRadians) * FOLLOW_CAMERA_SCALE;
-    const sine = Math.sin(rotationRadians) * FOLLOW_CAMERA_SCALE;
+    const rotationRadians = Math.atan2(
+        Math.sin(requestedRotationRadians),
+        Math.cos(requestedRotationRadians),
+    );
+    const cameraProgress = clamp(progress, 0, 1);
+    const currentScale = 1 + ((FOLLOW_CAMERA_SCALE - 1) * cameraProgress);
+    const currentRotationRadians = rotationRadians * cameraProgress;
+    const currentAnchorX = target.svgX + ((anchorX - target.svgX) * cameraProgress);
+    const currentAnchorY = target.svgY + ((anchorY - target.svgY) * cameraProgress);
+    const cosine = Math.cos(currentRotationRadians) * currentScale;
+    const sine = Math.sin(currentRotationRadians) * currentScale;
     const a = cosine;
     const b = sine;
     const c = -sine;
     const d = cosine;
-    const e = anchorX - ((a * target.svgX) + (c * target.svgY));
-    const f = anchorY - ((b * target.svgX) + (d * target.svgY));
+    const e = currentAnchorX - ((a * target.svgX) + (c * target.svgY));
+    const f = currentAnchorY - ((b * target.svgX) + (d * target.svgY));
     const cameraNumber = (value: number): string => Number(value.toFixed(6)).toString();
 
     return {
         transform: `matrix(${cameraNumber(a)} ${cameraNumber(b)} ${cameraNumber(c)} ${cameraNumber(d)} ${cameraNumber(e)} ${cameraNumber(f)})`,
         target: targetIdentity,
-        anchorX,
-        anchorY,
-        rotationRadians,
+        anchorX: currentAnchorX,
+        anchorY: currentAnchorY,
+        rotationRadians: currentRotationRadians,
         project: (point) => point ? {
             ...point,
             svgX: (a * point.svgX) + (c * point.svgY) + e,
@@ -874,14 +984,20 @@ const PedalGauge: React.FC<{
                     />
                 </>
             )}
-            <text className={styles.gaugeLabel} x="8" y="102">
+            <text
+                className={styles.gaugeLabel}
+                x={PEDAL_CENTER.x}
+                y="102"
+                textAnchor="middle"
+            >
                 {label}
             </text>
             <text
                 className={available ? styles.gaugeValue : styles.gaugeUnavailableValue}
-                x="122"
-                y="102"
-                textAnchor="end"
+                x={PEDAL_CENTER.x}
+                y={PEDAL_CENTER.y}
+                textAnchor="middle"
+                dominantBaseline="middle"
             >
                 {available ? `${percentage}%` : 'N/A'}
             </text>
@@ -925,6 +1041,8 @@ const TelemetryPod: React.FC<{
             aria-label={`${label} live telemetry`}
             style={{ '--identity-color': color } as React.CSSProperties}
             data-testid={`${identity}-telemetry-pod`}
+            data-card-width={formatNumber(TELEMETRY_POD_WIDTH)}
+            data-card-height={formatNumber(TELEMETRY_POD_HEIGHT)}
         >
             <line
                 className={styles.telemetryLeader}
@@ -939,36 +1057,63 @@ const TelemetryPod: React.FC<{
                 className={styles.telemetryPodBody}
                 width={TELEMETRY_POD_WIDTH}
                 height={TELEMETRY_POD_HEIGHT}
-                rx="7"
+                rx={7 * TELEMETRY_POD_SCALE}
             />
-            <rect width="3" height={TELEMETRY_POD_HEIGHT} rx="1.5" fill={color} />
-            <circle className={styles.telemetryIdentityDot} cx="13" cy="14" r="3" fill={color} />
-            <text className={styles.telemetryIdentity} x="22" y="17" fill={color}>{label}</text>
-            <g
-                className={!gearAvailable ? styles.telemetryGearUnavailable : undefined}
-                data-testid={`${identity}-gear`}
-                data-state={gearAvailable ? 'available' : 'unavailable'}
-            >
-                <text className={styles.telemetryGearLabel} x="129" y="17">Gear</text>
-                <text className={styles.telemetryGearValue} x="173" y="18" textAnchor="end">
-                    {gearValue}
+            <g transform={`scale(${TELEMETRY_POD_SCALE})`}>
+                <rect width="3" height={TELEMETRY_POD_BASE_HEIGHT} rx="1.5" fill={color} />
+                <circle
+                    className={styles.telemetryIdentityDot}
+                    cx="13"
+                    cy="14"
+                    r="3"
+                    fill={color}
+                />
+                <text className={styles.telemetryIdentity} x="22" y="17" fill={color}>
+                    {label}
                 </text>
+                <g
+                    className={!gearAvailable ? styles.telemetryGearUnavailable : undefined}
+                    data-testid={`${identity}-gear`}
+                    data-state={gearAvailable ? 'available' : 'unavailable'}
+                >
+                    <text
+                        className={styles.telemetryGearLabel}
+                        x={TELEMETRY_POD_BASE_WIDTH - 55}
+                        y="17"
+                    >
+                        Gear
+                    </text>
+                    <text
+                        className={styles.telemetryGearValue}
+                        x={TELEMETRY_POD_BASE_WIDTH - 11}
+                        y="18"
+                        textAnchor="end"
+                    >
+                        {gearValue}
+                    </text>
+                </g>
+                <line
+                    className={styles.telemetryDivider}
+                    x1="10"
+                    y1="25"
+                    x2={TELEMETRY_POD_BASE_WIDTH - 10}
+                    y2="25"
+                />
+                <PedalGauge
+                    available={gasAvailable}
+                    identity={identity}
+                    label="Throttle"
+                    value={gas}
+                    x={THROTTLE_GAUGE_X}
+                />
+                <PedalGauge
+                    available={brakeAvailable}
+                    identity={identity}
+                    label="Brake"
+                    value={brake}
+                    x={BRAKE_GAUGE_X}
+                />
             </g>
-            <line className={styles.telemetryDivider} x1="10" y1="25" x2="174" y2="25" />
-            <PedalGauge
-                available={gasAvailable}
-                identity={identity}
-                label="Throttle"
-                value={gas}
-                x={4}
-            />
-            <PedalGauge
-                available={brakeAvailable}
-                identity={identity}
-                label="Brake"
-                value={brake}
-                x={98}
-            />
         </g>
     );
 };
@@ -979,7 +1124,19 @@ const TrackReplay: React.FC<{
     geometry: TrackGeometry;
     height: number | string;
     filterId: string;
-}> = ({ availability, frame, geometry, height, filterId }) => {
+    cameraProgress: number;
+    statusOpacity: number;
+    presentationPhase: TrackPresentationPhase;
+}> = ({
+    availability,
+    frame,
+    geometry,
+    height,
+    filterId,
+    cameraProgress,
+    statusOpacity,
+    presentationPhase,
+}) => {
     const svgRef = React.useRef<SVGSVGElement>(null);
     const [viewportHeight, setViewportHeight] = React.useState(TRACK_VIEWBOX_HEIGHT);
 
@@ -1022,6 +1179,7 @@ const TrackReplay: React.FC<{
         expertWorldMarker,
         frame.driverDirection,
         viewportHeight,
+        cameraProgress,
     );
     const driverMarker = camera?.project(driverWorldMarker);
     const expertMarker = camera?.project(expertWorldMarker);
@@ -1054,13 +1212,6 @@ const TrackReplay: React.FC<{
             style={{ height: toCssSize(height) }}
             aria-label="Track replay"
         >
-            <header className={styles.panelHeader}>
-                <span>Track replay</span>
-                <div className={styles.traceLabels} aria-label="Track trace identities">
-                    <span style={{ color: DRIVER_COMPARISON_COLOR }}>Driver trace</span>
-                    <span style={{ color: EXPERT_COMPARISON_COLOR }}>Expert trace</span>
-                </div>
-            </header>
             <svg
                 ref={svgRef}
                 className={styles.trackSvg}
@@ -1103,6 +1254,8 @@ const TrackReplay: React.FC<{
                             transform={camera.transform}
                             data-testid="comparison-camera-layer"
                             data-camera-target={camera.target}
+                            data-camera-phase={presentationPhase}
+                            data-camera-progress={formatNumber(cameraProgress)}
                             data-camera-anchor-x={formatNumber(camera.anchorX)}
                             data-camera-anchor-y={formatNumber(camera.anchorY)}
                             data-camera-rotation={formatNumber(
@@ -1135,7 +1288,15 @@ const TrackReplay: React.FC<{
                                 />
                             )}
                         </g>
-                        <g className={styles.cameraOverlay} data-testid="comparison-camera-overlay">
+                        <g
+                            className={styles.cameraOverlay}
+                            data-testid="comparison-camera-overlay"
+                            data-status-visibility={statusOpacity <= 0
+                                ? 'hidden'
+                                : statusOpacity < 1 ? 'fading' : 'visible'}
+                            aria-hidden={statusOpacity <= 0 ? true : undefined}
+                            style={{ opacity: statusOpacity }}
+                        >
                             {driverMarker && driverPod
                                 && renderPod('driver', driverPod, driverMarker)}
                             {expertMarker && expertPod
@@ -1246,15 +1407,17 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     const rootClassName = [styles.root, className].filter(Boolean).join(' ');
     const rootStyle = { width: toCssSize(width) } as React.CSSProperties;
     const replayDurationMs = replay?.durationMs ?? 0;
-    const elapsedTimeMs = useReplayElapsedTime(plottingReplay, replayDurationMs);
+    const geometry = React.useMemo(() => createTrackGeometry(plottingReplay), [plottingReplay]);
+    const hasTrajectory = geometry.driver.length > 0 || geometry.expert.length > 0;
+    const timeline = useReplayTimeline(plottingReplay, replayDurationMs, hasTrajectory);
+    const { elapsedTimeMs } = timeline;
     const frame = React.useMemo(
         () => buildReplayFrame(plottingReplay, elapsedTimeMs),
         [elapsedTimeMs, plottingReplay],
     );
-    const geometry = React.useMemo(() => createTrackGeometry(plottingReplay), [plottingReplay]);
     const reactId = React.useId();
     const filterId = React.useMemo(() => `driver-expert-${reactId.replace(/:/g, '')}`, [reactId]);
-    const isComplete = !replay || replayDurationMs <= 0 || elapsedTimeMs >= replayDurationMs;
+    const isComplete = timeline.isComplete;
     const replayStatus = !replay ? 'No data' : isComplete ? 'Replay complete' : 'Replaying';
 
     return (
@@ -1266,7 +1429,6 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
         >
             <header className={styles.header}>
                 <div className={styles.titleBlock}>
-                    <span className={styles.eyebrow}>Driver / Expert</span>
                     <h2 className={styles.title}>{title ?? 'Segment comparison replay'}</h2>
                 </div>
                 <div className={styles.replayReadout}>
@@ -1306,6 +1468,9 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
                     geometry={geometry}
                     height={trajectoryHeight}
                     filterId={filterId}
+                    cameraProgress={timeline.cameraProgress}
+                    statusOpacity={timeline.statusOpacity}
+                    presentationPhase={timeline.presentationPhase}
                 />
             </div>
         </section>

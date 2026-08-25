@@ -23,7 +23,7 @@ jest.mock('@radix-ui/themes', () => {
         Text: ({ children, as, ...props }: any) => { const Component = as === 'div' ? 'div' : 'span'; return <Component {...props}>{children}</Component>; },
     };
 });
-jest.mock('@radix-ui/react-icons', () => ({ Cross2Icon: () => <span>Close</span>, DragHandleDots2Icon: () => <span>Drag</span>, PlusIcon: () => <span>Add</span> }));
+jest.mock('@radix-ui/react-icons', () => ({ Cross2Icon: () => <span>Close</span>, PlusIcon: () => <span>Add</span> }));
 jest.mock('contexts/AiLabelsContext', () => {
     const getCategoryLabels = () => [];
     const getLabelName = () => undefined;

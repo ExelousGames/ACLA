@@ -5,39 +5,170 @@ import { isOverlayRecord } from 'views/floating-chat/overlay-renderer-validation
 import './baseline-collection.css';
 
 type BaselineProgressDisplayProps = {
-    tag: BaselineCollectionTag;
+    tag: BaselineCollectionTag | null;
     surface?: 'panel' | 'pill';
+    action?: React.ReactNode;
 };
+
+type BaselineStage = 'start' | 'recording' | 'finish';
+type BaselineStageState = 'complete' | 'active' | 'upcoming';
+
+const StageIcon = ({ stage }: { stage: BaselineStage }) => {
+    if (stage === 'start') {
+        return (
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8.25 6.5 17 12l-8.75 5.5z" />
+            </svg>
+        );
+    }
+
+    if (stage === 'recording') {
+        return (
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12h2.25l1.6-4.25L12 16.5l2.2-6 1.35 1.5H19" />
+            </svg>
+        );
+    }
+
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m6.75 12.25 3.2 3.2 7.3-7.3" />
+        </svg>
+    );
+};
+
+const formatTelemetryLabel = (value: string): string => value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 
 const BaselineProgressDisplay: React.FC<BaselineProgressDisplayProps> = ({
     tag,
     surface = 'panel',
+    action,
 }) => {
-    const progress = Math.max(0, Math.min(100, Math.round(tag.progress_percent)));
+    const progress = Math.max(0, Math.min(100, Math.round(tag?.progress_percent ?? 0)));
+    const activeStage = !tag
+        ? 0
+        : tag.status === 'complete'
+            ? 2
+            : 1;
+    const statusLabel = !tag
+        ? 'Ready'
+        : tag.status === 'waiting_for_start'
+            ? 'Armed'
+            : tag.status === 'collecting'
+                ? 'Recording'
+                : 'Captured';
+    const stages: Array<{
+        key: BaselineStage;
+        label: string;
+        title: string;
+        detail: string;
+    }> = [
+        {
+            key: 'start',
+            label: 'Starting stage',
+            title: 'Start collection',
+            detail: !tag
+                ? 'Capture one complete, clean lap as your reference.'
+                : 'Collection started and the telemetry trigger is armed.',
+        },
+        {
+            key: 'recording',
+            label: 'Recording stage',
+            title: tag?.status === 'collecting' ? 'Recording baseline' : 'Record baseline',
+            detail: !tag
+                ? 'Recording begins at the next start / finish crossing.'
+                : tag.status === 'waiting_for_start'
+                    ? 'Waiting for the start / finish line.'
+                    : tag.status === 'collecting'
+                        ? tag.detail
+                        : 'Full-lap telemetry has been captured.',
+        },
+        {
+            key: 'finish',
+            label: 'End stage',
+            title: tag?.status === 'complete' ? 'Baseline ready' : 'Finish collection',
+            detail: tag?.status === 'complete'
+                ? 'The recorded lap is ready for performance analysis.'
+                : 'Collection ends automatically after one full lap.',
+        },
+    ];
+
+    const getStageState = (index: number): BaselineStageState => {
+        if (index < activeStage) return 'complete';
+        if (index === activeStage) return 'active';
+        return 'upcoming';
+    };
 
     return (
         <div
-            className={`ai-chat__baseline-progress ai-chat__baseline-progress--${surface}`}
+            className={`baseline-timeline baseline-timeline--${surface}`}
             aria-label="Baseline collection progress"
         >
-            <div className="ai-chat__baseline-progress-head">
-                <span>BASELINE</span>
-                <span>{progress}%</span>
+            <div className="baseline-timeline__header">
+                <div>
+                    <span className="baseline-timeline__eyebrow">Baseline run</span>
+                </div>
+                <span
+                    className={`baseline-timeline__status baseline-timeline__status--${statusLabel.toLowerCase()}`}
+                >
+                    <span aria-hidden="true" />
+                    {statusLabel}
+                </span>
             </div>
-            <div
-                className="ai-chat__baseline-progress-track"
-                role="progressbar"
-                aria-valuenow={progress}
-                aria-valuemin={0}
-                aria-valuemax={100}
-            >
-                <div
-                    className="ai-chat__baseline-progress-fill"
-                    style={{ width: `${progress}%` }}
-                />
-            </div>
-            <div className="ai-chat__baseline-progress-detail">
-                {tag.detail}
+
+            <div className="baseline-timeline__stages">
+                {stages.map((stage, index) => {
+                    const state = getStageState(index);
+                    const showProgress = stage.key === 'recording'
+                        && tag?.status !== 'complete'
+                        && Boolean(tag);
+                    const showAction = index === activeStage && Boolean(action);
+
+                    return (
+                        <section
+                            className={`baseline-timeline__stage baseline-timeline__stage--${state}`}
+                            data-stage={stage.key}
+                            data-state={state}
+                            key={stage.key}
+                        >
+                            <div className="baseline-timeline__rail" aria-hidden="true">
+                                <span className="baseline-timeline__node">
+                                    <StageIcon stage={stage.key} />
+                                </span>
+                            </div>
+                            <div className="baseline-timeline__content">
+                                <div className="baseline-timeline__stage-heading">
+                                    <div>
+                                        <span className="baseline-timeline__stage-label">{stage.label}</span>
+                                        <h4>{stage.title}</h4>
+                                    </div>
+                                    {showProgress && (
+                                        <span
+                                            className="baseline-timeline__percent"
+                                            role="progressbar"
+                                            aria-label="Recorded lap progress"
+                                            aria-valuenow={progress}
+                                            aria-valuemin={0}
+                                            aria-valuemax={100}
+                                        >
+                                            {progress}%
+                                        </span>
+                                    )}
+                                </div>
+                                <p>{stage.detail}</p>
+                                {stage.key === 'recording' && tag && (tag.track || tag.car) && (
+                                    <div className="baseline-timeline__meta" aria-label="Baseline session details">
+                                        {tag.track && <span>{formatTelemetryLabel(tag.track)}</span>}
+                                        {tag.car && <span>{tag.car}</span>}
+                                    </div>
+                                )}
+                                {showAction && <div className="baseline-timeline__action">{action}</div>}
+                            </div>
+                        </section>
+                    );
+                })}
             </div>
         </div>
     );
@@ -56,7 +187,7 @@ export const baselineProgressDisplayOverlayRenderer: AiOverlayRenderer<BaselineC
         ? `Baseline ${Math.round(snapshot.progress_percent)}% - ${snapshot.detail}`
         : <BaselineProgressDisplay tag={snapshot} surface="pill" />,
     dimensions: {
-        expanded: { width: 420, height: 136 },
+        expanded: { width: 420, height: 280 },
         folded: { width: 300, height: 58 },
     },
 };

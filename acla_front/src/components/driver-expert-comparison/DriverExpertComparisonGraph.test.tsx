@@ -170,6 +170,7 @@ describe('DriverExpertComparisonGraph', () => {
     });
 
     it('renders a compact HUD with no conventional telemetry charts or axes', () => {
+        setReducedMotion(true);
         const { container } = render(
             <DriverExpertComparisonGraph data={completeData} title="Comparison" />,
         );
@@ -185,6 +186,17 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('expert-telemetry-pod')).toHaveStyle({
             '--identity-color': EXPERT_COMPARISON_COLOR,
         });
+        expect(screen.getByTestId('driver-telemetry-pod')).toHaveAttribute(
+            'data-card-width',
+            '360',
+        );
+        expect(screen.getByTestId('driver-telemetry-pod')).toHaveAttribute(
+            'data-card-height',
+            '229.5',
+        );
+        expect(
+            screen.getByTestId('driver-telemetry-pod').querySelector('g[transform="scale(2.25)"]'),
+        ).toBeInTheDocument();
         expect(screen.getByTestId('driver-telemetry-pod').closest('svg')).toBe(
             screen.getByTestId('comparison-track-map'),
         );
@@ -200,8 +212,58 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.queryByTestId('pedal-panel-region')).not.toBeInTheDocument();
         expect(container.querySelector('canvas')).not.toBeInTheDocument();
         expect(container.querySelector('[data-testid^="comparison-graph-"]')).not.toBeInTheDocument();
+        expect(screen.queryByText('Driver / Expert')).not.toBeInTheDocument();
+        expect(screen.queryByText('Track replay')).not.toBeInTheDocument();
+        expect(screen.queryByText('Driver trace')).not.toBeInTheDocument();
+        expect(screen.queryByText('Expert trace')).not.toBeInTheDocument();
         expect(screen.queryByText('Segment progress (%)')).not.toBeInTheDocument();
         expect(screen.queryByText('Track X')).not.toBeInTheDocument();
+    });
+
+    it('establishes the full trajectory before zooming and fading in competitor status', () => {
+        render(<DriverExpertComparisonGraph data={completeData} />);
+
+        const camera = screen.getByTestId('comparison-camera-layer');
+        const overlay = screen.getByTestId('comparison-camera-overlay');
+        const driverPath = screen.getByTestId('driver-track-path').getAttribute('d');
+        const expertPath = screen.getByTestId('expert-track-path').getAttribute('d');
+
+        expect(camera).toHaveAttribute('transform', 'matrix(1 0 0 1 0 0)');
+        expect(camera).toHaveAttribute('data-camera-phase', 'overview');
+        expect(camera).toHaveAttribute('data-camera-progress', '0');
+        expect(overlay).toHaveAttribute('data-status-visibility', 'hidden');
+        expect(overlay).toHaveAttribute('aria-hidden', 'true');
+        expect(overlay).toHaveStyle({ opacity: '0' });
+        expect(screen.queryAllByRole('meter')).toHaveLength(0);
+
+        runAnimationFrame(0);
+        runAnimationFrame(1_000);
+
+        expect(camera).toHaveAttribute('transform', 'matrix(1 0 0 1 0 0)');
+        expect(camera).toHaveAttribute('data-camera-phase', 'overview');
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('0.00s / 3.00s');
+
+        runAnimationFrame(1_375);
+
+        expect(camera).toHaveAttribute('data-camera-phase', 'focusing');
+        expect(camera).toHaveAttribute('data-camera-progress', '0.5');
+        expect(camera).not.toHaveAttribute('transform', 'matrix(1 0 0 1 0 0)');
+        expect(overlay).toHaveAttribute('data-status-visibility', 'fading');
+        expect(overlay).not.toHaveAttribute('aria-hidden');
+        expect(overlay).toHaveStyle({ opacity: '0.5' });
+        expect(screen.getAllByRole('meter')).toHaveLength(4);
+        expect(screen.getByTestId('driver-track-path')).toHaveAttribute('d', driverPath);
+        expect(screen.getByTestId('expert-track-path')).toHaveAttribute('d', expertPath);
+
+        runAnimationFrame(1_750);
+
+        expect(camera).toHaveAttribute('data-camera-phase', 'following');
+        expect(camera).toHaveAttribute('data-camera-progress', '1');
+        expect(overlay).toHaveAttribute('data-status-visibility', 'visible');
+        expect(overlay).toHaveStyle({ opacity: '1' });
+        expectCameraLockedOn('driver');
+        expectCameraFacingDriverDirection();
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('0.00s / 3.00s');
     });
 
     it.each(['ac', 'iracing', null] as const)(
@@ -401,21 +463,21 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('2');
 
         runAnimationFrame(0);
-        runAnimationFrame(1_000);
+        runAnimationFrame(2_750);
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replaying');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '20');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-x', '140');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-track-position', '0.3');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-track-position', '0.6');
 
-        runAnimationFrame(1_500);
+        runAnimationFrame(3_250);
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replaying');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '30');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-x', '140');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-track-position', '0.4');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-track-position', '0.6');
 
-        runAnimationFrame(2_000);
+        runAnimationFrame(3_750);
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '40');
     });
@@ -441,7 +503,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(getDriverExpertReplayDurationMs(data)).toBe(2_000);
         render(<DriverExpertComparisonGraph data={data} />);
         runAnimationFrame(0);
-        runAnimationFrame(1_000);
+        runAnimationFrame(2_750);
 
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '40');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-x', '120');
@@ -450,7 +512,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replaying');
         expect(pendingFrames.size).toBe(1);
 
-        runAnimationFrame(2_000);
+        runAnimationFrame(3_750);
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '40');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-x', '140');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-track-position', '0.6');
@@ -576,12 +638,31 @@ describe('DriverExpertComparisonGraph', () => {
         setReducedMotion(true);
         render(<DriverExpertComparisonGraph data={completeData} />);
 
-        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '1');
-        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-gauge-angle', '0');
-        expect(screen.getByTestId('driver-throttle-gauge')).toHaveTextContent('100%');
-        expect(screen.getByTestId('driver-brake-gauge')).toHaveAttribute('data-value', '0');
-        expect(screen.getByTestId('driver-brake-gauge')).toHaveAttribute('data-gauge-angle', '-60');
-        expect(screen.getByTestId('driver-brake-gauge')).toHaveTextContent('0%');
+        const throttleGauge = screen.getByTestId('driver-throttle-gauge');
+        const brakeGauge = screen.getByTestId('driver-brake-gauge');
+        const [throttleLabel, throttleValue] = Array.from(
+            throttleGauge.querySelectorAll('text'),
+        );
+        const [brakeLabel, brakeValue] = Array.from(brakeGauge.querySelectorAll('text'));
+
+        expect(throttleGauge).toHaveAttribute('data-value', '1');
+        expect(throttleGauge).toHaveAttribute('data-gauge-angle', '0');
+        expect(throttleGauge).toHaveTextContent('100%');
+        expect(throttleGauge).toHaveAttribute('transform', 'translate(12 27) scale(0.62)');
+        expect(brakeGauge).toHaveAttribute('data-value', '0');
+        expect(brakeGauge).toHaveAttribute('data-gauge-angle', '-60');
+        expect(brakeGauge).toHaveTextContent('0%');
+        expect(brakeGauge).toHaveAttribute('transform', 'translate(66 27) scale(0.62)');
+        [throttleLabel, brakeLabel].forEach((label) => {
+            expect(label).toHaveAttribute('x', '66');
+            expect(label).toHaveAttribute('text-anchor', 'middle');
+        });
+        [throttleValue, brakeValue].forEach((value) => {
+            expect(value).toHaveAttribute('x', '66');
+            expect(value).toHaveAttribute('y', '58');
+            expect(value).toHaveAttribute('text-anchor', 'middle');
+            expect(value).toHaveAttribute('dominant-baseline', 'middle');
+        });
         expect(screen.getByTestId('expert-throttle-gauge')).toHaveAttribute('data-value', '1');
         expect(screen.getByTestId('expert-brake-gauge')).toHaveAttribute('data-value', '0');
     });
@@ -601,10 +682,13 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-track-position', '0.2');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('2');
         expectCameraLockedOn('driver');
+
+        runAnimationFrame(0);
+        runAnimationFrame(1_750);
+        expectCameraLockedOn('driver');
         expectCameraFacingDriverDirection();
 
-        runAnimationFrame(1000);
-        runAnimationFrame(1750);
+        runAnimationFrame(2_500);
 
         expect(screen.getByTestId('replay-progress')).toHaveAttribute('aria-valuenow', '750');
         expect(screen.getByTestId('replay-progress')).toHaveTextContent('0.75s / 3.00s');
@@ -626,7 +710,7 @@ describe('DriverExpertComparisonGraph', () => {
         expectCameraLockedOn('driver');
         expectCameraFacingDriverDirection();
 
-        runAnimationFrame(2500);
+        runAnimationFrame(3_250);
 
         expect(screen.getByTestId('replay-progress')).toHaveTextContent('1.50s / 3.00s');
         expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.675');
@@ -636,7 +720,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('3');
         expect(screen.getByTestId('expert-gear')).toHaveTextContent('3');
 
-        runAnimationFrame(3500);
+        runAnimationFrame(4_250);
 
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replaying');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '47.5');
@@ -647,7 +731,7 @@ describe('DriverExpertComparisonGraph', () => {
         expectCameraLockedOn('driver');
         expectCameraFacingDriverDirection();
 
-        runAnimationFrame(4000);
+        runAnimationFrame(4_750);
 
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
         expect(screen.getByTestId('replay-progress')).toHaveTextContent('3.00s / 3.00s');
@@ -658,10 +742,57 @@ describe('DriverExpertComparisonGraph', () => {
         expect(pendingFrames.size).toBe(0);
     });
 
+    it('smoothly rotates the camera toward the next driver forward axis', () => {
+        render(<DriverExpertComparisonGraph data={{
+            samples: [{
+                driverTimeMs: 0,
+                expertTimeMs: 0,
+                driverTrackPosition: 0,
+                expertTrackPosition: 0,
+                driverTrajectory: { x: 0, y: 0 },
+                expertTrajectory: { x: 0, y: 10 },
+            }, {
+                driverTimeMs: 1_000,
+                expertTimeMs: 1_000,
+                driverTrackPosition: 0.5,
+                expertTrackPosition: 0.5,
+                driverTrajectory: { x: 100, y: 0 },
+                expertTrajectory: { x: 100, y: 10 },
+            }, {
+                driverTimeMs: 2_000,
+                expertTimeMs: 2_000,
+                driverTrackPosition: 1,
+                expertTrackPosition: 1,
+                driverTrajectory: { x: 100, y: 100 },
+                expertTrajectory: { x: 100, y: 110 },
+            }],
+        }} />);
+
+        runAnimationFrame(0);
+        runAnimationFrame(1_750);
+        expect(screen.getByTestId('comparison-camera-layer')).toHaveAttribute(
+            'data-camera-rotation',
+            '-90',
+        );
+
+        runAnimationFrame(2_250);
+        expect(screen.getByTestId('comparison-camera-layer')).toHaveAttribute(
+            'data-camera-rotation',
+            '-45',
+        );
+
+        runAnimationFrame(2_750);
+        expect(screen.getByTestId('comparison-camera-layer')).toHaveAttribute(
+            'data-camera-rotation',
+            '0',
+        );
+        expectCameraFacingDriverDirection();
+    });
+
     it('holds the final state, restarts on remount, and cancels a pending frame on unmount', () => {
         const firstMount = render(<DriverExpertComparisonGraph data={completeData} />);
         runAnimationFrame(0);
-        runAnimationFrame(3000);
+        runAnimationFrame(4_750);
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
         expect(requestAnimationFrameMock).toHaveBeenCalledTimes(2);
 
@@ -752,9 +883,9 @@ describe('DriverExpertComparisonGraph', () => {
         const driverPosition = parseTranslate(driverPod);
         const expertPosition = parseTranslate(expertPod);
 
-        expect(driverPosition.x - Number(driverMarker.getAttribute('cx'))).toBeCloseTo(14, 3);
-        expect(driverPosition.y - Number(driverMarker.getAttribute('cy'))).toBeCloseTo(-116, 3);
-        expect(expertPosition.x - Number(expertMarker.getAttribute('cx'))).toBeCloseTo(-198, 3);
+        expect(driverPosition.x - Number(driverMarker.getAttribute('cx'))).toBeCloseTo(41, 3);
+        expect(driverPosition.y - Number(driverMarker.getAttribute('cy'))).toBeCloseTo(-243.5, 3);
+        expect(expertPosition.x - Number(expertMarker.getAttribute('cx'))).toBeCloseTo(-401, 3);
         expect(expertPosition.y - Number(expertMarker.getAttribute('cy'))).toBeCloseTo(14, 3);
         expect(driverPod).not.toHaveAttribute('data-placement');
         expect(driverPod).not.toHaveAttribute('data-clamped');
@@ -763,6 +894,7 @@ describe('DriverExpertComparisonGraph', () => {
     });
 
     it('keeps the camera locked on the driver regardless of expert separation', () => {
+        setReducedMotion(true);
         const comparisonData = (expertX: number) => ({
             samples: [{
                 driverTimeMs: 0,
@@ -795,6 +927,7 @@ describe('DriverExpertComparisonGraph', () => {
     });
 
     it('updates the driver anchor for the rendered panel aspect ratio without changing zoom', () => {
+        setReducedMotion(true);
         let notifyResize: ((width: number, height: number) => void) | undefined;
         const originalResizeObserver = window.ResizeObserver;
         const observe = jest.fn();
@@ -832,6 +965,7 @@ describe('DriverExpertComparisonGraph', () => {
 
             const initialMatrix = parseMatrix(screen.getByTestId('comparison-camera-layer'));
             const initialScale = Math.hypot(initialMatrix[0], initialMatrix[1]);
+            expect(initialScale).toBeCloseTo(4, 6);
             act(() => notifyResize?.(400, 260));
 
             expect(screen.getByTestId('comparison-track-map')).toHaveAttribute(
@@ -853,6 +987,7 @@ describe('DriverExpertComparisonGraph', () => {
     it.each(['driver', 'expert'] as const)(
         'follows a lone %s marker and card when the other trajectory is unavailable',
         (identity) => {
+            setReducedMotion(true);
             const otherIdentity = identity === 'driver' ? 'expert' : 'driver';
             render(<DriverExpertComparisonGraph data={{
                 samples: [{

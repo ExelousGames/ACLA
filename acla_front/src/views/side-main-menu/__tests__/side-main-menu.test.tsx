@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import SideMainMenu from '../side-main-menu';
 
 const mockUseEnvironment = jest.fn(() => 'web');
@@ -16,7 +16,7 @@ jest.mock('@radix-ui/themes', () => ({
 
 jest.mock('radix-ui', () => ({
     ScrollArea: {
-        Root: ({ children, ...props }: any) => <div {...props}>{children}</div>,
+        Root: ({ children, asChild: _asChild, ...props }: any) => <div {...props}>{children}</div>,
         Viewport: ({ children, ...props }: any) => <div {...props}>{children}</div>,
         Scrollbar: ({ children, ...props }: any) => <div {...props}>{children}</div>,
         Thumb: (props: any) => <div {...props} />,
@@ -27,6 +27,16 @@ jest.mock('radix-ui', () => ({
         List: ({ children, ...props }: any) => <div role="tablist" {...props}>{children}</div>,
         Trigger: ({ children, ...props }: any) => <button role="tab" {...props}>{children}</button>,
         Content: ({ children, forceMount: _forceMount, ...props }: any) => <div {...props}>{children}</div>,
+    },
+    Tooltip: {
+        Provider: ({ children }: any) => <>{children}</>,
+        Root: ({ children }: any) => <>{children}</>,
+        Trigger: ({ children }: any) => <>{children}</>,
+        Portal: ({ children }: any) => <>{children}</>,
+        Content: ({ children, side: _side, sideOffset: _sideOffset, ...props }: any) => (
+            <div role="tooltip" {...props}>{children}</div>
+        ),
+        Arrow: (props: any) => <span {...props} />,
     },
 }));
 
@@ -60,5 +70,29 @@ describe('SideMainMenu', () => {
             'User Summary',
             'Circuit Maps',
         ]);
+    });
+
+    it('renders a distinct icon and tooltip for every menu option', () => {
+        render(<SideMainMenu />);
+
+        const tabs = screen.getAllByRole('tab');
+        expect(tabs.every((tab) => Boolean(tab.querySelector('svg')))).toBe(true);
+        expect(screen.getAllByRole('tooltip').map((tooltip) => tooltip.textContent)).toEqual(
+            expect.arrayContaining(['Analysis', 'User Summary', 'Circuit Maps']),
+        );
+    });
+
+    it('collapses and expands the menu from the toggle', () => {
+        const { container } = render(<SideMainMenu />);
+        const root = container.querySelector('.TabsRoot');
+        const collapseButton = screen.getByRole('button', { name: 'Collapse main menu' });
+
+        expect(root).toHaveAttribute('data-menu-collapsed', 'false');
+        expect(collapseButton).toHaveAttribute('aria-expanded', 'true');
+
+        fireEvent.click(collapseButton);
+
+        expect(root).toHaveAttribute('data-menu-collapsed', 'true');
+        expect(screen.getByRole('button', { name: 'Expand main menu' })).toHaveAttribute('aria-expanded', 'false');
     });
 });

@@ -838,6 +838,8 @@ const getComparisonText = (snapshot: GoalSnapshot): string => {
 };
 
 export const GoalDisplay: React.FC<GoalDisplayProps> = ({ snapshot, surface = 'chat' }) => {
+    if (surface === 'chat' && snapshot.status === 'achieved') return null;
+
     const determinationResult = snapshot.determination_result;
     return (
         <section

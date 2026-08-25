@@ -7,13 +7,16 @@ import { VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');
     const Div = React.forwardRef(({ children, ...props }: any, ref: React.Ref<HTMLDivElement>) => <div ref={ref} {...props}>{children}</div>);
+    const Box = React.forwardRef(({ children, ...props }: any, ref: React.Ref<HTMLDivElement>) => (
+        <div ref={ref} data-radix-box="" {...props}>{children}</div>
+    ));
     return {
-        Box: Div, Button: ({ children, size, variant, ...props }: any) => <button {...props}>{children}</button>,
+        Box, Button: ({ children, size, variant, ...props }: any) => <button {...props}>{children}</button>,
         DropdownMenu: { Root: ({ children }: any) => <>{children}</>, Trigger: ({ children }: any) => <>{children}</>, Content: ({ children }: any) => <div role="menu">{children}</div>, Item: ({ children, ...props }: any) => <button role="menuitem" {...props}>{children}</button> },
         Flex: Div, IconButton: ({ children, size, variant, ...props }: any) => <button {...props}>{children}</button>, Text: ({ children, size, weight, ...props }: any) => <span {...props}>{children}</span>,
     };
 });
-jest.mock('@radix-ui/react-icons', () => ({ Cross2Icon: () => <span>Close</span>, DragHandleDots2Icon: () => <span>Drag</span>, PlusIcon: () => <span>Add</span> }));
+jest.mock('@radix-ui/react-icons', () => ({ Cross2Icon: () => <span>Close</span>, PlusIcon: () => <span>Add</span> }));
 
 interface TestInstance extends ManagedVisualizationInstance { height: number; }
 let nextId = 0;
@@ -52,7 +55,13 @@ describe('VisualizationPanelManager concrete ref state', () => {
         expect(ref.current!.getComponentName()).toBe('test-manager');
         await userEvent.click(screen.getByRole('menuitem', { name: 'Alpha' }));
         expect(ref.current!.getCurrentVisualizations()).toEqual([expect.objectContaining({ name: 'visualization:alpha', type: 'alpha' })]);
-        await userEvent.click(screen.getByRole('button', { name: 'Remove alpha' }));
+        expect(screen.queryByText('Drag')).not.toBeInTheDocument();
+        const closeButton = screen.getByRole('button', { name: 'Remove alpha' });
+        expect(closeButton).toHaveClass('visualization-close-button');
+        expect(closeButton).toHaveStyle({ position: 'absolute', top: '11px', right: '12px' });
+        expect(closeButton.parentElement).toHaveClass('visualization-container');
+        expect(closeButton.closest('.visualization-header')).toBeNull();
+        await userEvent.click(closeButton);
         expect(ref.current!.getCurrentVisualizations()).toEqual([]);
     });
 
@@ -61,6 +70,7 @@ describe('VisualizationPanelManager concrete ref state', () => {
         render(<TestVisualizationPanelManager ref={ref} name="test-manager" />);
         await userEvent.click(screen.getByRole('menuitem', { name: 'Alpha' }));
         await userEvent.click(screen.getByRole('menuitem', { name: 'Beta' }));
+        expect(document.querySelector('.visualizations-container')).not.toHaveAttribute('data-radix-box');
         const containers = Array.from(document.querySelectorAll<HTMLElement>('.visualization-container'));
         const sourceHeader = containers[0].querySelector<HTMLElement>('.visualization-header')!;
         let draggedId = '';
