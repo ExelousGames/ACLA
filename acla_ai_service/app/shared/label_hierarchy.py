@@ -134,33 +134,6 @@ def _section_for_position(position: Any, track_id: str) -> Optional[str]:
     return None
 
 
-def _segment_track_section(
-    label_ids: List[str],
-    fallback_section_id: Optional[str],
-) -> Optional[str]:
-    for label_id in label_ids:
-        if label_id in TRACK_SECTION_LABEL_IDS:
-            return label_id
-    return fallback_section_id
-
-
-def _append_or_merge_segment(
-    segments: List[Dict[str, Any]],
-    segment: Dict[str, Any],
-) -> None:
-    previous = segments[-1] if segments else None
-    if (
-        previous
-        and previous.get("track_section") == segment.get("track_section")
-        and previous.get("labels") == segment.get("labels")
-        and previous.get("end_index") == segment.get("start_index")
-    ):
-        previous["end_index"] = segment["end_index"]
-        return
-
-    segments.append(segment)
-
-
 def _track_area_windows(
     telemetry_data: Sequence[Dict[str, Any]],
     track_id: str,
@@ -200,22 +173,22 @@ def build_track_area_segments(
     track_name: Optional[str],
     include_empty_sections: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Build classifier-label segments with track sections as metadata."""
+    """Build one segment per track-section window with all detected labels."""
     track_id = _track_id(track_name)
     if not track_id or not telemetry_data or not _section_candidates(track_id):
         return build_parent_label_segments(raw_segments)
 
-    parent_windows = _track_area_windows(telemetry_data, track_id)
-    if not parent_windows:
+    section_windows = _track_area_windows(telemetry_data, track_id)
+    if not section_windows:
         return build_parent_label_segments(raw_segments)
 
     segments: List[Dict[str, Any]] = []
 
-    for parent_window in parent_windows:
-        parent_start = parent_window["start_index"]
-        parent_end = parent_window["end_index"]
-        section_id = parent_window["section_id"]
-        section_has_segments = False
+    for section_window in section_windows:
+        section_start = section_window["start_index"]
+        section_end = section_window["end_index"]
+        section_id = section_window["section_id"]
+        labels: List[str] = []
 
         for raw_segment in raw_segments:
             raw_start = raw_segment.get("start_index")
@@ -223,38 +196,27 @@ def build_track_area_segments(
             if raw_start is None or raw_end is None:
                 continue
 
-            child_start = max(parent_start, int(raw_start))
-            child_end = min(parent_end, int(raw_end))
-            if child_end <= child_start:
+            if min(section_end, int(raw_end)) <= max(section_start, int(raw_start)):
                 continue
 
-            labels = _classifier_label_ids(raw_segment.get("labels", []))
-            if not labels:
-                continue
+            for label_id in _classifier_label_ids(raw_segment.get("labels", [])):
+                if label_id not in labels:
+                    labels.append(label_id)
 
-            section_has_segments = True
-            _append_or_merge_segment(segments, {
-                "id": f"{labels[0]}:{section_id}:{child_start}-{child_end}",
-                "labels": labels,
-                "track_section": _segment_track_section(labels, section_id),
-                "start_index": child_start,
-                "end_index": child_end,
-            })
-
-        if include_empty_sections and not section_has_segments:
+        if labels or include_empty_sections:
             segments.append({
-                "id": f"{section_id}:{parent_start}-{parent_end}",
-                "labels": [],
+                "id": f"{section_id}:{section_start}-{section_end}",
+                "labels": labels,
                 "track_section": section_id,
-                "start_index": parent_start,
-                "end_index": parent_end,
+                "start_index": section_start,
+                "end_index": section_end,
             })
 
     return segments
 
 
 def build_parent_label_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Merge classifier windows into label-preserving display segments."""
+    """Return classifier windows when track-section geometry is unavailable."""
     segments: List[Dict[str, Any]] = []
 
     for raw_segment in raw_segments:
@@ -270,10 +232,13 @@ def build_parent_label_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict
         segment = {
             "id": raw_segment.get("id"),
             "labels": labels,
-            "track_section": _segment_track_section(labels, None),
+            "track_section": next((
+                label_id for label_id in labels
+                if label_id in TRACK_SECTION_LABEL_IDS
+            ), None),
             "start_index": start_index,
             "end_index": end_index,
         }
-        _append_or_merge_segment(segments, segment)
+        segments.append(segment)
 
     return segments

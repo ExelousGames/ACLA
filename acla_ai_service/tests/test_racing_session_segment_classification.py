@@ -66,6 +66,7 @@ def _expert_row(index: int):
 
 
 def _configure_endpoint_services(monkeypatch, segment):
+    segments = segment if isinstance(segment, list) else [segment]
     monkeypatch.setattr(
         racing_session,
         "preprocess_inference_telemetry",
@@ -103,7 +104,7 @@ def _configure_endpoint_services(monkeypatch, segment):
         racing_session,
         "get_segment_classifier",
         lambda: SimpleNamespace(
-            classify_ranges=lambda dataframe, ranges: [segment],
+            classify_ranges=lambda dataframe, ranges: segments,
         ),
     )
 
@@ -144,6 +145,60 @@ async def test_classifier_endpoints_return_one_parent_range_with_all_sub_labels(
         for row in result["segments"][0]["expert_reference_data"]
     ] == [90_000.0, 90_250.0, 90_500.0, 90_750.0]
     assert "expert_reference_data" not in result
+
+
+@pytest.mark.asyncio
+async def test_live_baseline_returns_one_segment_with_all_labels_for_track_section(
+    monkeypatch,
+):
+    predictions = [
+        _predicted_segment("MSP1"),
+        PredictedSegment(
+            id="recovery-segment",
+            label="RM",
+            score=0.8,
+            start_index=0,
+            end_index=4,
+            subsegments=[PredictedSegment(
+                label="RM1",
+                score=0.7,
+                start_index=1,
+                end_index=3,
+            )],
+        ),
+        PredictedSegment(
+            id="segment-type",
+            label="ST1",
+            score=0.7,
+            start_index=2,
+            end_index=4,
+        ),
+    ]
+    records = [
+        {
+            **_expert_row(index),
+            "Graphics_normalized_car_position": position,
+        }
+        for index, position in enumerate((0.12, 0.14, 0.16, 0.17))
+    ]
+    _configure_endpoint_services(monkeypatch, predictions)
+
+    result = await racing_session.analyze_live_baseline(
+        racing_session.LiveBaselineAnalysisRequest(
+            track="brands_hatch",
+            records=records,
+        )
+    )
+
+    assert result["parent_segment_count"] == 1
+    assert len(result["segments"]) == 1
+    assert result["segments"][0]["id"] == "brands_hatch3:0-4"
+    assert result["segments"][0]["labels"] == [
+        "MSP", "MSP1", "RM", "RM1", "ST1",
+    ]
+    assert result["segments"][0]["track_section"] == "brands_hatch3"
+    assert result["segments"][0]["start_index"] == 0
+    assert result["segments"][0]["end_index"] == 4
 
 
 @pytest.mark.asyncio
