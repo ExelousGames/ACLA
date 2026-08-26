@@ -29,6 +29,7 @@ const TELEMETRY_POD_GAP = 14;
 const DRIVER_MARKER_HALO_RADIUS = 11;
 const EXPERT_MARKER_HALO_RADIUS = 10;
 const FOLLOW_CAMERA_SCALE = 4;
+const CAMERA_HEADING_SMOOTHING_RADIUS = 2;
 const OVERVIEW_HOLD_DURATION_MS = 1_000;
 const CAMERA_FOCUS_DURATION_MS = 750;
 const DRIVER_CAMERA_ANCHOR_Y_RATIO = 2 / 3;
@@ -559,6 +560,51 @@ const trajectoryDirection = (
         return undefined;
     };
 
+    const adjacentDistinctTrajectoryIndexes = (
+        anchorIndex: number,
+        step: -1 | 1,
+    ): number[] => {
+        const indexes: number[] = [];
+        let index = anchorIndex;
+        let point = stream[index].trajectory;
+        if (!point) return indexes;
+
+        while (indexes.length < CAMERA_HEADING_SMOOTHING_RADIUS) {
+            const adjacentIndex = findDistinctTrajectoryIndex(index + step, step, point);
+            if (adjacentIndex === undefined) break;
+            indexes.push(adjacentIndex);
+            index = adjacentIndex;
+            point = stream[index].trajectory;
+            if (!point) break;
+        }
+        return indexes;
+    };
+
+    const smoothedDirectionAt = (
+        anchorIndex: number,
+    ): PlottingTrajectoryPoint | undefined => {
+        const anchor = stream[anchorIndex].trajectory;
+        if (!anchor) return undefined;
+
+        const previousIndexes = adjacentDistinctTrajectoryIndexes(anchorIndex, -1);
+        const nextIndexes = adjacentDistinctTrajectoryIndexes(anchorIndex, 1);
+        const centeredRadius = Math.min(previousIndexes.length, nextIndexes.length);
+        if (centeredRadius > 0) {
+            return directionBetween(
+                stream[previousIndexes[centeredRadius - 1]].trajectory,
+                stream[nextIndexes[centeredRadius - 1]].trajectory,
+            );
+        }
+
+        if (nextIndexes.length > 0) {
+            return directionBetween(anchor, stream[nextIndexes[0]].trajectory);
+        }
+        if (previousIndexes.length > 0) {
+            return directionBetween(stream[previousIndexes[0]].trajectory, anchor);
+        }
+        return undefined;
+    };
+
     let previousIndex = lower;
     while (previousIndex >= 0 && !stream[previousIndex].trajectory) previousIndex -= 1;
     let nextIndex = upper;
@@ -570,14 +616,11 @@ const trajectoryDirection = (
         const forwardIndex = findDistinctTrajectoryIndex(nextIndex, 1, previous);
         if (forwardIndex !== undefined) {
             const forwardPoint = stream[forwardIndex].trajectory;
-            const forward = directionBetween(previous, forwardPoint);
-            if (!forward) return undefined;
-
-            const followingIndex = findDistinctTrajectoryIndex(forwardIndex + 1, 1, forwardPoint!);
-            const following = followingIndex === undefined
-                ? undefined
-                : directionBetween(forwardPoint, stream[followingIndex].trajectory);
-            if (!following) return forward;
+            const forward = smoothedDirectionAt(previousIndex)
+                ?? directionBetween(previous, forwardPoint);
+            const following = smoothedDirectionAt(forwardIndex)
+                ?? directionBetween(previous, forwardPoint);
+            if (!forward || !following) return forward;
 
             const startTime = normalizedSampleTime(stream, previousIndex);
             const endTime = normalizedSampleTime(stream, forwardIndex);
@@ -599,6 +642,8 @@ const trajectoryDirection = (
     const originIndex = previous ? previousIndex : nextIndex;
     const origin = previous ?? next;
     if (!origin) return undefined;
+    const smoothedDirection = smoothedDirectionAt(originIndex);
+    if (smoothedDirection) return smoothedDirection;
     const laterIndex = findDistinctTrajectoryIndex(originIndex + 1, 1, origin);
     if (laterIndex !== undefined) {
         return directionBetween(origin, stream[laterIndex].trajectory);

@@ -27,10 +27,10 @@ describe('appended AI display components', () => {
         expect(screen.getByText('Lap 1 baseline')).toBeInTheDocument();
     });
 
-    it('renders a compact procedure plan without the chat clear button', () => {
+    it('renders a procedure plan in chat without a close button', () => {
         render(
             <ProcedurePlan
-                surface="pill"
+                surface="chat"
                 plan={{
                     goal: 'Collect a clean baseline',
                     currentStep: 1,
@@ -40,12 +40,12 @@ describe('appended AI display components', () => {
                         { type: 'driver_action', title: 'Run next lap', status: 'pending' },
                     ],
                 }}
-                onClear={jest.fn()}
             />,
         );
 
         expect(screen.getByText('Collect a clean baseline')).toBeInTheDocument();
         expect(screen.getByText('Analyze baseline')).toBeInTheDocument();
+        expect(screen.queryByText(/tool_call/i)).not.toBeInTheDocument();
         expect(screen.queryByLabelText('Dismiss the visible plan')).not.toBeInTheDocument();
     });
 

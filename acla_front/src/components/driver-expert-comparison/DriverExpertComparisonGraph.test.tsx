@@ -742,7 +742,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(pendingFrames.size).toBe(0);
     });
 
-    it('smoothly rotates the camera toward the next driver forward axis', () => {
+    it('smooths camera rotation across multiple adjacent driver points', () => {
         render(<DriverExpertComparisonGraph data={{
             samples: [{
                 driverTimeMs: 0,
@@ -761,10 +761,24 @@ describe('DriverExpertComparisonGraph', () => {
             }, {
                 driverTimeMs: 2_000,
                 expertTimeMs: 2_000,
-                driverTrackPosition: 1,
-                expertTrackPosition: 1,
+                driverTrackPosition: 0.5,
+                expertTrackPosition: 0.5,
                 driverTrajectory: { x: 100, y: 100 },
                 expertTrajectory: { x: 100, y: 110 },
+            }, {
+                driverTimeMs: 3_000,
+                expertTimeMs: 3_000,
+                driverTrackPosition: 0.75,
+                expertTrackPosition: 0.75,
+                driverTrajectory: { x: 100, y: 200 },
+                expertTrajectory: { x: 100, y: 210 },
+            }, {
+                driverTimeMs: 4_000,
+                expertTimeMs: 4_000,
+                driverTrackPosition: 1,
+                expertTrackPosition: 1,
+                driverTrajectory: { x: 100, y: 300 },
+                expertTrajectory: { x: 100, y: 310 },
             }],
         }} />);
 
@@ -778,10 +792,22 @@ describe('DriverExpertComparisonGraph', () => {
         runAnimationFrame(2_250);
         expect(screen.getByTestId('comparison-camera-layer')).toHaveAttribute(
             'data-camera-rotation',
-            '-45',
+            '-67.5',
         );
 
         runAnimationFrame(2_750);
+        expect(screen.getByTestId('comparison-camera-layer')).toHaveAttribute(
+            'data-camera-rotation',
+            '-45',
+        );
+
+        runAnimationFrame(3_750);
+        expect(screen.getByTestId('comparison-camera-layer')).toHaveAttribute(
+            'data-camera-rotation',
+            '-18.435',
+        );
+
+        runAnimationFrame(4_750);
         expect(screen.getByTestId('comparison-camera-layer')).toHaveAttribute(
             'data-camera-rotation',
             '0',

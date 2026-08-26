@@ -587,7 +587,6 @@ export const buildProcedurePlan = (
 export type ProcedurePlanProps = {
     plan: ProcedurePlanSnapshot;
     surface?: 'chat' | 'pill';
-    onClear?: () => void;
 };
 
 export type ProcedurePlanWorkflowProps = {
@@ -599,7 +598,7 @@ export type ProcedurePlanWorkflowProps = {
 
 const getProcedurePlanRequestMeta = (request: ProcedurePlanSnapshot['requests'][number]): string => {
     const parts = [
-        request.type,
+        request.type === 'tool_call' ? null : request.type,
         request.status,
     ].filter((part): part is string => Boolean(part));
     return parts.join(' - ');
@@ -608,7 +607,6 @@ const getProcedurePlanRequestMeta = (request: ProcedurePlanSnapshot['requests'][
 const ProcedurePlan: React.FC<ProcedurePlanProps> = ({
     plan,
     surface = 'chat',
-    onClear,
 }) => {
     const requests = surface === 'pill'
         ? plan.requests.slice(Math.max(0, plan.currentStep - 1), plan.currentStep + 2)
@@ -621,17 +619,6 @@ const ProcedurePlan: React.FC<ProcedurePlanProps> = ({
                     <span className="ai-chat__plan-kicker">PLAN</span>
                     <div className="ai-chat__plan-goal">{plan.goal}</div>
                 </div>
-                {onClear && surface === 'chat' && (
-                    <button
-                        type="button"
-                        className="ai-chat__plan-clear"
-                        onClick={onClear}
-                        title="Dismiss the visible plan"
-                        aria-label="Dismiss the visible plan"
-                    >
-                        x
-                    </button>
-                )}
             </div>
             <ul className="ai-chat__plan-list">
                 {requests.map((request) => {
@@ -731,7 +718,6 @@ export const ProcedurePlanWorkflow: React.FC<ProcedurePlanWorkflowProps> = ({
         <ProcedurePlan
             plan={serializeProcedurePlan(plan)}
             surface={surface}
-            onClear={() => runnerRef.current?.clear()}
         />
     ) : null;
 };
