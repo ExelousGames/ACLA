@@ -1,96 +1,64 @@
 # Kestrel — Live Performance Analyst
 
-## Opening
+## Opening: show the result first
 
-[Start a practice lap and ask the Live Performance Analyst to watch one lap.]
+[Start with the car already on track. Keep the Kestrel overlay visible. Ask AI: I will do two laps. Give me an analysis of them.]
 
-[Talk to AI: “I need to do some lap analysis.”]
-[Talk to AI: “Live Performance Analyst.”]
-[Talk to AI: “I will do one lap. analyze that lap for me.”]
-
-[The AI starts the goal feature.]
-
-This is Kestrel, a sim-racing data analysis assistant. I just used its Live Performance Analyst, one of purpose-built AI agents that communicates directly with sensors integrated into Kestrel. Equipped with extensive racing knowledge, it translates complex telemetry graphs into clear, easy-to-understand insights. Kestrel isn’t just another AI coaching program—it’s an assistant designed to help you become your own racing analyst.
-
-In this video, I’ll demonstrate the complete workflow—from recording a lap to finding the section that needs attention and carrying that insight back onto the track.
-
-
-## Enabling the Live Performance Analyst agent mode
-
-[Keep the live practice recording active or paused. Open the AI Assistant and tap the mic to start the assistant connection.]
-
-Kestrel’s live session assistant can answer one-off live-session question. For an ongoing performance review, I will switch to the dedicated Live Performance Analyst agent mode.
-
-To enable it, I can ask:
-
-[Ask: “Can you do a lap analysis for me?”]
-[AI responds.]
-[Ask: “Start the Live Analyst.”]
-
-The main assistant starts a separate agent session. The interface identifies it as Live Analyst and pauses the main conversation while this focused mode is active.
-
-This separation has a purpose. It allows the AI to concentrate on analyzing laps from a ongoing session. it ensures the context is focused on live data analysis.
-
-At startup, the analyst asks how do I want to analyze. I can give it a specific instruction, such as:
-
-[Say: “I will do two laps, and then you will analyze it.”]
-
-The AI understands the request and provides the sequence for recording and analyzing the baseline.
-
-[Ask: “Analyze multiple laps.”]
-
-In fact, I can adjust the baseline recording conditions in much more detail. The recording’s start and end conditions are customizable. currently we have just one preset in the UI, but the AI can tune them further by controlling the internal settings. For example, I can start recording when I apply the throttle and stop when the car reaches 100 km/h. This is not today’s focus, I would like to make a separate video about it.
-
-
-## A brief overview of practice-lap analysis
-
-[Complete the laps]
-
-Once the recording is done, the AI then analyzes the laps as requested. It compares the driver’s recorded laps with a reference lap. The AI is trained to recognize the differences between the driver and the reference, then it will assign labels to them.
-
-[Briefly show the loading state, then open the results.]
-
-The analysis results present as sections, with the driving behaviors identified in each one. The user can hover over each segment to see an animated driver-versus-expert comparison.
-
-[Move quickly through two analysis sections.]
-
-There is more I want to show about the analysis result page, such as how to use presets to manage the list, check the overall trend, or ask the AI to clean up the list. However, I would like to cover that in a separate video.
-
-
-## Showing the result in the overlay
-
-[Enable the overlay. Keep the lap analysis visible in the main application.]
-
-Useful analysis results can also be shown outside the main Kestrel window. By design, the overlay can display any information available in the main window.
-
-[Show an AI response appearing in the overlay.]
-
-Inspect a mistake by hovering over a result is good. However, displaying the comparison graphs in the overlay while driving could be useful too. So, I can ask Kestrel to present each mistake while you drive. If no specific page is requested, Kestrel displays the currently selected analysis result by default.
-
-[Ask AI: “I would like to see the mistake, with actaul detailed mistake annotated, while driving. Show the selected driver-versus-expert comparison in the overlay.”]
-
-This prompt asks ai to only show sections with detailed mistakes. because currently, AI doesnt have much samples to learn from. it's not confortable at identifying detailed mistakes all the time.
-
-I think this is more useful than copying a text summary onto the overlat. The driver can see the actual comparison associated with the analyzed lap section.
-
-## The complete workflow
-
-[Show the full sequence without cuts where practical.]
-
-That is one of the Live Performance Analyst workflows.
-
-I asked the AI Assistant to enable the Live Performance Analyst.
-
-
-The main assistant pauses, and a separate Live Analyst session takes over with a narrow job: review performance in a live session.
-
-I then tell the analyst what I want it to review.
-
-Kestrel analyzes the practice lap and displays the analysis results.
-
-Finally, I ask to see a useful result in the overlay.
-
-That is one of the workflows I have developed.
+That is Kestrel's Live Performance Analyst agent. I just let it start the automation for analysing the lap I am about to do.
 
 
 
+## Record the laps
+
+[Return to the simulator and drive the first lap. Keep the recording indicator visible when practical.]
+
+[During the lap, let the driving and telemetry carry the video. Avoid continuous narration.]
+
+The agent set up a to-do list for analysis on my behalf. It will execute the steps on its own, and I just need to focus on the driving. After two laps, i am able to see the result and see how did i do.
+
+[At the end of lap one, briefly show that the lap has been captured.]
+
+That is the first lap recorded. I will do one more because I asked for two laps.
+
+[Drive the second lap.]
+
+[Finish the second lap and show the recording completing.]
+
+
+## Review the analysis
+
+[Return to Kestrel. Briefly show the loading state, then open the results when they are ready.]
+
+Kestrel has completed the analysis and returned the results to me.
+
+[Open the first useful section.]
+
+This is where the analysis result will be shown. I am able to pinpoint the mistakes I made.
+
+[Hover over the segment to play the animated driver-versus-reference comparison.]
+
+In this section, the comparison shows exactly where my line begins to diverge from the reference.
+
+
+## Put the selected result in the overlay
+
+[Enable the driving overlay.]
+
+[Ask: “Show the selected driver-versus-reference comparison in the overlay while I'm driving.”]
+
+[Show the selected comparison appearing in the overlay.]
+
+Now the result I selected is available while I am driving. I do not have to memorize a text summary or keep switching back to the application.
+
+[Return to the simulator. Approach the relevant section of track with the comparison visible.]
+
+[Drive through the section once while applying the insight from the analysis.]
+
+
+## Closing
+
+[Show a quick recap montage: start analyst → record laps → inspect a result → view it in the overlay.]
+
+That is the Live Performance Analyst workflow: tell Kestrel what to record, drive the laps, inspect the important differences, and bring the selected comparison back onto the track.
+
+[End on the live overlay or the selected analysis result.]

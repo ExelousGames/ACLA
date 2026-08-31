@@ -17,10 +17,6 @@ import {
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const IDLE_WIDTH = 300;
 const SPEAKING_WIDTH = 420;
-const MAP_TYPE = 'map';
-const EDGE_TO_EDGE_COMPONENT_TYPES = new Set([
-    MAP_TYPE,
-]);
 
 interface ElectronOverlayRendererApi {
     onOverlayPresentation?: (
@@ -155,26 +151,35 @@ const SpeakingContext: React.FC<{
 const GeneratedDisplayItem: React.FC<{
     presentationId: string;
     card: AiOverlayPresentationCard;
-    hiddenByFullSize: boolean;
-}> = ({ presentationId, card, hiddenByFullSize }) => {
+    deckIndex: number;
+}> = ({ presentationId, card, deckIndex }) => {
     const renderer = getAiOverlayRenderer(card.componentType);
     const context = useRenderContext(presentationId, card);
     const fullSizeActive = card.status === 'full_size';
-    const edgeToEdge = EDGE_TO_EDGE_COMPONENT_TYPES.has(card.componentType);
+    const dimensions = renderer.dimensions[card.status]!;
     return (
         <article
             className={[
                 'overlay-list-item',
+                'overlay-list-item--deck',
                 card.status === 'folded' ? 'overlay-list-item--folded' : '',
                 fullSizeActive ? 'overlay-list-item--full-size-active' : '',
-                edgeToEdge ? 'overlay-list-item--edge-to-edge' : '',
-                hiddenByFullSize ? 'overlay-list-item--full-size-hidden' : '',
             ].filter(Boolean).join(' ')}
+            style={{
+                zIndex: deckIndex + 1,
+                ...(fullSizeActive ? {
+                    width: dimensions.width,
+                    height: dimensions.height,
+                    flexBasis: dimensions.height,
+                    alignSelf: 'center',
+                } : {}),
+            }}
             data-component-name={card.componentName}
             data-display-type={card.componentType}
             data-placement={card.placement}
             data-full-size-active={fullSizeActive ? 'true' : undefined}
-            aria-hidden={hiddenByFullSize || undefined}
+            data-renderer-width={dimensions.width}
+            data-renderer-height={dimensions.height}
         >
             {card.status === 'folded' ? (
                 <header className="overlay-list-item__header">
@@ -227,30 +232,17 @@ const FloatingChat: React.FC = () => {
     const cards = React.useMemo(() => presentation?.cards ?? [], [presentation]);
     const speaking = cards.find((card) => card.shellSlot === 'speech');
     const generatedDisplays = cards.filter((card) => card.shellSlot !== 'speech');
-    const fullSizeCard = generatedDisplays.find((card) => card.status === 'full_size');
-    const edgeToEdgeOnly = !speaking
-        && generatedDisplays.length === 1
-        && EDGE_TO_EDGE_COMPONENT_TYPES.has(generatedDisplays[0].componentType);
     const idle = !speaking && generatedDisplays.length === 0;
     const identity = resolveIdentity(presentation?.session.displayIdentity, speaking);
     const widths = generatedDisplays.map((card) => (
         getAiOverlayRenderer(card.componentType).dimensions[card.status]?.width ?? SPEAKING_WIDTH
     ));
-    const shellWidth = fullSizeCard
-        ? getAiOverlayRenderer(fullSizeCard.componentType).dimensions.full_size!.width
-        : Math.max(idle ? IDLE_WIDTH : SPEAKING_WIDTH, ...widths);
-    const fullSizeHeight = fullSizeCard
-        ? getAiOverlayRenderer(fullSizeCard.componentType).dimensions.full_size!.height
-        : undefined;
+    const shellWidth = Math.max(idle ? IDLE_WIDTH : SPEAKING_WIDTH, ...widths);
 
     React.useLayoutEffect(() => {
         const shell = shellRef.current;
         if (!shell) return undefined;
         const resize = () => {
-            if (fullSizeCard && fullSizeHeight) {
-                getElectronApi()?.resizeFloatingChat?.(shellWidth, fullSizeHeight);
-                return;
-            }
             const bounds = shell.getBoundingClientRect();
             getElectronApi()?.resizeFloatingChat?.(
                 Math.ceil(bounds.width),
@@ -261,7 +253,7 @@ const FloatingChat: React.FC = () => {
         const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize);
         observer?.observe(shell);
         return () => observer?.disconnect();
-    }, [cards, fullSizeCard, fullSizeHeight, shellWidth]);
+    }, [cards, shellWidth]);
 
     return (
         <main className="floating-overlay-stage" aria-live="polite">
@@ -269,14 +261,10 @@ const FloatingChat: React.FC = () => {
                 className={[
                     'overlay-shell',
                     idle ? 'overlay-shell--idle' : '',
-                    fullSizeCard ? 'overlay-shell--full-size' : '',
-                    edgeToEdgeOnly ? 'overlay-shell--edge-to-edge' : '',
                 ].filter(Boolean).join(' ')}
                 ref={shellRef}
-                style={{ width: shellWidth, height: fullSizeHeight }}
+                style={{ width: shellWidth }}
                 data-presentation-id={presentation?.presentationId || ''}
-                data-full-size-component-name={fullSizeCard?.componentName}
-                data-edge-to-edge={edgeToEdgeOnly ? 'true' : undefined}
             >
                 <header className="overlay-shell__header">
                     <OverlayIdentity identity={identity} emotionGifs={emotionGifs} />
@@ -286,14 +274,12 @@ const FloatingChat: React.FC = () => {
                 )}
                 {generatedDisplays.length > 0 && presentation && (
                     <div className="overlay-display-list">
-                        {generatedDisplays.map((card) => (
+                        {generatedDisplays.map((card, deckIndex) => (
                             <GeneratedDisplayItem
                                 key={card.componentName}
                                 presentationId={presentation.presentationId}
                                 card={card}
-                                hiddenByFullSize={Boolean(
-                                    fullSizeCard && card.componentName !== fullSizeCard.componentName
-                                )}
+                                deckIndex={deckIndex}
                             />
                         ))}
                     </div>

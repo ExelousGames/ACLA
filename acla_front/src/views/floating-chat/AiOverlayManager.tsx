@@ -235,9 +235,13 @@ export class AiOverlayManagerController {
                 : active
         ), null);
         cards.forEach((card) => {
-            card.status = card.requestedStatus === 'full_size'
-                ? (card === fullSize ? 'full_size' : 'expanded')
-                : card.requestedStatus;
+            if (card === fullSize) {
+                card.status = 'full_size';
+            } else if (fullSize && card.shellSlot !== 'speech') {
+                card.status = 'folded';
+            } else {
+                card.status = card.requestedStatus;
+            }
         });
         return cards.sort((left, right) => {
             if (left.placement !== right.placement) return left.placement === 'pinned' ? -1 : 1;

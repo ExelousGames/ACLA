@@ -1,5 +1,6 @@
 import {
     DriverExpertComparisonData,
+    DriverExpertComparisonDiagnostic,
     normalizeDriverExpertComparisonData,
 } from 'components/driver-expert-comparison';
 
@@ -23,6 +24,7 @@ export interface AnalysisResultElement {
     normalizedPositionRange?: AnalysisResultPositionRange;
     timeGap?: AnalysisResultTimeGap;
     comparison?: DriverExpertComparisonData;
+    comparisonDiagnostics?: DriverExpertComparisonDiagnostic[];
     metadata?: Record<string, unknown>;
 }
 
@@ -93,6 +95,21 @@ const normalizeLabels = (value: unknown): string[] => {
         .filter(Boolean);
 };
 
+const normalizeComparisonDiagnostics = (
+    value: unknown,
+): DriverExpertComparisonDiagnostic[] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+    const diagnostics = value.flatMap((entry): DriverExpertComparisonDiagnostic[] => {
+        if (!isRecord(entry)) return [];
+        const code = optionalText(entry.code);
+        const message = optionalText(entry.message);
+        if (!code || !message) return [];
+        const details = isRecord(entry.details) ? { ...entry.details } : undefined;
+        return [{ code, message, ...(details ? { details } : {}) }];
+    });
+    return diagnostics.length > 0 ? diagnostics : undefined;
+};
+
 const normalizePositionRange = (
     element: Record<string, unknown>,
 ): AnalysisResultPositionRange | undefined => {
@@ -134,6 +151,9 @@ export const normalizeAnalysisResultElement = (
     const normalizedPositionRange = normalizePositionRange(input);
     const timeGap = normalizeTimeGap(input.timeGap ?? input.time_gap);
     const comparison = normalizeDriverExpertComparisonData(input.comparison);
+    const comparisonDiagnostics = normalizeComparisonDiagnostics(
+        input.comparisonDiagnostics ?? input.comparison_diagnostics,
+    );
     const metadata = isRecord(input.metadata) ? { ...input.metadata } : undefined;
 
     return {
@@ -144,6 +164,7 @@ export const normalizeAnalysisResultElement = (
         ...(normalizedPositionRange ? { normalizedPositionRange } : {}),
         ...(timeGap ? { timeGap } : {}),
         ...(comparison ? { comparison } : {}),
+        ...(comparisonDiagnostics ? { comparisonDiagnostics } : {}),
         ...(metadata ? { metadata } : {}),
     };
 };

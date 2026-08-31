@@ -8,7 +8,7 @@ import type { SegmentClassificationResult } from 'views/lap-analysis/recorded-se
 import type { VisualizationManagerHandle } from './VisualizationPanelManager';
 import type { AnalysisResultsChartHandle } from './charts/AnalysisResultsChart';
 import type { AnalysisResultElement } from './charts/analysisResultsModel';
-import { adaptAnalysisResultsComparison } from './charts/analysisResultsComparisonAdapter';
+import { resolveAnalysisResultsComparison } from './charts/analysisResultsComparisonAdapter';
 import { getSegmentLabelIds } from './charts/segmentClassificationDisplay';
 import { getSingletonVisualizationComponentName } from './visualization-component-names';
 
@@ -32,12 +32,11 @@ const buildAnalysisElements = (
 ): AnalysisResultElement[] => result.segments.map((segment, index) => {
     const start = records.length ? getNormalizedPosition(records, segment.start_index) : null;
     const end = records.length ? getNormalizedPosition(records, segment.end_index) : null;
-    const comparison = records.length && segment.expert_reference_data.length
-        ? adaptAnalysisResultsComparison({
-            baselineRecords: records,
-            expertReferenceData: segment.expert_reference_data,
-        })
-        : undefined;
+    const comparisonResolution = resolveAnalysisResultsComparison({
+        baselineRecords: records,
+        expertReferenceData: segment.expert_reference_data,
+    });
+    const comparison = comparisonResolution.comparison;
     return {
         id: segment.id || `${result.session_id}:segment:${index}`,
         labels: getSegmentLabelIds(segment)
@@ -49,6 +48,9 @@ const buildAnalysisElements = (
             normalizedPositionRange: { start, end },
         } : {}),
         ...(comparison?.samples.length ? { comparison } : {}),
+        ...(comparisonResolution.diagnostics.length > 0
+            ? { comparisonDiagnostics: comparisonResolution.diagnostics }
+            : {}),
         metadata: {
             source: 'ai_classifier',
             start_index: segment.start_index,

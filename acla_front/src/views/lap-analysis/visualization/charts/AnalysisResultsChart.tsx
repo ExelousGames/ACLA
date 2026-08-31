@@ -13,6 +13,7 @@ import { useAiLabels } from 'contexts/AiLabelsContext';
 import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
 import {
     DriverExpertComparisonGraph,
+    getDriverExpertComparisonUnavailableDiagnostics,
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
@@ -423,9 +424,55 @@ const AnalysisResultCard: React.FC<{
     sessionGame?: DesktopGame | null;
 }> = ({ element, resultNumber, showElementId, sessionGame }) => {
     const [comparisonOpen, setComparisonOpen] = React.useState(false);
+    const comparisonWarningFingerprintRef = React.useRef<string | null>(null);
     const metadataEntries = Object.entries(element.metadata ?? {})
         .filter(([key]) => !HIDDEN_METADATA_KEYS.has(key));
     const hasComparison = hasComparableDriverExpertData(element.comparison, sessionGame ?? null);
+    const comparisonDiagnostics = React.useMemo(() => {
+        if (hasComparison) return [];
+        const diagnostics = [
+            ...(element.comparisonDiagnostics ?? []),
+            ...getDriverExpertComparisonUnavailableDiagnostics(
+                element.comparison,
+                sessionGame ?? null,
+            ),
+        ];
+        const diagnosticsByCode = new Map<string, typeof diagnostics[number]>();
+        diagnostics.forEach((diagnostic) => diagnosticsByCode.set(diagnostic.code, diagnostic));
+        return Array.from(diagnosticsByCode.values());
+    }, [element.comparison, element.comparisonDiagnostics, hasComparison, sessionGame]);
+    const comparisonWarningFingerprint = React.useMemo(() => JSON.stringify({
+        segment_id: element.id,
+        game: sessionGame ?? null,
+        reason_codes: comparisonDiagnostics.map((diagnostic) => diagnostic.code),
+    }), [comparisonDiagnostics, element.id, sessionGame]);
+
+    React.useEffect(() => {
+        if (hasComparison) {
+            comparisonWarningFingerprintRef.current = null;
+            return;
+        }
+        const isClassifierResult = element.metadata?.source === 'ai_classifier';
+        if (!isClassifierResult && !element.comparisonDiagnostics?.length) return;
+        if (comparisonWarningFingerprintRef.current === comparisonWarningFingerprint) return;
+        comparisonWarningFingerprintRef.current = comparisonWarningFingerprint;
+        console.warn('[driver-expert-comparison] Expert comparison unavailable.', {
+            segment_id: element.id,
+            section: element.section ?? null,
+            game: sessionGame ?? null,
+            reason_codes: comparisonDiagnostics.map((diagnostic) => diagnostic.code),
+            reasons: comparisonDiagnostics,
+        });
+    }, [
+        comparisonDiagnostics,
+        comparisonWarningFingerprint,
+        element.comparisonDiagnostics,
+        element.id,
+        element.metadata?.source,
+        element.section,
+        hasComparison,
+        sessionGame,
+    ]);
 
     const card = (
         <Box

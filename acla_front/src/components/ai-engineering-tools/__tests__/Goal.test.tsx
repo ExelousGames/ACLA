@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import {
     GoalDisplay,
     GoalRunner,
+    goalOverlayRenderer,
     buildGoalRequest,
     compareGoalValues,
     validateGoalRequest,
@@ -10,8 +11,14 @@ import {
     type GoalRequest,
     type NestedAiToolResult,
 } from '../Goal';
-import { createAiToolOperationFrom, resolvedAiToolOperation } from '../ai-tool-operation';
+import {
+    createAiToolDeferred,
+    createAiToolOperation,
+    createAiToolOperationFrom,
+    resolvedAiToolOperation,
+} from '../ai-tool-operation';
 import { InvalidGoalDeterminationError } from '../../../contexts/AiToolComponentError';
+import { isJsonSafe } from '../../../views/floating-chat/ai-overlay-types';
 
 const request = (): GoalRequest => ({
     name: 'Drive a clean lap',
@@ -59,6 +66,66 @@ describe('GoalDisplay', () => {
         rerender(<GoalDisplay snapshot={achievedSnapshot} surface="pill" />);
         expect(screen.getByLabelText('Goal')).toBeInTheDocument();
     });
+
+    it('uses a dedicated overlay card that only renders the active step', () => {
+        const snapshot = {
+            name: 'Drive a clean lap',
+            status: 'running' as const,
+            steps: [
+                {
+                    id: 'collect',
+                    title: 'Collect baseline',
+                    name: 'collect',
+                    status: 'completed' as const,
+                    attempts: 1,
+                    run_id: 'run-1',
+                    error: null,
+                },
+                {
+                    id: 'analyze',
+                    title: 'Analyze baseline',
+                    name: 'analyze',
+                    status: 'running' as const,
+                    attempts: 2,
+                    run_id: 'run-2',
+                    error: null,
+                },
+                {
+                    id: 'report',
+                    title: 'Build report',
+                    name: 'report',
+                    status: 'pending' as const,
+                    attempts: 0,
+                    run_id: null,
+                    error: null,
+                },
+            ],
+            determination: request().determination,
+            determination_result: {
+                tool_name: 'determine',
+                attempt: 0,
+                status: 'pending' as const,
+                value: null,
+            },
+            target: 0,
+            actual: null,
+            completed_steps: ['collect'],
+        };
+
+        const overlay = goalOverlayRenderer.renderOverlay(snapshot, 'expanded', {
+            componentName: 'goal',
+            revision: 1,
+            emitRendererEvent: jest.fn(),
+        });
+        render(<>{overlay}</>);
+
+        expect(screen.getByTestId('goal-overlay')).toBeInTheDocument();
+        expect(screen.getByText('Analyze baseline')).toBeInTheDocument();
+        expect(screen.getByText('Step 2 of 3 · Attempt 2')).toBeInTheDocument();
+        expect(screen.queryByText('Collect baseline')).not.toBeInTheDocument();
+        expect(screen.queryByText('Build report')).not.toBeInTheDocument();
+        expect(screen.getByTestId('goal-overlay')).not.toHaveClass('ai-chat__goal');
+    });
 });
 
 describe('Goal descriptors', () => {
@@ -95,6 +162,54 @@ describe('Goal descriptors', () => {
 });
 
 describe('GoalRunner central dispatch callback', () => {
+    it('publishes overlay-safe running steps with a stable run id and defined error', async () => {
+        const collect = createAiToolDeferred<NestedAiToolResult>();
+        const dispatch: AiToolDispatcher = jest.fn((name: string) => (
+            name === 'collect'
+                ? createAiToolOperation(collect.promise)
+                : operationWithValue(name === 'determine'
+                    ? { status: 'ready', data: 0 }
+                    : { status: 'complete' })
+        ));
+        const runner = new GoalRunner('goal', dispatch);
+        const operation = runner.createGoal(request());
+
+        expect(runner.getComponentName()).toBe('goal');
+        expect(runner.getComponentType()).toBe('goal');
+        expect(runner.getOverlayBehavior(null)).toEqual({
+            placement: 'flow',
+            requestedStatus: 'expanded',
+            remove: true,
+        });
+        expect(runner.getOverlayMetadata()).toEqual({});
+        expect(runner.handleOverlayRendererEvent({} as any)).toBeUndefined();
+
+        const runningSnapshot = runner.getSnapshot();
+        expect(isJsonSafe(runningSnapshot)).toBe(true);
+        expect(runningSnapshot?.steps[0]).toMatchObject({
+            status: 'running',
+            run_id: expect.stringMatching(/^goal-/),
+            error: null,
+        });
+        const runningRunId = runningSnapshot?.steps[0].run_id;
+
+        collect.resolve({ status: 'complete' } as NestedAiToolResult);
+        const result = await operation.result;
+        if (result instanceof Error) throw result;
+
+        expect(result).toMatchObject({ goal: 'Drive a clean lap', status: 'achieved' });
+        expect(result).not.toHaveProperty('name');
+
+        const completedSnapshot = runner.getSnapshot();
+        expect(isJsonSafe(completedSnapshot)).toBe(true);
+        expect(runner.getOverlayBehavior(completedSnapshot)).toMatchObject({ remove: true });
+        expect(completedSnapshot?.steps[0]).toMatchObject({
+            status: 'completed',
+            run_id: runningRunId,
+            error: null,
+        });
+    });
+
     it('executes ordered steps and achieves a goal from a numeric query envelope', async () => {
         const input: GoalRequest = {
             ...request(),

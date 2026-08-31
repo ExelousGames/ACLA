@@ -293,7 +293,7 @@ export const executeSubscribedFrontendTool = async ({
         ? call.arguments
         : {};
 
-    sendText(buildToolResultFrame(id, name, false, { status: 'started' }));
+    if (name !== 'start_agent_session') sendText(buildToolResultFrame(id, name, false, { status: 'started' }));
 
     if (!name) {
         const error = new InvalidToolCallError(

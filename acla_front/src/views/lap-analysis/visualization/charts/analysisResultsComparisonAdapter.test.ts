@@ -1,4 +1,7 @@
-import { adaptAnalysisResultsComparison } from './analysisResultsComparisonAdapter';
+import {
+    adaptAnalysisResultsComparison,
+    resolveAnalysisResultsComparison,
+} from './analysisResultsComparisonAdapter';
 
 const driverRow = (
     position: number,
@@ -338,5 +341,78 @@ describe('adaptAnalysisResultsComparison', () => {
         });
 
         expect(result.samples).toEqual([]);
+    });
+});
+
+describe('resolveAnalysisResultsComparison diagnostics', () => {
+    const reasonCodes = (resolution: ReturnType<typeof resolveAnalysisResultsComparison>) => (
+        resolution.diagnostics.map((diagnostic) => diagnostic.code)
+    );
+
+    it('reports both missing telemetry sources', () => {
+        const resolution = resolveAnalysisResultsComparison({
+            baselineRecords: [],
+            expertReferenceData: [],
+        });
+
+        expect(resolution.comparison).toBeUndefined();
+        expect(reasonCodes(resolution)).toEqual([
+            'driver_records_missing',
+            'expert_reference_missing',
+        ]);
+    });
+
+    it('reports every invalid Expert field category found in the reference rows', () => {
+        const resolution = resolveAnalysisResultsComparison({
+            baselineRecords: [
+                driverRow(0.1, 100, { x: 1, y: 1, z: 1 }),
+                driverRow(0.3, 300, { x: 3, y: 3, z: 3 }),
+            ],
+            expertReferenceData: [
+                expertRow(0.1, 1_000, { expert_optimal_time: undefined }),
+                expertRow(0.3, 1_200, { Graphics_normalized_car_position: 2 }),
+                null,
+            ],
+        });
+
+        expect(reasonCodes(resolution)).toEqual(expect.arrayContaining([
+            'expert_time_missing_or_invalid',
+            'expert_position_missing_or_invalid',
+            'expert_row_invalid',
+            'expert_reference_invalid',
+        ]));
+    });
+
+    it('distinguishes incomplete coverage from a position interpolation failure', () => {
+        const incomplete = resolveAnalysisResultsComparison({
+            baselineRecords: [
+                driverRow(0.2, 200, { x: 2, y: 2, z: 2 }),
+                driverRow(0.4, 400, { x: 4, y: 4, z: 4 }),
+            ],
+            expertReferenceData: [expertRow(0.1, 1_000), expertRow(0.3, 1_200)],
+        });
+        const interpolation = resolveAnalysisResultsComparison({
+            baselineRecords: [
+                driverRow(0.1, 100, { x: 1, y: 1, z: 1 }),
+                driverRow(0.3, 300, { x: 3, y: 3, z: 3 }),
+            ],
+            expertReferenceData: [expertRow(0.2, 1_000), expertRow(0.2, 1_100)],
+        });
+
+        expect(reasonCodes(incomplete)).toContain('driver_coverage_incomplete');
+        expect(reasonCodes(interpolation)).toContain('driver_interpolation_failed');
+    });
+
+    it('returns no diagnostics when a comparison is displayable', () => {
+        const resolution = resolveAnalysisResultsComparison({
+            baselineRecords: [
+                driverRow(0.1, 100, { x: 1, y: 1, z: 1 }),
+                driverRow(0.3, 300, { x: 3, y: 3, z: 3 }),
+            ],
+            expertReferenceData: [expertRow(0.1, 1_000), expertRow(0.3, 1_200)],
+        });
+
+        expect(resolution.comparison?.samples).toHaveLength(2);
+        expect(resolution.diagnostics).toEqual([]);
     });
 });

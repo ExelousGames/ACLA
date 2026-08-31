@@ -7,7 +7,7 @@ import BaselineProgressDisplay from 'views/live-session/BaselineProgressDisplay'
 import ToolMessageDisplay from '../ToolMessageDisplay';
 
 describe('appended AI display components', () => {
-    it('renders baseline progress on the floating pill surface', () => {
+    it('renders only the active baseline step on the floating pill surface', () => {
         render(
             <BaselineProgressDisplay
                 surface="pill"
@@ -25,6 +25,17 @@ describe('appended AI display components', () => {
 
         expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '42');
         expect(screen.getByText('Lap 1 baseline')).toBeInTheDocument();
+        expect(screen.getByText('Recording baseline')).toBeInTheDocument();
+        expect(screen.queryByText('Start collection')).not.toBeInTheDocument();
+        expect(screen.queryByText('Finish collection')).not.toBeInTheDocument();
+    });
+
+    it('keeps every baseline step visible on the panel surface', () => {
+        render(<BaselineProgressDisplay tag={null} />);
+
+        expect(screen.getByText('Start collection')).toBeInTheDocument();
+        expect(screen.getByText('Record baseline')).toBeInTheDocument();
+        expect(screen.getByText('Finish collection')).toBeInTheDocument();
     });
 
     it('renders a procedure plan in chat without a close button', () => {

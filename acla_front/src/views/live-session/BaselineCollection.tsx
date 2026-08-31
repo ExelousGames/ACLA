@@ -40,7 +40,7 @@ import {
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 import type { AnalysisResultsChartHandle } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
 import type { AnalysisResultElement } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
-import { adaptAnalysisResultsComparison } from 'views/lap-analysis/visualization/charts/analysisResultsComparisonAdapter';
+import { resolveAnalysisResultsComparison } from 'views/lap-analysis/visualization/charts/analysisResultsComparisonAdapter';
 import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
 import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
 import BaselineProgressDisplay from './BaselineProgressDisplay';
@@ -504,12 +504,11 @@ const buildAnalysisElements = (
 ): AnalysisResultElement[] => result.segments.map((segment, index) => {
     const start = getBaselinePosition(records, segment.start_index);
     const end = getBaselinePosition(records, segment.end_index);
-    const comparison = segment.expert_reference_data.length
-        ? adaptAnalysisResultsComparison({
-            baselineRecords: records,
-            expertReferenceData: segment.expert_reference_data,
-        })
-        : undefined;
+    const comparisonResolution = resolveAnalysisResultsComparison({
+        baselineRecords: records,
+        expertReferenceData: segment.expert_reference_data,
+    });
+    const comparison = comparisonResolution.comparison;
     return {
         id: segment.id || `${result.session_id}:segment:${index}`,
         labels: getSegmentLabelIds(segment)
@@ -521,6 +520,9 @@ const buildAnalysisElements = (
             normalizedPositionRange: { start, end },
         } : {}),
         ...(comparison?.samples.length ? { comparison } : {}),
+        ...(comparisonResolution.diagnostics.length > 0
+            ? { comparisonDiagnostics: comparisonResolution.diagnostics }
+            : {}),
         metadata: {
             source: 'ai_classifier',
             start_index: segment.start_index,

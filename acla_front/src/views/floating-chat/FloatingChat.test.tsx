@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import FloatingChat from './FloatingChat';
 import { registerAiOverlayRenderer } from './overlay-renderer-modules';
 import { aiMessageDisplayOverlayRenderer } from 'views/lap-analysis/ai-chat/AiMessageDisplay';
@@ -47,6 +47,18 @@ const card = (
     placement: 'flow',
     shellSlot: 'card',
     ...options,
+});
+
+const bounds = (width: number, height: number): DOMRect => ({
+    width,
+    height,
+    top: 0,
+    right: width,
+    bottom: height,
+    left: 0,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
 });
 
 beforeAll(() => {
@@ -102,6 +114,10 @@ describe('FloatingChat presentation renderer', () => {
 
         const items = Array.from(container.querySelectorAll('.overlay-list-item'));
         expect(items).toHaveLength(2);
+        expect(items[0]).toHaveClass('overlay-list-item--deck');
+        expect(items[1]).toHaveClass('overlay-list-item--deck');
+        expect(items[0]).toHaveStyle({ zIndex: 1 });
+        expect(items[1]).toHaveStyle({ zIndex: 2 });
         expect(items[0]).toHaveAttribute('data-component-name', 'tool:second');
         expect(items[1]).toHaveAttribute('data-component-name', 'tool:first');
         expect(screen.getByText('Second tool')).toBeInTheDocument();
@@ -109,11 +125,13 @@ describe('FloatingChat presentation renderer', () => {
         expect(acknowledgements.at(-1)).toMatchObject({ accepted: true });
     });
 
-    it('uses manager-selected folded and full-size statuses without local arbitration', () => {
+    it('keeps the message, full-size card, and collapsed siblings visible in deck order', () => {
         registerAiOverlayRenderer({
             componentType: 'comparison-test',
             validateSnapshot: (value): value is { title: string } => Boolean((value as any)?.title),
-            renderOverlay: (value: any, status) => <div>{`${status}:${value.title}`}</div>,
+            renderOverlay: (value: any, status) => (
+                <button type="button">{`${status}:${value.title}`}</button>
+            ),
             dimensions: {
                 expanded: { width: 500, height: 300 },
                 folded: { width: 320, height: 58 },
@@ -121,23 +139,76 @@ describe('FloatingChat presentation renderer', () => {
             },
         });
         const { container } = render(<FloatingChat />);
+        const shell = container.querySelector('.overlay-shell') as HTMLElement;
+        jest.spyOn(shell, 'getBoundingClientRect').mockReturnValue(bounds(760, 704));
         act(() => presentationListener?.(presentation([
+            card('message:session', 'ai_message', { text: 'Deck introduction' }, {
+                shellSlot: 'speech',
+            }),
             card('folded-card', 'comparison-test', { title: 'Summary' }, { status: 'folded' }),
             card('full-card', 'comparison-test', { title: 'Graph' }, { status: 'full_size' }),
+            card('collapsed-card', 'comparison-test', { title: 'Details' }, { status: 'folded' }),
         ])));
 
-        expect(container.querySelector('[data-component-name="folded-card"]'))
-            .toHaveClass('overlay-list-item--folded');
-        expect(container.querySelector('[data-component-name="full-card"]'))
-            .toHaveClass('overlay-list-item--full-size-active');
-        expect(container.querySelector('.overlay-shell'))
-            .toHaveAttribute('data-full-size-component-name', 'full-card');
+        const speaking = container.querySelector('.overlay-shell__speaking') as HTMLElement;
+        const deck = container.querySelector('.overlay-display-list') as HTMLElement;
+        const items = Array.from(deck.querySelectorAll<HTMLElement>('.overlay-list-item'));
+        const folded = items[0];
+        const fullSize = items[1];
+
+        expect(speaking.compareDocumentPosition(deck) & Node.DOCUMENT_POSITION_FOLLOWING)
+            .toBeTruthy();
+        expect(items.map((item) => item.dataset.componentName)).toEqual([
+            'folded-card',
+            'full-card',
+            'collapsed-card',
+        ]);
+        expect(folded).toHaveClass('overlay-list-item--deck', 'overlay-list-item--folded');
+        expect(fullSize).toHaveClass('overlay-list-item--deck', 'overlay-list-item--full-size-active');
+        expect(items[2]).toHaveClass('overlay-list-item--deck', 'overlay-list-item--folded');
+        items.forEach((item) => expect(item).not.toHaveAttribute('aria-hidden'));
+        expect(shell).toHaveStyle({ width: '760px' });
+        expect(shell.style.height).toBe('');
+        expect(fullSize).toHaveStyle({
+            width: '760px',
+            height: '500px',
+            flexBasis: '500px',
+        });
+        expect(fullSize).toHaveAttribute('data-renderer-width', '760');
+        expect(fullSize).toHaveAttribute('data-renderer-height', '500');
+        expect(screen.getByTestId('overlay-ai-message')).toBeInTheDocument();
         expect(screen.getByText('folded:Summary')).toBeInTheDocument();
         expect(screen.getByText('full_size:Graph')).toBeInTheDocument();
-        expect(resizeFloatingChat).toHaveBeenCalledWith(760, 500);
+        expect(screen.getByText('folded:Details')).toBeInTheDocument();
+        expect(resizeFloatingChat).toHaveBeenLastCalledWith(760, 704);
+
+        fireEvent.mouseOver(folded);
+        fireEvent.focus(screen.getByRole('button', { name: 'folded:Summary' }));
+        expect(Array.from(deck.querySelectorAll<HTMLElement>('.overlay-list-item')))
+            .toEqual(items);
     });
 
-    it('renders standalone map visualizations edge to edge', () => {
+    it('keeps overlay chrome and collapsed cards visible in full-size mode without speech', () => {
+        const { container } = render(<FloatingChat />);
+        act(() => presentationListener?.(presentation([
+            card('full-card', 'comparison-test', { title: 'Graph' }, { status: 'full_size' }),
+            card('collapsed-card', 'comparison-test', { title: 'Baseline' }, { status: 'folded' }),
+        ])));
+
+        const shell = container.querySelector('.overlay-shell') as HTMLElement;
+        const collapsed = container.querySelector(
+            '[data-component-name="collapsed-card"]',
+        ) as HTMLElement;
+
+        expect(shell.querySelector('.overlay-shell__header')).toBeVisible();
+        expect(screen.getByText('Kestrel')).toBeVisible();
+        expect(screen.getByText('full_size:Graph')).toBeVisible();
+        expect(screen.getByText('folded:Baseline')).toBeVisible();
+        expect(collapsed).toHaveClass('overlay-list-item--folded');
+        expect(collapsed).not.toHaveAttribute('aria-hidden');
+    });
+
+    it('keeps overlay chrome visible for standalone map visualizations', () => {
         const { container } = render(<FloatingChat />);
         act(() => presentationListener?.(presentation([
             card('map:track', 'map', {
@@ -147,12 +218,26 @@ describe('FloatingChat presentation renderer', () => {
             }),
         ])));
 
-        expect(container.querySelector('.overlay-shell'))
-            .toHaveClass('overlay-shell--edge-to-edge');
-        expect(container.querySelector('.overlay-shell'))
-            .toHaveAttribute('data-edge-to-edge', 'true');
+        const shell = container.querySelector('.overlay-shell') as HTMLElement;
+        expect(shell.querySelector('.overlay-shell__header')).toBeVisible();
+        expect(screen.getByText('Kestrel')).toBeVisible();
         expect(container.querySelector('[data-component-name="map:track"]'))
-            .toHaveClass('overlay-list-item--edge-to-edge');
+            .toBeInTheDocument();
+    });
+
+    it('keeps overlay chrome visible when the presentation contains only cards', () => {
+        const { container } = render(<FloatingChat />);
+        act(() => presentationListener?.(presentation([
+            card('tool:surface', 'tool_status', {
+                runId: 'surface', name: 'query', title: 'Card-owned surface', status: 'completed', ok: true,
+            }),
+        ])));
+
+        const shell = container.querySelector('.overlay-shell') as HTMLElement;
+        expect(shell.querySelector('.overlay-shell__header')).toBeVisible();
+        expect(screen.getByText('Kestrel')).toBeVisible();
+        expect(container.querySelector('.overlay-list-item'))
+            .toContainElement(screen.getByText('Card-owned surface'));
     });
 
     it('finishes a speaking animation once across manager presentation updates', () => {

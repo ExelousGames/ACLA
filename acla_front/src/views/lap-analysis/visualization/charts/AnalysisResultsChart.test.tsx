@@ -2152,6 +2152,53 @@ describe('AnalysisResultsChart', () => {
         fireEvent.mouseEnter(card);
         expect(screen.queryByTestId('comparison-hover-content')).not.toBeInTheDocument();
     });
+
+    it('logs one structured warning with every reason for a classifier comparison failure', async () => {
+        const consoleWarn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+        render(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="comparison-warning"
+                sessionGame="acc"
+                data={{
+                    elements: [{
+                        id: 'segment-warning',
+                        labels: ['MSP'],
+                        section: 'Turn 5',
+                        comparisonDiagnostics: [{
+                            code: 'expert_reference_missing',
+                            message: 'The analysis segment contains no Expert reference telemetry.',
+                        }, {
+                            code: 'driver_coverage_incomplete',
+                            message: 'No complete Driver lap covers the Expert segment from start to end.',
+                        }],
+                        metadata: { source: 'ai_classifier' },
+                    }],
+                }}
+            />,
+        );
+
+        await waitFor(() => expect(consoleWarn).toHaveBeenCalledTimes(1));
+        expect(consoleWarn).toHaveBeenCalledWith(
+            '[driver-expert-comparison] Expert comparison unavailable.',
+            expect.objectContaining({
+                segment_id: 'segment-warning',
+                section: 'Turn 5',
+                game: 'acc',
+                reason_codes: [
+                    'expert_reference_missing',
+                    'driver_coverage_incomplete',
+                    'comparison_data_missing',
+                ],
+                reasons: expect.arrayContaining([
+                    expect.objectContaining({ code: 'expert_reference_missing' }),
+                    expect.objectContaining({ code: 'driver_coverage_incomplete' }),
+                    expect.objectContaining({ code: 'comparison_data_missing' }),
+                ]),
+            }),
+        );
+        consoleWarn.mockRestore();
+    });
 });
 
 describe('analysis results mutations', () => {

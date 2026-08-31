@@ -1,9 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React from 'react';
 import { AiToolComponentBase } from './AiToolComponentBase';
 import type {
     NamedAiToolComponentHandle,
 } from 'contexts/AiToolComponentRefContext';
-import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 import type { AiToolDispatcher } from './Goal';
 import {
     createAiToolDeferred,
@@ -20,6 +19,7 @@ import { serializeError, type SerializedError } from 'errors/AiToolError';
 import type {
     AiOverlayComponentHandle,
     AiOverlayRenderer,
+    AiOverlayRendererEvent,
 } from 'views/floating-chat/ai-overlay-types';
 import {
     isOverlayNonEmptyString,
@@ -106,7 +106,9 @@ const defaultProcedurePlanErrorHandler: ProcedurePlanTaskErrorHandler = (request
     console.error(`Procedure plan task '${request.title}' failed.`, error);
 };
 
-export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapshot | null> {
+export class ProcedurePlanRunner
+extends AiToolComponentBase<ProcedurePlanSnapshot | null>
+implements ProcedurePlanHandle {
     private plan: ProcedurePlanState | null = null;
     private active = false;
     private taskResults: ProcedurePlanTaskResult[] = [];
@@ -125,6 +127,42 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
         super(componentName, null);
         this.onChange = onChange ?? (() => undefined);
         this.onError = onError;
+    }
+
+    createProcedurePlan(plan: ProcedurePlanState): AiToolOperation<ProcedurePlanRunResult> {
+        return this.replace(plan);
+    }
+
+    advancePlanStep(reason?: string): AiToolOperation<ProcedurePlanRunResult> {
+        return this.advance(reason);
+    }
+
+    clearProcedurePlan(reason?: string): AiToolOperation<ProcedurePlanRunResult> {
+        return this.clear(reason);
+    }
+
+    getProcedurePlan(): ProcedurePlanState | null {
+        return this.get();
+    }
+
+    getComponentType(): string {
+        return 'procedure_plan';
+    }
+
+    getOverlayBehavior(snapshot: ProcedurePlanSnapshot | null) {
+        return {
+            placement: 'flow' as const,
+            requestedStatus: 'expanded' as const,
+            remove: snapshot === null,
+        };
+    }
+
+    getOverlayMetadata() {
+        return {};
+    }
+
+    handleOverlayRendererEvent(_event: AiOverlayRendererEvent): void {
+        // Procedure plan overlays have no renderer-originated events.
     }
 
     get(): ProcedurePlanState | null {
@@ -202,6 +240,12 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
             'The procedure plan was disposed.',
         ));
         this.plan = null;
+    }
+
+    protected cloneSnapshot(
+        snapshot: ProcedurePlanSnapshot | null,
+    ): ProcedurePlanSnapshot | null {
+        return snapshot ? serializeProcedurePlan(snapshot) : null;
     }
 
     private startOperation(
@@ -589,13 +633,6 @@ export type ProcedurePlanProps = {
     surface?: 'chat' | 'pill';
 };
 
-export type ProcedurePlanWorkflowProps = {
-    name: string;
-    dispatchTool: AiToolDispatcher;
-    onSnapshotChange?: (plan: ProcedurePlanState | null) => void;
-    surface?: 'chat' | 'pill';
-};
-
 const getProcedurePlanRequestMeta = (request: ProcedurePlanSnapshot['requests'][number]): string => {
     const parts = [
         request.type === 'tool_call' ? null : request.type,
@@ -672,54 +709,6 @@ export const procedurePlanOverlayRenderer: AiOverlayRenderer<ProcedurePlanSnapsh
         expanded: { width: 420, height: 220 },
         folded: { width: 320, height: 58 },
     },
-};
-
-export const ProcedurePlanWorkflow: React.FC<ProcedurePlanWorkflowProps> = ({
-    name,
-    dispatchTool,
-    onSnapshotChange,
-    surface = 'chat',
-}) => {
-    const [plan, setPlan] = useState<ProcedurePlanState | null>(null);
-    const onSnapshotChangeRef = useRef(onSnapshotChange);
-    onSnapshotChangeRef.current = onSnapshotChange;
-    const runnerRef = useRef<ProcedurePlanRunner | null>(null);
-    if (!runnerRef.current) {
-        runnerRef.current = new ProcedurePlanRunner(name, dispatchTool, (next) => {
-            setPlan(next);
-            onSnapshotChangeRef.current?.(next);
-        });
-    }
-
-    const handle = useMemo<ProcedurePlanHandle>(() => ({
-        getComponentName: () => name,
-        createProcedurePlan: (next) => runnerRef.current!.replace(next),
-        advancePlanStep: (reason) => runnerRef.current!.advance(reason),
-        clearProcedurePlan: (reason) => runnerRef.current!.clear(reason),
-        getProcedurePlan: () => runnerRef.current!.get(),
-        getComponentType: () => 'procedure_plan',
-        getSnapshot: () => runnerRef.current!.getSnapshot(),
-        subscribe: (listener) => runnerRef.current!.subscribe(listener),
-        getOverlayBehavior: (snapshot) => ({
-            placement: 'flow',
-            requestedStatus: 'expanded',
-            remove: snapshot === null,
-        }),
-        getOverlayMetadata: () => ({}),
-        handleOverlayRendererEvent: () => undefined,
-    }), [name]);
-    const componentRef = useRef<ProcedurePlanHandle | null>(handle);
-    componentRef.current = handle;
-    useRegisterAiToolComponentRef(componentRef);
-
-    useEffect(() => () => runnerRef.current?.dispose(), []);
-
-    return plan ? (
-        <ProcedurePlan
-            plan={serializeProcedurePlan(plan)}
-            surface={surface}
-        />
-    ) : null;
 };
 
 export default ProcedurePlan;

@@ -4,12 +4,14 @@ export {
     DriverExpertComparisonGraph,
     getDriverExpertReplayDurationMs,
     getDriverExpertComparisonAvailability,
+    getDriverExpertComparisonUnavailableDiagnostics,
     hasComparableDriverExpertData,
     normalizeDriverExpertComparisonData,
 } from './DriverExpertComparisonGraph';
 export type {
     DriverExpertComparisonAvailability,
     DriverExpertComparisonData,
+    DriverExpertComparisonDiagnostic,
     DriverExpertComparisonGraphProps,
     DriverExpertComparisonLayout,
     DriverExpertComparisonSample,

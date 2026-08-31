@@ -116,21 +116,31 @@ describe('AiOverlayManagerController', () => {
         });
     });
 
-    it('arbitrates full-size requests by recency and falls back when a source clears', () => {
+    it('keeps the latest full-size card visible, folds sibling cards, and restores them afterward', () => {
         const first = component('comparison:first', 'driver_expert_comparison');
         const second = component('comparison:second', 'driver_expert_comparison');
-        manager.syncReferences([{ current: first }, { current: second }]);
+        const details = component('details', 'test-card');
+        manager.syncReferences([{ current: first }, { current: second }, { current: details }]);
+        details.publish({ value: 'details' });
         first.publish({ value: 'first' }, { requestedStatus: 'full_size' });
         second.publish({ value: 'second' }, { requestedStatus: 'full_size' });
 
         expect(manager.getPresentationSnapshot()!.cards).toEqual([
             expect.objectContaining({ componentName: 'comparison:second', status: 'full_size' }),
-            expect.objectContaining({ componentName: 'comparison:first', status: 'expanded' }),
+            expect.objectContaining({ componentName: 'comparison:first', status: 'folded' }),
+            expect.objectContaining({ componentName: 'details', status: 'folded' }),
         ]);
 
         second.clear();
         expect(manager.getPresentationSnapshot()!.cards).toEqual([
             expect.objectContaining({ componentName: 'comparison:first', status: 'full_size' }),
+            expect.objectContaining({ componentName: 'details', status: 'folded' }),
+        ]);
+
+        first.publish({ value: 'first' }, { requestedStatus: 'expanded' });
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([
+            expect.objectContaining({ componentName: 'comparison:first', status: 'expanded' }),
+            expect.objectContaining({ componentName: 'details', status: 'expanded' }),
         ]);
     });
 

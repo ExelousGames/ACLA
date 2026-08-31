@@ -33,9 +33,11 @@ import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
 import {
     Goal,
+    GoalRunner,
     LiveRangeTodoList,
     LiveRangeTodoListRunner,
-    ProcedurePlanWorkflow,
+    ProcedurePlan,
+    ProcedurePlanRunner,
     buildProcedurePlan,
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
@@ -45,9 +47,11 @@ import {
     type AiToolOperation,
     type LiveRangeTodoListHandle,
     type ProcedurePlanHandle,
+    type ProcedurePlanSnapshot,
     type ProcedurePlanState,
     type GoalSnapshot,
     createAiToolOperationFrom,
+    serializeProcedurePlan,
 } from 'components/ai-engineering-tools';
 import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
 import {
@@ -58,8 +62,6 @@ import type { AssistantActiveScreen } from 'views/lap-analysis/assistant-session
 import {
     AI_TOOL_COMPONENT_NAMES,
     NamedAiToolComponentHandle,
-    awaitNamedComponentHandle,
-    resolveNamedComponentHandle,
     useAiToolComponentRefs,
     useOptionalAiToolComponentSnapshot,
     useRegisterAiToolComponentRef,
@@ -212,8 +214,8 @@ export interface AiChatHandle extends NamedAiToolComponentHandle {
 export type ShowMapAiResult = { status: string; [key: string]: unknown };
 
 type ActiveWorkflow =
-    | { kind: 'goal'; key: number; dispatchTool: AiToolDispatcher }
-    | { kind: 'procedure_plan'; key: number; dispatchTool: AiToolDispatcher }
+    | { kind: 'goal'; key: number; runner: GoalRunner }
+    | { kind: 'procedure_plan'; key: number; runner: ProcedurePlanRunner }
     | { kind: 'live_range_todo'; key: number; runner: LiveRangeTodoListRunner };
 
 type PendingWorkflow =
@@ -330,9 +332,10 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     // Loading and mode states
     const [isLoading] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
-    const [, setProcedurePlanState] = useState<ProcedurePlanState | null>(null);
-    const [, setGoalSnapshot] = useState<GoalSnapshot | null>(null);
+    const [procedurePlanSnapshot, setProcedurePlanSnapshot] = useState<ProcedurePlanSnapshot | null>(null);
+    const [goalSnapshot, setGoalSnapshot] = useState<GoalSnapshot | null>(null);
     const [activeWorkflow, setActiveWorkflow] = useState<ActiveWorkflow | null>(null);
+    const activeWorkflowRef = useRef<ActiveWorkflow | null>(null);
     const workflowKeyRef = useRef(0);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
@@ -459,6 +462,11 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             overlayInvalidationTokenRef.current += 1;
             activeAgentSessionRef.current = null;
             activeToolHandlersRef.current = {};
+            const activeWorkflow = activeWorkflowRef.current;
+            activeWorkflowRef.current = null;
+            if (activeWorkflow?.kind === 'goal' || activeWorkflow?.kind === 'procedure_plan') {
+                activeWorkflow.runner.dispose();
+            }
             const liveRangeTodoListRunner = liveRangeTodoListRunnerRef.current;
             liveRangeTodoListRunnerRef.current = null;
             liveRangeTodoListRunner?.dispose();
@@ -468,14 +476,30 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }, []);
 
     const mountWorkflow = useCallback((workflow: PendingWorkflow) => {
+        const previous = activeWorkflowRef.current;
+        if (
+            (previous?.kind === 'goal' || previous?.kind === 'procedure_plan')
+            && previous.runner !== workflow.runner
+        ) {
+            previous.runner.dispose();
+        }
+        if (workflow.kind === 'goal' || workflow.kind === 'procedure_plan') {
+            try {
+                workflow.runner.addComponentRef(componentRefs);
+            } catch (error) {
+                workflow.runner.dispose();
+                throw error;
+            }
+        }
         const next = { ...workflow, key: ++workflowKeyRef.current } as ActiveWorkflow;
+        activeWorkflowRef.current = next;
         flushSync(() => {
             setGoalSnapshot(null);
             procedurePlanRef.current = null;
-            setProcedurePlanState(null);
+            setProcedurePlanSnapshot(null);
             setActiveWorkflow(next);
         });
-    }, []);
+    }, [componentRefs]);
 
     const dispatchActiveVoiceTool = useCallback<AiToolDispatcher>((
         toolName,
@@ -851,33 +875,29 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }, []);
 
     const setProcedurePlan = useCallback((plan: ProcedurePlanState | null) => {
-        const existing = componentRefs
-            .findComponentRef<ProcedurePlanHandle>(AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN)
-            ?.current ?? null;
+        const active = activeWorkflowRef.current;
+        const existing = active?.kind === 'procedure_plan' ? active.runner : null;
         if (!plan) {
             existing?.clearProcedurePlan();
             procedurePlanRef.current = null;
-            setProcedurePlanState(null);
+            setProcedurePlanSnapshot(null);
             return;
         }
-        if (existing) {
-            observeBackgroundWorkflow(existing.createProcedurePlan(plan));
-            return;
-        }
-        mountWorkflow({ kind: 'procedure_plan', dispatchTool: dispatchActiveVoiceTool });
-        void awaitNamedComponentHandle<ProcedurePlanHandle>(
-            componentRefs,
+        const runner = new ProcedurePlanRunner(
             AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
-        ).then((handle) => {
-            if (conversationDisposedRef.current) return;
-            observeBackgroundWorkflow(handle.createProcedurePlan(plan));
-        });
-    }, [componentRefs, dispatchActiveVoiceTool, mountWorkflow, observeBackgroundWorkflow]);
+            dispatchActiveVoiceTool,
+            (next) => {
+                procedurePlanRef.current = next;
+                setProcedurePlanSnapshot(next ? serializeProcedurePlan(next) : null);
+            },
+        );
+        mountWorkflow({ kind: 'procedure_plan', runner });
+        observeBackgroundWorkflow(runner.createProcedurePlan(plan));
+    }, [dispatchActiveVoiceTool, mountWorkflow, observeBackgroundWorkflow]);
 
     const advanceProcedurePlanStep = useCallback(async (reason?: string) => {
-        const runner = componentRefs
-            .findComponentRef<ProcedurePlanHandle>(AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN)
-            ?.current;
+        const active = activeWorkflowRef.current;
+        const runner = active?.kind === 'procedure_plan' ? active.runner : null;
         if (!runner) {
             throw new NoProcedurePlanError(
                 name,
@@ -899,16 +919,15 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 { cause: error },
             );
         }
-    }, [componentRefs, name]);
+    }, [name]);
 
     const clearProcedurePlan = useCallback(() => {
-        const runner = componentRefs
-            .findComponentRef<ProcedurePlanHandle>(AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN)
-            ?.current;
+        const active = activeWorkflowRef.current;
+        const runner = active?.kind === 'procedure_plan' ? active.runner : null;
         runner?.clearProcedurePlan();
         procedurePlanRef.current = null;
-        setProcedurePlanState(null);
-    }, [componentRefs]);
+        setProcedurePlanSnapshot(null);
+    }, []);
 
     const optOutProcedurePlan = useCallback(() => {
         procedurePlanOptedOutRef.current = true;
@@ -1116,16 +1135,19 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         args: Record<string, unknown>,
         dispatchTool: AiToolDispatcher,
     ): ReturnType<GoalHandle['createGoal']> => {
+        const runner = new GoalRunner(
+            AI_TOOL_COMPONENT_NAMES.GOAL,
+            dispatchTool,
+            setGoalSnapshot,
+        );
         try {
-            mountWorkflow({ kind: 'goal', dispatchTool });
-            return resolveNamedComponentHandle<GoalHandle>(
-                componentRefs,
-                AI_TOOL_COMPONENT_NAMES.GOAL,
-            ).createGoal(args as any);
+            mountWorkflow({ kind: 'goal', runner });
+            return runner.createGoal(args as any);
         } catch (error) {
+            runner.dispose();
             return createAiToolOperationFrom(() => { throw error; });
         }
-    }, [componentRefs, mountWorkflow]);
+    }, [mountWorkflow]);
 
     const createProcedurePlan = useCallback((
         args: Record<string, unknown>,
@@ -1143,15 +1165,25 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                     'Provide a goal and at least one request with a title.',
                 );
             }
-            mountWorkflow({ kind: 'procedure_plan', dispatchTool });
-            return resolveNamedComponentHandle<ProcedurePlanHandle>(
-                componentRefs,
+            const runner = new ProcedurePlanRunner(
                 AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
-            ).createProcedurePlan(plan);
+                dispatchTool,
+                (next) => {
+                    procedurePlanRef.current = next;
+                    setProcedurePlanSnapshot(next ? serializeProcedurePlan(next) : null);
+                },
+            );
+            try {
+                mountWorkflow({ kind: 'procedure_plan', runner });
+                return runner.createProcedurePlan(plan);
+            } catch (error) {
+                runner.dispose();
+                throw error;
+            }
         } catch (error) {
             return createAiToolOperationFrom(() => { throw error; });
         }
-    }, [componentRefs, mountWorkflow]);
+    }, [mountWorkflow]);
 
     const initializeLiveRangeTodoList = useCallback((): LiveRangeTodoListHandle => {
         let runner = liveRangeTodoListRunnerRef.current;
@@ -1161,6 +1193,10 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 (snapshot) => {
                     if (snapshot !== null || liveRangeTodoListRunnerRef.current !== runner) return;
                     liveRangeTodoListRunnerRef.current = null;
+                    const active = activeWorkflowRef.current;
+                    if (active?.kind === 'live_range_todo' && active.runner === runner) {
+                        activeWorkflowRef.current = null;
+                    }
                     setActiveWorkflow((current) => (
                         current?.kind === 'live_range_todo' && current.runner === runner
                             ? null
@@ -1171,24 +1207,30 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             liveRangeTodoListRunnerRef.current = runner;
             runner.addComponentRef(componentRefs);
         }
-        if (activeWorkflow?.kind !== 'live_range_todo' || activeWorkflow.runner !== runner) {
+        const active = activeWorkflowRef.current;
+        if (active?.kind !== 'live_range_todo' || active.runner !== runner) {
             mountWorkflow({ kind: 'live_range_todo', runner });
         }
         return runner;
-    }, [activeWorkflow, componentRefs, mountWorkflow]);
+    }, [componentRefs, mountWorkflow]);
 
     const resetLivePerformanceAnalystRuntime = useCallback(() => {
         const analystAgent = livePerformanceAnalystStateRef.current;
         analystAgent.enabled = false;
         setLivePerformanceAnalystAgentEnabled(false);
         procedurePlanOptedOutRef.current = false;
+        const active = activeWorkflowRef.current;
+        activeWorkflowRef.current = null;
+        if (active?.kind === 'goal' || active?.kind === 'procedure_plan') {
+            active.runner.dispose();
+        }
         setActiveWorkflow(null);
         setGoalSnapshot(null);
         const liveRangeTodoListRunner = liveRangeTodoListRunnerRef.current;
         liveRangeTodoListRunnerRef.current = null;
         liveRangeTodoListRunner?.dispose();
         procedurePlanRef.current = null;
-        setProcedurePlanState(null);
+        setProcedurePlanSnapshot(null);
     }, [setLivePerformanceAnalystAgentEnabled]);
 
     const resetOvertakeRuntime = useCallback(() => {
@@ -2165,21 +2207,14 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                     {activeWorkflow?.kind === 'goal' && (
                         <Goal
                             key={activeWorkflow.key}
-                            name={AI_TOOL_COMPONENT_NAMES.GOAL}
-                            dispatchTool={activeWorkflow.dispatchTool}
-                            onSnapshotChange={setGoalSnapshot}
+                            snapshot={goalSnapshot}
                             surface="chat"
                         />
                     )}
-                    {activeWorkflow?.kind === 'procedure_plan' && (
-                        <ProcedurePlanWorkflow
+                    {activeWorkflow?.kind === 'procedure_plan' && procedurePlanSnapshot && (
+                        <ProcedurePlan
                             key={activeWorkflow.key}
-                            name={AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN}
-                            dispatchTool={activeWorkflow.dispatchTool}
-                            onSnapshotChange={(next) => {
-                                procedurePlanRef.current = next;
-                                setProcedurePlanState(next);
-                            }}
+                            plan={procedurePlanSnapshot}
                             surface="chat"
                         />
                     )}

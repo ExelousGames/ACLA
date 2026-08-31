@@ -18,7 +18,6 @@ export {
     default as ProcedurePlan,
     PROCEDURE_PLAN_STEP_STATUSES,
     ProcedurePlanRunner,
-    ProcedurePlanWorkflow,
     advanceProcedurePlan,
     buildProcedurePlan,
     getProcedurePlanToolArguments,
@@ -43,7 +42,6 @@ export type {
     ProcedurePlanStepStatus,
     ProcedurePlanTaskErrorHandler,
     ProcedurePlanTaskResult,
-    ProcedurePlanWorkflowProps,
 } from './ProcedurePlan';
 export {
     default as LiveRangeTodoList,

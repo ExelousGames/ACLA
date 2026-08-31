@@ -120,6 +120,8 @@ const BaselineProgressDisplay: React.FC<BaselineProgressDisplayProps> = ({
 
             <div className="baseline-timeline__stages">
                 {stages.map((stage, index) => {
+                    if (surface === 'pill' && index !== activeStage) return null;
+
                     const state = getStageState(index);
                     const showProgress = stage.key === 'recording'
                         && tag?.status !== 'complete'

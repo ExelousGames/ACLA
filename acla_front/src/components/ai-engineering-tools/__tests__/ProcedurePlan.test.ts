@@ -57,7 +57,16 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         }));
         const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
 
-        const operation = runner.replace(plan());
+        const operation = runner.createProcedurePlan(plan());
+        expect(runner.getComponentName()).toBe('procedure-plan');
+        expect(runner.getComponentType()).toBe('procedure_plan');
+        expect(runner.getOverlayBehavior(null)).toEqual({
+            placement: 'flow',
+            requestedStatus: 'expanded',
+            remove: true,
+        });
+        expect(runner.getOverlayMetadata()).toEqual({});
+        expect(runner.handleOverlayRendererEvent({} as any)).toBeUndefined();
         const result = await operation.result;
         expect(result).not.toBeInstanceOf(Error);
         if (result instanceof Error) throw result;
@@ -71,6 +80,14 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
             name: 'read',
             lap: 2,
         });
+        expect(runner.getProcedurePlan()).toMatchObject({
+            goal: 'Review the lap',
+            currentStep: 2,
+        });
+
+        const cleared = await runner.clearProcedurePlan('finished').result;
+        expect(cleared).toMatchObject({ status: 'cleared', reason: 'finished' });
+        expect(runner.getSnapshot()).toBeNull();
     });
 
     it('keeps a failed step available for retry', async () => {
@@ -83,7 +100,7 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         }));
         const runner = new ProcedurePlanRunner('procedure-plan', dispatch, undefined, onError);
 
-        const failedResult = await runner.replace(plan()).result;
+        const failedResult = await runner.createProcedurePlan(plan()).result;
         expect(failedResult).not.toBeInstanceOf(Error);
         if (failedResult instanceof Error) throw failedResult;
         expect(failedResult).toMatchObject({

@@ -74,6 +74,12 @@ export interface DriverExpertComparisonAvailability {
     gear: boolean;
 }
 
+export interface DriverExpertComparisonDiagnostic {
+    code: string;
+    message: string;
+    details?: Record<string, unknown>;
+}
+
 export interface DriverExpertComparisonLayout {
     /** @deprecated Retained as a no-op for backwards compatibility. */
     chartHeight?: number | string;
@@ -374,25 +380,136 @@ const streamHasValue = (
     key: 'gas' | 'brake' | 'gear',
 ): boolean => stream.some((point) => finiteNumber(point[key]) !== undefined);
 
+interface DriverExpertComparisonChannelPresence {
+    replay?: DriverExpertReplay;
+    driverTrajectory: boolean;
+    expertTrajectory: boolean;
+    driverGas: boolean;
+    expertGas: boolean;
+    driverBrake: boolean;
+    expertBrake: boolean;
+    driverGear: boolean;
+    expertGear: boolean;
+}
+
+const getDriverExpertComparisonChannelPresence = (
+    data: DriverExpertComparisonData | null | undefined,
+    detectedGame: DesktopGame | null,
+): DriverExpertComparisonChannelPresence => {
+    const replay = buildDriverExpertReplay(data);
+    if (!replay) {
+        return {
+            driverTrajectory: false,
+            expertTrajectory: false,
+            driverGas: false,
+            expertGas: false,
+            driverBrake: false,
+            expertBrake: false,
+            driverGear: false,
+            expertGear: false,
+        };
+    }
+    const driverVerticalAxis = detectedGame === 'acc' ? 'z' : 'y';
+    return {
+        replay,
+        driverTrajectory: replay.driver.some((point) => (
+            toPlottingTrajectory(point.trajectory, driverVerticalAxis) !== undefined
+        )),
+        expertTrajectory: replay.expert.some((point) => (
+            toPlottingTrajectory(point.trajectory, 'y') !== undefined
+        )),
+        driverGas: streamHasValue(replay.driver, 'gas'),
+        expertGas: streamHasValue(replay.expert, 'gas'),
+        driverBrake: streamHasValue(replay.driver, 'brake'),
+        expertBrake: streamHasValue(replay.expert, 'brake'),
+        driverGear: streamHasValue(replay.driver, 'gear'),
+        expertGear: streamHasValue(replay.expert, 'gear'),
+    };
+};
+
 export const getDriverExpertComparisonAvailability = (
     data: DriverExpertComparisonData | null | undefined,
     detectedGame: DesktopGame | null = null,
 ): DriverExpertComparisonAvailability => {
-    const replay = buildDriverExpertReplay(data);
-    if (!replay) return { trajectory: false, gas: false, brake: false, gear: false };
-    const driverVerticalAxis = detectedGame === 'acc' ? 'z' : 'y';
-    const hasDriverTrajectory = replay.driver.some((point) => (
-        toPlottingTrajectory(point.trajectory, driverVerticalAxis) !== undefined
-    ));
-    const hasExpertTrajectory = replay.expert.some((point) => (
-        toPlottingTrajectory(point.trajectory, 'y') !== undefined
-    ));
+    const presence = getDriverExpertComparisonChannelPresence(data, detectedGame);
     return {
-        trajectory: hasDriverTrajectory && hasExpertTrajectory,
-        gas: streamHasValue(replay.driver, 'gas') && streamHasValue(replay.expert, 'gas'),
-        brake: streamHasValue(replay.driver, 'brake') && streamHasValue(replay.expert, 'brake'),
-        gear: streamHasValue(replay.driver, 'gear') && streamHasValue(replay.expert, 'gear'),
+        trajectory: presence.driverTrajectory && presence.expertTrajectory,
+        gas: presence.driverGas && presence.expertGas,
+        brake: presence.driverBrake && presence.expertBrake,
+        gear: presence.driverGear && presence.expertGear,
     };
+};
+
+export const getDriverExpertComparisonUnavailableDiagnostics = (
+    data: DriverExpertComparisonData | null | undefined,
+    detectedGame: DesktopGame | null = null,
+): DriverExpertComparisonDiagnostic[] => {
+    if (!data) {
+        return [{
+            code: 'comparison_data_missing',
+            message: 'No Driver/Expert comparison payload was attached to the analysis segment.',
+        }];
+    }
+    if (!Array.isArray(data.samples) || data.samples.length === 0) {
+        return [{
+            code: 'comparison_samples_missing',
+            message: 'The Driver/Expert comparison payload contains no samples.',
+        }];
+    }
+
+    const presence = getDriverExpertComparisonChannelPresence(data, detectedGame);
+    if (!presence.replay) {
+        return [{
+            code: 'comparison_replay_invalid',
+            message: 'Comparison samples do not form valid increasing Driver and Expert timelines.',
+        }];
+    }
+    if (
+        (presence.driverTrajectory && presence.expertTrajectory)
+        || (presence.driverGas && presence.expertGas)
+        || (presence.driverBrake && presence.expertBrake)
+        || (presence.driverGear && presence.expertGear)
+    ) {
+        return [];
+    }
+
+    const diagnostics: DriverExpertComparisonDiagnostic[] = [];
+    const driverTrajectoryPlane = detectedGame === 'acc' ? 'X/Z' : 'X/Y';
+    if (!presence.driverTrajectory) diagnostics.push({
+        code: 'driver_trajectory_missing',
+        message: `Driver trajectory has no finite ${driverTrajectoryPlane} coordinates.`,
+        details: { game: detectedGame, required_plane: driverTrajectoryPlane },
+    });
+    if (!presence.expertTrajectory) diagnostics.push({
+        code: 'expert_trajectory_missing',
+        message: 'Expert trajectory has no finite X/Y coordinates.',
+        details: { required_plane: 'X/Y' },
+    });
+    if (!presence.driverGas) diagnostics.push({
+        code: 'driver_throttle_missing',
+        message: 'Driver throttle telemetry is missing or non-finite.',
+    });
+    if (!presence.expertGas) diagnostics.push({
+        code: 'expert_throttle_missing',
+        message: 'Expert throttle telemetry is missing or non-finite.',
+    });
+    if (!presence.driverBrake) diagnostics.push({
+        code: 'driver_brake_missing',
+        message: 'Driver brake telemetry is missing or non-finite.',
+    });
+    if (!presence.expertBrake) diagnostics.push({
+        code: 'expert_brake_missing',
+        message: 'Expert brake telemetry is missing or non-finite.',
+    });
+    if (!presence.driverGear) diagnostics.push({
+        code: 'driver_gear_missing',
+        message: 'Driver gear telemetry is missing or non-finite.',
+    });
+    if (!presence.expertGear) diagnostics.push({
+        code: 'expert_gear_missing',
+        message: 'Expert gear telemetry is missing or non-finite.',
+    });
+    return diagnostics;
 };
 
 export const hasComparableDriverExpertData = (

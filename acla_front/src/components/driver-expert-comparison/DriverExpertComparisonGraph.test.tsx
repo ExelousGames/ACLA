@@ -5,6 +5,7 @@ import {
     EXPERT_COMPARISON_COLOR,
     DriverExpertComparisonGraph,
     getDriverExpertReplayDurationMs,
+    getDriverExpertComparisonUnavailableDiagnostics,
     normalizeDriverExpertComparisonData,
 } from './DriverExpertComparisonGraph';
 import { useDesktopGame } from 'contexts/DesktopGameContext';
@@ -1129,5 +1130,64 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByLabelText('Track replay')).toHaveStyle({ height: '200px' });
         expect(screen.queryByTestId('pedal-panel-region')).not.toBeInTheDocument();
         expect(screen.getByTestId('driver-telemetry-pod')).toHaveTextContent('Driver');
+    });
+});
+
+describe('Driver/Expert comparison unavailable diagnostics', () => {
+    const reasonCodes = (
+        data: Parameters<typeof getDriverExpertComparisonUnavailableDiagnostics>[0],
+        game: DesktopGame | null = null,
+    ) => getDriverExpertComparisonUnavailableDiagnostics(data, game)
+        .map((diagnostic) => diagnostic.code);
+
+    it('distinguishes missing data, empty samples, and an invalid replay', () => {
+        expect(reasonCodes(undefined)).toEqual(['comparison_data_missing']);
+        expect(reasonCodes({ samples: [] })).toEqual(['comparison_samples_missing']);
+        expect(reasonCodes({
+            samples: [{
+                driverTimeMs: 100,
+                expertTimeMs: 100,
+                driverTrackPosition: 0.2,
+                expertTrackPosition: 0.2,
+            }, {
+                driverTimeMs: 100,
+                expertTimeMs: 200,
+                driverTrackPosition: 0.3,
+                expertTrackPosition: 0.3,
+            }],
+        })).toEqual(['comparison_replay_invalid']);
+    });
+
+    it('reports every missing Driver and Expert display channel', () => {
+        expect(reasonCodes({
+            samples: [{
+                driverTimeMs: 100,
+                expertTimeMs: 1_000,
+                driverTrackPosition: 0.2,
+                expertTrackPosition: 0.2,
+            }],
+        })).toEqual([
+            'driver_trajectory_missing',
+            'expert_trajectory_missing',
+            'driver_throttle_missing',
+            'expert_throttle_missing',
+            'driver_brake_missing',
+            'expert_brake_missing',
+            'driver_gear_missing',
+            'expert_gear_missing',
+        ]);
+    });
+
+    it('returns no reasons as soon as one paired channel can be displayed', () => {
+        expect(reasonCodes({
+            samples: [{
+                driverTimeMs: 100,
+                expertTimeMs: 1_000,
+                driverTrackPosition: 0.2,
+                expertTrackPosition: 0.2,
+                driverGas: 0.4,
+                expertGas: 0.5,
+            }],
+        })).toEqual([]);
     });
 });

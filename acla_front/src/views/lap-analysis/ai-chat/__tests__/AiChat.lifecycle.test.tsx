@@ -14,6 +14,8 @@ const mockOverlaySetEnabled = jest.fn<Promise<void>, [boolean]>(() => Promise.re
 const mockFindComponentRef = jest.fn(() => null);
 const mockRegisterComponentRef = jest.fn();
 const mockUnregisterComponentRef = jest.fn();
+const mockGoalRender = jest.fn();
+const mockProcedurePlanRender = jest.fn();
 let mockRegisteredAiChatHandle: any;
 
 jest.mock('../use-voice-conversation', () => ({
@@ -78,20 +80,20 @@ jest.mock('views/lap-analysis/recording-state', () => {
 jest.mock('components/ai-engineering-tools', () => {
     const actual = jest.requireActual('components/ai-engineering-tools');
     return {
-        Goal: () => null,
-        ProcedurePlanWorkflow: () => null,
+        ...actual,
+        Goal: (props: unknown) => {
+            mockGoalRender(props);
+            return null;
+        },
+        ProcedurePlan: (props: unknown) => {
+            mockProcedurePlanRender(props);
+            return null;
+        },
         LiveRangeTodoList: () => null,
         LiveRangeTodoListRunner: actual.LiveRangeTodoListRunner,
-        buildProcedurePlan: jest.fn(() => null),
         isProcedurePlanClearEvent: jest.fn(() => false),
         isProcedurePlanOptOutRequest: jest.fn(() => false),
         isProcedurePlanStartEvent: jest.fn(() => false),
-        serializeProcedurePlan: jest.fn((value) => value),
-        createAiToolOperationFrom: (callback: () => unknown) => ({
-            result: Promise.resolve().then(callback),
-            statuses: [],
-        }),
-        mapAiToolOperation: jest.fn((operation) => operation),
     };
 });
 
@@ -136,6 +138,26 @@ const getLatestAgentVoiceOptions = () => {
     return call[0] as Record<string, any>;
 };
 
+const lifecycleGoalRequest = () => ({
+    name: 'Lifecycle goal',
+    steps: [{ id: 'collect', title: 'Collect data', name: 'collect' }],
+    determination: {
+        tool: { name: 'determine' },
+        operator: 'eq',
+        target: 0,
+    },
+});
+
+const lifecycleProcedurePlan = () => ({
+    goal: 'Lifecycle plan',
+    requests: [{ type: 'tool_call', title: 'Read data', name: 'read' }],
+});
+
+const operationWithValue = (value: unknown) => ({
+    result: Promise.resolve(value),
+    statuses: [],
+});
+
 describe('AiChat conversation lifecycle', () => {
     beforeEach(() => {
         localStorage.clear();
@@ -169,6 +191,8 @@ describe('AiChat conversation lifecycle', () => {
         mockRegisterComponentRef.mockClear();
         mockUnregisterComponentRef.mockClear();
         mockFindComponentRef.mockClear();
+        mockGoalRender.mockClear();
+        mockProcedurePlanRender.mockClear();
         mockRegisteredAiChatHandle = undefined;
         delete (window as any).electronAPI;
     });
@@ -281,6 +305,152 @@ describe('AiChat conversation lifecycle', () => {
         expect(mockRegisterComponentRef).toHaveBeenCalledTimes(2);
 
         view.unmount();
+    });
+
+    it('registers a goal runner before dispatch and renders its snapshots', async () => {
+        let resolveCollect!: (value: unknown) => void;
+        const collect = new Promise((resolve) => {
+            resolveCollect = resolve;
+        });
+        const dispatch = jest.fn((toolName: string) => {
+            expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
+            expect(mockRegisterComponentRef.mock.calls[0][0].current.getComponentType()).toBe('goal');
+            if (toolName === 'collect') return { result: collect, statuses: [] };
+            return operationWithValue({ status: 'ready', data: 0 });
+        });
+        render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+
+        let operation: any;
+        act(() => {
+            operation = mockRegisteredAiChatHandle.createGoal(lifecycleGoalRequest(), dispatch);
+        });
+        expect(mockGoalRender).toHaveBeenLastCalledWith(expect.objectContaining({
+            snapshot: expect.objectContaining({ name: 'Lifecycle goal', status: 'running' }),
+        }));
+
+        let result: any;
+        await act(async () => {
+            resolveCollect({ status: 'complete' });
+            result = await operation.result;
+        });
+
+        expect(result).toMatchObject({ goal: 'Lifecycle goal', status: 'achieved' });
+        expect(result).not.toHaveProperty('name');
+        expect(mockGoalRender.mock.calls.map(([props]) => props.snapshot)).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ name: 'Lifecycle goal', status: 'running' }),
+                expect.objectContaining({ name: 'Lifecycle goal', status: 'achieved' }),
+            ]),
+        );
+    });
+
+    it('registers a procedure plan runner before dispatch and renders its snapshots', async () => {
+        let resolveRead!: (value: unknown) => void;
+        const read = new Promise((resolve) => {
+            resolveRead = resolve;
+        });
+        const dispatch = jest.fn(() => {
+            expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
+            expect(mockRegisterComponentRef.mock.calls[0][0].current.getComponentType())
+                .toBe('procedure_plan');
+            return { result: read, statuses: [] };
+        });
+        render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+
+        let operation: any;
+        act(() => {
+            operation = mockRegisteredAiChatHandle
+                .createProcedurePlan(lifecycleProcedurePlan(), dispatch);
+        });
+        expect(mockProcedurePlanRender).toHaveBeenLastCalledWith(expect.objectContaining({
+            plan: expect.objectContaining({
+                goal: 'Lifecycle plan',
+                requests: [expect.objectContaining({ status: 'running' })],
+            }),
+        }));
+
+        let result: any;
+        await act(async () => {
+            resolveRead({ status: 'complete' });
+            result = await operation.result;
+        });
+
+        expect(result).toMatchObject({ status: 'complete', goal: 'Lifecycle plan' });
+        expect(mockProcedurePlanRender.mock.calls.map(([props]) => props.plan)).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    goal: 'Lifecycle plan',
+                    requests: [expect.objectContaining({ status: 'running' })],
+                }),
+                expect.objectContaining({
+                    goal: 'Lifecycle plan',
+                    requests: [expect.objectContaining({ status: 'complete' })],
+                }),
+            ]),
+        );
+    });
+
+    it('disposes owned workflow runners on replacement and conversation unmount', () => {
+        const never = new Promise<any>(() => undefined);
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        let goalOperation: any;
+        act(() => {
+            goalOperation = mockRegisteredAiChatHandle.createGoal(
+                lifecycleGoalRequest(),
+                jest.fn(() => ({ result: never, statuses: [] })),
+            );
+        });
+        void goalOperation.result.catch(() => undefined);
+        const goalRef = mockRegisterComponentRef.mock.calls[0][0];
+        const goalDispose = jest.spyOn(goalRef.current, 'dispose');
+
+        let planOperation: any;
+        act(() => {
+            planOperation = mockRegisteredAiChatHandle.createProcedurePlan(
+                lifecycleProcedurePlan(),
+                jest.fn(() => ({ result: never, statuses: [] })),
+            );
+        });
+        void planOperation.result.catch(() => undefined);
+        const planRef = mockRegisterComponentRef.mock.calls[1][0];
+        const planDispose = jest.spyOn(planRef.current, 'dispose');
+
+        expect(goalDispose).toHaveBeenCalledTimes(1);
+        expect(mockUnregisterComponentRef).toHaveBeenCalledWith(goalRef);
+        expect(mockUnregisterComponentRef.mock.invocationCallOrder[0])
+            .toBeLessThan(mockRegisterComponentRef.mock.invocationCallOrder[1]);
+
+        view.unmount();
+
+        expect(planDispose).toHaveBeenCalledTimes(1);
+        expect(mockUnregisterComponentRef).toHaveBeenCalledWith(planRef);
+    });
+
+    it('disposes an owned workflow runner during an agent runtime reset', async () => {
+        const never = new Promise<any>(() => undefined);
+        render(
+            <AiChat
+                name="dashboard-assistant"
+                activeScreen={{ assistantMode: 'live', label: 'Live Session' }}
+            />,
+        );
+        let goalOperation: any;
+        act(() => {
+            goalOperation = mockRegisteredAiChatHandle.createGoal(
+                lifecycleGoalRequest(),
+                jest.fn(() => ({ result: never, statuses: [] })),
+            );
+        });
+        void goalOperation.result.catch(() => undefined);
+        const goalRef = mockRegisterComponentRef.mock.calls[0][0];
+        const goalDispose = jest.spyOn(goalRef.current, 'dispose');
+
+        await act(async () => {
+            await mockRegisteredAiChatHandle.startAgentSession('track_guide').result;
+        });
+
+        expect(goalDispose).toHaveBeenCalledTimes(1);
+        expect(mockUnregisterComponentRef).toHaveBeenCalledWith(goalRef);
     });
 
     it('starts a conversation when mounted under StrictMode', async () => {

@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React from 'react';
 import type { NamedAiToolComponentHandle } from 'contexts/AiToolComponentRefContext';
-import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 import type {
     AiOverlayComponentHandle,
     AiOverlayRenderer,
+    AiOverlayRendererEvent,
 } from 'views/floating-chat/ai-overlay-types';
 import {
     isOverlayNonEmptyString,
@@ -34,6 +34,7 @@ import {
     type AiToolDeferred,
     type AiToolOperation,
 } from './ai-tool-operation';
+import GoalOverlayDisplay, { getGoalOverlaySummary } from './GoalOverlayDisplay';
 
 export interface NestedAiToolResult {
     [key: string]: unknown;
@@ -94,8 +95,8 @@ export type GoalTaskDescriptor = {
 export type GoalStepSnapshot = GoalStepDescriptor & {
     status: GoalStepStatus;
     attempts: number;
-    run_id?: string;
-    error?: string;
+    run_id: string | null;
+    error: string | null;
 };
 
 export type GoalSourceResultMetadata = {
@@ -169,14 +170,15 @@ export type GoalDisplayProps = {
 };
 
 export type GoalProps = {
-    name: string;
-    dispatchTool: AiToolDispatcher;
-    onSnapshotChange?: (snapshot: GoalSnapshot | null) => void;
+    snapshot: GoalSnapshot | null;
     surface?: 'chat' | 'pill';
 };
 
 const RETRY_DELAY_MS = 1000;
 const RECURSIVE_GOAL_TOOL_NAMES = new Set(['create_goal', 'retry_goal_task']);
+const createGoalRunId = (): string => (
+    `goal-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -396,7 +398,7 @@ const toRunResult = (
 type RuntimeTaskExecutionResult = {
     value: unknown;
     error?: GoalComponentError;
-    source_result?: GoalSourceResultMetadata;
+    source_result: GoalSourceResultMetadata;
 };
 
 type ActiveGoalOperation = {
@@ -413,7 +415,9 @@ const toGoalAiResult = (result: GoalRunResult): GoalAiResult => {
     return { ...safeResult, goal: name };
 };
 
-export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
+export class GoalRunner
+extends AiToolComponentBase<GoalSnapshot | null>
+implements GoalHandle {
     private currentSnapshot: GoalSnapshot | null = null;
     private request: GoalRequest | null = null;
     private failedStepIndex: number | null = null;
@@ -430,6 +434,30 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         private readonly onChange?: (snapshot: GoalSnapshot | null) => void,
     ) {
         super(componentName, null);
+    }
+
+    createGoal(input: GoalRequest): AiToolOperation<GoalAiResult> {
+        return mapAiToolOperation(this.create(input), toGoalAiResult);
+    }
+
+    getComponentType(): string {
+        return 'goal';
+    }
+
+    getOverlayBehavior(snapshot: GoalSnapshot | null) {
+        return {
+            placement: 'flow' as const,
+            requestedStatus: 'expanded' as const,
+            remove: snapshot === null || snapshot.status === 'achieved',
+        };
+    }
+
+    getOverlayMetadata() {
+        return {};
+    }
+
+    handleOverlayRendererEvent(_event: AiOverlayRendererEvent): void {
+        // Goal overlays have no renderer-originated events.
     }
 
     getSnapshot(): GoalSnapshot | null {
@@ -473,7 +501,11 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         return this.runPreparation(validation.request, this.generation, 0);
     }
 
-    retryFailedTask(): AiToolOperation<GoalRunResult> {
+    retryFailedTask(): AiToolOperation<GoalAiResult> {
+        return mapAiToolOperation(this.retryFailedTaskResult(), toGoalAiResult);
+    }
+
+    private retryFailedTaskResult(): AiToolOperation<GoalRunResult> {
         const request = this.request;
         if (!request) return createAiToolOperationFrom(() => this.runRetryFailedTask());
         return this.startOperation(() => this.runRetryFailedTask());
@@ -574,31 +606,31 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
             }
             const step = request.steps[index];
             const attempt = (this.stepAttempts[index] ?? 0) + 1;
+            const runId = createGoalRunId();
             this.stepAttempts[index] = attempt;
             this.updateStep(index, {
                 status: 'running',
                 attempts: attempt,
-                run_id: undefined,
-                error: undefined,
+                run_id: runId,
+                error: null,
             });
             const execution = await this.executeTask(
                 step.name,
                 step.arguments,
                 GoalStepFailedError,
                 'The goal step failed.',
+                runId,
             );
             if (generation !== this.generation) {
                 throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
             }
-            const sourceResult = execution.source_result
-                ? { ...execution.source_result, step_id: step.id }
-                : undefined;
+            const sourceResult = { ...execution.source_result, step_id: step.id };
             this.taskResults.push({
                 step_id: step.id,
                 tool_name: step.name,
                 attempt,
                 status: execution.error ? 'error' : 'completed',
-                ...(sourceResult ? { source_result: sourceResult } : {}),
+                source_result: sourceResult,
                 ...(execution.error ? { error: serializeError(execution.error) } : {}),
             });
             if (execution.error) {
@@ -606,7 +638,7 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 this.determinationFailed = false;
                 this.updateStep(index, {
                     status: 'error',
-                    run_id: sourceResult?.run_id,
+                    run_id: sourceResult.run_id,
                     error: execution.error.message,
                 });
                 const snapshot: GoalSnapshot = {
@@ -621,8 +653,8 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
             }
             this.updateStep(index, {
                 status: 'completed',
-                run_id: sourceResult?.run_id,
-                error: undefined,
+                run_id: sourceResult.run_id,
+                error: null,
             });
             this.publish({
                 ...this.currentSnapshot!,
@@ -730,8 +762,8 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         argumentsValue: Record<string, unknown> | undefined,
         FailureError: AiToolComponentErrorConstructor<GoalComponentError>,
         fallbackMessage: string,
+        runId = createGoalRunId(),
     ): Promise<RuntimeTaskExecutionResult> {
-        const runId = `goal-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
         try {
             const operation = this.dispatchTool(toolName, argumentsValue);
             const output = await operation.result;
@@ -770,6 +802,8 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 ...(step.arguments ? { arguments: { ...step.arguments } } : {}),
                 status: 'pending',
                 attempts: this.stepAttempts[index] ?? 0,
+                run_id: null,
+                error: null,
             })),
             determination: cloneDetermination(request.determination),
             determination_result: this.pendingDeterminationResult(request),
@@ -905,60 +939,16 @@ export const goalOverlayRenderer: AiOverlayRenderer<GoalSnapshot> = {
         && (snapshot.actual === null || (typeof snapshot.actual === 'number' && Number.isFinite(snapshot.actual)))
     ),
     renderOverlay: (snapshot, status) => status === 'folded'
-        ? `${snapshot.status}: ${snapshot.name}`
-        : <GoalDisplay snapshot={snapshot} surface="pill" />,
+        ? getGoalOverlaySummary(snapshot)
+        : <GoalOverlayDisplay snapshot={snapshot} />,
     dimensions: {
-        expanded: { width: 420, height: 230 },
+        expanded: { width: 420, height: 176 },
         folded: { width: 340, height: 58 },
     },
 };
 
-const Goal: React.FC<GoalProps> = ({
-    name,
-    dispatchTool,
-    onSnapshotChange,
-    surface = 'chat',
-}) => {
-    const [snapshot, setSnapshot] = useState<GoalSnapshot | null>(null);
-    const onSnapshotChangeRef = useRef(onSnapshotChange);
-    onSnapshotChangeRef.current = onSnapshotChange;
-    const runnerRef = useRef<GoalRunner | null>(null);
-    if (!runnerRef.current) {
-        runnerRef.current = new GoalRunner(name, dispatchTool, (next) => {
-            setSnapshot(next);
-            onSnapshotChangeRef.current?.(next);
-        });
-    }
-
-    const handle = useMemo<GoalHandle>(() => ({
-        getComponentName: () => name,
-        createGoal: (input) => mapAiToolOperation(
-            runnerRef.current!.create(input),
-            toGoalAiResult,
-        ),
-        retryFailedTask: () => mapAiToolOperation(
-            runnerRef.current!.retryFailedTask(),
-            toGoalAiResult,
-        ),
-        getComponentType: () => 'goal',
-        getSnapshot: () => runnerRef.current?.getSnapshot() ?? null,
-        subscribe: (listener) => runnerRef.current!.subscribe(listener),
-        getOverlayBehavior: (next) => ({
-            placement: 'flow',
-            requestedStatus: 'expanded',
-            remove: next === null,
-        }),
-        getOverlayMetadata: () => ({}),
-        handleOverlayRendererEvent: () => undefined,
-        clear: () => runnerRef.current?.clear(),
-    }), [name]);
-    const componentRef = useRef<GoalHandle | null>(handle);
-    componentRef.current = handle;
-    useRegisterAiToolComponentRef(componentRef);
-
-    useEffect(() => () => runnerRef.current?.dispose(), []);
-
-    return snapshot ? <GoalDisplay snapshot={snapshot} surface={surface} /> : null;
-};
+const Goal: React.FC<GoalProps> = ({ snapshot, surface = 'chat' }) => (
+    snapshot ? <GoalDisplay snapshot={snapshot} surface={surface} /> : null
+);
 
 export default Goal;
