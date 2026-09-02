@@ -25,12 +25,6 @@ export type ApplyAnalysisResultQueryInput = {
 
 export type ApplyAnalysisResultQueryOutput = {
     status: 'ready';
-    data: number;
-    applied_query: string;
-    applied_page_id: string | null;
-    applied_page_number: number;
-    requested_page_number: number | null;
-    used_most_recent_fallback: boolean;
 };
 
 export type ActivePageQueryElement = {

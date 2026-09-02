@@ -13,7 +13,6 @@ import { useAiLabels } from 'contexts/AiLabelsContext';
 import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
 import {
     DriverExpertComparisonGraph,
-    getDriverExpertReplayDurationMs,
     getDriverExpertComparisonUnavailableDiagnostics,
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
@@ -1146,7 +1145,6 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         if (
             !result.comparison
             || !hasComparableDriverExpertData(result.comparison, sessionGame)
-            || getDriverExpertReplayDurationMs(result.comparison) <= 0
         ) {
             throw new ToolExecutionError(
                 `Analysis result '${resultId}' has no supported overlay graph.`,
@@ -1491,12 +1489,6 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
 
                 return {
                     status: 'ready' as const,
-                    data: applied.matchedElements.length,
-                    applied_query: args.query,
-                    applied_page_id: appliedPage?.id ?? null,
-                    applied_page_number: appliedPageNumber,
-                    requested_page_number: requestedPageNumber,
-                    used_most_recent_fallback: !requestedPageExists,
                 };
             }, 'ready');
         },

@@ -7,6 +7,7 @@ import {
     driverExpertComparisonOverlayRenderer,
     getDriverExpertReplayDurationMs,
     getDriverExpertComparisonUnavailableDiagnostics,
+    hasComparableDriverExpertData,
     normalizeDriverExpertComparisonData,
 } from './DriverExpertComparisonGraph';
 import { useDesktopGame } from 'contexts/DesktopGameContext';
@@ -1186,17 +1187,17 @@ describe('DriverExpertComparisonGraph', () => {
     });
 });
 
-describe('Driver/Expert comparison unavailable diagnostics', () => {
+describe('Driver/Expert comparison availability', () => {
     const reasonCodes = (
         data: Parameters<typeof getDriverExpertComparisonUnavailableDiagnostics>[0],
         game: DesktopGame | null = null,
     ) => getDriverExpertComparisonUnavailableDiagnostics(data, game)
         .map((diagnostic) => diagnostic.code);
 
-    it('distinguishes missing data, empty samples, and an invalid replay', () => {
+    it('only reports missing data or a completely empty sample list', () => {
         expect(reasonCodes(undefined)).toEqual(['comparison_data_missing']);
         expect(reasonCodes({ samples: [] })).toEqual(['comparison_samples_missing']);
-        expect(reasonCodes({
+        const backendPayload = {
             samples: [{
                 driverTimeMs: 100,
                 expertTimeMs: 100,
@@ -1208,39 +1209,31 @@ describe('Driver/Expert comparison unavailable diagnostics', () => {
                 driverTrackPosition: 0.3,
                 expertTrackPosition: 0.3,
             }],
-        })).toEqual(['comparison_replay_invalid']);
+        };
+
+        expect(reasonCodes(backendPayload)).toEqual([]);
+        expect(hasComparableDriverExpertData(backendPayload)).toBe(true);
     });
 
-    it('reports every missing Driver and Expert display channel', () => {
-        expect(reasonCodes({
+    it('keeps a non-empty backend payload available when optional channels are absent', () => {
+        (useDesktopGame as jest.Mock).mockReturnValue({ detectedGame: null });
+        Object.defineProperty(window, 'matchMedia', {
+            configurable: true,
+            value: jest.fn().mockReturnValue({ matches: false }),
+        });
+        const backendPayload = {
             samples: [{
                 driverTimeMs: 100,
                 expertTimeMs: 1_000,
                 driverTrackPosition: 0.2,
                 expertTrackPosition: 0.2,
             }],
-        })).toEqual([
-            'driver_trajectory_missing',
-            'expert_trajectory_missing',
-            'driver_throttle_missing',
-            'expert_throttle_missing',
-            'driver_brake_missing',
-            'expert_brake_missing',
-            'driver_gear_missing',
-            'expert_gear_missing',
-        ]);
-    });
+        };
 
-    it('returns no reasons as soon as one paired channel can be displayed', () => {
-        expect(reasonCodes({
-            samples: [{
-                driverTimeMs: 100,
-                expertTimeMs: 1_000,
-                driverTrackPosition: 0.2,
-                expertTrackPosition: 0.2,
-                driverGas: 0.4,
-                expertGas: 0.5,
-            }],
-        })).toEqual([]);
+        expect(reasonCodes(backendPayload)).toEqual([]);
+        expect(hasComparableDriverExpertData(backendPayload)).toBe(true);
+
+        render(<DriverExpertComparisonGraph data={backendPayload} />);
+        expect(screen.queryByText(/^Expert comparison unavailable$/)).not.toBeInTheDocument();
     });
 });

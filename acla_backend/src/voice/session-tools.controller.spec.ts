@@ -57,7 +57,7 @@ describe('SessionToolsController', () => {
         expect(names).toEqual(expect.arrayContaining([
             'run_recorded_ai_analysis',
             'get_recorded_session_analysis',
-            'apply_analysis_result_query',
+            'apply_query_to_analysis_result',
             'stop_agent_session',
         ]));
         expect(names).not.toEqual(expect.arrayContaining([
@@ -77,7 +77,7 @@ describe('SessionToolsController', () => {
 
         expect(names).toEqual(expect.arrayContaining([
             'collect_live_baseline',
-            'apply_analysis_result_query',
+            'apply_query_to_analysis_result',
             'query_analysis_result',
             'create_goal',
             'retry_goal_task',
@@ -118,7 +118,7 @@ describe('SessionToolsController', () => {
         const tools = controller.getSessionTools({
             session_context: { session_mode: 'recorded' },
         });
-        const tool = tools.find(({ name }) => name === 'apply_analysis_result_query') as any;
+        const tool = tools.find(({ name }) => name === 'apply_query_to_analysis_result') as any;
 
         expect(tool.required).toEqual(['query']);
         expect(Object.keys(tool.properties)).toEqual(['query', 'page_number']);
@@ -128,6 +128,8 @@ describe('SessionToolsController', () => {
             pattern: '\\S',
         });
         expect(tool.properties.page_number).toMatchObject({ type: 'integer' });
+        expect(tool.description).toContain('returns only its status');
+        expect(tool.description).not.toContain('matched element count');
         expect(tool.description).toContain('retained-page array order');
         expect(tool.description).toContain('manual Apply');
     });

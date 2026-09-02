@@ -529,7 +529,7 @@ describe('AnalysisResultsChart', () => {
         expect(mockOverlayComponentDirectory.getComponentRefs()).toHaveLength(0);
     });
 
-    it('rejects missing, static, or undisplayable comparison results before publishing', () => {
+    it('publishes static backend comparisons and rejects only missing results', async () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         render(
             <AnalysisResultsChart
@@ -554,10 +554,22 @@ describe('AnalysisResultsChart', () => {
             'comparison-validation',
             'missing-result',
         )).toThrow("Analysis result 'missing-result' was not found");
-        expect(() => chartRef.current!.displaySpecificResultInOverlay(
+        const staticDisplay = chartRef.current!.displaySpecificResultInOverlay(
             'comparison-validation',
             'static-result',
-        )).toThrow("has no supported overlay graph");
+        );
+        const staticRef = mockOverlayComponentDirectory.getComponentRefs()[0];
+        expect(staticRef.current.getSnapshot()).toEqual({
+            title: 'Driver vs Expert',
+            comparison: comparableData(0.2, 0.3),
+        });
+        staticRef.current.handleOverlayRendererEvent({
+            presentationId: 'analysis-overlay-session',
+            componentName: staticRef.current.getComponentName(),
+            revision: 1,
+            event: 'replay_complete',
+        });
+        await expect(staticDisplay.result).resolves.toBe('graph shown');
 
         mockOverlayPresentation = null;
         expect(() => chartRef.current!.displaySpecificResultInOverlay(
@@ -611,14 +623,12 @@ describe('AnalysisResultsChart', () => {
     });
 
     it.each([
-        { requested: undefined, requestedResult: null, fallback: true },
-        { requested: -1, requestedResult: -1, fallback: true },
-        { requested: 0, requestedResult: 0, fallback: true },
-        { requested: 99, requestedResult: 99, fallback: true },
+        { requested: undefined },
+        { requested: -1 },
+        { requested: 0 },
+        { requested: 99 },
     ])('applies to the highest retained-array page for fallback request $requested', async ({
         requested,
-        requestedResult,
-        fallback,
     }) => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const onSelectPage = jest.fn();
@@ -673,12 +683,6 @@ describe('AnalysisResultsChart', () => {
 
         expect(result).toEqual({
             status: 'ready',
-            data: 1,
-            applied_query: query,
-            applied_page_id: 'array-page-2',
-            applied_page_number: 2,
-            requested_page_number: requestedResult,
-            used_most_recent_fallback: fallback,
         });
         expect(onSelectPage).toHaveBeenCalledWith('array-page-2');
         expect(screen.getByRole('button', { name: 'Lap Results' })).toHaveAttribute('aria-pressed', 'true');
@@ -724,14 +728,9 @@ describe('AnalysisResultsChart', () => {
             result = await operation.result;
         });
 
-        expect(result).toEqual(expect.objectContaining({
+        expect(result).toEqual({
             status: 'ready',
-            data: 1,
-            applied_page_id: 'displayed-page-1',
-            applied_page_number: 1,
-            requested_page_number: 1,
-            used_most_recent_fallback: false,
-        }));
+        });
         expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
         await waitFor(() => expect(renderedResultIds()).toEqual(['page-one-match']));
     });
@@ -761,12 +760,6 @@ describe('AnalysisResultsChart', () => {
 
         expect(result).toEqual({
             status: 'ready',
-            data: 1,
-            applied_query: query,
-            applied_page_id: null,
-            applied_page_number: 1,
-            requested_page_number: 12,
-            used_most_recent_fallback: true,
         });
         expect(screen.queryByRole('textbox', { name: 'Query expression' })).not.toBeInTheDocument();
         expect(renderedResultIds()).toEqual(['recorded-match']);
@@ -885,11 +878,7 @@ describe('AnalysisResultsChart', () => {
         });
         let latestResult: unknown;
         await act(async () => { latestResult = await latest.result; });
-        expect(latestResult).toEqual(expect.objectContaining({
-            applied_page_id: 'stale-page-1',
-            applied_page_number: 1,
-            data: 1,
-        }));
+        expect(latestResult).toEqual({ status: 'ready' });
         expect(renderedResultIds()).toEqual(['newest-wins']);
         expect(onSelectPage).toHaveBeenNthCalledWith(1, 'stale-page-2');
         expect(onSelectPage).toHaveBeenNthCalledWith(2, 'stale-page-1');

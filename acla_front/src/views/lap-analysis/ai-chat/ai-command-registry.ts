@@ -325,7 +325,7 @@ export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
-    'apply_analysis_result_query',
+    'apply_query_to_analysis_result',
     'query_analysis_result',
     'create_goal',
     'retry_goal_task',
@@ -406,7 +406,7 @@ const validateAnalysisResultQueryArguments = (
 const validateApplyAnalysisResultQueryArguments = (
     args: unknown,
 ): ApplyAnalysisResultQueryInput => {
-    const validationMessage = 'apply_analysis_result_query requires a non-empty string property named query and accepts only an optional integer property named page_number.';
+    const validationMessage = 'apply_query_to_analysis_result requires a non-empty string property named query and accepts only an optional integer property named page_number.';
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
         throw new InvalidToolCallError(validationMessage);
     }
@@ -528,7 +528,7 @@ const GOAL_STEP_TOOLS = new Set<FrontendAiToolName>([
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
-    'apply_analysis_result_query',
+    'apply_query_to_analysis_result',
     'query_analysis_result',
     'advance_plan_step',
     'clear_procedure_plan',
@@ -1089,7 +1089,7 @@ const definitionList = Object.freeze([
             .analyzeLiveRecordedAnalysisForAi(args),
     },
     {
-        name: 'apply_analysis_result_query',
+        name: 'apply_query_to_analysis_result',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args) => {
             const request = validateApplyAnalysisResultQueryArguments(args);

@@ -447,7 +447,7 @@ export const getDriverExpertComparisonAvailability = (
 
 export const getDriverExpertComparisonUnavailableDiagnostics = (
     data: DriverExpertComparisonData | null | undefined,
-    detectedGame: DesktopGame | null = null,
+    _detectedGame: DesktopGame | null = null,
 ): DriverExpertComparisonDiagnostic[] => {
     if (!data) {
         return [{
@@ -461,66 +461,16 @@ export const getDriverExpertComparisonUnavailableDiagnostics = (
             message: 'The Driver/Expert comparison payload contains no samples.',
         }];
     }
-
-    const presence = getDriverExpertComparisonChannelPresence(data, detectedGame);
-    if (!presence.replay) {
-        return [{
-            code: 'comparison_replay_invalid',
-            message: 'Comparison samples do not form valid increasing Driver and Expert timelines.',
-        }];
-    }
-    if (
-        (presence.driverTrajectory && presence.expertTrajectory)
-        || (presence.driverGas && presence.expertGas)
-        || (presence.driverBrake && presence.expertBrake)
-        || (presence.driverGear && presence.expertGear)
-    ) {
-        return [];
-    }
-
-    const diagnostics: DriverExpertComparisonDiagnostic[] = [];
-    const driverTrajectoryPlane = detectedGame === 'acc' ? 'X/Z' : 'X/Y';
-    if (!presence.driverTrajectory) diagnostics.push({
-        code: 'driver_trajectory_missing',
-        message: `Driver trajectory has no finite ${driverTrajectoryPlane} coordinates.`,
-        details: { game: detectedGame, required_plane: driverTrajectoryPlane },
-    });
-    if (!presence.expertTrajectory) diagnostics.push({
-        code: 'expert_trajectory_missing',
-        message: 'Expert trajectory has no finite X/Y coordinates.',
-        details: { required_plane: 'X/Y' },
-    });
-    if (!presence.driverGas) diagnostics.push({
-        code: 'driver_throttle_missing',
-        message: 'Driver throttle telemetry is missing or non-finite.',
-    });
-    if (!presence.expertGas) diagnostics.push({
-        code: 'expert_throttle_missing',
-        message: 'Expert throttle telemetry is missing or non-finite.',
-    });
-    if (!presence.driverBrake) diagnostics.push({
-        code: 'driver_brake_missing',
-        message: 'Driver brake telemetry is missing or non-finite.',
-    });
-    if (!presence.expertBrake) diagnostics.push({
-        code: 'expert_brake_missing',
-        message: 'Expert brake telemetry is missing or non-finite.',
-    });
-    if (!presence.driverGear) diagnostics.push({
-        code: 'driver_gear_missing',
-        message: 'Driver gear telemetry is missing or non-finite.',
-    });
-    if (!presence.expertGear) diagnostics.push({
-        code: 'expert_gear_missing',
-        message: 'Expert gear telemetry is missing or non-finite.',
-    });
-    return diagnostics;
+    return [];
 };
 
 export const hasComparableDriverExpertData = (
     data: DriverExpertComparisonData | null | undefined,
-    detectedGame: DesktopGame | null = null,
-): boolean => Object.values(getDriverExpertComparisonAvailability(data, detectedGame)).some(Boolean);
+    _detectedGame: DesktopGame | null = null,
+): boolean => {
+    const samples = data?.samples;
+    return Array.isArray(samples) && samples.length > 0;
+};
 
 const toCssSize = (value: number | string | undefined): number | string | undefined => (
     typeof value === 'number' ? `${value}px` : value
@@ -1576,7 +1526,7 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
         () => getDriverExpertComparisonAvailability(data, comparisonGame),
         [comparisonGame, data],
     );
-    const hasAnyComparison = Object.values(availability).some(Boolean);
+    const hasAnyComparison = sourceSamples.length > 0;
     const trajectoryHeight = layout?.trajectoryHeight ?? 300;
     const rootClassName = [styles.root, className].filter(Boolean).join(' ');
     const rootStyle = { width: toCssSize(width) } as React.CSSProperties;

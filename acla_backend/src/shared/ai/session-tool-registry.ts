@@ -169,11 +169,11 @@ export const SESSION_TOOLS = [
         required: [],
     },
     {
-        name: 'apply_analysis_result_query',
+        name: 'apply_query_to_analysis_result',
         description: [
-            'Apply a final JSONata expression through the visible Analysis Results manual editor and return the matched element count.',
+            'Apply a final JSONata expression to the visible Analysis Results. The tool returns only its status and does not return the matched results.',
             'The expression receives only { "elements": [{ "id": "...", "labels": ["..."], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] } for the selected page; it does not receive the current View selection or hidden page data.',
-            'The result must be null, one element ID string, one object with a string id, or a flat array of element IDs or objects with string ids. Unknown IDs and nested arrays are rejected.',
+            'The JSONata expression must evaluate to null, one element ID string, one object with a string id, or a flat array of element IDs or objects with string ids. Unknown IDs and nested arrays are rejected.',
             'Examples: elements; elements[labels[$ = "Lockup"]]; elements[labels[$ = "Mistake (Practice)"]].id.',
             'page_number uses the displayed 1-based retained-page array order: Page 1 is array index 0 and the highest page number is the most recent analysis.',
             'When page_number is omitted, below 1, or above the existing page count, the highest existing page is selected.',
@@ -488,7 +488,7 @@ const COMMON_TOOL_NAMES: SessionToolName[] = [
 
 const LIVE_SESSION_TOOL_NAMES: SessionToolName[] = [
     'start_agent_session',
-    'apply_analysis_result_query',
+    'apply_query_to_analysis_result',
     'query_analysis_result',
     'analyze_telemetry',
     'get_next_corner',
@@ -534,7 +534,7 @@ const RECORDED_SESSION_TOOL_NAMES: SessionToolName[] = [
     'run_recorded_ai_analysis',
     'get_recorded_session_analysis',
     'get_recorded_session_context',
-    'apply_analysis_result_query',
+    'apply_query_to_analysis_result',
     'query_analysis_result',
     'analyze_telemetry',
 ];
@@ -561,7 +561,7 @@ const getAllowedToolNames = (
             ...LIVE_AGENT_SESSION_TOOL_NAMES,
             ...USER_SUMMARY_SESSION_TOOL_NAMES,
             ...(sessionMode === 'live' ? [
-                'apply_analysis_result_query',
+                'apply_query_to_analysis_result',
                 'query_analysis_result',
             ] as const : []),
             ...(sessionMode === 'live' && agentMode === 'live_performance_analyst'

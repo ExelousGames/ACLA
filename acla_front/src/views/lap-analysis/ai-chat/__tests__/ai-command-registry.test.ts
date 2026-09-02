@@ -158,7 +158,7 @@ describe('frontend AI tool registry', () => {
             [...FRONTEND_AI_TOOL_NAMES].sort(),
         );
         expect(FRONTEND_AI_TOOL_NAMES).toContain('query_analysis_result');
-        expect(FRONTEND_AI_TOOL_NAMES).toContain('apply_analysis_result_query');
+        expect(FRONTEND_AI_TOOL_NAMES).toContain('apply_query_to_analysis_result');
         expect(FRONTEND_AI_TOOL_NAMES).toContain('display_specific_result_in_overlay');
         FRONTEND_AI_TOOL_NAMES.forEach((name) => {
             expect(frontendAiToolRegistry[name].componentName).toEqual(expect.any(String));
@@ -287,12 +287,6 @@ describe('frontend AI tool registry', () => {
     it('validates and dispatches an Analysis Results query apply operation unchanged', async () => {
         const componentOperation = resolvedAiToolOperation({
             status: 'ready' as const,
-            data: 2,
-            applied_query: 'elements',
-            applied_page_id: 'page-3',
-            applied_page_number: 3,
-            requested_page_number: -1,
-            used_most_recent_fallback: true,
         }, 'ready');
         const handle: Partial<AnalysisResultsChartHandle> = {
             applyAnalysisResultQuery: jest.fn(() => componentOperation) as any,
@@ -301,7 +295,7 @@ describe('frontend AI tool registry', () => {
             componentRefs: register('visualization:analysis-results', handle),
         });
 
-        const returned = registry.apply_analysis_result_query({
+        const returned = registry.apply_query_to_analysis_result({
             query: 'elements',
             page_number: -1,
         });
@@ -331,7 +325,7 @@ describe('frontend AI tool registry', () => {
             componentRefs: register('visualization:analysis-results', handle),
         });
 
-        await expect(registry.apply_analysis_result_query(args).result).rejects.toMatchObject({
+        await expect(registry.apply_query_to_analysis_result(args).result).rejects.toMatchObject({
             name: 'InvalidToolCallError',
         });
         expect(handle.applyAnalysisResultQuery).not.toHaveBeenCalled();
@@ -360,7 +354,7 @@ describe('frontend AI tool registry', () => {
             sessionMode: 'live',
             conversationRole: 'agent',
             agentMode: 'live_performance_analyst',
-        }, 'apply_analysis_result_query')).toBe(true);
+        }, 'apply_query_to_analysis_result')).toBe(true);
         expect(isGoalStepAvailableForContext({
             sessionMode: 'live',
             conversationRole: 'agent',

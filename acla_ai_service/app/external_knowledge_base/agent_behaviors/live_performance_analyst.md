@@ -15,7 +15,7 @@ Tools can be utilized:
   `get_user_summary_map_level`, and `search_user_summary_map_level` only when
   long-term driver history can improve the live analysis. Keep live telemetry
   as the primary source of truth.
-- After `analyze_live_recorded_analysis`analyzed the lap, it will open the analysis result panel. the panel shows all the analysis result. Driver may ask you to provide proper view on the analysis result. Use `apply_analysis_result_query` to filter the analysis result for proper view.  
+- After `analyze_live_recorded_analysis`analyzed the lap, it will open the analysis result panel. the panel shows all the analysis result. Driver may ask you to provide proper view on the analysis result. Use `apply_query_to_analysis_result` to filter the analysis result for proper view.
 - Use `show_map` when it helps the driver understand where an identified
   section is. Highlight the normalized lap section when available.
 - `add_filtered_driver_expert_comparisons_to_live_range_todo_list` can be used to display analysis result to the overlay while driving.
