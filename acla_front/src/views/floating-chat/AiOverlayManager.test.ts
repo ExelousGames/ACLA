@@ -116,30 +116,44 @@ describe('AiOverlayManagerController', () => {
         });
     });
 
-    it('keeps the latest full-size card visible, folds sibling cards, and restores them afterward', () => {
+    it('focuses the latest requesting card, folds card siblings, and restores them afterward', () => {
         const first = component('comparison:first', 'driver_expert_comparison');
         const second = component('comparison:second', 'driver_expert_comparison');
         const details = component('details', 'test-card');
-        manager.syncReferences([{ current: first }, { current: second }, { current: details }]);
+        const speech = new MutableAiOverlayComponent<{ value: string }>(
+            'speech',
+            'ai_message',
+            () => ({ placement: 'flow', requestedStatus: 'expanded', shellSlot: 'speech' }),
+        );
+        manager.syncReferences([
+            { current: first },
+            { current: second },
+            { current: details },
+            { current: speech },
+        ]);
         details.publish({ value: 'details' });
-        first.publish({ value: 'first' }, { requestedStatus: 'full_size' });
-        second.publish({ value: 'second' }, { requestedStatus: 'full_size' });
+        speech.publish({ value: 'commentary' });
+        first.publish({ value: 'first' }, { requestedStatus: 'focus' });
+        second.publish({ value: 'second' }, { requestedStatus: 'focus' });
 
         expect(manager.getPresentationSnapshot()!.cards).toEqual([
-            expect.objectContaining({ componentName: 'comparison:second', status: 'full_size' }),
+            expect.objectContaining({ componentName: 'comparison:second', status: 'focus' }),
             expect.objectContaining({ componentName: 'comparison:first', status: 'folded' }),
+            expect.objectContaining({ componentName: 'speech', status: 'expanded' }),
             expect.objectContaining({ componentName: 'details', status: 'folded' }),
         ]);
 
         second.clear();
         expect(manager.getPresentationSnapshot()!.cards).toEqual([
-            expect.objectContaining({ componentName: 'comparison:first', status: 'full_size' }),
+            expect.objectContaining({ componentName: 'comparison:first', status: 'focus' }),
+            expect.objectContaining({ componentName: 'speech', status: 'expanded' }),
             expect.objectContaining({ componentName: 'details', status: 'folded' }),
         ]);
 
         first.publish({ value: 'first' }, { requestedStatus: 'expanded' });
         expect(manager.getPresentationSnapshot()!.cards).toEqual([
             expect.objectContaining({ componentName: 'comparison:first', status: 'expanded' }),
+            expect.objectContaining({ componentName: 'speech', status: 'expanded' }),
             expect.objectContaining({ componentName: 'details', status: 'expanded' }),
         ]);
     });

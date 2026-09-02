@@ -879,7 +879,7 @@ function validateOverlayPresentationSnapshot(presentation) {
     if (names.has(card.componentName)) return `Duplicate overlay componentName '${card.componentName}'.`;
     names.add(card.componentName);
     if (!Number.isInteger(card.revision) || card.revision < 1) return 'Overlay card revision must be a positive integer.';
-    if (!['expanded', 'folded', 'full_size'].includes(card.status)) return 'Unknown overlay display status.';
+    if (!['expanded', 'folded', 'focus'].includes(card.status)) return 'Unknown overlay display status.';
     if (!['pinned', 'flow'].includes(card.placement)) return 'Unknown overlay placement.';
   }
   if (!isSerializableOverlayValue(presentation)) return 'Overlay presentation must be JSON-safe.';

@@ -107,9 +107,6 @@ const OverlayIdentity: React.FC<{
             </div>
             <div className="overlay-shell__identity">
                 <span className="overlay-shell__name">{identity.name || 'Kestrel'}</span>
-                {(identity.agentTags || []).map((tag) => (
-                    <span className="overlay-shell__tag" key={tag}>{tag}</span>
-                ))}
             </div>
         </div>
     );
@@ -155,7 +152,7 @@ const GeneratedDisplayItem: React.FC<{
 }> = ({ presentationId, card, deckIndex }) => {
     const renderer = getAiOverlayRenderer(card.componentType);
     const context = useRenderContext(presentationId, card);
-    const fullSizeActive = card.status === 'full_size';
+    const focusActive = card.status === 'focus';
     const dimensions = renderer.dimensions[card.status]!;
     return (
         <article
@@ -163,21 +160,15 @@ const GeneratedDisplayItem: React.FC<{
                 'overlay-list-item',
                 'overlay-list-item--deck',
                 card.status === 'folded' ? 'overlay-list-item--folded' : '',
-                fullSizeActive ? 'overlay-list-item--full-size-active' : '',
+                focusActive ? 'overlay-list-item--focus-active' : '',
             ].filter(Boolean).join(' ')}
             style={{
                 zIndex: deckIndex + 1,
-                ...(fullSizeActive ? {
-                    width: dimensions.width,
-                    height: dimensions.height,
-                    flexBasis: dimensions.height,
-                    alignSelf: 'center',
-                } : {}),
             }}
             data-component-name={card.componentName}
             data-display-type={card.componentType}
             data-placement={card.placement}
-            data-full-size-active={fullSizeActive ? 'true' : undefined}
+            data-focus-active={focusActive ? 'true' : undefined}
             data-renderer-width={dimensions.width}
             data-renderer-height={dimensions.height}
         >

@@ -100,21 +100,6 @@ html, body, #root, .App {
     text-transform: uppercase;
 }
 
-.overlay-shell__tag {
-    max-width: 116px;
-    overflow: hidden;
-    border: 1px solid rgba(232, 255, 58, .42);
-    border-radius: 999px;
-    padding: 1px 6px;
-    color: var(--overlay-accent);
-    background: rgba(232, 255, 58, .1);
-    font-family: 'Geist Mono', monospace;
-    font-size: 9px;
-    text-overflow: ellipsis;
-    text-transform: uppercase;
-    white-space: nowrap;
-}
-
 .overlay-shell__speaking {
     position: relative;
     display: flex;
@@ -142,16 +127,6 @@ html, body, #root, .App {
 .overlay-list-item:hover,
 .overlay-list-item:focus-within {
     z-index: 1000 !important;
-}
-
-.overlay-list-item--full-size-active {
-    display: flex;
-    flex-direction: column;
-}
-.overlay-list-item--full-size-active .overlay-list-item__body {
-    min-height: 0;
-    flex: 1 1 auto;
-    overflow: hidden;
 }
 
 .overlay-list-item__header {
@@ -207,8 +182,6 @@ html, body, #root, .App {
     margin: 0;
     border-radius: 14px;
 }
-
-.overlay-shell .floating-pill-comparison--full-size { height: 100%; }
 
 .overlay-shell .floating-pill-comparison {
     padding: 10px;

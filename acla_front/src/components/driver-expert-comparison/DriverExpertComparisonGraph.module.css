@@ -16,21 +16,6 @@
     font-family: var(--lp-sans, 'Geist', system-ui, sans-serif);
 }
 
-.root:global(.floating-pill-comparison--full-size) {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-}
-
-.root:global(.floating-pill-comparison--full-size) .hud {
-    min-height: 0;
-    flex: 1 1 auto;
-}
-
-.root:global(.floating-pill-comparison--full-size) .trackPanel {
-    height: 100% !important;
-}
-
 .header {
     min-width: 0;
     margin-bottom: 10px;

@@ -3,7 +3,7 @@ import type React from 'react';
 export const OVERLAY_HOLD_MS = 3_800;
 
 export type AiOverlayPlacement = 'pinned' | 'flow';
-export type AiOverlayDisplayStatus = 'expanded' | 'folded' | 'full_size';
+export type AiOverlayDisplayStatus = 'expanded' | 'folded' | 'focus';
 export type AiOverlayShellSlot = 'speech' | 'card';
 
 export interface AiOverlayShellMetadata {

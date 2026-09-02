@@ -1621,13 +1621,11 @@ const DriverExpertComparisonOverlayGraph = React.memo<{
     context: AiOverlayRenderContext;
 }>(({ snapshot, status, context }) => (
     <DriverExpertComparisonGraph
-        className={status === 'full_size'
-            ? 'floating-pill-comparison floating-pill-comparison--full-size'
-            : 'floating-pill-comparison'}
+        className="floating-pill-comparison"
         data={snapshot.comparison}
         game={snapshot.game}
         title={snapshot.title}
-        layout={{ trajectoryHeight: status === 'full_size' ? '100%' : 280 }}
+        layout={{ trajectoryHeight: 280 }}
         onReplayComplete={() => context.emitRendererEvent('replay_complete')}
     />
 ), (previous, next) => (
@@ -1663,7 +1661,7 @@ export const driverExpertComparisonOverlayRenderer: AiOverlayRenderer<DriverExpe
     dimensions: {
         expanded: { width: 760, height: 500 },
         folded: { width: 360, height: 58 },
-        full_size: { width: 760, height: 500 },
+        focus: { width: 760, height: 500 },
     },
 };
 

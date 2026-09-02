@@ -34,7 +34,7 @@ type ManagedOverlayCard = AiOverlayPresentationCard & {
     updatedAt: number;
     removeAt: number | null;
     foldAt: number | null;
-    fullSizeRequestOrder: number | null;
+    focusRequestOrder: number | null;
 };
 
 export interface AiOverlayManagerTransport {
@@ -63,7 +63,7 @@ export class AiOverlayManagerController {
     private presentation: AiOverlayPresentationSession | null = null;
     private presentationRevision = 0;
     private updateOrder = 0;
-    private fullSizeRequestOrder = 0;
+    private focusRequestOrder = 0;
     private timer: ReturnType<typeof setTimeout> | null = null;
     private disposed = false;
 
@@ -126,8 +126,8 @@ export class AiOverlayManagerController {
         } else {
             if (directive.requestedStatus) {
                 card.requestedStatus = directive.requestedStatus;
-                if (directive.requestedStatus === 'full_size') {
-                    card.fullSizeRequestOrder = ++this.fullSizeRequestOrder;
+                if (directive.requestedStatus === 'focus') {
+                    card.focusRequestOrder = ++this.focusRequestOrder;
                 }
             }
             if (directive.removeAfterMs !== undefined) {
@@ -143,7 +143,7 @@ export class AiOverlayManagerController {
     getPresentationSnapshot(): AiOverlayPresentationSnapshot | null {
         if (!this.presentation) return null;
         const cards = this.orderedCards().map((card) => {
-            const { source, behavior, requestedStatus, updatedAt, removeAt, foldAt, fullSizeRequestOrder, ...serializable } = card;
+            const { source, behavior, requestedStatus, updatedAt, removeAt, foldAt, focusRequestOrder, ...serializable } = card;
             return cloneJsonSnapshot(serializable);
         });
         return {
@@ -205,9 +205,9 @@ export class AiOverlayManagerController {
             updatedAt: ++this.updateOrder,
             removeAt: deadlineFrom(behavior.transientDurationMs, now),
             foldAt: deadlineFrom(behavior.foldAfterMs, now),
-            fullSizeRequestOrder: requestedStatus === 'full_size'
-                ? ++this.fullSizeRequestOrder
-                : existing?.fullSizeRequestOrder ?? null,
+            focusRequestOrder: requestedStatus === 'focus'
+                ? ++this.focusRequestOrder
+                : existing?.focusRequestOrder ?? null,
         };
         this.cards.set(componentName, card);
         if (notify) this.changed();
@@ -227,17 +227,17 @@ export class AiOverlayManagerController {
 
     private orderedCards(): ManagedOverlayCard[] {
         const cards = Array.from(this.cards.values());
-        const fullSize = cards.reduce<ManagedOverlayCard | null>((active, card) => (
-            card.requestedStatus === 'full_size'
-            && card.fullSizeRequestOrder !== null
-            && (!active || card.fullSizeRequestOrder > active.fullSizeRequestOrder!)
+        const focused = cards.reduce<ManagedOverlayCard | null>((active, card) => (
+            card.requestedStatus === 'focus'
+            && card.focusRequestOrder !== null
+            && (!active || card.focusRequestOrder > active.focusRequestOrder!)
                 ? card
                 : active
         ), null);
         cards.forEach((card) => {
-            if (card === fullSize) {
-                card.status = 'full_size';
-            } else if (fullSize && card.shellSlot !== 'speech') {
+            if (card === focused) {
+                card.status = 'focus';
+            } else if (focused && card.shellSlot !== 'speech') {
                 card.status = 'folded';
             } else {
                 card.status = card.requestedStatus;

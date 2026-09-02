@@ -125,7 +125,7 @@ describe('FloatingChat presentation renderer', () => {
         expect(acknowledgements.at(-1)).toMatchObject({ accepted: true });
     });
 
-    it('keeps the message, full-size card, and collapsed siblings visible in deck order', () => {
+    it('keeps the message, focused card, and collapsed siblings visible in deck order', () => {
         registerAiOverlayRenderer({
             componentType: 'comparison-test',
             validateSnapshot: (value): value is { title: string } => Boolean((value as any)?.title),
@@ -135,7 +135,7 @@ describe('FloatingChat presentation renderer', () => {
             dimensions: {
                 expanded: { width: 500, height: 300 },
                 folded: { width: 320, height: 58 },
-                full_size: { width: 760, height: 500 },
+                focus: { width: 760, height: 500 },
             },
         });
         const { container } = render(<FloatingChat />);
@@ -146,7 +146,7 @@ describe('FloatingChat presentation renderer', () => {
                 shellSlot: 'speech',
             }),
             card('folded-card', 'comparison-test', { title: 'Summary' }, { status: 'folded' }),
-            card('full-card', 'comparison-test', { title: 'Graph' }, { status: 'full_size' }),
+            card('focus-card', 'comparison-test', { title: 'Graph' }, { status: 'focus' }),
             card('collapsed-card', 'comparison-test', { title: 'Details' }, { status: 'folded' }),
         ])));
 
@@ -154,31 +154,29 @@ describe('FloatingChat presentation renderer', () => {
         const deck = container.querySelector('.overlay-display-list') as HTMLElement;
         const items = Array.from(deck.querySelectorAll<HTMLElement>('.overlay-list-item'));
         const folded = items[0];
-        const fullSize = items[1];
+        const focused = items[1];
 
         expect(speaking.compareDocumentPosition(deck) & Node.DOCUMENT_POSITION_FOLLOWING)
             .toBeTruthy();
         expect(items.map((item) => item.dataset.componentName)).toEqual([
             'folded-card',
-            'full-card',
+            'focus-card',
             'collapsed-card',
         ]);
         expect(folded).toHaveClass('overlay-list-item--deck', 'overlay-list-item--folded');
-        expect(fullSize).toHaveClass('overlay-list-item--deck', 'overlay-list-item--full-size-active');
+        expect(focused).toHaveClass('overlay-list-item--deck', 'overlay-list-item--focus-active');
         expect(items[2]).toHaveClass('overlay-list-item--deck', 'overlay-list-item--folded');
         items.forEach((item) => expect(item).not.toHaveAttribute('aria-hidden'));
         expect(shell).toHaveStyle({ width: '760px' });
         expect(shell.style.height).toBe('');
-        expect(fullSize).toHaveStyle({
-            width: '760px',
-            height: '500px',
-            flexBasis: '500px',
-        });
-        expect(fullSize).toHaveAttribute('data-renderer-width', '760');
-        expect(fullSize).toHaveAttribute('data-renderer-height', '500');
+        expect(focused).not.toHaveStyle({ height: '500px' });
+        expect(focused).not.toHaveStyle({ flexBasis: '500px' });
+        expect(focused).toHaveAttribute('data-focus-active', 'true');
+        expect(focused).toHaveAttribute('data-renderer-width', '760');
+        expect(focused).toHaveAttribute('data-renderer-height', '500');
         expect(screen.getByTestId('overlay-ai-message')).toBeInTheDocument();
         expect(screen.getByText('folded:Summary')).toBeInTheDocument();
-        expect(screen.getByText('full_size:Graph')).toBeInTheDocument();
+        expect(screen.getByText('focus:Graph')).toBeInTheDocument();
         expect(screen.getByText('folded:Details')).toBeInTheDocument();
         expect(resizeFloatingChat).toHaveBeenLastCalledWith(760, 704);
 
@@ -188,10 +186,10 @@ describe('FloatingChat presentation renderer', () => {
             .toEqual(items);
     });
 
-    it('keeps overlay chrome and collapsed cards visible in full-size mode without speech', () => {
+    it('keeps overlay chrome and collapsed cards visible in focus mode without speech', () => {
         const { container } = render(<FloatingChat />);
         act(() => presentationListener?.(presentation([
-            card('full-card', 'comparison-test', { title: 'Graph' }, { status: 'full_size' }),
+            card('focus-card', 'comparison-test', { title: 'Graph' }, { status: 'focus' }),
             card('collapsed-card', 'comparison-test', { title: 'Baseline' }, { status: 'folded' }),
         ])));
 
@@ -202,7 +200,7 @@ describe('FloatingChat presentation renderer', () => {
 
         expect(shell.querySelector('.overlay-shell__header')).toBeVisible();
         expect(screen.getByText('Kestrel')).toBeVisible();
-        expect(screen.getByText('full_size:Graph')).toBeVisible();
+        expect(screen.getByText('focus:Graph')).toBeVisible();
         expect(screen.getByText('folded:Baseline')).toBeVisible();
         expect(collapsed).toHaveClass('overlay-list-item--folded');
         expect(collapsed).not.toHaveAttribute('aria-hidden');
@@ -249,7 +247,8 @@ describe('FloatingChat presentation renderer', () => {
             });
         act(() => presentationListener?.(presentation([messageCard])));
         expect(screen.getByText('Engineer')).toBeInTheDocument();
-        expect(screen.getByText('Race')).toBeInTheDocument();
+        expect(screen.queryByText('Race')).not.toBeInTheDocument();
+        expect(screen.queryByText('Live')).not.toBeInTheDocument();
 
         act(() => jest.advanceTimersByTime(28 * 'Hello driver'.length));
         expect(screen.getByText('Hello driver')).toBeInTheDocument();
