@@ -35,9 +35,7 @@ import {
 } from './ai-tool-operation';
 import GoalOverlayDisplay, { getGoalOverlaySummary } from './GoalOverlayDisplay';
 
-export interface NestedAiToolResult {
-    [key: string]: unknown;
-}
+export type NestedAiToolResult = Record<string, unknown> | string;
 export interface NestedAiToolStatus {
     [key: string]: unknown;
 }
@@ -45,6 +43,7 @@ export interface NestedAiToolStatus {
 export type AiToolDispatcher = (
     name: string,
     args?: Record<string, unknown>,
+    signal?: AbortSignal,
 ) => AiToolOperation<NestedAiToolResult, NestedAiToolStatus>;
 
 export const GOAL_COMPARISON_OPERATORS = [

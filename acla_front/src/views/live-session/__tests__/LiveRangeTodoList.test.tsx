@@ -9,6 +9,11 @@ import type {
     LiveRangeTodoEventUpdate,
 } from 'components/ai-engineering-tools';
 import {
+    createAiToolOperationFrom,
+    createControlledAiToolOperation,
+    resolvedAiToolOperation,
+} from 'components/ai-engineering-tools';
+import {
     AI_TOOL_COMPONENT_NAMES,
     createAiToolComponentRefDirectory,
 } from 'contexts/AiToolComponentRefContext';
@@ -16,7 +21,9 @@ import {
 const event = (
     id: string,
     normalizedPosition: number,
-    taskStart: LiveRangeTodoEventInput['taskStart'] = jest.fn(),
+    taskStart: LiveRangeTodoEventInput['taskStart'] = jest.fn(() => (
+        resolvedAiToolOperation({}, 'complete')
+    )),
 ): LiveRangeTodoEventInput => ({
     id,
     normalized_position: normalizedPosition,
@@ -31,8 +38,7 @@ const makeDue = (runner: LiveRangeTodoListRunner, endPosition = 0.5) => {
 };
 
 const flushPromises = async () => {
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
 };
 
 describe('live range helpers', () => {
@@ -84,7 +90,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
 
     it('uses a tool-provided ETA for lead-time scheduling without a rolling rate', () => {
         const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
-        const taskStart = jest.fn();
+        const taskStart = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.addEvent({
             ...event('estimated', 0.4, taskStart),
@@ -103,7 +109,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
     });
 
     it('waits for telemetry, invokes taskStart, and omits functions from snapshots', async () => {
-        const taskStart = jest.fn();
+        const taskStart = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
         const runner = new LiveRangeTodoListRunner('live-range');
 
         const result = runner.addEvent(event('one', 0.2, taskStart));
@@ -117,10 +123,10 @@ describe('LiveRangeTodoListRunner executable events', () => {
     });
 
     it('keeps asynchronous work visible as running and executes due tasks sequentially', async () => {
-        let resolveFirst!: () => void;
-        let resolveSecond!: () => void;
-        const first = jest.fn(() => new Promise<void>((resolve) => { resolveFirst = resolve; }));
-        const second = jest.fn(() => new Promise<void>((resolve) => { resolveSecond = resolve; }));
+        const firstController = createControlledAiToolOperation<Record<string, never>, never, 'complete'>();
+        const secondController = createControlledAiToolOperation<Record<string, never>, never, 'complete'>();
+        const first = jest.fn(() => firstController.operation);
+        const second = jest.fn(() => secondController.operation);
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.replaceEvents([event('one', 0.2, first), event('two', 0.4, second)]);
 
@@ -133,16 +139,76 @@ describe('LiveRangeTodoListRunner executable events', () => {
             expect.objectContaining({ id: 'two', status: 'pending' }),
         ]);
 
-        resolveFirst();
+        firstController.resolve('complete', {});
         await flushPromises();
         expect(second).toHaveBeenCalledTimes(1);
         expect(runner.get().todo_list?.events).toEqual([
             expect.objectContaining({ id: 'two', status: 'running' }),
         ]);
 
-        resolveSecond();
+        secondController.resolve('complete', {});
         await flushPromises();
         expect(runner.get().todo_list?.events).toHaveLength(0);
+    });
+
+    it('advances only after notifyTerminated, not when operation.result settles', async () => {
+        let notifyFirstTerminated!: (termination: {
+            status: string;
+            result: Record<string, never> | Error;
+        }) => void;
+        const firstOperation = {
+            result: Promise.resolve({}),
+            statuses: [],
+            notifyTerminated: (listener: typeof notifyFirstTerminated) => {
+                notifyFirstTerminated = listener;
+                return () => undefined;
+            },
+        };
+        const first = jest.fn(() => firstOperation);
+        const second = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.replaceEvents([event('one', 0.2, first), event('two', 0.4, second)]);
+
+        makeDue(runner);
+        await flushPromises();
+
+        expect(second).not.toHaveBeenCalled();
+        expect(runner.get().todo_list?.events[0]).toMatchObject({
+            id: 'one',
+            status: 'running',
+        });
+
+        notifyFirstTerminated({ status: 'complete', result: {} });
+        await flushPromises();
+
+        expect(second).toHaveBeenCalledTimes(1);
+    });
+
+    it('unsubscribes from termination before aborting a replaced task', () => {
+        const lifecycle: string[] = [];
+        let staleTermination!: (termination: { status: string; result: Record<string, never> }) => void;
+        const operation = {
+            result: new Promise<Record<string, never>>(() => undefined),
+            statuses: [],
+            notifyTerminated: (listener: typeof staleTermination) => {
+                staleTermination = listener;
+                return () => lifecycle.push('unsubscribe');
+            },
+        };
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent(event('one', 0.2, (signal) => {
+            signal.addEventListener('abort', () => lifecycle.push('abort'));
+            return operation;
+        }));
+        makeDue(runner, 0.25);
+
+        runner.replaceEvents([event('replacement', 0.8)]);
+
+        expect(lifecycle).toEqual(['unsubscribe', 'abort']);
+        staleTermination({ status: 'complete', result: {} });
+        expect(runner.get().todo_list?.events).toEqual([
+            expect.objectContaining({ id: 'replacement', status: 'pending' }),
+        ]);
     });
 
     it('logs synchronous throws and promise rejections without stalling the queue', async () => {
@@ -152,8 +218,13 @@ describe('LiveRangeTodoListRunner executable events', () => {
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.replaceEvents([
             event('throws', 0.1, () => { throw failure; }),
-            event('rejects', 0.2, () => Promise.reject(failure)),
-            event('continues', 0.3, finalTask),
+            event('rejects', 0.2, () => createAiToolOperationFrom(() => {
+                throw failure;
+            }, 'failed')),
+            event('continues', 0.3, () => {
+                finalTask();
+                return resolvedAiToolOperation({}, 'complete');
+            }),
         ]);
 
         makeDue(runner, 0.4);
@@ -186,7 +257,8 @@ describe('LiveRangeTodoListRunner executable events', () => {
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.addEvent(event('one', 0.2, (signal) => {
             receivedSignal = signal;
-            return new Promise(() => undefined);
+            return createControlledAiToolOperation<Record<string, never>, never, 'complete'>()
+                .operation;
         }));
         makeDue(runner, 0.25);
 
@@ -197,7 +269,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
     });
 
     it('preserves taskStart on ordinary updates and replaces it when explicitly supplied', async () => {
-        const preserved = jest.fn();
+        const preserved = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.addEvent(event('one', 0.2, preserved));
         runner.updateEvents([{ id: 'one', content: { description: 'Current description' } }]);
@@ -205,8 +277,8 @@ describe('LiveRangeTodoListRunner executable events', () => {
         expect(preserved).toHaveBeenCalledTimes(1);
         await flushPromises();
 
-        const original = jest.fn();
-        const replacement = jest.fn();
+        const original = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
+        const replacement = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
         const secondRunner = new LiveRangeTodoListRunner('live-range-two');
         secondRunner.addEvent(event('two', 0.2, original));
         secondRunner.updateEvents([{ id: 'two', taskStart: replacement }]);

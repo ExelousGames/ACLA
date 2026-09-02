@@ -17,6 +17,7 @@ import {
     createAiToolComponentRefDirectory,
 } from 'contexts/AiToolComponentRefContext';
 import {
+    createControlledAiToolOperation,
     LiveRangeTodoListRunner,
     resolvedAiToolOperation,
 } from 'components/ai-engineering-tools';
@@ -71,6 +72,14 @@ const assertQueryContractTypes = (registry: AiCommandRegistry) => {
         scope: { type: 'now' },
         reduce: 'stats',
     });
+    const display: AiToolOperation<'graph shown'> = registry.display_specific_result_in_overlay({
+        page_id: 'page-id',
+        result_id: 'result-id',
+    });
+    // @ts-expect-error Specific result displays require both exact ids.
+    registry.display_specific_result_in_overlay({ page_id: 'page-id' });
+    // @ts-expect-error Specific result displays accept no extra arguments.
+    registry.display_specific_result_in_overlay({ page_id: 'page-id', result_id: 'result-id', extra: true });
 
     // @ts-expect-error The model-facing telemetry query does not expose raw values.
     registry.query_telemetry_metric({ fields: ['speed'], scope: { type: 'now' }, reduce: 'raw' });
@@ -83,6 +92,7 @@ const assertQueryContractTypes = (registry: AiCommandRegistry) => {
         min,
         max,
         stats,
+        display,
         mismatchedReduction,
         queryContractCoverage,
     };
@@ -149,6 +159,7 @@ describe('frontend AI tool registry', () => {
         );
         expect(FRONTEND_AI_TOOL_NAMES).toContain('query_analysis_result');
         expect(FRONTEND_AI_TOOL_NAMES).toContain('apply_analysis_result_query');
+        expect(FRONTEND_AI_TOOL_NAMES).toContain('display_specific_result_in_overlay');
         FRONTEND_AI_TOOL_NAMES.forEach((name) => {
             expect(frontendAiToolRegistry[name].componentName).toEqual(expect.any(String));
         });
@@ -368,6 +379,132 @@ const reserve = (
         ...handle,
     } as any });
 };
+
+const comparisonData = (durationMs: number) => ({
+    samples: durationMs > 0 ? [{
+        driverTimeMs: 0,
+        expertTimeMs: 0,
+        driverTrackPosition: 0.1,
+        expertTrackPosition: 0.1,
+        driverGas: 0.2,
+        expertGas: 0.3,
+    }, {
+        driverTimeMs: durationMs,
+        expertTimeMs: durationMs,
+        driverTrackPosition: 0.2,
+        expertTrackPosition: 0.2,
+        driverGas: 0.4,
+        expertGas: 0.5,
+    }] : [{
+        driverTimeMs: 0,
+        expertTimeMs: 0,
+        driverTrackPosition: 0.1,
+        expertTrackPosition: 0.1,
+        driverGas: 0.2,
+        expertGas: 0.3,
+    }],
+});
+
+const createMockComparisonOperation = () => {
+    const controller = createControlledAiToolOperation<
+        'graph shown',
+        never,
+        'complete' | 'cancelled' | 'replaced' | 'failed'
+    >();
+    return {
+        operation: controller.operation,
+        complete: () => controller.resolve('complete', 'graph shown'),
+        terminate: (status: 'cancelled' | 'replaced' | 'failed') => {
+            controller.reject(status, new Error(status));
+        },
+    };
+};
+
+describe('specific Analysis Results overlay tool', () => {
+    const args = { page_id: 'retained-page', result_id: 'braking-result' };
+
+    const setup = () => {
+        const directory = createAiToolComponentRefDirectory();
+        const displayController = createMockComparisonOperation();
+        const displaySpecificResultInOverlay = jest.fn(() => displayController.operation);
+        reserve(directory, 'visualization:analysis-results', {
+            displaySpecificResultInOverlay,
+        } satisfies Partial<AnalysisResultsChartHandle>);
+        return {
+            displayController,
+            displaySpecificResultInOverlay,
+            registry: createAiCommandRegistry({ componentRefs: directory, sessionGame: 'acc' }),
+        };
+    };
+
+    it('delegates exact ids and the operation lifecycle to Analysis Results', async () => {
+        const test = setup();
+        const operation = test.registry.display_specific_result_in_overlay(args);
+        const terminated = new Promise((resolve) => operation.notifyTerminated(resolve));
+        let resultSettled = false;
+        void operation.result.then(() => { resultSettled = true; });
+
+        await Promise.resolve();
+        expect(resultSettled).toBe(false);
+        expect(test.displaySpecificResultInOverlay).toHaveBeenCalledWith(
+            'retained-page',
+            'braking-result',
+            undefined,
+        );
+
+        test.displayController.complete();
+        test.displayController.complete();
+
+        await expect(operation.result).resolves.toBe('graph shown');
+        await expect(terminated).resolves.toEqual({
+            status: 'complete',
+            result: 'graph shown',
+        });
+    });
+
+    it.each([
+        {},
+        { page_id: 'retained-page' },
+        { result_id: 'braking-result' },
+        { page_id: '', result_id: 'braking-result' },
+        { page_id: 'retained-page', result_id: ' ' },
+        { page_id: 'retained-page', result_id: 'braking-result', extra: true },
+    ])('rejects invalid exact arguments without resolving or publishing: %p', async (invalidArgs) => {
+        const test = setup();
+
+        await expect(test.registry.display_specific_result_in_overlay(invalidArgs as any).result)
+            .rejects.toMatchObject({ name: 'InvalidToolCallError' });
+        expect(test.displaySpecificResultInOverlay).not.toHaveBeenCalled();
+    });
+
+    it.each(['cancelled', 'replaced', 'failed'] as const)(
+        'preserves the Analysis Results %s termination path',
+        async (status) => {
+            const test = setup();
+            const operation = test.registry.display_specific_result_in_overlay(args);
+            const terminated = new Promise((resolve) => operation.notifyTerminated(resolve));
+
+            test.displayController.terminate(status);
+
+            await expect(operation.result).rejects.toThrow(status);
+            await expect(terminated).resolves.toMatchObject({ status });
+        },
+    );
+
+    it('forwards the task abort signal to Analysis Results', () => {
+        const test = setup();
+        const abortController = new AbortController();
+        (test.registry.display_specific_result_in_overlay as any)(
+            args,
+            abortController.signal,
+        );
+        expect(test.displaySpecificResultInOverlay).toHaveBeenCalledWith(
+            'retained-page',
+            'braking-result',
+            abortController.signal,
+        );
+    });
+});
 
 const todoResult = (events: readonly { id: string }[] = []) => ({
     status: events.length > 0 ? 'ready' as const : 'empty' as const,
@@ -606,37 +743,12 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         jest.useRealTimers();
     });
 
-    const comparison = (durationMs: number) => ({
-        samples: durationMs > 0 ? [{
-            driverTimeMs: 0,
-            expertTimeMs: 0,
-            driverTrackPosition: 0.1,
-            expertTrackPosition: 0.1,
-            driverGas: 0.2,
-            expertGas: 0.3,
-        }, {
-            driverTimeMs: durationMs,
-            expertTimeMs: durationMs,
-            driverTrackPosition: 0.2,
-            expertTrackPosition: 0.2,
-            driverGas: 0.4,
-            expertGas: 0.5,
-        }] : [{
-            driverTimeMs: 0,
-            expertTimeMs: 0,
-            driverTrackPosition: 0.1,
-            expertTrackPosition: 0.1,
-            driverGas: 0.2,
-            expertGas: 0.3,
-        }],
-    });
-
     it('appends eligible segments in filtered order and publishes overlays only when due', async () => {
         jest.useFakeTimers();
         const directory = createAiToolComponentRefDirectory();
         const runner = new LiveRangeTodoListRunner(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
-        const existingTask = jest.fn();
-        const duplicateTask = jest.fn();
+        const existingTask = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
+        const duplicateTask = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
         runner.addEvent({
             id: 'existing-user-event',
             normalized_position: 0.95,
@@ -656,8 +768,8 @@ describe('filtered Driver/Expert comparison queue tool', () => {
             get: () => runner.get(),
         } satisfies Partial<LiveRangeTodoListHandle>);
 
-        const fiveSecondComparison = comparison(5_000);
-        const secondComparison = comparison(2_000);
+        const fiveSecondComparison = comparisonData(5_000);
+        const secondComparison = comparisonData(2_000);
         const filteredSnapshot: FilteredAnalysisSegmentsSnapshot = {
             status: 'ready',
             activePageId: 'analysis-page-7',
@@ -693,15 +805,20 @@ describe('filtered Driver/Expert comparison queue tool', () => {
                 id: 'zero-duration',
                 labels: ['MSP'],
                 normalizedPositionRange: { start: 0.3, end: 0.35 },
-                comparison: comparison(0),
+                comparison: comparisonData(0),
             }],
         };
+        const displayControllers: ReturnType<typeof createMockComparisonOperation>[] = [];
+        const displaySpecificResultInOverlay = jest.fn(() => {
+            const display = createMockComparisonOperation();
+            displayControllers.push(display);
+            return display.operation;
+        });
         reserve(directory, 'visualization:analysis-results', {
             getFilteredSegments: () => filteredSnapshot,
+            displaySpecificResultInOverlay,
         } satisfies Partial<AnalysisResultsChartHandle>);
-        const displayDriverExpertComparison = jest.fn();
         reserve(directory, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
-            displayDriverExpertComparison,
             getOpportunityTelemetryRows: () => [{
                 Graphics_normalized_car_position: 0.1,
                 Graphics_estimated_lap_time: 100_000,
@@ -753,30 +870,34 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         ]);
         expect(queuedEvents[0].eta_seconds).toBeCloseTo(30);
         expect(queuedEvents[1].eta_seconds).toBeCloseTo(60);
-        expect(displayDriverExpertComparison).not.toHaveBeenCalled();
+        expect(displaySpecificResultInOverlay).not.toHaveBeenCalled();
 
         runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_laps: 1 });
         runner.acceptTelemetry({ Graphics_normalized_car_position: 0.5, Graphics_completed_laps: 1 });
-        expect(displayDriverExpertComparison).toHaveBeenNthCalledWith(1, {
-            title: 'Late braking: Driver vs Expert',
-            comparison: fiveSecondComparison,
-            game: 'acc',
-        });
+        expect(displaySpecificResultInOverlay).toHaveBeenNthCalledWith(
+            1,
+            'analysis-page-7',
+            'late-first',
+            expect.any(AbortSignal),
+        );
 
         runner.acceptTelemetry({ Graphics_normalized_car_position: 0.8, Graphics_completed_laps: 1 });
-        expect(displayDriverExpertComparison).toHaveBeenCalledTimes(1);
+        expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(1);
 
-        jest.advanceTimersByTime(5_799);
+        jest.advanceTimersByTime(60_000);
         for (let index = 0; index < 4; index += 1) await Promise.resolve();
-        expect(displayDriverExpertComparison).toHaveBeenCalledTimes(1);
+        expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(1);
 
-        jest.advanceTimersByTime(1);
-        for (let index = 0; index < 4; index += 1) await Promise.resolve();
-        expect(displayDriverExpertComparison).toHaveBeenNthCalledWith(2, {
-            title: 'Driver vs Expert',
-            comparison: secondComparison,
-            game: 'acc',
-        });
+        displayControllers[0].complete();
+        for (let index = 0; index < 6; index += 1) await Promise.resolve();
+        expect(displaySpecificResultInOverlay).toHaveBeenNthCalledWith(
+            2,
+            'analysis-page-7',
+            'early-second',
+            expect.any(AbortSignal),
+        );
+        displayControllers[0].complete();
+        expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(2);
         expect(existingTask).not.toHaveBeenCalled();
         expect(duplicateTask).not.toHaveBeenCalled();
         runner.dispose();
@@ -795,7 +916,6 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         });
         reserve(directory, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
             initializeLiveRangeTodoList,
-            displayDriverExpertComparison: jest.fn(),
         } satisfies Partial<AiChatHandle>);
         reserve(directory, 'visualization:analysis-results', {
             getFilteredSegments: () => ({
@@ -807,7 +927,7 @@ describe('filtered Driver/Expert comparison queue tool', () => {
                     id: 'mounted-comparison',
                     labels: ['MSP'],
                     normalizedPositionRange: { start: 0.25, end: 0.3 },
-                    comparison: comparison(1_000),
+                    comparison: comparisonData(1_000),
                 }],
             }),
         } satisfies Partial<AnalysisResultsChartHandle>);
@@ -870,6 +990,30 @@ describe('filtered Driver/Expert comparison queue tool', () => {
             .rejects.toMatchObject({ name: 'InvalidToolCallError' });
     });
 
+    it('fails a matched batch when none of its results has a showable graph', async () => {
+        const directory = createAiToolComponentRefDirectory();
+        reserve(directory, 'visualization:analysis-results', {
+            getFilteredSegments: () => ({
+                status: 'ready',
+                activePageId: 'unsupported-page',
+                appliedView: 'mistakes',
+                committedQuery: 'elements',
+                segments: [{
+                    id: 'unsupported-result',
+                    labels: ['MSP'],
+                    normalizedPositionRange: { start: 0.2, end: 0.3 },
+                }],
+            }),
+        } satisfies Partial<AnalysisResultsChartHandle>);
+
+        await expect(analystLiveRegistry(directory)
+            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({}).result)
+            .rejects.toMatchObject({ name: 'ToolExecutionError' });
+        expect(directory.findComponentRef(
+            AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        )).toBeNull();
+    });
+
     it('is available in analyst goals but never as a nested Live Range task', () => {
         expect(isGoalStepAvailableForContext({
             sessionMode: 'live',
@@ -881,5 +1025,10 @@ describe('filtered Driver/Expert comparison queue tool', () => {
             conversationRole: 'agent',
             agentMode: 'track_guide',
         }, 'add_filtered_driver_expert_comparisons_to_live_range_todo_list')).toBe(false);
+        expect(isGoalStepAvailableForContext({
+            sessionMode: 'live',
+            conversationRole: 'agent',
+            agentMode: 'live_performance_analyst',
+        }, 'display_specific_result_in_overlay')).toBe(true);
     });
 });

@@ -4,6 +4,7 @@ import {
     DRIVER_COMPARISON_COLOR,
     EXPERT_COMPARISON_COLOR,
     DriverExpertComparisonGraph,
+    driverExpertComparisonOverlayRenderer,
     getDriverExpertReplayDurationMs,
     getDriverExpertComparisonUnavailableDiagnostics,
     normalizeDriverExpertComparisonData,
@@ -832,6 +833,58 @@ describe('DriverExpertComparisonGraph', () => {
         secondMount.unmount();
         expect(cancelAnimationFrameMock).toHaveBeenCalledWith(pendingId);
         expect(pendingFrames.size).toBe(0);
+    });
+
+    it('fires replay completion exactly once after the full timeline and never after unmount', () => {
+        const onReplayComplete = jest.fn();
+        const first = render(
+            <DriverExpertComparisonGraph
+                data={completeData}
+                onReplayComplete={onReplayComplete}
+            />,
+        );
+
+        runAnimationFrame(0);
+        runAnimationFrame(1_000);
+        runAnimationFrame(1_750);
+        runAnimationFrame(4_749);
+        expect(onReplayComplete).not.toHaveBeenCalled();
+
+        runAnimationFrame(4_750);
+        expect(onReplayComplete).toHaveBeenCalledTimes(1);
+        runAnimationFrame(5_000);
+        expect(onReplayComplete).toHaveBeenCalledTimes(1);
+        first.unmount();
+
+        const neverComplete = jest.fn();
+        const second = render(
+            <DriverExpertComparisonGraph
+                data={completeData}
+                onReplayComplete={neverComplete}
+            />,
+        );
+        runAnimationFrame(0);
+        second.unmount();
+        runAnimationFrame(4_750);
+        expect(neverComplete).not.toHaveBeenCalled();
+    });
+
+    it('converts graph completion to the replay_complete renderer event', () => {
+        const emitRendererEvent = jest.fn();
+        render(driverExpertComparisonOverlayRenderer.renderOverlay({
+            title: 'Comparison',
+            comparison: completeData,
+        }, 'expanded', {
+            componentName: 'comparison',
+            revision: 1,
+            emitRendererEvent,
+        }));
+
+        runAnimationFrame(0);
+        runAnimationFrame(4_750);
+
+        expect(emitRendererEvent).toHaveBeenCalledTimes(1);
+        expect(emitRendererEvent).toHaveBeenCalledWith('replay_complete');
     });
 
     it('does not render telemetry pods when trajectory data is unavailable', () => {

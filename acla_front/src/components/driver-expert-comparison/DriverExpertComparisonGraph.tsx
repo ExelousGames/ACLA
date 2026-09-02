@@ -1,7 +1,11 @@
 import React from 'react';
 import { useDesktopGame } from 'contexts/DesktopGameContext';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
-import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
+import type {
+    AiOverlayDisplayStatus,
+    AiOverlayRenderContext,
+    AiOverlayRenderer,
+} from 'views/floating-chat/ai-overlay-types';
 import {
     isOverlayNonEmptyString,
     isOverlayRecord,
@@ -95,6 +99,7 @@ export interface DriverExpertComparisonGraphProps {
     width?: number | string;
     layout?: DriverExpertComparisonLayout;
     game?: DesktopGame | null;
+    onReplayComplete?: () => void;
 }
 
 type ReplayContinuousKey = 'trackPosition' | 'gas' | 'brake';
@@ -877,6 +882,9 @@ const useReplayTimeline = (
     const [animationElapsedTimeMs, setAnimationElapsedTimeMs] = React.useState(
         shouldFinishImmediately ? animationDurationMs : 0,
     );
+    const renderedReplayRef = React.useRef(replay);
+    const replayChanged = renderedReplayRef.current !== replay;
+    renderedReplayRef.current = replay;
 
     React.useEffect(() => {
         if (!replay || animationDurationMs <= 0 || prefersReducedMotion()) {
@@ -905,10 +913,13 @@ const useReplayTimeline = (
         };
     }, [animationDurationMs, replay]);
 
+    const effectiveAnimationElapsedTimeMs = replayChanged
+        ? shouldFinishImmediately ? animationDurationMs : 0
+        : animationElapsedTimeMs;
     const focusProgress = !introduceCamera || reduceMotion
         ? 1
         : clamp(
-            (animationElapsedTimeMs - OVERVIEW_HOLD_DURATION_MS) / CAMERA_FOCUS_DURATION_MS,
+            (effectiveAnimationElapsedTimeMs - OVERVIEW_HOLD_DURATION_MS) / CAMERA_FOCUS_DURATION_MS,
             0,
             1,
         );
@@ -918,11 +929,11 @@ const useReplayTimeline = (
         : focusProgress < 1 ? 'focusing' : 'following';
 
     return {
-        elapsedTimeMs: clamp(animationElapsedTimeMs - introductionDurationMs, 0, durationMs),
+        elapsedTimeMs: clamp(effectiveAnimationElapsedTimeMs - introductionDurationMs, 0, durationMs),
         cameraProgress,
         statusOpacity: cameraProgress,
         presentationPhase,
-        isComplete: !replay || animationElapsedTimeMs >= animationDurationMs,
+        isComplete: !replay || effectiveAnimationElapsedTimeMs >= animationDurationMs,
     };
 };
 
@@ -1544,6 +1555,7 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     width = '100%',
     layout,
     game,
+    onReplayComplete,
 }) => {
     const { detectedGame } = useDesktopGame();
     const comparisonGame = game === undefined ? detectedGame : game;
@@ -1581,6 +1593,20 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     const filterId = React.useMemo(() => `driver-expert-${reactId.replace(/:/g, '')}`, [reactId]);
     const isComplete = timeline.isComplete;
     const replayStatus = !replay ? 'No data' : isComplete ? 'Replay complete' : 'Replaying';
+    const replayCompleteFiredRef = React.useRef(false);
+    const completionReplayRef = React.useRef(replay);
+    if (completionReplayRef.current !== replay) {
+        completionReplayRef.current = replay;
+        replayCompleteFiredRef.current = false;
+    }
+    const replayCompleteCallbackRef = React.useRef(onReplayComplete);
+    replayCompleteCallbackRef.current = onReplayComplete;
+
+    React.useEffect(() => {
+        if (!replay || !isComplete || replayCompleteFiredRef.current) return;
+        replayCompleteFiredRef.current = true;
+        replayCompleteCallbackRef.current?.();
+    }, [isComplete, replay]);
 
     return (
         <section
@@ -1639,6 +1665,27 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     );
 };
 
+const DriverExpertComparisonOverlayGraph = React.memo<{
+    snapshot: DriverExpertComparisonSnapshot;
+    status: AiOverlayDisplayStatus;
+    context: AiOverlayRenderContext;
+}>(({ snapshot, status, context }) => (
+    <DriverExpertComparisonGraph
+        className={status === 'full_size'
+            ? 'floating-pill-comparison floating-pill-comparison--full-size'
+            : 'floating-pill-comparison'}
+        data={snapshot.comparison}
+        game={snapshot.game}
+        title={snapshot.title}
+        layout={{ trajectoryHeight: status === 'full_size' ? '100%' : 280 }}
+        onReplayComplete={() => context.emitRendererEvent('replay_complete')}
+    />
+), (previous, next) => (
+    previous.status === next.status
+    && previous.context.componentName === next.context.componentName
+    && previous.context.revision === next.context.revision
+));
+
 export const driverExpertComparisonOverlayRenderer: AiOverlayRenderer<DriverExpertComparisonSnapshot> = {
     componentType: 'driver_expert_comparison',
     validateSnapshot: (snapshot): snapshot is DriverExpertComparisonSnapshot => (
@@ -1653,17 +1700,13 @@ export const driverExpertComparisonOverlayRenderer: AiOverlayRenderer<DriverExpe
             || snapshot.game === 'iracing'
         )
     ),
-    renderOverlay: (snapshot, status) => {
+    renderOverlay: (snapshot, status, context) => {
         if (status === 'folded') return snapshot.title;
         return (
-            <DriverExpertComparisonGraph
-                className={status === 'full_size'
-                    ? 'floating-pill-comparison floating-pill-comparison--full-size'
-                    : 'floating-pill-comparison'}
-                data={snapshot.comparison}
-                game={snapshot.game}
-                title={snapshot.title}
-                layout={{ trajectoryHeight: status === 'full_size' ? '100%' : 280 }}
+            <DriverExpertComparisonOverlayGraph
+                snapshot={snapshot}
+                status={status}
+                context={context}
             />
         );
     },

@@ -89,8 +89,6 @@ import type { MutableAiOverlayComponent } from 'views/floating-chat/MutableAiOve
 import { createAiMessageOverlayComponent } from './AiMessageDisplay.overlay-source';
 import { createAiMapOverlayComponent } from './AiMapToolDisplay.overlay-source';
 import { createToolStatusOverlayComponent } from './ToolMessageDisplay.overlay-source';
-import { createDriverExpertComparisonOverlayComponent } from 'components/driver-expert-comparison/DriverExpertComparisonGraph.overlay-source';
-import type { DriverExpertComparisonSnapshot } from 'components/driver-expert-comparison';
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 
 const asFrontendToolHandlers = (
@@ -205,9 +203,6 @@ export interface AiChatHandle extends NamedAiToolComponentHandle {
     getCircuitMapById(id: string): ReturnType<ReturnType<typeof useCircuitMaps>['getCircuitMapById']>;
     getCircuitMapByTrack: ReturnType<typeof useCircuitMaps>['getCircuitMapByTrack'];
     displayMap(display: AiMapDisplayPayload): void;
-    displayDriverExpertComparison(
-        snapshot: DriverExpertComparisonSnapshot,
-    ): void;
     showMap(args: Record<string, unknown>): AiToolOperation<ShowMapAiResult>;
 }
 
@@ -408,7 +403,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         presentationId: string;
         ref: React.MutableRefObject<MutableAiOverlayComponent<any> | null>;
     }>>(new Map());
-    const overlayComponentSequenceRef = useRef(0);
     const voiceSessionSeenActiveRef = useRef(false);
     const procedurePlanRef = useRef<ProcedurePlanState | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
@@ -504,6 +498,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const dispatchActiveVoiceTool = useCallback<AiToolDispatcher>((
         toolName,
         args = {},
+        signal,
     ) => {
         const handler = activeToolHandlersRef.current[toolName];
         if (!handler) {
@@ -513,7 +508,10 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 );
             }, 'failed');
         }
-        return handler(args) as ReturnType<AiToolDispatcher>;
+        return (handler as (
+            input: Record<string, unknown>,
+            nestedSignal?: AbortSignal,
+        ) => ReturnType<AiToolDispatcher>)(args, signal);
     }, []);
 
 
@@ -633,18 +631,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 mapDisplay: display,
             }));
     }, [generateUniqueId, publishOverlayComponent, setMessages]);
-
-    const displayDriverExpertComparison = useCallback((
-        snapshot: DriverExpertComparisonSnapshot,
-    ) => {
-        const presentationId = overlayPresentationRef.current?.presentationId;
-        publishOverlayComponent(
-            `driver-expert-comparison:${presentationId}:${++overlayComponentSequenceRef.current}`,
-            presentationId,
-            createDriverExpertComparisonOverlayComponent,
-            snapshot,
-        );
-    }, [publishOverlayComponent]);
 
     const showMap = useCallback(async (
         args: Record<string, unknown>,
@@ -830,10 +816,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
 
     useEffect(() => () => {
         overlayPresentationRef.current = null;
-        overlayComponentRefsRef.current.forEach(({ ref }) => {
-            componentRefs.unregisterComponentRef(ref);
-        });
-        overlayComponentRefsRef.current.clear();
+        releaseOverlayComponents();
         const presentationIds = Array.from(ownedOverlayPresentationIdsRef.current);
         ownedOverlayPresentationIdsRef.current.clear();
         overlayPresentationsByAiSessionRef.current.clear();
@@ -842,7 +825,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         presentationIds.forEach((presentationId) => {
             void overlaySessionClient.destroy(presentationId).catch(() => undefined);
         });
-    }, [componentRefs]);
+    }, [releaseOverlayComponents]);
 
     useEffect(() => {
         if (overlayClosedGeneration === 0) return;
@@ -1389,7 +1372,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         getCircuitMapById,
         getCircuitMapByTrack,
         displayMap: displayMapInChat,
-        displayDriverExpertComparison,
         showMap: (args) => createAiToolOperationFrom(
             async () => await showMap(args) as ShowMapAiResult,
             'complete',
@@ -1398,7 +1380,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         analysisContext?.recordingState,
         createGoal,
         createProcedurePlan,
-        displayDriverExpertComparison,
         displayMapInChat,
         getCategoryLabels,
         getCircuitMapById,

@@ -43,6 +43,8 @@ type RuntimeSnapshot = Omit<LiveRangeTodoListSnapshot, 'events'> & { events: Run
 interface ActiveRun {
     controller: AbortController;
     event: RuntimeEvent;
+    operation: ReturnType<LiveRangeTodoEventInput['taskStart']> | null;
+    unsubscribeTermination: () => void;
     token: symbol;
 }
 
@@ -748,6 +750,7 @@ implements LiveRangeTodoListHandle {
     private abortRunningEvents(ids?: Set<string>): void {
         Array.from(this.activeRuns.entries()).forEach(([id, run]) => {
             if (ids && !ids.has(id)) return;
+            run.unsubscribeTermination();
             this.activeRuns.delete(id);
             run.controller.abort();
         });
@@ -771,7 +774,6 @@ implements LiveRangeTodoListHandle {
             started_at: now,
             updated_at: now,
         };
-        this.activeRuns.set(event.id, { controller, event: runningEvent, token });
         this.commit({
             ...this.runtime,
             events: this.runtime.events.map((candidate) => (
@@ -780,11 +782,31 @@ implements LiveRangeTodoListHandle {
             updated_at: now,
         });
 
+        const activeRun: ActiveRun = {
+            controller,
+            event: runningEvent,
+            operation: null,
+            unsubscribeTermination: () => undefined,
+            token,
+        };
+        this.activeRuns.set(event.id, activeRun);
+
         try {
-            Promise.resolve(runningEvent.taskStart(controller.signal)).then(
-                () => this.finishEvent(event.id, token),
-                (error) => this.finishEvent(event.id, token, error),
-            );
+            const operation = runningEvent.taskStart(controller.signal);
+            activeRun.operation = operation;
+            const unsubscribeTermination = operation.notifyTerminated((termination) => {
+                this.finishEvent(
+                    event.id,
+                    token,
+                    termination.result instanceof Error ? termination.result : undefined,
+                );
+            });
+            const retainedRun = this.activeRuns.get(event.id);
+            if (retainedRun?.token === token) {
+                retainedRun.unsubscribeTermination = unsubscribeTermination;
+            } else {
+                unsubscribeTermination();
+            }
         } catch (error) {
             this.finishEvent(event.id, token, error);
         }
@@ -794,6 +816,7 @@ implements LiveRangeTodoListHandle {
         if (this.isDisposed()) return;
         const activeRun = this.activeRuns.get(id);
         if (!activeRun || activeRun.token !== token || activeRun.controller.signal.aborted) return;
+        activeRun.unsubscribeTermination();
         this.activeRuns.delete(id);
         if (error !== undefined) console.error(`Live range to-do event '${id}' task failed.`, error);
         if (!this.runtime.events.some((event) => event.id === id)) {

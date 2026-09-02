@@ -1,5 +1,5 @@
 export type AiToolNormalOutput = { [key: string]: unknown };
-export type AiToolExecutionOutput = AiToolNormalOutput | Error;
+export type AiToolExecutionOutput = AiToolNormalOutput | string | Error;
 export type AiToolStatusPayload = { [key: string]: unknown };
 
 export {

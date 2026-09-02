@@ -6,6 +6,7 @@ import {
     NoLiveSessionError,
     NoLiveTelemetryError,
     RetryGoalTaskToolUnavailableError,
+    ToolExecutionError,
     ToolNotRegisteredError,
     createAiToolOperationFrom,
     type AiToolOperation,
@@ -46,6 +47,7 @@ import type { SessionAnalysisHandle } from 'views/lap-analysis/session-analysis'
 import type { UserSummaryHandle } from 'views/user-summary/user-summary';
 import type { AiMapDisplayPayload } from './AiMapToolDisplay';
 import type {
+    AnalysisResultOverlayResult,
     AnalysisResultsChartHandle,
     FilteredAnalysisSegmentsSnapshot,
 } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
@@ -61,8 +63,6 @@ import {
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
-import type { DriverExpertComparisonSnapshot } from 'components/driver-expert-comparison';
-import { OVERLAY_COMPARISON_COMPLETION_PAUSE_MS } from 'views/floating-chat/ai-overlay-types';
 
 export type {
     ApplyAnalysisResultQueryInput,
@@ -146,6 +146,13 @@ export interface AddFilteredDriverExpertComparisonsResult {
         reason_code: FilteredComparisonSkipReason;
     }>;
 }
+
+export interface DisplaySpecificResultInOverlayArguments {
+    page_id: string;
+    result_id: string;
+}
+
+export type DisplaySpecificResultInOverlayResult = AnalysisResultOverlayResult;
 
 export interface AiCommandRegistryContext extends FrontendAiCommandContext {
     recordingState?: RecordingState | null;
@@ -313,6 +320,7 @@ export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
     'stop_agent_session',
     'add_event_to_live_range_todo_list',
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+    'display_specific_result_in_overlay',
     'get_live_range_todo_list',
     'collect_live_baseline',
     'restart_live_baseline',
@@ -426,6 +434,37 @@ const validateApplyAnalysisResultQueryArguments = (
     };
 };
 
+const validateDisplaySpecificResultArguments = (
+    args: unknown,
+): DisplaySpecificResultInOverlayArguments => {
+    const validationMessage = 'display_specific_result_in_overlay requires exactly two non-empty string properties named page_id and result_id.';
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        throw new InvalidToolCallError(validationMessage);
+    }
+    const value = args as Record<string, unknown>;
+    const keys = Reflect.ownKeys(value);
+    const pageIdProperty = Object.getOwnPropertyDescriptor(value, 'page_id');
+    const resultIdProperty = Object.getOwnPropertyDescriptor(value, 'result_id');
+    if (
+        keys.length !== 2
+        || keys.some((key) => key !== 'page_id' && key !== 'result_id')
+        || !pageIdProperty
+        || !('value' in pageIdProperty)
+        || typeof pageIdProperty.value !== 'string'
+        || !pageIdProperty.value.trim()
+        || !resultIdProperty
+        || !('value' in resultIdProperty)
+        || typeof resultIdProperty.value !== 'string'
+        || !resultIdProperty.value.trim()
+    ) {
+        throw new InvalidToolCallError(validationMessage);
+    }
+    return {
+        page_id: pageIdProperty.value,
+        result_id: resultIdProperty.value,
+    };
+};
+
 type WorkflowOwner = 'chat' | 'goal' | 'procedure_plan' | 'live_range_todo';
 
 type FrontendAiToolDefinition = {
@@ -435,6 +474,7 @@ type FrontendAiToolDefinition = {
         context: FrontendAiCommandContext,
         args: Record<string, any>,
         dispatchNested: AiToolDispatcher,
+        signal?: AbortSignal,
     ) => AiToolOperation<AiToolExecutionOutput, AiToolStatusPayload>;
 };
 
@@ -483,6 +523,7 @@ const GOAL_STEP_TOOLS = new Set<FrontendAiToolName>([
     'stop_agent_session',
     'add_event_to_live_range_todo_list',
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+    'display_specific_result_in_overlay',
     'get_live_range_todo_list',
     'collect_live_baseline',
     'restart_live_baseline',
@@ -754,19 +795,13 @@ const getOrInitializeLiveRangeTodoList = (
 const createScheduledTaskStart = (
     descriptor: PreparedLiveRangeTodoEvent['tool'],
     dispatchNested: AiToolDispatcher,
-): LiveRangeTodoEventInput['taskStart'] => async (signal) => {
+): LiveRangeTodoEventInput['taskStart'] => (signal) => {
     if (signal.aborted) {
-        const error = new Error('The live range to-do task was aborted.');
-        error.name = 'AbortError';
-        throw error;
+        return createAiToolOperationFrom(() => {
+            throw createLiveRangeAbortError();
+        }, 'failed');
     }
-    const operation = dispatchNested(descriptor.name, descriptor.arguments);
-    const termination = await new Promise<{
-        status: string;
-        result: AiToolExecutionOutput;
-    }>((resolve) => operation.notifyTerminated(resolve));
-    if (termination.result instanceof Error) throw termination.result;
-    return termination.result;
+    return dispatchNested(descriptor.name, descriptor.arguments, signal);
 };
 
 const createLiveRangeAbortError = (): Error => {
@@ -775,27 +810,17 @@ const createLiveRangeAbortError = (): Error => {
     return error;
 };
 
-const waitForLiveRangeReplay = (
-    durationMs: number,
-    signal: AbortSignal,
-): Promise<void> => new Promise((resolve, reject) => {
-    if (signal.aborted) {
-        reject(createLiveRangeAbortError());
-        return;
-    }
-
-    let timer: ReturnType<typeof setTimeout>;
-    const handleAbort = () => {
-        clearTimeout(timer);
-        signal.removeEventListener('abort', handleAbort);
-        reject(createLiveRangeAbortError());
-    };
-    timer = setTimeout(() => {
-        signal.removeEventListener('abort', handleAbort);
-        resolve();
-    }, durationMs + OVERLAY_COMPARISON_COMPLETION_PAUSE_MS);
-    signal.addEventListener('abort', handleAbort, { once: true });
-});
+const displaySpecificResultInOverlay = (
+    context: FrontendAiCommandContext,
+    args: unknown,
+    signal?: AbortSignal,
+): ReturnType<AnalysisResultsChartHandle['displaySpecificResultInOverlay']> => {
+    const request = validateDisplaySpecificResultArguments(args);
+    return getComponent<AnalysisResultsChartHandle>(
+        context,
+        getSingletonVisualizationComponentName('analysis-results'),
+    ).displaySpecificResultInOverlay(request.page_id, request.result_id, signal);
+};
 
 type EligibleFilteredComparison = {
     segmentId: string;
@@ -804,7 +829,7 @@ type EligibleFilteredComparison = {
     replayDurationMs: number;
     leadTimeSeconds: number;
     estimatedLapTimeMs: number | null;
-    overlay: DriverExpertComparisonSnapshot;
+    title: string;
     section?: string;
 };
 
@@ -857,6 +882,7 @@ const createFilteredComparisonResult = (
 const queueFilteredDriverExpertComparisons = (
     context: FrontendAiCommandContext,
     snapshot: FilteredAnalysisSegmentsSnapshot,
+    dispatchNested: AiToolDispatcher,
 ): AddFilteredDriverExpertComparisonsResult => {
     const result = createFilteredComparisonResult(snapshot);
     if (snapshot.status !== 'ready') return result;
@@ -885,9 +911,6 @@ const queueFilteredDriverExpertComparisons = (
             skip('invalid_replay_duration');
             return;
         }
-        const title = segment.title
-            ? `${segment.title}: Driver vs Expert`
-            : 'Driver vs Expert';
         const end = segment.normalizedPositionRange?.end;
         const segmentDistance = typeof end === 'number' && Number.isFinite(end)
             && end >= 0 && end <= 1
@@ -902,16 +925,25 @@ const queueFilteredDriverExpertComparisons = (
             estimatedLapTimeMs: segmentDistance > 0
                 ? replayDurationMs / segmentDistance
                 : null,
-            overlay: {
-                title,
-                comparison: segment.comparison!,
-                game: context.sessionGame ?? null,
-            },
+            title: segment.title
+                ? `${segment.title}: Driver vs Expert`
+                : 'Driver vs Expert',
             section: segment.section,
         });
     });
 
+    if (snapshot.segments.length > 0 && eligible.length === 0) {
+        throw new ToolExecutionError(
+            'The filtered analysis results contain no showable overlay graphs.',
+        );
+    }
+
     if (eligible.length > 0) {
+        if (!snapshot.activePageId) {
+            throw new ToolExecutionError(
+                'The filtered analysis results do not identify a retained page.',
+            );
+        }
         const todoList = getOrInitializeLiveRangeTodoList(context);
         const aiChat = getComponent<AiChatHandle>(
             context,
@@ -945,16 +977,18 @@ const queueFilteredDriverExpertComparisons = (
                 lead_time_seconds: comparison.leadTimeSeconds,
                 ...(etaSeconds !== null ? { eta_seconds: etaSeconds } : {}),
                 content: {
-                    title: comparison.overlay.title,
+                    title: comparison.title,
                     ...(comparison.section
                         ? { description: `Section: ${comparison.section}` }
                         : {}),
                 },
-                taskStart: async (signal) => {
-                    if (signal.aborted) throw createLiveRangeAbortError();
-                    aiChat.displayDriverExpertComparison(comparison.overlay);
-                    await waitForLiveRangeReplay(comparison.replayDurationMs, signal);
-                },
+                taskStart: createScheduledTaskStart({
+                    name: 'display_specific_result_in_overlay',
+                    arguments: {
+                        page_id: snapshot.activePageId,
+                        result_id: comparison.segmentId,
+                    },
+                }, dispatchNested),
             });
             result.queued_timing.push({
                 segment_id: comparison.segmentId,
@@ -1011,7 +1045,7 @@ const definitionList = Object.freeze([
     {
         name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
-        execute: (context, args) => createAiToolOperationFrom(() => {
+        execute: (context, args, dispatchNested) => createAiToolOperationFrom(() => {
             validateNoArguments(
                 args,
                 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
@@ -1020,8 +1054,15 @@ const definitionList = Object.freeze([
                 context,
                 getSingletonVisualizationComponentName('analysis-results'),
             ).getFilteredSegments();
-            return queueFilteredDriverExpertComparisons(context, snapshot);
+            return queueFilteredDriverExpertComparisons(context, snapshot, dispatchNested);
         }, 'complete'),
+    },
+    {
+        name: 'display_specific_result_in_overlay',
+        componentName: getSingletonVisualizationComponentName('analysis-results'),
+        execute: (context, args, _dispatchNested, signal) => (
+            displaySpecificResultInOverlay(context, args, signal)
+        ),
     },
     {
         name: 'get_live_range_todo_list',
@@ -1183,12 +1224,19 @@ export type FrontendAiToolOperation<TName extends FrontendAiToolName> = (
 );
 
 type NonQueryAiCommandRegistry = {
-    [TName in Exclude<FrontendAiToolName, FrontendAiQueryName>]: (
+    [TName in Exclude<
+        FrontendAiToolName,
+        FrontendAiQueryName | 'display_specific_result_in_overlay'
+    >]: (
         args: Record<string, unknown>,
     ) => FrontendAiToolOperation<TName>;
 };
 
-export type AiCommandRegistry = NonQueryAiCommandRegistry & FrontendAiQueryContractMap;
+export type AiCommandRegistry = NonQueryAiCommandRegistry & FrontendAiQueryContractMap & {
+    display_specific_result_in_overlay(
+        args: DisplaySpecificResultInOverlayArguments,
+    ): FrontendAiToolOperation<'display_specific_result_in_overlay'>;
+};
 
 const definitions = Object.fromEntries(
     definitionList.map((definition) => [definition.name, definition]),
@@ -1201,6 +1249,7 @@ const dispatchAiTool = (
     name: string,
     args: Record<string, unknown>,
     owner: WorkflowOwner,
+    signal?: AbortSignal,
 ): AiToolOperation<AiToolExecutionOutput, AiToolStatusPayload> => {
     try {
         const definition = definitions[name as FrontendAiToolName];
@@ -1209,15 +1258,21 @@ const dispatchAiTool = (
         const nestedOwner: WorkflowOwner = definition.name === 'create_goal'
             ? 'goal'
             : definition.name === 'add_event_to_live_range_todo_list'
+                || definition.name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
                 ? 'live_range_todo'
                 : 'procedure_plan';
-        const dispatchNested: AiToolDispatcher = (nestedName, nestedArgs = {}) => dispatchAiTool(
+        const dispatchNested: AiToolDispatcher = (
+            nestedName,
+            nestedArgs = {},
+            nestedSignal,
+        ) => dispatchAiTool(
             context,
             nestedName,
             nestedArgs,
             nestedOwner,
+            nestedSignal,
         ) as ReturnType<AiToolDispatcher>;
-        return definition.execute(context, args, dispatchNested);
+        return definition.execute(context, args, dispatchNested, signal);
     } catch (error) {
         return createAiToolOperationFrom(() => { throw error; }, 'failed');
     }
@@ -1228,11 +1283,12 @@ export const createAiCommandRegistry = (
 ): AiCommandRegistry => Object.fromEntries(
     definitionList.map((definition) => [
         definition.name,
-        (args: Record<string, any>) => dispatchAiTool(
+        (args: Record<string, any>, signal?: AbortSignal) => dispatchAiTool(
             context,
             definition.name,
             args,
             'chat',
+            signal,
         ),
     ]),
 ) as unknown as AiCommandRegistry;

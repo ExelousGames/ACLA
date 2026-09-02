@@ -13,14 +13,17 @@ import { useAiLabels } from 'contexts/AiLabelsContext';
 import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
 import {
     DriverExpertComparisonGraph,
+    getDriverExpertReplayDurationMs,
     getDriverExpertComparisonUnavailableDiagnostics,
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
+import { createDriverExpertComparisonOverlayComponent } from 'components/driver-expert-comparison/DriverExpertComparisonGraph.overlay-source';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import styles from './AnalysisResultsChart.module.css';
 import {
     AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS,
     NamedAiToolComponentHandle,
+    useOptionalAiToolComponentRefDirectory,
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
 import {
@@ -32,9 +35,13 @@ import {
 } from 'contexts/AiToolComponentError';
 import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
 import {
+    createControlledAiToolOperation,
     createAiToolOperationFrom,
     type AiToolOperation,
 } from 'components/ai-engineering-tools';
+import { ToolExecutionError } from 'errors/AiToolError';
+import { overlaySessionClient } from 'views/floating-chat/overlay-display-client';
+import type { MutableAiOverlayComponent } from 'views/floating-chat/MutableAiOverlayComponent';
 import {
     buildActivePageQueryTemplates,
     buildOverallTrendQueryExpression,
@@ -141,6 +148,11 @@ const cloneAndFreeze = <T,>(value: T): T => {
 export interface AnalysisResultsChartHandle extends NamedAiToolComponentHandle {
     waitForAnalysisResultPage(pageId: string): Promise<void>;
     getFilteredSegments(): FilteredAnalysisSegmentsSnapshot;
+    displaySpecificResultInOverlay(
+        pageId: string,
+        resultId: string,
+        signal?: AbortSignal,
+    ): AnalysisResultOverlayOperation;
     applyAnalysisResultQuery(
         args: ApplyAnalysisResultQueryInput,
     ): AiToolOperation<ApplyAnalysisResultQueryOutput>;
@@ -153,6 +165,18 @@ export interface AnalysisResultsChartHandle extends NamedAiToolComponentHandle {
     removeAnalysisResult(id: unknown): AnalysisResultControlResult;
     disableAnalysisResults(): true;
 }
+
+export type AnalysisResultOverlayResult = 'graph shown';
+export type AnalysisResultOverlayTerminationStatus =
+    | 'complete'
+    | 'failed'
+    | 'cancelled'
+    | 'replaced';
+export type AnalysisResultOverlayOperation = AiToolOperation<
+    AnalysisResultOverlayResult,
+    never,
+    AnalysisResultOverlayTerminationStatus
+>;
 
 export type AnalysisResultControlResult = Omit<AnalysisResultMutationResult, 'success'> & {
     success: true;
@@ -172,6 +196,27 @@ type AnalysisResultSelectionWaiter = AnalysisResultPageWaiter & {
 type RenderedAnalysisResultSelection = {
     pageId: string | null;
     isLapResults: boolean;
+};
+
+type ActiveAnalysisResultOverlay = {
+    presentationId: string;
+    terminate(status: Exclude<AnalysisResultOverlayTerminationStatus, 'complete'>, error: Error): void;
+};
+
+interface FloatingChatLifecycleApi {
+    onFloatingChatClosed?: (listener: () => void) => (() => void) | void;
+}
+
+const getFloatingChatLifecycleApi = (): FloatingChatLifecycleApi | undefined => (
+    typeof window === 'undefined'
+        ? undefined
+        : (window as unknown as { electronAPI?: FloatingChatLifecycleApi }).electronAPI
+);
+
+const createAnalysisResultOverlayAbortError = (): Error => {
+    const error = new Error('The Analysis Results graph display was aborted.');
+    error.name = 'AbortError';
+    return error;
 };
 
 const createAnalysisResultsReadinessError = (
@@ -1066,6 +1111,9 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     });
     const applyOperationGenerationRef = React.useRef(0);
     const mountedRef = React.useRef(false);
+    const overlayComponentSequenceRef = React.useRef(0);
+    const activeOverlayRef = React.useRef<ActiveAnalysisResultOverlay | null>(null);
+    const componentRefs = useOptionalAiToolComponentRefDirectory();
     const { getCategoryLabels, getLabelName } = useAiLabels();
     const retainedPages = pagination?.pages ?? EMPTY_ANALYSIS_RESULTS_PAGES;
     const activePageIndex = React.useMemo(() => {
@@ -1077,6 +1125,108 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const isOverallTrend = Boolean(pagination) && (showOverallTrend || !activePage);
     const activeData = activePage ?? data;
     const { elements } = React.useMemo(() => normalizeAnalysisResultsData(activeData), [activeData]);
+    const resolveSpecificResult = React.useCallback((pageId: string, resultId: string) => {
+        const pageElements = pagination
+            ? retainedPages.find((page) => page.id === pageId)?.elements
+            : pageId === id ? elements : undefined;
+        const result = pageElements?.find((element) => element.id === resultId);
+        return result ? cloneAndFreeze(result) : null;
+    }, [elements, id, pagination, retainedPages]);
+    const displaySpecificResultInOverlay = React.useCallback((
+        pageId: string,
+        resultId: string,
+        signal?: AbortSignal,
+    ): AnalysisResultOverlayOperation => {
+        const result = resolveSpecificResult(pageId, resultId);
+        if (!result) {
+            throw new ToolExecutionError(
+                `Analysis result '${resultId}' was not found on page '${pageId}'.`,
+            );
+        }
+        if (
+            !result.comparison
+            || !hasComparableDriverExpertData(result.comparison, sessionGame)
+            || getDriverExpertReplayDurationMs(result.comparison) <= 0
+        ) {
+            throw new ToolExecutionError(
+                `Analysis result '${resultId}' has no supported overlay graph.`,
+            );
+        }
+        if (!componentRefs) {
+            throw new ToolExecutionError('The graph overlay component directory is unavailable.');
+        }
+        const presentationId = overlaySessionClient.current()?.presentationId;
+        if (!presentationId) {
+            throw new ToolExecutionError('The graph overlay is unavailable.');
+        }
+
+        const controller = createControlledAiToolOperation<
+            AnalysisResultOverlayResult,
+            never,
+            AnalysisResultOverlayTerminationStatus
+        >();
+        if (signal?.aborted) {
+            controller.reject('cancelled', createAnalysisResultOverlayAbortError());
+            return controller.operation;
+        }
+
+        activeOverlayRef.current?.terminate(
+            'replaced',
+            new ToolExecutionError('A newer graph replaced the active Analysis Results display.'),
+        );
+
+        const componentName = `${name}:driver-expert-comparison:${++overlayComponentSequenceRef.current}`;
+        let ref: React.MutableRefObject<MutableAiOverlayComponent<any> | null>;
+        let active: ActiveAnalysisResultOverlay;
+        const finish = (
+            status: AnalysisResultOverlayTerminationStatus,
+            error?: Error,
+        ) => {
+            if (controller.settled) return;
+            signal?.removeEventListener('abort', handleAbort);
+            ref.current?.clear();
+            componentRefs.unregisterComponentRef(ref);
+            if (activeOverlayRef.current === active) activeOverlayRef.current = null;
+            if (status === 'complete') {
+                controller.resolve('complete', 'graph shown');
+                return;
+            }
+            controller.reject(
+                status,
+                error ?? new ToolExecutionError('The Analysis Results graph display closed.'),
+            );
+        };
+        const handleAbort = () => finish('cancelled', createAnalysisResultOverlayAbortError());
+        ref = {
+            current: createDriverExpertComparisonOverlayComponent(componentName, (event) => {
+                if (event === 'replay_complete') finish('complete');
+            }),
+        };
+        active = {
+            presentationId,
+            terminate: (status, error) => finish(status, error),
+        };
+        activeOverlayRef.current = active;
+        signal?.addEventListener('abort', handleAbort, { once: true });
+        if (signal?.aborted) {
+            handleAbort();
+            return controller.operation;
+        }
+
+        try {
+            componentRefs.registerComponentRef(ref);
+            ref.current?.publish({
+                title: result.title
+                    ? `${result.title}: Driver vs Expert`
+                    : 'Driver vs Expert',
+                comparison: result.comparison,
+                game: sessionGame,
+            }, { presentationId });
+        } catch (error) {
+            finish('failed', error instanceof Error ? error : new Error(String(error)));
+        }
+        return controller.operation;
+    }, [componentRefs, name, resolveSpecificResult, sessionGame]);
     const activeMistakeCatalog = React.useMemo(() => {
         const categoryLabels = {
             MSP: getCategoryLabels('MSP'),
@@ -1229,6 +1379,32 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         });
     }, [activePage?.id, isOverallTrend, name, pagination]);
 
+    React.useEffect(() => overlaySessionClient.subscribe((presentation) => {
+        const active = activeOverlayRef.current;
+        if (!active || active.presentationId === presentation?.presentationId) return;
+        active.terminate(
+            'cancelled',
+            new ToolExecutionError('The overlay session closed the Analysis Results graph.'),
+        );
+    }), []);
+
+    React.useEffect(() => {
+        const unsubscribe = getFloatingChatLifecycleApi()?.onFloatingChatClosed?.(() => {
+            activeOverlayRef.current?.terminate(
+                'cancelled',
+                new ToolExecutionError('The floating overlay closed the Analysis Results graph.'),
+            );
+        });
+        return typeof unsubscribe === 'function' ? unsubscribe : undefined;
+    }, []);
+
+    React.useLayoutEffect(() => () => {
+        activeOverlayRef.current?.terminate(
+            'cancelled',
+            new ToolExecutionError('Analysis Results unmounted before the graph display completed.'),
+        );
+    }, []);
+
     const handle = React.useMemo<AnalysisResultsChartHandle>(() => ({
         getComponentName: () => name,
         waitForAnalysisResultPage,
@@ -1256,6 +1432,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 segments,
             });
         },
+        displaySpecificResultInOverlay,
         applyAnalysisResultQuery: (args) => {
             const operationGeneration = applyOperationGenerationRef.current + 1;
             applyOperationGenerationRef.current = operationGeneration;
@@ -1397,6 +1574,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     }), [
         activeData,
         activePage?.id,
+        displaySpecificResultInOverlay,
         elements,
         id,
         isOverallTrend,

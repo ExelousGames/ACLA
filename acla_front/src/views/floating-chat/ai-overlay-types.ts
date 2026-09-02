@@ -1,7 +1,6 @@
 import type React from 'react';
 
 export const OVERLAY_HOLD_MS = 3_800;
-export const OVERLAY_COMPARISON_COMPLETION_PAUSE_MS = 800;
 
 export type AiOverlayPlacement = 'pinned' | 'flow';
 export type AiOverlayDisplayStatus = 'expanded' | 'folded' | 'full_size';

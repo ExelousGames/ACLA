@@ -14,7 +14,7 @@ export interface LiveRangeTodoEventInput {
     lead_time_seconds?: number;
     eta_seconds?: number;
     content: LiveRangeTodoContent;
-    taskStart: (signal: AbortSignal) => unknown | Promise<unknown>;
+    taskStart: (signal: AbortSignal) => AiToolOperation<unknown, object>;
 }
 
 export interface LiveRangeTodoEventUpdate {
@@ -22,7 +22,7 @@ export interface LiveRangeTodoEventUpdate {
     normalized_position?: number;
     lead_time_seconds?: number;
     content?: Partial<LiveRangeTodoContent>;
-    taskStart?: (signal: AbortSignal) => unknown | Promise<unknown>;
+    taskStart?: (signal: AbortSignal) => AiToolOperation<unknown, object>;
 }
 
 export interface LiveRangeTodoSnapshotEvent {

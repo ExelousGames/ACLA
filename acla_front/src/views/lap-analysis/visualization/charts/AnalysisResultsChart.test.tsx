@@ -1,6 +1,32 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
+let mockOverlayPresentation: { presentationId: string } | null = null;
+let mockOverlayComponentDirectory: any = null;
+let mockFloatingChatClosedListener: (() => void) | null = null;
+const mockOverlaySessionListeners = new Set<(
+    presentation: { presentationId: string } | null,
+) => void>();
+
+jest.mock('views/floating-chat/overlay-display-client', () => ({
+    overlaySessionClient: {
+        current: () => mockOverlayPresentation,
+        subscribe: (listener: (presentation: { presentationId: string } | null) => void) => {
+            mockOverlaySessionListeners.add(listener);
+            listener(mockOverlayPresentation);
+            return () => mockOverlaySessionListeners.delete(listener);
+        },
+    },
+}));
+
+jest.mock('contexts/AiToolComponentRefContext', () => {
+    const actual = jest.requireActual('contexts/AiToolComponentRefContext');
+    return {
+        ...actual,
+        useOptionalAiToolComponentRefDirectory: () => mockOverlayComponentDirectory,
+    };
+});
+
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: () => ({
         detectedGame: null,
@@ -130,6 +156,9 @@ import AnalysisResultsChart, {
     type AnalysisResultsPaginationPage,
 } from './AnalysisResultsChart';
 import {
+    createAiToolComponentRefDirectory,
+} from 'contexts/AiToolComponentRefContext';
+import {
     VisualizationControlFailedError,
 } from 'contexts/AiToolComponentError';
 import {
@@ -181,7 +210,50 @@ const comparableData = (driverGas: number, expertGas: number) => ({
     }],
 });
 
+const replayComparisonData = () => ({
+    samples: [{
+        driverTimeMs: 0,
+        expertTimeMs: 0,
+        driverTrackPosition: 0.2,
+        expertTrackPosition: 0.2,
+        driverGas: 0.2,
+        expertGas: 0.3,
+    }, {
+        driverTimeMs: 2_000,
+        expertTimeMs: 2_000,
+        driverTrackPosition: 0.3,
+        expertTrackPosition: 0.3,
+        driverGas: 0.4,
+        expertGas: 0.5,
+    }],
+});
+
 describe('AnalysisResultsChart', () => {
+    beforeEach(() => {
+        mockOverlayPresentation = { presentationId: 'analysis-overlay-session' };
+        mockOverlayComponentDirectory = createAiToolComponentRefDirectory();
+        mockFloatingChatClosedListener = null;
+        mockOverlaySessionListeners.clear();
+        (window as any).electronAPI = {
+            onFloatingChatClosed: (listener: () => void) => {
+                mockFloatingChatClosedListener = listener;
+                return () => {
+                    if (mockFloatingChatClosedListener === listener) {
+                        mockFloatingChatClosedListener = null;
+                    }
+                };
+            },
+        };
+    });
+
+    afterEach(() => {
+        delete (window as any).electronAPI;
+        mockOverlayComponentDirectory = null;
+        mockOverlayPresentation = null;
+        mockFloatingChatClosedListener = null;
+        mockOverlaySessionListeners.clear();
+    });
+
     it('evaluates JSONata over normalized results and preserves JSON value types', async () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const view = render(
@@ -348,6 +420,151 @@ describe('AnalysisResultsChart', () => {
             status: 'ready',
             data: 4,
         });
+    });
+
+    it('owns comparison overlay publication, replacement, and replay completion', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="comparison-owner"
+                sessionGame="acc"
+                pagination={{
+                    pages: [{
+                        id: 'retained-page',
+                        createdAt: 1,
+                        baseline: { lap_id: 1, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
+                        elements: [{
+                            id: 'braking-result',
+                            labels: ['MSP'],
+                            title: 'Late braking',
+                            comparison: replayComparisonData(),
+                        }],
+                    }, {
+                        id: 'active-page',
+                        createdAt: 2,
+                        baseline: { lap_id: 2, lap_time_ms: 98_000, track: 'Spa', car: 'GT3' },
+                        elements: [{ id: 'active-result', labels: ['MSR'] }],
+                    }],
+                    activePageId: 'active-page',
+                    onSelectPage: jest.fn(),
+                }}
+            />,
+        );
+
+        expect(() => chartRef.current!.displaySpecificResultInOverlay(
+            'active-page',
+            'braking-result',
+        )).toThrow("Analysis result 'braking-result' was not found");
+        const first = chartRef.current!.displaySpecificResultInOverlay(
+            'retained-page',
+            'braking-result',
+        );
+        const firstTerminated = new Promise((resolve) => first.notifyTerminated(resolve));
+        const firstRef = mockOverlayComponentDirectory.getComponentRefs()[0];
+        expect(firstRef.current.getComponentType()).toBe('driver_expert_comparison');
+        expect(firstRef.current.getSnapshot()).toEqual({
+            title: 'Late braking: Driver vs Expert',
+            comparison: replayComparisonData(),
+            game: 'acc',
+        });
+
+        const second = chartRef.current!.displaySpecificResultInOverlay(
+            'retained-page',
+            'braking-result',
+        );
+        await expect(first.result).rejects.toThrow('newer graph');
+        await expect(firstTerminated).resolves.toMatchObject({ status: 'replaced' });
+        expect(mockOverlayComponentDirectory.getComponentRefs()).not.toContain(firstRef);
+
+        const secondRef = mockOverlayComponentDirectory.getComponentRefs()[0];
+        secondRef.current.handleOverlayRendererEvent({
+            presentationId: 'analysis-overlay-session',
+            componentName: secondRef.current.getComponentName(),
+            revision: 1,
+            event: 'replay_complete',
+        });
+
+        await expect(second.result).resolves.toBe('graph shown');
+        expect(mockOverlayComponentDirectory.getComponentRefs()).toHaveLength(0);
+    });
+
+    it('owns comparison overlay cancellation when the overlay closes or the task aborts', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="comparison-cancellation"
+                data={{
+                    elements: [{
+                        id: 'corner-result',
+                        labels: ['MSR'],
+                        comparison: replayComparisonData(),
+                    }],
+                }}
+            />,
+        );
+
+        const closed = chartRef.current!.displaySpecificResultInOverlay(
+            'comparison-cancellation',
+            'corner-result',
+        );
+        const closedTermination = new Promise((resolve) => closed.notifyTerminated(resolve));
+        mockFloatingChatClosedListener?.();
+        await expect(closed.result).rejects.toThrow('floating overlay closed');
+        await expect(closedTermination).resolves.toMatchObject({ status: 'cancelled' });
+
+        const abortController = new AbortController();
+        const aborted = chartRef.current!.displaySpecificResultInOverlay(
+            'comparison-cancellation',
+            'corner-result',
+            abortController.signal,
+        );
+        const abortedTermination = new Promise((resolve) => aborted.notifyTerminated(resolve));
+        abortController.abort();
+        await expect(aborted.result).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(abortedTermination).resolves.toMatchObject({ status: 'cancelled' });
+        expect(mockOverlayComponentDirectory.getComponentRefs()).toHaveLength(0);
+    });
+
+    it('rejects missing, static, or undisplayable comparison results before publishing', () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="comparison-validation"
+                data={{
+                    elements: [{
+                        id: 'static-result',
+                        labels: ['MSP'],
+                        comparison: comparableData(0.2, 0.3),
+                    }, {
+                        id: 'replay-result',
+                        labels: ['MSP'],
+                        comparison: replayComparisonData(),
+                    }],
+                }}
+            />,
+        );
+
+        expect(() => chartRef.current!.displaySpecificResultInOverlay(
+            'comparison-validation',
+            'missing-result',
+        )).toThrow("Analysis result 'missing-result' was not found");
+        expect(() => chartRef.current!.displaySpecificResultInOverlay(
+            'comparison-validation',
+            'static-result',
+        )).toThrow("has no supported overlay graph");
+
+        mockOverlayPresentation = null;
+        expect(() => chartRef.current!.displaySpecificResultInOverlay(
+            'comparison-validation',
+            'replay-result',
+        )).toThrow('graph overlay is unavailable');
+        expect(mockOverlayComponentDirectory.getComponentRefs()).toHaveLength(0);
     });
 
     it('treats a zero telemetry lap as retained result 1 and one analyzed lap', async () => {
