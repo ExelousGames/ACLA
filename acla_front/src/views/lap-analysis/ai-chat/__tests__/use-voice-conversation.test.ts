@@ -26,6 +26,7 @@ describe('executeSubscribedFrontendTool', () => {
         const { frames, events, result } = await execute(() => createAiToolOperation(
             Promise.resolve({ status: 'complete', value: 7 }),
             [Promise.resolve({ status: 'working', progress: 50 })],
+            'complete',
         ));
 
         expect(frames).toEqual([
@@ -42,6 +43,7 @@ describe('executeSubscribedFrontendTool', () => {
         const { frames, result } = await execute(() => createAiToolOperation(
             Promise.resolve({ status: 'complete' }),
             [Promise.reject(new Error('progress unavailable'))],
+            'complete',
         ));
 
         expect(frames[1]).toMatchObject({
@@ -52,9 +54,31 @@ describe('executeSubscribedFrontendTool', () => {
         expect(result).toMatchObject({ ok: true });
     });
 
+    it('uses the notified terminal status when the result is missing or conflicts', async () => {
+        const conflicting = await execute(() => createAiToolOperation(
+            { status: 'payload-status', value: 7 },
+            'notified-status',
+        ));
+        const missing = await execute(() => createAiToolOperation(
+            { value: 8 },
+            'explicit-status',
+        ));
+
+        expect(conflicting.frames.at(-1)).toMatchObject({
+            final: true,
+            result: { status: 'notified-status', value: 7 },
+        });
+        expect(missing.frames.at(-1)).toMatchObject({
+            final: true,
+            result: { status: 'explicit-status', value: 8 },
+        });
+        expect(conflicting.frames.filter((frame) => frame.final)).toHaveLength(1);
+        expect(missing.frames.filter((frame) => frame.final)).toHaveLength(1);
+    });
+
     it.each([
-        ['resolved Error', () => createAiToolOperation(new Error('broken'))],
-        ['rejected promise', () => createAiToolOperationFrom(() => { throw new Error('broken'); })],
+        ['resolved Error', () => createAiToolOperation(new Error('broken'), 'failed')],
+        ['rejected promise', () => createAiToolOperationFrom(() => { throw new Error('broken'); }, 'failed')],
     ])('normalizes a %s into the same failed final frame', async (_label, handler) => {
         const { frames, result } = await execute(handler as any);
 
@@ -74,7 +98,7 @@ describe('executeSubscribedFrontendTool', () => {
         };
         const { frames, result } = await execute(() => createAiToolOperationFrom(() => {
             throw new AnalysisResultsQueryError(detail);
-        }));
+        }, 'failed'));
 
         expect(frames.at(-1)).toMatchObject({
             final: true,

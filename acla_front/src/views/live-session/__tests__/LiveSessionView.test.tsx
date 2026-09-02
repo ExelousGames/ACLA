@@ -14,7 +14,7 @@ import {
     BaselineCollectionAlreadyStartedError,
     BaselineCollectionNotStartedError,
 } from 'contexts/AiToolComponentError';
-import { createAiToolOperationFrom } from 'components/ai-engineering-tools';
+import { createAiToolOperation, createAiToolOperationFrom } from 'components/ai-engineering-tools';
 import { liveTelemetryStore } from '../live-telemetry-store';
 
 jest.mock('contexts/DesktopGameContext', () => ({
@@ -378,7 +378,7 @@ describe('LiveSessionView', () => {
             AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
             'Baseline collection is already in progress.',
         );
-        const startCollection = jest.fn(() => createAiToolOperationFrom(() => { throw failure; }));
+        const startCollection = jest.fn(() => createAiToolOperationFrom(() => { throw failure; }, 'failed'));
 
         render(
             <AiToolComponentRefProvider>
@@ -537,16 +537,17 @@ describe('LiveSessionView', () => {
             track: 'brands_hatch',
             message: 'Baseline complete. Cached baseline record is ready.',
         };
-        const startCollection = jest.fn(() => ({
-            result: Promise.resolve(completed),
-            statuses: [Promise.resolve({
+        const startCollection = jest.fn(() => createAiToolOperation(
+            Promise.resolve(completed),
+            [Promise.resolve({
                 ...completed,
                 progress_percent: 50,
                 status: 'collecting' as const,
                 event: 'baseline_progress' as const,
                 milestone: 50,
             })],
-        }));
+            'collector-complete',
+        ));
 
         render(
             <AiToolComponentRefProvider>
@@ -572,6 +573,7 @@ describe('LiveSessionView', () => {
             },
             timeout_seconds: 12,
         });
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
 
         expect(startCollection).toHaveBeenCalledWith({
             query: {
@@ -582,6 +584,10 @@ describe('LiveSessionView', () => {
         });
         expect(operation.statuses).toEqual([]);
         await expect(operation.result).resolves.toEqual(completed);
+        await expect(termination).resolves.toEqual({
+            status: 'collector-complete',
+            result: completed,
+        });
     });
 
     it('rejects restart without mounting a collector when collection is not in progress', async () => {
@@ -635,7 +641,7 @@ describe('LiveSessionView', () => {
             component_name: 'visualization:analysis-results',
             pageId: 'baseline-analysis-page-1',
             pageCount: 1,
-        })));
+        }), 'ready'));
 
         render(
             <AiToolComponentRefProvider>

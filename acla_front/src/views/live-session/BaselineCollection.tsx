@@ -49,9 +49,11 @@ import { LiveSessionContext } from './LiveSessionContext';
 import { liveTelemetryStore } from './live-telemetry-store';
 import {
     createAiToolDeferred,
+    createControlledAiToolOperation,
     createAiToolOperation,
     createAiToolOperationFrom,
     type AiToolDeferred,
+    type ControlledAiToolOperation,
     type AiToolOperation,
 } from 'components/ai-engineering-tools';
 import type { AiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
@@ -145,7 +147,11 @@ export interface BaselineCollectionHandle extends NamedAiToolComponentHandle, Ai
 }
 
 type PendingBaselineOperation = {
-    result: AiToolDeferred<BaselineCollectionPayload>;
+    controller: ControlledAiToolOperation<
+        BaselineCollectionPayload,
+        BaselineCollectionStatus,
+        'complete' | 'timed_out' | 'cancelled'
+    >;
     statuses: Array<{ milestone: number; deferred: AiToolDeferred<BaselineCollectionStatus> }>;
     timeoutId: ReturnType<typeof setTimeout> | null;
 };
@@ -662,6 +668,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
 
     const settlePendingCollectionOperations = useCallback((
         outcome: BaselineCollectionPayload | Error,
+        terminationStatus: 'complete' | 'cancelled',
     ) => {
         const operations = Array.from(pendingCollectionOperationsRef.current);
         pendingCollectionOperationsRef.current.clear();
@@ -684,8 +691,8 @@ const BaselineCollection = ({ name }: { name: string }) => {
                     });
                 }
             });
-            if (outcome instanceof Error) operation.result.reject(outcome);
-            else operation.result.resolve(outcome);
+            if (outcome instanceof Error) operation.controller.reject(terminationStatus, outcome);
+            else operation.controller.resolve(terminationStatus, outcome);
         });
     }, []);
 
@@ -761,7 +768,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
                     name,
                     'Baseline collection is already in progress.',
                 );
-            });
+            }, 'failed');
         }
 
         const completedRecord = status === 'complete' ? lapRecordRef.current : null;
@@ -769,7 +776,6 @@ const BaselineCollection = ({ name }: { name: string }) => {
         if (!completedRecord || !beginContinuedCollection(completedRecord, query)) {
             beginFreshCollection(query);
         }
-        const result = createAiToolDeferred<BaselineCollectionPayload>();
         const statuses = [0, 1, 25, 50, 75, 100].map((milestone) => ({
             milestone,
             deferred: createAiToolDeferred<BaselineCollectionStatus>(),
@@ -777,8 +783,13 @@ const BaselineCollection = ({ name }: { name: string }) => {
         const timeoutMs = Number.isFinite(options.timeoutMs) && Number(options.timeoutMs) > 0
             ? Number(options.timeoutMs)
             : 600000;
+        const controller = createControlledAiToolOperation<
+            BaselineCollectionPayload,
+            BaselineCollectionStatus,
+            'complete' | 'timed_out' | 'cancelled'
+        >(statuses.map((status) => status.deferred.promise));
         const pending: PendingBaselineOperation = {
-            result,
+            controller,
             statuses,
             timeoutId: setTimeout(() => {
                 pendingCollectionOperationsRef.current.delete(pending);
@@ -795,12 +806,12 @@ const BaselineCollection = ({ name }: { name: string }) => {
                         skipped: true,
                     });
                 });
-                result.reject(error);
+                controller.reject('timed_out', error);
             }, timeoutMs),
         };
         pendingCollectionOperationsRef.current.add(pending);
         if (tagRef.current) settleCollectionStatus(tagRef.current);
-        return createAiToolOperation(result.promise, statuses.map((status) => status.deferred.promise));
+        return controller.operation;
     }, [beginContinuedCollection, beginFreshCollection, name, settleCollectionStatus]);
 
     const restartCollection = useCallback(() => {
@@ -817,10 +828,10 @@ const BaselineCollection = ({ name }: { name: string }) => {
             settlePendingCollectionOperations(new BaselineAnalysisCancelledError(
                 name,
                 'Baseline collection was cancelled because collection restarted.',
-            ));
-            return createAiToolOperation(beginFreshCollection(recorderRef.current.query));
+            ), 'cancelled');
+            return createAiToolOperation(beginFreshCollection(recorderRef.current.query), 'complete');
         } catch (error) {
-            return createAiToolOperationFrom(() => { throw error; });
+            return createAiToolOperationFrom(() => { throw error; }, 'failed');
         }
     }, [beginFreshCollection, name, settlePendingCollectionOperations]);
 
@@ -966,7 +977,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         getComponentName: () => name,
         startCollection,
         restartCollection,
-        requestAnalysis: (options) => createAiToolOperation(requestAnalysis(options)),
+        requestAnalysis: (options) => createAiToolOperation(requestAnalysis(options), 'complete'),
         getTag: () => tagRef.current,
         getComponentType: () => 'baseline_progress',
         getSnapshot: () => tagRef.current,
@@ -1078,7 +1089,10 @@ const BaselineCollection = ({ name }: { name: string }) => {
             publishTag(nextTag);
             settleCollectionStatus(nextTag);
             if (completedRecordToEmit) {
-                settlePendingCollectionOperations(buildBaselineCollectionToolPayload(null, completedRecordToEmit));
+                settlePendingCollectionOperations(
+                    buildBaselineCollectionToolPayload(null, completedRecordToEmit),
+                    'complete',
+                );
             }
         }, { replayLatest: true });
     }, [publishTag, settleCollectionStatus, settlePendingCollectionOperations]);
@@ -1092,7 +1106,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         settlePendingCollectionOperations(new BaselineAnalysisCancelledError(
             name,
             'Baseline collection was cancelled because the component unmounted.',
-        ));
+        ), 'cancelled');
         tagListenersRef.current.clear();
         analysisRequestRef.current = null;
         collectionGenerationRef.current += 1;

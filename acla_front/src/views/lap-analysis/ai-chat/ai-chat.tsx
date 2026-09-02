@@ -508,10 +508,10 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         const handler = activeToolHandlersRef.current[toolName];
         if (!handler) {
             return createAiToolOperationFrom(() => {
-            throw new ToolExecutionError(
-                `The active AI session could not execute '${toolName}'.`,
-            );
-            });
+                throw new ToolExecutionError(
+                    `The active AI session could not execute '${toolName}'.`,
+                );
+            }, 'failed');
         }
         return handler(args) as ReturnType<AiToolDispatcher>;
     }, []);
@@ -1145,7 +1145,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             return runner.createGoal(args as any);
         } catch (error) {
             runner.dispose();
-            return createAiToolOperationFrom(() => { throw error; });
+            return createAiToolOperationFrom(() => { throw error; }, 'failed');
         }
     }, [mountWorkflow]);
 
@@ -1181,7 +1181,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 throw error;
             }
         } catch (error) {
-            return createAiToolOperationFrom(() => { throw error; });
+            return createAiToolOperationFrom(() => { throw error; }, 'failed');
         }
     }, [mountWorkflow]);
 
@@ -1368,9 +1368,11 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         getRecordingState: () => analysisContext?.recordingState ?? null,
         startAgentSession: (agentMode, args) => createAiToolOperationFrom(
             () => startAgentSession(agentMode, args),
+            'started',
         ),
         stopAgentSession: (agentSessionId) => createAiToolOperationFrom(
             () => stopAgentSession(agentSessionId),
+            'stopped',
         ),
         startTrackGuide,
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
@@ -1390,6 +1392,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         displayDriverExpertComparison,
         showMap: (args) => createAiToolOperationFrom(
             async () => await showMap(args) as ShowMapAiResult,
+            'complete',
         ),
     }), [
         analysisContext?.recordingState,
@@ -2204,26 +2207,32 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 </aside>
 
                 <section className="ai-chat__transcript">
-                    {activeWorkflow?.kind === 'goal' && (
-                        <Goal
-                            key={activeWorkflow.key}
-                            snapshot={goalSnapshot}
-                            surface="chat"
-                        />
-                    )}
-                    {activeWorkflow?.kind === 'procedure_plan' && procedurePlanSnapshot && (
-                        <ProcedurePlan
-                            key={activeWorkflow.key}
-                            plan={procedurePlanSnapshot}
-                            surface="chat"
-                        />
-                    )}
-                    {activeWorkflow?.kind === 'live_range_todo' && (
-                        <LiveRangeTodoList
-                            key={activeWorkflow.key}
-                            runner={activeWorkflow.runner}
-                            surface="chat"
-                        />
+                    {activeWorkflow
+                        && (activeWorkflow.kind !== 'procedure_plan' || procedurePlanSnapshot)
+                        && (
+                        <div className="ai-chat__tool-list">
+                            {activeWorkflow.kind === 'goal' && (
+                                <Goal
+                                    key={activeWorkflow.key}
+                                    snapshot={goalSnapshot}
+                                    surface="chat"
+                                />
+                            )}
+                            {activeWorkflow.kind === 'procedure_plan' && procedurePlanSnapshot && (
+                                <ProcedurePlan
+                                    key={activeWorkflow.key}
+                                    plan={procedurePlanSnapshot}
+                                    surface="chat"
+                                />
+                            )}
+                            {activeWorkflow.kind === 'live_range_todo' && (
+                                <LiveRangeTodoList
+                                    key={activeWorkflow.key}
+                                    runner={activeWorkflow.runner}
+                                    surface="chat"
+                                />
+                            )}
+                        </div>
                     )}
 
                     <div className="ai-chat__msgs" ref={messagesScrollRef} onScroll={handleMessagesScroll}>

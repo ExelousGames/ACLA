@@ -33,8 +33,8 @@ const request = (): GoalRequest => ({
     },
 });
 
-const operationWithValue = (value: unknown) => (
-    resolvedAiToolOperation(value as NestedAiToolResult)
+const operationWithValue = (value: unknown, status = 'complete') => (
+    resolvedAiToolOperation(value as NestedAiToolResult, status)
 );
 
 describe('GoalDisplay', () => {
@@ -166,7 +166,7 @@ describe('GoalRunner central dispatch callback', () => {
         const collect = createAiToolDeferred<NestedAiToolResult>();
         const dispatch: AiToolDispatcher = jest.fn((name: string) => (
             name === 'collect'
-                ? createAiToolOperation(collect.promise)
+                ? createAiToolOperation(collect.promise, 'complete')
                 : operationWithValue(name === 'determine'
                     ? { status: 'ready', data: 0 }
                     : { status: 'complete' })
@@ -282,6 +282,39 @@ describe('GoalRunner central dispatch callback', () => {
         });
     });
 
+    it('records notified statuses instead of result payload statuses', async () => {
+        const dispatch = jest.fn((name: string) => {
+            if (name === 'collect') {
+                return operationWithValue({ status: 'conflicting-payload' }, 'collect-terminal');
+            }
+            if (name === 'analyze') {
+                return operationWithValue({ value: 4 }, 'analyze-terminal');
+            }
+            return operationWithValue(
+                { status: 'ready', data: 0 },
+                'determination-terminal',
+            );
+        });
+        const runner = new GoalRunner('goal', dispatch);
+
+        const result = await runner.create(request()).result;
+        if (result instanceof Error) throw result;
+
+        expect(result.task_results).toEqual([
+            expect.objectContaining({
+                step_id: 'collect',
+                source_result: expect.objectContaining({ status: 'collect-terminal' }),
+            }),
+            expect.objectContaining({
+                step_id: 'analyze',
+                source_result: expect.objectContaining({ status: 'analyze-terminal' }),
+            }),
+        ]);
+        expect(result.determination_result?.source_result).toMatchObject({
+            status: 'determination-terminal',
+        });
+    });
+
     it('keeps rerunning a missed numeric-envelope goal until it is achieved', async () => {
         let determinations = 0;
         const dispatch = jest.fn((name: string) => operationWithValue(
@@ -379,7 +412,7 @@ describe('GoalRunner central dispatch callback', () => {
         const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {
             if (name === 'determine') throw new Error('determination exploded');
             return { status: 'complete' };
-        }));
+        }, 'complete'));
         const runner = new GoalRunner('goal', dispatch);
 
         const result = await runner.create(request()).result;
@@ -404,7 +437,7 @@ describe('GoalRunner central dispatch callback', () => {
             return name === 'determine'
                 ? { status: 'ready', data: 0 }
                 : { status: 'complete' };
-        }));
+        }, 'complete'));
         const runner = new GoalRunner('goal', dispatch);
 
         const failedOperation = runner.create(request());

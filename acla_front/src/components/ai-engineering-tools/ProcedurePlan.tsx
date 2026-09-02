@@ -5,10 +5,9 @@ import type {
 } from 'contexts/AiToolComponentRefContext';
 import type { AiToolDispatcher } from './Goal';
 import {
-    createAiToolDeferred,
-    createAiToolOperation,
+    createControlledAiToolOperation,
     createAiToolOperationFrom,
-    type AiToolDeferred,
+    type ControlledAiToolOperation,
     type AiToolOperation,
 } from './ai-tool-operation';
 import {
@@ -99,7 +98,11 @@ export interface ProcedurePlanHandle extends NamedAiToolComponentHandle, AiOverl
 }
 
 type ActiveProcedurePlanOperation = {
-    result: AiToolDeferred<ProcedurePlanRunResult>;
+    controller: ControlledAiToolOperation<
+        ProcedurePlanRunResult,
+        never,
+        'complete' | 'failed' | 'cancelled' | 'replaced'
+    >;
 };
 
 const defaultProcedurePlanErrorHandler: ProcedurePlanTaskErrorHandler = (request, error) => {
@@ -184,13 +187,13 @@ implements ProcedurePlanHandle {
     }
 
     clear(reason?: string): AiToolOperation<ProcedurePlanRunResult> {
-        return createAiToolOperationFrom(() => this.runClear(reason));
+        return createAiToolOperationFrom(() => this.runClear(reason), 'cleared');
     }
 
     private runClear(reason?: string): ProcedurePlanRunResult {
         this.generation += 1;
         this.active = false;
-        this.cancelActiveOperation(new ProcedurePlanReplacedError(
+        this.cancelActiveOperation('cancelled', new ProcedurePlanReplacedError(
             this.getComponentName(),
             'The procedure plan was cleared.',
         ));
@@ -235,7 +238,7 @@ implements ProcedurePlanHandle {
     protected onDispose(): void {
         this.generation += 1;
         this.active = false;
-        this.cancelActiveOperation(new ProcedurePlanReplacedError(
+        this.cancelActiveOperation('cancelled', new ProcedurePlanReplacedError(
             this.getComponentName(),
             'The procedure plan was disposed.',
         ));
@@ -251,28 +254,38 @@ implements ProcedurePlanHandle {
     private startOperation(
         run: () => Promise<ProcedurePlanRunResult>,
     ): AiToolOperation<ProcedurePlanRunResult> {
-        this.cancelActiveOperation(new ProcedurePlanReplacedError(
+        this.cancelActiveOperation('replaced', new ProcedurePlanReplacedError(
             this.getComponentName(),
             'The procedure plan operation was replaced.',
         ));
         const operation: ActiveProcedurePlanOperation = {
-            result: createAiToolDeferred<ProcedurePlanRunResult>(),
+            controller: createControlledAiToolOperation<
+                ProcedurePlanRunResult,
+                never,
+                'complete' | 'failed' | 'cancelled' | 'replaced'
+            >(),
         };
         this.activeOperation = operation;
         void run().then(
-            (result) => operation.result.resolve(result),
-            (error) => operation.result.reject(error),
+            (result) => operation.controller.resolve('complete', result),
+            (error) => operation.controller.reject(
+                'failed',
+                error instanceof Error ? error : new Error(String(error)),
+            ),
         ).finally(() => {
             if (this.activeOperation === operation) this.activeOperation = null;
         });
-        return createAiToolOperation(operation.result.promise);
+        return operation.controller.operation;
     }
 
-    private cancelActiveOperation(error: Error): void {
+    private cancelActiveOperation(
+        status: 'cancelled' | 'replaced',
+        error: Error,
+    ): void {
         const operation = this.activeOperation;
         if (!operation) return;
         this.activeOperation = null;
-        operation.result.reject(error);
+        operation.controller.reject(status, error);
     }
 
     private publish(plan: ProcedurePlanState | null): void {
@@ -316,9 +329,12 @@ implements ProcedurePlanHandle {
                     request.name || '',
                     getProcedurePlanToolArguments(request),
                 );
-                const value = await operation.result;
-                if (value instanceof Error) throw value;
-                output = value;
+                const termination = await new Promise<{
+                    status: string;
+                    result: import('./Goal').NestedAiToolResult | Error;
+                }>((resolve) => operation.notifyTerminated(resolve));
+                if (termination.result instanceof Error) throw termination.result;
+                output = termination.result;
             } catch (error) {
                 executionError = error;
             }

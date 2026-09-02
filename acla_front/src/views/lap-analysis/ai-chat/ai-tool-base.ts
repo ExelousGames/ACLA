@@ -4,6 +4,7 @@ export type AiToolStatusPayload = { [key: string]: unknown };
 
 export {
     createAiToolDeferred,
+    createControlledAiToolOperation,
     createAiToolOperation,
     createAiToolOperationFrom,
     mapAiToolOperation,
@@ -14,6 +15,9 @@ export type {
     AiToolOperation,
     AiToolOperationResult,
     AiToolOperationStatus,
+    AiToolOperationTerminationStatus,
+    AiToolTermination,
+    ControlledAiToolOperation,
 } from 'components/ai-engineering-tools/ai-tool-operation';
 
 export {

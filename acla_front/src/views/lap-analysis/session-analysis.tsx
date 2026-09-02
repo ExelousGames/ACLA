@@ -369,7 +369,7 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
                     getAiAnalysisLimit(args.limit),
                     (labelId) => resolveAnalysisLabel(componentRefs, labelId),
                 );
-            }),
+            }, 'complete'),
             getRecordedAnalysisForAi: (args) => createAiToolOperationFrom(() => compactRecordedAnalysisForAi(
                 name,
                 analysisContextRef.current.sessionSelected,
@@ -377,7 +377,7 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
                 analysisContextRef.current.recordedAiAnalysis,
                 getAiAnalysisLimit(args.limit),
                 (labelId) => resolveAnalysisLabel(componentRefs, labelId),
-            )),
+            ), 'complete'),
             getRecordedSessionContextForAi: (_args) => createAiToolOperationFrom(() => {
                 const selected = analysisContextRef.current.sessionSelected;
                 if (!selected?.SessionId) {
@@ -389,7 +389,7 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
                     track: selected.map || analysisContextRef.current.mapSelected,
                     car: selected.car || null,
                 };
-            }),
+            }, 'ready'),
             analyzeTelemetryForAi: (args) => createAiToolOperationFrom(async () => {
                 const state = await analysisContextRef.current.runRecordedAiAnalysis({
                     force: args.force === true,
@@ -417,7 +417,7 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
                     telemetry_stats: null,
                     ...chart,
                 };
-            }),
+            }, 'complete'),
         };
     }
     useRegisterAiToolComponentRef(componentRef);

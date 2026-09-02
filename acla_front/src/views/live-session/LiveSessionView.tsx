@@ -63,8 +63,9 @@ import type { LiveEventLogHandle } from './LiveEventLog';
 import type { EventSearchParams } from './event-log/EventLog';
 import { liveTelemetryStore } from './live-telemetry-store';
 import {
-    createAiToolOperation,
+    createControlledAiToolOperation,
     createAiToolOperationFrom,
+    mapAiToolOperation,
     type AiToolOperation,
 } from 'components/ai-engineering-tools';
 import './live-session.css';
@@ -84,6 +85,31 @@ export type LiveBaselineRestartAiResult = {
 };
 export type LiveBaselineAnalysisAiResult = {
     status: 'ready' | 'empty';
+};
+
+const bridgeDeferredAiToolOperation = <TResult,>(
+    load: () => Promise<AiToolOperation<TResult, any, string>>,
+): AiToolOperation<TResult> => {
+    const controller = createControlledAiToolOperation<
+        TResult,
+        never,
+        string
+    >();
+    void load().then((operation) => {
+        operation.notifyTerminated((termination) => {
+            void operation.result.then(
+                (result) => controller.resolve(termination.status, result),
+                (error) => controller.reject(
+                    termination.status,
+                    error instanceof Error ? error : new Error(String(error)),
+                ),
+            );
+        });
+    }, (error) => controller.reject(
+        'failed',
+        error instanceof Error ? error : new Error(String(error)),
+    ));
+    return controller.operation;
 };
 export type LiveTelemetryAnalysisAiResult = {
     status: 'ready' | 'empty';
@@ -366,11 +392,11 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                     status: 'ready' as const,
                     data: await queryLiveTelemetry(query),
                 };
-            }),
+            }, 'ready'),
             getEventLogForAi: (args) => createAiToolOperationFrom(() => ({
                 status: 'complete',
                 events: findLiveEvents(args),
-            })),
+            }), 'complete'),
             getNextCornerForAi: () => createAiToolOperationFrom(() => {
                 const corner = liveSessionRef.current.getNextCorner();
                 if (!corner) throw new NoCornerDataError('No upcoming corner data is available.');
@@ -382,51 +408,50 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                         distance_ahead: corner.distanceAhead,
                     },
                 };
-            }),
+            }, 'complete'),
             collectLiveBaselineForAi: (args) => {
                 let options: BaselineCollectionOptions;
                 try {
                     options = validateBaselineCollectionArguments(args);
                 } catch (error) {
-                    return createAiToolOperationFrom<BaselineCollectionPayload>(() => { throw error; });
+                    return createAiToolOperationFrom<BaselineCollectionPayload>(() => { throw error; }, 'failed');
                 }
                 const mountedHandle = componentRefs?.findComponentRef<BaselineCollectionHandle>(
                     AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                 )?.current;
                 if (mountedHandle) {
-                    return createAiToolOperation(mountedHandle.startCollection(options).result);
+                    const operation = mountedHandle.startCollection(options);
+                    return bridgeDeferredAiToolOperation(async () => operation);
                 }
 
-                return createAiToolOperationFrom<BaselineCollectionPayload>(async () => {
-                    const handle = await getBaselineHandle(componentRefs);
-                    return handle.startCollection(options).result;
-                });
+                return bridgeDeferredAiToolOperation(async () => (
+                    (await getBaselineHandle(componentRefs)).startCollection(options)
+                ));
             },
-            restartLiveBaselineForAi: () => createAiToolOperationFrom(async () => {
+            restartLiveBaselineForAi: () => {
                 const handle = componentRefs?.findComponentRef<BaselineCollectionHandle>(
                     AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                 )?.current;
                 if (!handle) {
-                    throw new BaselineCollectionNotStartedError(
-                        AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
-                        'Baseline collection is not in progress. Start a new collection instead.',
-                    );
+                    return createAiToolOperationFrom<LiveBaselineRestartAiResult>(() => {
+                        throw new BaselineCollectionNotStartedError(
+                            AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                            'Baseline collection is not in progress. Start a new collection instead.',
+                        );
+                    }, 'failed');
                 }
-                const restart = handle.restartCollection();
-                const restarted = await restart.result;
-                if (restarted instanceof Error) return restarted;
-                return {
-                    status: 'complete',
-                    progress_percent: 0,
+                return mapAiToolOperation(handle.restartCollection(), () => ({
+                    status: 'complete' as const,
+                    progress_percent: 0 as const,
                     message: 'Baseline collection restart completed.',
-                };
-            }),
-            analyzeLiveRecordedAnalysisForAi: (args) => createAiToolOperationFrom(async () => {
-                const handle = await getBaselineHandle(componentRefs);
-                const analysis = await handle.requestAnalysis(args).result;
-                if (analysis instanceof Error) return analysis;
-                return { status: analysis.status };
-            }),
+                }));
+            },
+            analyzeLiveRecordedAnalysisForAi: (args) => mapAiToolOperation(
+                bridgeDeferredAiToolOperation(async () => (
+                    (await getBaselineHandle(componentRefs)).requestAnalysis(args)
+                )),
+                (analysis) => ({ status: analysis.status }),
+            ),
             analyzeTelemetryForAi: (args) => createAiToolOperationFrom(async () => {
                 const rows = await getTelemetryForLiveScope(args.scope);
                 if (rows.length === 0) {
@@ -470,7 +495,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                         { cause: error },
                     );
                 }
-            }),
+            }, 'complete'),
         };
     }
     useRegisterAiToolComponentRef(componentRef);

@@ -27,11 +27,10 @@ import {
 import { serializeError, type SerializedError } from 'errors/AiToolError';
 import { AiToolComponentBase } from './AiToolComponentBase';
 import {
-    createAiToolDeferred,
-    createAiToolOperation,
+    createControlledAiToolOperation,
     createAiToolOperationFrom,
     mapAiToolOperation,
-    type AiToolDeferred,
+    type ControlledAiToolOperation,
     type AiToolOperation,
 } from './ai-tool-operation';
 import GoalOverlayDisplay, { getGoalOverlaySummary } from './GoalOverlayDisplay';
@@ -402,12 +401,11 @@ type RuntimeTaskExecutionResult = {
 };
 
 type ActiveGoalOperation = {
-    result: AiToolDeferred<GoalRunResult>;
-};
-
-const getOutputStatus = (output: unknown): string => {
-    const status = isRecord(output) ? output.status : undefined;
-    return typeof status === 'string' && status ? status : 'complete';
+    controller: ControlledAiToolOperation<
+        GoalRunResult,
+        never,
+        'complete' | 'failed' | 'cancelled' | 'replaced'
+    >;
 };
 
 const toGoalAiResult = (result: GoalRunResult): GoalAiResult => {
@@ -467,7 +465,7 @@ implements GoalHandle {
     create(input: GoalRequest): AiToolOperation<GoalRunResult> {
         const validation = validateGoalRequest(input, this.getComponentName());
         if ('error' in validation) {
-            return createAiToolOperationFrom(() => this.runCreate(input));
+            return createAiToolOperationFrom(() => this.runCreate(input), 'failed');
         }
         return this.startOperation(() => this.runCreate(input));
     }
@@ -507,7 +505,7 @@ implements GoalHandle {
 
     private retryFailedTaskResult(): AiToolOperation<GoalRunResult> {
         const request = this.request;
-        if (!request) return createAiToolOperationFrom(() => this.runRetryFailedTask());
+        if (!request) return createAiToolOperationFrom(() => this.runRetryFailedTask(), 'failed');
         return this.startOperation(() => this.runRetryFailedTask());
     }
 
@@ -545,7 +543,7 @@ implements GoalHandle {
     }
 
     clear(): void {
-        this.cancelActiveOperation(new GoalReplacedError(
+        this.cancelActiveOperation('cancelled', new GoalReplacedError(
             this.getComponentName(),
             'The goal run was cleared.',
         ));
@@ -559,7 +557,7 @@ implements GoalHandle {
     }
 
     protected onDispose(): void {
-        this.cancelActiveOperation(new GoalReplacedError(
+        this.cancelActiveOperation('cancelled', new GoalReplacedError(
             this.getComponentName(),
             'The goal run was disposed.',
         ));
@@ -571,28 +569,38 @@ implements GoalHandle {
     private startOperation(
         run: () => Promise<GoalRunResult>,
     ): AiToolOperation<GoalRunResult> {
-        this.cancelActiveOperation(new GoalReplacedError(
+        this.cancelActiveOperation('replaced', new GoalReplacedError(
             this.getComponentName(),
             'The goal run was replaced.',
         ));
         const operation: ActiveGoalOperation = {
-            result: createAiToolDeferred<GoalRunResult>(),
+            controller: createControlledAiToolOperation<
+                GoalRunResult,
+                never,
+                'complete' | 'failed' | 'cancelled' | 'replaced'
+            >(),
         };
         this.activeOperation = operation;
         void run().then(
-            (result) => operation.result.resolve(result),
-            (error) => operation.result.reject(error),
+            (result) => operation.controller.resolve('complete', result),
+            (error) => operation.controller.reject(
+                'failed',
+                error instanceof Error ? error : new Error(String(error)),
+            ),
         ).finally(() => {
             if (this.activeOperation === operation) this.activeOperation = null;
         });
-        return createAiToolOperation(operation.result.promise);
+        return operation.controller.operation;
     }
 
-    private cancelActiveOperation(error: Error): void {
+    private cancelActiveOperation(
+        status: 'cancelled' | 'replaced',
+        error: Error,
+    ): void {
         const operation = this.activeOperation;
         if (!operation) return;
         this.activeOperation = null;
-        operation.result.reject(error);
+        operation.controller.reject(status, error);
     }
 
     private async runPreparation(
@@ -766,14 +774,17 @@ implements GoalHandle {
     ): Promise<RuntimeTaskExecutionResult> {
         try {
             const operation = this.dispatchTool(toolName, argumentsValue);
-            const output = await operation.result;
-            if (output instanceof Error) throw output;
+            const termination = await new Promise<{
+                status: string;
+                result: NestedAiToolResult | Error;
+            }>((resolve) => operation.notifyTerminated(resolve));
+            if (termination.result instanceof Error) throw termination.result;
             return {
-                value: output,
+                value: termination.result,
                 source_result: {
                     tool_name: toolName,
                     run_id: runId,
-                    status: getOutputStatus(output),
+                    status: termination.status,
                 },
             };
         } catch (error) {

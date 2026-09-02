@@ -1321,7 +1321,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                     requested_page_number: requestedPageNumber,
                     used_most_recent_fallback: !requestedPageExists,
                 };
-            });
+            }, 'ready');
         },
         queryAnalysisResult: ({ query }) => createAiToolOperationFrom(async () => ({
             status: 'ready' as const,
@@ -1333,7 +1333,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                     elements,
                 }],
             }),
-        })),
+        }), 'ready'),
         replaceAnalysisResults: (nextData) => runVisualizationBooleanCallback(
             name,
             VisualizationUpdateFailedError,

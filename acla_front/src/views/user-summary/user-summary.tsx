@@ -207,21 +207,21 @@ const UserSummary = ({ name }: { name: string }) => {
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
-            }, args))),
+            }, args)), 'complete'),
             getAvailableUserSummaryMaps: () => createAiToolOperationFrom(() => compactAvailableMapsForAi(getAvailableUserSummaryMaps({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
-            }))),
+            })), 'complete'),
             searchUserSummaryMapLevel: (args) => createAiToolOperationFrom(() => compactMapSearchForAi(searchUserSummaryMapLevel({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
-            }, args))),
+            }, args)), 'complete'),
         };
     }
     useRegisterAiToolComponentRef(componentRef);

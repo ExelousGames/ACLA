@@ -383,7 +383,7 @@ implements LiveRangeTodoListHandle {
     }
 
     getForAi() {
-        return createAiToolOperation(toAiResult(this.get()));
+        return createAiToolOperation(toAiResult(this.get()), 'complete');
     }
 
     getComponentType(): string {

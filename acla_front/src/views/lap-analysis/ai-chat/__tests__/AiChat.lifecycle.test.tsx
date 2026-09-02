@@ -2,6 +2,7 @@ import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AiChat from '../ai-chat';
 import type { AssistantActiveScreen } from '../../assistant-session-mode';
+import { createAiToolOperation } from 'components/ai-engineering-tools';
 
 const mockVoiceCleanup = jest.fn();
 const mockVoiceStop = jest.fn();
@@ -153,10 +154,7 @@ const lifecycleProcedurePlan = () => ({
     requests: [{ type: 'tool_call', title: 'Read data', name: 'read' }],
 });
 
-const operationWithValue = (value: unknown) => ({
-    result: Promise.resolve(value),
-    statuses: [],
-});
+const operationWithValue = (value: unknown) => createAiToolOperation(value, 'complete');
 
 describe('AiChat conversation lifecycle', () => {
     beforeEach(() => {
@@ -315,15 +313,22 @@ describe('AiChat conversation lifecycle', () => {
         const dispatch = jest.fn((toolName: string) => {
             expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
             expect(mockRegisterComponentRef.mock.calls[0][0].current.getComponentType()).toBe('goal');
-            if (toolName === 'collect') return { result: collect, statuses: [] };
+            if (toolName === 'collect') return createAiToolOperation(collect, 'complete');
             return operationWithValue({ status: 'ready', data: 0 });
         });
-        render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        const { container } = render(
+            <AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />,
+        );
 
         let operation: any;
         act(() => {
             operation = mockRegisteredAiChatHandle.createGoal(lifecycleGoalRequest(), dispatch);
         });
+        const toolList = container.querySelector('.ai-chat__tool-list');
+        const messages = container.querySelector('.ai-chat__msgs');
+        expect(toolList).toBeInTheDocument();
+        expect(toolList!.compareDocumentPosition(messages as Node) & Node.DOCUMENT_POSITION_FOLLOWING)
+            .toBeTruthy();
         expect(mockGoalRender).toHaveBeenLastCalledWith(expect.objectContaining({
             snapshot: expect.objectContaining({ name: 'Lifecycle goal', status: 'running' }),
         }));
@@ -353,7 +358,7 @@ describe('AiChat conversation lifecycle', () => {
             expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
             expect(mockRegisterComponentRef.mock.calls[0][0].current.getComponentType())
                 .toBe('procedure_plan');
-            return { result: read, statuses: [] };
+            return createAiToolOperation(read, 'complete');
         });
         render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
 
@@ -397,7 +402,7 @@ describe('AiChat conversation lifecycle', () => {
         act(() => {
             goalOperation = mockRegisteredAiChatHandle.createGoal(
                 lifecycleGoalRequest(),
-                jest.fn(() => ({ result: never, statuses: [] })),
+                jest.fn(() => createAiToolOperation(never, 'complete')),
             );
         });
         void goalOperation.result.catch(() => undefined);
@@ -408,7 +413,7 @@ describe('AiChat conversation lifecycle', () => {
         act(() => {
             planOperation = mockRegisteredAiChatHandle.createProcedurePlan(
                 lifecycleProcedurePlan(),
-                jest.fn(() => ({ result: never, statuses: [] })),
+                jest.fn(() => createAiToolOperation(never, 'complete')),
             );
         });
         void planOperation.result.catch(() => undefined);
@@ -438,7 +443,7 @@ describe('AiChat conversation lifecycle', () => {
         act(() => {
             goalOperation = mockRegisteredAiChatHandle.createGoal(
                 lifecycleGoalRequest(),
-                jest.fn(() => ({ result: never, statuses: [] })),
+                jest.fn(() => createAiToolOperation(never, 'complete')),
             );
         });
         void goalOperation.result.catch(() => undefined);

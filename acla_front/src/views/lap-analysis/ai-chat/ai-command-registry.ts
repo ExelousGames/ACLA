@@ -761,9 +761,12 @@ const createScheduledTaskStart = (
         throw error;
     }
     const operation = dispatchNested(descriptor.name, descriptor.arguments);
-    const result = await operation.result;
-    if (result instanceof Error) throw result;
-    return result;
+    const termination = await new Promise<{
+        status: string;
+        result: AiToolExecutionOutput;
+    }>((resolve) => operation.notifyTerminated(resolve));
+    if (termination.result instanceof Error) throw termination.result;
+    return termination.result;
 };
 
 const createLiveRangeAbortError = (): Error => {
@@ -1018,7 +1021,7 @@ const definitionList = Object.freeze([
                 getSingletonVisualizationComponentName('analysis-results'),
             ).getFilteredSegments();
             return queueFilteredDriverExpertComparisons(context, snapshot);
-        }),
+        }, 'complete'),
     },
     {
         name: 'get_live_range_todo_list',
@@ -1216,7 +1219,7 @@ const dispatchAiTool = (
         ) as ReturnType<AiToolDispatcher>;
         return definition.execute(context, args, dispatchNested);
     } catch (error) {
-        return createAiToolOperationFrom(() => { throw error; });
+        return createAiToolOperationFrom(() => { throw error; }, 'failed');
     }
 };
 

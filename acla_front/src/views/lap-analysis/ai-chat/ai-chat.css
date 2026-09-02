@@ -362,8 +362,34 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
+.ai-chat__tool-list {
+  width: 100%;
+  max-width: 100%;
+  max-height: 75%;
+  min-height: 0;
+  flex: 0 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-color: var(--lp-border-strong) transparent;
+  scrollbar-width: thin;
+}
+.ai-chat__tool-list > * {
+  width: 100%;
+  max-width: 100%;
+}
+.ai-chat__tool-list::-webkit-scrollbar { width: 6px; }
+.ai-chat__tool-list::-webkit-scrollbar-track { background: transparent; }
+.ai-chat__tool-list::-webkit-scrollbar-thumb {
+  background: var(--lp-border-strong);
+  border-radius: 3px;
+}
+.ai-chat__tool-list::-webkit-scrollbar-thumb:hover { background: var(--lp-gray); }
 .ai-chat__msgs {
   flex: 1;
   overflow-y: auto;

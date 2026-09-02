@@ -2,6 +2,7 @@ export { AiToolComponentBase } from './AiToolComponentBase';
 export type { AiToolComponentSnapshotListener } from './AiToolComponentBase';
 export {
     createAiToolDeferred,
+    createControlledAiToolOperation,
     createAiToolOperation,
     createAiToolOperationFrom,
     mapAiToolOperation,
@@ -12,7 +13,10 @@ export type {
     AiToolOperation,
     AiToolOperationResult,
     AiToolOperationStatus,
+    AiToolOperationTerminationStatus,
     AiToolQueryResult,
+    AiToolTermination,
+    ControlledAiToolOperation,
 } from './ai-tool-operation';
 export {
     default as ProcedurePlan,

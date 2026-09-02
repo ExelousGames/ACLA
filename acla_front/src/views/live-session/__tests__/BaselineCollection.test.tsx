@@ -327,6 +327,9 @@ describe('BaselineCollection visualization', () => {
             original = handle.startCollection();
             duplicate = handle.startCollection();
         });
+        const originalTermination = new Promise((resolve) => (
+            original.notifyTerminated(resolve)
+        ));
 
         expect(duplicate.statuses).toHaveLength(0);
         await expect(duplicate.result).rejects.toMatchObject({
@@ -340,9 +343,40 @@ describe('BaselineCollection visualization', () => {
 
         let restart!: ReturnType<BaselineCollectionHandle['restartCollection']>;
         act(() => { restart = handle.restartCollection(); });
+        const restartTermination = new Promise((resolve) => (
+            restart.notifyTerminated(resolve)
+        ));
         await expect(original.result).rejects.toMatchObject({ name: 'BaselineAnalysisCancelledError' });
+        await expect(originalTermination).resolves.toMatchObject({
+            status: 'cancelled',
+            result: { name: 'BaselineAnalysisCancelledError' },
+        });
         await expect(restart.result).resolves.toMatchObject({ status: 'waiting_for_start' });
+        await expect(restartTermination).resolves.toMatchObject({ status: 'complete' });
         expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start', baseline_lap_id: null });
+    });
+
+    it('notifies timed out with the incomplete-collection error', async () => {
+        jest.useFakeTimers();
+        try {
+            render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
+            let operation!: ReturnType<BaselineCollectionHandle['startCollection']>;
+            act(() => { operation = getHandle().startCollection({ timeoutMs: 25 }); });
+            const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
+
+            act(() => { jest.advanceTimersByTime(25); });
+
+            await expect(operation.result).rejects.toMatchObject({
+                name: 'BaselineCollectionIncompleteError',
+            });
+            await expect(termination).resolves.toMatchObject({
+                status: 'timed_out',
+                result: { name: 'BaselineCollectionIncompleteError' },
+            });
+            await expect(Promise.all(operation.statuses)).resolves.toHaveLength(6);
+        } finally {
+            jest.useRealTimers();
+        }
     });
 
     it('rejects duplicate starts during collection without disrupting the original operation', async () => {
@@ -492,6 +526,7 @@ describe('BaselineCollection visualization', () => {
                 progress_percent: 0,
             });
         });
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
         expect(handle.getLapRecord()).toBeNull();
 
         view.rerender(<Harness telemetry={makeSample(4, 0.9, 90_000)} />);
@@ -527,6 +562,10 @@ describe('BaselineCollection visualization', () => {
             car: 'Ferrari 296',
             track: 'brands_hatch',
             message: 'Baseline complete. Cached baseline record is ready.',
+        });
+        await expect(termination).resolves.toMatchObject({
+            status: 'complete',
+            result: { status: 'complete', progress_percent: 100 },
         });
         await expect(Promise.all(operation.statuses)).resolves.toEqual(expect.arrayContaining([
             expect.objectContaining({ event: 'baseline_progress', milestone: 100 }),
@@ -568,10 +607,14 @@ describe('BaselineCollection visualization', () => {
         expect(screen.getByRole('button', { name: 'Request Analysis' })).toBeEnabled();
     });
 
-    it('unregisters and discards partial or completed state when closed, then reopens fresh', () => {
+    it('unregisters, cancels partial work, and reopens fresh', async () => {
         const view = render(<Harness telemetry={{}} />);
         const firstHandle = getHandle();
-        act(() => { firstHandle.startCollection(); });
+        let firstOperation!: ReturnType<BaselineCollectionHandle['startCollection']>;
+        act(() => { firstOperation = firstHandle.startCollection(); });
+        const firstTermination = new Promise((resolve) => (
+            firstOperation.notifyTerminated(resolve)
+        ));
         view.rerender(<Harness telemetry={makeSample(0, 0.001, 10)} />);
         view.rerender(<Harness telemetry={makeSample(0, 0.5, 50_000)} />);
         expect(firstHandle.getTag()).toMatchObject({ status: 'collecting' });
@@ -580,6 +623,13 @@ describe('BaselineCollection visualization', () => {
         expect(directory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
         expect(firstHandle.getTag()).toBeNull();
         expect(firstHandle.getLapRecord()).toBeNull();
+        await expect(firstOperation.result).rejects.toMatchObject({
+            name: 'BaselineAnalysisCancelledError',
+        });
+        await expect(firstTermination).resolves.toMatchObject({
+            status: 'cancelled',
+            result: { name: 'BaselineAnalysisCancelledError' },
+        });
 
         view.rerender(<Harness telemetry={makeSample(0, 0.5, 50_000)} />);
         const secondHandle = getHandle();

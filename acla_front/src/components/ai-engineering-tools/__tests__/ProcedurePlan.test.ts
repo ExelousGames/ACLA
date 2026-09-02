@@ -7,7 +7,12 @@ import {
     type ProcedurePlanState,
 } from '../ProcedurePlan';
 import { ProcedurePlanStepFailedError } from '../../../contexts/AiToolComponentError';
-import { createAiToolOperationFrom, resolvedAiToolOperation } from '../ai-tool-operation';
+import {
+    createAiToolDeferred,
+    createAiToolOperation,
+    createAiToolOperationFrom,
+    resolvedAiToolOperation,
+} from '../ai-tool-operation';
 
 const plan = (): ProcedurePlanState => ({
     goal: 'Review the lap',
@@ -54,10 +59,11 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
             status: 'complete',
             name,
             lap: args?.lap,
-        }));
+        }, 'complete'));
         const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
 
         const operation = runner.createProcedurePlan(plan());
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
         expect(runner.getComponentName()).toBe('procedure-plan');
         expect(runner.getComponentType()).toBe('procedure_plan');
         expect(runner.getOverlayBehavior(null)).toEqual({
@@ -84,10 +90,38 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
             goal: 'Review the lap',
             currentStep: 2,
         });
+        await expect(termination).resolves.toMatchObject({
+            status: 'complete',
+            result: { status: 'complete' },
+        });
 
-        const cleared = await runner.clearProcedurePlan('finished').result;
+        const clearOperation = runner.clearProcedurePlan('finished');
+        const clearTermination = new Promise((resolve) => (
+            clearOperation.notifyTerminated(resolve)
+        ));
+        const cleared = await clearOperation.result;
         expect(cleared).toMatchObject({ status: 'cleared', reason: 'finished' });
+        await expect(clearTermination).resolves.toMatchObject({ status: 'cleared' });
         expect(runner.getSnapshot()).toBeNull();
+    });
+
+    it('notifies a superseded operation as replaced', async () => {
+        const nestedResult = createAiToolDeferred<{ status: string }>();
+        const dispatch = jest.fn(() => createAiToolOperation(nestedResult.promise, 'complete'));
+        const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
+        const original = runner.createProcedurePlan(plan());
+        const termination = new Promise((resolve) => original.notifyTerminated(resolve));
+
+        const replacement = runner.replace(null);
+
+        await expect(original.result).rejects.toMatchObject({
+            name: 'ProcedurePlanReplacedError',
+        });
+        await expect(termination).resolves.toMatchObject({
+            status: 'replaced',
+            result: { name: 'ProcedurePlanReplacedError' },
+        });
+        await expect(replacement.result).resolves.toMatchObject({ status: 'cleared' });
     });
 
     it('keeps a failed step available for retry', async () => {
@@ -97,7 +131,7 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {
             if (name === 'read' && ++attempts === 1) throw rootError;
             return { status: 'complete' };
-        }));
+        }, 'complete'));
         const runner = new ProcedurePlanRunner('procedure-plan', dispatch, undefined, onError);
 
         const failedResult = await runner.createProcedurePlan(plan()).result;

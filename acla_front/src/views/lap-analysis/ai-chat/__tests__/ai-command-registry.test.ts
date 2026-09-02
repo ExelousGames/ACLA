@@ -159,7 +159,7 @@ describe('frontend AI tool registry', () => {
             status: 'started' as const,
             conversation_role: 'agent' as const,
             agent_mode: 'overtake' as const,
-        });
+        }, 'started');
         const handle: Partial<AiChatHandle> = {
             startAgentSession: jest.fn(() => componentOperation),
         };
@@ -190,7 +190,7 @@ describe('frontend AI tool registry', () => {
         const componentOperation = resolvedAiToolOperation({
             status: 'ready' as const,
             data: { Physics_speed_kmh: 123 },
-        });
+        }, 'ready');
         const handle: Partial<LiveSessionHandle> = {
             queryTelemetryMetricForAi: jest.fn(() => componentOperation) as any,
         };
@@ -213,19 +213,19 @@ describe('frontend AI tool registry', () => {
 
     it('dispatches JSONata expressions and preserves actual JSON result types', async () => {
         const operations = new Map<string, AiToolOperation<QueryAnalysisResultOutput>>([
-            ['$count(analyses)', resolvedAiToolOperation({ status: 'ready' as const, data: 4 })],
+            ['$count(analyses)', resolvedAiToolOperation({ status: 'ready' as const, data: 4 }, 'ready')],
             ['{"count": $count(analyses.elements)}', resolvedAiToolOperation({
                 status: 'ready' as const,
                 data: { count: 4 },
-            })],
+            }, 'ready')],
             ['[analyses.elements.id]', resolvedAiToolOperation({
                 status: 'ready' as const,
                 data: ['first', 'second'],
-            })],
+            }, 'ready')],
             ['analyses.elements[id = "missing"]', resolvedAiToolOperation({
                 status: 'ready' as const,
                 data: null,
-            })],
+            }, 'ready')],
         ]);
         const componentName = 'visualization:analysis-results';
         const handle: Partial<AnalysisResultsChartHandle> = {
@@ -282,7 +282,7 @@ describe('frontend AI tool registry', () => {
             applied_page_number: 3,
             requested_page_number: -1,
             used_most_recent_fallback: true,
-        });
+        }, 'ready');
         const handle: Partial<AnalysisResultsChartHandle> = {
             applyAnalysisResultQuery: jest.fn(() => componentOperation) as any,
         };
@@ -429,7 +429,7 @@ describe('live range to-do add tool', () => {
                 event_count: inserted.length + 1,
                 pending_count: inserted.length + 1,
                 running_count: 0,
-            }),
+            }, 'complete'),
         };
         reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, handle);
 
@@ -466,7 +466,7 @@ describe('live range to-do add tool', () => {
                 event_count: 1,
                 pending_count: 1,
                 running_count: 0,
-            }),
+            }, 'complete'),
         };
         const initializeLiveRangeTodoList = jest.fn(() => {
             reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
@@ -495,14 +495,14 @@ describe('live range to-do add tool', () => {
                 event_count: events.length,
                 pending_count: events.filter(({ status }) => status === 'pending').length,
                 running_count: events.filter(({ status }) => status === 'running').length,
-            });
+            }, 'complete');
         };
         reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
             addEvent: (event: LiveRangeTodoEventInput) => runner.addEvent(event),
             get: () => runner.get(),
             getForAi: summarize,
         } satisfies Partial<LiveRangeTodoListHandle>);
-        const analyzeTelemetryForAi = jest.fn(() => resolvedAiToolOperation({ status: 'ready' }));
+        const analyzeTelemetryForAi = jest.fn(() => resolvedAiToolOperation({ status: 'ready' }, 'ready'));
         reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION, { analyzeTelemetryForAi });
         const storedArguments = { scope: { type: 'now' } };
 

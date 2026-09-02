@@ -221,11 +221,12 @@ export const extractInlineFunctionCalls = (
     return { cleanText, calls };
 };
 
-const getToolResultForAi = (result: unknown): unknown => (
-    result && typeof result === 'object' && !Array.isArray(result)
+const getToolResultForAi = (result: unknown, status?: string): unknown => {
+    const payload = result && typeof result === 'object' && !Array.isArray(result)
         ? result
-        : { value: result }
-);
+        : { value: result };
+    return status === undefined ? payload : { ...payload, status };
+};
 
 const buildToolResultFrame = (
     id: string,
@@ -356,20 +357,24 @@ export const executeSubscribedFrontendTool = async ({
                 });
             });
         });
-        const result = await operation.result;
-        if (result instanceof Error) throw result;
-        sendText(buildToolResultFrame(id, name, true, getToolResultForAi(result)));
+        const termination = await new Promise<{
+            status: string;
+            result: AiToolExecutionOutput;
+        }>((resolve) => operation.notifyTerminated(resolve));
+        if (termination.result instanceof Error) throw termination.result;
+        const finalResult = getToolResultForAi(termination.result, termination.status);
+        sendText(buildToolResultFrame(id, name, true, finalResult));
         emitEvent?.({
             kind: 'tool_call',
             runId: id,
             name,
             title,
             status: 'completed',
-            result,
+            result: finalResult,
             ok: true,
             final: true,
         });
-        return { id, name, ok: true, result };
+        return { id, name, ok: true, result: termination.result };
     } catch (err) {
         const error = normalizeAiToolError(err);
         const failure = buildFailedToolResult(error);
