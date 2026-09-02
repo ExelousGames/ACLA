@@ -101,6 +101,10 @@
     padding: 14px;
 }
 
+.trendContent :global(.rt-ScrollAreaViewport) > div {
+    width: 100%;
+}
+
 .mistakeTrendHeader,
 .specificTrendHeader {
     min-width: 0;

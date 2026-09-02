@@ -122,7 +122,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
         expect(runner.get()).toMatchObject({ status: 'empty' });
     });
 
-    it('keeps asynchronous work visible as running and executes due tasks sequentially', async () => {
+    it('does not queue a due task behind a running task', async () => {
         const firstController = createControlledAiToolOperation<Record<string, never>, never, 'complete'>();
         const secondController = createControlledAiToolOperation<Record<string, never>, never, 'complete'>();
         const first = jest.fn(() => firstController.operation);
@@ -141,17 +141,33 @@ describe('LiveRangeTodoListRunner executable events', () => {
 
         firstController.resolve('complete', {});
         await flushPromises();
-        expect(second).toHaveBeenCalledTimes(1);
+        expect(second).not.toHaveBeenCalled();
         expect(runner.get().todo_list?.events).toEqual([
-            expect.objectContaining({ id: 'two', status: 'running' }),
+            expect.objectContaining({ id: 'two', status: 'pending' }),
         ]);
+
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.6,
+            Graphics_completed_laps: 1,
+        });
+        expect(second).not.toHaveBeenCalled();
+
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.3,
+            Graphics_completed_laps: 2,
+        });
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.45,
+            Graphics_completed_laps: 2,
+        });
+        expect(second).toHaveBeenCalledTimes(1);
 
         secondController.resolve('complete', {});
         await flushPromises();
         expect(runner.get().todo_list?.events).toHaveLength(0);
     });
 
-    it('advances only after notifyTerminated, not when operation.result settles', async () => {
+    it('removes a task only after notifyTerminated and waits for telemetry before starting another', async () => {
         let notifyFirstTerminated!: (termination: {
             status: string;
             result: Record<string, never> | Error;
@@ -167,7 +183,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
         const first = jest.fn(() => firstOperation);
         const second = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
         const runner = new LiveRangeTodoListRunner('live-range');
-        runner.replaceEvents([event('one', 0.2, first), event('two', 0.4, second)]);
+        runner.replaceEvents([event('one', 0.2, first), event('two', 0.8, second)]);
 
         makeDue(runner);
         await flushPromises();
@@ -181,6 +197,11 @@ describe('LiveRangeTodoListRunner executable events', () => {
         notifyFirstTerminated({ status: 'complete', result: {} });
         await flushPromises();
 
+        expect(second).not.toHaveBeenCalled();
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.9,
+            Graphics_completed_laps: 1,
+        });
         expect(second).toHaveBeenCalledTimes(1);
     });
 
@@ -211,7 +232,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
         ]);
     });
 
-    it('logs synchronous throws and promise rejections without stalling the queue', async () => {
+    it('logs synchronous throws and promise rejections without stalling later telemetry', async () => {
         const failure = new Error('task failed');
         const finalTask = jest.fn();
         const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -227,8 +248,23 @@ describe('LiveRangeTodoListRunner executable events', () => {
             }),
         ]);
 
-        makeDue(runner, 0.4);
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0,
+            Graphics_completed_laps: 1,
+        });
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.15,
+            Graphics_completed_laps: 1,
+        });
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.25,
+            Graphics_completed_laps: 1,
+        });
         await flushPromises();
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.35,
+            Graphics_completed_laps: 1,
+        });
         await flushPromises();
 
         expect(finalTask).toHaveBeenCalledTimes(1);

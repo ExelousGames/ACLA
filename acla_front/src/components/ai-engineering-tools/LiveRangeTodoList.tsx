@@ -35,7 +35,6 @@ export interface LiveRangeTelemetrySample {
 
 interface RuntimeEvent extends LiveRangeTodoSnapshotEvent {
     taskStart: LiveRangeTodoEventInput['taskStart'];
-    due?: boolean;
 }
 
 type RuntimeSnapshot = Omit<LiveRangeTodoListSnapshot, 'events'> & { events: RuntimeEvent[] };
@@ -178,7 +177,7 @@ export const crossedLiveRangeTodoPosition = (
 };
 
 const serializeEvent = (event: RuntimeEvent): LiveRangeTodoSnapshotEvent => {
-    const { due: _due, taskStart: _taskStart, ...snapshotEvent } = event;
+    const { taskStart: _taskStart, ...snapshotEvent } = event;
     return {
         ...snapshotEvent,
         content: {
@@ -504,7 +503,6 @@ implements LiveRangeTodoListHandle {
             let next: RuntimeEvent = {
                 ...existing,
                 status: 'pending',
-                due: undefined,
                 updated_at: now,
             };
             if (hasOwn(raw, 'content')) {
@@ -550,7 +548,6 @@ implements LiveRangeTodoListHandle {
             events: this.runtime.events.map((event) => updates.get(event.id) ?? event),
             updated_at: now,
         });
-        this.runNextDueEvent();
         return { status: 'ready', todo_list: next, message: `Updated ${updates.size} event${updates.size === 1 ? '' : 's'}.` };
     }
 
@@ -562,7 +559,6 @@ implements LiveRangeTodoListHandle {
         const events = this.runtime.events.filter((event) => !ids.has(event.id));
         const removedCount = this.runtime.events.length - events.length;
         const next = this.commit({ ...this.runtime, events, updated_at: Date.now() });
-        this.runNextDueEvent();
         return {
             status: events.length > 0 ? 'ready' : 'empty',
             todo_list: next,
@@ -581,7 +577,6 @@ implements LiveRangeTodoListHandle {
         const events = this.runtime.events.map((event): RuntimeEvent => ids.has(event.id) ? {
             ...event,
             status: 'pending',
-            due: undefined,
             eta_seconds: (this.runtime.current_position === null
                 ? null
                 : calculateLiveRangeEta(
@@ -594,7 +589,6 @@ implements LiveRangeTodoListHandle {
             lap: undefined,
         } : event);
         const next = this.commit({ ...this.runtime, events, updated_at: now });
-        this.runNextDueEvent();
         return {
             status: events.length > 0 ? 'ready' : 'empty',
             todo_list: next,
@@ -632,6 +626,7 @@ implements LiveRangeTodoListHandle {
         const rate = calculateRollingForwardRate(this.samples);
         const previousSample = this.previousSample;
         this.previousSample = currentSample;
+        let nextDueEventId: string | null = null;
         const events = this.runtime.events.map((event): RuntimeEvent => {
             if (event.status !== 'pending') return event;
             const measuredEta = calculateLiveRangeEta(position, event.normalized_position, rate);
@@ -642,10 +637,11 @@ implements LiveRangeTodoListHandle {
             const crossed = previousSample
                 ? crossedLiveRangeTodoPosition(previousSample, currentSample, event.normalized_position)
                 : false;
+            const isDue = crossed || (eta !== null && eta <= event.lead_time_seconds);
+            if (nextDueEventId === null && isDue) nextDueEventId = event.id;
             return {
                 ...event,
                 eta_seconds: eta,
-                due: event.due || crossed || (eta !== null && eta <= event.lead_time_seconds),
                 updated_at: now,
             };
         });
@@ -657,7 +653,7 @@ implements LiveRangeTodoListHandle {
             lap: currentSample.lap,
             updated_at: now,
         });
-        this.runNextDueEvent();
+        if (nextDueEventId !== null) this.runDueEvent(nextDueEventId);
     }
 
     reset(): void {
@@ -756,10 +752,10 @@ implements LiveRangeTodoListHandle {
         });
     }
 
-    private runNextDueEvent(): void {
+    private runDueEvent(id: string): void {
         if (this.isDisposed() || this.activeRuns.size > 0) return;
         const event = this.runtime.events.find((candidate) => (
-            candidate.status === 'pending' && candidate.due
+            candidate.id === id && candidate.status === 'pending'
         ));
         if (!event) return;
 
@@ -769,7 +765,6 @@ implements LiveRangeTodoListHandle {
         const runningEvent: RuntimeEvent = {
             ...event,
             status: 'running',
-            due: undefined,
             lap: this.runtime.lap,
             started_at: now,
             updated_at: now,
@@ -820,7 +815,6 @@ implements LiveRangeTodoListHandle {
         this.activeRuns.delete(id);
         if (error !== undefined) console.error(`Live range to-do event '${id}' task failed.`, error);
         if (!this.runtime.events.some((event) => event.id === id)) {
-            this.runNextDueEvent();
             return;
         }
         this.commit({
@@ -828,7 +822,6 @@ implements LiveRangeTodoListHandle {
             events: this.runtime.events.filter((event) => event.id !== id),
             updated_at: Date.now(),
         });
-        this.runNextDueEvent();
     }
 }
 

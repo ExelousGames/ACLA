@@ -883,6 +883,7 @@ describe('filtered Driver/Expert comparison queue tool', () => {
 
         runner.acceptTelemetry({ Graphics_normalized_car_position: 0.8, Graphics_completed_laps: 1 });
         expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(1);
+        runner.removeEvents(['existing-user-event', 'analysis-comparison:duplicate']);
 
         jest.advanceTimersByTime(60_000);
         for (let index = 0; index < 4; index += 1) await Promise.resolve();
@@ -890,6 +891,9 @@ describe('filtered Driver/Expert comparison queue tool', () => {
 
         displayControllers[0].complete();
         for (let index = 0; index < 6; index += 1) await Promise.resolve();
+        expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(1);
+
+        runner.acceptTelemetry({ Graphics_normalized_car_position: 0.65, Graphics_completed_laps: 2 });
         expect(displaySpecificResultInOverlay).toHaveBeenNthCalledWith(
             2,
             'analysis-page-7',
