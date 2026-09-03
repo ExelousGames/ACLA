@@ -1029,10 +1029,10 @@ async def build_voice_pipeline_task(
     vad_processor = VADProcessor(vad_analyzer=SileroVADAnalyzer())
 
     # --- STT (faster-whisper) ---
-    # Phase 3 starting point: small English model on whichever device is
+    # Use the multilingual large-v3-turbo model on whichever device is
     # available. Pipecat's WhisperSTTService wraps faster-whisper directly.
     stt = WhisperSTTService(
-        model="small.en",
+        model="large-v3-turbo",
         # device="cuda" if available; Pipecat auto-detects via faster-whisper.
     )
 
