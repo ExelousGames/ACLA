@@ -125,7 +125,7 @@ describe('FloatingChat presentation renderer', () => {
         expect(acknowledgements.at(-1)).toMatchObject({ accepted: true });
     });
 
-    it('keeps the message, focused card, and collapsed siblings visible in deck order', () => {
+    it('keeps the message, focused card, and expanded siblings inside a card stack', () => {
         registerAiOverlayRenderer({
             componentType: 'comparison-test',
             validateSnapshot: (value): value is { title: string } => Boolean((value as any)?.title),
@@ -145,28 +145,38 @@ describe('FloatingChat presentation renderer', () => {
             card('message:session', 'ai_message', { text: 'Deck introduction' }, {
                 shellSlot: 'speech',
             }),
-            card('folded-card', 'comparison-test', { title: 'Summary' }, { status: 'folded' }),
+            card('summary-card', 'comparison-test', { title: 'Summary' }),
             card('focus-card', 'comparison-test', { title: 'Graph' }, { status: 'focus' }),
-            card('collapsed-card', 'comparison-test', { title: 'Details' }, { status: 'folded' }),
+            card('details-card', 'comparison-test', { title: 'Details' }),
         ])));
 
         const speaking = container.querySelector('.overlay-shell__speaking') as HTMLElement;
         const deck = container.querySelector('.overlay-display-list') as HTMLElement;
         const items = Array.from(deck.querySelectorAll<HTMLElement>('.overlay-list-item'));
-        const folded = items[0];
-        const focused = items[1];
+        const summary = items[0];
+        const focused = items[2];
 
         expect(speaking.compareDocumentPosition(deck) & Node.DOCUMENT_POSITION_FOLLOWING)
             .toBeTruthy();
         expect(items.map((item) => item.dataset.componentName)).toEqual([
-            'folded-card',
+            'summary-card',
+            'details-card',
             'focus-card',
-            'collapsed-card',
         ]);
-        expect(folded).toHaveClass('overlay-list-item--deck', 'overlay-list-item--folded');
-        expect(focused).toHaveClass('overlay-list-item--deck', 'overlay-list-item--focus-active');
-        expect(items[2]).toHaveClass('overlay-list-item--deck', 'overlay-list-item--folded');
+        expect(deck).toHaveClass('overlay-card-stack');
+        expect(deck).toHaveAttribute('aria-label', 'Overlay card stack');
+        expect(summary).toHaveClass('overlay-list-item--deck', 'overlay-list-item--stacked');
+        expect(summary).not.toHaveClass('overlay-list-item--folded');
+        expect(items[1]).toHaveClass('overlay-list-item--deck', 'overlay-list-item--stacked');
+        expect(items[1]).not.toHaveClass('overlay-list-item--folded');
+        expect(focused).toHaveClass(
+            'overlay-list-item--deck',
+            'overlay-list-item--stacked',
+            'overlay-list-item--focus-active',
+        );
         items.forEach((item) => expect(item).not.toHaveAttribute('aria-hidden'));
+        expect(summary.style.getPropertyValue('--overlay-stack-position')).toBe('0');
+        expect(focused.style.getPropertyValue('--overlay-stack-position')).toBe('2');
         expect(shell).toHaveStyle({ width: '760px' });
         expect(shell.style.height).toBe('');
         expect(focused).not.toHaveStyle({ height: '500px' });
@@ -175,35 +185,37 @@ describe('FloatingChat presentation renderer', () => {
         expect(focused).toHaveAttribute('data-renderer-width', '760');
         expect(focused).toHaveAttribute('data-renderer-height', '500');
         expect(screen.getByTestId('overlay-ai-message')).toBeInTheDocument();
-        expect(screen.getByText('folded:Summary')).toBeInTheDocument();
+        expect(screen.getByText('expanded:Summary')).toBeInTheDocument();
         expect(screen.getByText('focus:Graph')).toBeInTheDocument();
-        expect(screen.getByText('folded:Details')).toBeInTheDocument();
+        expect(screen.getByText('expanded:Details')).toBeInTheDocument();
         expect(resizeFloatingChat).toHaveBeenLastCalledWith(760, 704);
 
-        fireEvent.mouseOver(folded);
-        fireEvent.focus(screen.getByRole('button', { name: 'folded:Summary' }));
+        fireEvent.mouseOver(summary);
+        fireEvent.focus(screen.getByRole('button', { name: 'expanded:Summary' }));
         expect(Array.from(deck.querySelectorAll<HTMLElement>('.overlay-list-item')))
             .toEqual(items);
     });
 
-    it('keeps overlay chrome and collapsed cards visible in focus mode without speech', () => {
+    it('keeps overlay chrome and sibling cards stacked in focus mode without speech', () => {
         const { container } = render(<FloatingChat />);
         act(() => presentationListener?.(presentation([
             card('focus-card', 'comparison-test', { title: 'Graph' }, { status: 'focus' }),
-            card('collapsed-card', 'comparison-test', { title: 'Baseline' }, { status: 'folded' }),
+            card('baseline-card', 'comparison-test', { title: 'Baseline' }),
         ])));
 
         const shell = container.querySelector('.overlay-shell') as HTMLElement;
-        const collapsed = container.querySelector(
-            '[data-component-name="collapsed-card"]',
+        const stacked = container.querySelector(
+            '[data-component-name="baseline-card"]',
         ) as HTMLElement;
 
         expect(shell.querySelector('.overlay-shell__header')).toBeVisible();
         expect(screen.getByText('Kestrel')).toBeVisible();
         expect(screen.getByText('focus:Graph')).toBeVisible();
-        expect(screen.getByText('folded:Baseline')).toBeVisible();
-        expect(collapsed).toHaveClass('overlay-list-item--folded');
-        expect(collapsed).not.toHaveAttribute('aria-hidden');
+        expect(screen.getByText('expanded:Baseline')).toBeVisible();
+        expect(stacked.closest('.overlay-card-stack')).toBeInTheDocument();
+        expect(stacked).toHaveClass('overlay-list-item--stacked');
+        expect(stacked).not.toHaveClass('overlay-list-item--folded');
+        expect(stacked).not.toHaveAttribute('aria-hidden');
     });
 
     it('keeps overlay chrome visible for standalone map visualizations', () => {

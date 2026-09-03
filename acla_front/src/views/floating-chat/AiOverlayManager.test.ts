@@ -116,7 +116,7 @@ describe('AiOverlayManagerController', () => {
         });
     });
 
-    it('focuses the latest requesting card, folds card siblings, and restores them afterward', () => {
+    it('focuses the latest requesting card without minimizing its card siblings', () => {
         const first = component('comparison:first', 'driver_expert_comparison');
         const second = component('comparison:second', 'driver_expert_comparison');
         const details = component('details', 'test-card');
@@ -138,16 +138,16 @@ describe('AiOverlayManagerController', () => {
 
         expect(manager.getPresentationSnapshot()!.cards).toEqual([
             expect.objectContaining({ componentName: 'comparison:second', status: 'focus' }),
-            expect.objectContaining({ componentName: 'comparison:first', status: 'folded' }),
+            expect.objectContaining({ componentName: 'comparison:first', status: 'expanded' }),
             expect.objectContaining({ componentName: 'speech', status: 'expanded' }),
-            expect.objectContaining({ componentName: 'details', status: 'folded' }),
+            expect.objectContaining({ componentName: 'details', status: 'expanded' }),
         ]);
 
         second.clear();
         expect(manager.getPresentationSnapshot()!.cards).toEqual([
             expect.objectContaining({ componentName: 'comparison:first', status: 'focus' }),
             expect.objectContaining({ componentName: 'speech', status: 'expanded' }),
-            expect.objectContaining({ componentName: 'details', status: 'folded' }),
+            expect.objectContaining({ componentName: 'details', status: 'expanded' }),
         ]);
 
         first.publish({ value: 'first' }, { requestedStatus: 'expanded' });

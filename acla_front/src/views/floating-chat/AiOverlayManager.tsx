@@ -237,8 +237,8 @@ export class AiOverlayManagerController {
         cards.forEach((card) => {
             if (card === focused) {
                 card.status = 'focus';
-            } else if (focused && card.shellSlot !== 'speech') {
-                card.status = 'folded';
+            } else if (focused && card.requestedStatus === 'focus') {
+                card.status = 'expanded';
             } else {
                 card.status = card.requestedStatus;
             }

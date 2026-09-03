@@ -118,10 +118,26 @@ html, body, #root, .App {
     isolation: isolate;
 }
 
+.overlay-card-stack {
+    display: grid;
+    gap: 0;
+    padding-bottom: 12px;
+    border: 1px solid rgba(167, 139, 250, .2);
+    border-radius: 18px;
+    background: rgba(5, 3, 10, .18);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+}
+
 .overlay-list-item {
     position: relative;
     min-width: 0;
     flex: 0 0 auto;
+}
+
+.overlay-card-stack .overlay-list-item--stacked {
+    grid-area: 1 / 1;
+    align-self: start;
+    margin-top: calc(var(--overlay-stack-position) * 14px);
 }
 
 .overlay-list-item:hover,

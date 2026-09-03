@@ -149,7 +149,8 @@ const GeneratedDisplayItem: React.FC<{
     presentationId: string;
     card: AiOverlayPresentationCard;
     deckIndex: number;
-}> = ({ presentationId, card, deckIndex }) => {
+    stacked: boolean;
+}> = ({ presentationId, card, deckIndex, stacked }) => {
     const renderer = getAiOverlayRenderer(card.componentType);
     const context = useRenderContext(presentationId, card);
     const focusActive = card.status === 'focus';
@@ -159,12 +160,14 @@ const GeneratedDisplayItem: React.FC<{
             className={[
                 'overlay-list-item',
                 'overlay-list-item--deck',
+                stacked ? 'overlay-list-item--stacked' : '',
                 card.status === 'folded' ? 'overlay-list-item--folded' : '',
                 focusActive ? 'overlay-list-item--focus-active' : '',
             ].filter(Boolean).join(' ')}
             style={{
                 zIndex: deckIndex + 1,
-            }}
+                '--overlay-stack-position': deckIndex,
+            } as React.CSSProperties}
             data-component-name={card.componentName}
             data-display-type={card.componentType}
             data-placement={card.placement}
@@ -223,6 +226,13 @@ const FloatingChat: React.FC = () => {
     const cards = React.useMemo(() => presentation?.cards ?? [], [presentation]);
     const speaking = cards.find((card) => card.shellSlot === 'speech');
     const generatedDisplays = cards.filter((card) => card.shellSlot !== 'speech');
+    const focusedDisplay = generatedDisplays.find((card) => card.status === 'focus');
+    const displayedCards = focusedDisplay
+        ? [
+            ...generatedDisplays.filter((card) => card.componentName !== focusedDisplay.componentName),
+            focusedDisplay,
+        ]
+        : generatedDisplays;
     const idle = !speaking && generatedDisplays.length === 0;
     const identity = resolveIdentity(presentation?.session.displayIdentity, speaking);
     const widths = generatedDisplays.map((card) => (
@@ -264,13 +274,20 @@ const FloatingChat: React.FC = () => {
                     <SpeakingContext presentationId={presentation.presentationId} card={speaking} />
                 )}
                 {generatedDisplays.length > 0 && presentation && (
-                    <div className="overlay-display-list">
-                        {generatedDisplays.map((card, deckIndex) => (
+                    <div
+                        className={[
+                            'overlay-display-list',
+                            focusedDisplay ? 'overlay-card-stack' : '',
+                        ].filter(Boolean).join(' ')}
+                        aria-label={focusedDisplay ? 'Overlay card stack' : undefined}
+                    >
+                        {displayedCards.map((card, deckIndex) => (
                             <GeneratedDisplayItem
                                 key={card.componentName}
                                 presentationId={presentation.presentationId}
                                 card={card}
                                 deckIndex={deckIndex}
+                                stacked={Boolean(focusedDisplay)}
                             />
                         ))}
                     </div>
