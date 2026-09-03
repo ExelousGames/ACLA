@@ -79,7 +79,7 @@ describe('appended AI display components', () => {
         expect(screen.queryByText('collect_live_baseline')).not.toBeInTheDocument();
     });
 
-    it('renders a compact live range to-do list snapshot', () => {
+    it('renders only the closest live range event on the floating pill surface', () => {
         render(
             <LiveRangeTodoListDisplay
                 surface="pill"
@@ -89,6 +89,16 @@ describe('appended AI display components', () => {
                     current_position: 0.1,
                     rolling_rate: 0.05,
                     events: [
+                        {
+                            id: 'range-later',
+                            normalized_position: 0.8,
+                            lead_time_seconds: 2,
+                            content: { title: 'Later turn' },
+                            status: 'pending',
+                            eta_seconds: 14,
+                            created_at: 1,
+                            updated_at: 2,
+                        },
                         {
                             id: 'range-1',
                             normalized_position: 0.2,
@@ -107,6 +117,46 @@ describe('appended AI display components', () => {
         expect(screen.getByText('Turn exit')).toBeInTheDocument();
         expect(screen.getByText('Use all the road')).toBeInTheDocument();
         expect(screen.getByText('running')).toBeInTheDocument();
+        expect(screen.queryByText('Later turn')).not.toBeInTheDocument();
+    });
+
+    it('selects the nearest upcoming track position for the floating pill', () => {
+        render(
+            <LiveRangeTodoListDisplay
+                surface="pill"
+                snapshot={{
+                    created_at: 1,
+                    updated_at: 2,
+                    current_position: 0.65,
+                    rolling_rate: 0.05,
+                    events: [
+                        {
+                            id: 'range-next-lap',
+                            normalized_position: 0.2,
+                            lead_time_seconds: 2,
+                            content: { title: 'Next-lap event' },
+                            status: 'pending',
+                            eta_seconds: 11,
+                            created_at: 1,
+                            updated_at: 2,
+                        },
+                        {
+                            id: 'range-next',
+                            normalized_position: 0.75,
+                            lead_time_seconds: 2,
+                            content: { title: 'Nearest event' },
+                            status: 'pending',
+                            eta_seconds: 2,
+                            created_at: 1,
+                            updated_at: 2,
+                        },
+                    ],
+                }}
+            />,
+        );
+
+        expect(screen.getByText('Nearest event')).toBeInTheDocument();
+        expect(screen.queryByText('Next-lap event')).not.toBeInTheDocument();
     });
 
     it('collapses long live range to-do lists in chat', () => {

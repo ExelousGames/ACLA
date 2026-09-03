@@ -469,6 +469,8 @@ describe('AnalysisResultsChart', () => {
             comparison: replayComparisonData(),
             game: 'acc',
         });
+        expect(firstRef.current.getOverlayBehavior(firstRef.current.getSnapshot()))
+            .toMatchObject({ requestedStatus: 'focus' });
 
         const second = chartRef.current!.displaySpecificResultInOverlay(
             'retained-page',

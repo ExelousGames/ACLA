@@ -10,7 +10,7 @@ export const createDriverExpertComparisonOverlayComponent = (
         'driver_expert_comparison',
         (_snapshot, publication) => ({
             placement: 'flow',
-            requestedStatus: publication.requestedStatus ?? 'expanded',
+            requestedStatus: publication.requestedStatus ?? 'focus',
             transientDurationMs: null,
             presentationId: publication.presentationId,
         }),

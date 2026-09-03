@@ -243,6 +243,29 @@ const parseIds = (value: unknown): { ids?: string[]; error?: string } => {
     return { ids: Array.from(new Set(ids)) };
 };
 
+const getClosestLiveRangeTodoEvent = (
+    snapshot: LiveRangeTodoListSnapshot,
+): Readonly<LiveRangeTodoSnapshotEvent> => snapshot.events.reduce((closest, event) => {
+    if (event.status === 'running') return closest.status === 'running' ? closest : event;
+    if (closest.status === 'running') return closest;
+
+    if (snapshot.current_position !== null) {
+        const closestDistance = calculateForwardCircularDistance(
+            snapshot.current_position,
+            closest.normalized_position,
+        );
+        const eventDistance = calculateForwardCircularDistance(
+            snapshot.current_position,
+            event.normalized_position,
+        );
+        return eventDistance < closestDistance ? event : closest;
+    }
+
+    if (event.eta_seconds === null) return closest;
+    if (closest.eta_seconds === null || event.eta_seconds < closest.eta_seconds) return event;
+    return closest;
+});
+
 type LiveRangeTodoListDisplayProps = {
     snapshot: LiveRangeTodoListSnapshot | null;
     surface?: 'panel' | 'chat' | 'pill';
@@ -256,9 +279,11 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
     if (!snapshot || (snapshot.events.length === 0 && surface !== 'panel')) return null;
     const isCollapsible = surface === 'chat'
         && snapshot.events.length > CHAT_COLLAPSED_EVENT_LIMIT;
-    const events = surface === 'pill' || (isCollapsible && !isExpanded)
-        ? snapshot.events.slice(0, CHAT_COLLAPSED_EVENT_LIMIT)
-        : snapshot.events;
+    const events = surface === 'pill'
+        ? [getClosestLiveRangeTodoEvent(snapshot)]
+        : isCollapsible && !isExpanded
+            ? snapshot.events.slice(0, CHAT_COLLAPSED_EVENT_LIMIT)
+            : snapshot.events;
 
     return (
         <div className={`ai-chat__range-todo ai-chat__range-todo--${surface}`} aria-label="Live range to-do list">
