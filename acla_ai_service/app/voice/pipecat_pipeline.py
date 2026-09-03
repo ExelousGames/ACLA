@@ -938,6 +938,7 @@ async def build_voice_pipeline_task(
     websocket: Any,
     session_config: VoiceSessionConfig,
     tool_executor: Any,
+    stt_pool: Any,
     *,
     session_tools: Optional[List[Dict[str, Any]]] = None,
 ):
@@ -968,7 +969,6 @@ async def build_voice_pipeline_task(
     )
     from pipecat.processors.audio.vad_processor import VADProcessor
     from pipecat.services.openai.llm import OpenAILLMService
-    from pipecat.services.whisper.stt import WhisperSTTService
     from pipecat.transports.websocket.fastapi import (
         FastAPIWebsocketParams,
         FastAPIWebsocketTransport,
@@ -1026,15 +1026,14 @@ async def build_voice_pipeline_task(
     # --- VAD (Silero, in-pipeline) ---
     # Emits VADUserStartedSpeakingFrame / VADUserStoppedSpeakingFrame which
     # the downstream STT uses to gate Whisper inference.
-    vad_processor = VADProcessor(vad_analyzer=SileroVADAnalyzer())
+    vad_processor = VADProcessor(
+        vad_analyzer=SileroVADAnalyzer(sample_rate=16000),
+    )
 
     # --- STT (faster-whisper) ---
-    # Use the multilingual large-v3-turbo model on whichever device is
-    # available. Pipecat's WhisperSTTService wraps faster-whisper directly.
-    stt = WhisperSTTService(
-        model="large-v3-turbo",
-        # device="cuda" if available; Pipecat auto-detects via faster-whisper.
-    )
+    # The processor and its audio buffers belong to this WebSocket. It leases
+    # a startup-loaded model only while transcribing a completed speech window.
+    stt = stt_pool.create_session_stt()
 
     # --- LLM (remote OpenAI-compatible client) ---
     llm = _build_openai_llm_service(
@@ -1215,6 +1214,7 @@ async def run_voice_session(
     tool_executor: Any,
     *,
     session_tools: Optional[List[Dict[str, Any]]] = None,
+    stt_pool: Any = None,
 ) -> None:
     """Bind a Pipecat pipeline to `websocket` and run it to completion.
 
@@ -1229,12 +1229,17 @@ async def run_voice_session(
     # Deferred imports.
     from pipecat.pipeline.runner import PipelineRunner
     from app.voice.chat_sessions import get_chat_session_registry
+    from app.voice.stt_service_pool import get_voice_stt_service_pool
     from app.voice.tool_relay import get_relay
 
     task = None
     try:
+        worker_pool = stt_pool or get_voice_stt_service_pool()
         task = await build_voice_pipeline_task(
-            websocket, session_config, tool_executor,
+            websocket,
+            session_config,
+            tool_executor,
+            worker_pool,
             session_tools=session_tools,
         )
         runner = PipelineRunner()

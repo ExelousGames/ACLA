@@ -894,7 +894,16 @@ async def test_pipeline_failure_persists_complete_turn_and_detaches(
         _acla_initial_history_length=len(initial_history),
     )
 
-    async def fake_build(*args, **kwargs):
+    stt_pool = SimpleNamespace()
+
+    async def fake_build(
+        websocket,
+        session_config,
+        tool_executor,
+        received_stt_pool,
+        **kwargs,
+    ):
+        assert received_stt_pool is stt_pool
         return task
 
     class FailingRunner:
@@ -939,6 +948,7 @@ async def test_pipeline_failure_persists_complete_turn_and_detaches(
             transport,
             config,
             tool_executor=None,
+            stt_pool=stt_pool,
         )
 
     stored = registry.get(created.chat_session_id)
