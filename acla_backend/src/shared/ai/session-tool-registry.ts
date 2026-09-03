@@ -213,7 +213,7 @@ export const SESSION_TOOLS = [
     },
     {
         name: 'create_goal',
-        description: 'Create one visible goal. The session tool calls will be executed sequentially, and these tool calls will be repeated until the goal is achieved or an error occurs. If the goal is missed, the goal will continue to be retried until the goal is achieved or the user cancels the goal. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. When using query_analysis_result for stop_when, use { "query": "$count(analyses)" } to count all analysis results. The operator and target are evaluated against that number to decide when to stop.',
+        description: 'Create one visible goal that executes ordered session tool calls in a loop until its stopping condition is met. If the goal is missed, the loop continues until the goal is achieved, an error occurs, or the user cancels the goal. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. The operator compares the returned data with the target, so both values must be finite numbers measured on the same scale.',
         properties: {
             name: {
                 type: 'string',
@@ -236,11 +236,11 @@ export const SESSION_TOOLS = [
             },
             stop_when: {
                 type: 'object',
-                description: 'Frontend query tool call that must return { "status": "ready", "data": finiteNumber }, plus the comparison evaluated after the ordered preparation steps. A query_analysis_result stop condition should normally use a $count(...) JSONata expression.',
+                description: 'Frontend tool call plus the comparison evaluated after the ordered preparation steps. The tool must return { "status": "ready", "data": finiteNumber }, and its data must be comparable with the target.',
                 properties: {
                     tool: {
                         type: 'object',
-                        description: 'Frontend query tool call that must return { "status": "ready", "data": finiteNumber } to determine whether the goal was achieved. For query_analysis_result, use { "query": "$count(analyses)" } to count all analysis results.',
+                        description: 'Frontend tool call that must return { "status": "ready", "data": finiteNumber } to determine whether the goal was achieved.',
                         properties: {
                             name: { type: 'string', description: 'Available session tool to execute.' },
                             arguments: { type: 'object', description: 'Arguments passed unchanged to the stop-when tool.' },
@@ -248,7 +248,7 @@ export const SESSION_TOOLS = [
                         required: ['name'],
                     },
                     operator: { type: 'string', enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
-                    target: { type: 'number' },
+                    target: { type: 'number', description: 'Finite number comparable to the value returned by the stop-when tool.' },
                 },
                 required: ['tool', 'operator', 'target'],
             },

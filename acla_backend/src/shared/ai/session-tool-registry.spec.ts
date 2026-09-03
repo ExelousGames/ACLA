@@ -444,7 +444,10 @@ describe('create_goal tool', () => {
                             },
                         },
                         operator: { enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
-                        target: { type: 'number' },
+                        target: {
+                            type: 'number',
+                            description: expect.any(String),
+                        },
                     },
                 },
             },
@@ -459,12 +462,14 @@ describe('create_goal tool', () => {
             .toEqual(['operator', 'target', 'tool']);
         expect(tool.properties.stop_when.description)
             .toContain('{ "status": "ready", "data": finiteNumber }');
-        expect(tool.description).toContain('query_analysis_result');
-        expect(tool.description).toContain('{ "query": "$count(analyses)" }');
-        expect(tool.properties.stop_when.description)
-            .toContain('$count(...) JSONata expression');
+        expect(tool.description).toContain('both values must be finite numbers');
+        expect(tool.description).not.toContain('query_analysis_result');
+        expect(tool.properties.stop_when.description).toContain('comparable with the target');
+        expect(tool.properties.stop_when.description).not.toContain('query_analysis_result');
         expect(tool.properties.stop_when.properties.tool.description)
-            .toContain('{ "query": "$count(analyses)" }');
+            .not.toContain('query_analysis_result');
+        expect(tool.properties.stop_when.properties.target.description)
+            .toContain('comparable to the value returned by the stop-when tool');
     });
 
     it('exposes create_goal only to the Live Performance Analyst and constrains nested tools by session', () => {
