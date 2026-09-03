@@ -1,5 +1,4 @@
 # Core dependencies for Electron desktop Python scripts
-# Synchronise with speech setup requirements when versions change.
 pyaccsharedmemory
 pandas==2.1.4
 numpy==1.24.4
@@ -8,14 +7,3 @@ pydantic==2.5.0
 pydantic-settings==2.1.0
 joblib==1.3.2
 scipy==1.11.1
-SpeechRecognition==3.10.0
-# Older PyAudio wheels required a system PortAudio SDK. The 0.2.14 wheels vendor the dependency for Windows.
-pyaudio==0.2.14
-soundfile==0.12.1
-librosa==0.10.0
-noisereduce==3.0.0
-webrtcvad==2.0.10
-pyannote-audio==3.1.1
-openai-whisper==20230314
-torch==2.0.1
-torchaudio==2.0.2

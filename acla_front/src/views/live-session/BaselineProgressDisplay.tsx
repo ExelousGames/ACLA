@@ -37,10 +37,6 @@ const StageIcon = ({ stage }: { stage: BaselineStage }) => {
     );
 };
 
-const formatTelemetryLabel = (value: string): string => value
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-
 const BaselineProgressDisplay: React.FC<BaselineProgressDisplayProps> = ({
     tag,
     surface = 'panel',
@@ -107,9 +103,9 @@ const BaselineProgressDisplay: React.FC<BaselineProgressDisplayProps> = ({
             aria-label="Baseline collection progress"
         >
             <div className="baseline-timeline__header">
-                <div>
+                {surface === 'panel' && (
                     <span className="baseline-timeline__eyebrow">Baseline run</span>
-                </div>
+                )}
                 <span
                     className={`baseline-timeline__status baseline-timeline__status--${statusLabel.toLowerCase()}`}
                 >
@@ -143,7 +139,9 @@ const BaselineProgressDisplay: React.FC<BaselineProgressDisplayProps> = ({
                             <div className="baseline-timeline__content">
                                 <div className="baseline-timeline__stage-heading">
                                     <div>
-                                        <span className="baseline-timeline__stage-label">{stage.label}</span>
+                                        {surface === 'panel' && (
+                                            <span className="baseline-timeline__stage-label">{stage.label}</span>
+                                        )}
                                         <h4>{stage.title}</h4>
                                     </div>
                                     {showProgress && (
@@ -160,12 +158,6 @@ const BaselineProgressDisplay: React.FC<BaselineProgressDisplayProps> = ({
                                     )}
                                 </div>
                                 <p>{stage.detail}</p>
-                                {stage.key === 'recording' && tag && (tag.track || tag.car) && (
-                                    <div className="baseline-timeline__meta" aria-label="Baseline session details">
-                                        {tag.track && <span>{formatTelemetryLabel(tag.track)}</span>}
-                                        {tag.car && <span>{tag.car}</span>}
-                                    </div>
-                                )}
                                 {showAction && <div className="baseline-timeline__action">{action}</div>}
                             </div>
                         </section>

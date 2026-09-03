@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain } = requ
 const { PythonShell } = require('python-shell');
 const path = require('path');
 const isDev = require('electron-is-dev');
-const { spawn, execFile, execSync } = require('child_process');
+const { execFile } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
@@ -398,24 +398,6 @@ function finalizeShell(shellId, extra = {}) {
   }
 }
 
-// Speech recognition variables
-let speechRecognitionProcess = null;
-let isSpeechRecognitionAvailable = false;
-
-// Function to check speech recognition availability
-async function checkSpeechRecognitionAvailability() {
-  try {
-    execSync('python -c "import speech_recognition; print(\'OK\')"', { stdio: 'ignore' });
-    isSpeechRecognitionAvailable = true;
-    console.log('Speech recognition is available');
-    return true;
-  } catch (error) {
-    isSpeechRecognitionAvailable = false;
-    console.log('Speech recognition is not available:', error.message);
-    return false;
-  }
-}
-
 function createWindow() {
   mainWindow = new BrowserWindow({
     title: 'Kestrel Motorsport Analyst',
@@ -700,109 +682,6 @@ ipcMain.handle('stop-python-script', async (event, shellId, initiator = 'rendere
   } catch (error) {
     console.error(`Failed to stop python shell ${shellId}:`, error);
     return { success: false, error: error?.message || 'Unknown error stopping python shell' };
-  }
-});
-
-// Speech Recognition IPC Handlers
-ipcMain.handle('check-speech-recognition-availability', async () => {
-  return await checkSpeechRecognitionAvailability();
-});
-
-ipcMain.handle('start-speech-recognition', async (event) => {
-  try {
-    if (!isSpeechRecognitionAvailable) {
-      return { success: false, error: 'Speech recognition not available' };
-    }
-
-    if (speechRecognitionProcess) {
-      return { success: false, error: 'Speech recognition already in progress' };
-    }
-
-    // Use the enhanced speech recognition script
-    const enhancedScriptPath = path.join(resolveScriptDirectory(), 'enhanced_speech_recognition.py');
-
-    if (!fs.existsSync(enhancedScriptPath)) {
-      return { success: false, error: 'Enhanced speech recognition script not found' };
-    }
-
-    // Start the enhanced Python speech recognition process with 30-second timeout
-    const pythonExec = getPythonExecutable();
-    speechRecognitionProcess = spawn(pythonExec, [enhancedScriptPath, '30'], {
-      stdio: 'pipe',
-      shell: false,
-      cwd: path.dirname(enhancedScriptPath)
-    });
-
-    let recognitionResult = null;
-    let recognitionMethod = null;
-    let recognitionConfidence = null;
-
-    speechRecognitionProcess.stdout.on('data', (data) => {
-      try {
-        const lines = data.toString().split('\n').filter(line => line.trim());
-        for (const line of lines) {
-          const result = JSON.parse(line);
-
-          if (result.status === 'success') {
-            recognitionResult = result.transcript;
-            recognitionMethod = result.method || 'unknown';
-            recognitionConfidence = result.confidence || 0.5;
-          } else if (result.status === 'error') {
-            console.error('Enhanced speech recognition error:', result.error);
-          } else if (result.status === 'warning') {
-            console.warn('Enhanced speech recognition warning:', result.message);
-          }
-
-          // Send status updates to renderer with enhanced information
-          if (mainWindow) {
-            mainWindow.webContents.send('speech-recognition-status', {
-              ...result,
-              enhanced: true,
-              timestamp: Date.now()
-            });
-          }
-        }
-      } catch (parseError) {
-        console.error('Error parsing enhanced speech recognition output:', parseError, 'Raw data:', data.toString());
-      }
-    });
-
-    speechRecognitionProcess.stderr.on('data', (data) => {
-      const errorMessage = data.toString();
-      console.error('Enhanced speech recognition stderr:', errorMessage);
-
-      // Send error status to renderer
-      if (mainWindow && errorMessage.trim()) {
-        mainWindow.webContents.send('speech-recognition-status', {
-          status: 'error',
-          error: errorMessage.trim(),
-          enhanced: true
-        });
-      }
-    });
-
-    speechRecognitionProcess.on('close', (code) => {
-      const process = speechRecognitionProcess;
-      speechRecognitionProcess = null;
-
-      // Send result to renderer with enhanced information
-      if (mainWindow) {
-        mainWindow.webContents.send('speech-recognition-complete', {
-          success: code === 0,
-          transcript: recognitionResult,
-          method: recognitionMethod,
-          confidence: recognitionConfidence,
-          enhanced: true,
-          error: code !== 0 ? `Enhanced speech recognition process exited with code ${code}` : null
-        });
-      }
-    });
-
-    return { success: true, recordingId: Date.now().toString(), enhanced: true };
-
-  } catch (error) {
-    console.error('Error starting enhanced speech recognition:', error);
-    return { success: false, error: error.message };
   }
 });
 
@@ -1178,35 +1057,9 @@ ipcMain.handle('resize-floating-chat', (event, payload) => {
   return { success: true };
 });
 
-ipcMain.handle('stop-speech-recognition', async (event) => {
-  try {
-    if (!speechRecognitionProcess) {
-      return { success: false, error: 'No speech recognition in progress' };
-    }
-
-    // Kill the process
-    speechRecognitionProcess.kill('SIGTERM');
-
-    // Wait a bit for graceful termination
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    if (speechRecognitionProcess && !speechRecognitionProcess.killed) {
-      speechRecognitionProcess.kill('SIGKILL');
-    }
-
-    return { success: true };
-
-  } catch (error) {
-    console.error('Error stopping speech recognition:', error);
-    return { success: false, error: error.message };
-  }
-});
-
 app.on('ready', () => {
   registerRecordingIpc();
   createWindow();
-  // Check speech recognition availability on startup
-  checkSpeechRecognitionAvailability();
 });
 
 app.on('before-quit', (event) => {

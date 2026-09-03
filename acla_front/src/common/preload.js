@@ -330,28 +330,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     //The main process would then need to listen for these messages using ipcMain.on.
     sendMessageToPython: (shellId, message) => ipcRenderer.invoke('send-message-to-python', shellId, message),
 
-    // Speech Recognition API
-    isSpeechRecognitionAvailable: () => ipcRenderer.invoke('check-speech-recognition-availability'),
-    startSpeechRecognition: () => ipcRenderer.invoke('start-speech-recognition'),
-    stopSpeechRecognition: () => ipcRenderer.invoke('stop-speech-recognition'),
-
-    // Speech recognition event listeners
-    onSpeechRecognitionStatus: (callback) => {
-        const subscription = (event, ...args) => callback(...args);
-        ipcRenderer.on('speech-recognition-status', subscription);
-        return () => {
-            ipcRenderer.off('speech-recognition-status', subscription);
-        };
-    },
-
-    onSpeechRecognitionComplete: (callback) => {
-        const subscription = (event, ...args) => callback(...args);
-        ipcRenderer.on('speech-recognition-complete', subscription);
-        return () => {
-            ipcRenderer.off('speech-recognition-complete', subscription);
-        };
-    },
-
     // Session-scoped floating overlay and typed display broker.
     createOverlaySession: (descriptor) => ipcRenderer.invoke('overlay-session-create', descriptor),
     destroyOverlaySession: (presentationId) => ipcRenderer.invoke('overlay-session-destroy', presentationId),

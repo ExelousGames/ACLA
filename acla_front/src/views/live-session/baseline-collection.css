@@ -221,29 +221,6 @@
   letter-spacing: 0.04em;
 }
 
-.baseline-timeline__meta {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 5px;
-}
-
-.baseline-timeline__meta span {
-  max-width: 100%;
-  padding: 2px 6px;
-  overflow: hidden;
-  border: 1px solid rgba(139, 124, 255, 0.17);
-  border-radius: var(--lp-radius-pill);
-  color: rgba(215, 216, 233, 0.66);
-  font-family: var(--lp-mono);
-  font-size: 9px;
-  letter-spacing: 0.04em;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
 .baseline-timeline__action {
   margin-top: 8px;
 }
@@ -352,6 +329,7 @@
 }
 
 .baseline-timeline--pill .baseline-timeline__header {
+  justify-content: flex-end;
   margin-bottom: 8px;
 }
 
