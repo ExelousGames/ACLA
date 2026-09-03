@@ -15,7 +15,6 @@ from app.infra.config import settings
 from app.integrations.backend.client import backend_service
 from app.llama.health import check_llama_server
 from app.ml.model_hub import hydrate_chatbot_models
-from app.voice.stt_service_pool import get_voice_stt_service_pool
 from app.api import (
     annotation_router,
     health_router,
@@ -79,16 +78,10 @@ async def lifespan(app: FastAPI):
         else:
             print(f"{model_name}: NOT ready (backend active model payload unavailable or invalid)")
 
-    print("🎙️  Loading reusable voice STT services...")
-    stt_pool = get_voice_stt_service_pool()
-    await stt_pool.start()
-    print(f"✅ Voice STT services ready ({stt_pool.size} workers)")
+    yield
 
-    try:
-        yield
-    finally:
-        await stt_pool.close()
-        print(f"🏁 {settings.app_name} shutting down...")
+    # Shutdown
+    print(f"🏁 {settings.app_name} shutting down...")
 
 
 # Create FastAPI application with lifespan manager
