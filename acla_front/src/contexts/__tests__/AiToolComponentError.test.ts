@@ -7,7 +7,7 @@ import {
     BaselineLapRecordRequiredError,
     ComponentRefUnavailableError,
     GoalComponentError,
-    GoalDeterminationInputIncompatibleError,
+    GoalStopWhenInputIncompatibleError,
     GoalStepFailedError,
     InvalidLiveRangeTodoListError,
     LiveRangeTodoListComponentError,
@@ -26,7 +26,7 @@ describe('AI tool component errors', () => {
     const subclasses = [
         [ComponentRefUnavailableError, AiToolComponentRefError],
         [GoalStepFailedError, GoalComponentError],
-        [GoalDeterminationInputIncompatibleError, GoalComponentError],
+        [GoalStopWhenInputIncompatibleError, GoalComponentError],
         [ProcedurePlanStepFailedError, ProcedurePlanComponentError],
         [InvalidLiveRangeTodoListError, LiveRangeTodoListComponentError],
         [BaselineCollectionNotStartedError, BaselineCollectionComponentError],

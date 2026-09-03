@@ -56,20 +56,20 @@ export class RecursiveGoalStepError extends GoalComponentError {
     override name = 'RecursiveGoalStepError';
 }
 
-export class InvalidGoalDeterminationError extends GoalComponentError {
-    override name = 'InvalidGoalDeterminationError';
+export class InvalidGoalStopWhenError extends GoalComponentError {
+    override name = 'InvalidGoalStopWhenError';
 }
 
-export class RecursiveGoalDeterminationError extends GoalComponentError {
-    override name = 'RecursiveGoalDeterminationError';
+export class RecursiveGoalStopWhenError extends GoalComponentError {
+    override name = 'RecursiveGoalStopWhenError';
 }
 
 export class GoalStepTaskUnavailableError extends GoalComponentError {
     override name = 'GoalStepTaskUnavailableError';
 }
 
-export class GoalDeterminationTaskUnavailableError extends GoalComponentError {
-    override name = 'GoalDeterminationTaskUnavailableError';
+export class GoalStopWhenTaskUnavailableError extends GoalComponentError {
+    override name = 'GoalStopWhenTaskUnavailableError';
 }
 
 export class GoalStepFailedError extends GoalComponentError {
@@ -80,16 +80,16 @@ export class GoalStepOutputToolMismatchError extends GoalComponentError {
     override name = 'GoalStepOutputToolMismatchError';
 }
 
-export class GoalDeterminationFailedError extends GoalComponentError {
-    override name = 'GoalDeterminationFailedError';
+export class GoalStopWhenFailedError extends GoalComponentError {
+    override name = 'GoalStopWhenFailedError';
 }
 
-export class GoalDeterminationOutputToolMismatchError extends GoalComponentError {
-    override name = 'GoalDeterminationOutputToolMismatchError';
+export class GoalStopWhenOutputToolMismatchError extends GoalComponentError {
+    override name = 'GoalStopWhenOutputToolMismatchError';
 }
 
-export class GoalDeterminationInputIncompatibleError extends GoalComponentError {
-    override name = 'GoalDeterminationInputIncompatibleError';
+export class GoalStopWhenInputIncompatibleError extends GoalComponentError {
+    override name = 'GoalStopWhenInputIncompatibleError';
 }
 
 export class GoalReplacedError extends GoalComponentError {

@@ -213,7 +213,7 @@ export const SESSION_TOOLS = [
     },
     {
         name: 'create_goal',
-        description: 'Create one visible goal. the session tool calls will be executed sequentially, and these tool calls will be repeated until the goal is achieved or error. If the goal is missed, the goal will continue to be retried until the goal is achieved or the user cancels the goal. The determination tool call must return { "status": "ready", "data": finiteNumber }. When using query_analysis_result for the determination, use { "query": "$count(analyses)" } to count all analysis results. The operator and target are evaluated against that number to determine whether the goal is achieved.',
+        description: 'Create one visible goal. The session tool calls will be executed sequentially, and these tool calls will be repeated until the goal is achieved or an error occurs. If the goal is missed, the goal will continue to be retried until the goal is achieved or the user cancels the goal. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. When using query_analysis_result for stop_when, use { "query": "$count(analyses)" } to count all analysis results. The operator and target are evaluated against that number to decide when to stop.',
         properties: {
             name: {
                 type: 'string',
@@ -234,16 +234,16 @@ export const SESSION_TOOLS = [
                     required: ['id', 'title', 'name'],
                 },
             },
-            determination: {
+            stop_when: {
                 type: 'object',
-                description: 'Frontend query tool call that must return { "status": "ready", "data": finiteNumber }, plus the comparison evaluated after the ordered preparation steps. A query_analysis_result determination should normally use a $count(...) JSONata expression.',
+                description: 'Frontend query tool call that must return { "status": "ready", "data": finiteNumber }, plus the comparison evaluated after the ordered preparation steps. A query_analysis_result stop condition should normally use a $count(...) JSONata expression.',
                 properties: {
                     tool: {
                         type: 'object',
                         description: 'Frontend query tool call that must return { "status": "ready", "data": finiteNumber } to determine whether the goal was achieved. For query_analysis_result, use { "query": "$count(analyses)" } to count all analysis results.',
                         properties: {
                             name: { type: 'string', description: 'Available session tool to execute.' },
-                            arguments: { type: 'object', description: 'Arguments passed unchanged to the determination tool.' },
+                            arguments: { type: 'object', description: 'Arguments passed unchanged to the stop-when tool.' },
                         },
                         required: ['name'],
                     },
@@ -253,7 +253,7 @@ export const SESSION_TOOLS = [
                 required: ['tool', 'operator', 'target'],
             },
         },
-        required: ['name', 'steps', 'determination'],
+        required: ['name', 'steps', 'stop_when'],
     },
     {
         name: 'retry_goal_task',
@@ -651,8 +651,8 @@ export const getSessionToolsForSessionContext = (
         }
         if (tool.name !== 'create_goal') return tool;
         const steps = tool.properties.steps;
-        const determination = tool.properties.determination;
-        const determinationTool = determination.properties.tool;
+        const stopWhen = tool.properties.stop_when;
+        const stopWhenTool = stopWhen.properties.tool;
         return {
             ...tool,
             properties: {
@@ -670,16 +670,16 @@ export const getSessionToolsForSessionContext = (
                         },
                     },
                 },
-                determination: {
-                    ...determination,
+                stop_when: {
+                    ...stopWhen,
                     properties: {
-                        ...determination.properties,
+                        ...stopWhen.properties,
                         tool: {
-                            ...determinationTool,
+                            ...stopWhenTool,
                             properties: {
-                                ...determinationTool.properties,
+                                ...stopWhenTool.properties,
                                 name: {
-                                    ...determinationTool.properties.name,
+                                    ...stopWhenTool.properties.name,
                                     enum: nestedToolNames,
                                 },
                             },

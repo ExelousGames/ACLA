@@ -142,7 +142,7 @@ const getLatestAgentVoiceOptions = () => {
 const lifecycleGoalRequest = () => ({
     name: 'Lifecycle goal',
     steps: [{ id: 'collect', title: 'Collect data', name: 'collect' }],
-    determination: {
+    stop_when: {
         tool: { name: 'determine' },
         operator: 'eq',
         target: 0,

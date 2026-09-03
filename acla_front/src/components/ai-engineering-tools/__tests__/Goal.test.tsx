@@ -17,7 +17,7 @@ import {
     createAiToolOperationFrom,
     resolvedAiToolOperation,
 } from '../ai-tool-operation';
-import { InvalidGoalDeterminationError } from '../../../contexts/AiToolComponentError';
+import { InvalidGoalStopWhenError } from '../../../contexts/AiToolComponentError';
 import { isJsonSafe } from '../../../views/floating-chat/ai-overlay-types';
 
 const request = (): GoalRequest => ({
@@ -26,7 +26,7 @@ const request = (): GoalRequest => ({
         { id: 'collect', title: 'Collect baseline', name: 'collect' },
         { id: 'analyze', title: 'Analyze baseline', name: 'analyze', arguments: { limit: 4 } },
     ],
-    determination: {
+    stop_when: {
         tool: { name: 'determine' },
         operator: 'eq',
         target: 0,
@@ -43,8 +43,8 @@ describe('GoalDisplay', () => {
             name: 'Drive a clean lap',
             status: 'achieved' as const,
             steps: [],
-            determination: request().determination,
-            determination_result: {
+            stop_when: request().stop_when,
+            stop_when_result: {
                 tool_name: 'determine',
                 attempt: 1,
                 status: 'completed' as const,
@@ -59,6 +59,7 @@ describe('GoalDisplay', () => {
         );
 
         expect(screen.getByLabelText('Goal')).toBeInTheDocument();
+        expect(screen.getByLabelText('Stop when')).toHaveTextContent('Stop when · determine');
 
         rerender(<GoalDisplay snapshot={achievedSnapshot} surface="chat" />);
         expect(screen.queryByLabelText('Goal')).not.toBeInTheDocument();
@@ -100,8 +101,8 @@ describe('GoalDisplay', () => {
                     error: null,
                 },
             ],
-            determination: request().determination,
-            determination_result: {
+            stop_when: request().stop_when,
+            stop_when_result: {
                 tool_name: 'determine',
                 attempt: 0,
                 status: 'pending' as const,
@@ -129,12 +130,12 @@ describe('GoalDisplay', () => {
 });
 
 describe('Goal descriptors', () => {
-    it('validates the clean-break determination shape and configurable tool names', () => {
+    it('validates the clean-break stop_when shape and configurable tool names', () => {
         expect(buildGoalRequest(request())).toEqual({ request: request() });
         expect(buildGoalRequest({
             ...request(),
-            determination: {
-                ...request().determination,
+            stop_when: {
+                ...request().stop_when,
                 tool: { name: 'session_configured_numeric_tool' },
             },
         })).toHaveProperty('request');
@@ -145,18 +146,27 @@ describe('Goal descriptors', () => {
         expect(compareGoalValues(2, 'lte', 2)).toBe(true);
     });
 
-    it('rejects unexpected determination properties', () => {
+    it('rejects the previous determination property', () => {
+        const { stop_when: stopWhen, ...goal } = request();
+
+        expect(validateGoalRequest({
+            ...goal,
+            determination: stopWhen,
+        })).toHaveProperty('error');
+    });
+
+    it('rejects unexpected stop_when properties', () => {
         const validation = validateGoalRequest({
             ...request(),
-            determination: {
-                ...request().determination,
+            stop_when: {
+                ...request().stop_when,
                 unexpected: true,
             },
         });
 
         expect(validation).toHaveProperty('error');
         if ('error' in validation) {
-            expect(validation.error).toBeInstanceOf(InvalidGoalDeterminationError);
+            expect(validation.error).toBeInstanceOf(InvalidGoalStopWhenError);
         }
     });
 });
@@ -213,8 +223,8 @@ describe('GoalRunner central dispatch callback', () => {
     it('executes ordered steps and achieves a goal from a numeric query envelope', async () => {
         const input: GoalRequest = {
             ...request(),
-            determination: {
-                ...request().determination,
+            stop_when: {
+                ...request().stop_when,
                 tool: {
                     name: 'query_analysis_result',
                     arguments: { query: '$count(analyses)' },
@@ -239,7 +249,7 @@ describe('GoalRunner central dispatch callback', () => {
             status: 'achieved',
             actual: 0,
             completed_steps: ['collect', 'analyze'],
-            determination: {
+            stop_when: {
                 tool: {
                     name: 'query_analysis_result',
                     arguments: { query: '$count(analyses)' },
@@ -248,8 +258,8 @@ describe('GoalRunner central dispatch callback', () => {
                 target: 0,
             },
         });
-        expect(result.determination).toEqual(input.determination);
-        expect(runner.getSnapshot()?.determination).toEqual(input.determination);
+        expect(result.stop_when).toEqual(input.stop_when);
+        expect(runner.getSnapshot()?.stop_when).toEqual(input.stop_when);
         expect(result.task_results).toEqual([
             {
                 step_id: 'collect',
@@ -292,7 +302,7 @@ describe('GoalRunner central dispatch callback', () => {
             }
             return operationWithValue(
                 { status: 'ready', data: 0 },
-                'determination-terminal',
+                'stop-when-terminal',
             );
         });
         const runner = new GoalRunner('goal', dispatch);
@@ -310,16 +320,16 @@ describe('GoalRunner central dispatch callback', () => {
                 source_result: expect.objectContaining({ status: 'analyze-terminal' }),
             }),
         ]);
-        expect(result.determination_result?.source_result).toMatchObject({
-            status: 'determination-terminal',
+        expect(result.stop_when_result?.source_result).toMatchObject({
+            status: 'stop-when-terminal',
         });
     });
 
     it('keeps rerunning a missed numeric-envelope goal until it is achieved', async () => {
-        let determinations = 0;
+        let stopWhenChecks = 0;
         const dispatch = jest.fn((name: string) => operationWithValue(
             name === 'determine'
-                ? { status: 'ready', data: ++determinations < 3 ? 1 : 0 }
+                ? { status: 'ready', data: ++stopWhenChecks < 3 ? 1 : 0 }
                 : { status: 'complete' },
         ));
         const snapshots: Array<{ status: string; actual: number | null }> = [];
@@ -332,7 +342,7 @@ describe('GoalRunner central dispatch callback', () => {
         if (result instanceof Error) throw result;
 
         expect(result.status).toBe('achieved');
-        expect(determinations).toBe(3);
+        expect(stopWhenChecks).toBe(3);
         expect(result.task_results).toHaveLength(6);
         expect(snapshots).toEqual(expect.arrayContaining([
             { status: 'missed', actual: 1 },
@@ -352,7 +362,7 @@ describe('GoalRunner central dispatch callback', () => {
         ['negative infinity', { status: 'ready', data: Number.NEGATIVE_INFINITY }],
         ['null', null],
         ['ordinary non-query output', { status: 'complete' }],
-    ])('fails determination for incompatible %s output', async (_description, output) => {
+    ])('fails the stop condition for incompatible %s output', async (_description, output) => {
         const dispatch: AiToolDispatcher = jest.fn((name: string) => operationWithValue(
             name === 'determine' ? output : { status: 'complete' },
         ));
@@ -365,22 +375,22 @@ describe('GoalRunner central dispatch callback', () => {
             status: 'failed',
             actual: null,
             completed_steps: ['collect', 'analyze'],
-            error: 'Goal determination requires a ready query result with finite numeric data.',
-            determination_result: {
+            error: 'Goal stop condition requires a ready query result with finite numeric data.',
+            stop_when_result: {
                 tool_name: 'determine',
                 attempt: 1,
                 status: 'error',
                 value: null,
-                error: 'Goal determination requires a ready query result with finite numeric data.',
+                error: 'Goal stop condition requires a ready query result with finite numeric data.',
             },
         });
     });
 
-    it('retries only determination after incompatible input', async () => {
-        let determinationAttempts = 0;
+    it('retries only the stop condition after incompatible input', async () => {
+        let stopWhenAttempts = 0;
         const dispatch = jest.fn((name: string) => operationWithValue(
             name === 'determine'
-                ? (++determinationAttempts === 1
+                ? (++stopWhenAttempts === 1
                     ? { status: 'ready', data: '0' }
                     : { status: 'ready', data: 0 })
                 : { status: 'complete' },
@@ -397,7 +407,7 @@ describe('GoalRunner central dispatch callback', () => {
         expect(retryResult).toMatchObject({
             status: 'achieved',
             actual: 0,
-            determination_result: { attempt: 2, value: 0 },
+            stop_when_result: { attempt: 2, value: 0 },
         });
         expect(dispatch.mock.calls.map(([name]) => name)).toEqual([
             'collect',
@@ -408,9 +418,9 @@ describe('GoalRunner central dispatch callback', () => {
         expect(retryResult.task_results).toHaveLength(2);
     });
 
-    it('reports a rejected determination operation as an execution failure', async () => {
+    it('reports a rejected stop-condition operation as an execution failure', async () => {
         const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {
-            if (name === 'determine') throw new Error('determination exploded');
+            if (name === 'determine') throw new Error('stop condition exploded');
             return { status: 'complete' };
         }, 'complete'));
         const runner = new GoalRunner('goal', dispatch);
@@ -421,10 +431,10 @@ describe('GoalRunner central dispatch callback', () => {
         expect(result).toMatchObject({
             status: 'failed',
             actual: null,
-            error: 'determination exploded',
-            determination_result: {
+            error: 'stop condition exploded',
+            stop_when_result: {
                 status: 'error',
-                error: 'determination exploded',
+                error: 'stop condition exploded',
                 source_result: { status: 'failed' },
             },
         });

@@ -13,15 +13,15 @@ import {
     AiToolComponentErrorConstructor,
     DuplicateGoalStepIdError,
     GoalComponentError,
-    GoalDeterminationFailedError,
-    GoalDeterminationInputIncompatibleError,
+    GoalStopWhenFailedError,
+    GoalStopWhenInputIncompatibleError,
     GoalReplacedError,
     GoalStepFailedError,
     GoalTaskRetryUnavailableError,
-    InvalidGoalDeterminationError,
+    InvalidGoalStopWhenError,
     InvalidGoalNameError,
     InvalidGoalStepsError,
-    RecursiveGoalDeterminationError,
+    RecursiveGoalStopWhenError,
     RecursiveGoalStepError,
 } from 'contexts/AiToolComponentError';
 import { serializeError, type SerializedError } from 'errors/AiToolError';
@@ -58,7 +58,7 @@ export const GOAL_COMPARISON_OPERATORS = [
 export type GoalComparisonOperator = typeof GOAL_COMPARISON_OPERATORS[number];
 export type GoalStatus = 'running' | 'achieved' | 'missed' | 'error';
 export type GoalStepStatus = 'pending' | 'running' | 'completed' | 'error';
-export type GoalDeterminationStatus = GoalStepStatus;
+export type GoalStopWhenStatus = GoalStepStatus;
 
 export type GoalStepDescriptor = {
     id: string;
@@ -67,13 +67,13 @@ export type GoalStepDescriptor = {
     arguments?: Record<string, unknown>;
 };
 
-export type GoalDeterminationTool = {
+export type GoalStopWhenTool = {
     name: string;
     arguments?: Record<string, unknown>;
 };
 
-export type GoalDetermination = {
-    tool: GoalDeterminationTool;
+export type GoalStopWhen = {
+    tool: GoalStopWhenTool;
     operator: GoalComparisonOperator;
     target: number;
 };
@@ -81,7 +81,7 @@ export type GoalDetermination = {
 export type GoalRequest = {
     name: string;
     steps: GoalStepDescriptor[];
-    determination: GoalDetermination;
+    stop_when: GoalStopWhen;
 };
 
 export type GoalTaskDescriptor = {
@@ -116,10 +116,10 @@ export type GoalTaskResult = {
     error?: SerializedError;
 };
 
-export type GoalDeterminationResult = {
+export type GoalStopWhenResult = {
     tool_name: string;
     attempt: number;
-    status: GoalDeterminationStatus;
+    status: GoalStopWhenStatus;
     value: number | null;
     error?: string;
     source_result?: GoalSourceResultMetadata;
@@ -129,8 +129,8 @@ export type GoalSnapshot = {
     name: string;
     status: GoalStatus;
     steps: GoalStepSnapshot[];
-    determination: GoalDetermination | null;
-    determination_result: GoalDeterminationResult | null;
+    stop_when: GoalStopWhen | null;
+    stop_when_result: GoalStopWhenResult | null;
     target: number | null;
     actual: number | null;
     completed_steps: string[];
@@ -144,8 +144,8 @@ export type GoalRunResult = Pick<
     | 'target'
     | 'actual'
     | 'completed_steps'
-    | 'determination'
-    | 'determination_result'
+    | 'stop_when'
+    | 'stop_when_result'
 > & {
     status: 'achieved' | 'missed' | 'failed';
     task_results: GoalTaskResult[];
@@ -214,7 +214,7 @@ const parseGoalStepDescriptor = (value: unknown): GoalStepDescriptor | null => {
     };
 };
 
-const parseGoalDeterminationTool = (value: unknown): GoalDeterminationTool | null => {
+const parseGoalStopWhenTool = (value: unknown): GoalStopWhenTool | null => {
     const tool = isRecord(value) ? value : null;
     if (!tool || !hasOnlyKeys(tool, ['name', 'arguments'])) return null;
     const name = toNonEmptyString(tool.name);
@@ -225,25 +225,25 @@ const parseGoalDeterminationTool = (value: unknown): GoalDeterminationTool | nul
     };
 };
 
-const parseGoalDetermination = (value: unknown): GoalDetermination | null => {
-    const determination = isRecord(value) ? value : null;
-    if (!determination || !hasOnlyKeys(
-        determination,
+const parseGoalStopWhen = (value: unknown): GoalStopWhen | null => {
+    const stopWhen = isRecord(value) ? value : null;
+    if (!stopWhen || !hasOnlyKeys(
+        stopWhen,
         ['tool', 'operator', 'target'],
     )) return null;
-    const tool = parseGoalDeterminationTool(determination.tool);
+    const tool = parseGoalStopWhenTool(stopWhen.tool);
     if (
         !tool
-        || !isGoalComparisonOperator(determination.operator)
-        || typeof determination.target !== 'number'
-        || !Number.isFinite(determination.target)
+        || !isGoalComparisonOperator(stopWhen.operator)
+        || typeof stopWhen.target !== 'number'
+        || !Number.isFinite(stopWhen.target)
     ) {
         return null;
     }
     return {
         tool,
-        operator: determination.operator,
-        target: determination.target,
+        operator: stopWhen.operator,
+        target: stopWhen.target,
     };
 };
 
@@ -253,7 +253,7 @@ export const validateGoalRequest = (
 ): { request: GoalRequest } | { error: GoalComponentError; name?: string } => {
     const input = isRecord(value) ? value : null;
     const name = toNonEmptyString(input?.name);
-    if (!input || !name || !hasOnlyKeys(input, ['name', 'steps', 'determination'])) {
+    if (!input || !name || !hasOnlyKeys(input, ['name', 'steps', 'stop_when'])) {
         return {
             error: new InvalidGoalNameError(componentName, 'Provide a valid goal name.'),
             ...(name ? { name } : {}),
@@ -289,20 +289,20 @@ export const validateGoalRequest = (
             };
         }
     }
-    const determination = parseGoalDetermination(input.determination);
-    if (!determination) {
+    const stopWhen = parseGoalStopWhen(input.stop_when);
+    if (!stopWhen) {
         return {
-            error: new InvalidGoalDeterminationError(componentName, 'Provide a valid goal determination.'),
+            error: new InvalidGoalStopWhenError(componentName, 'Provide a valid goal stop condition.'),
             name,
         };
     }
-    if (RECURSIVE_GOAL_TOOL_NAMES.has(determination.tool.name)) {
+    if (RECURSIVE_GOAL_TOOL_NAMES.has(stopWhen.tool.name)) {
         return {
-            error: new RecursiveGoalDeterminationError(componentName, 'Goal determination cannot invoke a goal-management tool.'),
+            error: new RecursiveGoalStopWhenError(componentName, 'Goal stop condition cannot invoke a goal-management tool.'),
             name,
         };
     }
-    return { request: { name, steps: parsedSteps, determination } };
+    return { request: { name, steps: parsedSteps, stop_when: stopWhen } };
 };
 
 export const buildGoalRequest = (
@@ -312,7 +312,7 @@ export const buildGoalRequest = (
     validateGoalRequest(value, componentName)
 );
 
-const evaluateGoalDeterminationInput = (value: unknown): number | null => {
+const evaluateGoalStopWhenInput = (value: unknown): number | null => {
     if (
         !isRecord(value)
         || value.status !== 'ready'
@@ -340,19 +340,19 @@ export const compareGoalValues = (
     }
 };
 
-const cloneDeterminationTool = (tool: GoalDeterminationTool): GoalDeterminationTool => ({
+const cloneStopWhenTool = (tool: GoalStopWhenTool): GoalStopWhenTool => ({
     ...tool,
     ...(tool.arguments ? { arguments: { ...tool.arguments } } : {}),
 });
 
-const cloneDetermination = (determination: GoalDetermination): GoalDetermination => ({
-    ...determination,
-    tool: cloneDeterminationTool(determination.tool),
+const cloneStopWhen = (stopWhen: GoalStopWhen): GoalStopWhen => ({
+    ...stopWhen,
+    tool: cloneStopWhenTool(stopWhen.tool),
 });
 
-const cloneDeterminationResult = (
-    result: GoalDeterminationResult | null,
-): GoalDeterminationResult | null => result ? ({
+const cloneStopWhenResult = (
+    result: GoalStopWhenResult | null,
+): GoalStopWhenResult | null => result ? ({
     ...result,
     ...(result.source_result ? { source_result: { ...result.source_result } } : {}),
 }) : null;
@@ -363,10 +363,10 @@ const cloneSnapshot = (snapshot: GoalSnapshot): GoalSnapshot => ({
         ...step,
         ...(step.arguments ? { arguments: { ...step.arguments } } : {}),
     })),
-    determination: snapshot.determination
-        ? cloneDetermination(snapshot.determination)
+    stop_when: snapshot.stop_when
+        ? cloneStopWhen(snapshot.stop_when)
         : null,
-    determination_result: cloneDeterminationResult(snapshot.determination_result),
+    stop_when_result: cloneStopWhenResult(snapshot.stop_when_result),
     completed_steps: [...snapshot.completed_steps],
 });
 
@@ -383,10 +383,10 @@ const toRunResult = (
 ): GoalRunResult => ({
     name: snapshot.name,
     status: snapshot.status,
-    determination: snapshot.determination
-        ? cloneDetermination(snapshot.determination)
+    stop_when: snapshot.stop_when
+        ? cloneStopWhen(snapshot.stop_when)
         : null,
-    determination_result: cloneDeterminationResult(snapshot.determination_result),
+    stop_when_result: cloneStopWhenResult(snapshot.stop_when_result),
     target: snapshot.target,
     actual: snapshot.actual,
     completed_steps: [...snapshot.completed_steps],
@@ -418,9 +418,9 @@ implements GoalHandle {
     private currentSnapshot: GoalSnapshot | null = null;
     private request: GoalRequest | null = null;
     private failedStepIndex: number | null = null;
-    private determinationFailed = false;
+    private stopWhenFailed = false;
     private stepAttempts: number[] = [];
-    private determinationAttempts = 0;
+    private stopWhenAttempts = 0;
     private taskResults: GoalTaskResult[] = [];
     private generation = 0;
     private activeOperation: ActiveGoalOperation | null = null;
@@ -476,8 +476,8 @@ implements GoalHandle {
                 name: validation.name || 'Goal',
                 status: 'error',
                 steps: [],
-                determination: null,
-                determination_result: null,
+                stop_when: null,
+                stop_when_result: null,
                 target: null,
                 actual: null,
                 completed_steps: [],
@@ -490,9 +490,9 @@ implements GoalHandle {
         this.generation += 1;
         this.request = validation.request;
         this.failedStepIndex = null;
-        this.determinationFailed = false;
+        this.stopWhenFailed = false;
         this.stepAttempts = validation.request.steps.map(() => 0);
-        this.determinationAttempts = 0;
+        this.stopWhenAttempts = 0;
         this.taskResults = [];
         this.publish(this.createRunningSnapshot(validation.request));
         return this.runPreparation(validation.request, this.generation, 0);
@@ -524,16 +524,16 @@ implements GoalHandle {
             this.publish({ ...snapshot, status: 'running', actual: null });
             return this.runPreparation(request, generation, index);
         }
-        if (this.determinationFailed) {
-            this.determinationFailed = false;
+        if (this.stopWhenFailed) {
+            this.stopWhenFailed = false;
             const { failed_step: _failedStep, error: _error, ...snapshot } = this.currentSnapshot;
             this.publish({
                 ...snapshot,
                 status: 'running',
                 actual: null,
-                determination_result: this.pendingDeterminationResult(request),
+                stop_when_result: this.pendingStopWhenResult(request),
             });
-            return this.runDetermination(request, generation);
+            return this.runStopWhen(request, generation);
         }
         throw new GoalTaskRetryUnavailableError(
             this.getComponentName(),
@@ -550,7 +550,7 @@ implements GoalHandle {
         this.currentSnapshot = null;
         this.request = null;
         this.failedStepIndex = null;
-        this.determinationFailed = false;
+        this.stopWhenFailed = false;
         this.onChange?.(null);
         this.publishSnapshot(null);
     }
@@ -642,7 +642,7 @@ implements GoalHandle {
             });
             if (execution.error) {
                 this.failedStepIndex = index;
-                this.determinationFailed = false;
+                this.stopWhenFailed = false;
                 this.updateStep(index, {
                     status: 'error',
                     run_id: sourceResult.run_id,
@@ -670,28 +670,28 @@ implements GoalHandle {
                     .map((item) => item.id),
             });
         }
-        return this.runDetermination(request, generation);
+        return this.runStopWhen(request, generation);
     }
 
-    private async runDetermination(
+    private async runStopWhen(
         request: GoalRequest,
         generation: number,
     ): Promise<GoalRunResult> {
-        const attempt = ++this.determinationAttempts;
+        const attempt = ++this.stopWhenAttempts;
         this.publish({
             ...this.currentSnapshot!,
-            determination_result: {
-                tool_name: request.determination.tool.name,
+            stop_when_result: {
+                tool_name: request.stop_when.tool.name,
                 attempt,
                 status: 'running',
                 value: null,
             },
         });
         const execution = await this.executeTask(
-            request.determination.tool.name,
-            request.determination.tool.arguments,
-            GoalDeterminationFailedError,
-            'The goal determination failed.',
+            request.stop_when.tool.name,
+            request.stop_when.tool.arguments,
+            GoalStopWhenFailedError,
+            'The goal stop condition check failed.',
         );
         if (generation !== this.generation) {
             throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
@@ -699,24 +699,24 @@ implements GoalHandle {
         let error = execution.error;
         let actual: number | null = null;
         if (!error) {
-            actual = evaluateGoalDeterminationInput(execution.value);
+            actual = evaluateGoalStopWhenInput(execution.value);
             if (actual === null) {
-                error = new GoalDeterminationInputIncompatibleError(
+                error = new GoalStopWhenInputIncompatibleError(
                     this.getComponentName(),
-                    'Goal determination requires a ready query result with finite numeric data.',
+                    'Goal stop condition requires a ready query result with finite numeric data.',
                 );
             }
         }
         if (error) {
             this.failedStepIndex = null;
-            this.determinationFailed = true;
+            this.stopWhenFailed = true;
             const snapshot: GoalSnapshot = {
                 ...this.currentSnapshot!,
                 status: 'error',
                 actual: null,
                 error: error.message,
-                determination_result: {
-                    tool_name: request.determination.tool.name,
+                stop_when_result: {
+                    tool_name: request.stop_when.tool.name,
                     attempt,
                     status: 'error',
                     value: null,
@@ -731,18 +731,18 @@ implements GoalHandle {
         }
 
         this.failedStepIndex = null;
-        this.determinationFailed = false;
+        this.stopWhenFailed = false;
         const achieved = compareGoalValues(
             actual!,
-            request.determination.operator,
-            request.determination.target,
+            request.stop_when.operator,
+            request.stop_when.target,
         );
         const snapshot: GoalSnapshot & { status: 'achieved' | 'missed' } = {
             ...this.currentSnapshot!,
             status: achieved ? 'achieved' : 'missed',
             actual,
-            determination_result: {
-                tool_name: request.determination.tool.name,
+            stop_when_result: {
+                tool_name: request.stop_when.tool.name,
                 attempt,
                 status: 'completed',
                 value: actual,
@@ -815,18 +815,18 @@ implements GoalHandle {
                 run_id: null,
                 error: null,
             })),
-            determination: cloneDetermination(request.determination),
-            determination_result: this.pendingDeterminationResult(request),
-            target: request.determination.target,
+            stop_when: cloneStopWhen(request.stop_when),
+            stop_when_result: this.pendingStopWhenResult(request),
+            target: request.stop_when.target,
             actual: null,
             completed_steps: [],
         };
     }
 
-    private pendingDeterminationResult(request: GoalRequest): GoalDeterminationResult {
+    private pendingStopWhenResult(request: GoalRequest): GoalStopWhenResult {
         return {
-            tool_name: request.determination.tool.name,
-            attempt: this.determinationAttempts,
+            tool_name: request.stop_when.tool.name,
+            attempt: this.stopWhenAttempts,
             status: 'pending',
             value: null,
         };
@@ -836,10 +836,10 @@ implements GoalHandle {
         return {
             name: snapshot.name,
             status: 'failed',
-            determination: snapshot.determination
-                ? cloneDetermination(snapshot.determination)
+            stop_when: snapshot.stop_when
+                ? cloneStopWhen(snapshot.stop_when)
                 : null,
-            determination_result: cloneDeterminationResult(snapshot.determination_result),
+            stop_when_result: cloneStopWhenResult(snapshot.stop_when_result),
             target: snapshot.target,
             actual: snapshot.actual,
             completed_steps: [...snapshot.completed_steps],
@@ -875,16 +875,16 @@ implements GoalHandle {
 }
 
 const getComparisonText = (snapshot: GoalSnapshot): string => {
-    const determination = snapshot.determination;
-    if (!determination) return snapshot.error || 'Invalid goal';
+    const stopWhen = snapshot.stop_when;
+    if (!stopWhen) return snapshot.error || 'Invalid goal';
     const actual = snapshot.actual === null ? '—' : String(snapshot.actual);
-    return `${actual} ${determination.operator} ${determination.target}`;
+    return `${actual} ${stopWhen.operator} ${stopWhen.target}`;
 };
 
 export const GoalDisplay: React.FC<GoalDisplayProps> = ({ snapshot, surface = 'chat' }) => {
     if (surface === 'chat' && snapshot.status === 'achieved') return null;
 
-    const determinationResult = snapshot.determination_result;
+    const stopWhenResult = snapshot.stop_when_result;
     return (
         <section
             className={`ai-chat__goal ai-chat__goal--${surface} ai-chat__goal--${snapshot.status}`}
@@ -913,18 +913,18 @@ export const GoalDisplay: React.FC<GoalDisplayProps> = ({ snapshot, surface = 'c
                     ))}
                 </ol>
             )}
-            {snapshot.determination && determinationResult && (
+            {snapshot.stop_when && stopWhenResult && (
                 <div
-                    className={`ai-chat__goal-determination ai-chat__goal-determination--${determinationResult.status}`}
-                    aria-label="Determination"
+                    className={`ai-chat__goal-stop-when ai-chat__goal-stop-when--${stopWhenResult.status}`}
+                    aria-label="Stop when"
                 >
                     <span className="ai-chat__goal-step-dot" aria-hidden="true" />
                     <span className="ai-chat__goal-step-copy">
-                        <span>Determination · {determinationResult.tool_name}</span>
+                        <span>Stop when · {stopWhenResult.tool_name}</span>
                         <span>
-                            {determinationResult.status}
-                            {determinationResult.attempt > 0
-                                ? ` · attempt ${determinationResult.attempt}`
+                            {stopWhenResult.status}
+                            {stopWhenResult.attempt > 0
+                                ? ` · attempt ${stopWhenResult.attempt}`
                                 : ''}
                         </span>
                         <span className="ai-chat__goal-metric">{getComparisonText(snapshot)}</span>

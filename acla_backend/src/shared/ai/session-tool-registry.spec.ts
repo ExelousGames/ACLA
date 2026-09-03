@@ -309,7 +309,7 @@ describe('analysis result query tool', () => {
             .not.toContain('query_analysis_result');
     });
 
-    it('is available to compatible live analyst goal steps and determinations', () => {
+    it('is available to compatible live analyst goal steps and stop conditions', () => {
         const tools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
@@ -318,7 +318,7 @@ describe('analysis result query tool', () => {
 
         expect(createGoal.properties.steps.items.properties.name.enum)
             .toContain('query_analysis_result');
-        expect(createGoal.properties.determination.properties.tool.properties.name.enum)
+        expect(createGoal.properties.stop_when.properties.tool.properties.name.enum)
             .toContain('query_analysis_result');
     });
 });
@@ -377,7 +377,7 @@ describe('analysis result query apply tool', () => {
         });
     });
 
-    it('is available in analyst goals, determinations, and nested live-range workflows', () => {
+    it('is available in analyst goals, stop conditions, and nested live-range workflows', () => {
         const tools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
@@ -389,7 +389,7 @@ describe('analysis result query apply tool', () => {
 
         expect(createGoal.properties.steps.items.properties.name.enum)
             .toContain('apply_query_to_analysis_result');
-        expect(createGoal.properties.determination.properties.tool.properties.name.enum)
+        expect(createGoal.properties.stop_when.properties.tool.properties.name.enum)
             .toContain('apply_query_to_analysis_result');
         expect(addEvents.properties.events.items.properties.tool.properties.name.enum)
             .toContain('apply_query_to_analysis_result');
@@ -419,21 +419,21 @@ describe('set_procedure_plan tool', () => {
 });
 
 describe('create_goal tool', () => {
-    it('defines the canonical preparation workflow and numeric determination schema', () => {
+    it('defines the canonical preparation workflow and numeric stop_when schema', () => {
         const tools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
         const tool = tools.find(({ name }) => name === 'create_goal') as any;
         expect(tool).toMatchObject({
-            required: ['name', 'steps', 'determination'],
+            required: ['name', 'steps', 'stop_when'],
             properties: {
                 name: { type: 'string' },
                 steps: {
                     minItems: 1,
                     items: { required: ['id', 'title', 'name'] },
                 },
-                determination: {
+                stop_when: {
                     required: ['tool', 'operator', 'target'],
                     properties: {
                         tool: {
@@ -451,18 +451,19 @@ describe('create_goal tool', () => {
         });
         expect(tool.properties).not.toHaveProperty('goal');
         expect(tool.properties).not.toHaveProperty('comparison');
-        expect(tool.properties.determination.properties).not.toHaveProperty('step_id');
-        expect(tool.properties.determination.properties).not.toHaveProperty('metric_label');
-        expect(tool.properties.determination.properties).not.toHaveProperty('unit');
-        expect(Object.keys(tool.properties.determination.properties).sort())
+        expect(tool.properties).not.toHaveProperty('determination');
+        expect(tool.properties.stop_when.properties).not.toHaveProperty('step_id');
+        expect(tool.properties.stop_when.properties).not.toHaveProperty('metric_label');
+        expect(tool.properties.stop_when.properties).not.toHaveProperty('unit');
+        expect(Object.keys(tool.properties.stop_when.properties).sort())
             .toEqual(['operator', 'target', 'tool']);
-        expect(tool.properties.determination.description)
+        expect(tool.properties.stop_when.description)
             .toContain('{ "status": "ready", "data": finiteNumber }');
         expect(tool.description).toContain('query_analysis_result');
         expect(tool.description).toContain('{ "query": "$count(analyses)" }');
-        expect(tool.properties.determination.description)
+        expect(tool.properties.stop_when.description)
             .toContain('$count(...) JSONata expression');
-        expect(tool.properties.determination.properties.tool.description)
+        expect(tool.properties.stop_when.properties.tool.description)
             .toContain('{ "query": "$count(analyses)" }');
     });
 
@@ -482,8 +483,8 @@ describe('create_goal tool', () => {
         });
         const createGoal = analystTools.find(({ name }) => name === 'create_goal') as any;
         const nestedNames = createGoal.properties.steps.items.properties.name.enum;
-        const determinationNames = createGoal
-            .properties.determination.properties.tool.properties.name.enum;
+        const stopWhenNames = createGoal
+            .properties.stop_when.properties.tool.properties.name.enum;
         expect(nestedNames).toEqual(analystTools
             .map(({ name }) => name)
             .filter((name) => name !== 'create_goal' && name !== 'retry_goal_task'));
@@ -494,9 +495,9 @@ describe('create_goal tool', () => {
         ]));
         expect(nestedNames).not.toContain('create_goal');
         expect(nestedNames).not.toContain('retry_goal_task');
-        expect(determinationNames).toEqual(nestedNames);
-        expect(determinationNames).not.toContain('create_goal');
-        expect(determinationNames).not.toContain('retry_goal_task');
+        expect(stopWhenNames).toEqual(nestedNames);
+        expect(stopWhenNames).not.toContain('create_goal');
+        expect(stopWhenNames).not.toContain('retry_goal_task');
 
     });
 });

@@ -1,6 +1,6 @@
 import React from 'react';
 import type {
-    GoalDeterminationResult,
+    GoalStopWhenResult,
     GoalSnapshot,
     GoalStepSnapshot,
 } from './Goal';
@@ -11,7 +11,7 @@ export type GoalOverlayDisplayProps = {
 
 type GoalOverlayActivity =
     | { kind: 'step'; step: GoalStepSnapshot; index: number }
-    | { kind: 'determination'; result: GoalDeterminationResult }
+    | { kind: 'stopWhen'; result: GoalStopWhenResult }
     | { kind: 'complete' }
     | { kind: 'missed' }
     | { kind: 'error'; message: string };
@@ -36,12 +36,12 @@ const getActivity = (snapshot: GoalSnapshot): GoalOverlayActivity => {
     }
 
     if (
-        snapshot.determination_result
-        && snapshot.determination_result.status !== 'pending'
+        snapshot.stop_when_result
+        && snapshot.stop_when_result.status !== 'pending'
         && snapshot.status !== 'achieved'
         && snapshot.status !== 'missed'
     ) {
-        return { kind: 'determination', result: snapshot.determination_result };
+        return { kind: 'stopWhen', result: snapshot.stop_when_result };
     }
 
     if (snapshot.status === 'achieved') return { kind: 'complete' };
@@ -54,14 +54,14 @@ const getCompletedCount = (snapshot: GoalSnapshot): number => (
 );
 
 const getOutcomeMetric = (snapshot: GoalSnapshot): string | null => {
-    if (!snapshot.determination || snapshot.actual === null) return null;
-    return `${snapshot.actual} ${snapshot.determination.operator} ${snapshot.determination.target}`;
+    if (!snapshot.stop_when || snapshot.actual === null) return null;
+    return `${snapshot.actual} ${snapshot.stop_when.operator} ${snapshot.stop_when.target}`;
 };
 
 export const getGoalOverlaySummary = (snapshot: GoalSnapshot): string => {
     const activity = getActivity(snapshot);
     if (activity.kind === 'step') return activity.step.title;
-    if (activity.kind === 'determination') return 'Checking goal result';
+    if (activity.kind === 'stopWhen') return 'Checking stop condition';
     if (activity.kind === 'complete') return `Goal achieved: ${snapshot.name}`;
     if (activity.kind === 'missed') return `Goal not met: ${snapshot.name}`;
     return activity.message;
@@ -89,14 +89,14 @@ export const GoalOverlayDisplay: React.FC<GoalOverlayDisplayProps> = ({ snapshot
             activity.step.attempts > 1 ? `Attempt ${activity.step.attempts}` : null,
         ].filter(Boolean).join(' · ');
         activityError = activity.step.error;
-    } else if (activity.kind === 'determination') {
+    } else if (activity.kind === 'stopWhen') {
         activityLabel = activity.result.status === 'error'
             ? 'Check needs attention'
             : 'Current step';
-        activityTitle = 'Checking goal result';
+        activityTitle = 'Checking stop condition';
         activityMeta = activity.result.attempt > 1
-            ? `Final check · Attempt ${activity.result.attempt}`
-            : 'Final check';
+            ? `Stop when · Attempt ${activity.result.attempt}`
+            : 'Stop when';
         activityError = activity.result.error || null;
     } else if (activity.kind === 'complete') {
         activityLabel = 'Run complete';
