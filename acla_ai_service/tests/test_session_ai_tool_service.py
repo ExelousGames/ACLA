@@ -134,12 +134,11 @@ def test_get_side_chat_tools_exposes_only_search_application_tool():
     second = service.get_side_chat_tools()
 
     assert [tool["name"] for tool in first] == ["search_application_tool"]
-    assert first[0]["required"] == ["prompt"]
-    assert set(first[0]["properties"]) == {"prompt"}
-    assert first[0]["properties"]["prompt"]["minLength"] == 1
-    assert "cannot read this parent conversation" in first[0]["description"]
-    first[0]["properties"].clear()
-    assert second[0]["properties"]
+    assert first[0]["required"] == []
+    assert first[0]["properties"] == {}
+    assert "parent conversation" in first[0]["description"]
+    first[0]["description"] = "changed"
+    assert second[0]["description"] != "changed"
 
 
 @pytest.mark.asyncio

@@ -595,6 +595,7 @@ async def test_application_tool_search_uses_latest_authoritative_context_and_ai_
     class Selector:
         async def run(self, request):
             selector_requests.append(deepcopy(request))
+            request["parent_messages"][0]["content"] = "mutated"
             request["session_context"]["session_mode"] = "front_desk"
             request["allowed_tools"].clear()
             return {
@@ -627,6 +628,24 @@ async def test_application_tool_search_uses_latest_authoritative_context_and_ai_
         session_context={"session_mode": "live"},
         user_id="private-user-id",
     )
+    config.session_context = {
+        "session_mode": "recorded",
+        "agent_mode": "track_guide",
+        "private_route": "must-not-leak",
+    }
+    parent_messages = [
+        {"role": "system", "content": "parent-system-prompt"},
+        {"role": "user", "content": "Explain the MSP44 label."},
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "function": {
+                    "name": "search_application_tool",
+                    "arguments": "{}",
+                },
+            }],
+        },
+    ]
     handler, _, _ = pipecat_pipeline._make_tool_handler(
         execute_server_tool,
         config,
@@ -634,27 +653,18 @@ async def test_application_tool_search_uses_latest_authoritative_context_and_ai_
         session_tool_names=frozenset({"show_map"}),
         allowed_tools=[session_tool, ai_tool],
         application_tool_search=Selector(),
+        parent_message_source=lambda: parent_messages,
     )
     assert selector_requests == []
 
-    config.session_context = {
-        "session_mode": "recorded",
-        "agent_mode": "track_guide",
-        "private_route": "must-not-leak",
-    }
     await handler(SimpleNamespace(
         function_name="search_application_tool",
-        arguments={
-            "prompt": "Explain the MSP44 label.",
-            "session_context": {"session_mode": "front_desk"},
-            "allowed_tools": [],
-            "_chat_session_id": "parent-override",
-        },
+        arguments={},
         result_callback=receive_parent_result,
     ))
 
     assert selector_requests == [{
-        "prompt": "Explain the MSP44 label.",
+        "parent_messages": parent_messages,
         "session_context": {
             "session_mode": "recorded",
             "agent_mode": "track_guide",
@@ -664,8 +674,9 @@ async def test_application_tool_search_uses_latest_authoritative_context_and_ai_
     assert "private-routing-id" not in json.dumps(selector_requests)
     assert "private-chat-id" not in json.dumps(selector_requests)
     assert "private-user-id" not in json.dumps(selector_requests)
-    assert "private-parent-message" not in json.dumps(selector_requests)
+    assert "Explain the MSP44 label." in json.dumps(selector_requests)
     assert config.session_context["session_mode"] == "recorded"
+    assert parent_messages[0]["content"] == "parent-system-prompt"
     assert server_calls == [(
         "explain_label",
         {"label_id": "MSP44"},
@@ -717,11 +728,14 @@ async def test_application_tool_search_preserves_browser_session_dispatch(monkey
         session_tool_names=frozenset({"show_map"}),
         allowed_tools=[session_tool],
         application_tool_search=Selector(),
+        parent_message_source=lambda: [
+            {"role": "user", "content": "Show Spa on the circuit map."},
+        ],
     )
 
     await handler(SimpleNamespace(
         function_name="search_application_tool",
-        arguments={"prompt": "Show Spa on the circuit map."},
+        arguments={},
         result_callback=receive_parent_result,
     ))
 
@@ -735,8 +749,7 @@ async def test_application_tool_search_preserves_browser_session_dispatch(monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("prompt", [None, "", "   "])
-async def test_application_tool_search_rejects_empty_parent_prompt(prompt):
+async def test_application_tool_search_rejects_missing_parent_session_content():
     selector = AsyncMock()
     parent_results = []
 
@@ -758,12 +771,12 @@ async def test_application_tool_search_rejects_empty_parent_prompt(prompt):
 
     await handler(SimpleNamespace(
         function_name="search_application_tool",
-        arguments={"prompt": prompt},
+        arguments={},
         result_callback=receive_parent_result,
     ))
 
     selector.run.assert_not_awaited()
-    assert parent_results == [{"error": "prompt must be a non-empty string"}]
+    assert parent_results == [{"error": "Parent session content is unavailable"}]
 
 
 @pytest.mark.asyncio
@@ -788,11 +801,14 @@ async def test_application_tool_search_returns_selector_failure_as_tool_error():
         session_tool_names=frozenset(),
         allowed_tools=[],
         application_tool_search=Selector(),
+        parent_message_source=lambda: [
+            {"role": "user", "content": "Find an application action."},
+        ],
     )
 
     await handler(SimpleNamespace(
         function_name="search_application_tool",
-        arguments={"prompt": "Find an application action."},
+        arguments={},
         result_callback=receive_parent_result,
     ))
 

@@ -48,22 +48,11 @@ _SIDE_CHAT_TOOLS: tuple[SessionAIToolDescriptor, ...] = (
     {
         "name": "search_application_tool",
         "description": (
-            "Find and run one application tool. Supply a self-contained prompt "
-            "with the relevant goal, known values, constraints, and desired "
-            "outcome. The isolated tool-search side chat cannot read this parent "
-            "conversation or its history."
+            "Find and run one application tool using the complete parent "
+            "conversation and current session context."
         ),
-        "properties": {
-            "prompt": {
-                "type": "string",
-                "minLength": 1,
-                "description": (
-                    "A non-empty, self-contained description of the application "
-                    "capability, data, or action needed."
-                ),
-            },
-        },
-        "required": ["prompt"],
+        "properties": {},
+        "required": [],
     },
 )
 

@@ -15,7 +15,7 @@ APPLICATION_TOOL_SEARCH_NAME = "search_application_tool"
 
 
 class ApplicationToolSearchRequest(TypedDict):
-    prompt: str
+    parent_messages: List[Dict[str, Any]]
     session_context: Dict[str, Any]
     allowed_tools: List[SessionAIToolDescriptor]
 
@@ -54,9 +54,15 @@ class ApplicationToolSearchSideChat(SideAIChat[SelectedToolCall]):
         )
 
     def task_prompt(self, request: ApplicationToolSearchRequest) -> str:
-        prompt = request.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ApplicationToolSearchError("prompt must be a non-empty string")
+        parent_messages = request.get("parent_messages")
+        if (
+            not isinstance(parent_messages, list)
+            or not parent_messages
+            or not all(isinstance(message, dict) for message in parent_messages)
+        ):
+            raise ApplicationToolSearchError(
+                "parent_messages must be a non-empty list of messages",
+            )
 
         allowed_tools = request.get("allowed_tools")
         if not isinstance(allowed_tools, list) or not allowed_tools:
@@ -72,15 +78,24 @@ class ApplicationToolSearchSideChat(SideAIChat[SelectedToolCall]):
             ensure_ascii=True,
             sort_keys=True,
         )
+        parent_session = json.dumps(
+            deepcopy(parent_messages),
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
         return (
             "You select application tools for an isolated parent chat. "
             "Choose exactly one tool from the allowed catalog that best fulfills "
-            "the parent's request. Fill every required argument from the request "
-            "and session context. Do not invent missing values, choose an unlisted "
-            "tool, answer conversationally, or emit more than one tool call.\n\n"
+            "the parent's request. Fill every required argument from the complete "
+            "parent session and session context. Do not invent missing values, "
+            "choose an unlisted tool, answer conversationally, or emit more than "
+            "one tool call.\n\n"
             f"Complete allowed-tool catalog:\n{catalog}\n\n"
             f"Current normalized parent session context:\n{session_context}\n\n"
-            f"Self-contained parent request:\n{prompt.strip()}"
+            f"Complete parent session messages:\n{parent_session}\n\n"
+            "Selector request:\nChoose and call the one allowed application "
+            "tool that best fulfills the latest request in the parent session."
         )
 
     def request_options(

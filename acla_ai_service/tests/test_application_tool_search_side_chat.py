@@ -56,7 +56,19 @@ def _side_chat(response=None):
 
 def _request(tools=None):
     return {
-        "prompt": "Show the Spa map at the default zoom.",
+        "parent_messages": [
+            {"role": "system", "content": "You are a race engineer."},
+            {"role": "user", "content": "Show the Spa map at the default zoom."},
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "function": {
+                        "name": "search_application_tool",
+                        "arguments": "{}",
+                    },
+                }],
+            },
+        ],
         "session_context": {
             "session_mode": "recorded",
             "agent_mode": "track_guide",
@@ -81,7 +93,13 @@ async def test_side_chat_sends_only_isolated_selection_messages_and_full_catalog
     assert kwargs["tool_choice"] == "required"
     assert len(kwargs["messages"]) == 1
     prompt = kwargs["messages"][0]["content"]
-    assert request["prompt"] in prompt
+    serialized_parent = json.dumps(
+        request["parent_messages"],
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    assert serialized_parent in prompt
+    assert prompt.index(serialized_parent) < prompt.index("Selector request:")
     assert json.dumps(
         request["session_context"],
         ensure_ascii=True,
@@ -118,13 +136,15 @@ async def test_side_chat_copies_selected_arguments():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("prompt", [None, "", "   "])
-async def test_side_chat_requires_non_empty_prompt_without_calling_provider(prompt):
+@pytest.mark.parametrize("parent_messages", [None, [], ["not-a-message"]])
+async def test_side_chat_requires_parent_messages_without_calling_provider(
+    parent_messages,
+):
     side_chat, create = _side_chat()
     request = _request()
-    request["prompt"] = prompt
+    request["parent_messages"] = parent_messages
 
-    with pytest.raises(ApplicationToolSearchError, match="non-empty"):
+    with pytest.raises(ApplicationToolSearchError, match="parent_messages"):
         await side_chat.run(request)
 
     create.assert_not_awaited()

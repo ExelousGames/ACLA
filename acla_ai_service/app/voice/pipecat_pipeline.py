@@ -36,7 +36,7 @@ import json
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from app.chat_llm import resolve_chat_llm_config
 from app.infra.config import settings
@@ -106,13 +106,12 @@ _APPLICATION_TOOL_SEARCH_PROMPT = (
     "- Your only application-tool entry point is search_application_tool.\n"
     "- Call it explicitly when application data or an application action is "
     "needed.\n"
-    "- Its prompt must be self-contained: include the goal, known values, "
-    "constraints, and desired outcome because the isolated selector cannot "
-    "read this conversation.\n"
+    "- Call it without arguments. Its selector receives this complete parent "
+    "conversation and the current session context.\n"
     "- Individual tool names in earlier coaching guidance describe "
     "capabilities, not parent-callable tools. Translate those instructions "
-    "into a self-contained search_application_tool prompt; do not call or "
-    "guess hidden tools directly.\n"
+    "into a search_application_tool call; do not call or guess hidden tools "
+    "directly.\n"
 )
 
 
@@ -385,6 +384,7 @@ def _make_tool_handler(
     session_tool_names: frozenset[str],
     allowed_tools: Optional[List[Dict[str, Any]]] = None,
     application_tool_search: Optional[ApplicationToolSearchSideChat] = None,
+    parent_message_source: Optional[Callable[[], Iterable[Any]]] = None,
 ):
     """Build a per-session selector handler with two-bucket dispatch.
 
@@ -448,12 +448,11 @@ def _make_tool_handler(
             if function_name == APPLICATION_TOOL_SEARCH_NAME:
                 if application_tool_search is None:
                     raise RuntimeError("Application tool search is unavailable")
-                prompt = arguments.get("prompt")
-                if not isinstance(prompt, str) or not prompt.strip():
-                    raise ValueError("prompt must be a non-empty string")
+                if parent_message_source is None:
+                    raise RuntimeError("Parent session content is unavailable")
 
                 selected = await application_tool_search.run({
-                    "prompt": prompt.strip(),
+                    "parent_messages": deepcopy(list(parent_message_source())),
                     "session_context": deepcopy(normalize_voice_session_context(
                         session_config.session_context,
                     )),
@@ -1056,6 +1055,17 @@ async def build_voice_pipeline_task(
     ]
     tools = ToolsSchema(standard_tools=tool_schemas)
 
+    # Build the live parent context before the selector handler so each search
+    # can snapshot every message accumulated up to that tool call.
+    initial_messages, initial_history_length = _build_initial_context_messages(
+        session_config,
+    )
+    context = LLMContext(
+        messages=initial_messages,
+        tools=tools,
+    )
+    context_aggregator = LLMContextAggregatorPair(context)
+
     application_tool_search = ApplicationToolSearchSideChat.from_chat_llm_model(
         session_config.chat_llm_model,
     )
@@ -1067,6 +1077,7 @@ async def build_voice_pipeline_task(
         session_tool_names=session_tool_names,
         allowed_tools=application_tool_descriptors,
         application_tool_search=application_tool_search,
+        parent_message_source=lambda: getattr(context, "messages", []) or [],
     )
     for schema in tool_schemas:
         llm.register_function(schema.name, tool_handler)
@@ -1077,16 +1088,6 @@ async def build_voice_pipeline_task(
     #
     # Startup behavior docs live in editable .md files. Each new socket gets
     # shared chatbot rules plus exactly one agent-specific role document.
-    initial_messages, initial_history_length = _build_initial_context_messages(
-        session_config,
-    )
-
-    context = LLMContext(
-        messages=initial_messages,
-        tools=tools,
-    )
-    context_aggregator = LLMContextAggregatorPair(context)
-
     # --- TTS (Kokoro via custom Pipecat processor) ---
     KokoroProcessor = build_kokoro_processor()
     tts = KokoroProcessor(sample_rate=settings.kokoro_sample_rate)
