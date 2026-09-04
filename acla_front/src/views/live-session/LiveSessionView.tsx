@@ -90,12 +90,22 @@ export type LiveBaselineAnalysisAiResult = {
 const bridgeDeferredAiToolOperation = <TResult,>(
     load: () => Promise<AiToolOperation<TResult, any, string>>,
 ): AiToolOperation<TResult> => {
+    let loadedOperation: AiToolOperation<TResult, any, string> | null = null;
+    let aborted = false;
     const controller = createControlledAiToolOperation<
         TResult,
         never,
         string
-    >();
+    >([], () => {
+        aborted = true;
+        loadedOperation?.abort();
+    });
     void load().then((operation) => {
+        loadedOperation = operation;
+        if (aborted) {
+            operation.abort();
+            return;
+        }
         operation.notifyTerminated((termination) => {
             void operation.result.then(
                 (result) => controller.resolve(termination.status, result),

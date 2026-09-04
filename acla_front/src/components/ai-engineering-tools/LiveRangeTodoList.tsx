@@ -774,6 +774,7 @@ implements LiveRangeTodoListHandle {
             run.unsubscribeTermination();
             this.activeRuns.delete(id);
             run.controller.abort();
+            run.operation?.abort();
         });
     }
 

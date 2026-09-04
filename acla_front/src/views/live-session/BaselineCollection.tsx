@@ -783,12 +783,17 @@ const BaselineCollection = ({ name }: { name: string }) => {
         const timeoutMs = Number.isFinite(options.timeoutMs) && Number(options.timeoutMs) > 0
             ? Number(options.timeoutMs)
             : 600000;
+        let pending!: PendingBaselineOperation;
         const controller = createControlledAiToolOperation<
             BaselineCollectionPayload,
             BaselineCollectionStatus,
             'complete' | 'timed_out' | 'cancelled'
-        >(statuses.map((status) => status.deferred.promise));
-        const pending: PendingBaselineOperation = {
+        >(statuses.map((status) => status.deferred.promise), () => {
+            pendingCollectionOperationsRef.current.delete(pending);
+            if (pending.timeoutId) clearTimeout(pending.timeoutId);
+            pending.timeoutId = null;
+        });
+        pending = {
             controller,
             statuses,
             timeoutId: setTimeout(() => {

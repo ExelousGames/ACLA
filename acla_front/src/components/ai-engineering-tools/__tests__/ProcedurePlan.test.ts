@@ -54,13 +54,37 @@ describe('ProcedurePlan descriptors', () => {
 });
 
 describe('ProcedurePlanRunner central dispatch callback', () => {
+    it('aborts the active nested tool when the plan operation is aborted', async () => {
+        const nested = createAiToolOperation(
+            new Promise<Record<string, unknown>>(() => undefined),
+            'complete',
+        );
+        const nestedAbort = jest.spyOn(nested, 'abort');
+        const dispatch = jest.fn(() => nested);
+        const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
+        const operation = runner.createProcedurePlan(plan());
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
+
+        operation.abort();
+
+        expect(nestedAbort).toHaveBeenCalledTimes(1);
+        await expect(operation.result).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(termination).resolves.toMatchObject({
+            status: 'aborted',
+            result: { name: 'AbortError' },
+        });
+        await Promise.resolve();
+        expect(dispatch).toHaveBeenCalledTimes(1);
+    });
+
     it('executes requests in order and returns dispatcher outputs unchanged', async () => {
         const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => resolvedAiToolOperation({
             status: 'complete',
             name,
             lap: args?.lap,
         }, 'complete'));
-        const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
+        const onChange = jest.fn();
+        const runner = new ProcedurePlanRunner('procedure-plan', dispatch, onChange);
 
         const operation = runner.createProcedurePlan(plan());
         const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
@@ -86,10 +110,13 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
             name: 'read',
             lap: 2,
         });
-        expect(runner.getProcedurePlan()).toMatchObject({
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
             goal: 'Review the lap',
             currentStep: 2,
-        });
+        }));
+        expect(onChange).toHaveBeenLastCalledWith(null);
+        expect(runner.getProcedurePlan()).toBeNull();
+        expect(runner.getSnapshot()).toBeNull();
         await expect(termination).resolves.toMatchObject({
             status: 'complete',
             result: { status: 'complete' },
@@ -124,21 +151,25 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         await expect(replacement.result).resolves.toMatchObject({ status: 'cleared' });
     });
 
-    it('keeps a failed step available for retry', async () => {
-        let attempts = 0;
+    it('returns failure details and removes a failed plan', async () => {
         const onError = jest.fn();
+        const onChange = jest.fn();
         const rootError = new Error('offline');
         const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {
-            if (name === 'read' && ++attempts === 1) throw rootError;
+            if (name === 'read') throw rootError;
             return { status: 'complete' };
         }, 'complete'));
-        const runner = new ProcedurePlanRunner('procedure-plan', dispatch, undefined, onError);
+        const runner = new ProcedurePlanRunner('procedure-plan', dispatch, onChange, onError);
 
         const failedResult = await runner.createProcedurePlan(plan()).result;
         expect(failedResult).not.toBeInstanceOf(Error);
         if (failedResult instanceof Error) throw failedResult;
         expect(failedResult).toMatchObject({
             status: 'failed',
+            request: {
+                title: 'Read telemetry',
+                status: 'failed',
+            },
             task_results: [{
                 title: 'Read telemetry',
                 tool_name: 'read',
@@ -154,14 +185,15 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
             }],
         });
         expect(onError).toHaveBeenCalledWith(
-            expect.objectContaining({ title: 'Read telemetry' }),
+            expect.objectContaining({ title: 'Read telemetry', status: 'failed' }),
             expect.any(ProcedurePlanStepFailedError),
         );
         expect(onError.mock.calls[0][1]).toMatchObject({
             componentName: 'procedure-plan',
             cause: rootError,
         });
-        await expect(runner.retryFailedStep()).resolves.toMatchObject({ status: 'complete' });
-        expect(attempts).toBe(2);
+        expect(onChange).toHaveBeenLastCalledWith(null);
+        expect(runner.getProcedurePlan()).toBeNull();
+        expect(runner.getSnapshot()).toBeNull();
     });
 });

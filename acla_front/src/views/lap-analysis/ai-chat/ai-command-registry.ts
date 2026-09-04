@@ -1272,7 +1272,19 @@ const dispatchAiTool = (
             nestedOwner,
             nestedSignal,
         ) as ReturnType<AiToolDispatcher>;
-        return definition.execute(context, args, dispatchNested, signal);
+        const operation = definition.execute(context, args, dispatchNested, signal);
+        if (signal) {
+            const abortOperation = () => operation.abort();
+            if (signal.aborted) {
+                abortOperation();
+            } else {
+                signal.addEventListener('abort', abortOperation, { once: true });
+                operation.notifyTerminated(() => {
+                    signal.removeEventListener('abort', abortOperation);
+                });
+            }
+        }
+        return operation;
     } catch (error) {
         return createAiToolOperationFrom(() => { throw error; }, 'failed');
     }

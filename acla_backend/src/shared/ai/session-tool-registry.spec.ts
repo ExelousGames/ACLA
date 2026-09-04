@@ -12,7 +12,7 @@ describe('live baseline tools', () => {
         const collect = SESSION_TOOLS.find(({ name }) => name === 'collect_live_baseline') as any;
         const restart = SESSION_TOOLS.find(({ name }) => name === 'restart_live_baseline') as any;
 
-        expect(collect?.description).toContain('If a previous baseline exists');
+        expect(collect?.description).toContain('holds only one recording at a time');
         expect(collect?.description).toContain('starts a new recording');
         expect(restart?.description).toContain('only while it is waiting for its start condition or actively collecting');
         expect(restart?.description).toContain('use collect_live_baseline');

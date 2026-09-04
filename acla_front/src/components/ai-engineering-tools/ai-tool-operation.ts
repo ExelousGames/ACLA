@@ -1,14 +1,31 @@
 /**
  * Promise-native contract shared by every frontend AI tool.
  *
- * Status promises represent independently observable progress. The result is
- * deliberately a terminal barrier: it cannot settle until every advertised
- * status has settled. A rejected status is progress-delivery failure only and
- * never changes the operation's final result.
+ * Status promises represent independently observable progress. On ordinary
+ * completion, the result is a terminal barrier that cannot settle until every
+ * advertised status has settled. A rejected status is progress-delivery
+ * failure only and never changes the operation's final result.
  *
  * Termination is a separate, one-shot lifecycle signal. Its status is supplied
  * explicitly by the operation producer and is never read from the result body.
+ * Every operation can also be aborted. Aborting runs the producer's synchronous
+ * cleanup first, then rejects unfinished public promises and emits termination.
  */
+export const AI_TOOL_ABORTED_STATUS = 'aborted' as const;
+
+export class AiToolOperationAbortedError extends Error {
+    override name = 'AbortError';
+    readonly cause?: unknown;
+
+    constructor(cause?: unknown) {
+        super('AI tool operation was aborted.');
+        this.cause = cause;
+        Object.setPrototypeOf(this, AiToolOperationAbortedError.prototype);
+    }
+}
+
+export type AiToolAbortHandler = () => void;
+
 export type AiToolTermination<TResult, TTerminationStatus extends string = string> = {
     status: TTerminationStatus;
     result: TResult | Error;
@@ -21,9 +38,13 @@ export interface AiToolOperation<
 > {
     result: Promise<TResult | Error>;
     statuses: readonly Promise<TStatus>[];
+    abort(): void;
     notifyTerminated(
         listener: (
-            termination: AiToolTermination<TResult, TTerminationStatus>
+            termination: AiToolTermination<
+                TResult,
+                TTerminationStatus | typeof AI_TOOL_ABORTED_STATUS
+            >
         ) => void,
     ): () => void;
 }
@@ -43,7 +64,7 @@ export type AiToolOperationStatus<TOperation> = TOperation extends AiToolOperati
 
 export type AiToolOperationTerminationStatus<TOperation> = (
     TOperation extends AiToolOperation<unknown, object, infer TTerminationStatus>
-        ? TTerminationStatus
+        ? TTerminationStatus | typeof AI_TOOL_ABORTED_STATUS
         : never
 );
 
@@ -86,7 +107,7 @@ const toTerminationError = (error: unknown): Error => (
 
 type TerminationNotifier<TResult, TTerminationStatus extends string> = {
     notifyTerminated: AiToolOperation<TResult, never, TTerminationStatus>['notifyTerminated'];
-    terminate(termination: AiToolTermination<TResult, TTerminationStatus>): void;
+    terminate(termination: AiToolTermination<TResult, TTerminationStatus>): boolean;
 };
 
 const createTerminationNotifier = <
@@ -108,11 +129,12 @@ const createTerminationNotifier = <
             return () => listeners.delete(listener);
         },
         terminate: (nextTermination) => {
-            if (termination) return;
+            if (termination) return false;
             termination = nextTermination;
             const currentListeners = Array.from(listeners);
             listeners.clear();
             currentListeners.forEach((listener) => listener(nextTermination));
+            return true;
         },
     };
 };
@@ -125,9 +147,17 @@ const createOperationWithTermination = <
     result: TResult | Error | PromiseLike<TResult | Error>,
     statuses: readonly Promise<TStatus>[],
     termination: PromiseLike<AiToolTermination<TResult, TTerminationStatus>>,
+    handleAbort: AiToolAbortHandler = () => undefined,
 ): AiToolOperation<TResult, TStatus, TTerminationStatus> => {
-    const statusBarrier = Promise.allSettled(statuses);
-    const terminalResult = Promise.resolve(result).then(
+    type OperationState = 'running' | 'aborting' | 'aborted' | 'finished';
+    let state: OperationState = 'running';
+    const aborted = createAiToolDeferred<never>();
+    const publicStatuses = statuses.map((status) => Promise.race([
+        status,
+        aborted.promise,
+    ]));
+    const statusBarrier = Promise.allSettled(publicStatuses);
+    const completedResult = Promise.resolve(result).then(
         async (value) => {
             await statusBarrier;
             return value;
@@ -137,9 +167,23 @@ const createOperationWithTermination = <
             throw error;
         },
     );
-    const notifier = createTerminationNotifier<TResult, TTerminationStatus>();
+    const terminalResult = Promise.race([completedResult, aborted.promise]).then(
+        (value) => {
+            if (state === 'running') state = 'finished';
+            return value;
+        },
+        (error) => {
+            if (state === 'running') state = 'finished';
+            throw error;
+        },
+    );
+    const notifier = createTerminationNotifier<
+        TResult,
+        TTerminationStatus | typeof AI_TOOL_ABORTED_STATUS
+    >();
     void Promise.resolve(termination).then(async (value) => {
         await statusBarrier;
+        if (state === 'aborting' || state === 'aborted') return;
         notifier.terminate(value);
     });
     // Operations are often replaced by UI lifecycle events before their owner
@@ -148,7 +192,21 @@ const createOperationWithTermination = <
     void terminalResult.catch(() => undefined);
     return {
         result: terminalResult,
-        statuses,
+        statuses: publicStatuses,
+        abort: () => {
+            if (state !== 'running') return;
+            state = 'aborting';
+            let cleanupError: unknown;
+            try {
+                handleAbort();
+            } catch (error) {
+                cleanupError = error;
+            }
+            const error = new AiToolOperationAbortedError(cleanupError);
+            state = 'aborted';
+            aborted.reject(error);
+            notifier.terminate({ status: AI_TOOL_ABORTED_STATUS, result: error });
+        },
         notifyTerminated: notifier.notifyTerminated,
     };
 };
@@ -161,6 +219,7 @@ export function createAiToolOperation<
     result: TResult | Error | PromiseLike<TResult | Error>,
     statuses: readonly Promise<TStatus>[],
     terminationStatus: TTerminationStatus,
+    handleAbort?: AiToolAbortHandler,
 ): AiToolOperation<TResult, TStatus, TTerminationStatus | 'failed'>;
 export function createAiToolOperation<
     TResult,
@@ -170,6 +229,7 @@ export function createAiToolOperation<
     result: TResult | Error | PromiseLike<TResult | Error>,
     terminationStatus: TTerminationStatus,
     statuses?: readonly Promise<TStatus>[],
+    handleAbort?: AiToolAbortHandler,
 ): AiToolOperation<TResult, TStatus, TTerminationStatus | 'failed'>;
 export function createAiToolOperation<
     TResult,
@@ -179,6 +239,7 @@ export function createAiToolOperation<
     result: TResult | Error | PromiseLike<TResult | Error>,
     statusesOrTerminationStatus: readonly Promise<TStatus>[] | TTerminationStatus,
     terminationStatusOrStatuses?: TTerminationStatus | readonly Promise<TStatus>[],
+    handleAbort?: AiToolAbortHandler,
 ): AiToolOperation<TResult, TStatus, TTerminationStatus | 'failed'> {
     const statusWasSuppliedFirst = typeof statusesOrTerminationStatus === 'string';
     const statuses = statusWasSuppliedFirst
@@ -195,7 +256,7 @@ export function createAiToolOperation<
             : { status: terminationStatus, result: value }
         )).catch((error) => ({ status: 'failed', result: toTerminationError(error) }))
     );
-    return createOperationWithTermination(sourceResult, statuses, termination);
+    return createOperationWithTermination(sourceResult, statuses, termination, handleAbort);
 }
 
 export const resolvedAiToolOperation = <
@@ -213,39 +274,52 @@ export function createAiToolOperationFrom<
     TStatus extends object = never,
     TTerminationStatus extends string = string,
 >(
-    run: () => TResult | Error | PromiseLike<TResult | Error>,
+    run: (signal: AbortSignal) => TResult | Error | PromiseLike<TResult | Error>,
     statuses: readonly Promise<TStatus>[],
     terminationStatus: TTerminationStatus,
+    handleAbort?: AiToolAbortHandler,
 ): AiToolOperation<TResult, TStatus, TTerminationStatus | 'failed'>;
 export function createAiToolOperationFrom<
     TResult,
     TTerminationStatus extends string = string,
     TStatus extends object = never,
 >(
-    run: () => TResult | Error | PromiseLike<TResult | Error>,
+    run: (signal: AbortSignal) => TResult | Error | PromiseLike<TResult | Error>,
     terminationStatus: TTerminationStatus,
     statuses?: readonly Promise<TStatus>[],
+    handleAbort?: AiToolAbortHandler,
 ): AiToolOperation<TResult, TStatus, TTerminationStatus | 'failed'>;
 export function createAiToolOperationFrom<
     TResult,
     TStatus extends object,
     TTerminationStatus extends string,
 >(
-    run: () => TResult | Error | PromiseLike<TResult | Error>,
+    run: (signal: AbortSignal) => TResult | Error | PromiseLike<TResult | Error>,
     statusesOrTerminationStatus: readonly Promise<TStatus>[] | TTerminationStatus,
     terminationStatusOrStatuses?: TTerminationStatus | readonly Promise<TStatus>[],
+    handleAbort?: AiToolAbortHandler,
 ): AiToolOperation<TResult, TStatus, TTerminationStatus | 'failed'> {
-    const sourceResult = Promise.resolve().then(run);
+    const abortController = new AbortController();
+    const sourceResult = Promise.resolve().then(() => {
+        if (abortController.signal.aborted) throw new AiToolOperationAbortedError();
+        return run(abortController.signal);
+    });
+    const safelyAbort = () => {
+        abortController.abort();
+        handleAbort?.();
+    };
     return typeof statusesOrTerminationStatus !== 'string'
         ? createAiToolOperation<TResult, TStatus, TTerminationStatus>(
             sourceResult,
             statusesOrTerminationStatus as readonly Promise<TStatus>[],
             terminationStatusOrStatuses as TTerminationStatus,
+            safelyAbort,
         )
         : createAiToolOperation<TResult, TTerminationStatus, TStatus>(
             sourceResult,
             statusesOrTerminationStatus,
             terminationStatusOrStatuses as readonly Promise<TStatus>[] | undefined,
+            safelyAbort,
         );
 }
 
@@ -255,6 +329,7 @@ export interface ControlledAiToolOperation<
     TTerminationStatus extends string,
 > {
     operation: AiToolOperation<TResult, TStatus, TTerminationStatus>;
+    readonly signal: AbortSignal;
     resolve(status: TTerminationStatus, result: TResult | Error): void;
     reject(status: TTerminationStatus, error: Error): void;
     readonly settled: boolean;
@@ -266,23 +341,39 @@ export const createControlledAiToolOperation = <
     TTerminationStatus extends string = string,
 >(
     statuses: readonly Promise<TStatus>[] = [],
+    handleAbort: AiToolAbortHandler = () => undefined,
 ): ControlledAiToolOperation<TResult, TStatus, TTerminationStatus> => {
     const result = createAiToolDeferred<TResult | Error>();
     const termination = createAiToolDeferred<AiToolTermination<TResult, TTerminationStatus>>();
+    const abortController = new AbortController();
+    let aborted = false;
     return {
-        operation: createOperationWithTermination(result.promise, statuses, termination.promise),
+        operation: createOperationWithTermination(
+            result.promise,
+            statuses,
+            termination.promise,
+            () => {
+                abortController.abort();
+                try {
+                    handleAbort();
+                } finally {
+                    aborted = true;
+                }
+            },
+        ),
+        signal: abortController.signal,
         resolve: (status, value) => {
-            if (termination.settled) return;
+            if (aborted || termination.settled) return;
             termination.resolve({ status, result: value });
             result.resolve(value);
         },
         reject: (status, error) => {
-            if (termination.settled) return;
+            if (aborted || termination.settled) return;
             termination.resolve({ status, result: error });
             result.reject(error);
         },
         get settled() {
-            return termination.settled;
+            return aborted || termination.settled;
         },
     };
 };
@@ -299,13 +390,17 @@ export const mapAiToolOperation = <
     mapStatus: (status: TSourceStatus) => TStatus | PromiseLike<TStatus> = (
         (status: TSourceStatus) => status as unknown as TStatus
     ),
-): AiToolOperation<TResult, TStatus, TTerminationStatus | 'failed'> => {
+): AiToolOperation<
+    TResult,
+    TStatus,
+    TTerminationStatus | 'failed' | typeof AI_TOOL_ABORTED_STATUS
+> => {
     const mappedResult = operation.result.then((result) => (
         result instanceof Error ? result : mapResult(result)
     ));
     const mappedTermination = new Promise<AiToolTermination<
         TResult,
-        TTerminationStatus | 'failed'
+        TTerminationStatus | 'failed' | typeof AI_TOOL_ABORTED_STATUS
     >>((resolve) => {
         operation.notifyTerminated((sourceTermination) => {
             if (sourceTermination.result instanceof Error) {
@@ -327,5 +422,6 @@ export const mapAiToolOperation = <
         mappedResult,
         operation.statuses.map((status) => status.then(mapStatus)),
         mappedTermination,
+        () => operation.abort(),
     );
 };

@@ -103,6 +103,10 @@ type ActiveProcedurePlanOperation = {
         never,
         'complete' | 'failed' | 'cancelled' | 'replaced'
     >;
+    nestedOperation: AiToolOperation<
+        import('./Goal').NestedAiToolResult,
+        import('./Goal').NestedAiToolStatus
+    > | null;
 };
 
 const defaultProcedurePlanErrorHandler: ProcedurePlanTaskErrorHandler = (request, error) => {
@@ -212,27 +216,10 @@ implements ProcedurePlanHandle {
         const generation = ++this.generation;
         const result = advanceProcedurePlan(this.plan, reason);
         if (result.status === 'complete') {
-            const completed = this.result('complete');
-            this.finish();
-            return completed;
+            return this.finish(this.result('complete'));
         }
         this.publish(result.plan);
         return this.runNext(generation);
-    }
-
-    async retryFailedStep(): Promise<ProcedurePlanRunResult> {
-        if (!this.plan || this.active) throw new Error('No failed procedure plan step is available to retry.');
-        const request = this.plan.requests[this.plan.currentStep];
-        if (!request || request.status !== 'failed') {
-            throw new Error('No failed procedure plan step is available to retry.');
-        }
-        this.publish({
-            ...this.plan,
-            requests: this.plan.requests.map((item, index) => (
-                index === this.plan!.currentStep ? { ...item, status: 'pending' } : item
-            )),
-        });
-        return this.runNext(++this.generation);
     }
 
     protected onDispose(): void {
@@ -258,12 +245,15 @@ implements ProcedurePlanHandle {
             this.getComponentName(),
             'The procedure plan operation was replaced.',
         ));
-        const operation: ActiveProcedurePlanOperation = {
-            controller: createControlledAiToolOperation<
-                ProcedurePlanRunResult,
-                never,
-                'complete' | 'failed' | 'cancelled' | 'replaced'
-            >(),
+        let operation!: ActiveProcedurePlanOperation;
+        const controller = createControlledAiToolOperation<
+            ProcedurePlanRunResult,
+            never,
+            'complete' | 'failed' | 'cancelled' | 'replaced'
+        >([], () => this.abortOperation(operation));
+        operation = {
+            controller,
+            nestedOperation: null,
         };
         this.activeOperation = operation;
         void run().then(
@@ -285,7 +275,18 @@ implements ProcedurePlanHandle {
         const operation = this.activeOperation;
         if (!operation) return;
         this.activeOperation = null;
+        operation.nestedOperation?.abort();
+        operation.nestedOperation = null;
         operation.controller.reject(status, error);
+    }
+
+    private abortOperation(operation: ActiveProcedurePlanOperation): void {
+        operation.nestedOperation?.abort();
+        operation.nestedOperation = null;
+        if (this.activeOperation !== operation) return;
+        this.activeOperation = null;
+        this.generation += 1;
+        this.active = false;
     }
 
     private publish(plan: ProcedurePlanState | null): void {
@@ -305,11 +306,11 @@ implements ProcedurePlanHandle {
             }
             const request = this.plan.requests[this.plan.currentStep];
             if (!request) {
-                const completed = this.result('complete');
-                this.finish();
-                return completed;
+                return this.finish(this.result('complete'));
             }
-            if (request.status === 'failed') return this.result('failed', request);
+            if (request.status === 'failed') {
+                return this.finish(this.result('failed', request));
+            }
             if (request.status !== 'pending') {
                 this.publish({ ...this.plan, currentStep: this.plan.currentStep + 1 });
                 continue;
@@ -324,19 +325,37 @@ implements ProcedurePlanHandle {
             const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
             let output: import('./Goal').NestedAiToolResult | null = null;
             let executionError: unknown;
+            let nestedOperation: AiToolOperation<
+                import('./Goal').NestedAiToolResult,
+                import('./Goal').NestedAiToolStatus
+            > | null = null;
             try {
-                const operation = this.dispatchTool(
+                const activeOperation = this.activeOperation;
+                nestedOperation = this.dispatchTool(
                     request.name || '',
                     getProcedurePlanToolArguments(request),
                 );
+                if (
+                    !activeOperation
+                    || this.activeOperation !== activeOperation
+                    || activeOperation.controller.signal.aborted
+                ) {
+                    nestedOperation.abort();
+                } else {
+                    activeOperation.nestedOperation = nestedOperation;
+                }
                 const termination = await new Promise<{
                     status: string;
                     result: import('./Goal').NestedAiToolResult | Error;
-                }>((resolve) => operation.notifyTerminated(resolve));
+                }>((resolve) => nestedOperation!.notifyTerminated(resolve));
                 if (termination.result instanceof Error) throw termination.result;
                 output = termination.result;
             } catch (error) {
                 executionError = error;
+            } finally {
+                if (this.activeOperation?.nestedOperation === nestedOperation) {
+                    this.activeOperation.nestedOperation = null;
+                }
             }
             this.active = false;
             if (generation !== this.generation) {
@@ -359,14 +378,17 @@ implements ProcedurePlanHandle {
             this.lastRunId = runId;
             this.taskResults.push(taskResult);
             if (stepError) {
-                this.onError(serializeProcedurePlanRequest(request), stepError);
-                this.publish({
-                    ...this.plan!,
-                    requests: this.plan!.requests.map((item, index) => (
-                        index === this.plan!.currentStep ? { ...item, status: 'failed' } : item
-                    )),
-                });
-                return this.result('failed', this.plan.requests[this.plan.currentStep], runId);
+                const failedRequest: ProcedurePlanRequestSnapshot = {
+                    ...serializeProcedurePlanRequest(request),
+                    status: 'failed',
+                };
+                const failed = this.finish(this.result(
+                    'failed',
+                    failedRequest,
+                    runId,
+                ));
+                this.onError(failedRequest, stepError);
+                return failed;
             }
             const nextIndex = this.plan.currentStep + 1;
             this.publish({
@@ -413,8 +435,9 @@ implements ProcedurePlanHandle {
         };
     }
 
-    private finish(): void {
-        // The completed plan stays mounted until AI Chat replaces it.
+    private finish(result: ProcedurePlanRunResult): ProcedurePlanRunResult {
+        this.publish(null);
+        return result;
     }
 }
 
