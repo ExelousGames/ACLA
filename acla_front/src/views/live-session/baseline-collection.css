@@ -328,11 +328,6 @@
   background: linear-gradient(145deg, rgba(17, 18, 38, 0.96), rgba(24, 24, 45, 0.94));
 }
 
-.baseline-timeline--pill .baseline-timeline__header {
-  justify-content: flex-end;
-  margin-bottom: 8px;
-}
-
 .baseline-timeline--pill .baseline-timeline__stage {
   min-height: 50px;
 }

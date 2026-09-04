@@ -212,27 +212,10 @@ implements ProcedurePlanHandle {
         const generation = ++this.generation;
         const result = advanceProcedurePlan(this.plan, reason);
         if (result.status === 'complete') {
-            const completed = this.result('complete');
-            this.finish();
-            return completed;
+            return this.finish(this.result('complete'));
         }
         this.publish(result.plan);
         return this.runNext(generation);
-    }
-
-    async retryFailedStep(): Promise<ProcedurePlanRunResult> {
-        if (!this.plan || this.active) throw new Error('No failed procedure plan step is available to retry.');
-        const request = this.plan.requests[this.plan.currentStep];
-        if (!request || request.status !== 'failed') {
-            throw new Error('No failed procedure plan step is available to retry.');
-        }
-        this.publish({
-            ...this.plan,
-            requests: this.plan.requests.map((item, index) => (
-                index === this.plan!.currentStep ? { ...item, status: 'pending' } : item
-            )),
-        });
-        return this.runNext(++this.generation);
     }
 
     protected onDispose(): void {
@@ -305,11 +288,11 @@ implements ProcedurePlanHandle {
             }
             const request = this.plan.requests[this.plan.currentStep];
             if (!request) {
-                const completed = this.result('complete');
-                this.finish();
-                return completed;
+                return this.finish(this.result('complete'));
             }
-            if (request.status === 'failed') return this.result('failed', request);
+            if (request.status === 'failed') {
+                return this.finish(this.result('failed', request));
+            }
             if (request.status !== 'pending') {
                 this.publish({ ...this.plan, currentStep: this.plan.currentStep + 1 });
                 continue;
@@ -359,14 +342,17 @@ implements ProcedurePlanHandle {
             this.lastRunId = runId;
             this.taskResults.push(taskResult);
             if (stepError) {
-                this.onError(serializeProcedurePlanRequest(request), stepError);
-                this.publish({
-                    ...this.plan!,
-                    requests: this.plan!.requests.map((item, index) => (
-                        index === this.plan!.currentStep ? { ...item, status: 'failed' } : item
-                    )),
-                });
-                return this.result('failed', this.plan.requests[this.plan.currentStep], runId);
+                const failedRequest: ProcedurePlanRequestSnapshot = {
+                    ...serializeProcedurePlanRequest(request),
+                    status: 'failed',
+                };
+                const failed = this.finish(this.result(
+                    'failed',
+                    failedRequest,
+                    runId,
+                ));
+                this.onError(failedRequest, stepError);
+                return failed;
             }
             const nextIndex = this.plan.currentStep + 1;
             this.publish({
@@ -413,8 +399,9 @@ implements ProcedurePlanHandle {
         };
     }
 
-    private finish(): void {
-        // The completed plan stays mounted until AI Chat replaces it.
+    private finish(result: ProcedurePlanRunResult): ProcedurePlanRunResult {
+        this.publish(null);
+        return result;
     }
 }
 

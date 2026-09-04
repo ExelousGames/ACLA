@@ -383,6 +383,7 @@
   width: 100%;
   max-width: 100%;
 }
+.ai-chat__tool-list > .ai-chat__plan--chat,
 .ai-chat__tool-list > .ai-chat__range-todo--chat {
   /* The tool-list owns vertical scrolling. Let the expanded card keep its
      intrinsic height so its contents cannot escape the card's border. */

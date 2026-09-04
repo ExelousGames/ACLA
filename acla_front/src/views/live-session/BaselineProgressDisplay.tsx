@@ -86,8 +86,8 @@ const BaselineProgressDisplay: React.FC<BaselineProgressDisplayProps> = ({
             label: 'End stage',
             title: tag?.status === 'complete' ? 'Baseline ready' : 'Finish collection',
             detail: tag?.status === 'complete'
-                ? 'The recorded lap is ready for performance analysis.'
-                : 'Collection ends automatically after one full lap.',
+                ? 'The recorded lap is ready for performance analysis. Only one baseline recording is held at a time; starting another replaces it.'
+                : 'Collection ends automatically after one full lap. Only one baseline recording is held at a time; starting another replaces it.',
         },
     ];
 
@@ -102,17 +102,17 @@ const BaselineProgressDisplay: React.FC<BaselineProgressDisplayProps> = ({
             className={`baseline-timeline baseline-timeline--${surface}`}
             aria-label="Baseline collection progress"
         >
-            <div className="baseline-timeline__header">
-                {surface === 'panel' && (
+            {surface === 'panel' && (
+                <div className="baseline-timeline__header">
                     <span className="baseline-timeline__eyebrow">Baseline run</span>
-                )}
-                <span
-                    className={`baseline-timeline__status baseline-timeline__status--${statusLabel.toLowerCase()}`}
-                >
-                    <span aria-hidden="true" />
-                    {statusLabel}
-                </span>
-            </div>
+                    <span
+                        className={`baseline-timeline__status baseline-timeline__status--${statusLabel.toLowerCase()}`}
+                    >
+                        <span aria-hidden="true" />
+                        {statusLabel}
+                    </span>
+                </div>
+            )}
 
             <div className="baseline-timeline__stages">
                 {stages.map((stage, index) => {

@@ -88,7 +88,7 @@ jest.mock('components/ai-engineering-tools', () => {
         },
         ProcedurePlan: (props: unknown) => {
             mockProcedurePlanRender(props);
-            return null;
+            return <div data-testid="procedure-plan" />;
         },
         LiveRangeTodoList: () => null,
         LiveRangeTodoListRunner: actual.LiveRangeTodoListRunner,
@@ -373,6 +373,7 @@ describe('AiChat conversation lifecycle', () => {
                 requests: [expect.objectContaining({ status: 'running' })],
             }),
         }));
+        expect(screen.getByTestId('procedure-plan')).toBeInTheDocument();
 
         let result: any;
         await act(async () => {
@@ -381,15 +382,15 @@ describe('AiChat conversation lifecycle', () => {
         });
 
         expect(result).toMatchObject({ status: 'complete', goal: 'Lifecycle plan' });
+        expect(screen.queryByTestId('procedure-plan')).not.toBeInTheDocument();
+        expect(mockUnregisterComponentRef).toHaveBeenCalledWith(
+            mockRegisterComponentRef.mock.calls[0][0],
+        );
         expect(mockProcedurePlanRender.mock.calls.map(([props]) => props.plan)).toEqual(
             expect.arrayContaining([
                 expect.objectContaining({
                     goal: 'Lifecycle plan',
                     requests: [expect.objectContaining({ status: 'running' })],
-                }),
-                expect.objectContaining({
-                    goal: 'Lifecycle plan',
-                    requests: [expect.objectContaining({ status: 'complete' })],
                 }),
             ]),
         );

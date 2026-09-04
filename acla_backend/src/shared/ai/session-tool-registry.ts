@@ -119,7 +119,7 @@ export const SESSION_TOOLS = [
     },
     {
         name: 'collect_live_baseline',
-        description: 'Start live baseline recording through the dedicated baseline UI component and return the cached record when the selected stop condition is met. Choose either the full_lap preset or custom start_query and end_query conditions. If a previous baseline exists, this starts a new recording and replaces it; an existing completed baseline is not treated as an already-started error.',
+        description: 'Start live baseline recording through the dedicated baseline UI component and return the cached record when the selected stop condition is met. Choose either the full_lap preset or custom start_query and end_query conditions. The baseline recorder holds only one recording at a time. If a previous baseline exists, this starts a new recording and replaces it; an existing completed baseline is not treated as an already-started error.',
         properties: {
             query: {
                 description: 'Mutually exclusive baseline bounds. full_lap starts at normalized position 0 and ends at normalized position 1.',
