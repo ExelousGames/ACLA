@@ -175,6 +175,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
         const firstOperation = {
             result: Promise.resolve({}),
             statuses: [],
+            abort: jest.fn(),
             notifyTerminated: (listener: typeof notifyFirstTerminated) => {
                 notifyFirstTerminated = listener;
                 return () => undefined;
@@ -211,6 +212,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
         const operation = {
             result: new Promise<Record<string, never>>(() => undefined),
             statuses: [],
+            abort: jest.fn(),
             notifyTerminated: (listener: typeof staleTermination) => {
                 staleTermination = listener;
                 return () => lifecycle.push('unsubscribe');

@@ -172,6 +172,29 @@ describe('Goal descriptors', () => {
 });
 
 describe('GoalRunner central dispatch callback', () => {
+    it('aborts the active nested tool when the goal operation is aborted', async () => {
+        const nested = createAiToolOperation(
+            new Promise<NestedAiToolResult>(() => undefined),
+            'complete',
+        );
+        const nestedAbort = jest.spyOn(nested, 'abort');
+        const dispatch: AiToolDispatcher = jest.fn(() => nested);
+        const runner = new GoalRunner('goal', dispatch);
+        const operation = runner.createGoal(request());
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
+
+        operation.abort();
+
+        expect(nestedAbort).toHaveBeenCalledTimes(1);
+        await expect(operation.result).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(termination).resolves.toMatchObject({
+            status: 'aborted',
+            result: { name: 'AbortError' },
+        });
+        await Promise.resolve();
+        expect(dispatch).toHaveBeenCalledTimes(1);
+    });
+
     it('publishes overlay-safe running steps with a stable run id and defined error', async () => {
         const collect = createAiToolDeferred<NestedAiToolResult>();
         const dispatch: AiToolDispatcher = jest.fn((name: string) => (

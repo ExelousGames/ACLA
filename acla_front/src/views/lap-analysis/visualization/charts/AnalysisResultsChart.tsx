@@ -1158,11 +1158,12 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             throw new ToolExecutionError('The graph overlay is unavailable.');
         }
 
+        let safelyAbortOverlay: () => void = () => undefined;
         const controller = createControlledAiToolOperation<
             AnalysisResultOverlayResult,
             never,
             AnalysisResultOverlayTerminationStatus
-        >();
+        >([], () => safelyAbortOverlay());
         if (signal?.aborted) {
             controller.reject('cancelled', createAnalysisResultOverlayAbortError());
             return controller.operation;
@@ -1195,6 +1196,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             );
         };
         const handleAbort = () => finish('cancelled', createAnalysisResultOverlayAbortError());
+        safelyAbortOverlay = handleAbort;
         ref = {
             current: createDriverExpertComparisonOverlayComponent(componentName, (event) => {
                 if (event === 'replay_complete') finish('complete');

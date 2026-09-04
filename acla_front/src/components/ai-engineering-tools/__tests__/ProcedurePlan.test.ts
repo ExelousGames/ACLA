@@ -54,6 +54,29 @@ describe('ProcedurePlan descriptors', () => {
 });
 
 describe('ProcedurePlanRunner central dispatch callback', () => {
+    it('aborts the active nested tool when the plan operation is aborted', async () => {
+        const nested = createAiToolOperation(
+            new Promise<Record<string, unknown>>(() => undefined),
+            'complete',
+        );
+        const nestedAbort = jest.spyOn(nested, 'abort');
+        const dispatch = jest.fn(() => nested);
+        const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
+        const operation = runner.createProcedurePlan(plan());
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
+
+        operation.abort();
+
+        expect(nestedAbort).toHaveBeenCalledTimes(1);
+        await expect(operation.result).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(termination).resolves.toMatchObject({
+            status: 'aborted',
+            result: { name: 'AbortError' },
+        });
+        await Promise.resolve();
+        expect(dispatch).toHaveBeenCalledTimes(1);
+    });
+
     it('executes requests in order and returns dispatcher outputs unchanged', async () => {
         const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => resolvedAiToolOperation({
             status: 'complete',

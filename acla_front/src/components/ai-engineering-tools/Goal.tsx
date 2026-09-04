@@ -405,6 +405,7 @@ type ActiveGoalOperation = {
         never,
         'complete' | 'failed' | 'cancelled' | 'replaced'
     >;
+    nestedOperation: AiToolOperation<NestedAiToolResult, NestedAiToolStatus> | null;
 };
 
 const toGoalAiResult = (result: GoalRunResult): GoalAiResult => {
@@ -572,12 +573,15 @@ implements GoalHandle {
             this.getComponentName(),
             'The goal run was replaced.',
         ));
-        const operation: ActiveGoalOperation = {
-            controller: createControlledAiToolOperation<
-                GoalRunResult,
-                never,
-                'complete' | 'failed' | 'cancelled' | 'replaced'
-            >(),
+        let operation!: ActiveGoalOperation;
+        const controller = createControlledAiToolOperation<
+            GoalRunResult,
+            never,
+            'complete' | 'failed' | 'cancelled' | 'replaced'
+        >([], () => this.abortOperation(operation));
+        operation = {
+            controller,
+            nestedOperation: null,
         };
         this.activeOperation = operation;
         void run().then(
@@ -599,7 +603,17 @@ implements GoalHandle {
         const operation = this.activeOperation;
         if (!operation) return;
         this.activeOperation = null;
+        operation.nestedOperation?.abort();
+        operation.nestedOperation = null;
         operation.controller.reject(status, error);
+    }
+
+    private abortOperation(operation: ActiveGoalOperation): void {
+        operation.nestedOperation?.abort();
+        operation.nestedOperation = null;
+        if (this.activeOperation !== operation) return;
+        this.activeOperation = null;
+        this.generation += 1;
     }
 
     private async runPreparation(
@@ -771,12 +785,27 @@ implements GoalHandle {
         fallbackMessage: string,
         runId = createGoalRunId(),
     ): Promise<RuntimeTaskExecutionResult> {
+        const activeOperation = this.activeOperation;
+        let operation: AiToolOperation<NestedAiToolResult, NestedAiToolStatus> | null = null;
         try {
-            const operation = this.dispatchTool(toolName, argumentsValue);
+            const dispatchedOperation = this.dispatchTool(
+                toolName,
+                argumentsValue,
+            );
+            operation = dispatchedOperation;
+            if (
+                !activeOperation
+                || this.activeOperation !== activeOperation
+                || activeOperation.controller.signal.aborted
+            ) {
+                dispatchedOperation.abort();
+            } else {
+                activeOperation.nestedOperation = dispatchedOperation;
+            }
             const termination = await new Promise<{
                 status: string;
                 result: NestedAiToolResult | Error;
-            }>((resolve) => operation.notifyTerminated(resolve));
+            }>((resolve) => dispatchedOperation.notifyTerminated(resolve));
             if (termination.result instanceof Error) throw termination.result;
             return {
                 value: termination.result,
@@ -800,6 +829,10 @@ implements GoalHandle {
                     { cause: error },
                 ),
             };
+        } finally {
+            if (activeOperation?.nestedOperation === operation) {
+                activeOperation.nestedOperation = null;
+            }
         }
     }
 

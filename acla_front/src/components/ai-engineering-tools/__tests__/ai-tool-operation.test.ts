@@ -1,4 +1,5 @@
 import {
+    AiToolOperationAbortedError,
     createControlledAiToolOperation,
     createAiToolDeferred,
     createAiToolOperation,
@@ -85,6 +86,87 @@ describe('createAiToolOperation', () => {
         await expect(termination).resolves.toEqual({
             status: 'source-status',
             result: { doubled: 6 },
+        });
+    });
+
+    it('runs safe cleanup before aborting result, statuses, and termination', async () => {
+        const result = createAiToolDeferred<{ status: string }>();
+        const status = createAiToolDeferred<{ progress: number }>();
+        const lifecycle: string[] = [];
+        const operation = createAiToolOperation(
+            result.promise,
+            [status.promise],
+            'complete',
+            () => lifecycle.push('cleanup'),
+        );
+        let terminationResult: Error | null = null;
+        operation.notifyTerminated((termination) => {
+            lifecycle.push('terminated');
+            expect(termination.status).toBe('aborted');
+            terminationResult = termination.result as Error;
+        });
+
+        operation.abort();
+        operation.abort();
+
+        expect(lifecycle).toEqual(['cleanup', 'terminated']);
+        expect(terminationResult).toBeInstanceOf(AiToolOperationAbortedError);
+        await expect(operation.result).rejects.toBe(terminationResult);
+        await expect(operation.statuses[0]).rejects.toBe(terminationResult);
+
+        result.resolve({ status: 'complete' });
+        status.resolve({ progress: 100 });
+        await Promise.resolve();
+        expect(lifecycle).toEqual(['cleanup', 'terminated']);
+
+        const late = jest.fn();
+        operation.notifyTerminated(late);
+        expect(late).toHaveBeenCalledWith({ status: 'aborted', result: terminationResult });
+    });
+
+    it('aborts the signal supplied to factory work', async () => {
+        let signal: AbortSignal | null = null;
+        const operation = createAiToolOperationFrom((operationSignal) => {
+            signal = operationSignal;
+            return new Promise<Record<string, never>>(() => undefined);
+        }, 'complete');
+        await Promise.resolve();
+
+        operation.abort();
+
+        expect((signal as unknown as AbortSignal).aborted).toBe(true);
+        await expect(operation.result).rejects.toBeInstanceOf(AiToolOperationAbortedError);
+    });
+
+    it('propagates mapped operation aborts to their source', async () => {
+        const source = createAiToolOperation(
+            new Promise<{ value: number }>(() => undefined),
+            'complete',
+            [],
+            jest.fn(),
+        );
+        const sourceAbort = jest.spyOn(source, 'abort');
+        const mapped = mapAiToolOperation(source, ({ value }) => value * 2);
+
+        mapped.abort();
+
+        expect(sourceAbort).toHaveBeenCalledTimes(1);
+        await expect(mapped.result).rejects.toBeInstanceOf(AiToolOperationAbortedError);
+    });
+
+    it('does not replace a completed operation with an abort', async () => {
+        const operation = createAiToolOperation({ value: 1 }, 'complete');
+        const terminated = jest.fn();
+        operation.notifyTerminated(terminated);
+        await expect(operation.result).resolves.toEqual({ value: 1 });
+        await Promise.resolve();
+
+        operation.abort();
+
+        expect(terminated).toHaveBeenCalledTimes(1);
+        expect(terminated).toHaveBeenCalledWith({
+            status: 'complete',
+            result: { value: 1 },
         });
     });
 });

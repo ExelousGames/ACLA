@@ -3,6 +3,8 @@ export type AiToolExecutionOutput = AiToolNormalOutput | string | Error;
 export type AiToolStatusPayload = { [key: string]: unknown };
 
 export {
+    AI_TOOL_ABORTED_STATUS,
+    AiToolOperationAbortedError,
     createAiToolDeferred,
     createControlledAiToolOperation,
     createAiToolOperation,
@@ -11,6 +13,7 @@ export {
     resolvedAiToolOperation,
 } from 'components/ai-engineering-tools/ai-tool-operation';
 export type {
+    AiToolAbortHandler,
     AiToolDeferred,
     AiToolOperation,
     AiToolOperationResult,

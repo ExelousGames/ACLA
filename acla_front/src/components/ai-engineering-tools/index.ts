@@ -1,6 +1,8 @@
 export { AiToolComponentBase } from './AiToolComponentBase';
 export type { AiToolComponentSnapshotListener } from './AiToolComponentBase';
 export {
+    AI_TOOL_ABORTED_STATUS,
+    AiToolOperationAbortedError,
     createAiToolDeferred,
     createControlledAiToolOperation,
     createAiToolOperation,
@@ -9,6 +11,7 @@ export {
     resolvedAiToolOperation,
 } from './ai-tool-operation';
 export type {
+    AiToolAbortHandler,
     AiToolDeferred,
     AiToolOperation,
     AiToolOperationResult,

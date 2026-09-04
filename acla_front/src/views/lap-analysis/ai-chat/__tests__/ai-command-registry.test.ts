@@ -485,18 +485,24 @@ describe('specific Analysis Results overlay tool', () => {
         },
     );
 
-    it('forwards the task abort signal to Analysis Results', () => {
+    it('forwards the task abort signal and aborts the returned operation', async () => {
         const test = setup();
         const abortController = new AbortController();
-        (test.registry.display_specific_result_in_overlay as any)(
+        const operation = (test.registry.display_specific_result_in_overlay as any)(
             args,
             abortController.signal,
         );
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
         expect(test.displaySpecificResultInOverlay).toHaveBeenCalledWith(
             'retained-page',
             'braking-result',
             abortController.signal,
         );
+
+        abortController.abort();
+
+        await expect(operation.result).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(termination).resolves.toMatchObject({ status: 'aborted' });
     });
 });
 

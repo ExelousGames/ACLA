@@ -103,6 +103,10 @@ type ActiveProcedurePlanOperation = {
         never,
         'complete' | 'failed' | 'cancelled' | 'replaced'
     >;
+    nestedOperation: AiToolOperation<
+        import('./Goal').NestedAiToolResult,
+        import('./Goal').NestedAiToolStatus
+    > | null;
 };
 
 const defaultProcedurePlanErrorHandler: ProcedurePlanTaskErrorHandler = (request, error) => {
@@ -241,12 +245,15 @@ implements ProcedurePlanHandle {
             this.getComponentName(),
             'The procedure plan operation was replaced.',
         ));
-        const operation: ActiveProcedurePlanOperation = {
-            controller: createControlledAiToolOperation<
-                ProcedurePlanRunResult,
-                never,
-                'complete' | 'failed' | 'cancelled' | 'replaced'
-            >(),
+        let operation!: ActiveProcedurePlanOperation;
+        const controller = createControlledAiToolOperation<
+            ProcedurePlanRunResult,
+            never,
+            'complete' | 'failed' | 'cancelled' | 'replaced'
+        >([], () => this.abortOperation(operation));
+        operation = {
+            controller,
+            nestedOperation: null,
         };
         this.activeOperation = operation;
         void run().then(
@@ -268,7 +275,18 @@ implements ProcedurePlanHandle {
         const operation = this.activeOperation;
         if (!operation) return;
         this.activeOperation = null;
+        operation.nestedOperation?.abort();
+        operation.nestedOperation = null;
         operation.controller.reject(status, error);
+    }
+
+    private abortOperation(operation: ActiveProcedurePlanOperation): void {
+        operation.nestedOperation?.abort();
+        operation.nestedOperation = null;
+        if (this.activeOperation !== operation) return;
+        this.activeOperation = null;
+        this.generation += 1;
+        this.active = false;
     }
 
     private publish(plan: ProcedurePlanState | null): void {
@@ -307,19 +325,37 @@ implements ProcedurePlanHandle {
             const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
             let output: import('./Goal').NestedAiToolResult | null = null;
             let executionError: unknown;
+            let nestedOperation: AiToolOperation<
+                import('./Goal').NestedAiToolResult,
+                import('./Goal').NestedAiToolStatus
+            > | null = null;
             try {
-                const operation = this.dispatchTool(
+                const activeOperation = this.activeOperation;
+                nestedOperation = this.dispatchTool(
                     request.name || '',
                     getProcedurePlanToolArguments(request),
                 );
+                if (
+                    !activeOperation
+                    || this.activeOperation !== activeOperation
+                    || activeOperation.controller.signal.aborted
+                ) {
+                    nestedOperation.abort();
+                } else {
+                    activeOperation.nestedOperation = nestedOperation;
+                }
                 const termination = await new Promise<{
                     status: string;
                     result: import('./Goal').NestedAiToolResult | Error;
-                }>((resolve) => operation.notifyTerminated(resolve));
+                }>((resolve) => nestedOperation!.notifyTerminated(resolve));
                 if (termination.result instanceof Error) throw termination.result;
                 output = termination.result;
             } catch (error) {
                 executionError = error;
+            } finally {
+                if (this.activeOperation?.nestedOperation === nestedOperation) {
+                    this.activeOperation.nestedOperation = null;
+                }
             }
             this.active = false;
             if (generation !== this.generation) {

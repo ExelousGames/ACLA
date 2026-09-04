@@ -529,6 +529,18 @@ describe('AnalysisResultsChart', () => {
         await expect(aborted.result).rejects.toMatchObject({ name: 'AbortError' });
         await expect(abortedTermination).resolves.toMatchObject({ status: 'cancelled' });
         expect(mockOverlayComponentDirectory.getComponentRefs()).toHaveLength(0);
+
+        const directlyAborted = chartRef.current!.displaySpecificResultInOverlay(
+            'comparison-cancellation',
+            'corner-result',
+        );
+        const directTermination = new Promise((resolve) => (
+            directlyAborted.notifyTerminated(resolve)
+        ));
+        directlyAborted.abort();
+        expect(mockOverlayComponentDirectory.getComponentRefs()).toHaveLength(0);
+        await expect(directlyAborted.result).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(directTermination).resolves.toMatchObject({ status: 'aborted' });
     });
 
     it('publishes static backend comparisons and rejects only missing results', async () => {
