@@ -68,7 +68,6 @@ _FUNCTION_TAG_RE = re.compile(
 )
 _FRONTEND_TOOL_RESULT_TYPE = "tool_result"
 _FRONTEND_TOOL_STATUS_PREFIX = "Tool status update: "
-_SESSION_TOOL_DISPATCHED = object()
 _SHARED_STARTUP_BEHAVIORS = (
     "tool_use",
     "procedure_plan",
@@ -223,7 +222,7 @@ def _compact_json(value: Any, *, max_chars: int = 3000) -> str:
 
 
 def _llm_context_messages_from_user_text(text: str) -> List[Dict[str, Any]]:
-    """Return LLMContext message(s) for typed text/control payloads."""
+    """Return LLMContext message(s) for typed user text."""
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
@@ -238,15 +237,65 @@ def _llm_context_messages_from_user_text(text: str) -> List[Dict[str, Any]]:
         if native_messages and _native_message_batch_is_valid(native_messages):
             return native_messages
 
-    tool_status_message = _format_frontend_tool_status_for_prompt(payload)
-    if tool_status_message:
-        return [{"role": "user", "content": tool_status_message}]
-
     role = payload.get("role")
     if isinstance(role, str) and role != "tool":
         return [payload]
 
     return [{"role": "user", "content": text}]
+
+
+def _llm_context_messages_from_tool_result(text: str) -> List[Dict[str, Any]]:
+    """Return an unmatched final result as a valid native tool-call pair."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("type") != _FRONTEND_TOOL_RESULT_TYPE:
+        return []
+    if payload.get("final") is False:
+        return []
+
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        native_messages = [m for m in messages if isinstance(m, dict)]
+        if native_messages and _native_message_batch_is_valid(native_messages):
+            return native_messages
+
+    tool_call_id = payload.get("id")
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        LOGGER.warning("Dropped final frontend tool result without a call id")
+        return []
+
+    tool_status_message = _format_frontend_tool_status_for_prompt(payload)
+    if not tool_status_message:
+        return []
+
+    tool_name = payload.get("name")
+    if not isinstance(tool_name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tool_name):
+        tool_name = "frontend_tool_result"
+
+    return [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": "{}",
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": tool_status_message,
+        },
+    ]
 
 
 def _format_frontend_tool_status_for_prompt(payload: Dict[str, Any]) -> str:
@@ -376,6 +425,13 @@ class VoiceSessionConfig:
     chat_llm_model: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class _SessionToolDispatch:
+    """Browser dispatch awaiting a final result for its parent tool call."""
+
+    call_id: Optional[str]
+
+
 def _make_tool_handler(
     tool_executor,
     session_config: "VoiceSessionConfig",
@@ -385,6 +441,7 @@ def _make_tool_handler(
     allowed_tools: Optional[List[Dict[str, Any]]] = None,
     application_tool_search: Optional[ApplicationToolSearchSideChat] = None,
     parent_message_source: Optional[Callable[[], Iterable[Any]]] = None,
+    pending_session_tool_callbacks: Optional[Dict[str, Callable[[Any], Any]]] = None,
 ):
     """Build a per-session selector handler with two-bucket dispatch.
 
@@ -469,8 +526,8 @@ def _make_tool_handler(
                         "Application tool selector arguments must be a JSON object",
                     )
                 if selected_name in session_tool_names:
-                    await send_session_tool(selected_name, selected_arguments)
-                    return _SESSION_TOOL_DISPATCHED
+                    call_id = await send_session_tool(selected_name, selected_arguments)
+                    return _SessionToolDispatch(call_id)
                 return await dispatch_server_tool(
                     selected_name,
                     selected_arguments,
@@ -511,10 +568,14 @@ def _make_tool_handler(
 
     async def handle_tool_call(params):
         if params.function_name in session_tool_names:
-            await send_session_tool(params.function_name, params.arguments or {})
+            call_id = await send_session_tool(params.function_name, params.arguments or {})
+            if call_id and pending_session_tool_callbacks is not None:
+                pending_session_tool_callbacks[call_id] = params.result_callback
             return
         payload = await dispatch_server_tool(params.function_name, params.arguments or {})
-        if payload is _SESSION_TOOL_DISPATCHED:
+        if isinstance(payload, _SessionToolDispatch):
+            if payload.call_id and pending_session_tool_callbacks is not None:
+                pending_session_tool_callbacks[payload.call_id] = params.result_callback
             return
         await params.result_callback(payload)
 
@@ -673,7 +734,7 @@ def _build_function_tag_recovery():
                 return
 
             result = await self._dispatch_server_tool(name, args)
-            if result is _SESSION_TOOL_DISPATCHED:
+            if isinstance(result, _SessionToolDispatch):
                 return
             try:
                 call_id = f"recovered_{_uuid.uuid4().hex}"
@@ -1070,6 +1131,7 @@ async def build_voice_pipeline_task(
         session_config.chat_llm_model,
     )
 
+    pending_session_tool_callbacks: Dict[str, Callable[[Any], Any]] = {}
     tool_handler, send_session_tool, dispatch_server_tool = _make_tool_handler(
         tool_executor,
         session_config,
@@ -1078,6 +1140,7 @@ async def build_voice_pipeline_task(
         allowed_tools=application_tool_descriptors,
         application_tool_search=application_tool_search,
         parent_message_source=lambda: getattr(context, "messages", []) or [],
+        pending_session_tool_callbacks=pending_session_tool_callbacks,
     )
     for schema in tool_schemas:
         llm.register_function(schema.name, tool_handler)
@@ -1192,7 +1255,40 @@ async def build_voice_pipeline_task(
         """
         import time as _time
         LOGGER.info("[LAT-DIAG] tool_result_in t=%.3f chars=%d", _time.monotonic(), len(text))
-        for message in _llm_context_messages_from_user_text(text):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            LOGGER.warning("Dropped malformed frontend tool result")
+            return
+        if not isinstance(payload, dict) or payload.get("type") != _FRONTEND_TOOL_RESULT_TYPE:
+            LOGGER.warning("Dropped invalid frontend tool result payload")
+            return
+        if payload.get("final") is False:
+            return
+
+        call_id = payload.get("id")
+        result_callback = (
+            pending_session_tool_callbacks.pop(call_id, None)
+            if isinstance(call_id, str)
+            else None
+        )
+        if result_callback is not None:
+            async def deliver_result() -> None:
+                try:
+                    await result_callback(payload.get("result"))
+                except Exception:
+                    LOGGER.exception(
+                        "tool_result_sink: could not complete tool call %s",
+                        call_id,
+                    )
+
+            loop.create_task(deliver_result())
+            return
+
+        messages = _llm_context_messages_from_tool_result(text)
+        if not messages:
+            return
+        for message in messages:
             context.add_message(message)
         _trigger_llm_run("tool_result_sink")
 

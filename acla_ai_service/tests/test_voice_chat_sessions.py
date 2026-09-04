@@ -477,6 +477,50 @@ def test_parent_startup_surface_contains_only_application_tool_search():
     assert session_tool_names == frozenset({"show_map"})
 
 
+def test_non_final_tool_result_is_not_added_to_llm_context():
+    text = json.dumps({
+        "type": "tool_result",
+        "id": "call-1",
+        "name": "show_map",
+        "final": False,
+        "result": {"status": "working", "progress": 50},
+    })
+
+    assert pipecat_pipeline._llm_context_messages_from_tool_result(text) == []
+
+
+def test_final_tool_result_uses_valid_native_tool_pair():
+    text = json.dumps({
+        "type": "tool_result",
+        "id": "call-1",
+        "name": "show_map",
+        "final": True,
+        "result": {"status": "complete", "map_id": "spa"},
+    })
+
+    assert pipecat_pipeline._llm_context_messages_from_tool_result(text) == [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "show_map", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": (
+                "Tool status update: "
+                '{"name": "show_map", "result": {"map_id": "spa", '
+                '"status": "complete"}, "status": "complete", '
+                '"type": "tool_result"}'
+            ),
+        },
+    ]
+
+
 @pytest.mark.asyncio
 async def test_tool_relay_routes_by_chat_session_after_rebinding():
     relay = ToolRelay()
@@ -696,6 +740,7 @@ async def test_application_tool_search_preserves_browser_session_dispatch(monkey
     monkeypatch.setattr(tool_relay, "_RELAY", relay)
     session_tool_frames = []
     parent_results = []
+    pending_session_tool_callbacks = {}
 
     async def receive_parent_result(payload):
         parent_results.append(payload)
@@ -731,6 +776,7 @@ async def test_application_tool_search_preserves_browser_session_dispatch(monkey
         parent_message_source=lambda: [
             {"role": "user", "content": "Show Spa on the circuit map."},
         ],
+        pending_session_tool_callbacks=pending_session_tool_callbacks,
     )
 
     await handler(SimpleNamespace(
@@ -746,6 +792,17 @@ async def test_application_tool_search_preserves_browser_session_dispatch(monkey
         "arguments": {"map_id": "spa"},
     }
     assert parent_results == []
+    call_id = session_tool_frames[0]["id"]
+    assert pending_session_tool_callbacks == {
+        call_id: receive_parent_result,
+    }
+
+    await pending_session_tool_callbacks.pop(call_id)({
+        "status": "complete",
+        "map_id": "spa",
+    })
+
+    assert parent_results == [{"status": "complete", "map_id": "spa"}]
 
 
 @pytest.mark.asyncio
