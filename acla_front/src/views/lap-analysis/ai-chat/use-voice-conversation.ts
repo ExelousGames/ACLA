@@ -17,6 +17,7 @@ import apiService from 'services/api.service';
 import { buildFormattedToolResultFrame } from './voice-tool-result-formatter';
 import {
     AiToolError,
+    AiToolOperationAbortedError,
     InvalidToolCallError,
     ToolNotRegisteredError,
     type AiToolOperation,
@@ -125,7 +126,7 @@ export interface VoiceConversation {
     micDisabled: boolean;
     /** Start the session — opens mic + WS. Throws if user denies mic. */
     start: (eventSessionId?: string) => Promise<void>;
-    /** Stop the session — closes mic, WS, audio playback. Idempotent. */
+    /** System teardown — closes resources and aborts tools, retaining the session for resume. */
     stop: () => void;
     setMicDisabled: (disabled: boolean) => void;
     /** Send a typed chat message over the WS. Returns false if no WS is
@@ -180,6 +181,7 @@ interface ExecuteSubscribedToolOptions {
     sendText: ToolFrameSender;
     emitEvent?: ToolEventEmitter;
     makeRunId?: () => string;
+    signal?: AbortSignal;
 }
 
 export interface InlineFunctionCall {
@@ -286,6 +288,7 @@ export const executeSubscribedFrontendTool = async ({
     sendText,
     emitEvent,
     makeRunId = defaultToolRunId,
+    signal,
 }: ExecuteSubscribedToolOptions): Promise<ToolSubscriptionResult> => {
     const id = call.id || makeRunId();
     const name = String(call.name || '').trim();
@@ -317,7 +320,9 @@ export const executeSubscribedFrontendTool = async ({
 
     const handler = handlers[name];
 
+    let removeAbortListener: (() => void) | undefined;
     try {
+        if (signal?.aborted) throw new AiToolOperationAbortedError();
         if (!handler) {
             throw new ToolNotRegisteredError(
                 `No handler is registered for '${name}'.`,
@@ -325,8 +330,14 @@ export const executeSubscribedFrontendTool = async ({
         }
 
         const operation = handler(args);
+        const abortOperation = () => operation.abort();
+        signal?.addEventListener('abort', abortOperation, { once: true });
+        removeAbortListener = () => signal?.removeEventListener('abort', abortOperation);
+        // A handler may synchronously trigger a system session transition.
+        if (signal?.aborted) abortOperation();
         operation.statuses.forEach((statusPromise) => {
             void statusPromise.then((status) => {
+                if (signal?.aborted) return;
                 sendText(buildToolResultFrame(id, name, false, getToolResultForAi(status)));
                 emitEvent?.({
                     kind: 'tool_call',
@@ -339,6 +350,7 @@ export const executeSubscribedFrontendTool = async ({
                     final: false,
                 });
             }, (statusError) => {
+                if (signal?.aborted) return;
                 const error = normalizeAiToolError(statusError);
                 const failure = { ...buildFailedToolResult(error), status: 'status_failed' };
                 console.error(`[ai-tool] '${name}' status failed.`, error);
@@ -361,6 +373,7 @@ export const executeSubscribedFrontendTool = async ({
             status: string;
             result: AiToolExecutionOutput;
         }>((resolve) => operation.notifyTerminated(resolve));
+        if (signal?.aborted) throw new AiToolOperationAbortedError();
         if (termination.result instanceof Error) throw termination.result;
         const finalResult = getToolResultForAi(termination.result, termination.status);
         sendText(buildToolResultFrame(id, name, true, finalResult));
@@ -391,6 +404,8 @@ export const executeSubscribedFrontendTool = async ({
             final: true,
         });
         return buildFailedToolSubscriptionResult(id, name, error);
+    } finally {
+        removeAbortListener?.();
     }
 };
 
@@ -405,6 +420,7 @@ export function useVoiceConversation(
     // Hold refs to all the resources we need to tear down on stop().
     const wsRef = useRef<WebSocket | null>(null);
     const readyWsRef = useRef<WebSocket | null>(null);
+    const connectionAbortRef = useRef<AbortController | null>(null);
     const chatSessionIdRef = useRef<string | null>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
     const micStreamRef = useRef<MediaStream | null>(null);
@@ -555,6 +571,9 @@ export function useVoiceConversation(
         connectionAttemptRef.current += 1;
         clearConnectTimeout();
         readyWsRef.current = null;
+        const connectionAbort = connectionAbortRef.current;
+        connectionAbortRef.current = null;
+        connectionAbort?.abort();
 
         try { workletNodeRef.current?.disconnect(); } catch { /* ignore */ }
         workletNodeRef.current = null;
@@ -591,7 +610,6 @@ export function useVoiceConversation(
 
     const stop = useCallback(() => {
         // Tear down in reverse order of construction. All steps are idempotent.
-        chatSessionIdRef.current = null;
         releaseSessionResources();
         setState('idle');
     }, [releaseSessionResources]);
@@ -672,6 +690,8 @@ export function useVoiceConversation(
             const requestedChatSessionId = chatSessionIdRef.current;
             const chatSessionAction = requestedChatSessionId ? 'resume' : 'create';
             const ws = openWs(chatSessionAction, requestedChatSessionId);
+            const connectionAbort = new AbortController();
+            connectionAbortRef.current = connectionAbort;
             ws.binaryType = 'arraybuffer';
             wsRef.current = ws;
             connectTimeoutRef.current = window.setTimeout(() => {
@@ -771,6 +791,7 @@ export function useVoiceConversation(
                     handlers: toolHandlersRef.current,
                     sendText,
                     emitEvent: emitConnectionEvent,
+                    signal: connectionAbort.signal,
                 });
             };
 
@@ -784,17 +805,20 @@ export function useVoiceConversation(
                     handlers: toolHandlersRef.current,
                     sendText,
                     emitEvent: emitConnectionEvent,
+                    signal: connectionAbort.signal,
                 });
             };
 
-            let connectionFailureReported = false;
-            const reportConnectionFailure = (message: string) => {
+            const reportConnectionFailure = (
+                message: string,
+                closeCode = 4001,
+                closeReason = 'connection failed',
+            ) => {
                 if (wsRef.current !== ws) return;
-                connectionFailureReported = true;
-                readyWsRef.current = null;
                 console.error('[voice] connection failed:', message);
                 setError(message);
                 setState('error');
+                releaseSessionResources(closeCode, closeReason);
             };
 
             ws.onmessage = (event) => {
@@ -823,8 +847,9 @@ export function useVoiceConversation(
                                 chatSessionAction === 'resume'
                                     ? 'Voice session resume handshake returned an unexpected chat session'
                                     : 'Voice session create handshake was invalid',
+                                4002,
+                                'invalid chat session handshake',
                             );
-                            releaseSessionResources(4002, 'invalid chat session handshake');
                             return;
                         }
 
@@ -839,14 +864,10 @@ export function useVoiceConversation(
                         // Backend explicit error (e.g. a stale process-local
                         // chat session or unavailable voice dependency).
                         const msg = parsed.message || parsed.error_type || 'backend error';
-                        if (parsed.error_type === 'ChatSessionNotFound') {
+                        if (parsed.error_type === 'ChatSessionNotFound' || parsed.error_type === 'ChatSessionReplaced') {
                             chatSessionIdRef.current = null;
                         }
-                        console.error('[voice] backend error frame:', msg);
-                        connectionFailureReported = true;
-                        readyWsRef.current = null;
-                        setError(msg);
-                        setState('error');
+                        reportConnectionFailure(msg);
                         return;
                     }
 
@@ -894,22 +915,13 @@ export function useVoiceConversation(
 
             ws.onerror = (event) => {
                 if (wsRef.current !== ws) return;
-                clearConnectTimeout();
                 console.error('[voice] WS error event:', event);
-                connectionFailureReported = true;
-                readyWsRef.current = null;
-                setError('Voice connection error');
-                setState('error');
+                reportConnectionFailure('Voice connection error');
             };
 
             ws.onclose = (event) => {
                 if (wsRef.current !== ws) return;
-                clearConnectTimeout();
-                readyWsRef.current = null;
-                if (!connectionFailureReported) {
-                    setError(`Voice connection closed (${event.code}): ${event.reason || 'unknown'}`);
-                }
-                setState('error');
+                reportConnectionFailure(`Voice connection closed (${event.code}): ${event.reason || 'unknown'}`);
             };
         } catch (err) {
             if (connectionAttempt !== connectionAttemptRef.current) return;
@@ -1038,6 +1050,9 @@ export function useVoiceConversation(
     ): Promise<ToolSubscriptionResult | null> => {
         const ws = wsRef.current;
         if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return null;
+        const connectionAbort = connectionAbortRef.current;
+        if (!connectionAbort || connectionAbort.signal.aborted) return null;
+        const eventSessionId = activeEventSessionIdRef.current;
 
         const sendText = (payload: object) => {
             if (wsRef.current !== ws || readyWsRef.current !== ws) return;
@@ -1054,14 +1069,19 @@ export function useVoiceConversation(
             call,
             handlers: toolHandlersRef.current,
             sendText,
-            emitEvent: emitVoiceEvent,
+            emitEvent: (event) => emitVoiceEvent({ ...event, clientSessionId: eventSessionId }),
+            signal: connectionAbort.signal,
         });
     }, [emitVoiceEvent]);
 
-    // Auto-cleanup on unmount.
+    // A new client identity creates a new session; transport teardown alone
+    // retains the current server identity so system-paused sessions can resume.
     useEffect(() => {
+        chatSessionIdRef.current = null;
+        setError(null);
+        setState('idle');
         return () => stop();
-    }, [stop]);
+    }, [options.clientSessionId, options.conversationRole, options.userId, stop]);
 
     return {
         state,

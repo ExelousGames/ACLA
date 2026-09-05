@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from copy import deepcopy
 import json
 import sys
 from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 import uuid
 
 import pytest
 
 from app.api import voice
 from app.voice import chat_sessions, pipecat_pipeline, tool_relay
-from app.voice.chat_sessions import ChatSessionRegistry
+from app.voice.chat_sessions import ChatSessionError, ChatSessionRegistry
 from app.voice.tool_relay import ToolRelay
 
 
@@ -155,6 +156,50 @@ def session_tool_catalog(monkeypatch):
             }]
 
     monkeypatch.setattr(voice, "SessionAIToolService", Catalog)
+
+
+def test_new_main_deletes_all_owner_sessions_and_closes_active_connections():
+    registry = ChatSessionRegistry()
+    close_main, close_agent, close_other = Mock(), Mock(), Mock()
+    main = registry.create_attached("owner", on_replaced=close_main)
+    agent = registry.create_attached(
+        "owner", {"agent_mode": "track_guide"}, on_replaced=close_agent,
+    )
+    inactive = registry.create_attached("owner", {"agent_mode": "overtake"})
+    registry.detach(inactive.chat_session_id, [{"role": "user", "content": "old"}])
+    other = registry.create_attached("other", on_replaced=close_other)
+
+    current = registry.create_attached("owner", {"session_mode": "recorded"})
+
+    for previous in (main, agent, inactive):
+        assert registry.get(previous.chat_session_id) is None
+        with pytest.raises(ChatSessionError) as exc:
+            registry.resume_attached(previous.chat_session_id, "owner")
+        assert exc.value.error_type == "ChatSessionNotFound"
+        registry.detach(previous.chat_session_id, [{"role": "assistant", "content": "late"}])
+        assert registry.get(previous.chat_session_id) is None
+    close_main.assert_called_once_with()
+    close_agent.assert_called_once_with()
+    close_other.assert_not_called()
+    assert registry.get(other.chat_session_id).active
+    assert registry.get(current.chat_session_id).active
+    assert current.committed_history == []
+
+
+def test_agent_creation_and_resume_preserve_main_history_and_current_transport():
+    registry = ChatSessionRegistry()
+    old_close, resumed_close = Mock(), Mock()
+    main = registry.create_attached("owner", on_replaced=old_close)
+    history = [{"role": "user", "content": "Remember this lap"}]
+    registry.detach(main.chat_session_id, history)
+    agent = registry.create_attached("owner", {"agent_mode": "track_guide"})
+    resumed = registry.resume_attached(main.chat_session_id, "owner", resumed_close)
+    assert resumed.chat_session_id == main.chat_session_id
+    assert resumed.committed_history == history
+    assert registry.get(agent.chat_session_id) is not None
+    registry.create_attached("owner")
+    old_close.assert_not_called()
+    resumed_close.assert_called_once_with()
 
 
 def _install_fake_ai_service(monkeypatch):
@@ -312,10 +357,8 @@ async def test_create_returns_server_uuid_and_is_active_while_pipeline_runs(
         ["show_map"],
         ["show_map"],
     ]
-    assert all(
-        registry.get(chat_session_id).session_context == {"session_mode": "live"}
-        for chat_session_id in identifiers
-    )
+    assert registry.get(identifiers[0]) is None
+    assert registry.get(identifiers[1]).session_context == {"session_mode": "live"}
 
 
 @pytest.mark.asyncio
@@ -365,6 +408,86 @@ async def test_resume_uses_same_session_and_passes_stored_history(
     assert registry.get(created.chat_session_id).session_context == {
         "session_mode": "live",
     }
+
+
+@pytest.mark.asyncio
+async def test_new_main_closes_replaced_transport_and_cannot_be_resurrected(
+    monkeypatch, registry,
+):
+    _install_fake_ai_service(monkeypatch)
+    first_running = asyncio.Event()
+    first_closed = asyncio.Event()
+    first = _FakeWebSocket([_session_info()])
+    original_close = first.close
+
+    async def close_first(**kwargs):
+        await original_close(**kwargs)
+        first_closed.set()
+
+    first.close = close_first
+
+    async def fake_run(websocket, config, tool_executor, **kwargs):
+        if websocket._ws is first:
+            first_running.set()
+            await first_closed.wait()
+            registry.detach(config.chat_session_id, [{"role": "user", "content": "late"}])
+
+    monkeypatch.setattr(pipecat_pipeline, "run_voice_session", fake_run)
+    arguments = dict(
+        session_id=None, user_id="owner", chat_llm_model=None,
+        chat_session_action="create", chat_session_id=None,
+    )
+    first_task = asyncio.create_task(voice.voice_stream(first, **arguments))
+    try:
+        await asyncio.wait_for(first_running.wait(), 1)
+        old_id = first.sent_json[0]["chat_session_id"]
+        second = _FakeWebSocket([_session_info()])
+        await voice.voice_stream(second, **arguments)
+        await asyncio.wait_for(first_task, 1)
+        assert first.closed == (1000, "chat session replaced")
+        assert first.sent_json[-1]["error_type"] == "ChatSessionReplaced"
+        assert registry.get(old_id) is None
+        assert registry.get(second.sent_json[0]["chat_session_id"]) is not None
+    finally:
+        first_closed.set()
+        await first_task
+
+
+@pytest.mark.asyncio
+async def test_replacement_during_resume_setup_does_not_start_stale_pipeline(
+    monkeypatch, registry,
+):
+    catalog_started, finish_catalog = asyncio.Event(), asyncio.Event()
+
+    class Catalog:
+        async def get_session_tools(self, session_context):
+            catalog_started.set()
+            await finish_catalog.wait()
+            return []
+
+    monkeypatch.setattr(voice, "SessionAIToolService", Catalog)
+    run = AsyncMock()
+    monkeypatch.setattr(pipecat_pipeline, "run_voice_session", run)
+    old = registry.create_attached("owner")
+    registry.detach(old.chat_session_id)
+    websocket = _FakeWebSocket([_session_info()])
+    resume_task = asyncio.create_task(voice.voice_stream(
+        websocket, session_id=None, user_id="owner", chat_llm_model=None,
+        chat_session_action="resume", chat_session_id=old.chat_session_id,
+    ))
+    try:
+        await asyncio.wait_for(catalog_started.wait(), 1)
+        current = registry.create_attached("owner")
+        finish_catalog.set()
+        await asyncio.wait_for(resume_task, 1)
+        run.assert_not_awaited()
+        assert not any(frame["type"] == "chat_session_ready" for frame in websocket.sent_json)
+        assert websocket.closed == (1000, "chat session replaced")
+        assert registry.get(old.chat_session_id) is None
+        assert registry.get(current.chat_session_id).active
+    finally:
+        finish_catalog.set()
+        await resume_task
 
 
 @pytest.mark.asyncio

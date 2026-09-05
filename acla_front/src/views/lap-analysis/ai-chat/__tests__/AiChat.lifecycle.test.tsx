@@ -8,6 +8,9 @@ const mockVoiceCleanup = jest.fn();
 const mockVoiceStop = jest.fn();
 const mockVoiceStart = jest.fn(() => Promise.resolve());
 const mockVoiceSendUserText = jest.fn(() => false);
+const mockSetMicDisabled = jest.fn();
+let mockVoiceState = 'idle';
+let mockMicDisabled = false;
 const mockUseVoiceConversation = jest.fn();
 const mockOverlayCreate = jest.fn();
 const mockOverlayDestroy = jest.fn<Promise<void>, [string]>(() => Promise.resolve());
@@ -165,17 +168,20 @@ describe('AiChat conversation lifecycle', () => {
         mockVoiceStart.mockClear();
         mockVoiceSendUserText.mockReset();
         mockVoiceSendUserText.mockReturnValue(false);
+        mockVoiceState = 'idle';
+        mockMicDisabled = false;
+        mockSetMicDisabled.mockClear();
         mockUseVoiceConversation.mockReset();
         mockUseVoiceConversation.mockImplementation(() => {
             React.useEffect(() => () => mockVoiceCleanup(), []);
             return {
-                state: 'idle',
-                micDisabled: false,
+                state: mockVoiceState,
+                micDisabled: mockMicDisabled,
                 micLevel: 0,
                 error: null,
                 start: mockVoiceStart,
                 stop: mockVoiceStop,
-                setMicDisabled: jest.fn(),
+                setMicDisabled: mockSetMicDisabled,
                 sendUserText: mockVoiceSendUserText,
                 sendToolStatus: jest.fn(() => true),
                 sendToolResult: jest.fn(() => true),
@@ -493,7 +499,7 @@ describe('AiChat conversation lifecycle', () => {
             }),
         ]);
 
-        fireEvent.click(screen.getByRole('button', { name: 'Toggle voice session' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Start assistant' }));
 
         await waitFor(() => expect(mockVoiceStart).toHaveBeenCalledTimes(1));
     });
@@ -678,6 +684,20 @@ describe('AiChat conversation lifecycle', () => {
         expect(screen.getByRole('img', { name: 'idle' })).toHaveAttribute('src', idleGif);
     });
 
+    it.each(['listening', 'speaking'])('only toggles microphone input while %s', (voiceState) => {
+        mockVoiceState = voiceState;
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Disable microphone' }));
+        expect(mockSetMicDisabled).toHaveBeenLastCalledWith(true);
+        mockMicDisabled = true;
+        view.rerender(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Enable microphone' }));
+        expect(mockSetMicDisabled).toHaveBeenLastCalledWith(false);
+        expect(mockVoiceStop).not.toHaveBeenCalled();
+        expect(mockOverlayDestroy).not.toHaveBeenCalled();
+        expect(mockVoiceStart).not.toHaveBeenCalled();
+    });
+
     it('destroys an overlay whose asynchronous creation finishes after an identity reset', async () => {
         let resolveOverlay: (presentation: { presentationId: string }) => void = () => undefined;
         mockOverlayCreate.mockReturnValueOnce(new Promise((resolve) => {
@@ -685,7 +705,7 @@ describe('AiChat conversation lifecycle', () => {
         }));
         const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
 
-        fireEvent.click(screen.getByRole('button', { name: 'Toggle voice session' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Start assistant' }));
         expect(mockOverlayCreate).toHaveBeenCalledTimes(1);
         view.rerender(
             <AiChat

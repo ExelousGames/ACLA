@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 Message = Dict[str, Any]
@@ -36,6 +36,7 @@ class _ChatSession:
     session_context: Dict[str, Any] = field(default_factory=dict)
     committed_history: List[Message] = field(default_factory=list)
     active: bool = False
+    on_replaced: Optional[Callable[[], None]] = None
 
 
 class ChatSessionRegistry:
@@ -48,8 +49,13 @@ class ChatSessionRegistry:
         self,
         user_id: str,
         session_context: Optional[Dict[str, Any]] = None,
+        on_replaced: Optional[Callable[[], None]] = None,
     ) -> ChatSessionSnapshot:
-        """Create a new active session owned by ``user_id``."""
+        """Create a session; a new main session replaces all of its owner's sessions.
+
+        Focused agent sessions are identified by the validated ``agent_mode``
+        context and may coexist with the current main session.
+        """
         chat_session_id = str(uuid.uuid4())
         while chat_session_id in self._sessions:
             chat_session_id = str(uuid.uuid4())
@@ -58,14 +64,24 @@ class ChatSessionRegistry:
             user_id=user_id,
             session_context=deepcopy(session_context or {}),
             active=True,
+            on_replaced=on_replaced,
         )
+        replaced = []
+        if not session.session_context.get("agent_mode"):
+            for old_id, old_session in list(self._sessions.items()):
+                if old_session.user_id == user_id:
+                    replaced.append(self._sessions.pop(old_id))
         self._sessions[chat_session_id] = session
+        for old_session in replaced:
+            if old_session.on_replaced is not None:
+                old_session.on_replaced()
         return self._snapshot(chat_session_id, session)
 
     def resume_attached(
         self,
         chat_session_id: str,
         user_id: str,
+        on_replaced: Optional[Callable[[], None]] = None,
     ) -> ChatSessionSnapshot:
         """Atomically attach to an inactive session after policy checks."""
         session = self._sessions.get(chat_session_id)
@@ -86,6 +102,7 @@ class ChatSessionRegistry:
             )
 
         session.active = True
+        session.on_replaced = on_replaced
         return self._snapshot(chat_session_id, session)
 
     def update_session_context(
@@ -114,6 +131,7 @@ class ChatSessionRegistry:
         if session_context is not None:
             session.session_context = deepcopy(session_context)
         session.active = False
+        session.on_replaced = None
 
     def get(self, chat_session_id: str) -> Optional[ChatSessionSnapshot]:
         """Return a copy of current session state, if present."""

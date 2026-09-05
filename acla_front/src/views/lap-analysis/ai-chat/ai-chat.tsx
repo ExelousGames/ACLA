@@ -1918,6 +1918,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const statusTop =
         vState === 'idle' ? 'TAP MIC' :
         vState === 'connecting' ? 'CONNECTING' :
+        vState === 'error' ? 'VOICE' :
         micDisabled ? 'MIC' :
         vState === 'speaking' ? 'Kestrel' :
         vState === 'listening' ? 'DRIVER' :
@@ -1925,17 +1926,17 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const statusBottom =
         vState === 'idle' ? 'TO START' :
         vState === 'connecting' ? '…' :
+        vState === 'error' ? 'RETRY' :
         micDisabled ? 'DISABLED' :
         vState === 'speaking' ? 'RESPONDING' :
         vState === 'listening' ? 'LISTENING' :
-        vState === 'error' ? 'RETRY' :
         'IDLE';
     const statusMod =
         vState === 'idle' || vState === 'connecting' ? 'ai-chat__mic-status--idle' :
         vState === 'error' ? 'ai-chat__mic-status--error' :
         '';
 
-    const toggleVoice = () => {
+    const handleMicClick = () => {
         if (liveSessionEnded) return;
         const agentSession = activeAgentSessionRef.current;
         const voiceSessionId = agentSession?.clientSessionId ?? mainClientSessionIdRef.current;
@@ -1962,12 +1963,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                     console.error('Voice conversation failed to start:', err);
                     void endOverlaySession(overlayAiSessionId).catch(() => undefined);
                 });
-        } else {
-            const overlayAiSessionId = overlayAiSessionByVoiceSessionRef.current.get(voiceSessionId);
-            overlayAiSessionByVoiceSessionRef.current.delete(voiceSessionId);
-            overlayStartByVoiceSessionRef.current.delete(voiceSessionId);
-            activeVoiceConversation.stop();
-            void endOverlaySession(overlayAiSessionId).catch(() => undefined);
+        } else if (voiceActive) {
+            activeVoiceConversation.setMicDisabled(!micDisabled);
         }
     };
 
@@ -2071,15 +2068,18 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                         <button
                             type="button"
                             className={`ai-chat__mic-core ${coreMod} ${micDisabled ? 'ai-chat__mic-core--muted' : ''}`}
-                            onClick={toggleVoice}
+                            onClick={handleMicClick}
                             disabled={vState === 'connecting' || liveSessionEnded}
                             title={
                                 vState === 'error' ? `Voice error: ${activeVoiceConversation.error}. Click to retry.` :
                                 vState === 'connecting' ? 'Connecting…' :
-                                voiceActive ? 'Click to end voice session' :
+                                voiceActive ? (micDisabled ? 'Enable microphone capture' : 'Disable microphone capture') :
                                 'Click to start voice session'
                             }
-                            aria-label="Toggle voice session"
+                            aria-label={voiceActive
+                                ? (micDisabled ? 'Enable microphone' : 'Disable microphone')
+                                : vState === 'error' ? 'Reconnect assistant' : 'Start assistant'}
+                            aria-pressed={voiceActive ? micDisabled : undefined}
                         >
                             <svg viewBox="0 0 48 48" width="36" height="36" fill="none">
                                 <rect x="18" y="6" width="12" height="22" rx="6"
@@ -2111,7 +2111,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                             disabled={modelPickerDisabled}
                             aria-label="Chat LLM model"
                             title={modelPickerDisabled
-                                ? 'End the current voice session before changing models'
+                                ? 'The model is fixed while the assistant is connected'
                                 : 'Choose the model for the next voice chat session'}
                         >
                             {CHAT_LLM_MODEL_OPTIONS.map((option) => (

@@ -195,12 +195,21 @@ async def voice_stream(
 
     registry = get_chat_session_registry()
     chat_session = None
+    replacement_close_task = None
+
+    def disconnect_replaced_session() -> None:
+        nonlocal replacement_close_task
+        replacement_close_task = asyncio.create_task(
+            _close_replaced_chat_session(websocket),
+        )
+
     resumed = action == "resume"
     if resumed:
         try:
             chat_session = registry.resume_attached(
                 requested_chat_session_id,
                 owner_user_id,
+                on_replaced=disconnect_replaced_session,
             )
         except ChatSessionError as exc:
             await _reject_chat_session_request(websocket, exc)
@@ -293,8 +302,12 @@ async def voice_stream(
             chat_session = registry.create_attached(
                 owner_user_id,
                 session_context,
+                on_replaced=disconnect_replaced_session,
             )
         else:
+            # A new main session may have replaced this one during setup.
+            if registry.get(chat_session.chat_session_id) is None:
+                return
             registry.update_session_context(
                 chat_session.chat_session_id,
                 session_context,
@@ -305,6 +318,8 @@ async def voice_stream(
             "chat_session_id": chat_session.chat_session_id,
             "resumed": resumed,
         })
+        if registry.get(chat_session.chat_session_id) is None:
+            return
 
         config = VoiceSessionConfig(
             chat_session_id=chat_session.chat_session_id,
@@ -353,6 +368,24 @@ async def voice_stream(
     finally:
         if chat_session is not None:
             registry.detach(chat_session.chat_session_id)
+        if replacement_close_task is not None:
+            await replacement_close_task
+
+
+async def _close_replaced_chat_session(websocket: WebSocket) -> None:
+    """Close the replaced transport; frontend disconnect handling aborts tools."""
+    try:
+        await websocket.send_json({
+            "type": "error",
+            "error_type": "ChatSessionReplaced",
+            "message": "A new main session replaced this session.",
+        })
+    except Exception:
+        pass
+    try:
+        await websocket.close(code=1000, reason="chat session replaced")
+    except Exception:
+        pass
 
 
 def _validate_chat_session_request(
