@@ -18,7 +18,7 @@ const mockOverlaySetEnabled = jest.fn<Promise<void>, [boolean]>(() => Promise.re
 const mockFindComponentRef = jest.fn(() => null);
 const mockRegisterComponentRef = jest.fn();
 const mockUnregisterComponentRef = jest.fn();
-const mockGoalRender = jest.fn();
+const mockRepeatablePlanRender = jest.fn();
 const mockProcedurePlanRender = jest.fn();
 let mockRegisteredAiChatHandle: any;
 
@@ -85,8 +85,8 @@ jest.mock('components/ai-engineering-tools', () => {
     const actual = jest.requireActual('components/ai-engineering-tools');
     return {
         ...actual,
-        Goal: (props: unknown) => {
-            mockGoalRender(props);
+        RepeatablePlan: (props: unknown) => {
+            mockRepeatablePlanRender(props);
             return null;
         },
         ProcedurePlan: (props: unknown) => {
@@ -195,7 +195,7 @@ describe('AiChat conversation lifecycle', () => {
         mockRegisterComponentRef.mockClear();
         mockUnregisterComponentRef.mockClear();
         mockFindComponentRef.mockClear();
-        mockGoalRender.mockClear();
+        mockRepeatablePlanRender.mockClear();
         mockProcedurePlanRender.mockClear();
         mockRegisteredAiChatHandle = undefined;
         delete (window as any).electronAPI;
@@ -311,14 +311,14 @@ describe('AiChat conversation lifecycle', () => {
         view.unmount();
     });
 
-    it('registers a goal runner before dispatch and renders its snapshots', async () => {
+    it('registers a repeatable plan before dispatch and renders its snapshots', async () => {
         let resolveCollect!: (value: unknown) => void;
         const collect = new Promise((resolve) => {
             resolveCollect = resolve;
         });
         const dispatch = jest.fn((toolName: string) => {
             expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
-            expect(mockRegisterComponentRef.mock.calls[0][0].current.getComponentType()).toBe('goal');
+            expect(mockRegisterComponentRef.mock.calls[0][0].current.getComponentType()).toBe('repeatable-plan');
             if (toolName === 'collect') return createAiToolOperation(collect, 'complete');
             return operationWithValue({ status: 'ready', data: 0 });
         });
@@ -328,14 +328,14 @@ describe('AiChat conversation lifecycle', () => {
 
         let operation: any;
         act(() => {
-            operation = mockRegisteredAiChatHandle.createGoal(lifecycleGoalRequest(), dispatch);
+            operation = mockRegisteredAiChatHandle.createRepeatablePlan(lifecycleGoalRequest(), dispatch);
         });
         const toolList = container.querySelector('.ai-chat__tool-list');
         const messages = container.querySelector('.ai-chat__msgs');
         expect(toolList).toBeInTheDocument();
         expect(toolList!.compareDocumentPosition(messages as Node) & Node.DOCUMENT_POSITION_FOLLOWING)
             .toBeTruthy();
-        expect(mockGoalRender).toHaveBeenLastCalledWith(expect.objectContaining({
+        expect(mockRepeatablePlanRender).toHaveBeenLastCalledWith(expect.objectContaining({
             snapshot: expect.objectContaining({ name: 'Lifecycle goal', status: 'running' }),
         }));
 
@@ -347,7 +347,7 @@ describe('AiChat conversation lifecycle', () => {
 
         expect(result).toMatchObject({ goal: 'Lifecycle goal', status: 'achieved' });
         expect(result).not.toHaveProperty('name');
-        expect(mockGoalRender.mock.calls.map(([props]) => props.snapshot)).toEqual(
+        expect(mockRepeatablePlanRender.mock.calls.map(([props]) => props.snapshot)).toEqual(
             expect.arrayContaining([
                 expect.objectContaining({ name: 'Lifecycle goal', status: 'running' }),
                 expect.objectContaining({ name: 'Lifecycle goal', status: 'achieved' }),
@@ -407,7 +407,7 @@ describe('AiChat conversation lifecycle', () => {
         const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
         let goalOperation: any;
         act(() => {
-            goalOperation = mockRegisteredAiChatHandle.createGoal(
+            goalOperation = mockRegisteredAiChatHandle.createRepeatablePlan(
                 lifecycleGoalRequest(),
                 jest.fn(() => createAiToolOperation(never, 'complete')),
             );
@@ -448,7 +448,7 @@ describe('AiChat conversation lifecycle', () => {
         );
         let goalOperation: any;
         act(() => {
-            goalOperation = mockRegisteredAiChatHandle.createGoal(
+            goalOperation = mockRegisteredAiChatHandle.createRepeatablePlan(
                 lifecycleGoalRequest(),
                 jest.fn(() => createAiToolOperation(never, 'complete')),
             );

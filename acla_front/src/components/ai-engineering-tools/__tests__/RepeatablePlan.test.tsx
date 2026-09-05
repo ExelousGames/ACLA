@@ -1,16 +1,16 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import {
-    GoalDisplay,
-    GoalRunner,
-    goalOverlayRenderer,
+    RepeatablePlanDisplay,
+    RepeatablePlanRunner,
+    repeatablePlanOverlayRenderer,
     buildGoalRequest,
     compareGoalValues,
     validateGoalRequest,
     type AiToolDispatcher,
     type GoalRequest,
     type NestedAiToolResult,
-} from '../Goal';
+} from '../RepeatablePlan';
 import {
     createAiToolDeferred,
     createAiToolOperation,
@@ -37,7 +37,7 @@ const operationWithValue = (value: unknown, status = 'complete') => (
     resolvedAiToolOperation(value as NestedAiToolResult, status)
 );
 
-describe('GoalDisplay', () => {
+describe('RepeatablePlanDisplay', () => {
     it('removes an achieved goal from chat while keeping it available on pill surfaces', () => {
         const achievedSnapshot = {
             name: 'Drive a clean lap',
@@ -55,17 +55,17 @@ describe('GoalDisplay', () => {
             completed_steps: [],
         };
         const { rerender } = render(
-            <GoalDisplay snapshot={{ ...achievedSnapshot, status: 'running' }} surface="chat" />,
+            <RepeatablePlanDisplay snapshot={{ ...achievedSnapshot, status: 'running' }} surface="chat" />,
         );
 
-        expect(screen.getByLabelText('Goal')).toBeInTheDocument();
+        expect(screen.getByLabelText('Repeatable plan')).toBeInTheDocument();
         expect(screen.getByLabelText('Stop when')).toHaveTextContent('Stop when · determine');
 
-        rerender(<GoalDisplay snapshot={achievedSnapshot} surface="chat" />);
-        expect(screen.queryByLabelText('Goal')).not.toBeInTheDocument();
+        rerender(<RepeatablePlanDisplay snapshot={achievedSnapshot} surface="chat" />);
+        expect(screen.queryByLabelText('Repeatable plan')).not.toBeInTheDocument();
 
-        rerender(<GoalDisplay snapshot={achievedSnapshot} surface="pill" />);
-        expect(screen.getByLabelText('Goal')).toBeInTheDocument();
+        rerender(<RepeatablePlanDisplay snapshot={achievedSnapshot} surface="pill" />);
+        expect(screen.getByLabelText('Repeatable plan')).toBeInTheDocument();
     });
 
     it('uses a dedicated overlay card that only renders the active step', () => {
@@ -113,8 +113,8 @@ describe('GoalDisplay', () => {
             completed_steps: ['collect'],
         };
 
-        const overlay = goalOverlayRenderer.renderOverlay(snapshot, 'expanded', {
-            componentName: 'goal',
+        const overlay = repeatablePlanOverlayRenderer.renderOverlay(snapshot, 'expanded', {
+            componentName: 'repeatable-plan',
             revision: 1,
             emitRendererEvent: jest.fn(),
         });
@@ -129,7 +129,7 @@ describe('GoalDisplay', () => {
     });
 });
 
-describe('Goal descriptors', () => {
+describe('Repeatable plan descriptors', () => {
     it('validates the clean-break stop_when shape and configurable tool names', () => {
         expect(buildGoalRequest(request())).toEqual({ request: request() });
         expect(buildGoalRequest({
@@ -141,7 +141,7 @@ describe('Goal descriptors', () => {
         })).toHaveProperty('request');
         expect(validateGoalRequest({
             ...request(),
-            steps: [{ id: 'nested', title: 'Nested', name: 'create_goal' }],
+            steps: [{ id: 'nested', title: 'Nested', name: 'create_repeatable_plan' }],
         })).toHaveProperty('error');
         expect(compareGoalValues(2, 'lte', 2)).toBe(true);
     });
@@ -171,7 +171,7 @@ describe('Goal descriptors', () => {
     });
 });
 
-describe('GoalRunner central dispatch callback', () => {
+describe('RepeatablePlanRunner central dispatch callback', () => {
     it('aborts the active nested tool when the goal operation is aborted', async () => {
         const nested = createAiToolOperation(
             new Promise<NestedAiToolResult>(() => undefined),
@@ -179,8 +179,8 @@ describe('GoalRunner central dispatch callback', () => {
         );
         const nestedAbort = jest.spyOn(nested, 'abort');
         const dispatch: AiToolDispatcher = jest.fn(() => nested);
-        const runner = new GoalRunner('goal', dispatch);
-        const operation = runner.createGoal(request());
+        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
+        const operation = runner.createRepeatablePlan(request());
         const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
 
         operation.abort();
@@ -204,11 +204,11 @@ describe('GoalRunner central dispatch callback', () => {
                     ? { status: 'ready', data: 0 }
                     : { status: 'complete' })
         ));
-        const runner = new GoalRunner('goal', dispatch);
-        const operation = runner.createGoal(request());
+        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
+        const operation = runner.createRepeatablePlan(request());
 
-        expect(runner.getComponentName()).toBe('goal');
-        expect(runner.getComponentType()).toBe('goal');
+        expect(runner.getComponentName()).toBe('repeatable-plan');
+        expect(runner.getComponentType()).toBe('repeatable-plan');
         expect(runner.getOverlayBehavior(null)).toEqual({
             placement: 'flow',
             requestedStatus: 'expanded',
@@ -261,7 +261,7 @@ describe('GoalRunner central dispatch callback', () => {
                 ? { status: 'ready', data: 0 }
                 : { status: 'complete' });
         });
-        const runner = new GoalRunner('goal', dispatch);
+        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
         const operation = runner.create(input);
 
         const result = await operation.result;
@@ -328,7 +328,7 @@ describe('GoalRunner central dispatch callback', () => {
                 'stop-when-terminal',
             );
         });
-        const runner = new GoalRunner('goal', dispatch);
+        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
 
         const result = await runner.create(request()).result;
         if (result instanceof Error) throw result;
@@ -356,7 +356,7 @@ describe('GoalRunner central dispatch callback', () => {
                 : { status: 'complete' },
         ));
         const snapshots: Array<{ status: string; actual: number | null }> = [];
-        const runner = new GoalRunner('goal', dispatch, (snapshot) => {
+        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch, (snapshot) => {
             if (snapshot) snapshots.push({ status: snapshot.status, actual: snapshot.actual });
         });
         const operation = runner.create(request());
@@ -389,7 +389,7 @@ describe('GoalRunner central dispatch callback', () => {
         const dispatch: AiToolDispatcher = jest.fn((name: string) => operationWithValue(
             name === 'determine' ? output : { status: 'complete' },
         ));
-        const runner = new GoalRunner('goal', dispatch);
+        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
 
         const result = await runner.create(request()).result;
         if (result instanceof Error) throw result;
@@ -398,13 +398,13 @@ describe('GoalRunner central dispatch callback', () => {
             status: 'failed',
             actual: null,
             completed_steps: ['collect', 'analyze'],
-            error: 'Goal stop condition requires a ready query result with finite numeric data.',
+            error: 'Repeatable plan stop condition requires a ready query result with finite numeric data.',
             stop_when_result: {
                 tool_name: 'determine',
                 attempt: 1,
                 status: 'error',
                 value: null,
-                error: 'Goal stop condition requires a ready query result with finite numeric data.',
+                error: 'Repeatable plan stop condition requires a ready query result with finite numeric data.',
             },
         });
     });
@@ -418,7 +418,7 @@ describe('GoalRunner central dispatch callback', () => {
                     : { status: 'ready', data: 0 })
                 : { status: 'complete' },
         ));
-        const runner = new GoalRunner('goal', dispatch);
+        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
 
         const failedResult = await runner.create(request()).result;
         if (failedResult instanceof Error) throw failedResult;
@@ -446,7 +446,7 @@ describe('GoalRunner central dispatch callback', () => {
             if (name === 'determine') throw new Error('stop condition exploded');
             return { status: 'complete' };
         }, 'complete'));
-        const runner = new GoalRunner('goal', dispatch);
+        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
 
         const result = await runner.create(request()).result;
         if (result instanceof Error) throw result;
@@ -471,7 +471,7 @@ describe('GoalRunner central dispatch callback', () => {
                 ? { status: 'ready', data: 0 }
                 : { status: 'complete' };
         }, 'complete'));
-        const runner = new GoalRunner('goal', dispatch);
+        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
 
         const failedOperation = runner.create(request());
         const failedResult = await failedOperation.result;

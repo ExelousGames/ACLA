@@ -2,7 +2,7 @@ import {
     FRONTEND_AI_TOOL_NAMES,
     createAiCommandRegistry,
     frontendAiToolRegistry,
-    isGoalStepAvailableForContext,
+    isRepeatablePlanStepAvailableForContext,
     startAgentRuntime,
 } from '../ai-command-registry';
 import type {
@@ -344,18 +344,18 @@ describe('frontend AI tool registry', () => {
         });
     });
 
-    it('allows analysis result expressions in compatible live analyst goal steps', () => {
-        expect(isGoalStepAvailableForContext({
+    it('allows analysis result expressions in compatible live analyst repeatable plan steps', () => {
+        expect(isRepeatablePlanStepAvailableForContext({
             sessionMode: 'live',
             conversationRole: 'agent',
             agentMode: 'live_performance_analyst',
         }, 'query_analysis_result')).toBe(true);
-        expect(isGoalStepAvailableForContext({
+        expect(isRepeatablePlanStepAvailableForContext({
             sessionMode: 'live',
             conversationRole: 'agent',
             agentMode: 'live_performance_analyst',
         }, 'apply_query_to_analysis_result')).toBe(true);
-        expect(isGoalStepAvailableForContext({
+        expect(isRepeatablePlanStepAvailableForContext({
             sessionMode: 'live',
             conversationRole: 'agent',
             agentMode: 'track_guide',
@@ -696,8 +696,8 @@ describe('live range to-do add tool', () => {
     });
 
     it.each([
-        'create_goal',
-        'retry_goal_task',
+        'create_repeatable_plan',
+        'retry_repeatable_plan_task',
         'set_procedure_plan',
         'advance_plan_step',
         'clear_procedure_plan',
@@ -1018,18 +1018,18 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         )).toBeNull();
     });
 
-    it('is available in analyst goals but never as a nested Live Range task', () => {
-        expect(isGoalStepAvailableForContext({
+    it('is available in analyst repeatable plans but never as a nested Live Range task', () => {
+        expect(isRepeatablePlanStepAvailableForContext({
             sessionMode: 'live',
             conversationRole: 'agent',
             agentMode: 'live_performance_analyst',
         }, 'add_filtered_driver_expert_comparisons_to_live_range_todo_list')).toBe(true);
-        expect(isGoalStepAvailableForContext({
+        expect(isRepeatablePlanStepAvailableForContext({
             sessionMode: 'live',
             conversationRole: 'agent',
             agentMode: 'track_guide',
         }, 'add_filtered_driver_expert_comparisons_to_live_range_todo_list')).toBe(false);
-        expect(isGoalStepAvailableForContext({
+        expect(isRepeatablePlanStepAvailableForContext({
             sessionMode: 'live',
             conversationRole: 'agent',
             agentMode: 'live_performance_analyst',

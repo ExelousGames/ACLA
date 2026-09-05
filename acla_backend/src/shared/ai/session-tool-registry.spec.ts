@@ -125,8 +125,8 @@ describe('session live range to-do tools', () => {
             'get_live_range_todo_list',
         ]));
         expect(nestedNames).not.toEqual(expect.arrayContaining([
-            'create_goal',
-            'retry_goal_task',
+            'create_repeatable_plan',
+            'retry_repeatable_plan_task',
             'set_procedure_plan',
             'advance_plan_step',
             'clear_procedure_plan',
@@ -167,7 +167,7 @@ describe('session live range to-do tools', () => {
             session_mode: 'live',
             agent_mode: 'track_guide',
             agent_session: { agent_mode: 'live_performance_analyst' },
-        })).not.toContain('create_goal');
+        })).not.toContain('create_repeatable_plan');
     });
 });
 
@@ -198,20 +198,20 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         })).toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
     });
 
-    it('includes the tool in analyst goals and excludes recursive Live Range scheduling', () => {
+    it('includes the tool in analyst repeatable plans and excludes recursive Live Range scheduling', () => {
         const analystTools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
-        const createGoal = analystTools.find(({ name }) => name === 'create_goal') as any;
+        const repeatablePlan = analystTools.find(({ name }) => name === 'create_repeatable_plan') as any;
         const addEvents = analystTools.find(({ name }) => (
             name === 'add_event_to_live_range_todo_list'
         )) as any;
-        const goalNames = createGoal.properties.steps.items.properties.name.enum;
+        const repeatablePlanNames = repeatablePlan.properties.steps.items.properties.name.enum;
         const nestedLiveRangeNames = addEvents.properties.events.items
             .properties.tool.properties.name.enum;
 
-        expect(goalNames)
+        expect(repeatablePlanNames)
             .toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
         expect(nestedLiveRangeNames)
             .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
@@ -309,16 +309,16 @@ describe('analysis result query tool', () => {
             .not.toContain('query_analysis_result');
     });
 
-    it('is available to compatible live analyst goal steps and stop conditions', () => {
+    it('is available to compatible live analyst repeatable plan steps and stop conditions', () => {
         const tools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
-        const createGoal = tools.find(({ name }) => name === 'create_goal') as any;
+        const repeatablePlan = tools.find(({ name }) => name === 'create_repeatable_plan') as any;
 
-        expect(createGoal.properties.steps.items.properties.name.enum)
+        expect(repeatablePlan.properties.steps.items.properties.name.enum)
             .toContain('query_analysis_result');
-        expect(createGoal.properties.stop_when.properties.tool.properties.name.enum)
+        expect(repeatablePlan.properties.stop_when.properties.tool.properties.name.enum)
             .toContain('query_analysis_result');
     });
 });
@@ -377,19 +377,19 @@ describe('analysis result query apply tool', () => {
         });
     });
 
-    it('is available in analyst goals, stop conditions, and nested live-range workflows', () => {
+    it('is available in analyst repeatable plans, stop conditions, and nested live-range workflows', () => {
         const tools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
-        const createGoal = tools.find(({ name }) => name === 'create_goal') as any;
+        const repeatablePlan = tools.find(({ name }) => name === 'create_repeatable_plan') as any;
         const addEvents = tools.find(({ name }) => (
             name === 'add_event_to_live_range_todo_list'
         )) as any;
 
-        expect(createGoal.properties.steps.items.properties.name.enum)
+        expect(repeatablePlan.properties.steps.items.properties.name.enum)
             .toContain('apply_query_to_analysis_result');
-        expect(createGoal.properties.stop_when.properties.tool.properties.name.enum)
+        expect(repeatablePlan.properties.stop_when.properties.tool.properties.name.enum)
             .toContain('apply_query_to_analysis_result');
         expect(addEvents.properties.events.items.properties.tool.properties.name.enum)
             .toContain('apply_query_to_analysis_result');
@@ -418,13 +418,13 @@ describe('set_procedure_plan tool', () => {
     });
 });
 
-describe('create_goal tool', () => {
+describe('create_repeatable_plan tool', () => {
     it('defines the canonical preparation workflow and numeric stop_when schema', () => {
         const tools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
-        const tool = tools.find(({ name }) => name === 'create_goal') as any;
+        const tool = tools.find(({ name }) => name === 'create_repeatable_plan') as any;
         expect(tool).toMatchObject({
             required: ['name', 'steps', 'stop_when'],
             properties: {
@@ -472,37 +472,37 @@ describe('create_goal tool', () => {
             .toContain('comparable to the value returned by the stop-when tool');
     });
 
-    it('exposes create_goal only to the Live Performance Analyst and constrains nested tools by session', () => {
+    it('exposes create_repeatable_plan only to the Live Performance Analyst and constrains nested tools by session', () => {
         const namesFor = (context: Record<string, unknown>) => (
             getSessionToolsForSessionContext(context).map(({ name }) => name)
         );
-        expect(namesFor({ session_mode: 'live' })).not.toContain('create_goal');
+        expect(namesFor({ session_mode: 'live' })).not.toContain('create_repeatable_plan');
         expect(namesFor({
             session_mode: 'live',
             agent_mode: 'track_guide',
-        })).not.toContain('create_goal');
+        })).not.toContain('create_repeatable_plan');
 
         const analystTools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
-        const createGoal = analystTools.find(({ name }) => name === 'create_goal') as any;
-        const nestedNames = createGoal.properties.steps.items.properties.name.enum;
-        const stopWhenNames = createGoal
+        const repeatablePlan = analystTools.find(({ name }) => name === 'create_repeatable_plan') as any;
+        const nestedNames = repeatablePlan.properties.steps.items.properties.name.enum;
+        const stopWhenNames = repeatablePlan
             .properties.stop_when.properties.tool.properties.name.enum;
         expect(nestedNames).toEqual(analystTools
             .map(({ name }) => name)
-            .filter((name) => name !== 'create_goal' && name !== 'retry_goal_task'));
+            .filter((name) => name !== 'create_repeatable_plan' && name !== 'retry_repeatable_plan_task'));
         expect(nestedNames).toEqual(expect.arrayContaining([
             'collect_live_baseline',
             'analyze_live_recorded_analysis',
             'query_analysis_result',
         ]));
-        expect(nestedNames).not.toContain('create_goal');
-        expect(nestedNames).not.toContain('retry_goal_task');
+        expect(nestedNames).not.toContain('create_repeatable_plan');
+        expect(nestedNames).not.toContain('retry_repeatable_plan_task');
         expect(stopWhenNames).toEqual(nestedNames);
-        expect(stopWhenNames).not.toContain('create_goal');
-        expect(stopWhenNames).not.toContain('retry_goal_task');
+        expect(stopWhenNames).not.toContain('create_repeatable_plan');
+        expect(stopWhenNames).not.toContain('retry_repeatable_plan_task');
 
     });
 });
@@ -548,28 +548,28 @@ describe('telemetry metric query tool', () => {
     });
 });
 
-describe('retry_goal_task tool', () => {
+describe('retry_repeatable_plan_task tool', () => {
     it('defines a no-argument schema and is exposed only to the Live Performance Analyst', () => {
         const namesFor = (context: Record<string, unknown>) => (
             getSessionToolsForSessionContext(context).map(({ name }) => name)
         );
         const tool = SESSION_TOOLS.find(({ name }) => (
-            name === 'retry_goal_task'
+            name === 'retry_repeatable_plan_task'
         ));
         expect(tool).toMatchObject({ properties: {}, required: [] });
 
-        expect(namesFor({ session_mode: 'live' })).not.toContain('retry_goal_task');
+        expect(namesFor({ session_mode: 'live' })).not.toContain('retry_repeatable_plan_task');
         expect(namesFor({
             session_mode: 'live',
             agent_mode: 'track_guide',
-        })).not.toContain('retry_goal_task');
+        })).not.toContain('retry_repeatable_plan_task');
         expect(namesFor({
             session_mode: 'recorded',
             agent_mode: 'live_performance_analyst',
-        })).not.toContain('retry_goal_task');
+        })).not.toContain('retry_repeatable_plan_task');
         expect(namesFor({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
-        })).toContain('retry_goal_task');
+        })).toContain('retry_repeatable_plan_task');
     });
 });

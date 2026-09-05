@@ -222,7 +222,7 @@ html, body, #root, .App {
 .overlay-shell .ai-chat__tool-wrap--pill { width: 100%; }
 .overlay-shell .ai-chat__tool--pill { padding: 8px 10px; font-size: 10px; }
 
-/* Goal runner has its own glanceable driving-overlay surface. */
+/* Repeatable plan has its own glanceable driving-overlay surface. */
 .goal-overlay {
     --goal-overlay-tone: var(--overlay-accent);
     position: relative;

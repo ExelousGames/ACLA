@@ -1,5 +1,5 @@
 import type { AiOverlayRenderer } from './ai-overlay-types';
-import { goalOverlayRenderer } from 'components/ai-engineering-tools/Goal';
+import { repeatablePlanOverlayRenderer } from 'components/ai-engineering-tools/RepeatablePlan';
 import { liveRangeTodoListOverlayRenderer } from 'components/ai-engineering-tools/LiveRangeTodoList';
 import { procedurePlanOverlayRenderer } from 'components/ai-engineering-tools/ProcedurePlan';
 import { driverExpertComparisonOverlayRenderer } from 'components/driver-expert-comparison/DriverExpertComparisonGraph';
@@ -9,7 +9,7 @@ import { toolMessageDisplayOverlayRenderer } from 'views/lap-analysis/ai-chat/To
 import { baselineProgressDisplayOverlayRenderer } from 'views/live-session/BaselineProgressDisplay';
 
 const builtInRenderers: readonly AiOverlayRenderer[] = [
-    goalOverlayRenderer,
+    repeatablePlanOverlayRenderer,
     liveRangeTodoListOverlayRenderer,
     procedurePlanOverlayRenderer,
     driverExpertComparisonOverlayRenderer,

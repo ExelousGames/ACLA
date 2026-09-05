@@ -32,8 +32,8 @@ import {
 import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
 import {
-    Goal,
-    GoalRunner,
+    RepeatablePlan,
+    RepeatablePlanRunner,
     LiveRangeTodoList,
     LiveRangeTodoListRunner,
     ProcedurePlan,
@@ -43,7 +43,7 @@ import {
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
     type AiToolDispatcher,
-    type GoalHandle,
+    type RepeatablePlanHandle,
     type AiToolOperation,
     type LiveRangeTodoListHandle,
     type ProcedurePlanHandle,
@@ -191,7 +191,7 @@ export interface AiChatHandle extends NamedAiToolComponentHandle {
     startTrackGuide(): void;
     setTrackGuideEnabled(enabled: boolean): void;
     setLivePerformanceAnalystEnabled(enabled: boolean): void;
-    createGoal(args: Record<string, unknown>, dispatchTool: AiToolDispatcher): ReturnType<GoalHandle['createGoal']>;
+    createRepeatablePlan(args: Record<string, unknown>, dispatchTool: AiToolDispatcher): ReturnType<RepeatablePlanHandle['createRepeatablePlan']>;
     createProcedurePlan(args: Record<string, unknown>, dispatchTool: AiToolDispatcher): ReturnType<ProcedurePlanHandle['createProcedurePlan']>;
     initializeLiveRangeTodoList(): LiveRangeTodoListHandle;
     setAgentTagActive(tag: string, active: boolean): void;
@@ -209,12 +209,12 @@ export interface AiChatHandle extends NamedAiToolComponentHandle {
 export type ShowMapAiResult = { status: string; [key: string]: unknown };
 
 type ActiveWorkflow =
-    | { kind: 'goal'; key: number; runner: GoalRunner }
+    | { kind: 'repeatable_plan'; key: number; runner: RepeatablePlanRunner }
     | { kind: 'procedure_plan'; key: number; runner: ProcedurePlanRunner }
     | { kind: 'live_range_todo'; key: number; runner: LiveRangeTodoListRunner };
 
 type PendingWorkflow =
-    | Omit<Extract<ActiveWorkflow, { kind: 'goal' }>, 'key'>
+    | Omit<Extract<ActiveWorkflow, { kind: 'repeatable_plan' }>, 'key'>
     | Omit<Extract<ActiveWorkflow, { kind: 'procedure_plan' }>, 'key'>
     | Omit<Extract<ActiveWorkflow, { kind: 'live_range_todo' }>, 'key'>;
 
@@ -328,7 +328,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const [isLoading] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
     const [procedurePlanSnapshot, setProcedurePlanSnapshot] = useState<ProcedurePlanSnapshot | null>(null);
-    const [goalSnapshot, setGoalSnapshot] = useState<GoalSnapshot | null>(null);
+    const [repeatablePlanSnapshot, setRepeatablePlanSnapshot] = useState<GoalSnapshot | null>(null);
     const [activeWorkflow, setActiveWorkflow] = useState<ActiveWorkflow | null>(null);
     const activeWorkflowRef = useRef<ActiveWorkflow | null>(null);
     const workflowKeyRef = useRef(0);
@@ -458,7 +458,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             activeToolHandlersRef.current = {};
             const activeWorkflow = activeWorkflowRef.current;
             activeWorkflowRef.current = null;
-            if (activeWorkflow?.kind === 'goal' || activeWorkflow?.kind === 'procedure_plan') {
+            if (activeWorkflow?.kind === 'repeatable_plan' || activeWorkflow?.kind === 'procedure_plan') {
                 activeWorkflow.runner.dispose();
             }
             const liveRangeTodoListRunner = liveRangeTodoListRunnerRef.current;
@@ -472,12 +472,12 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const mountWorkflow = useCallback((workflow: PendingWorkflow) => {
         const previous = activeWorkflowRef.current;
         if (
-            (previous?.kind === 'goal' || previous?.kind === 'procedure_plan')
+            (previous?.kind === 'repeatable_plan' || previous?.kind === 'procedure_plan')
             && previous.runner !== workflow.runner
         ) {
             previous.runner.dispose();
         }
-        if (workflow.kind === 'goal' || workflow.kind === 'procedure_plan') {
+        if (workflow.kind === 'repeatable_plan' || workflow.kind === 'procedure_plan') {
             try {
                 workflow.runner.addComponentRef(componentRefs);
             } catch (error) {
@@ -488,7 +488,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         const next = { ...workflow, key: ++workflowKeyRef.current } as ActiveWorkflow;
         activeWorkflowRef.current = next;
         flushSync(() => {
-            setGoalSnapshot(null);
+            setRepeatablePlanSnapshot(null);
             procedurePlanRef.current = null;
             setProcedurePlanSnapshot(null);
             setActiveWorkflow(next);
@@ -1114,18 +1114,18 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const inactiveAgentToolHandlers = useMemo(() => ({}), []);
     const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
     const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
-    const createGoal = useCallback((
+    const createRepeatablePlan = useCallback((
         args: Record<string, unknown>,
         dispatchTool: AiToolDispatcher,
-    ): ReturnType<GoalHandle['createGoal']> => {
-        const runner = new GoalRunner(
-            AI_TOOL_COMPONENT_NAMES.GOAL,
+    ): ReturnType<RepeatablePlanHandle['createRepeatablePlan']> => {
+        const runner = new RepeatablePlanRunner(
+            AI_TOOL_COMPONENT_NAMES.REPEATABLE_PLAN,
             dispatchTool,
-            setGoalSnapshot,
+            setRepeatablePlanSnapshot,
         );
         try {
-            mountWorkflow({ kind: 'goal', runner });
-            return runner.createGoal(args as any);
+            mountWorkflow({ kind: 'repeatable_plan', runner });
+            return runner.createRepeatablePlan(args as any);
         } catch (error) {
             runner.dispose();
             return createAiToolOperationFrom(() => { throw error; }, 'failed');
@@ -1204,11 +1204,11 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         procedurePlanOptedOutRef.current = false;
         const active = activeWorkflowRef.current;
         activeWorkflowRef.current = null;
-        if (active?.kind === 'goal' || active?.kind === 'procedure_plan') {
+        if (active?.kind === 'repeatable_plan' || active?.kind === 'procedure_plan') {
             active.runner.dispose();
         }
         setActiveWorkflow(null);
-        setGoalSnapshot(null);
+        setRepeatablePlanSnapshot(null);
         const liveRangeTodoListRunner = liveRangeTodoListRunnerRef.current;
         liveRangeTodoListRunnerRef.current = null;
         liveRangeTodoListRunner?.dispose();
@@ -1360,7 +1360,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         startTrackGuide,
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-        createGoal,
+        createRepeatablePlan,
         createProcedurePlan,
         initializeLiveRangeTodoList,
         setAgentTagActive: setAgentTag,
@@ -1378,7 +1378,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         ),
     }), [
         analysisContext?.recordingState,
-        createGoal,
+        createRepeatablePlan,
         createProcedurePlan,
         displayMapInChat,
         getCategoryLabels,
@@ -2192,10 +2192,10 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                         && (activeWorkflow.kind !== 'procedure_plan' || procedurePlanSnapshot)
                         && (
                         <div className="ai-chat__tool-list">
-                            {activeWorkflow.kind === 'goal' && (
-                                <Goal
+                            {activeWorkflow.kind === 'repeatable_plan' && (
+                                <RepeatablePlan
                                     key={activeWorkflow.key}
-                                    snapshot={goalSnapshot}
+                                    snapshot={repeatablePlanSnapshot}
                                     surface="chat"
                                 />
                             )}

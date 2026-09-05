@@ -70,14 +70,14 @@ export type {
     LiveRangeTodoStatus,
 } from './live-range-todo-list-types';
 export {
-    default as Goal,
+    default as RepeatablePlan,
     GOAL_COMPARISON_OPERATORS,
-    GoalDisplay,
-    GoalRunner,
+    RepeatablePlanDisplay,
+    RepeatablePlanRunner,
     buildGoalRequest,
     compareGoalValues,
     validateGoalRequest,
-} from './Goal';
+} from './RepeatablePlan';
 export type {
     GoalComparisonOperator,
     AiToolDispatcher,
@@ -86,9 +86,9 @@ export type {
     GoalStopWhenResult,
     GoalStopWhenStatus,
     GoalStopWhenTool,
-    GoalDisplayProps,
-    GoalHandle,
-    GoalProps,
+    RepeatablePlanDisplayProps,
+    RepeatablePlanHandle,
+    RepeatablePlanProps,
     GoalRunResult,
     GoalRequest,
     GoalSnapshot,
@@ -101,4 +101,4 @@ export type {
     GoalTaskDescriptor,
     GoalTaskResult,
     NestedAiToolResult,
-} from './Goal';
+} from './RepeatablePlan';

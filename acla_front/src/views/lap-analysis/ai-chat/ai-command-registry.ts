@@ -27,7 +27,7 @@ import {
 import { isLiveSessionAiAvailable, type RecordingState } from 'views/lap-analysis/recording-state';
 import type {
     AiToolDispatcher,
-    GoalHandle,
+    RepeatablePlanHandle,
     LiveRangeTodoEventInput,
     LiveRangeTodoListHandle,
     ProcedurePlanHandle,
@@ -327,8 +327,8 @@ export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
     'analyze_live_recorded_analysis',
     'apply_query_to_analysis_result',
     'query_analysis_result',
-    'create_goal',
-    'retry_goal_task',
+    'create_repeatable_plan',
+    'retry_repeatable_plan_task',
     'advance_plan_step',
     'clear_procedure_plan',
     'set_procedure_plan',
@@ -465,7 +465,7 @@ const validateDisplaySpecificResultArguments = (
     };
 };
 
-type WorkflowOwner = 'chat' | 'goal' | 'procedure_plan' | 'live_range_todo';
+type WorkflowOwner = 'chat' | 'repeatable_plan' | 'procedure_plan' | 'live_range_todo';
 
 type FrontendAiToolDefinition = {
     readonly name: FrontendAiToolName;
@@ -491,8 +491,8 @@ const getComponent = <T,>(context: FrontendAiCommandContext, name: string): T =>
 );
 
 const WORKFLOW_CONTROL_TOOLS = new Set<FrontendAiToolName>([
-    'create_goal',
-    'retry_goal_task',
+    'create_repeatable_plan',
+    'retry_repeatable_plan_task',
     'set_procedure_plan',
     'advance_plan_step',
     'clear_procedure_plan',
@@ -519,7 +519,7 @@ const LIVE_RANGE_TODO_NESTED_TOOLS = new Set<FrontendAiToolName>(
     )),
 );
 
-const GOAL_STEP_TOOLS = new Set<FrontendAiToolName>([
+const REPEATABLE_PLAN_STEP_TOOLS = new Set<FrontendAiToolName>([
     'stop_agent_session',
     'add_event_to_live_range_todo_list',
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
@@ -543,14 +543,14 @@ const GOAL_STEP_TOOLS = new Set<FrontendAiToolName>([
     'analyze_telemetry',
 ]);
 
-export const isGoalStepAvailableForContext = (
+export const isRepeatablePlanStepAvailableForContext = (
     context: Pick<FrontendAiCommandContext, 'sessionMode' | 'conversationRole' | 'agentMode'>,
     name: string,
 ): boolean => (
     context.sessionMode === 'live'
     && context.conversationRole === 'agent'
     && context.agentMode === 'live_performance_analyst'
-    && GOAL_STEP_TOOLS.has(name as FrontendAiToolName)
+    && REPEATABLE_PLAN_STEP_TOOLS.has(name as FrontendAiToolName)
 );
 
 const assertAvailable = (
@@ -573,28 +573,28 @@ const assertAvailable = (
             `Tool '${name}' cannot be scheduled by the live range to-do list.`,
         );
     }
-    if (owner === 'goal' && !isGoalStepAvailableForContext(context, name)) {
-        throw new ToolNotRegisteredError(`Tool '${name}' is unavailable inside a goal.`);
+    if (owner === 'repeatable_plan' && !isRepeatablePlanStepAvailableForContext(context, name)) {
+        throw new ToolNotRegisteredError(`Tool '${name}' is unavailable inside a repeatable plan.`);
     }
     if (owner === 'procedure_plan' && WORKFLOW_CONTROL_TOOLS.has(name)) {
         throw new ToolNotRegisteredError(`Tool '${name}' is unavailable inside a procedure plan.`);
     }
-    if (name === 'create_goal' && (
+    if (name === 'create_repeatable_plan' && (
         context.sessionMode !== 'live'
         || context.conversationRole !== 'agent'
         || context.agentMode !== 'live_performance_analyst'
     )) {
         throw new CreateGoalToolUnavailableError(
-            'Goal creation is available only to the live performance analyst.',
+            'Repeatable plan creation is available only to the live performance analyst.',
         );
     }
-    if (name === 'retry_goal_task' && (
+    if (name === 'retry_repeatable_plan_task' && (
         context.sessionMode !== 'live'
         || context.conversationRole !== 'agent'
         || context.agentMode !== 'live_performance_analyst'
     )) {
         throw new RetryGoalTaskToolUnavailableError(
-            'Goal task retry is available only to the live performance analyst.',
+            'Repeatable plan task retry is available only to the live performance analyst.',
         );
     }
     if (name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list' && (
@@ -1111,15 +1111,15 @@ const definitionList = Object.freeze([
         },
     },
     {
-        name: 'create_goal',
+        name: 'create_repeatable_plan',
         componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
         execute: (context, args, dispatchNested) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
-            .createGoal(args, dispatchNested),
+            .createRepeatablePlan(args, dispatchNested),
     },
     {
-        name: 'retry_goal_task',
-        componentName: AI_TOOL_COMPONENT_NAMES.GOAL,
-        execute: (context) => getComponent<GoalHandle>(context, AI_TOOL_COMPONENT_NAMES.GOAL)
+        name: 'retry_repeatable_plan_task',
+        componentName: AI_TOOL_COMPONENT_NAMES.REPEATABLE_PLAN,
+        execute: (context) => getComponent<RepeatablePlanHandle>(context, AI_TOOL_COMPONENT_NAMES.REPEATABLE_PLAN)
             .retryFailedTask(),
     },
     {
@@ -1255,8 +1255,8 @@ const dispatchAiTool = (
         const definition = definitions[name as FrontendAiToolName];
         if (!definition) throw new ToolNotRegisteredError(`Tool '${name}' is not registered.`);
         assertAvailable(context, definition.name, owner);
-        const nestedOwner: WorkflowOwner = definition.name === 'create_goal'
-            ? 'goal'
+        const nestedOwner: WorkflowOwner = definition.name === 'create_repeatable_plan'
+            ? 'repeatable_plan'
             : definition.name === 'add_event_to_live_range_todo_list'
                 || definition.name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
                 ? 'live_range_todo'

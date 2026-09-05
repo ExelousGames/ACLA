@@ -3,9 +3,9 @@ import type {
     GoalStopWhenResult,
     GoalSnapshot,
     GoalStepSnapshot,
-} from './Goal';
+} from './RepeatablePlan';
 
-export type GoalOverlayDisplayProps = {
+export type RepeatablePlanOverlayDisplayProps = {
     snapshot: GoalSnapshot;
 };
 
@@ -58,7 +58,7 @@ const getOutcomeMetric = (snapshot: GoalSnapshot): string | null => {
     return `${snapshot.actual} ${snapshot.stop_when.operator} ${snapshot.stop_when.target}`;
 };
 
-export const getGoalOverlaySummary = (snapshot: GoalSnapshot): string => {
+export const getRepeatablePlanOverlaySummary = (snapshot: GoalSnapshot): string => {
     const activity = getActivity(snapshot);
     if (activity.kind === 'step') return activity.step.title;
     if (activity.kind === 'stopWhen') return 'Checking stop condition';
@@ -67,7 +67,7 @@ export const getGoalOverlaySummary = (snapshot: GoalSnapshot): string => {
     return activity.message;
 };
 
-export const GoalOverlayDisplay: React.FC<GoalOverlayDisplayProps> = ({ snapshot }) => {
+export const RepeatablePlanOverlayDisplay: React.FC<RepeatablePlanOverlayDisplayProps> = ({ snapshot }) => {
     const activity = getActivity(snapshot);
     const completedCount = getCompletedCount(snapshot);
     const progress = snapshot.steps.length > 0
@@ -75,7 +75,7 @@ export const GoalOverlayDisplay: React.FC<GoalOverlayDisplayProps> = ({ snapshot
         : 0;
     const outcomeMetric = getOutcomeMetric(snapshot);
 
-    let activityLabel = 'Goal runner';
+    let activityLabel = 'Repeatable plan';
     let activityTitle = snapshot.name;
     let activityMeta: string | null = null;
     let activityError: string | null = null;
@@ -107,7 +107,7 @@ export const GoalOverlayDisplay: React.FC<GoalOverlayDisplayProps> = ({ snapshot
         activityTitle = 'Preparing another run';
         activityMeta = outcomeMetric;
     } else {
-        activityLabel = snapshot.status === 'error' ? 'Goal stopped' : 'Goal runner';
+        activityLabel = snapshot.status === 'error' ? 'Plan stopped' : 'Repeatable plan';
         activityTitle = activity.message;
         activityError = snapshot.error || null;
     }
@@ -115,14 +115,14 @@ export const GoalOverlayDisplay: React.FC<GoalOverlayDisplayProps> = ({ snapshot
     return (
         <section
             className={`goal-overlay goal-overlay--${snapshot.status}`}
-            aria-label="Goal runner overlay"
+            aria-label="Repeatable plan overlay"
             aria-live="polite"
             data-testid="goal-overlay"
         >
             <header className="goal-overlay__header">
                 <div className="goal-overlay__identity">
                     <span className="goal-overlay__pulse" aria-hidden="true" />
-                    <span>Goal runner</span>
+                    <span>Repeatable plan</span>
                 </div>
                 <span className="goal-overlay__progress-count">
                     {completedCount}/{snapshot.steps.length}
@@ -154,4 +154,4 @@ export const GoalOverlayDisplay: React.FC<GoalOverlayDisplayProps> = ({ snapshot
     );
 };
 
-export default GoalOverlayDisplay;
+export default RepeatablePlanOverlayDisplay;

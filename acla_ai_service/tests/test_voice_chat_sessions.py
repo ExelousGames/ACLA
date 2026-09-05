@@ -576,6 +576,15 @@ def test_startup_prompt_keeps_neutral_procedure_plan_guidance():
     )
 
 
+def test_live_performance_analyst_prompt_names_repeatable_plan_tool():
+    prompt = pipecat_pipeline._build_system_prompt({
+        "session_mode": "live",
+        "agent_mode": "live_performance_analyst",
+    })
+
+    assert "create_repeatable_plan" in prompt
+
+
 def test_parent_startup_surface_contains_only_application_tool_search():
     session_tool = {
         "name": "show_map",

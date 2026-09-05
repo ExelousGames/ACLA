@@ -3,7 +3,7 @@ import { AiToolComponentBase } from './AiToolComponentBase';
 import type {
     NamedAiToolComponentHandle,
 } from 'contexts/AiToolComponentRefContext';
-import type { AiToolDispatcher } from './Goal';
+import type { AiToolDispatcher } from './RepeatablePlan';
 import {
     createControlledAiToolOperation,
     createAiToolOperationFrom,
@@ -104,8 +104,8 @@ type ActiveProcedurePlanOperation = {
         'complete' | 'failed' | 'cancelled' | 'replaced'
     >;
     nestedOperation: AiToolOperation<
-        import('./Goal').NestedAiToolResult,
-        import('./Goal').NestedAiToolStatus
+        import('./RepeatablePlan').NestedAiToolResult,
+        import('./RepeatablePlan').NestedAiToolStatus
     > | null;
 };
 
@@ -323,11 +323,11 @@ implements ProcedurePlanHandle {
                 )),
             });
             const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-            let output: import('./Goal').NestedAiToolResult | null = null;
+            let output: import('./RepeatablePlan').NestedAiToolResult | null = null;
             let executionError: unknown;
             let nestedOperation: AiToolOperation<
-                import('./Goal').NestedAiToolResult,
-                import('./Goal').NestedAiToolStatus
+                import('./RepeatablePlan').NestedAiToolResult,
+                import('./RepeatablePlan').NestedAiToolStatus
             > | null = null;
             try {
                 const activeOperation = this.activeOperation;
@@ -346,7 +346,7 @@ implements ProcedurePlanHandle {
                 }
                 const termination = await new Promise<{
                     status: string;
-                    result: import('./Goal').NestedAiToolResult | Error;
+                    result: import('./RepeatablePlan').NestedAiToolResult | Error;
                 }>((resolve) => nestedOperation!.notifyTerminated(resolve));
                 if (termination.result instanceof Error) throw termination.result;
                 output = termination.result;
@@ -405,7 +405,7 @@ implements ProcedurePlanHandle {
     private toTaskResult(
         request: ProcedurePlanRequestSnapshot,
         runId: string,
-        output: import('./Goal').NestedAiToolResult | null,
+        output: import('./RepeatablePlan').NestedAiToolResult | null,
         error: ProcedurePlanStepFailedError | undefined,
     ): ProcedurePlanTaskResult {
         return {

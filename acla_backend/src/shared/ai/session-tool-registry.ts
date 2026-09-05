@@ -212,17 +212,17 @@ export const SESSION_TOOLS = [
         required: ['query'],
     },
     {
-        name: 'create_goal',
-        description: 'Create one visible goal that executes ordered session tool calls in a loop until its stopping condition is met. If the goal is missed, the loop continues until the goal is achieved, an error occurs, or the user cancels the goal. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. The operator compares the returned data with the target, so both values must be finite numbers measured on the same scale.',
+        name: 'create_repeatable_plan',
+        description: 'Create one visible repeatable plan that executes ordered session tool calls, checks a numeric stopping condition, and repeats the plan until the condition is met. Repetition continues until the target is reached, an error occurs, or the user cancels the plan. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. The operator compares the returned data with the target, so both values must be finite numbers measured on the same scale.',
         properties: {
             name: {
                 type: 'string',
-                description: 'Short name displayed on the goal card.',
+                description: 'Short name displayed on the repeatable plan card.',
             },
             steps: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered session tool calls. Every id must be unique; create_goal and retry_goal_task cannot be nested.',
+                description: 'Ordered session tool calls. Every id must be unique; create_repeatable_plan and retry_repeatable_plan_task cannot be nested.',
                 items: {
                     type: 'object',
                     properties: {
@@ -240,7 +240,7 @@ export const SESSION_TOOLS = [
                 properties: {
                     tool: {
                         type: 'object',
-                        description: 'Frontend tool call that must return { "status": "ready", "data": finiteNumber } to determine whether the goal was achieved.',
+                        description: 'Frontend tool call that must return { "status": "ready", "data": finiteNumber } to determine whether the repeatable plan reached its target.',
                         properties: {
                             name: { type: 'string', description: 'Available session tool to execute.' },
                             arguments: { type: 'object', description: 'Arguments passed unchanged to the stop-when tool.' },
@@ -256,8 +256,8 @@ export const SESSION_TOOLS = [
         required: ['name', 'steps', 'stop_when'],
     },
     {
-        name: 'retry_goal_task',
-        description: 'Retry the currently failed goal task once with its stored arguments, then continue the remaining goal workflow after success. Available only when the visible goal is in an error state with a failed task.',
+        name: 'retry_repeatable_plan_task',
+        description: 'Retry the currently failed repeatable plan task once with its stored arguments, then continue the remaining plan after success. Available only when the visible repeatable plan is in an error state with a failed task.',
         properties: {},
         required: [],
     },
@@ -509,14 +509,14 @@ const LIVE_AGENT_SESSION_TOOL_NAMES: SessionToolName[] = [
 ];
 
 const LIVE_PERFORMANCE_ANALYST_TOOL_NAMES: SessionToolName[] = [
-    'create_goal',
-    'retry_goal_task',
+    'create_repeatable_plan',
+    'retry_repeatable_plan_task',
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
 ];
 
 const LIVE_RANGE_TODO_NESTED_TOOL_EXCLUSIONS = new Set<SessionToolName>([
-    'create_goal',
-    'retry_goal_task',
+    'create_repeatable_plan',
+    'retry_repeatable_plan_task',
     'set_procedure_plan',
     'advance_plan_step',
     'clear_procedure_plan',
@@ -611,9 +611,9 @@ export const getSessionToolsForSessionContext = (
     );
 
     const tools = SESSION_TOOLS.filter((tool) => allowedToolNames.has(tool.name));
-    const nestedToolNames = tools
+    const repeatablePlanNestedToolNames = tools
         .map((tool) => tool.name)
-        .filter((name) => name !== 'create_goal' && name !== 'retry_goal_task');
+        .filter((name) => name !== 'create_repeatable_plan' && name !== 'retry_repeatable_plan_task');
     const liveRangeTodoNestedToolNames = tools
         .map((tool) => tool.name)
         .filter((name) => !LIVE_RANGE_TODO_NESTED_TOOL_EXCLUSIONS.has(name));
@@ -649,7 +649,7 @@ export const getSessionToolsForSessionContext = (
                 },
             };
         }
-        if (tool.name !== 'create_goal') return tool;
+        if (tool.name !== 'create_repeatable_plan') return tool;
         const steps = tool.properties.steps;
         const stopWhen = tool.properties.stop_when;
         const stopWhenTool = stopWhen.properties.tool;
@@ -665,7 +665,7 @@ export const getSessionToolsForSessionContext = (
                             ...steps.items.properties,
                             name: {
                                 ...steps.items.properties.name,
-                                enum: nestedToolNames,
+                                enum: repeatablePlanNestedToolNames,
                             },
                         },
                     },
@@ -680,7 +680,7 @@ export const getSessionToolsForSessionContext = (
                                 ...stopWhenTool.properties,
                                 name: {
                                     ...stopWhenTool.properties.name,
-                                    enum: nestedToolNames,
+                                    enum: repeatablePlanNestedToolNames,
                                 },
                             },
                         },

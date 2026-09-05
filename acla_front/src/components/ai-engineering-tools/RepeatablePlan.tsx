@@ -33,7 +33,7 @@ import {
     type ControlledAiToolOperation,
     type AiToolOperation,
 } from './ai-tool-operation';
-import GoalOverlayDisplay, { getGoalOverlaySummary } from './GoalOverlayDisplay';
+import RepeatablePlanOverlayDisplay, { getRepeatablePlanOverlaySummary } from './RepeatablePlanOverlayDisplay';
 
 export type NestedAiToolResult = Record<string, unknown> | string;
 export interface NestedAiToolStatus {
@@ -155,26 +155,29 @@ export type GoalRunResult = Pick<
 
 export type GoalAiResult = Omit<GoalRunResult, 'name'> & { goal: string };
 
-export interface GoalHandle extends NamedAiToolComponentHandle, AiOverlayComponentHandle<GoalSnapshot | null> {
-    createGoal(input: GoalRequest): AiToolOperation<GoalAiResult>;
+export interface RepeatablePlanHandle extends NamedAiToolComponentHandle, AiOverlayComponentHandle<GoalSnapshot | null> {
+    createRepeatablePlan(input: GoalRequest): AiToolOperation<GoalAiResult>;
     retryFailedTask(): AiToolOperation<GoalAiResult>;
     getSnapshot(): GoalSnapshot | null;
     clear(): void;
 }
 
-export type GoalDisplayProps = {
+export type RepeatablePlanDisplayProps = {
     snapshot: GoalSnapshot;
     surface?: 'chat' | 'pill';
 };
 
-export type GoalProps = {
+export type RepeatablePlanProps = {
     snapshot: GoalSnapshot | null;
     surface?: 'chat' | 'pill';
 };
 
 const RETRY_DELAY_MS = 1000;
-const RECURSIVE_GOAL_TOOL_NAMES = new Set(['create_goal', 'retry_goal_task']);
-const createGoalRunId = (): string => (
+const RECURSIVE_GOAL_TOOL_NAMES = new Set([
+    'create_repeatable_plan',
+    'retry_repeatable_plan_task',
+]);
+const createRepeatablePlanRunId = (): string => (
     `goal-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
 );
 
@@ -249,26 +252,26 @@ const parseGoalStopWhen = (value: unknown): GoalStopWhen | null => {
 
 export const validateGoalRequest = (
     value: unknown,
-    componentName = 'goal',
+    componentName = 'repeatable-plan',
 ): { request: GoalRequest } | { error: GoalComponentError; name?: string } => {
     const input = isRecord(value) ? value : null;
     const name = toNonEmptyString(input?.name);
     if (!input || !name || !hasOnlyKeys(input, ['name', 'steps', 'stop_when'])) {
         return {
-            error: new InvalidGoalNameError(componentName, 'Provide a valid goal name.'),
+            error: new InvalidGoalNameError(componentName, 'Provide a valid repeatable plan name.'),
             ...(name ? { name } : {}),
         };
     }
     if (!Array.isArray(input.steps) || input.steps.length === 0) {
         return {
-            error: new InvalidGoalStepsError(componentName, 'Provide at least one valid goal step.'),
+            error: new InvalidGoalStepsError(componentName, 'Provide at least one valid repeatable plan step.'),
             name,
         };
     }
     const steps = input.steps.map(parseGoalStepDescriptor);
     if (steps.some((step) => !step)) {
         return {
-            error: new InvalidGoalStepsError(componentName, 'Every goal step must have a valid id, title, name, and arguments object.'),
+            error: new InvalidGoalStepsError(componentName, 'Every repeatable plan step must have a valid id, title, name, and arguments object.'),
             name,
         };
     }
@@ -277,14 +280,14 @@ export const validateGoalRequest = (
     for (const step of parsedSteps) {
         if (ids.has(step.id)) {
             return {
-                error: new DuplicateGoalStepIdError(componentName, `Goal step id '${step.id}' is duplicated.`),
+                error: new DuplicateGoalStepIdError(componentName, `Repeatable plan step id '${step.id}' is duplicated.`),
                 name,
             };
         }
         ids.add(step.id);
         if (RECURSIVE_GOAL_TOOL_NAMES.has(step.name)) {
             return {
-                error: new RecursiveGoalStepError(componentName, 'Goal steps cannot invoke goal-management tools.'),
+                error: new RecursiveGoalStepError(componentName, 'Repeatable plan steps cannot invoke repeatable-plan management tools.'),
                 name,
             };
         }
@@ -292,13 +295,13 @@ export const validateGoalRequest = (
     const stopWhen = parseGoalStopWhen(input.stop_when);
     if (!stopWhen) {
         return {
-            error: new InvalidGoalStopWhenError(componentName, 'Provide a valid goal stop condition.'),
+            error: new InvalidGoalStopWhenError(componentName, 'Provide a valid repeatable plan stop condition.'),
             name,
         };
     }
     if (RECURSIVE_GOAL_TOOL_NAMES.has(stopWhen.tool.name)) {
         return {
-            error: new RecursiveGoalStopWhenError(componentName, 'Goal stop condition cannot invoke a goal-management tool.'),
+            error: new RecursiveGoalStopWhenError(componentName, 'Repeatable plan stop condition cannot invoke a repeatable-plan management tool.'),
             name,
         };
     }
@@ -307,7 +310,7 @@ export const validateGoalRequest = (
 
 export const buildGoalRequest = (
     value: unknown,
-    componentName = 'goal',
+    componentName = 'repeatable-plan',
 ): { request: GoalRequest } | { error: GoalComponentError; name?: string } => (
     validateGoalRequest(value, componentName)
 );
@@ -413,9 +416,9 @@ const toGoalAiResult = (result: GoalRunResult): GoalAiResult => {
     return { ...safeResult, goal: name };
 };
 
-export class GoalRunner
+export class RepeatablePlanRunner
 extends AiToolComponentBase<GoalSnapshot | null>
-implements GoalHandle {
+implements RepeatablePlanHandle {
     private currentSnapshot: GoalSnapshot | null = null;
     private request: GoalRequest | null = null;
     private failedStepIndex: number | null = null;
@@ -434,12 +437,12 @@ implements GoalHandle {
         super(componentName, null);
     }
 
-    createGoal(input: GoalRequest): AiToolOperation<GoalAiResult> {
+    createRepeatablePlan(input: GoalRequest): AiToolOperation<GoalAiResult> {
         return mapAiToolOperation(this.create(input), toGoalAiResult);
     }
 
     getComponentType(): string {
-        return 'goal';
+        return 'repeatable-plan';
     }
 
     getOverlayBehavior(snapshot: GoalSnapshot | null) {
@@ -455,7 +458,7 @@ implements GoalHandle {
     }
 
     handleOverlayRendererEvent(_event: AiOverlayRendererEvent): void {
-        // Goal overlays have no renderer-originated events.
+        // Repeatable plan overlays have no renderer-originated events.
     }
 
     getSnapshot(): GoalSnapshot | null {
@@ -474,7 +477,7 @@ implements GoalHandle {
         const validation = validateGoalRequest(input, this.getComponentName());
         if ('error' in validation) {
             const snapshot: GoalSnapshot = {
-                name: validation.name || 'Goal',
+                name: validation.name || 'Repeatable plan',
                 status: 'error',
                 steps: [],
                 stop_when: null,
@@ -514,7 +517,7 @@ implements GoalHandle {
         if (!request || !this.currentSnapshot || this.currentSnapshot.status !== 'error') {
             throw new GoalTaskRetryUnavailableError(
                 this.getComponentName(),
-                'The failed goal task could not be retried.',
+                'The failed repeatable plan task could not be retried.',
             );
         }
         const generation = ++this.generation;
@@ -538,14 +541,14 @@ implements GoalHandle {
         }
         throw new GoalTaskRetryUnavailableError(
             this.getComponentName(),
-            'The failed goal task could not be retried.',
+            'The failed repeatable plan task could not be retried.',
         );
     }
 
     clear(): void {
         this.cancelActiveOperation('cancelled', new GoalReplacedError(
             this.getComponentName(),
-            'The goal run was cleared.',
+            'The repeatable plan run was cleared.',
         ));
         this.generation += 1;
         this.currentSnapshot = null;
@@ -559,7 +562,7 @@ implements GoalHandle {
     protected onDispose(): void {
         this.cancelActiveOperation('cancelled', new GoalReplacedError(
             this.getComponentName(),
-            'The goal run was disposed.',
+            'The repeatable plan run was disposed.',
         ));
         this.generation += 1;
         this.currentSnapshot = null;
@@ -571,7 +574,7 @@ implements GoalHandle {
     ): AiToolOperation<GoalRunResult> {
         this.cancelActiveOperation('replaced', new GoalReplacedError(
             this.getComponentName(),
-            'The goal run was replaced.',
+            'The repeatable plan run was replaced.',
         ));
         let operation!: ActiveGoalOperation;
         const controller = createControlledAiToolOperation<
@@ -623,11 +626,11 @@ implements GoalHandle {
     ): Promise<GoalRunResult> {
         for (let index = startIndex; index < request.steps.length; index += 1) {
             if (generation !== this.generation) {
-                throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
+                throw new GoalReplacedError(this.getComponentName(), 'The repeatable plan run was cancelled.');
             }
             const step = request.steps[index];
             const attempt = (this.stepAttempts[index] ?? 0) + 1;
-            const runId = createGoalRunId();
+            const runId = createRepeatablePlanRunId();
             this.stepAttempts[index] = attempt;
             this.updateStep(index, {
                 status: 'running',
@@ -639,11 +642,11 @@ implements GoalHandle {
                 step.name,
                 step.arguments,
                 GoalStepFailedError,
-                'The goal step failed.',
+                'The repeatable plan step failed.',
                 runId,
             );
             if (generation !== this.generation) {
-                throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
+                throw new GoalReplacedError(this.getComponentName(), 'The repeatable plan run was cancelled.');
             }
             const sourceResult = { ...execution.source_result, step_id: step.id };
             this.taskResults.push({
@@ -705,10 +708,10 @@ implements GoalHandle {
             request.stop_when.tool.name,
             request.stop_when.tool.arguments,
             GoalStopWhenFailedError,
-            'The goal stop condition check failed.',
+            'The repeatable plan stop condition check failed.',
         );
         if (generation !== this.generation) {
-            throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
+            throw new GoalReplacedError(this.getComponentName(), 'The repeatable plan run was cancelled.');
         }
         let error = execution.error;
         let actual: number | null = null;
@@ -717,7 +720,7 @@ implements GoalHandle {
             if (actual === null) {
                 error = new GoalStopWhenInputIncompatibleError(
                     this.getComponentName(),
-                    'Goal stop condition requires a ready query result with finite numeric data.',
+                    'Repeatable plan stop condition requires a ready query result with finite numeric data.',
                 );
             }
         }
@@ -769,7 +772,7 @@ implements GoalHandle {
         if (!achieved) {
             await this.retryDelay();
             if (generation !== this.generation) {
-                throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
+                throw new GoalReplacedError(this.getComponentName(), 'The repeatable plan run was cancelled.');
             }
             this.publish(this.createRunningSnapshot(request));
             return this.runPreparation(request, generation, 0);
@@ -783,7 +786,7 @@ implements GoalHandle {
         argumentsValue: Record<string, unknown> | undefined,
         FailureError: AiToolComponentErrorConstructor<GoalComponentError>,
         fallbackMessage: string,
-        runId = createGoalRunId(),
+        runId = createRepeatablePlanRunId(),
     ): Promise<RuntimeTaskExecutionResult> {
         const activeOperation = this.activeOperation;
         let operation: AiToolOperation<NestedAiToolResult, NestedAiToolStatus> | null = null;
@@ -899,7 +902,7 @@ implements GoalHandle {
     }
 
     private finish(): void {
-        // The completed goal stays mounted until AI Chat replaces it.
+        // The completed repeatable plan stays mounted until AI Chat replaces it.
     }
 
     private retryDelay(): Promise<void> {
@@ -909,24 +912,24 @@ implements GoalHandle {
 
 const getComparisonText = (snapshot: GoalSnapshot): string => {
     const stopWhen = snapshot.stop_when;
-    if (!stopWhen) return snapshot.error || 'Invalid goal';
+    if (!stopWhen) return snapshot.error || 'Invalid repeatable plan';
     const actual = snapshot.actual === null ? '—' : String(snapshot.actual);
     return `${actual} ${stopWhen.operator} ${stopWhen.target}`;
 };
 
-export const GoalDisplay: React.FC<GoalDisplayProps> = ({ snapshot, surface = 'chat' }) => {
+export const RepeatablePlanDisplay: React.FC<RepeatablePlanDisplayProps> = ({ snapshot, surface = 'chat' }) => {
     if (surface === 'chat' && snapshot.status === 'achieved') return null;
 
     const stopWhenResult = snapshot.stop_when_result;
     return (
         <section
             className={`ai-chat__goal ai-chat__goal--${surface} ai-chat__goal--${snapshot.status}`}
-            aria-label="Goal"
+            aria-label="Repeatable plan"
             aria-live="polite"
         >
             <div className="ai-chat__goal-head">
                 <div>
-                    <span className="ai-chat__goal-kicker">GOAL · {snapshot.status}</span>
+                    <span className="ai-chat__goal-kicker">REPEATABLE PLAN · {snapshot.status}</span>
                     <div className="ai-chat__goal-title">{snapshot.name}</div>
                 </div>
             </div>
@@ -971,8 +974,8 @@ export const GoalDisplay: React.FC<GoalDisplayProps> = ({ snapshot, surface = 'c
     );
 };
 
-export const goalOverlayRenderer: AiOverlayRenderer<GoalSnapshot> = {
-    componentType: 'goal',
+export const repeatablePlanOverlayRenderer: AiOverlayRenderer<GoalSnapshot> = {
+    componentType: 'repeatable-plan',
     validateSnapshot: (snapshot): snapshot is GoalSnapshot => (
         isOverlayRecord(snapshot)
         && isOverlayNonEmptyString(snapshot.name)
@@ -982,16 +985,16 @@ export const goalOverlayRenderer: AiOverlayRenderer<GoalSnapshot> = {
         && (snapshot.actual === null || (typeof snapshot.actual === 'number' && Number.isFinite(snapshot.actual)))
     ),
     renderOverlay: (snapshot, status) => status === 'folded'
-        ? getGoalOverlaySummary(snapshot)
-        : <GoalOverlayDisplay snapshot={snapshot} />,
+        ? getRepeatablePlanOverlaySummary(snapshot)
+        : <RepeatablePlanOverlayDisplay snapshot={snapshot} />,
     dimensions: {
         expanded: { width: 420, height: 176 },
         folded: { width: 340, height: 58 },
     },
 };
 
-const Goal: React.FC<GoalProps> = ({ snapshot, surface = 'chat' }) => (
-    snapshot ? <GoalDisplay snapshot={snapshot} surface={surface} /> : null
+const RepeatablePlan: React.FC<RepeatablePlanProps> = ({ snapshot, surface = 'chat' }) => (
+    snapshot ? <RepeatablePlanDisplay snapshot={snapshot} surface={surface} /> : null
 );
 
-export default Goal;
+export default RepeatablePlan;
