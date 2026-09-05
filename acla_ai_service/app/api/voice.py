@@ -24,7 +24,7 @@ from app.chat_llm import (
     normalize_chat_llm_model,
     parse_chat_llm_model_selector,
 )
-from app.voice import get_kokoro_service
+from app.voice import get_speech_core
 from app.voice.session_modes import (
     VALID_CHATBOT_SESSION_MODES,
 )
@@ -87,7 +87,7 @@ async def synthesize(req: SynthesizeRequest) -> Response:
     Latency: ~300ms on CPU for a short sentence, ~80ms on GPU.
     """
     try:
-        service = await get_kokoro_service()
+        service = get_speech_core()
         wav_bytes = await service.synthesize(
             req.text,
             voice=req.voice,
@@ -117,7 +117,7 @@ async def synthesize(req: SynthesizeRequest) -> Response:
 async def list_voices() -> dict:
     """List available Kokoro voice IDs."""
     try:
-        service = await get_kokoro_service()
+        service = get_speech_core()
         voices = await service.list_voices()
     except Exception as exc:
         LOGGER.exception("Failed to list Kokoro voices")
@@ -131,16 +131,13 @@ async def list_voices() -> dict:
 
 @router.get("/health")
 async def voice_health() -> dict:
-    """Reports whether the Kokoro engine has been loaded yet.
-
-    Does NOT trigger a load — that happens on the first synthesize() call.
-    Use this to distinguish "engine cold" (first request will be slow) from
-    "engine warm" (sub-second).
-    """
-    service = await get_kokoro_service()
+    """Report loaded model counts and availability without warming either pool."""
+    service = get_speech_core()
+    tts = service.tts.stats
     return {
-        "loaded": await service.is_ready(),
+        "loaded": tts["total"] >= tts["minimum"],
         "engine": "kokoro-onnx",
+        "pools": {"tts": tts, "stt": service.stt.stats},
     }
 
 

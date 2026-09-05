@@ -21,6 +21,7 @@ from app.api import (
     racing_session_router,
 )
 from app.api.voice import router as voice_router
+from app.voice.speech_core import close_speech_core
 
 
 # Load environment variables
@@ -78,10 +79,11 @@ async def lifespan(app: FastAPI):
         else:
             print(f"{model_name}: NOT ready (backend active model payload unavailable or invalid)")
 
-    yield
-
-    # Shutdown
-    print(f"🏁 {settings.app_name} shutting down...")
+    try:
+        yield
+    finally:
+        await close_speech_core()
+        print(f"🏁 {settings.app_name} shutting down...")
 
 
 # Create FastAPI application with lifespan manager

@@ -14,6 +14,8 @@ Builds a per-WebSocket-session pipeline:
 The factory returns a `PipelineTask` that the WS endpoint runs via
 `PipelineRunner`. Each connection gets a fresh pipeline instance, with
 conversation history restored from the process-local chat session registry.
+TTS and STT inference engines belong to the application speech core and are
+leased per operation; only processors and their buffers belong to a session.
 
 All Pipecat imports are deferred so the AI service still boots when
 pipecat-ai isn't installed in the active container (e.g. a partial dev
@@ -1011,8 +1013,8 @@ async def build_voice_pipeline_task(
     reach this session's LLM context. The caller (api/voice.py) is
     responsible for unbinding on session end.
 
-    Raises ImportError if pipecat-ai or faster-whisper aren't available
-    — the caller should map this to an explicit error frame to the WS.
+    Raises ImportError if pipecat-ai isn't available. Native speech models
+    load through the core on first inference, independently of this factory.
     """
     # Deferred imports — see module docstring.
     import asyncio
@@ -1028,7 +1030,6 @@ async def build_voice_pipeline_task(
     )
     from pipecat.processors.audio.vad_processor import VADProcessor
     from pipecat.services.openai.llm import OpenAILLMService
-    from pipecat.services.whisper.stt import WhisperSTTService
     from pipecat.transports.websocket.fastapi import (
         FastAPIWebsocketParams,
         FastAPIWebsocketTransport,
@@ -1036,7 +1037,9 @@ async def build_voice_pipeline_task(
 
     from app.voice.chat_sessions import get_chat_session_registry
     from app.voice.pipecat_kokoro import build_kokoro_processor
+    from app.voice.pipecat_whisper import build_whisper_processor
     from app.voice.raw_pcm_serializer import RawPCMSerializer
+    from app.voice.speech_core import get_speech_core
     from app.voice.tool_relay import get_relay
 
     TranscriptObserver = _build_transcript_observer()
@@ -1088,13 +1091,10 @@ async def build_voice_pipeline_task(
     # the downstream STT uses to gate Whisper inference.
     vad_processor = VADProcessor(vad_analyzer=SileroVADAnalyzer())
 
-    # --- STT (faster-whisper) ---
-    # Use the multilingual large-v3-turbo model on whichever device is
-    # available. Pipecat's WhisperSTTService wraps faster-whisper directly.
-    stt = WhisperSTTService(
-        model="large-v3-turbo",
-        # device="cuda" if available; Pipecat auto-detects via faster-whisper.
-    )
+    # The core owns models across sessions; processors own only stream state.
+    speech_core = get_speech_core()
+    WhisperProcessor = build_whisper_processor(speech_core)
+    stt = WhisperProcessor(sample_rate=16000)
 
     # --- LLM (remote OpenAI-compatible client) ---
     llm = _build_openai_llm_service(
@@ -1152,7 +1152,7 @@ async def build_voice_pipeline_task(
     # Startup behavior docs live in editable .md files. Each new socket gets
     # shared chatbot rules plus exactly one agent-specific role document.
     # --- TTS (Kokoro via custom Pipecat processor) ---
-    KokoroProcessor = build_kokoro_processor()
+    KokoroProcessor = build_kokoro_processor(speech_core)
     tts = KokoroProcessor(sample_rate=settings.kokoro_sample_rate)
 
     # --- Transcript observers ---
