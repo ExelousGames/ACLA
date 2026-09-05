@@ -260,6 +260,21 @@ globalThis.addEventListener?.('unload', cleanupPrivatePorts, { once: true });
 //contextBridge.exposeInMainWorld makes the function available in the global electronAPI object within the renderer.
 contextBridge.exposeInMainWorld('electronAPI', {
 
+    windowControls: {
+        minimize: () => ipcRenderer.invoke('window-control', 'minimize'),
+        toggleMaximize: () => ipcRenderer.invoke('window-control', 'toggle-maximize'),
+        close: () => ipcRenderer.invoke('window-control', 'close'),
+        isMaximized: () => ipcRenderer.invoke('window-control', 'is-maximized'),
+        onMaximizedChange: (callback) => {
+            if (typeof callback !== 'function') {
+                throw new Error('onMaximizedChange requires a callback function');
+            }
+            const subscription = (_event, maximized) => callback(Boolean(maximized));
+            ipcRenderer.on('window-maximized-changed', subscription);
+            return () => ipcRenderer.off('window-maximized-changed', subscription);
+        },
+    },
+
     detectDesktopGame: () => ipcRenderer.invoke('detect-desktop-game'),
 
     startRecordingSession: async (config) => validateRecordingStartResult(

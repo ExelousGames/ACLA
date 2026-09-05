@@ -24,6 +24,13 @@ declare global {
     //preload.js runs in runtime. the renderer process has no Node.js or Electron module access. 
     interface Window {
         electronAPI: {
+            windowControls: {
+                minimize: () => Promise<{ success: boolean; isMaximized: boolean }>;
+                toggleMaximize: () => Promise<{ success: boolean; isMaximized: boolean }>;
+                close: () => Promise<{ success: boolean; isMaximized: boolean }>;
+                isMaximized: () => Promise<boolean>;
+                onMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void;
+            };
             detectDesktopGame: () => Promise<{
                 supported: boolean;
                 detectedGame: DesktopGame | null;

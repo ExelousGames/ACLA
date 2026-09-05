@@ -243,6 +243,14 @@ const parseIds = (value: unknown): { ids?: string[]; error?: string } => {
     return { ids: Array.from(new Set(ids)) };
 };
 
+const orderLiveRangeTodoEventsByEta = <Event extends LiveRangeTodoSnapshotEvent>(
+    events: readonly Event[],
+): Event[] => [...events].sort((left, right) => {
+    if (left.eta_seconds === null) return right.eta_seconds === null ? 0 : 1;
+    if (right.eta_seconds === null) return -1;
+    return left.eta_seconds - right.eta_seconds;
+});
+
 const getClosestLiveRangeTodoEvent = (
     snapshot: LiveRangeTodoListSnapshot,
 ): Readonly<LiveRangeTodoSnapshotEvent> => snapshot.events.reduce((closest, event) => {
@@ -277,13 +285,14 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
 }) => {
     const [isExpanded, setIsExpanded] = useState(false);
     if (!snapshot || (snapshot.events.length === 0 && surface !== 'panel')) return null;
+    const orderedEvents = orderLiveRangeTodoEventsByEta(snapshot.events);
     const isCollapsible = surface === 'chat'
-        && snapshot.events.length > CHAT_COLLAPSED_EVENT_LIMIT;
+        && orderedEvents.length > CHAT_COLLAPSED_EVENT_LIMIT;
     const events = surface === 'pill'
         ? [getClosestLiveRangeTodoEvent(snapshot)]
         : isCollapsible && !isExpanded
-            ? snapshot.events.slice(0, CHAT_COLLAPSED_EVENT_LIMIT)
-            : snapshot.events;
+            ? orderedEvents.slice(0, CHAT_COLLAPSED_EVENT_LIMIT)
+            : orderedEvents;
 
     return (
         <div className={`ai-chat__range-todo ai-chat__range-todo--${surface}`} aria-label="Live range to-do list">
@@ -651,8 +660,8 @@ implements LiveRangeTodoListHandle {
         const rate = calculateRollingForwardRate(this.samples);
         const previousSample = this.previousSample;
         this.previousSample = currentSample;
-        let nextDueEventId: string | null = null;
-        const events = this.runtime.events.map((event): RuntimeEvent => {
+        const dueEventIds = new Set<string>();
+        const events = orderLiveRangeTodoEventsByEta(this.runtime.events.map((event): RuntimeEvent => {
             if (event.status !== 'pending') return event;
             const measuredEta = calculateLiveRangeEta(position, event.normalized_position, rate);
             const estimatedEta = event.eta_seconds === null
@@ -663,13 +672,13 @@ implements LiveRangeTodoListHandle {
                 ? crossedLiveRangeTodoPosition(previousSample, currentSample, event.normalized_position)
                 : false;
             const isDue = crossed || (eta !== null && eta <= event.lead_time_seconds);
-            if (nextDueEventId === null && isDue) nextDueEventId = event.id;
+            if (isDue) dueEventIds.add(event.id);
             return {
                 ...event,
                 eta_seconds: eta,
                 updated_at: now,
             };
-        });
+        }));
         this.commit({
             ...this.runtime,
             events,
@@ -678,7 +687,8 @@ implements LiveRangeTodoListHandle {
             lap: currentSample.lap,
             updated_at: now,
         });
-        if (nextDueEventId !== null) this.runDueEvent(nextDueEventId);
+        const nextDueEvent = events.find((event) => dueEventIds.has(event.id));
+        if (nextDueEvent) this.runDueEvent(nextDueEvent.id);
     }
 
     reset(): void {
@@ -702,8 +712,12 @@ implements LiveRangeTodoListHandle {
     }
 
     private commit(next: RuntimeSnapshot): LiveRangeTodoListSnapshot {
-        this.runtime = next;
-        const snapshot = serializeSnapshot(next);
+        const orderedNext = {
+            ...next,
+            events: orderLiveRangeTodoEventsByEta(next.events),
+        };
+        this.runtime = orderedNext;
+        const snapshot = serializeSnapshot(orderedNext);
         const visibleSnapshot = snapshot.events.length > 0 ? snapshot : null;
         this.publishSnapshot(visibleSnapshot);
         this.onChange?.(visibleSnapshot);

@@ -3,3 +3,48 @@
   background: var(--lp-bg);
   color: var(--lp-white);
 }
+
+.App__viewport {
+  min-height: 100vh;
+}
+
+.App--desktop {
+  --window-titlebar-height: 44px;
+  --app-viewport-height: calc(100vh - var(--window-titlebar-height));
+  position: relative;
+  height: 100vh;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: #0a0a0f;
+}
+
+.App--desktop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(0, 230, 118, 0.045);
+  pointer-events: none;
+  z-index: 2000;
+}
+
+.App--desktop .App__viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.App--desktop .center,
+.App--desktop .user-profile-container,
+.App--desktop .lp-cta {
+  min-height: var(--app-viewport-height);
+}
+
+.App--desktop .lp-hero,
+.App--desktop .lp-tl__viewport,
+.App--desktop .lp-lap__viewport,
+.App--desktop .landing-page .lp-lap__viewport {
+  height: var(--app-viewport-height);
+}

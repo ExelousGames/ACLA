@@ -108,6 +108,39 @@ describe('LiveRangeTodoListRunner executable events', () => {
         now.mockRestore();
     });
 
+    it('sorts recalculated ETAs before starting the first due task', () => {
+        const now = jest.spyOn(Date, 'now');
+        now.mockReturnValue(1_000);
+        const orderAtStart: string[][] = [];
+        const fartherStart = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
+        const nearerStart = jest.fn(() => {
+            orderAtStart.push(
+                runner.get().todo_list?.events.map((item) => item.id) ?? [],
+            );
+            return resolvedAiToolOperation({}, 'complete');
+        });
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.replaceEvents([
+            { ...event('farther', 0.3, fartherStart), lead_time_seconds: 2 },
+            { ...event('nearer', 0.25, nearerStart), lead_time_seconds: 2 },
+        ]);
+
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.1,
+            Graphics_completed_laps: 1,
+        });
+        now.mockReturnValue(2_000);
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.2,
+            Graphics_completed_laps: 1,
+        });
+
+        expect(nearerStart).toHaveBeenCalledTimes(1);
+        expect(fartherStart).not.toHaveBeenCalled();
+        expect(orderAtStart).toEqual([['nearer', 'farther']]);
+        now.mockRestore();
+    });
+
     it('waits for telemetry, invokes taskStart, and omits functions from snapshots', async () => {
         const taskStart = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
         const runner = new LiveRangeTodoListRunner('live-range');

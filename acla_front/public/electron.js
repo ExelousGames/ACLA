@@ -402,6 +402,12 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     title: 'Kestrel Motorsport Analyst',
     width: 900, height: 680,
+    minWidth: 820,
+    minHeight: 600,
+    frame: false,
+    thickFrame: true,
+    backgroundColor: '#0a0a0f',
+    show: false,
     webPreferences: {
       //To send messages to the listener created above, you can use the ipcRenderer.send API. 
       // By default, the renderer process has no Node.js or Electron module access. 
@@ -422,6 +428,19 @@ function createWindow() {
       void recordingManager.shutdownAll();
     }
   });
+
+  const sendWindowState = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window-maximized-changed', mainWindow.isMaximized());
+    }
+  };
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+    sendWindowState();
+  });
+  mainWindow.on('maximize', sendWindowState);
+  mainWindow.on('unmaximize', sendWindowState);
   mainWindow.on('closed', () => {
     mainWindow = null;
     if (process.platform !== 'darwin' && !isAppQuitting) app.quit();
@@ -743,6 +762,37 @@ function isSerializableOverlayValue(value) {
 function overlayPresentationKey(presentation) {
   return `${presentation.presentationId}\u0000${presentation.presentationRevision}`;
 }
+
+function isMainWindowSender(event) {
+  return Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && event.sender === mainWindow.webContents
+  );
+}
+
+ipcMain.handle('window-control', (event, action) => {
+  if (!isMainWindowSender(event)) return { success: false, isMaximized: false };
+
+  switch (action) {
+    case 'minimize':
+      mainWindow.minimize();
+      break;
+    case 'toggle-maximize':
+      if (mainWindow.isMaximized()) mainWindow.unmaximize();
+      else mainWindow.maximize();
+      break;
+    case 'close':
+      mainWindow.close();
+      break;
+    case 'is-maximized':
+      return mainWindow.isMaximized();
+    default:
+      return { success: false, isMaximized: mainWindow.isMaximized() };
+  }
+
+  return { success: true, isMaximized: mainWindow?.isMaximized() || false };
+});
 
 function validateOverlayPresentationSnapshot(presentation) {
   if (!presentation || typeof presentation !== 'object' || Array.isArray(presentation)) return 'Malformed overlay presentation.';

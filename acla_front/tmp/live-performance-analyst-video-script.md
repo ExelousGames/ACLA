@@ -4,7 +4,7 @@
 
 [Start with the car already on track. Keep the Kestrel overlay visible. Ask AI: I will do two laps. Give me an analysis of them.]
 
-That is Kestrel's Live Performance Analyst agent. I just let it start the automation for analyzing the laps I am about to do.
+That is Kestrel's Live Performance Analyst agent. I just let it starts the automation for analyzing the laps I am about to do.
 
 
 
@@ -14,7 +14,7 @@ That is Kestrel's Live Performance Analyst agent. I just let it start the automa
 
 [During the lap, let the driving and telemetry carry the video. Avoid continuous narration.]
 
-The agent sets up a to-do list for analysis. It will execute the steps on its own, and I just need to focus on the driving. After two laps, I’ll be able to see the results and see how I did.
+The agent sets up a to-do list for analysis. It will execute the steps on its own, and I just need to focus on the driving. After two laps, I’ll be able to see the results and how I did.
 
 [At the end of lap one, briefly show that the lap has been captured.]
 

@@ -197,4 +197,56 @@ describe('appended AI display components', () => {
 
         expect(screen.queryByText('Event 4')).not.toBeInTheDocument();
     });
+
+    it('shows live range events in estimated-arrival order', () => {
+        render(
+            <LiveRangeTodoListDisplay
+                surface="panel"
+                snapshot={{
+                    created_at: 1,
+                    updated_at: 2,
+                    current_position: 0.1,
+                    rolling_rate: null,
+                    events: [
+                        {
+                            id: 'unknown',
+                            normalized_position: 0.8,
+                            lead_time_seconds: 2,
+                            content: { title: 'Unknown arrival' },
+                            status: 'pending',
+                            eta_seconds: null,
+                            created_at: 1,
+                            updated_at: 2,
+                        },
+                        {
+                            id: 'later',
+                            normalized_position: 0.5,
+                            lead_time_seconds: 2,
+                            content: { title: 'Later arrival' },
+                            status: 'pending',
+                            eta_seconds: 8,
+                            created_at: 1,
+                            updated_at: 2,
+                        },
+                        {
+                            id: 'next',
+                            normalized_position: 0.2,
+                            lead_time_seconds: 2,
+                            content: { title: 'Next arrival' },
+                            status: 'pending',
+                            eta_seconds: 2,
+                            created_at: 1,
+                            updated_at: 2,
+                        },
+                    ],
+                }}
+            />,
+        );
+
+        expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+            expect.stringContaining('Next arrival'),
+            expect.stringContaining('Later arrival'),
+            expect.stringContaining('Unknown arrival'),
+        ]);
+    });
 });
