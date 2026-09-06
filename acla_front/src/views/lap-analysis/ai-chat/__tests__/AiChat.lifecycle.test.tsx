@@ -1,8 +1,13 @@
+import { asTool, type ToolDispatcher } from 'components/ai-operations/tool';
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AiChat from '../ai-chat';
 import type { AssistantActiveScreen } from '../../assistant-session-mode';
-import { createOperation } from 'components/ai-operations';
+import {
+    createOperation, asWorkflow, isProcedurePlanOptOutRequest, isProcedurePlanStartEvent,
+    type OperationExecutionOutput,
+} from 'components/ai-operations';
+import { createAiCommandRegistry, createWorkflowToolDispatcher } from '../ai-command-registry';
 
 const mockVoiceCleanup = jest.fn();
 const mockVoiceStop = jest.fn();
@@ -28,6 +33,7 @@ jest.mock('../use-voice-conversation', () => ({
 
 jest.mock('../ai-command-registry', () => ({
     createAiCommandRegistry: jest.fn(() => ({})),
+    createWorkflowToolDispatcher: jest.fn(() => Object.assign(jest.fn(), { validate: jest.fn() })),
     startAgentRuntime: jest.fn(() => Promise.resolve({ status: 'started' })),
 }));
 
@@ -143,21 +149,25 @@ const getLatestAgentVoiceOptions = () => {
 };
 
 const lifecycleGoalRequest = () => ({
-    name: 'Lifecycle goal',
-    steps: [{ id: 'collect', title: 'Collect data', name: 'collect' }],
-    stop_when: {
-        tool: { name: 'determine' },
-        operator: 'eq',
-        target: 0,
+    create_repeatable_plan: {
+        name: 'Lifecycle goal',
+        tools: [{ collect: { id: 'collect', title: 'Collect data' } }],
+        stop_when: {
+            tool: { determine: {} },
+            operator: 'eq',
+            target: 0,
+        },
     },
 });
 
 const lifecycleProcedurePlan = () => ({
-    goal: 'Lifecycle plan',
-    requests: [{ type: 'tool_call', title: 'Read data', name: 'read' }],
+    set_procedure_plan: {
+        goal: 'Lifecycle plan',
+        tools: [{ read: { title: 'Read data', arguments: {} } }],
+    },
 });
 
-const operationWithValue = (value: unknown) => createOperation(value, 'complete');
+const operationWithValue = (value: OperationExecutionOutput) => asTool(createOperation(value, 'complete'));
 
 describe('AiChat conversation lifecycle', () => {
     beforeEach(() => {
@@ -198,6 +208,13 @@ describe('AiChat conversation lifecycle', () => {
         mockRepeatablePlanRender.mockClear();
         mockProcedurePlanRender.mockClear();
         mockRegisteredAiChatHandle = undefined;
+        (createAiCommandRegistry as jest.Mock).mockReturnValue({});
+        (createWorkflowToolDispatcher as jest.Mock).mockImplementation(
+            jest.requireActual('../ai-command-registry').createWorkflowToolDispatcher,
+        );
+        const operations = jest.requireActual('components/ai-operations');
+        (isProcedurePlanOptOutRequest as jest.Mock).mockImplementation(operations.isProcedurePlanOptOutRequest);
+        (isProcedurePlanStartEvent as jest.Mock).mockImplementation(operations.isProcedurePlanStartEvent);
         delete (window as any).electronAPI;
     });
 
@@ -312,14 +329,14 @@ describe('AiChat conversation lifecycle', () => {
     });
 
     it('registers a repeatable plan before dispatch and renders its snapshots', async () => {
-        let resolveCollect!: (value: unknown) => void;
-        const collect = new Promise((resolve) => {
+        let resolveCollect!: (value: OperationExecutionOutput) => void;
+        const collect = new Promise<OperationExecutionOutput>((resolve) => {
             resolveCollect = resolve;
         });
         const dispatch = jest.fn((toolName: string) => {
             expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
             expect(mockRegisterComponentRef.mock.calls[0][0].current.getComponentType()).toBe('repeatable-plan');
-            if (toolName === 'collect') return createOperation(collect, 'complete');
+            if (toolName === 'collect') return asTool(createOperation(collect, 'complete'));
             return operationWithValue({ status: 'ready', data: 0 });
         });
         const { container } = render(
@@ -328,7 +345,7 @@ describe('AiChat conversation lifecycle', () => {
 
         let operation: any;
         act(() => {
-            operation = mockRegisteredAiChatHandle.createRepeatablePlan(lifecycleGoalRequest(), dispatch);
+            operation = mockRegisteredAiChatHandle.createRepeatablePlan(lifecycleGoalRequest(), toolDispatcher(dispatch));
         });
         const toolList = container.querySelector('.ai-chat__tool-list');
         const messages = container.querySelector('.ai-chat__msgs');
@@ -356,22 +373,22 @@ describe('AiChat conversation lifecycle', () => {
     });
 
     it('registers a procedure plan runner before dispatch and renders its snapshots', async () => {
-        let resolveRead!: (value: unknown) => void;
-        const read = new Promise((resolve) => {
+        let resolveRead!: (value: OperationExecutionOutput) => void;
+        const read = new Promise<OperationExecutionOutput>((resolve) => {
             resolveRead = resolve;
         });
         const dispatch = jest.fn(() => {
             expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
             expect(mockRegisterComponentRef.mock.calls[0][0].current.getComponentType())
                 .toBe('procedure_plan');
-            return createOperation(read, 'complete');
+            return asTool(createOperation(read, 'complete'));
         });
         render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
 
         let operation: any;
         act(() => {
             operation = mockRegisteredAiChatHandle
-                .createProcedurePlan(lifecycleProcedurePlan(), dispatch);
+                .createProcedurePlan(lifecycleProcedurePlan(), toolDispatcher(dispatch));
         });
         expect(mockProcedurePlanRender).toHaveBeenLastCalledWith(expect.objectContaining({
             plan: expect.objectContaining({
@@ -409,7 +426,7 @@ describe('AiChat conversation lifecycle', () => {
         act(() => {
             goalOperation = mockRegisteredAiChatHandle.createRepeatablePlan(
                 lifecycleGoalRequest(),
-                jest.fn(() => createOperation(never, 'complete')),
+                toolDispatcher(jest.fn(() => asTool(createOperation(never, 'complete')))),
             );
         });
         void goalOperation.result.catch(() => undefined);
@@ -420,7 +437,7 @@ describe('AiChat conversation lifecycle', () => {
         act(() => {
             planOperation = mockRegisteredAiChatHandle.createProcedurePlan(
                 lifecycleProcedurePlan(),
-                jest.fn(() => createOperation(never, 'complete')),
+                toolDispatcher(jest.fn(() => asTool(createOperation(never, 'complete')))),
             );
         });
         void planOperation.result.catch(() => undefined);
@@ -450,7 +467,7 @@ describe('AiChat conversation lifecycle', () => {
         act(() => {
             goalOperation = mockRegisteredAiChatHandle.createRepeatablePlan(
                 lifecycleGoalRequest(),
-                jest.fn(() => createOperation(never, 'complete')),
+                toolDispatcher(jest.fn(() => asTool(createOperation(never, 'complete')))),
             );
         });
         void goalOperation.result.catch(() => undefined);
@@ -463,6 +480,154 @@ describe('AiChat conversation lifecycle', () => {
 
         expect(goalDispose).toHaveBeenCalledTimes(1);
         expect(mockUnregisterComponentRef).toHaveBeenCalledWith(goalRef);
+    });
+
+    it.each(['procedure legacy', 'procedure later tool', 'repeatable legacy', 'repeatable stop tool'])(
+        'preserves the mounted workflow for rejected %s creation', async (scenario) => {
+            const child = asTool(createOperation(new Promise<Record<string, unknown>>(() => undefined), 'complete'));
+            const abort = jest.spyOn(child, 'abort');
+            const dispatch = toolDispatcher(jest.fn(() => child));
+            render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+            let active: any;
+            act(() => { active = mockRegisteredAiChatHandle.createProcedurePlan(lifecycleProcedurePlan(), dispatch); });
+            void active.result.catch(() => undefined);
+            const mounted = mockRegisterComponentRef.mock.calls[0][0].current;
+            const dispose = jest.spyOn(mounted, 'dispose');
+            const invalidDispatch = Object.assign(jest.fn(() => child), { validate: jest.fn((name: string) => {
+                if (name === 'forbidden') throw new Error('Forbidden tool');
+            }) });
+            const procedureInput = lifecycleProcedurePlan();
+            const repeatableInput = lifecycleGoalRequest();
+            let rejected: any;
+            act(() => {
+                if (scenario.startsWith('procedure')) {
+                    const input = scenario.endsWith('legacy')
+                        ? { goal: 'Legacy', requests: [{ name: 'read', title: 'Read', payload: {} }] }
+                        : { set_procedure_plan: { ...procedureInput.set_procedure_plan,
+                            tools: [...procedureInput.set_procedure_plan.tools, { forbidden: { title: 'Forbidden', arguments: {} } }],
+                        } };
+                    rejected = mockRegisteredAiChatHandle.createProcedurePlan(input, invalidDispatch);
+                } else {
+                    const input = scenario.endsWith('legacy')
+                        ? { name: 'Legacy', steps: [], stop_when: {} }
+                        : { create_repeatable_plan: { ...repeatableInput.create_repeatable_plan,
+                            stop_when: { ...repeatableInput.create_repeatable_plan.stop_when, tool: { forbidden: {} } },
+                        } };
+                    rejected = mockRegisteredAiChatHandle.createRepeatablePlan(input, invalidDispatch);
+                }
+            });
+            await expect(rejected.result).rejects.toThrow();
+            expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
+            expect(mockUnregisterComponentRef).not.toHaveBeenCalled();
+            expect(dispose).not.toHaveBeenCalled();
+            expect(abort).not.toHaveBeenCalled();
+            expect(invalidDispatch).not.toHaveBeenCalled();
+            expect(screen.getByTestId('procedure-plan')).toBeInTheDocument();
+        },
+    );
+
+    it.each([
+        'legacy', 'mixed', 'extra transport field', 'missing active handler',
+        'unregistered_tool', 'set_procedure_plan',
+        'create_repeatable_plan', 'retry_repeatable_plan_task', 'advance_plan_step',
+        'clear_procedure_plan', 'get_live_range_todo_list',
+        'add_event_to_live_range_todo_list', 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+    ])('rejects %s status input before handlers or workflow replacement', (scenario) => {
+        const statusHandler = jest.fn(() => operationWithValue({ status: 'complete' }));
+        (createAiCommandRegistry as jest.Mock).mockReturnValue({ show_map: statusHandler, [scenario]: statusHandler });
+        const child = asTool(createOperation(new Promise<Record<string, unknown>>(() => undefined), 'complete'));
+        const abort = jest.spyOn(child, 'abort');
+        const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        let active: any;
+        act(() => { active = mockRegisteredAiChatHandle.createProcedurePlan(lifecycleProcedurePlan(), toolDispatcher(jest.fn(() => child))); });
+        void active.result.catch(() => undefined);
+        const mounted = mockRegisterComponentRef.mock.calls[0][0].current;
+        const dispose = jest.spyOn(mounted, 'dispose');
+        const legacy = { event: 'procedure_plan_started', goal: 'Legacy', requests: [{ name: 'show_map', title: 'Map', payload: {} }] };
+        const input = { event: 'procedure_plan_started', set_procedure_plan: {
+            goal: 'Status plan', tools: [{ show_map: { title: 'Map', arguments: {} } }],
+        } };
+        const data = scenario === 'legacy' ? legacy : scenario === 'mixed' ? { ...input, requests: legacy.requests }
+            : scenario === 'extra transport field' ? { ...input, current_request: 0 }
+                : { ...input, set_procedure_plan: { ...input.set_procedure_plan,
+                    tools: [...input.set_procedure_plan.tools, {
+                        [scenario === 'missing active handler' ? 'stop_agent_session' : scenario]: { title: 'Later tool', arguments: {} },
+                    }],
+                } };
+        act(() => getLatestMainVoiceOptions().onEvent({ kind: 'tool_status', data }));
+        expect(statusHandler).not.toHaveBeenCalled();
+        expect(dispose).not.toHaveBeenCalled();
+        expect(abort).not.toHaveBeenCalled();
+        expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
+        expect(mockUnregisterComponentRef).not.toHaveBeenCalled();
+        expect(screen.getByTestId('procedure-plan')).toBeInTheDocument();
+        error.mockRestore();
+    });
+
+    it.each(['show_map', 'collect_live_baseline'])(
+        'executes %s from a status envelope in a front desk session with literal arguments', async (toolName) => {
+            const handler = jest.fn(() => operationWithValue({ status: 'complete' }));
+            (createAiCommandRegistry as jest.Mock).mockReturnValue({ [toolName]: handler });
+            render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+            const args = { args: { track: 'test' }, parameters: { view: 1 } };
+            await act(async () => {
+                getLatestMainVoiceOptions().onEvent({ kind: 'tool_status', data: {
+                    event: 'procedure_plan_started', set_procedure_plan: {
+                        goal: 'Run tool', tools: [{ [toolName]: { title: 'Tool', arguments: args } }],
+                    },
+                } });
+                for (let index = 0; index < 8; index += 1) await Promise.resolve();
+            });
+            expect(handler).toHaveBeenCalledWith(args, undefined);
+            expect(createWorkflowToolDispatcher).toHaveBeenCalledWith(expect.objectContaining({ sessionMode: 'front_desk', conversationRole: 'main' }));
+            expect(screen.queryByTestId('procedure-plan')).not.toBeInTheDocument();
+        },
+    );
+
+    it.each(['generic operation', 'workflow'])('rejects a status handler returning a %s without conversion', async (kind) => {
+        const raw = createOperation({}, 'complete');
+        const child = kind === 'workflow' ? asWorkflow(raw) : raw;
+        const notify = jest.spyOn(child, 'notifyTerminated');
+        const handler = jest.fn(() => child);
+        const later = jest.fn(() => operationWithValue({}));
+        const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        (createAiCommandRegistry as jest.Mock).mockReturnValue({ show_map: handler, stop_agent_session: later });
+        render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        await act(async () => {
+            getLatestMainVoiceOptions().onEvent({ kind: 'tool_status', data: { set_procedure_plan: {
+                goal: 'Show map', tools: [{ show_map: { title: 'Map', arguments: {} } }, { stop_agent_session: { title: 'Stop', arguments: {} } }],
+            } } });
+            for (let index = 0; index < 8; index += 1) await Promise.resolve();
+        });
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(later).not.toHaveBeenCalled();
+        expect(notify).not.toHaveBeenCalled();
+        expect(child).not.toHaveProperty('kind', 'tool');
+        expect(error).toHaveBeenCalled();
+        error.mockRestore();
+    });
+
+    it('keeps procedure opt-out after a malformed start status', async () => {
+        const handler = jest.fn(() => operationWithValue({}));
+        const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        (createAiCommandRegistry as jest.Mock).mockReturnValue({ show_map: handler });
+        render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        const input = { set_procedure_plan: { goal: 'Map', tools: [{ show_map: { title: 'Map', arguments: {} } }] } };
+        act(() => {
+            const { onEvent } = getLatestMainVoiceOptions();
+            onEvent({ kind: 'user_transcript', text: 'Stop the plan.' });
+            onEvent({ kind: 'tool_status', data: { event: 'procedure_plan_started', set_procedure_plan: { goal: 'Broken' } } });
+            onEvent({ kind: 'tool_status', data: input });
+        });
+        expect(handler).not.toHaveBeenCalled();
+        expect(mockRegisterComponentRef).not.toHaveBeenCalled();
+        await act(async () => {
+            getLatestMainVoiceOptions().onEvent({ kind: 'tool_status', data: { ...input, event: 'procedure_plan_started' } });
+            for (let index = 0; index < 8; index += 1) await Promise.resolve();
+        });
+        expect(handler).toHaveBeenCalledTimes(1);
+        error.mockRestore();
     });
 
     it('starts a conversation when mounted under StrictMode', async () => {
@@ -722,3 +887,5 @@ describe('AiChat conversation lifecycle', () => {
         expect(mockVoiceStart).not.toHaveBeenCalled();
     });
 });
+
+const toolDispatcher = (dispatch: (...args: any[]) => ReturnType<ToolDispatcher>): ToolDispatcher => Object.assign(dispatch, { validate: jest.fn() }) as ToolDispatcher;

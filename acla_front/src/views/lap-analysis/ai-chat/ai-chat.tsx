@@ -11,6 +11,7 @@ import { detectEnvironment } from 'utils/environment';
 import apiService from 'services/api.service';
 import {
     createAiCommandRegistry,
+    createWorkflowToolDispatcher,
     startAgentRuntime,
 } from './ai-command-registry';
 import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
@@ -38,13 +39,19 @@ import {
     LiveRangeTodoListRunner,
     ProcedurePlan,
     ProcedurePlanRunner,
-    buildProcedurePlan,
+    parseProcedurePlanInput,
+    parseRepeatablePlanInput,
+    assertTool,
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
-    type OperationDispatcher,
+    type ToolDispatcher,
+    type ProcedurePlanInput,
+    type RepeatablePlanInput,
     type RepeatablePlanHandle,
     type Operation,
+    type OperationExecutionOutput,
+    type OperationStatusPayload,
     type LiveRangeTodoListHandle,
     type ProcedurePlanHandle,
     type ProcedurePlanSnapshot,
@@ -74,7 +81,6 @@ import {
 } from 'contexts/OperationComponentError';
 import {
     CircuitMapLookupFailedError,
-    InvalidProcedurePlanRequestsError,
     OperationExecutionError,
     UnsupportedAgentModeError,
 } from './operation-base';
@@ -101,7 +107,6 @@ type AiChatSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
 type Emotion = typeof EMOTIONS[number];
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
-const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
 const MAX_OVERTAKE_AGENT_ROWS = 300;
 const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
 type ChatLlmModelOption = {
@@ -131,14 +136,6 @@ const DEFAULT_CHAT_LLM_MODEL_OPTION = CHAT_LLM_MODEL_OPTIONS[0];
 const getChatLlmModelOption = (value: string) =>
     CHAT_LLM_MODEL_OPTIONS.find((option) => option.value === value)
     || DEFAULT_CHAT_LLM_MODEL_OPTION;
-
-function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
-    const m = text.match(EMOTION_TAG_RE);
-    if (m && (EMOTIONS as readonly string[]).includes(m[1])) {
-        return { emotion: m[1] as Emotion, cleanText: text.slice(m[0].length) };
-    }
-    return { emotion: null, cleanText: text };
-}
 
 type MessageKind = AiChatDisplayMessage['kind'];
 
@@ -192,8 +189,8 @@ export interface AiChatHandle extends NamedOperationComponentHandle {
     startTrackGuide(): void;
     setTrackGuideEnabled(enabled: boolean): void;
     setLivePerformanceAnalystEnabled(enabled: boolean): void;
-    createRepeatablePlan(args: Record<string, unknown>, dispatchOperation: OperationDispatcher): ReturnType<RepeatablePlanHandle['createRepeatablePlan']>;
-    createProcedurePlan(args: Record<string, unknown>, dispatchOperation: OperationDispatcher): ReturnType<ProcedurePlanHandle['createProcedurePlan']>;
+    createRepeatablePlan(args: RepeatablePlanInput, dispatchOperation: ToolDispatcher): ReturnType<RepeatablePlanHandle['createRepeatablePlan']>;
+    createProcedurePlan(args: ProcedurePlanInput, dispatchOperation: ToolDispatcher): ReturnType<ProcedurePlanHandle['createProcedurePlan']>;
     initializeLiveRangeTodoList(): LiveRangeTodoListHandle;
     setAgentTagActive(tag: string, active: boolean): void;
     getOpportunityTelemetryRows(): Record<string, any>[];
@@ -496,24 +493,44 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         });
     }, [componentRefs]);
 
-    const dispatchActiveVoiceOperation = useCallback<OperationDispatcher>((
-        toolName,
-        args = {},
-        signal,
-    ) => {
-        const handler = activeOperationHandlersRef.current[toolName];
-        if (!handler) {
-            return createOperationFrom(() => {
+    const resolvedSessionId = resolveAssistantRecordedSessionId(
+        sessionMode,
+        sessionId
+            || (analysisContext?.sessionSelected as Record<string, any> | null)?.SessionId,
+    );
+
+    const dispatchActiveVoiceOperation = useMemo<ToolDispatcher>(() => {
+        const validate = (toolName: string): void => {
+            const agent = activeAgentSessionRef.current;
+            createWorkflowToolDispatcher({
+                componentRefs,
+                sessionId: resolvedSessionId,
+                sessionMode,
+                conversationRole: agent ? 'agent' : 'main',
+                agentMode: agent?.agentMode,
+                sessionGame: liveSession?.sessionGame ?? null,
+            }).validate(toolName);
+            if (!activeOperationHandlersRef.current[toolName]) {
                 throw new OperationExecutionError(
                     `The active AI session could not execute '${toolName}'.`,
                 );
-            }, 'failed');
-        }
-        return (handler as (
-            input: Record<string, unknown>,
-            nestedSignal?: AbortSignal,
-        ) => ReturnType<OperationDispatcher>)(args, signal);
-    }, []);
+            }
+        };
+        const dispatchTool: ToolDispatcher = Object.assign((
+            toolName: Parameters<ToolDispatcher>[0],
+            args: Record<string, unknown> = {},
+            signal?: AbortSignal,
+        ) => {
+            validate(toolName);
+            const handler = activeOperationHandlersRef.current[toolName] as (
+                args: Record<string, unknown>, signal?: AbortSignal,
+            ) => Operation<OperationExecutionOutput, OperationStatusPayload>;
+            const operation = handler(args, signal);
+            assertTool(operation);
+            return operation;
+        }, { validate });
+        return dispatchTool;
+    }, [componentRefs, liveSession?.sessionGame, resolvedSessionId, sessionMode]);
 
 
     useEffect(() => {
@@ -858,15 +875,17 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         });
     }, []);
 
-    const setProcedurePlan = useCallback((plan: ProcedurePlanState | null) => {
+    const setProcedurePlan = useCallback((input: ProcedurePlanInput | null) => {
         const active = activeWorkflowRef.current;
         const existing = active?.kind === 'procedure_plan' ? active.runner : null;
-        if (!plan) {
+        if (!input) {
             existing?.clearProcedurePlan();
             procedurePlanRef.current = null;
             setProcedurePlanSnapshot(null);
             return;
         }
+        const plan = parseProcedurePlanInput(input);
+        plan.requests.forEach((request) => dispatchActiveVoiceOperation.validate(request.name!));
         const runner = new ProcedurePlanRunner(
             OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
             dispatchActiveVoiceOperation,
@@ -876,7 +895,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             },
         );
         mountWorkflow({ kind: 'procedure_plan', runner });
-        observeBackgroundWorkflow(runner.createProcedurePlan(plan));
+        observeBackgroundWorkflow(runner.createProcedurePlan(input));
     }, [dispatchActiveVoiceOperation, mountWorkflow, observeBackgroundWorkflow]);
 
     const advanceProcedurePlanStep = useCallback(async (reason?: string) => {
@@ -982,23 +1001,18 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             return;
         }
         if (event.kind === 'assistant_transcript') {
-            // Backend strips the [emotion] tag before sending the transcript,
-            // but fall back to frontend parsing for robustness.
-            const { emotion, cleanText } = event.emotion
-                ? { emotion: event.emotion as Emotion, cleanText: event.text }
-                : extractEmotion(event.text);
             setTargetMessages(prev => prev
                 .filter(m => !m.isLoading)
                 .concat({
                     id: generateUniqueId('ai-voice'),
-                    content: cleanText,
+                    content: event.text,
                     isUser: false,
                     timestamp: new Date(),
                     kind: 'chat',
                 }));
             // Send a complete presentation snapshot to the Electron overlay.
-            presentAssistantOverlayMessage(cleanText, {
-                emotion,
+            presentAssistantOverlayMessage(event.text, {
+                emotion: event.emotion as Emotion | undefined,
                 name: target === 'agent' ? getAgentDisplayName(activeAgentSessionRef.current?.agentMode) : undefined,
             }, presentationId);
             return;
@@ -1009,15 +1023,18 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 clearProcedurePlan();
                 return;
             }
-            const plan = buildProcedurePlan(event.data);
-            if (plan) {
-                if (isProcedurePlanStartEvent(plan.sourceEvent)) {
-                    procedurePlanOptedOutRef.current = false;
-                }
-                if (procedurePlanOptedOutRef.current) {
+            if (Object.prototype.hasOwnProperty.call(event.data, 'set_procedure_plan')) {
+                const { event: _sourceEvent, ...input } = event.data;
+                const startsPlan = isProcedurePlanStartEvent(sourceEvent);
+                if (procedurePlanOptedOutRef.current && !startsPlan) {
                     return;
                 }
-                setProcedurePlan(plan);
+                try {
+                    setProcedurePlan(input as ProcedurePlanInput);
+                    if (startsPlan) procedurePlanOptedOutRef.current = false;
+                } catch (error) {
+                    console.error('Invalid procedure plan status.', error);
+                }
             }
             return;
         }
@@ -1102,12 +1119,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         setTrackGuideEnabled(true);
     }, []);
 
-    const resolvedSessionId = resolveAssistantRecordedSessionId(
-        sessionMode,
-        sessionId
-            || (analysisContext?.sessionSelected as Record<string, any> | null)?.SessionId,
-    );
-
     const aiSessionContext = useMemo(() => ({
         session_mode: sessionMode,
     }), [sessionMode]);
@@ -1116,8 +1127,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
     const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
     const createRepeatablePlan = useCallback((
-        args: Record<string, unknown>,
-        dispatchOperation: OperationDispatcher,
+        args: RepeatablePlanInput,
+        dispatchOperation: ToolDispatcher,
     ): ReturnType<RepeatablePlanHandle['createRepeatablePlan']> => {
         const runner = new RepeatablePlanRunner(
             OPERATION_COMPONENT_NAMES.REPEATABLE_PLAN,
@@ -1125,8 +1136,11 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             setRepeatablePlanSnapshot,
         );
         try {
+            const request = parseRepeatablePlanInput(args);
+            request.steps.forEach((step) => dispatchOperation.validate(step.name));
+            dispatchOperation.validate(request.stop_when.tool.name);
             mountWorkflow({ kind: 'repeatable_plan', runner });
-            return runner.createRepeatablePlan(args as any);
+            return runner.createRepeatablePlan(args);
         } catch (error) {
             runner.dispose();
             return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
@@ -1134,21 +1148,12 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }, [mountWorkflow]);
 
     const createProcedurePlan = useCallback((
-        args: Record<string, unknown>,
-        dispatchOperation: OperationDispatcher,
+        args: ProcedurePlanInput,
+        dispatchOperation: ToolDispatcher,
     ): ReturnType<ProcedurePlanHandle['createProcedurePlan']> => {
         try {
-            const plan = buildProcedurePlan({
-                ...args,
-                event: typeof args.event === 'string' && args.event.trim()
-                    ? args.event
-                    : 'procedure_plan_started',
-            });
-            if (!plan) {
-                throw new InvalidProcedurePlanRequestsError(
-                    'Provide a goal and at least one request with a title.',
-                );
-            }
+            const plan = parseProcedurePlanInput(args);
+            plan.requests.forEach((request) => dispatchOperation.validate(request.name!));
             const runner = new ProcedurePlanRunner(
                 OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
                 dispatchOperation,
@@ -1159,7 +1164,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             );
             try {
                 mountWorkflow({ kind: 'procedure_plan', runner });
-                return runner.createProcedurePlan(plan);
+                return runner.createProcedurePlan(args);
             } catch (error) {
                 runner.dispose();
                 throw error;

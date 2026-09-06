@@ -1,11 +1,9 @@
 import type { CircuitMapDto, CircuitMapGame } from 'views/circuit-maps/circuit-map-types';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
-    CreateGoalWorkflowUnavailableError,
     InvalidOperationCallError,
     NoLiveSessionError,
     NoLiveTelemetryError,
-    RetryGoalTaskWorkflowUnavailableError,
     OperationExecutionError,
     OperationNotRegisteredError,
     createOperationFrom,
@@ -30,7 +28,7 @@ import {
 } from 'contexts/OperationComponentError';
 import { isLiveSessionAiAvailable, type RecordingState } from 'views/lap-analysis/recording-state';
 import type {
-    OperationDispatcher,
+    ToolDispatcher,
     OperationKind,
     RepeatablePlanHandle,
     LiveRangeTodoEventInput,
@@ -64,6 +62,13 @@ import {
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
+import { parseProcedurePlanInput } from 'components/ai-operations/ProcedurePlan';
+import { validateGoalRequest } from 'components/ai-operations/RepeatablePlan';
+import type {
+    ProcedurePlanInput,
+    RepeatablePlanInput,
+    LiveRangeTodoListInput,
+} from 'components/ai-operations';
 
 export type {
     ApplyAnalysisResultQueryInput,
@@ -168,7 +173,7 @@ export interface AiCommandRegistryContext extends FrontendAiCommandContext {
     advanceProcedurePlanStep?: (reason?: string) => Promise<ProcedurePlanRunResult>;
     getProcedurePlan?: () => ProcedurePlanState | null;
     clearProcedurePlan?: () => void;
-    setProcedurePlan?: (plan: ProcedurePlanState | null) => void;
+    setProcedurePlan?: (plan: ProcedurePlanInput | null) => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     startAgentSession?: (
         agentMode: AgentSessionMode,
@@ -316,37 +321,7 @@ export const startAgentRuntime = async (
     };
 };
 
-export const FRONTEND_OPERATION_NAMES = Object.freeze([
-    'start_agent_session',
-    'stop_agent_session',
-    'add_event_to_live_range_todo_list',
-    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
-    'display_specific_result_in_overlay',
-    'get_live_range_todo_list',
-    'collect_live_baseline',
-    'restart_live_baseline',
-    'analyze_live_recorded_analysis',
-    'apply_query_to_analysis_result',
-    'query_analysis_result',
-    'create_repeatable_plan',
-    'retry_repeatable_plan_task',
-    'advance_plan_step',
-    'clear_procedure_plan',
-    'set_procedure_plan',
-    'get_next_corner',
-    'query_telemetry_metric',
-    'get_event_log',
-    'get_user_summary_map_level',
-    'get_available_user_summary_maps',
-    'search_user_summary_map_level',
-    'show_map',
-    'run_recorded_ai_analysis',
-    'get_recorded_session_analysis',
-    'get_recorded_session_context',
-    'analyze_telemetry',
-] as const);
-
-export type FrontendOperationName = typeof FRONTEND_OPERATION_NAMES[number];
+export type FrontendOperationName = typeof definitionList[number]['name'];
 export type FrontendAiQueryName = Extract<FrontendOperationName, `query_${string}`>;
 
 export type TelemetryMetricReduce = 'avg' | 'min' | 'max' | 'stats';
@@ -466,16 +441,14 @@ const validateDisplaySpecificResultArguments = (
     };
 };
 
-type WorkflowOwner = 'chat' | 'repeatable_plan' | 'procedure_plan' | 'live_range_todo';
-
 type FrontendOperationDefinition = {
-    readonly name: FrontendOperationName;
+    readonly name: string;
     readonly kind: OperationKind;
     readonly componentName: string;
     readonly execute: (
         context: FrontendAiCommandContext,
         args: Record<string, any>,
-        dispatchNested: OperationDispatcher,
+        dispatchNested: ToolDispatcher,
         signal?: AbortSignal,
     ) => Operation<OperationExecutionOutput, OperationStatusPayload>;
 };
@@ -491,124 +464,6 @@ const getDirectory = (context: FrontendAiCommandContext): OperationComponentRefD
 const getComponent = <T,>(context: FrontendAiCommandContext, name: string): T => (
     resolveNamedComponentHandle(getDirectory(context), name) as T
 );
-
-const WORKFLOW_CONTROL_OPERATIONS = new Set<FrontendOperationName>([
-    'create_repeatable_plan',
-    'retry_repeatable_plan_task',
-    'set_procedure_plan',
-    'advance_plan_step',
-    'clear_procedure_plan',
-]);
-
-const LIVE_RANGE_TODO_OPERATIONS = new Set<FrontendOperationName>([
-    'add_event_to_live_range_todo_list',
-    'get_live_range_todo_list',
-]);
-
-const NON_CHILD_LIVE_SESSION_OPERATIONS = new Set<FrontendOperationName>([
-    'start_agent_session',
-    'run_recorded_ai_analysis',
-    'get_recorded_session_analysis',
-    'get_recorded_session_context',
-]);
-
-const LIVE_RANGE_TODO_NESTED_OPERATIONS = new Set<FrontendOperationName>(
-    FRONTEND_OPERATION_NAMES.filter((name) => (
-        !WORKFLOW_CONTROL_OPERATIONS.has(name)
-        && name !== 'add_event_to_live_range_todo_list'
-        && name !== 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
-        && !NON_CHILD_LIVE_SESSION_OPERATIONS.has(name)
-    )),
-);
-
-const REPEATABLE_PLAN_STEP_OPERATIONS = new Set<FrontendOperationName>([
-    'stop_agent_session',
-    'add_event_to_live_range_todo_list',
-    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
-    'display_specific_result_in_overlay',
-    'get_live_range_todo_list',
-    'collect_live_baseline',
-    'restart_live_baseline',
-    'analyze_live_recorded_analysis',
-    'apply_query_to_analysis_result',
-    'query_analysis_result',
-    'advance_plan_step',
-    'clear_procedure_plan',
-    'set_procedure_plan',
-    'get_next_corner',
-    'query_telemetry_metric',
-    'get_event_log',
-    'get_user_summary_map_level',
-    'get_available_user_summary_maps',
-    'search_user_summary_map_level',
-    'show_map',
-    'analyze_telemetry',
-]);
-
-export const isRepeatablePlanStepAvailableForContext = (
-    context: Pick<FrontendAiCommandContext, 'sessionMode' | 'conversationRole' | 'agentMode'>,
-    name: string,
-): boolean => (
-    context.sessionMode === 'live'
-    && context.conversationRole === 'agent'
-    && context.agentMode === 'live_performance_analyst'
-    && REPEATABLE_PLAN_STEP_OPERATIONS.has(name as FrontendOperationName)
-);
-
-const assertAvailable = (
-    context: FrontendAiCommandContext,
-    name: FrontendOperationName,
-    owner: WorkflowOwner,
-) => {
-    const isChildLiveSession = context.sessionMode === 'live'
-        && context.conversationRole === 'agent';
-    if (owner === 'chat' && LIVE_RANGE_TODO_OPERATIONS.has(name) && !isChildLiveSession) {
-        throw new OperationNotRegisteredError(
-            `Operation '${name}' is available only in child live-agent sessions.`,
-        );
-    }
-    if (owner === 'live_range_todo' && (
-        !isChildLiveSession
-        || !LIVE_RANGE_TODO_NESTED_OPERATIONS.has(name)
-    )) {
-        throw new OperationNotRegisteredError(
-            `Operation '${name}' cannot be scheduled by the live range to-do list.`,
-        );
-    }
-    if (owner === 'repeatable_plan' && !isRepeatablePlanStepAvailableForContext(context, name)) {
-        throw new OperationNotRegisteredError(`Operation '${name}' is unavailable inside a repeatable plan.`);
-    }
-    if (owner === 'procedure_plan' && WORKFLOW_CONTROL_OPERATIONS.has(name)) {
-        throw new OperationNotRegisteredError(`Operation '${name}' is unavailable inside a procedure plan.`);
-    }
-    if (name === 'create_repeatable_plan' && (
-        context.sessionMode !== 'live'
-        || context.conversationRole !== 'agent'
-        || context.agentMode !== 'live_performance_analyst'
-    )) {
-        throw new CreateGoalWorkflowUnavailableError(
-            'Repeatable plan creation is available only to the live performance analyst.',
-        );
-    }
-    if (name === 'retry_repeatable_plan_task' && (
-        context.sessionMode !== 'live'
-        || context.conversationRole !== 'agent'
-        || context.agentMode !== 'live_performance_analyst'
-    )) {
-        throw new RetryGoalTaskWorkflowUnavailableError(
-            'Repeatable plan task retry is available only to the live performance analyst.',
-        );
-    }
-    if (name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list' && (
-        context.sessionMode !== 'live'
-        || context.conversationRole !== 'agent'
-        || context.agentMode !== 'live_performance_analyst'
-    )) {
-        throw new OperationNotRegisteredError(
-            `Operation '${name}' is available only to the live performance analyst.`,
-        );
-    }
-};
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean => (
     Object.prototype.hasOwnProperty.call(value, key)
@@ -667,30 +522,49 @@ const isJsonSafe = (value: unknown, ancestors = new Set<object>()): boolean => {
 type PreparedLiveRangeTodoEvent = {
     event: Omit<LiveRangeTodoEventInput, 'taskStart'>;
     tool: {
-        name: FrontendOperationName;
+        name: FrontendToolName;
         arguments: Record<string, unknown>;
     };
 };
 
 const validateLiveRangeTodoBatch = (
     args: unknown,
+    dispatchNested: ToolDispatcher,
 ): PreparedLiveRangeTodoEvent[] => {
-    if (!isRecord(args)) invalidLiveRangeTodoList('Provide an object containing events.');
-    const request = args as Record<string, unknown>;
-    assertExactKeys(request, ['events'], 'Live range to-do request');
-    if (!Array.isArray(request.events) || request.events.length === 0) {
-        invalidLiveRangeTodoList('Provide at least one event to add.');
+    const workflowName = 'add_event_to_live_range_todo_list';
+    if (!isRecord(args)) invalidLiveRangeTodoList(`Provide a ${workflowName} envelope.`);
+    const envelope = args as Record<string, unknown>;
+    assertExactKeys(envelope, [workflowName], 'Live range to-do envelope');
+    if (!hasOwn(envelope, workflowName) || !isRecord(envelope[workflowName])) {
+        invalidLiveRangeTodoList(`Provide a ${workflowName} envelope.`);
     }
-    const rawEvents = request.events as unknown[];
+    const request = envelope[workflowName] as Record<string, unknown>;
+    assertExactKeys(request, ['tools'], 'Live range to-do request');
+    if (!Array.isArray(request.tools) || request.tools.length === 0) {
+        invalidLiveRangeTodoList('Provide at least one tool to schedule.');
+    }
+    const rawEvents = request.tools as unknown[];
 
     const ids = new Set<string>();
     return rawEvents.map((item, index) => {
         const itemLabel = `Live range to-do item ${index + 1}`;
         if (!isRecord(item)) invalidLiveRangeTodoList(`${itemLabel} must be an object.`);
-        const rawItem = item as Record<string, unknown>;
-        assertExactKeys(rawItem, ['event', 'tool'], itemLabel);
-        if (!hasOwn(rawItem, 'event') || !hasOwn(rawItem, 'tool')) {
-            invalidLiveRangeTodoList(`${itemLabel} requires event and tool objects.`);
+        const keys = Reflect.ownKeys(item as object);
+        if (keys.length !== 1 || typeof keys[0] !== 'string') {
+            invalidLiveRangeTodoList(`${itemLabel} requires exactly one tool-name key.`);
+        }
+        const toolName = keys[0] as string;
+        try {
+            dispatchNested.validate(toolName);
+        } catch (error) {
+            invalidLiveRangeTodoList(error instanceof Error ? error.message : String(error));
+        }
+        const toolValue = (item as Record<string, unknown>)[toolName];
+        if (!isRecord(toolValue)) invalidLiveRangeTodoList(`${itemLabel} tool must be an object.`);
+        const rawItem = toolValue as Record<string, unknown>;
+        assertExactKeys(rawItem, ['event', 'arguments'], itemLabel);
+        if (!hasOwn(rawItem, 'event') || !hasOwn(rawItem, 'arguments')) {
+            invalidLiveRangeTodoList(`${itemLabel} requires event and arguments objects.`);
         }
 
         const eventValue = rawItem.event;
@@ -734,16 +608,7 @@ const validateLiveRangeTodoBatch = (
             invalidLiveRangeTodoList(`Event '${id}' content description must be a string.`);
         }
 
-        const toolValue = rawItem.tool;
-        if (!isRecord(toolValue)) invalidLiveRangeTodoList(`${itemLabel} tool must be an object.`);
-        const rawTool = toolValue as Record<string, unknown>;
-        assertExactKeys(rawTool, ['name', 'arguments'], `${itemLabel} tool`);
-        const toolName = typeof rawTool.name === 'string' ? rawTool.name.trim() : '';
-        if (!toolName || !LIVE_RANGE_TODO_NESTED_OPERATIONS.has(toolName as FrontendOperationName)) {
-            invalidLiveRangeTodoList(
-                `Tool '${toolName || '(missing)'}' cannot be scheduled by the live range to-do list.`,
-            );
-        }
+        const rawTool = rawItem;
         if (!hasOwn(rawTool, 'arguments') || !isRecord(rawTool.arguments)) {
             invalidLiveRangeTodoList(`Scheduled tool '${toolName}' requires an arguments object.`);
         }
@@ -770,7 +635,7 @@ const validateLiveRangeTodoBatch = (
                 },
             },
             tool: {
-                name: toolName as FrontendOperationName,
+                name: toolName as FrontendToolName,
                 arguments: JSON.parse(JSON.stringify(toolArguments)),
             },
         };
@@ -796,12 +661,12 @@ const getOrInitializeLiveRangeTodoList = (
 
 const createScheduledTaskStart = (
     descriptor: PreparedLiveRangeTodoEvent['tool'],
-    dispatchNested: OperationDispatcher,
+    dispatchNested: ToolDispatcher,
 ): LiveRangeTodoEventInput['taskStart'] => (signal) => {
     if (signal.aborted) {
-        return createOperationFrom(() => {
+        return asTool(createOperationFrom(() => {
             throw createLiveRangeAbortError();
-        }, 'failed');
+        }, 'failed'));
     }
     return dispatchNested(descriptor.name, descriptor.arguments, signal);
 };
@@ -851,7 +716,7 @@ const createFilteredComparisonResult = (
 const queueFilteredDriverExpertComparisons = (
     context: FrontendAiCommandContext,
     snapshot: FilteredAnalysisSegmentsSnapshot,
-    dispatchNested: OperationDispatcher,
+    dispatchNested: ToolDispatcher,
 ): AddFilteredDriverExpertComparisonsResult => {
     const result = createFilteredComparisonResult(snapshot);
     if (snapshot.status !== 'ready') return result;
@@ -900,6 +765,7 @@ const queueFilteredDriverExpertComparisons = (
     }
 
     if (eligible.length > 0) {
+        dispatchNested.validate('display_specific_result_in_overlay');
         if (!snapshot.activePageId) {
             throw new OperationExecutionError(
                 'The filtered analysis results do not identify a retained page.',
@@ -972,10 +838,12 @@ const definitionList = Object.freeze([
         kind: 'workflow',
         componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
         execute: (context, args, dispatchNested) => {
-            const prepared = validateLiveRangeTodoBatch(args);
-            const todoList = getOrInitializeLiveRangeTodoList(context);
+            const prepared = validateLiveRangeTodoBatch(args, dispatchNested);
+            const mounted = getDirectory(context).findComponentRef<LiveRangeTodoListHandle>(
+                OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+            )?.current;
             const existingIds = new Set(
-                todoList.get().todo_list?.events.map((event) => event.id) ?? [],
+                mounted?.get().todo_list?.events.map((event) => event.id) ?? [],
             );
             const collision = prepared.find(({ event }) => existingIds.has(event.id));
             if (collision) {
@@ -983,6 +851,7 @@ const definitionList = Object.freeze([
                     `Duplicate live range to-do event id: ${collision.event.id}.`,
                 );
             }
+            const todoList = getOrInitializeLiveRangeTodoList(context);
             prepared.forEach(({ event, tool }) => {
                 todoList.addEvent({
                     ...event,
@@ -1072,8 +941,14 @@ const definitionList = Object.freeze([
         name: 'create_repeatable_plan',
         kind: 'workflow',
         componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args, dispatchNested) => getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
-            .createRepeatablePlan(args, dispatchNested),
+        execute: (context, args, dispatchNested) => {
+            const validation = validateGoalRequest(args);
+            if ('error' in validation) throw validation.error;
+            validation.request.steps.forEach((step) => dispatchNested.validate(step.name));
+            dispatchNested.validate(validation.request.stop_when.tool.name);
+            return getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+                .createRepeatablePlan(args as RepeatablePlanInput, dispatchNested);
+        },
     },
     {
         name: 'retry_repeatable_plan_task',
@@ -1100,8 +975,12 @@ const definitionList = Object.freeze([
         name: 'set_procedure_plan',
         kind: 'workflow',
         componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args, dispatchNested) => getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
-            .createProcedurePlan(args, dispatchNested),
+        execute: (context, args, dispatchNested) => {
+            const plan = parseProcedurePlanInput(args);
+            plan.requests.forEach((request) => dispatchNested.validate(request.name!));
+            return getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+                .createProcedurePlan(args as ProcedurePlanInput, dispatchNested);
+        },
     },
     {
         name: 'get_next_corner',
@@ -1215,8 +1094,14 @@ type NonQueryAiCommandRegistry = {
         FrontendOperationName,
         FrontendAiQueryName | 'display_specific_result_in_overlay'
     >]: (
-        args: Record<string, unknown>,
+        args: TName extends keyof WorkflowInputMap ? WorkflowInputMap[TName] : Record<string, unknown>,
     ) => FrontendOperation<TName>;
+};
+
+type WorkflowInputMap = {
+    set_procedure_plan: ProcedurePlanInput;
+    create_repeatable_plan: RepeatablePlanInput;
+    add_event_to_live_range_todo_list: LiveRangeTodoListInput;
 };
 
 export type AiCommandRegistry = NonQueryAiCommandRegistry & FrontendAiQueryContractMap & {
@@ -1231,37 +1116,46 @@ const definitions = Object.fromEntries(
 
 export const frontendOperationRegistry = definitions;
 
+export const createWorkflowToolDispatcher = (
+    context: FrontendAiCommandContext,
+): ToolDispatcher => {
+    const validate = (name: string): void => {
+        const definition = Object.prototype.hasOwnProperty.call(definitions, name)
+            ? definitions[name as FrontendOperationName]
+            : undefined;
+        if (!definition) throw new OperationNotRegisteredError(`Tool '${name}' is not registered.`);
+        if (definition.kind !== 'tool') {
+            throw new OperationNotRegisteredError(`Workflow '${name}' cannot be used as a child tool.`);
+        }
+    };
+    return Object.assign((name: FrontendToolName, args: Record<string, unknown> = {}, signal?: AbortSignal) => {
+        validate(name);
+        const operation = dispatchOperation(context, name, args, signal);
+        if (operation.kind !== 'tool') {
+            throw new InvalidOperationCallError(`Child '${name}' did not return a Tool.`);
+        }
+        return operation;
+    }, { validate });
+};
+
 const dispatchOperation = (
     context: FrontendAiCommandContext,
     name: string,
     args: Record<string, unknown>,
-    owner: WorkflowOwner,
     signal?: AbortSignal,
 ): Tool<OperationExecutionOutput, OperationStatusPayload> | Workflow<OperationExecutionOutput, OperationStatusPayload> => {
-    const definition = definitions[name as FrontendOperationName];
+    const definition = Object.prototype.hasOwnProperty.call(definitions, name)
+        ? definitions[name as FrontendOperationName]
+        : undefined;
     try {
         if (!definition) throw new OperationNotRegisteredError(`Operation '${name}' is not registered.`);
-        assertAvailable(context, definition.name, owner);
-        const nestedOwner: WorkflowOwner = definition.name === 'create_repeatable_plan'
-            ? 'repeatable_plan'
-            : definition.name === 'add_event_to_live_range_todo_list'
-                || definition.name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
-                ? 'live_range_todo'
-                : 'procedure_plan';
-        const dispatchNested: OperationDispatcher = (
-            nestedName,
-            nestedArgs = {},
-            nestedSignal,
-        ) => dispatchOperation(
-            context,
-            nestedName,
-            nestedArgs,
-            nestedOwner,
-            nestedSignal,
-        ) as ReturnType<OperationDispatcher>;
+        const dispatchNested = createWorkflowToolDispatcher(context);
         const result: Operation<OperationExecutionOutput, OperationStatusPayload> = (
             definition.execute(context, args, dispatchNested, signal)
         );
+        if (definition.kind === 'tool' && 'kind' in result && result.kind !== 'tool') {
+            throw new InvalidOperationCallError(`Tool '${name}' returned a workflow.`);
+        }
         const operation = definition.kind === 'workflow' ? asWorkflow(result) : asTool(result);
         if (signal) {
             const abortOperation = () => operation.abort();
@@ -1290,12 +1184,11 @@ export const createAiCommandRegistry = (
             context,
             definition.name,
             args,
-            'chat',
             signal,
         ),
     ]),
 ) as unknown as AiCommandRegistry;
 
 export const isAiCommandName = (name: string): name is FrontendOperationName => (
-    name in definitions
+    Object.prototype.hasOwnProperty.call(definitions, name)
 );

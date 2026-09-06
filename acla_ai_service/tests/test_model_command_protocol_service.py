@@ -147,3 +147,24 @@ async def test_get_model_commands_rejects_reserved_side_chat_name():
         await ModelCommandProtocolService(
             _backend([_tool("search_application_tool")]),
         ).get_model_commands({"session_mode": "live"})
+
+
+@pytest.mark.asyncio
+async def test_catalog_preserves_nested_user_workflow_schema(user_workflow_case):
+    descriptor = user_workflow_case["descriptor"]
+    backend = _backend([descriptor])
+
+    tools = await ModelCommandProtocolService(backend).get_model_commands({
+        "session_mode": "live",
+        "agent_mode": "live_performance_analyst",
+    })
+
+    assert tools == [descriptor]
+    assert set(tools[0]) == {"name", "description", "properties", "required"}
+    name = descriptor["name"]
+    tools[0]["properties"][name]["properties"]["tools"]["items"]["oneOf"].clear()
+    tools[0]["properties"][name]["required"].clear()
+    tools[0]["required"].clear()
+    assert descriptor["properties"][name]["properties"]["tools"]["items"]["oneOf"]
+    assert descriptor["properties"][name]["required"]
+    assert descriptor["required"] == [name]

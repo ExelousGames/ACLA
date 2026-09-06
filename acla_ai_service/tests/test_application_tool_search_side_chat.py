@@ -209,3 +209,114 @@ async def test_side_chat_does_not_mutate_request_catalog():
     await side_chat.run(request)
 
     assert request == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("serialized", [False, True], ids=["object", "json"])
+async def test_side_chat_preserves_workflow_schema_and_arguments(
+    user_workflow_case,
+    serialized,
+):
+    descriptor = user_workflow_case["descriptor"]
+    arguments = user_workflow_case["arguments"]
+    original = deepcopy(user_workflow_case)
+    side_chat, create = _side_chat(_response(
+        name=descriptor["name"],
+        arguments=json.dumps(arguments) if serialized else arguments,
+    ))
+    request = _request([descriptor])
+
+    selected = await side_chat.run(request)
+
+    assert selected == {"name": descriptor["name"], "arguments": arguments}
+    function = create.await_args.kwargs["tools"][0]["function"]
+    assert function == {
+        "name": descriptor["name"],
+        "description": descriptor["description"],
+        "parameters": {
+            "type": "object",
+            "properties": descriptor["properties"],
+            "required": descriptor["required"],
+        },
+    }
+    prompt = create.await_args.kwargs["messages"][0]["content"]
+    assert json.dumps([descriptor], ensure_ascii=True, sort_keys=True) in prompt
+    assert user_workflow_case == original
+
+    name = descriptor["name"]
+    selected["arguments"][name]["tools"][0].clear()
+    function["parameters"]["properties"][name]["properties"].clear()
+    assert user_workflow_case == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_list", [False, True], ids=["unwrapped", "legacy"])
+async def test_side_chat_rejects_creation_arguments_without_repeated_name(
+    user_workflow_case,
+    legacy_list,
+):
+    descriptor = user_workflow_case["descriptor"]
+    name = descriptor["name"]
+    arguments = deepcopy(user_workflow_case["arguments"][name])
+    if legacy_list:
+        children = arguments.pop("tools")
+        if name == "set_procedure_plan":
+            arguments["requests"] = [
+                {"name": tool_name, "title": child["title"],
+                 "payload": {"arguments": child["arguments"]}}
+                for entry in children for tool_name, child in entry.items()
+            ]
+        elif name == "create_repeatable_plan":
+            arguments["steps"] = [
+                {"name": tool_name, **child}
+                for entry in children for tool_name, child in entry.items()
+            ]
+            tool_name, child = next(iter(arguments["stop_when"]["tool"].items()))
+            arguments["stop_when"]["tool"] = {"name": tool_name, **child}
+        else:
+            arguments["events"] = [
+                {"event": child["event"],
+                 "tool": {"name": tool_name, "arguments": child["arguments"]}}
+                for entry in children for tool_name, child in entry.items()
+            ]
+    side_chat, _ = _side_chat(_response(name=name, arguments=json.dumps(arguments)))
+
+    with pytest.raises(ApplicationToolSearchError, match=(
+        f"omitted required arguments for {name}: {name}"
+    )):
+        await side_chat.run(_request([descriptor]))
+
+
+def test_selector_prompt_uses_catalog_guidance(user_workflow_case):
+    side_chat, _ = _side_chat()
+    descriptor = user_workflow_case["descriptor"]
+    descriptor["description"] = "Use the workflow instructions supplied by this catalog."
+
+    prompt = side_chat.task_prompt(_request([descriptor]))
+
+    assert "Follow the selected tool's catalog description and argument schema" in prompt
+    assert descriptor["description"] in prompt
+    assert json.dumps([descriptor], ensure_ascii=True, sort_keys=True) in prompt
+    assert "User workflow creation uses a strict tool-only input protocol" not in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name, arguments", [
+    ("advance_plan_step", {"reason": "The current request is complete."}),
+    ("clear_procedure_plan", {"reason": "The driver cancelled."}),
+    ("retry_repeatable_plan_task", {}),
+    ("get_live_range_todo_list", {}),
+])
+async def test_side_chat_keeps_control_and_read_arguments_unwrapped(name, arguments):
+    descriptor = {
+        "name": name,
+        "description": "Control or read an existing workflow.",
+        "properties": {"reason": {"type": "string"}} if arguments else {},
+        "required": [],
+    }
+    side_chat, _ = _side_chat(_response(name=name, arguments=json.dumps(arguments)))
+
+    assert await side_chat.run(_request([descriptor])) == {
+        "name": name,
+        "arguments": arguments,
+    }

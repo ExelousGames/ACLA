@@ -1,17 +1,17 @@
+import { asTool, type ToolDispatcher } from 'components/ai-operations/tool';
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import {
     RepeatablePlanDisplay,
     RepeatablePlanRunner,
     repeatablePlanOverlayRenderer,
-    buildGoalRequest,
     compareGoalValues,
     validateGoalRequest,
     type GoalRequest,
+    type RepeatablePlanInput,
     type NestedOperationResult,
 } from '../RepeatablePlan';
 import {
-    type OperationDispatcher,
     createOperationDeferred,
     createOperation,
     createOperationFrom,
@@ -34,7 +34,7 @@ const request = (): GoalRequest => ({
 });
 
 const operationWithValue = (value: unknown, status = 'complete') => (
-    resolvedOperation(value as NestedOperationResult, status)
+    asTool(resolvedOperation(value as NestedOperationResult, status))
 );
 
 describe('RepeatablePlanDisplay', () => {
@@ -131,18 +131,18 @@ describe('RepeatablePlanDisplay', () => {
 
 describe('Repeatable plan descriptors', () => {
     it('validates the clean-break stop_when shape and configurable tool names', () => {
-        expect(buildGoalRequest(request())).toEqual({ request: request() });
-        expect(buildGoalRequest({
+        expect(validateGoalRequest(toInput(request()))).toEqual({ request: request() });
+        expect(validateGoalRequest(toInput({
             ...request(),
             stop_when: {
                 ...request().stop_when,
                 tool: { name: 'session_configured_numeric_tool' },
             },
-        })).toHaveProperty('request');
-        expect(validateGoalRequest({
+        }))).toHaveProperty('request');
+        expect(validateGoalRequest(toInput({
             ...request(),
             steps: [{ id: 'nested', title: 'Nested', name: 'create_repeatable_plan' }],
-        })).toHaveProperty('error');
+        }))).toHaveProperty('error');
         expect(compareGoalValues(2, 'lte', 2)).toBe(true);
     });
 
@@ -156,11 +156,14 @@ describe('Repeatable plan descriptors', () => {
     });
 
     it('rejects unexpected stop_when properties', () => {
+        const input = toInput(request());
         const validation = validateGoalRequest({
-            ...request(),
-            stop_when: {
-                ...request().stop_when,
-                unexpected: true,
+            create_repeatable_plan: {
+                ...input.create_repeatable_plan,
+                stop_when: {
+                    ...input.create_repeatable_plan.stop_when,
+                    unexpected: true,
+                },
             },
         });
 
@@ -173,14 +176,14 @@ describe('Repeatable plan descriptors', () => {
 
 describe('RepeatablePlanRunner central dispatch callback', () => {
     it('aborts the active nested tool when the goal operation is aborted', async () => {
-        const nested = createOperation(
+        const nested = asTool(createOperation(
             new Promise<NestedOperationResult>(() => undefined),
             'complete',
-        );
+        ));
         const nestedAbort = jest.spyOn(nested, 'abort');
-        const dispatch: OperationDispatcher = jest.fn(() => nested);
-        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
-        const operation = runner.createRepeatablePlan(request());
+        const dispatch = jest.fn(() => nested);
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+        const operation = runner.createRepeatablePlan(toInput(request()));
         const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
 
         operation.abort();
@@ -197,15 +200,15 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
 
     it('publishes overlay-safe running steps with a stable run id and defined error', async () => {
         const collect = createOperationDeferred<NestedOperationResult>();
-        const dispatch: OperationDispatcher = jest.fn((name: string) => (
+        const dispatch = jest.fn((name: string) => (
             name === 'collect'
-                ? createOperation(collect.promise, 'complete')
+                ? asTool(createOperation(collect.promise, 'complete'))
                 : operationWithValue(name === 'determine'
                     ? { status: 'ready', data: 0 }
                     : { status: 'complete' })
         ));
-        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
-        const operation = runner.createRepeatablePlan(request());
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+        const operation = runner.createRepeatablePlan(toInput(request()));
 
         expect(runner.getComponentName()).toBe('repeatable-plan');
         expect(runner.kind).toBe('workflow');
@@ -263,8 +266,8 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
                 ? { status: 'ready', data: 0 }
                 : { status: 'complete' });
         });
-        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
-        const operation = runner.create(input);
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+        const operation = runner.create(toInput(input));
 
         const result = await operation.result;
         if (result instanceof Error) throw result;
@@ -330,9 +333,9 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
                 'stop-when-terminal',
             );
         });
-        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
 
-        const result = await runner.create(request()).result;
+        const result = await runner.create(toInput(request())).result;
         if (result instanceof Error) throw result;
 
         expect(result.task_results).toEqual([
@@ -358,10 +361,10 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
                 : { status: 'complete' },
         ));
         const snapshots: Array<{ status: string; actual: number | null }> = [];
-        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch, (snapshot) => {
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch), (snapshot) => {
             if (snapshot) snapshots.push({ status: snapshot.status, actual: snapshot.actual });
         });
-        const operation = runner.create(request());
+        const operation = runner.create(toInput(request()));
 
         const result = await operation.result;
         if (result instanceof Error) throw result;
@@ -388,12 +391,12 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         ['null', null],
         ['ordinary non-query output', { status: 'complete' }],
     ])('fails the stop condition for incompatible %s output', async (_description, output) => {
-        const dispatch: OperationDispatcher = jest.fn((name: string) => operationWithValue(
+        const dispatch = jest.fn((name: string) => operationWithValue(
             name === 'determine' ? output : { status: 'complete' },
         ));
-        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
 
-        const result = await runner.create(request()).result;
+        const result = await runner.create(toInput(request())).result;
         if (result instanceof Error) throw result;
 
         expect(result).toMatchObject({
@@ -420,9 +423,9 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
                     : { status: 'ready', data: 0 })
                 : { status: 'complete' },
         ));
-        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
 
-        const failedResult = await runner.create(request()).result;
+        const failedResult = await runner.create(toInput(request())).result;
         if (failedResult instanceof Error) throw failedResult;
         expect(failedResult.status).toBe('failed');
 
@@ -444,13 +447,13 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
     });
 
     it('reports a rejected stop-condition operation as an execution failure', async () => {
-        const dispatch = jest.fn((name: string) => createOperationFrom(() => {
+        const dispatch = jest.fn((name: string) => asTool(createOperationFrom(() => {
             if (name === 'determine') throw new Error('stop condition exploded');
             return { status: 'complete' };
-        }, 'complete'));
-        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
+        }, 'complete')));
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
 
-        const result = await runner.create(request()).result;
+        const result = await runner.create(toInput(request())).result;
         if (result instanceof Error) throw result;
 
         expect(result).toMatchObject({
@@ -467,15 +470,15 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
 
     it('retains a failed step and retries it through the same dispatcher', async () => {
         let attempts = 0;
-        const dispatch = jest.fn((name: string) => createOperationFrom(() => {
+        const dispatch = jest.fn((name: string) => asTool(createOperationFrom(() => {
             if (name === 'collect' && ++attempts === 1) throw new Error('not ready');
             return name === 'determine'
                 ? { status: 'ready', data: 0 }
                 : { status: 'complete' };
-        }, 'complete'));
-        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
+        }, 'complete')));
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
 
-        const failedOperation = runner.create(request());
+        const failedOperation = runner.create(toInput(request()));
         const failedResult = await failedOperation.result;
         if (failedResult instanceof Error) throw failedResult;
 
@@ -539,4 +542,21 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
             ]);
         expect(attempts).toBe(2);
     });
+});
+
+const toolDispatcher = (dispatch: (...args: any[]) => ReturnType<ToolDispatcher>): ToolDispatcher => Object.assign(dispatch, { validate: jest.fn() }) as ToolDispatcher;
+
+const toInput = (request: GoalRequest): RepeatablePlanInput => ({
+    create_repeatable_plan: {
+        name: request.name,
+        tools: request.steps.map(({ name, ...metadata }) => ({ [name]: metadata })) as unknown as RepeatablePlanInput['create_repeatable_plan']['tools'],
+        stop_when: {
+            ...request.stop_when,
+            tool: {
+                [request.stop_when.tool.name]: {
+                    ...(request.stop_when.tool.arguments ? { arguments: request.stop_when.tool.arguments } : {}),
+                },
+            } as unknown as RepeatablePlanInput['create_repeatable_plan']['stop_when']['tool'],
+        },
+    },
 });

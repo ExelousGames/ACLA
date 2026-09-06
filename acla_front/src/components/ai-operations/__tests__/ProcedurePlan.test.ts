@@ -1,3 +1,4 @@
+import { asTool, type ToolDispatcher } from 'components/ai-operations/tool';
 import {
     ProcedurePlanRunner,
     advanceProcedurePlan,
@@ -5,6 +6,8 @@ import {
     getProcedurePlanOperationArguments,
     isProcedurePlanOptOutRequest,
     type ProcedurePlanState,
+    type ProcedurePlanInput,
+    parseProcedurePlanInput,
 } from '../ProcedurePlan';
 import { ProcedurePlanStepFailedError } from '../../../contexts/OperationComponentError';
 import {
@@ -23,7 +26,7 @@ const plan = (): ProcedurePlanState => ({
             title: 'Read telemetry',
             name: 'read',
             status: 'pending',
-            payload: { arguments: { lap: 2 } },
+            payload: { lap: 2 },
         },
         {
             type: 'tool_call',
@@ -37,8 +40,10 @@ const plan = (): ProcedurePlanState => ({
 describe('ProcedurePlan descriptors', () => {
     it('builds stable requests and advances the active request', () => {
         expect(buildProcedurePlan({
-            goal: 'Review',
-            requests: [{ title: 'Read', name: 'read' }],
+            set_procedure_plan: {
+                goal: 'Review',
+                tools: [{ read: { title: 'Read', arguments: {} } }],
+            },
         })).toMatchObject({
             goal: 'Review',
             currentStep: 0,
@@ -55,14 +60,14 @@ describe('ProcedurePlan descriptors', () => {
 
 describe('ProcedurePlanRunner central dispatch callback', () => {
     it('aborts the active nested tool when the plan operation is aborted', async () => {
-        const nested = createOperation(
+        const nested = asTool(createOperation(
             new Promise<Record<string, unknown>>(() => undefined),
             'complete',
-        );
+        ));
         const nestedAbort = jest.spyOn(nested, 'abort');
         const dispatch = jest.fn(() => nested);
-        const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
-        const operation = runner.createProcedurePlan(plan());
+        const runner = new ProcedurePlanRunner('procedure-plan', toolDispatcher(dispatch));
+        const operation = runner.createProcedurePlan(toInput(plan()));
         const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
 
         operation.abort();
@@ -78,15 +83,15 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
     });
 
     it('executes requests in order and returns dispatcher outputs unchanged', async () => {
-        const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => resolvedOperation({
+        const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => asTool(resolvedOperation({
             status: 'complete',
             name,
             lap: args?.lap,
-        }, 'complete'));
+        }, 'complete')));
         const onChange = jest.fn();
-        const runner = new ProcedurePlanRunner('procedure-plan', dispatch, onChange);
+        const runner = new ProcedurePlanRunner('procedure-plan', toolDispatcher(dispatch), onChange);
 
-        const operation = runner.createProcedurePlan(plan());
+        const operation = runner.createProcedurePlan(toInput(plan()));
         const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
         expect(runner.getComponentName()).toBe('procedure-plan');
         expect(runner.kind).toBe('workflow');
@@ -136,9 +141,9 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
 
     it('notifies a superseded operation as replaced', async () => {
         const nestedResult = createOperationDeferred<{ status: string }>();
-        const dispatch = jest.fn(() => createOperation(nestedResult.promise, 'complete'));
-        const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
-        const original = runner.createProcedurePlan(plan());
+        const dispatch = jest.fn(() => asTool(createOperation(nestedResult.promise, 'complete')));
+        const runner = new ProcedurePlanRunner('procedure-plan', toolDispatcher(dispatch));
+        const original = runner.createProcedurePlan(toInput(plan()));
         const termination = new Promise((resolve) => original.notifyTerminated(resolve));
 
         const replacement = runner.replace(null);
@@ -157,13 +162,13 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         const onError = jest.fn();
         const onChange = jest.fn();
         const rootError = new Error('offline');
-        const dispatch = jest.fn((name: string) => createOperationFrom(() => {
+        const dispatch = jest.fn((name: string) => asTool(createOperationFrom(() => {
             if (name === 'read') throw rootError;
             return { status: 'complete' };
-        }, 'complete'));
-        const runner = new ProcedurePlanRunner('procedure-plan', dispatch, onChange, onError);
+        }, 'complete')));
+        const runner = new ProcedurePlanRunner('procedure-plan', toolDispatcher(dispatch), onChange, onError);
 
-        const failedResult = await runner.createProcedurePlan(plan()).result;
+        const failedResult = await runner.createProcedurePlan(toInput(plan())).result;
         expect(failedResult).not.toBeInstanceOf(Error);
         if (failedResult instanceof Error) throw failedResult;
         expect(failedResult).toMatchObject({
@@ -198,4 +203,15 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         expect(runner.getProcedurePlan()).toBeNull();
         expect(runner.getSnapshot()).toBeNull();
     });
+});
+
+const toolDispatcher = (dispatch: (...args: any[]) => ReturnType<ToolDispatcher>): ToolDispatcher => Object.assign(dispatch, { validate: jest.fn() }) as ToolDispatcher;
+
+const toInput = (plan: ProcedurePlanState): ProcedurePlanInput => ({
+    set_procedure_plan: {
+        goal: plan.goal,
+        tools: plan.requests.map((request) => ({
+            [request.name!]: { title: request.title, arguments: request.payload ?? {} },
+        })) as unknown as ProcedurePlanInput['set_procedure_plan']['tools'],
+    },
 });

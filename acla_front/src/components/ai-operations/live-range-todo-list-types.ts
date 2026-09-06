@@ -1,4 +1,4 @@
-import type { Operation } from './operation';
+import type { Tool, ToolCall } from './tool';
 import type { Workflow } from './workflow';
 import type { AiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
 
@@ -9,12 +9,21 @@ export interface LiveRangeTodoContent {
     description?: string;
 }
 
+export type LiveRangeTodoListInput = {
+    add_event_to_live_range_todo_list: {
+        tools: ToolCall<{
+            event: Omit<LiveRangeTodoEventInput, 'taskStart'>;
+            arguments: Record<string, unknown>;
+        }>[];
+    };
+};
+
 export interface LiveRangeTodoEventInput {
     id: string;
     normalized_position: number;
     lead_time_seconds?: number;
     content: LiveRangeTodoContent;
-    taskStart: (signal: AbortSignal) => Operation<unknown, object>;
+    taskStart: (signal: AbortSignal) => Tool<unknown, object>;
 }
 
 export interface LiveRangeTodoEventUpdate {
@@ -22,7 +31,7 @@ export interface LiveRangeTodoEventUpdate {
     normalized_position?: number;
     lead_time_seconds?: number;
     content?: Partial<LiveRangeTodoContent>;
-    taskStart?: (signal: AbortSignal) => Operation<unknown, object>;
+    taskStart?: (signal: AbortSignal) => Tool<unknown, object>;
 }
 
 export interface LiveRangeTodoSnapshotEvent {

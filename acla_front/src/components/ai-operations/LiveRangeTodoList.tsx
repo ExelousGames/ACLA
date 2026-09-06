@@ -8,6 +8,7 @@ import {
 } from 'views/floating-chat/overlay-renderer-validation';
 import { WorkflowComponentBase } from './WorkflowComponentBase';
 import { asWorkflow } from './workflow';
+import { assertTool } from './tool';
 import type {
     LiveRangeTodoContent,
     LiveRangeTodoEventInput,
@@ -819,6 +820,7 @@ implements LiveRangeTodoListHandle {
 
         try {
             const operation = runningEvent.taskStart(controller.signal);
+            assertTool(operation);
             activeRun.operation = operation;
             const unsubscribeTermination = operation.notifyTerminated((termination) => {
                 this.finishEvent(

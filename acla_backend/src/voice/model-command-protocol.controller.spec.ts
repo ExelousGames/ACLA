@@ -93,6 +93,37 @@ describe('ModelCommandProtocolController', () => {
         expect(tools.some((tool) => 'title' in tool)).toBe(false);
     });
 
+    it('returns workflow envelopes while preserving standalone control payloads', () => {
+        const commands = controller.getModelCommands({
+            session_context: { session_mode: 'live', agent_mode: 'live_performance_analyst' },
+        });
+        const creationNames = [
+            'set_procedure_plan',
+            'create_repeatable_plan',
+            'add_event_to_live_range_todo_list',
+        ];
+        creationNames.forEach((name) => {
+            const command = commands.find((entry) => entry.name === name) as any;
+            expect(Object.keys(command.properties)).toEqual([name]);
+            expect(command.required).toEqual([name]);
+            expect(command.properties[name].additionalProperties).toBe(false);
+            expect(command.properties[name].properties.tools.items.oneOf.length).toBeGreaterThan(0);
+        });
+        [
+            'get_live_range_todo_list',
+            'retry_repeatable_plan_task',
+            'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        ].forEach((name) => {
+            expect(commands.find((entry) => entry.name === name))
+                .toMatchObject({ properties: {}, required: [] });
+        });
+        ['advance_plan_step', 'clear_procedure_plan'].forEach((name) => {
+            const command = commands.find((entry) => entry.name === name) as any;
+            expect(Object.keys(command.properties)).toEqual(['reason']);
+            expect(command.required).toEqual([]);
+        });
+    });
+
     it('returns the JSONata analysis-result query contract', () => {
         const tools = controller.getModelCommands({
             session_context: { session_mode: 'recorded' },

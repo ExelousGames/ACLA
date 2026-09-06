@@ -91,6 +91,8 @@ class ApplicationToolSearchSideChat(SideAIChat[SelectedToolCall]):
             "parent session and session context. Do not invent missing values, "
             "choose an unlisted tool, answer conversationally, or emit more than "
             "one tool call.\n\n"
+            "Follow the selected tool's catalog description and argument schema "
+            "for usage, workflow execution, and result handling.\n\n"
             f"Complete allowed-tool catalog:\n{catalog}\n\n"
             f"Current normalized parent session context:\n{session_context}\n\n"
             f"Complete parent session messages:\n{parent_session}\n\n"

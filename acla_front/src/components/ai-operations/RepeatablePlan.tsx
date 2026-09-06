@@ -27,19 +27,20 @@ import {
 import { serializeError, type SerializedError } from 'errors/OperationError';
 import { WorkflowComponentBase } from './WorkflowComponentBase';
 import { asWorkflow, type Workflow } from './workflow';
+import { assertTool, type ToolCall, type ToolDispatcher } from './tool';
+import type { FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import {
     createControlledOperation,
     createOperationFrom,
     mapOperation,
     type ControlledOperation,
     type Operation,
-    type OperationDispatcher,
-    type OperationNormalOutput,
+    type OperationExecutionOutput,
     type OperationStatusPayload,
 } from './operation';
 import RepeatablePlanOverlayDisplay, { getRepeatablePlanOverlaySummary } from './RepeatablePlanOverlayDisplay';
 
-export type NestedOperationResult = OperationNormalOutput | string;
+export type NestedOperationResult = OperationExecutionOutput;
 export type NestedOperationStatus = OperationStatusPayload;
 
 export const GOAL_COMPARISON_OPERATORS = [
@@ -52,6 +53,17 @@ export const GOAL_COMPARISON_OPERATORS = [
 ] as const;
 
 export type GoalComparisonOperator = typeof GOAL_COMPARISON_OPERATORS[number];
+export type RepeatablePlanInput = {
+    create_repeatable_plan: {
+        name: string;
+        tools: ToolCall<{ id: string; title: string; arguments?: Record<string, unknown> }>[];
+        stop_when: {
+            tool: ToolCall<{ arguments?: Record<string, unknown> }>;
+            operator: GoalComparisonOperator;
+            target: number;
+        };
+    };
+};
 export type GoalStatus = 'running' | 'achieved' | 'missed' | 'error';
 export type GoalStepStatus = 'pending' | 'running' | 'completed' | 'error';
 export type GoalStopWhenStatus = GoalStepStatus;
@@ -152,7 +164,7 @@ export type GoalRunResult = Pick<
 export type GoalAiResult = Omit<GoalRunResult, 'name'> & { goal: string };
 
 export interface RepeatablePlanHandle extends NamedOperationComponentHandle, AiOverlayComponentHandle<GoalSnapshot | null> {
-    createRepeatablePlan(input: GoalRequest): Workflow<GoalAiResult>;
+    createRepeatablePlan(input: RepeatablePlanInput): Workflow<GoalAiResult>;
     retryFailedTask(): Workflow<GoalAiResult>;
     getSnapshot(): GoalSnapshot | null;
     clear(): void;
@@ -183,7 +195,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
 
 const hasOnlyKeys = (value: Record<string, unknown>, allowedKeys: readonly string[]): boolean => {
     const allowed = new Set(allowedKeys);
-    return Object.keys(value).every((key) => allowed.has(key));
+    return Reflect.ownKeys(value).every((key) => typeof key === 'string' && allowed.has(key));
 };
 
 const toNonEmptyString = (value: unknown): string | null => {
@@ -198,11 +210,14 @@ const isGoalComparisonOperator = (value: unknown): value is GoalComparisonOperat
 );
 
 const parseGoalStepDescriptor = (value: unknown): GoalStepDescriptor | null => {
-    const step = isRecord(value) ? value : null;
-    if (!step || !hasOnlyKeys(step, ['id', 'title', 'name', 'arguments'])) return null;
+    const entry = isRecord(value) ? value : null;
+    if (!entry || Reflect.ownKeys(entry).length !== 1) return null;
+    const name = Object.keys(entry)[0];
+    if (!name || name.trim() !== name) return null;
+    const step = isRecord(entry[name]) ? entry[name] as Record<string, unknown> : null;
+    if (!step || !hasOnlyKeys(step, ['id', 'title', 'arguments'])) return null;
     const id = toNonEmptyString(step.id);
     const title = toNonEmptyString(step.title);
-    const name = toNonEmptyString(step.name);
     if (!id || !title || !name) return null;
     if (step.arguments !== undefined && !isRecord(step.arguments)) return null;
     return {
@@ -214,9 +229,12 @@ const parseGoalStepDescriptor = (value: unknown): GoalStepDescriptor | null => {
 };
 
 const parseGoalStopWhenOperation = (value: unknown): GoalStopWhenOperation | null => {
-    const tool = isRecord(value) ? value : null;
-    if (!tool || !hasOnlyKeys(tool, ['name', 'arguments'])) return null;
-    const name = toNonEmptyString(tool.name);
+    const entry = isRecord(value) ? value : null;
+    if (!entry || Reflect.ownKeys(entry).length !== 1) return null;
+    const name = Object.keys(entry)[0];
+    if (!name || name.trim() !== name) return null;
+    const tool = isRecord(entry[name]) ? entry[name] as Record<string, unknown> : null;
+    if (!tool || !hasOnlyKeys(tool, ['arguments'])) return null;
     if (!name || (tool.arguments !== undefined && !isRecord(tool.arguments))) return null;
     return {
         name,
@@ -250,21 +268,25 @@ export const validateGoalRequest = (
     value: unknown,
     componentName = 'repeatable-plan',
 ): { request: GoalRequest } | { error: GoalComponentError; name?: string } => {
-    const input = isRecord(value) ? value : null;
+    const envelope = isRecord(value)
+        && Reflect.ownKeys(value).length === 1
+        && Object.prototype.hasOwnProperty.call(value, 'create_repeatable_plan')
+        ? value : null;
+    const input = isRecord(envelope?.create_repeatable_plan) ? envelope!.create_repeatable_plan : null;
     const name = toNonEmptyString(input?.name);
-    if (!input || !name || !hasOnlyKeys(input, ['name', 'steps', 'stop_when'])) {
+    if (!input || !name || !hasOnlyKeys(input, ['name', 'tools', 'stop_when'])) {
         return {
             error: new InvalidGoalNameError(componentName, 'Provide a valid repeatable plan name.'),
             ...(name ? { name } : {}),
         };
     }
-    if (!Array.isArray(input.steps) || input.steps.length === 0) {
+    if (!Array.isArray(input.tools) || input.tools.length === 0) {
         return {
             error: new InvalidGoalStepsError(componentName, 'Provide at least one valid repeatable plan step.'),
             name,
         };
     }
-    const steps = input.steps.map(parseGoalStepDescriptor);
+    const steps = input.tools.map(parseGoalStepDescriptor);
     if (steps.some((step) => !step)) {
         return {
             error: new InvalidGoalStepsError(componentName, 'Every repeatable plan step must have a valid id, title, name, and arguments object.'),
@@ -304,12 +326,14 @@ export const validateGoalRequest = (
     return { request: { name, steps: parsedSteps, stop_when: stopWhen } };
 };
 
-export const buildGoalRequest = (
+export const parseRepeatablePlanInput = (
     value: unknown,
     componentName = 'repeatable-plan',
-): { request: GoalRequest } | { error: GoalComponentError; name?: string } => (
-    validateGoalRequest(value, componentName)
-);
+): GoalRequest => {
+    const validation = validateGoalRequest(value, componentName);
+    if ('error' in validation) throw validation.error;
+    return validation.request;
+};
 
 const evaluateGoalStopWhenInput = (value: unknown): number | null => {
     if (
@@ -427,13 +451,13 @@ implements RepeatablePlanHandle {
 
     constructor(
         componentName: string,
-        private readonly dispatchOperation: OperationDispatcher,
+        private readonly dispatchOperation: ToolDispatcher,
         private readonly onChange?: (snapshot: GoalSnapshot | null) => void,
     ) {
         super(componentName, null);
     }
 
-    createRepeatablePlan(input: GoalRequest): Workflow<GoalAiResult> {
+    createRepeatablePlan(input: RepeatablePlanInput): Workflow<GoalAiResult> {
         return asWorkflow(mapOperation(this.create(input), toGoalAiResult));
     }
 
@@ -461,41 +485,27 @@ implements RepeatablePlanHandle {
         return this.currentSnapshot ? cloneSnapshot(this.currentSnapshot) : null;
     }
 
-    create(input: GoalRequest): Workflow<GoalRunResult> {
-        const validation = validateGoalRequest(input, this.getComponentName());
-        if ('error' in validation) {
-            return asWorkflow(createOperationFrom(() => this.runCreate(input), 'failed'));
+    create(input: RepeatablePlanInput): Workflow<GoalRunResult> {
+        try {
+            const request = parseRepeatablePlanInput(input, this.getComponentName());
+            request.steps.forEach((step) => this.dispatchOperation.validate(step.name));
+            this.dispatchOperation.validate(request.stop_when.tool.name);
+            return this.startOperation(() => this.runCreate(request));
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
         }
-        return this.startOperation(() => this.runCreate(input));
     }
 
     private async runCreate(input: GoalRequest): Promise<GoalRunResult> {
-        const validation = validateGoalRequest(input, this.getComponentName());
-        if ('error' in validation) {
-            const snapshot: GoalSnapshot = {
-                name: validation.name || 'Repeatable plan',
-                status: 'error',
-                steps: [],
-                stop_when: null,
-                stop_when_result: null,
-                target: null,
-                actual: null,
-                completed_steps: [],
-                error: validation.error.message,
-            };
-            this.publish(snapshot);
-            throw validation.error;
-        }
-
         this.generation += 1;
-        this.request = validation.request;
+        this.request = input;
         this.failedStepIndex = null;
         this.stopWhenFailed = false;
-        this.stepAttempts = validation.request.steps.map(() => 0);
+        this.stepAttempts = input.steps.map(() => 0);
         this.stopWhenAttempts = 0;
         this.taskResults = [];
-        this.publish(this.createRunningSnapshot(validation.request));
-        return this.runPreparation(validation.request, this.generation, 0);
+        this.publish(this.createRunningSnapshot(input));
+        return this.runPreparation(input, this.generation, 0);
     }
 
     retryFailedTask(): Workflow<GoalAiResult> {
@@ -788,9 +798,10 @@ implements RepeatablePlanHandle {
         let operation: Operation<NestedOperationResult, NestedOperationStatus> | null = null;
         try {
             const dispatchedOperation = this.dispatchOperation(
-                toolName,
-                argumentsValue,
+                toolName as FrontendToolName,
+                argumentsValue ?? {},
             );
+            assertTool(dispatchedOperation);
             operation = dispatchedOperation;
             if (
                 !activeOperation

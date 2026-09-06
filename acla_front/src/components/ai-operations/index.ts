@@ -1,8 +1,8 @@
 export { OperationComponentBase } from './OperationComponentBase';
 export type { OperationComponentSnapshotListener } from './OperationComponentBase';
 export { WorkflowComponentBase } from './WorkflowComponentBase';
-export { asTool } from './tool';
-export type { Tool } from './tool';
+export { asTool, assertTool } from './tool';
+export type { Tool, ToolCall, ToolDispatcher } from './tool';
 export { asWorkflow } from './workflow';
 export type { Workflow } from './workflow';
 export {
@@ -37,6 +37,7 @@ export {
     ProcedurePlanRunner,
     advanceProcedurePlan,
     buildProcedurePlan,
+    parseProcedurePlanInput,
     getProcedurePlanOperationArguments,
     getProcedurePlanOperationRunKey,
     getProcedurePlanUpdateKey,
@@ -50,6 +51,7 @@ export {
 export type {
     ProcedurePlanAdvanceResult,
     ProcedurePlanHandle,
+    ProcedurePlanInput,
     ProcedurePlanProps,
     ProcedurePlanRequest,
     ProcedurePlanRequestSnapshot,
@@ -70,6 +72,7 @@ export {
 export type { LiveRangeTelemetrySample, LiveRangeTodoListProps } from './LiveRangeTodoList';
 export type {
     LiveRangeTodoContent,
+    LiveRangeTodoListInput,
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
@@ -84,7 +87,7 @@ export {
     GOAL_COMPARISON_OPERATORS,
     RepeatablePlanDisplay,
     RepeatablePlanRunner,
-    buildGoalRequest,
+    parseRepeatablePlanInput,
     compareGoalValues,
     validateGoalRequest,
 } from './RepeatablePlan';
@@ -97,6 +100,7 @@ export type {
     GoalStopWhenOperation,
     RepeatablePlanDisplayProps,
     RepeatablePlanHandle,
+    RepeatablePlanInput,
     RepeatablePlanProps,
     GoalRunResult,
     GoalRequest,

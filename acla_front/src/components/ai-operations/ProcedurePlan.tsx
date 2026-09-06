@@ -4,7 +4,8 @@ import { asWorkflow, type Workflow } from './workflow';
 import type {
     NamedOperationComponentHandle,
 } from 'contexts/OperationComponentRefContext';
-import type { OperationDispatcher } from './operation';
+import { assertTool, type ToolCall, type ToolDispatcher } from './tool';
+import type { FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import {
     createControlledOperation,
     createOperationFrom,
@@ -15,7 +16,7 @@ import {
     ProcedurePlanReplacedError,
     ProcedurePlanStepFailedError,
 } from 'contexts/OperationComponentError';
-import { serializeError, type SerializedError } from 'errors/OperationError';
+import { InvalidProcedurePlanRequestsError, serializeError, type SerializedError } from 'errors/OperationError';
 import type {
     AiOverlayComponentHandle,
     AiOverlayRenderer,
@@ -36,6 +37,13 @@ export const PROCEDURE_PLAN_STEP_STATUSES = [
 ] as const;
 
 export type ProcedurePlanStepStatus = typeof PROCEDURE_PLAN_STEP_STATUSES[number];
+
+export type ProcedurePlanInput = {
+    set_procedure_plan: {
+        goal: string;
+        tools: ToolCall<{ title: string; arguments: Record<string, unknown> }>[];
+    };
+};
 
 export type ProcedurePlanRequestSnapshot = {
     type: string;
@@ -92,7 +100,7 @@ export type ProcedurePlanRunResult = {
 };
 
 export interface ProcedurePlanHandle extends NamedOperationComponentHandle, AiOverlayComponentHandle<ProcedurePlanSnapshot | null> {
-    createProcedurePlan(plan: ProcedurePlanState): Workflow<ProcedurePlanRunResult>;
+    createProcedurePlan(input: ProcedurePlanInput): Workflow<ProcedurePlanRunResult>;
     advancePlanStep(reason?: string): Workflow<ProcedurePlanRunResult>;
     clearProcedurePlan(reason?: string): Workflow<ProcedurePlanRunResult>;
     getProcedurePlan(): ProcedurePlanState | null;
@@ -128,7 +136,7 @@ implements ProcedurePlanHandle {
 
     constructor(
         componentName: string,
-        private readonly dispatchOperation: OperationDispatcher,
+        private readonly dispatchOperation: ToolDispatcher,
         onChange?: ProcedurePlanChangeHandler,
         onError: ProcedurePlanTaskErrorHandler = defaultProcedurePlanErrorHandler,
     ) {
@@ -137,8 +145,8 @@ implements ProcedurePlanHandle {
         this.onError = onError;
     }
 
-    createProcedurePlan(plan: ProcedurePlanState): Workflow<ProcedurePlanRunResult> {
-        return this.replace(plan);
+    createProcedurePlan(input: ProcedurePlanInput): Workflow<ProcedurePlanRunResult> {
+        return this.replace(input);
     }
 
     advancePlanStep(reason?: string): Workflow<ProcedurePlanRunResult> {
@@ -177,8 +185,14 @@ implements ProcedurePlanHandle {
         return this.plan ? cloneProcedurePlanState(this.plan) : null;
     }
 
-    replace(plan: ProcedurePlanState | null): Workflow<ProcedurePlanRunResult> {
-        return this.startOperation(() => this.runReplace(plan));
+    replace(input: ProcedurePlanInput | null): Workflow<ProcedurePlanRunResult> {
+        try {
+            const plan = input === null ? null : parseProcedurePlanInput(input);
+            plan?.requests.forEach((request) => this.dispatchOperation.validate(request.name!));
+            return this.startOperation(() => this.runReplace(plan));
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
     }
 
     private async runReplace(plan: ProcedurePlanState | null): Promise<ProcedurePlanRunResult> {
@@ -333,9 +347,10 @@ implements ProcedurePlanHandle {
             try {
                 const activeOperation = this.activeOperation;
                 nestedOperation = this.dispatchOperation(
-                    request.name || '',
+                    request.name as FrontendToolName,
                     getProcedurePlanOperationArguments(request),
                 );
+                assertTool(nestedOperation);
                 if (
                     !activeOperation
                     || this.activeOperation !== activeOperation
@@ -523,49 +538,13 @@ const toRecord = (value: unknown): Record<string, unknown> | null => (
 export const getProcedurePlanOperationArguments = (
     request: ProcedurePlanRequestSnapshot,
 ): Record<string, unknown> => {
-    const payload = toRecord(request.payload);
-    if (!payload) return {};
-    const nested = payload.arguments || payload.args || payload.parameters;
-    return toRecord(nested) || payload;
+    return toRecord(request.payload) || {};
 };
 
 export const getProcedurePlanOperationRunKey = (
     plan: ProcedurePlanState | ProcedurePlanSnapshot,
     request: ProcedurePlanRequestSnapshot,
 ): string => `${plan.currentStep}:${request.name || ''}:${JSON.stringify(request.payload ?? null)}`;
-
-const isProcedurePlanStepStatus = (value: unknown): value is ProcedurePlanStepStatus => (
-    typeof value === 'string'
-    && (PROCEDURE_PLAN_STEP_STATUSES as readonly string[]).includes(value)
-);
-
-const buildProcedurePlanRequestSnapshot = (value: unknown): ProcedurePlanRequestSnapshot | null => {
-    const request = toRecord(value);
-    if (!request) return null;
-
-    const title = toNonEmptyString(request.title);
-    const name = toNonEmptyString(request.name);
-    if (!title) return null;
-    const type = toNonEmptyString(request.type) || (name ? 'tool_call' : 'request');
-
-    return {
-        type,
-        title,
-        name: name || undefined,
-        status: isProcedurePlanStepStatus(request.status) ? request.status : 'pending',
-        detail: toNonEmptyString(request.detail) || undefined,
-        method: toNonEmptyString(request.method) || undefined,
-        url: toNonEmptyString(request.url) || undefined,
-        payload: request.payload,
-    };
-};
-
-const toProcedurePlanRequestSnapshots = (value: unknown): ProcedurePlanRequestSnapshot[] | null => {
-    if (!Array.isArray(value) || value.length === 0) return null;
-    const snapshots = value.map(buildProcedurePlanRequestSnapshot);
-    if (snapshots.some((item) => !item)) return null;
-    return snapshots as ProcedurePlanRequestSnapshot[];
-};
 
 export const isProcedurePlanRequestDone = (
     request: ProcedurePlanRequest | ProcedurePlanRequestSnapshot | undefined,
@@ -641,30 +620,45 @@ export const isProcedurePlanClearEvent = (sourceEvent?: string): boolean => (
 );
 
 export const buildProcedurePlan = (
-    data: Record<string, unknown>,
+    data: unknown,
 ): ProcedurePlanState | null => {
-    const sourceEvent = toNonEmptyString(data.event);
-    const snapshots = toProcedurePlanRequestSnapshots(data.requests);
-    if (!snapshots) return null;
+    try {
+        return parseProcedurePlanInput(data);
+    } catch {
+        return null;
+    }
+};
 
-    const requestedStep = Math.floor(Number(data.current_request ?? 0));
-    const currentStep = Number.isFinite(requestedStep)
-        ? Math.max(0, Math.min(snapshots.length - 1, requestedStep))
-        : 0;
-    const runnableSnapshots = snapshots
-        .slice(currentStep)
-        .filter((request) => !isProcedurePlanRequestDone(request));
-    if (runnableSnapshots.length === 0) return null;
-    const requests = runnableSnapshots.map((request) => ({
-        ...request,
-        status: 'pending' as const,
-    }));
-
+export const parseProcedurePlanInput = (value: unknown): ProcedurePlanState => {
+    const invalid = (): never => {
+        throw new InvalidProcedurePlanRequestsError(
+            'Provide set_procedure_plan with a goal and tools containing one tool name, title, and arguments object each.',
+        );
+    };
+    const envelope = toRecord(value);
+    if (!envelope || Reflect.ownKeys(envelope).length !== 1
+        || !Object.prototype.hasOwnProperty.call(envelope, 'set_procedure_plan')) return invalid();
+    const input = toRecord(envelope.set_procedure_plan);
+    if (!input || Reflect.ownKeys(input).some((key) => key !== 'goal' && key !== 'tools')) return invalid();
+    if (!Object.prototype.hasOwnProperty.call(input, 'goal') || typeof input.goal !== 'string'
+        || !Array.isArray(input.tools) || input.tools.length === 0) return invalid();
+    const goal = input.goal.trim();
+    const requests = input.tools.map((value): ProcedurePlanRequestSnapshot => {
+        const entry = toRecord(value);
+        if (!entry || Reflect.ownKeys(entry).length !== 1) return invalid();
+        const name = Object.keys(entry)[0];
+        if (!name || name.trim() !== name) return invalid();
+        const metadata = toRecord(entry[name]);
+        if (!metadata || Reflect.ownKeys(metadata).some((key) => key !== 'title' && key !== 'arguments')) return invalid();
+        const title = toNonEmptyString(metadata.title);
+        const args = toRecord(metadata.arguments);
+        if (!title || !args || !Object.prototype.hasOwnProperty.call(metadata, 'arguments')) return invalid();
+        return { type: 'tool_call', name, title, status: 'pending', payload: { ...args } };
+    });
     return {
-        goal: toNonEmptyString(data.goal) || snapshots[0].title,
+        goal: goal || requests[0].title,
         requests,
         currentStep: 0,
-        sourceEvent: sourceEvent || undefined,
     };
 };
 

@@ -34,7 +34,7 @@ const BASELINE_TELEMETRY_CONDITION_SCHEMA = {
     additionalProperties: false,
 } as const;
 
-export const MODEL_COMMAND_PROTOCOL = [
+const MODEL_COMMAND_DEFINITIONS = [
     {
         name: 'start_agent_session',
         description: 'Start a separate child AI agent session. The user should interact with that child session while it is active.',
@@ -49,7 +49,10 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'stop_agent_session',
-        description: 'Stop the active child AI agent session and return focus to the main assistant. Use this for every live child agent instead of dedicated agent stop tools.',
+        description: [
+            'Stop the active child AI agent session and return focus to the main assistant. Use this for every live child agent instead of dedicated agent stop tools.',
+            'Use when the driver asks to stop, close, exit, or return from a child session to the main assistant.',
+        ].join(' '),
         properties: {
             agent_session_id: {
                 type: 'string',
@@ -60,12 +63,47 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'add_event_to_live_range_todo_list',
-        description: 'Atomically append executable events to the visible Live Range To-do List. AI Chat mounts the list when needed. Each nested tool runs only when telemetry makes its event due; this add call returns the updated list summary immediately after insertion.',
+        description: [
+            'Atomically append executable events to the visible Live Range To-do List. AI Chat mounts the list when needed. Each nested tool runs only when telemetry makes its event due; this add call returns the updated list summary immediately after insertion.',
+            'Use the native tool call channel. The arguments object must repeat the function name as its single outer key: add_event_to_live_range_todo_list.',
+            'Inside that wrapper, provide an explicit ordered tools list. Each child has exactly one ordinary tool-name key allowed by the current catalog child schema. All workflow categories are forbidden as children, including creation, control, and read commands. Do not include prose-only tasks or hidden steps.',
+            'Preserve each child\'s tool-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
+            'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, flat child name fields, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
+            'Keep metadata inside the tool-keyed child event: id, normalized_position, optional lead_time_seconds, and content with title and optional description. Keep the required arguments object alongside event, using {} for a tool with no inputs.',
+            'The immediate insertion summary does not mean the nested tools have run. Wait for the later event results before describing their outcomes.',
+            `Example native arguments:
+\`\`\`json
+{
+  "add_event_to_live_range_todo_list": {
+    "tools": [
+      {
+        "show_map": {
+          "event": {
+            "id": "spa-opening-map",
+            "normalized_position": 0.1,
+            "lead_time_seconds": 2,
+            "content": {
+              "title": "Opening section",
+              "description": "Show the selected Spa section"
+            }
+          },
+          "arguments": {
+            "source_track_key": "spa",
+            "section_start": 0,
+            "section_end": 0.2
+          }
+        }
+      }
+    ]
+  }
+}
+\`\`\``,
+        ].join(' '),
         properties: {
-            events: {
+            tools: {
                 type: 'array',
                 minItems: 1,
-                description: 'Events to append without replacing the existing queue. Every event id must be unique in this batch and the active list.',
+                description: 'Tool-keyed events to append without replacing the existing queue. Each entry contains exactly one tool name. Every event id must be unique in this batch and the active list. Workflow commands cannot be nested.',
                 items: {
                     type: 'object',
                     properties: {
@@ -88,32 +126,30 @@ export const MODEL_COMMAND_PROTOCOL = [
                             required: ['id', 'normalized_position', 'content'],
                             additionalProperties: false,
                         },
-                        tool: {
-                            type: 'object',
-                            properties: {
-                                name: { type: 'string', description: 'Available model command for this child live session to execute when the event is due.' },
-                                arguments: { type: 'object', description: 'JSON-safe arguments passed unchanged to the nested tool.' },
-                            },
-                            required: ['name', 'arguments'],
-                            additionalProperties: false,
-                        },
+                        arguments: { type: 'object', description: 'JSON-safe arguments passed unchanged to the nested tool.' },
                     },
-                    required: ['event', 'tool'],
+                    required: ['event', 'arguments'],
                     additionalProperties: false,
                 },
             },
         },
-        required: ['events'],
+        required: ['tools'],
     },
     {
         name: 'get_live_range_todo_list',
-        description: 'Read the active Live Range To-do List summary, including event and lifecycle counts.',
+        description: [
+            'Read the active Live Range To-do List summary, including event and lifecycle counts.',
+            'Call with an empty arguments object {}; do not add a get_live_range_todo_list wrapper.',
+        ].join(' '),
         properties: {},
         required: [],
     },
     {
         name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
-        description: 'Append Driver vs Expert comparison events for the active Analysis Results page\'s last successfully applied segment filter. Events keep the displayed segment order, retain existing to-do items, and publish only when live telemetry makes each event due.',
+        description: [
+            'Append Driver vs Expert comparison events for the active Analysis Results page\'s last successfully applied segment filter. Events keep the displayed segment order, retain existing to-do items, and publish only when live telemetry makes each event due.',
+            'Call with an empty arguments object {}; do not add a add_filtered_driver_expert_comparisons_to_live_range_todo_list wrapper.',
+        ].join(' '),
         properties: {},
         required: [],
     },
@@ -159,7 +195,10 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'analyze_live_recorded_analysis',
-        description: 'Submit the already recorded baseline to live recorded analysis and return classified sections with time gaps when available. Returns an error until baseline collection has recorded a cached baseline.',
+        description: [
+            'Submit the already recorded baseline to live recorded analysis and return classified sections with time gaps when available. Returns an error until baseline collection has recorded a cached baseline.',
+            'The completed analysis opens the Analysis Results panel. Use apply_query_to_analysis_result when the driver asks to filter that view, and add_filtered_driver_expert_comparisons_to_live_range_todo_list to display its filtered comparisons in the overlay while driving when available.',
+        ].join(' '),
         properties: {
             limit: {
                 type: 'integer',
@@ -213,25 +252,72 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'create_repeatable_plan',
-        description: 'Create one visible repeatable plan that executes ordered model command calls, checks a numeric stopping condition, and repeats the plan until the condition is met. Repetition continues until the target is reached, an error occurs, or the user cancels the plan. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. The operator compares the returned data with the target, so both values must be finite numbers measured on the same scale.',
+        description: [
+            'Create one visible repeatable plan that executes ordered model command calls, checks a numeric stopping condition, and repeats the plan until the condition is met. Repetition continues until the target is reached, an error occurs, or the user cancels the plan. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. The operator compares the returned data with the target, so both values must be finite numbers measured on the same scale.',
+            'Use the native tool call channel. The arguments object must repeat the function name as its single outer key: create_repeatable_plan.',
+            'Inside that wrapper, provide an explicit ordered tools list. Each child has exactly one ordinary tool-name key allowed by the current catalog child schema. All workflow categories are forbidden as children, including creation, control, and read commands. Do not include prose-only tasks or hidden steps.',
+            'Preserve each child\'s tool-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
+            'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, flat child name fields, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
+            'Each tool-name key contains a unique id, title, and arguments. stop_when.tool also has exactly one ordinary tool-name key containing arguments, and cannot contain any workflow creation, control, or read command. Child and stop-check arguments may be omitted only when the chosen tool needs no inputs.',
+            'The application executes the ordered calls and stop check. Wait for its later results before reporting completion; do not run the subscribed children again yourself.',
+            'For a five-lap analysis, collect a full_lap baseline, analyze it, and query $count(analyses) until at least five analyzed laps are retained. This target counts all retained analyses, including any that already exist.',
+            `Example native arguments:
+\`\`\`json
+{
+  "create_repeatable_plan": {
+    "name": "Analyze five laps",
+    "tools": [
+      {
+        "collect_live_baseline": {
+          "id": "collect",
+          "title": "Record a full lap",
+          "arguments": {
+            "query": {
+              "preset": "full_lap"
+            }
+          }
+        }
+      },
+      {
+        "analyze_live_recorded_analysis": {
+          "id": "analyze",
+          "title": "Analyze the recorded lap"
+        }
+      }
+    ],
+    "stop_when": {
+      "tool": {
+        "query_analysis_result": {
+          "arguments": {
+            "query": "$count(analyses)"
+          }
+        }
+      },
+      "operator": "gte",
+      "target": 5
+    }
+  }
+}
+\`\`\``,
+        ].join(' '),
         properties: {
             name: {
                 type: 'string',
                 description: 'Short name displayed on the repeatable plan card.',
             },
-            steps: {
+            tools: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered model command calls. Every id must be unique; create_repeatable_plan and retry_repeatable_plan_task cannot be nested.',
+                description: 'Ordered tool-keyed calls. Each entry contains exactly one tool name, and every id must be unique. Workflow commands cannot be nested.',
                 items: {
                     type: 'object',
                     properties: {
                         id: { type: 'string', description: 'Unique stable step id.' },
                         title: { type: 'string', description: 'Short step label displayed to the user.' },
-                        name: { type: 'string', description: 'Available model command to execute.' },
-                        arguments: { type: 'object', description: 'Arguments passed unchanged to the nested tool.' },
+                        arguments: { type: 'object', default: {}, description: 'Arguments passed unchanged to the nested tool. Defaults to {}.' },
                     },
-                    required: ['id', 'title', 'name'],
+                    required: ['id', 'title'],
+                    additionalProperties: false,
                 },
             },
             stop_when: {
@@ -242,28 +328,35 @@ export const MODEL_COMMAND_PROTOCOL = [
                         type: 'object',
                         description: 'Frontend tool call that must return { "status": "ready", "data": finiteNumber } to determine whether the repeatable plan reached its target.',
                         properties: {
-                            name: { type: 'string', description: 'Available model command to execute.' },
-                            arguments: { type: 'object', description: 'Arguments passed unchanged to the stop-when tool.' },
+                            arguments: { type: 'object', default: {}, description: 'Arguments passed unchanged to the stop-when tool. Defaults to {}.' },
                         },
-                        required: ['name'],
+                        required: [],
+                        additionalProperties: false,
                     },
                     operator: { type: 'string', enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
                     target: { type: 'number', description: 'Finite number comparable to the value returned by the stop-when tool.' },
                 },
                 required: ['tool', 'operator', 'target'],
+                additionalProperties: false,
             },
         },
-        required: ['name', 'steps', 'stop_when'],
+        required: ['name', 'tools', 'stop_when'],
     },
     {
         name: 'retry_repeatable_plan_task',
-        description: 'Retry the currently failed repeatable plan task once with its stored arguments, then continue the remaining plan after success. Available only when the visible repeatable plan is in an error state with a failed task.',
+        description: [
+            'Retry the currently failed repeatable plan task once with its stored arguments, then continue the remaining plan after success. Available only when the visible repeatable plan is in an error state with a failed task.',
+            'Call with an empty arguments object {}; do not add a retry_repeatable_plan_task wrapper.',
+        ].join(' '),
         properties: {},
         required: [],
     },
     {
         name: 'advance_plan_step',
-        description: 'Report that the current visible procedure plan request is complete so the UI can move to the next request.',
+        description: [
+            'Report that the current visible procedure plan request is complete so the UI can move to the next request. The application owns subscribed request execution; use the later tool result or user message to confirm completion before advancing. Do not skip an unfinished request unless the driver explicitly asks to skip it.',
+            'Pass the optional reason directly in the arguments object; do not add an advance_plan_step wrapper.',
+        ].join(' '),
         properties: {
             reason: {
                 type: 'string',
@@ -274,7 +367,10 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'clear_procedure_plan',
-        description: 'Clear or terminate the visible procedure plan UI when the plan is no longer useful.',
+        description: [
+            'Clear or terminate the visible procedure plan only when the driver explicitly asks to cancel, clear, stop, or opt out of the plan. Do not abandon an active plan merely because it no longer seems useful.',
+            'Pass the optional reason directly in the arguments object; do not add a clear_procedure_plan wrapper.',
+        ].join(' '),
         properties: {
             reason: {
                 type: 'string',
@@ -285,33 +381,61 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'set_procedure_plan',
-        description: 'Create or replace the visible procedure plan to execute tools in orders. Requests with a name are executed through the active AI session subscription. each tool call is executed sequentially, and end when the last request is complete. The plan can be cleared or terminated with clear_procedure_plan.',
+        description: [
+            'Create or replace the visible procedure plan to execute ordered tools through the active AI session subscription. Each tool call executes sequentially, and the plan ends when the last call is complete. The plan can be cleared or terminated with clear_procedure_plan.',
+            'Use the native tool call channel. The arguments object must repeat the function name as its single outer key: set_procedure_plan.',
+            'Inside that wrapper, provide an explicit ordered tools list. Each child has exactly one ordinary tool-name key allowed by the current catalog child schema. All workflow categories are forbidden as children, including creation, control, and read commands. Do not include prose-only tasks or hidden steps.',
+            'Preserve each child\'s tool-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
+            'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, flat child name fields, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
+            'Each tool-name key contains title and arguments; arguments is required, using {} for a tool with no inputs.',
+            'A procedure plan is active when procedure_plan exists in session context or a tool result includes goal, requests, and current_request. The application owns visible plan state and subscribed request execution.',
+            'Tool calls are fire-and-forget. Use the later tool result or user message before deciding what to say or whether another plan step should advance. Do not execute subscribed children again yourself.',
+            'Do not skip, clear, replace, or abandon an active plan unless the driver explicitly asks to cancel, clear, stop, skip, or opt out of the plan.',
+            `Example native arguments:
+\`\`\`json
+{
+  "set_procedure_plan": {
+    "goal": "Review the Spa opening section",
+    "tools": [
+      {
+        "show_map": {
+          "title": "Show the opening section",
+          "arguments": {
+            "source_track_key": "spa",
+            "section_start": 0,
+            "section_end": 0.2
+          }
+        }
+      }
+    ]
+  }
+}
+\`\`\``,
+        ].join(' '),
         properties: {
             goal: {
                 type: 'string',
                 description: 'Short goal shown above the request list.',
             },
-            requests: {
+            tools: {
                 type: 'array',
-                description: 'Ordered list of requests the assistant plans to perform or ask the UI/backend to perform.',
+                minItems: 1,
+                description: 'Ordered tool-keyed calls. Each entry contains exactly one tool name; repeated calls to the same tool are allowed. Workflow commands cannot be nested.',
                 items: {
                     type: 'object',
                     properties: {
-                        title: { type: 'string' },
-                        name: {
-                            type: 'string',
-                            description: 'Tool name for executable requests. The active AI session subscribes to this tool run and receives the final result.',
-                        },
-                        payload: {
+                        title: { type: 'string', minLength: 1, pattern: '\\S' },
+                        arguments: {
                             type: 'object',
-                            description: 'Tool arguments for executable requests, optionally wrapped in arguments, args, or parameters.',
+                            description: 'Arguments passed unchanged to the nested tool.',
                         },
                     },
-                    required: ['title', 'name', 'payload'],
+                    required: ['title', 'arguments'],
+                    additionalProperties: false,
                 },
             },
         },
-        required: ['goal', 'requests'],
+        required: ['goal', 'tools'],
     },
     {
         name: 'get_next_corner',
@@ -321,7 +445,10 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'query_telemetry_metric',
-        description: 'Ask for the current, average, minimum, or maximum telemetry value for selected fields over a live-session scope and return summarized numbers instead of raw telemetry rows. Do not use `query_telemetry_metric` for performance checking, pace diagnosis, or track-improvement requests; use `live_performance_analyst` for those.',
+        description: [
+            'Ask for the current, average, minimum, or maximum telemetry value for selected fields over a live-session scope and return summarized numbers instead of raw telemetry rows. Do not use `query_telemetry_metric` for performance checking, pace diagnosis, or track-improvement requests; use `live_performance_analyst` for those.',
+            'Use summarized telemetry numbers when they naturally answer the driver\'s question. This is not a required step before or after analyze_telemetry.',
+        ].join(' '),
         properties: {
             fields: {
                 type: 'array',
@@ -342,6 +469,9 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'get_event_log',
+        description: [
+            'Read session events when they may explain performance, such as incidents, traffic, or interruptions. Select a supported eventType and scope; use n with last_n.',
+        ].join(' '),
         properties: {
             eventType: {
                 type: 'string',
@@ -359,7 +489,10 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'get_user_summary_map_level',
-        description: 'Return map-level user summary data. With no map_id, returns all maps with aggregate stats and top sections; with map_id, returns that map with full section breakdowns, mistake counts, expert-adherence counts, percentages, and segment/category summaries.',
+        description: [
+            'Return map-level user summary data. With no map_id, returns all maps with aggregate stats and top sections; with map_id, returns that map with full section breakdowns, mistake counts, expert-adherence counts, percentages, and segment/category summaries.',
+            'During live performance analysis, use long-term driver history only when it improves the current analysis; keep live telemetry as the primary source of truth.',
+        ].join(' '),
         properties: {
             map_id: {
                 type: 'string',
@@ -369,13 +502,19 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'get_available_user_summary_maps',
-        description: 'Return a compact list of maps that have user summary data, including map id, name, analyzed session count, total analyzed time count, section count, and a human-readable map_options list.',
+        description: [
+            'Return a compact list of maps that have user summary data, including map id, name, analyzed session count, total analyzed time count, section count, and a human-readable map_options list.',
+            'During live performance analysis, use long-term driver history only when it improves the current analysis; keep live telemetry as the primary source of truth.',
+        ].join(' '),
         properties: {},
         required: [],
     },
     {
         name: 'search_user_summary_map_level',
-        description: 'Search map-level user summary rows by map name, map id, top mistake section names or ids, top expert-adherence section names or ids, and aggregate words like mistake, weakness, expert, or strength. Returns scored matching maps with matched_fields.',
+        description: [
+            'Search map-level user summary rows by map name, map id, top mistake section names or ids, top expert-adherence section names or ids, and aggregate words like mistake, weakness, expert, or strength. Returns scored matching maps with matched_fields.',
+            'During live performance analysis, use long-term driver history only when it improves the current analysis; keep live telemetry as the primary source of truth.',
+        ].join(' '),
         properties: {
             query: {
                 type: 'string',
@@ -388,7 +527,10 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'show_map',
-        description: 'Display a circuit map in the chat transcript, optionally highlighting a normalized lap section.',
+        description: [
+            'Display a circuit map in the chat transcript, optionally highlighting a normalized lap section.',
+            'Use when a map helps the driver locate an identified section; highlight the normalized lap section when available.',
+        ].join(' '),
         properties: {
             map_id: {
                 type: 'string',
@@ -464,7 +606,11 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
     {
         name: 'analyze_telemetry',
-        description: 'Classify driving actions over a telemetry scope and return engineer labels with definitions and optional solutions. Use this to do a quick analysis of a telemetry window without launching a dedicated ai analysis agent.',
+        description: [
+            'Classify driving actions over a telemetry scope and return engineer labels with definitions and optional solutions. Use this to do a quick analysis of a telemetry window without launching a dedicated ai analysis agent.',
+            'Use when an answer needs available telemetry or detected driving behaviours, rather than for simple conversation or common racing concepts. Use explain_label when a detected behaviour needs a clearer meaning or coaching explanation; it is not required for every telemetry result.',
+            'If telemetry is unavailable or the tool errors, say so plainly. Never fabricate numbers, driving behaviours, or label names; translate technical label codes into natural driving descriptions.',
+        ].join(' '),
         properties: {
             scope: {
                 ...MODEL_COMMAND_QUERY_SCOPE_SCHEMA,
@@ -475,7 +621,8 @@ export const MODEL_COMMAND_PROTOCOL = [
     },
 ] as const;
 
-type ModelCommandName = typeof MODEL_COMMAND_PROTOCOL[number]['name'];
+type ModelCommandDefinition = typeof MODEL_COMMAND_DEFINITIONS[number];
+type ModelCommandName = ModelCommandDefinition['name'];
 type SessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
 const COMMON_COMMAND_NAMES: ModelCommandName[] = [
@@ -514,13 +661,15 @@ const LIVE_PERFORMANCE_ANALYST_COMMAND_NAMES: ModelCommandName[] = [
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
 ];
 
-const LIVE_RANGE_TODO_NESTED_TOOL_EXCLUSIONS = new Set<ModelCommandName>([
+// Classification stays internal; public descriptors retain their existing format.
+const WORKFLOW_COMMAND_NAMES = new Set<ModelCommandName>([
     'create_repeatable_plan',
     'retry_repeatable_plan_task',
     'set_procedure_plan',
     'advance_plan_step',
     'clear_procedure_plan',
     'add_event_to_live_range_todo_list',
+    'get_live_range_todo_list',
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
 ]);
 
@@ -599,6 +748,71 @@ const getAllowedToolNames = (
     ]);
 };
 
+const createToolCallSchema = (
+    toolNames: ModelCommandName[],
+    metadata: Record<string, unknown>,
+) => ({
+    type: 'object',
+    oneOf: toolNames.map((name) => ({
+        type: 'object',
+        properties: { [name]: metadata },
+        required: [name],
+        additionalProperties: false,
+    })),
+});
+
+const expandWorkflowSchemas = (commands: readonly ModelCommandDefinition[]) => {
+    const nestedToolNames = commands
+        .map(({ name }) => name)
+        .filter((name) => !WORKFLOW_COMMAND_NAMES.has(name));
+
+    return commands.map((command) => {
+        if (
+            command.name !== 'set_procedure_plan'
+            && command.name !== 'create_repeatable_plan'
+            && command.name !== 'add_event_to_live_range_todo_list'
+        ) return command;
+
+        const properties = {
+            ...command.properties,
+            tools: {
+                ...command.properties.tools,
+                items: createToolCallSchema(nestedToolNames, command.properties.tools.items),
+            },
+            ...(command.name === 'create_repeatable_plan' ? {
+                stop_when: {
+                    ...command.properties.stop_when,
+                    properties: {
+                        ...command.properties.stop_when.properties,
+                        tool: {
+                            ...createToolCallSchema(
+                                nestedToolNames,
+                                command.properties.stop_when.properties.tool,
+                            ),
+                            description: command.properties.stop_when.properties.tool.description,
+                        },
+                    },
+                },
+            } : {}),
+        };
+
+        return {
+            ...command,
+            properties: {
+                [command.name]: {
+                    type: 'object',
+                    properties,
+                    required: command.required,
+                    additionalProperties: false,
+                },
+            },
+            required: [command.name],
+        };
+    });
+};
+
+export const MODEL_COMMAND_PROTOCOL = expandWorkflowSchemas(MODEL_COMMAND_DEFINITIONS);
+
 export const getModelCommandsForSessionContext = (
     sessionContext: Record<string, unknown> | null | undefined,
 ) => {
@@ -610,92 +824,13 @@ export const getModelCommandsForSessionContext = (
         sessionContext?.agent_mode,
     );
 
-    const tools = MODEL_COMMAND_PROTOCOL.filter((tool) => allowedToolNames.has(tool.name));
-    const repeatablePlanNestedToolNames = tools
-        .map((tool) => tool.name)
-        .filter((name) => name !== 'create_repeatable_plan' && name !== 'retry_repeatable_plan_task');
-    const liveRangeTodoNestedToolNames = tools
-        .map((tool) => tool.name)
-        .filter((name) => !LIVE_RANGE_TODO_NESTED_TOOL_EXCLUSIONS.has(name));
-
-    const expandedTools = tools.map((tool) => {
-        if (tool.name === 'add_event_to_live_range_todo_list') {
-            const events = tool.properties.events;
-            const item = events.items;
-            const nestedTool = item.properties.tool;
-            return {
-                ...tool,
-                properties: {
-                    ...tool.properties,
-                    events: {
-                        ...events,
-                        items: {
-                            ...item,
-                            properties: {
-                                ...item.properties,
-                                tool: {
-                                    ...nestedTool,
-                                    properties: {
-                                        ...nestedTool.properties,
-                                        name: {
-                                            ...nestedTool.properties.name,
-                                            enum: liveRangeTodoNestedToolNames,
-                                        },
-                                    },
-                                },
-                            },
-                        },
-                    },
-                },
-            };
-        }
-        if (tool.name !== 'create_repeatable_plan') return tool;
-        const steps = tool.properties.steps;
-        const stopWhen = tool.properties.stop_when;
-        const stopWhenTool = stopWhen.properties.tool;
-        return {
-            ...tool,
-            properties: {
-                ...tool.properties,
-                steps: {
-                    ...steps,
-                    items: {
-                        ...steps.items,
-                        properties: {
-                            ...steps.items.properties,
-                            name: {
-                                ...steps.items.properties.name,
-                                enum: repeatablePlanNestedToolNames,
-                            },
-                        },
-                    },
-                },
-                stop_when: {
-                    ...stopWhen,
-                    properties: {
-                        ...stopWhen.properties,
-                        tool: {
-                            ...stopWhenTool,
-                            properties: {
-                                ...stopWhenTool.properties,
-                                name: {
-                                    ...stopWhenTool.properties.name,
-                                    enum: repeatablePlanNestedToolNames,
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        };
-    });
-
-    return expandedTools.map((tool) => ({
-        name: tool.name,
-        description: 'description' in tool && typeof tool.description === 'string'
-            ? tool.description
+    const commands = MODEL_COMMAND_DEFINITIONS.filter(({ name }) => allowedToolNames.has(name));
+    return expandWorkflowSchemas(commands).map((command) => ({
+        name: command.name,
+        description: 'description' in command && typeof command.description === 'string'
+            ? command.description
             : '',
-        properties: tool.properties,
-        required: [...tool.required],
+        properties: command.properties,
+        required: [...command.required],
     }));
 };

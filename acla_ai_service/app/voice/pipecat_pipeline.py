@@ -70,8 +70,6 @@ _FUNCTION_TAG_RE = re.compile(
 )
 _FRONTEND_TOOL_RESULT_TYPE = "tool_result"
 _SHARED_STARTUP_BEHAVIORS = (
-    "tool_use",
-    "procedure_plan",
     "emotion",
     "transcript_resilience",
 )
@@ -91,6 +89,14 @@ _VOICE_COACH_PROMPT_TEMPLATE = """You are a race engineer speaking to your drive
 Voice: short radio sentences, 1-3 per turn unless asked to elaborate.
 No markdown, no bullets, no headings. Racing terms freely (apex,
 trail-brake, kerb, slip, weight transfer, etc.).
+Never speak XML tags, function tags, JSON, or internal tool names.
+Never fabricate numbers, driving behaviours, or technical label names. Translate
+technical label codes into natural descriptions before speaking. If data is
+unavailable or an action fails, say so plainly.
+Describe ACLA's capabilities as checking available telemetry, identifying driving
+behaviours, explaining what happened, and providing relevant guidance.
+Act on the driver's request when possible; otherwise explain the limitation.
+Avoid unsolicited offers and pivots to another track or topic.
 """
 
 _TOOL_RESULT_HANDLING_PROMPT = """Tool result handling:

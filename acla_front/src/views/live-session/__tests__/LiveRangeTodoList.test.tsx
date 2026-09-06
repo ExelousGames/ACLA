@@ -1,3 +1,4 @@
+import { asTool } from 'components/ai-operations/tool';
 import {
     LiveRangeTodoListRunner,
     calculateForwardCircularDistance,
@@ -23,7 +24,7 @@ const event = (
     id: string,
     normalizedPosition: number,
     taskStart: LiveRangeTodoEventInput['taskStart'] = jest.fn(() => (
-        resolvedOperation({}, 'complete')
+        asTool(resolvedOperation({}, 'complete'))
     )),
 ): LiveRangeTodoEventInput => ({
     id,
@@ -116,7 +117,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
 
     it('keeps stationary events pending regardless of elapsed time', () => {
         const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
-        const taskStart = jest.fn(() => resolvedOperation({}, 'complete'));
+        const taskStart = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.addEvent({
             ...event('stationary', 0.4, taskStart),
@@ -140,7 +141,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
 
     it('does not count down a previous measured ETA while stopped and resumes from movement', async () => {
         const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
-        const taskStart = jest.fn(() => resolvedOperation({}, 'complete'));
+        const taskStart = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.replaceEvents([
             { ...event('first', 0.5, taskStart), lead_time_seconds: 2 },
@@ -179,7 +180,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
 
     it('discards the previous ETA when telemetry resumes after a gap', () => {
         const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
-        const taskStart = jest.fn(() => resolvedOperation({}, 'complete'));
+        const taskStart = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.addEvent({ ...event('gap', 0.5, taskStart), lead_time_seconds: 2 });
         runner.acceptTelemetry({
@@ -207,12 +208,12 @@ describe('LiveRangeTodoListRunner executable events', () => {
         const now = jest.spyOn(Date, 'now');
         now.mockReturnValue(1_000);
         const orderAtStart: string[][] = [];
-        const fartherStart = jest.fn(() => resolvedOperation({}, 'complete'));
+        const fartherStart = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
         const nearerStart = jest.fn(() => {
             orderAtStart.push(
                 runner.get().todo_list?.events.map((item) => item.id) ?? [],
             );
-            return resolvedOperation({}, 'complete');
+            return asTool(resolvedOperation({}, 'complete'));
         });
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.replaceEvents([
@@ -237,7 +238,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
     });
 
     it('waits for telemetry, invokes taskStart, and omits functions from snapshots', async () => {
-        const taskStart = jest.fn(() => resolvedOperation({}, 'complete'));
+        const taskStart = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
         const runner = new LiveRangeTodoListRunner('live-range');
 
         const result = runner.addEvent(event('one', 0.2, taskStart));
@@ -253,8 +254,8 @@ describe('LiveRangeTodoListRunner executable events', () => {
     it('does not queue a due task behind a running task', async () => {
         const firstController = createControlledOperation<Record<string, never>, never, 'complete'>();
         const secondController = createControlledOperation<Record<string, never>, never, 'complete'>();
-        const first = jest.fn(() => firstController.operation);
-        const second = jest.fn(() => secondController.operation);
+        const first = jest.fn(() => asTool(firstController.operation));
+        const second = jest.fn(() => asTool(secondController.operation));
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.replaceEvents([event('one', 0.2, first), event('two', 0.4, second)]);
 
@@ -309,8 +310,8 @@ describe('LiveRangeTodoListRunner executable events', () => {
                 return () => undefined;
             },
         };
-        const first = jest.fn(() => firstOperation);
-        const second = jest.fn(() => resolvedOperation({}, 'complete'));
+        const first = jest.fn(() => asTool(firstOperation));
+        const second = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.replaceEvents([event('one', 0.2, first), event('two', 0.8, second)]);
 
@@ -349,7 +350,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.addEvent(event('one', 0.2, (signal) => {
             signal.addEventListener('abort', () => lifecycle.push('abort'));
-            return operation;
+            return asTool(operation);
         }));
         makeDue(runner, 0.25);
 
@@ -369,12 +370,12 @@ describe('LiveRangeTodoListRunner executable events', () => {
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.replaceEvents([
             event('throws', 0.1, () => { throw failure; }),
-            event('rejects', 0.2, () => createOperationFrom(() => {
+            event('rejects', 0.2, () => asTool(createOperationFrom(() => {
                 throw failure;
-            }, 'failed')),
+            }, 'failed'))),
             event('continues', 0.3, () => {
                 finalTask();
-                return resolvedOperation({}, 'complete');
+                return asTool(resolvedOperation({}, 'complete'));
             }),
         ]);
 
@@ -423,8 +424,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.addEvent(event('one', 0.2, (signal) => {
             receivedSignal = signal;
-            return createControlledOperation<Record<string, never>, never, 'complete'>()
-                .operation;
+            return asTool(createControlledOperation<Record<string, never>, never, 'complete'>().operation);
         }));
         makeDue(runner, 0.25);
 
@@ -435,7 +435,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
     });
 
     it('preserves taskStart on ordinary updates and replaces it when explicitly supplied', async () => {
-        const preserved = jest.fn(() => resolvedOperation({}, 'complete'));
+        const preserved = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.addEvent(event('one', 0.2, preserved));
         runner.updateEvents([{ id: 'one', content: { description: 'Current description' } }]);
@@ -443,8 +443,8 @@ describe('LiveRangeTodoListRunner executable events', () => {
         expect(preserved).toHaveBeenCalledTimes(1);
         await flushPromises();
 
-        const original = jest.fn(() => resolvedOperation({}, 'complete'));
-        const replacement = jest.fn(() => resolvedOperation({}, 'complete'));
+        const original = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
+        const replacement = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
         const secondRunner = new LiveRangeTodoListRunner('live-range-two');
         secondRunner.addEvent(event('two', 0.2, original));
         secondRunner.updateEvents([{ id: 'two', taskStart: replacement }]);

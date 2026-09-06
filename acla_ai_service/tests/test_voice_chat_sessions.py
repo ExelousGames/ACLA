@@ -561,28 +561,32 @@ def test_resumed_context_has_fresh_root_before_stored_history(monkeypatch):
     assert history_length == len(history)
 
 
-def test_startup_prompt_keeps_neutral_procedure_plan_guidance():
+def test_startup_prompt_loads_only_shared_voice_behaviors(monkeypatch):
+    from app import external_knowledge_base
+
+    behavior = Mock(wraps=external_knowledge_base.behavior)
+    monkeypatch.setattr(external_knowledge_base, "behavior", behavior)
+
     prompt = pipecat_pipeline._build_system_prompt({"session_mode": "front_desk"})
 
-    assert "Procedure plan mode:" in prompt
-    assert (
-        "The application owns visible plan state and subscribed request execution."
-        in prompt
-    )
-    assert "Tool calls are fire-and-forget." in prompt
-    assert "advance_plan_step" not in prompt
-    assert prompt.rfind("Your only application-tool entry point") > prompt.find(
-        "Tool calls are fire-and-forget.",
-    )
+    assert [call.args[0] for call in behavior.call_args_list] == [
+        "emotion", "transcript_resilience",
+    ]
+    assert "Start every response with exactly one emotion tag" in prompt
+    assert "Driver speech reaches you via STT" in prompt
+    assert "Procedure plan mode:" not in prompt
+    assert "Your only application-tool entry point is search_application_tool" in prompt
 
 
-def test_live_performance_analyst_prompt_names_repeatable_plan_tool():
+def test_live_performance_analyst_prompt_keeps_coaching_intent():
     prompt = pipecat_pipeline._build_system_prompt({
         "session_mode": "live",
         "agent_mode": "live_performance_analyst",
     })
 
-    assert "create_repeatable_plan" in prompt
+    assert "five analyzed laps are retained" in prompt
+    assert "Keep live telemetry as the primary source of truth" in prompt
+    assert "create_repeatable_plan" not in prompt
 
 
 def test_parent_startup_surface_contains_only_application_tool_search():
