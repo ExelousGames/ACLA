@@ -5,13 +5,13 @@ import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
 import apiService from 'services/api.service';
 import styles from './ImitationGuidanceChart.module.css';
-import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import {
     ComponentDisableFailedError,
     VisualizationComponentError,
     VisualizationControlFailedError,
     VisualizationUpdateFailedError,
-} from 'contexts/AiToolComponentError';
+} from 'contexts/OperationComponentError';
 import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
 
 const getNormalizedCarPos = (telemetry: Record<string, any> | null): number | undefined => {
@@ -38,7 +38,7 @@ const extractGuidanceText = (raw: any, guidanceResult: any): string | null => {
     return null;
 };
 
-export interface ImitationGuidanceChartHandle extends NamedAiToolComponentHandle {
+export interface ImitationGuidanceChartHandle extends NamedOperationComponentHandle {
     updateGuidanceData(data: any, config?: any): true;
     refreshGuidanceOnce(): Promise<{ success: true; message: string }>;
     disableGuidance(): true;
@@ -160,7 +160,7 @@ const ImitationGuidanceChart = forwardRef<ImitationGuidanceChartHandle, Visualiz
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     const registeredHandleRef = React.useRef(handle);
     registeredHandleRef.current = handle;
-    useRegisterAiToolComponentRef(registeredHandleRef);
+    useRegisterOperationComponentRef(registeredHandleRef);
 
     // Check crossing pacebook points
     useEffect(() => {

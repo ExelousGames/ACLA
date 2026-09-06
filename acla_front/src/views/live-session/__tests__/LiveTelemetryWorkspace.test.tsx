@@ -3,14 +3,14 @@ import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    AiToolComponentRefProvider,
-    useAiToolComponentRefDirectory,
-    type AiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    OperationComponentRefProvider,
+    useOperationComponentRefDirectory,
+    type OperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import LiveTelemetryWorkspace from '../LiveTelemetryWorkspace';
 import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
-import { VisualizationRequestFailedError } from 'contexts/AiToolComponentError';
+import { VisualizationRequestFailedError } from 'contexts/OperationComponentError';
 
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');
@@ -36,9 +36,9 @@ jest.mock('../LiveTrajectoryMap', () => () => <div>Live trajectory map</div>);
 jest.mock('../LiveTelemetryOverview', () => ({ name, telemetry }: any) => <div data-testid={name}>Live telemetry {telemetry?.label}</div>);
 jest.mock('../LiveEventLog', () => () => <div>Live event log</div>);
 
-let directory: AiToolComponentRefDirectory | null = null;
+let directory: OperationComponentRefDirectory | null = null;
 const DirectoryObserver = () => {
-    directory = useAiToolComponentRefDirectory();
+    directory = useOperationComponentRefDirectory();
     return null;
 };
 
@@ -132,7 +132,7 @@ describe('LiveTelemetryWorkspace named manager', () => {
             expect.objectContaining({ type: 'live-range-todo-list' }),
         );
         expect(() => ref.current!.requestVisualization({
-            name: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+            name: OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
             type: 'live-range-todo-list',
         })).toThrow(expect.objectContaining({
             name: 'VisualizationRequestFailedError',
@@ -222,30 +222,30 @@ describe('LiveTelemetryWorkspace named manager', () => {
     it('keeps Baseline Collection singleton and unregisters it when closed', () => {
         const ref = React.createRef<VisualizationManagerHandle>();
         render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <DirectoryObserver />
                 <LiveSessionProvider>
-                    <LiveTelemetryWorkspace ref={ref} name={AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
+                    <LiveTelemetryWorkspace ref={ref} name={OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
                 </LiveSessionProvider>
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
 
         act(() => {
             expect(ref.current!.requestVisualization({ name: 'first-name', type: 'baseline-collection' }))
-                .toMatchObject({ success: true, reused: false, componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION });
+                .toMatchObject({ success: true, reused: false, componentName: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION });
             expect(ref.current!.requestVisualization({ name: 'second-name', type: 'baseline-collection' }))
-                .toMatchObject({ success: true, reused: true, componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION });
+                .toMatchObject({ success: true, reused: true, componentName: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION });
         });
 
         expect(ref.current!.getCurrentVisualizations()).toEqual([
             expect.objectContaining({
-                name: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                name: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
                 type: 'baseline-collection',
             }),
         ]);
-        expect(directory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)?.current).not.toBeNull();
+        expect(directory!.findComponentRef(OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION)?.current).not.toBeNull();
 
         act(() => { ref.current!.closeVisualization({ type: 'baseline-collection' }); });
-        expect(directory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
+        expect(directory!.findComponentRef(OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
     });
 });

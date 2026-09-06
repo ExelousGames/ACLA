@@ -5,13 +5,13 @@ import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, us
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import apiService from 'services/api.service';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    ObservableAiToolComponentHandle,
-    useOptionalAiToolComponentRefDirectory,
-    useRegisterAiToolComponentRef,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    ObservableOperationComponentHandle,
+    useOptionalOperationComponentRefDirectory,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
 import {
-    AiToolComponentErrorConstructor,
+    OperationComponentErrorConstructor,
     ExpertLineGuidanceFailedError,
     LapComparisonFailedError,
     NoRecordedSessionError,
@@ -20,7 +20,7 @@ import {
     SessionAnalysisFailedError,
     SessionAnalysisComponentError,
     TelemetryDataFailedError,
-} from 'contexts/AiToolComponentError';
+} from 'contexts/OperationComponentError';
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
@@ -39,9 +39,9 @@ import {
     resolveAnalysisLabel,
 } from './visualization/open-analysis-results-visualization';
 import {
-    createAiToolOperationFrom,
-    type AiToolOperation,
-} from 'components/ai-engineering-tools';
+    createOperationFrom,
+    type Operation,
+} from 'components/ai-operations';
 
 export type RecordedAnalysisAiResult = {
     status: unknown;
@@ -81,7 +81,7 @@ const getRequestFailureMessage = (error: unknown, fallback: string): string => {
 
 const requestSessionAnalysisOperation = async <T,>(
     componentName: string,
-    ErrorType: AiToolComponentErrorConstructor<SessionAnalysisComponentError>,
+    ErrorType: OperationComponentErrorConstructor<SessionAnalysisComponentError>,
     fallbackMessage: string,
     request: () => Promise<T>,
 ): Promise<T> => {
@@ -97,7 +97,7 @@ const requestSessionAnalysisOperation = async <T,>(
     }
 };
 
-export interface SessionAnalysisHandle extends ObservableAiToolComponentHandle<AnalysisContextType> {
+export interface SessionAnalysisHandle extends ObservableOperationComponentHandle<AnalysisContextType> {
     getSelectedSession(): RacingSessionDetailedInfoDto | null;
     getMapSelected(): string | null;
     getRecordedAiAnalysis(): RecordedAiAnalysisState;
@@ -108,10 +108,10 @@ export interface SessionAnalysisHandle extends ObservableAiToolComponentHandle<A
     requestLapComparison(sessionIds: string[], metrics?: string[]): Promise<any>;
     requestExpertLineGuidance(sessionId: string | undefined, dataTypes?: string[]): Promise<any>;
     requestTelemetryData(sessionId: string | undefined, dataTypes?: string[]): Promise<any>;
-    runRecordedAnalysisForAi(args: Record<string, any>): AiToolOperation<RecordedAnalysisAiResult>;
-    getRecordedAnalysisForAi(args: Record<string, any>): AiToolOperation<RecordedAnalysisAiResult>;
-    getRecordedSessionContextForAi(args: Record<string, any>): AiToolOperation<RecordedSessionContextAiResult>;
-    analyzeTelemetryForAi(args: Record<string, any>): AiToolOperation<RecordedTelemetryAnalysisAiResult>;
+    runRecordedAnalysisForAi(args: Record<string, any>): Operation<RecordedAnalysisAiResult>;
+    getRecordedAnalysisForAi(args: Record<string, any>): Operation<RecordedAnalysisAiResult>;
+    getRecordedSessionContextForAi(args: Record<string, any>): Operation<RecordedSessionContextAiResult>;
+    analyzeTelemetryForAi(args: Record<string, any>): Operation<RecordedTelemetryAnalysisAiResult>;
 }
 
 const getAiAnalysisLimit = (value: unknown): number => {
@@ -183,7 +183,7 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             };
             setRecordedAiAnalysis(nextState);
             throw new NoRecordedSessionError(
-                AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+                OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
                 nextState.message!,
             );
         }
@@ -223,7 +223,7 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             };
             setRecordedAiAnalysis(nextState);
             throw new RecordedAnalysisFailedError(
-                AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+                OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
                 nextState.message!,
                 { cause: error },
             );
@@ -288,7 +288,7 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
 
 export const SessionAnalysisContent = ({ name }: { name: string }) => {
     const analysisContext = useContext(AnalysisContext);
-    const componentRefs = useOptionalAiToolComponentRefDirectory();
+    const componentRefs = useOptionalOperationComponentRefDirectory();
     const analysisContextRef = useRef(analysisContext);
     analysisContextRef.current = analysisContext;
     const assistantSnapshotListenersRef = useRef(new Set<() => void>());
@@ -349,14 +349,14 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
                     data_types: dataTypes,
                 }),
             ),
-            runRecordedAnalysisForAi: (args) => createAiToolOperationFrom(async () => {
+            runRecordedAnalysisForAi: (args) => createOperationFrom(async () => {
                 const state = await analysisContextRef.current.runRecordedAiAnalysis({
                     force: args.force === true,
                 });
                 if (componentRefs && state.result) {
                     await openAnalysisResultsVisualization({
                         directory: componentRefs,
-                        managerName: AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
+                        managerName: OPERATION_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
                         result: state.result,
                         records: analysisContextRef.current.sessionSelected?.data ?? [],
                     });
@@ -370,7 +370,7 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
                     (labelId) => resolveAnalysisLabel(componentRefs, labelId),
                 );
             }, 'complete'),
-            getRecordedAnalysisForAi: (args) => createAiToolOperationFrom(() => compactRecordedAnalysisForAi(
+            getRecordedAnalysisForAi: (args) => createOperationFrom(() => compactRecordedAnalysisForAi(
                 name,
                 analysisContextRef.current.sessionSelected,
                 analysisContextRef.current.mapSelected,
@@ -378,7 +378,7 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
                 getAiAnalysisLimit(args.limit),
                 (labelId) => resolveAnalysisLabel(componentRefs, labelId),
             ), 'complete'),
-            getRecordedSessionContextForAi: (_args) => createAiToolOperationFrom(() => {
+            getRecordedSessionContextForAi: (_args) => createOperationFrom(() => {
                 const selected = analysisContextRef.current.sessionSelected;
                 if (!selected?.SessionId) {
                     throw new NoRecordedSessionError(name, 'No recorded session is selected.');
@@ -390,7 +390,7 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
                     car: selected.car || null,
                 };
             }, 'ready'),
-            analyzeTelemetryForAi: (args) => createAiToolOperationFrom(async () => {
+            analyzeTelemetryForAi: (args) => createOperationFrom(async () => {
                 const state = await analysisContextRef.current.runRecordedAiAnalysis({
                     force: args.force === true,
                 });
@@ -405,7 +405,7 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
                 const chart = componentRefs && state.result
                     ? await openAnalysisResultsVisualization({
                         directory: componentRefs,
-                        managerName: AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
+                        managerName: OPERATION_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
                         result: state.result,
                         records: analysisContextRef.current.sessionSelected?.data ?? [],
                     })
@@ -420,7 +420,7 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
             }, 'complete'),
         };
     }
-    useRegisterAiToolComponentRef(componentRef);
+    useRegisterOperationComponentRef(componentRef);
     useLayoutEffect(() => {
         assistantSnapshotListenersRef.current.forEach((listener) => listener());
     }, [analysisContext]);

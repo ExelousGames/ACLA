@@ -1,26 +1,26 @@
 import type { MutableRefObject } from 'react';
 import type {
-    AiToolComponentRefDirectory,
-    NamedAiToolComponentHandle,
-} from 'contexts/AiToolComponentRefContext';
+    OperationComponentRefDirectory,
+    NamedOperationComponentHandle,
+} from 'contexts/OperationComponentRefContext';
 
-export type AiToolComponentSnapshotListener<TSnapshot> = (
+export type OperationComponentSnapshotListener<TSnapshot> = (
     snapshot: TSnapshot,
 ) => void;
 
 /**
- * Shared lifecycle for the mutually-exclusive AI workflow runners.
+ * Shared registration and snapshot lifecycle for operation components.
  *
  * Runners own their directory registration rather than relying on a mounted
- * React component. This lets a tool command create the runtime atomically and
+ * React component. This lets a command create the runtime atomically and
  * lets completion remove it immediately, while the host remains a pure
  * observer of whichever runner is active.
  */
-export abstract class AiToolComponentBase<TSnapshot>
-implements NamedAiToolComponentHandle {
+export abstract class OperationComponentBase<TSnapshot>
+implements NamedOperationComponentHandle {
     private readonly componentRef: MutableRefObject<this | null> = { current: this };
-    private componentRefDirectory: AiToolComponentRefDirectory | null = null;
-    private readonly snapshotListeners = new Set<AiToolComponentSnapshotListener<TSnapshot>>();
+    private componentRefDirectory: OperationComponentRefDirectory | null = null;
+    private readonly snapshotListeners = new Set<OperationComponentSnapshotListener<TSnapshot>>();
     private snapshot: TSnapshot;
     private disposed = false;
 
@@ -39,7 +39,7 @@ implements NamedAiToolComponentHandle {
         return this.cloneSnapshot(this.snapshot);
     }
 
-    subscribe(listener: AiToolComponentSnapshotListener<TSnapshot>): () => void {
+    subscribe(listener: OperationComponentSnapshotListener<TSnapshot>): () => void {
         this.snapshotListeners.add(listener);
         return () => {
             this.snapshotListeners.delete(listener);
@@ -47,7 +47,7 @@ implements NamedAiToolComponentHandle {
     }
 
     addComponentRef(
-        directory: AiToolComponentRefDirectory,
+        directory: OperationComponentRefDirectory,
     ): MutableRefObject<this | null> {
         this.componentRef.current = this;
         directory.registerComponentRef(this.componentRef);
@@ -91,4 +91,4 @@ implements NamedAiToolComponentHandle {
     }
 }
 
-export default AiToolComponentBase;
+export default OperationComponentBase;

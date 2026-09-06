@@ -1,34 +1,44 @@
-export { AiToolComponentBase } from './AiToolComponentBase';
-export type { AiToolComponentSnapshotListener } from './AiToolComponentBase';
+export { OperationComponentBase } from './OperationComponentBase';
+export type { OperationComponentSnapshotListener } from './OperationComponentBase';
+export { WorkflowComponentBase } from './WorkflowComponentBase';
+export { asTool } from './tool';
+export type { Tool } from './tool';
+export { asWorkflow } from './workflow';
+export type { Workflow } from './workflow';
 export {
-    AI_TOOL_ABORTED_STATUS,
-    AiToolOperationAbortedError,
-    createAiToolDeferred,
-    createControlledAiToolOperation,
-    createAiToolOperation,
-    createAiToolOperationFrom,
-    mapAiToolOperation,
-    resolvedAiToolOperation,
-} from './ai-tool-operation';
+    OPERATION_ABORTED_STATUS,
+    OperationAbortedError,
+    createOperationDeferred,
+    createControlledOperation,
+    createOperation,
+    createOperationFrom,
+    mapOperation,
+    resolvedOperation,
+} from './operation';
 export type {
-    AiToolAbortHandler,
-    AiToolDeferred,
-    AiToolOperation,
-    AiToolOperationResult,
-    AiToolOperationStatus,
-    AiToolOperationTerminationStatus,
-    AiToolQueryResult,
-    AiToolTermination,
-    ControlledAiToolOperation,
-} from './ai-tool-operation';
+    OperationKind,
+    OperationDispatcher,
+    OperationNormalOutput,
+    OperationExecutionOutput,
+    OperationStatusPayload,
+    OperationAbortHandler,
+    OperationDeferred,
+    Operation,
+    OperationResult,
+    OperationStatus,
+    OperationTerminationStatus,
+    OperationQueryResult,
+    OperationTermination,
+    ControlledOperation,
+} from './operation';
 export {
     default as ProcedurePlan,
     PROCEDURE_PLAN_STEP_STATUSES,
     ProcedurePlanRunner,
     advanceProcedurePlan,
     buildProcedurePlan,
-    getProcedurePlanToolArguments,
-    getProcedurePlanToolRunKey,
+    getProcedurePlanOperationArguments,
+    getProcedurePlanOperationRunKey,
     getProcedurePlanUpdateKey,
     getSelfAdvancingProcedurePlan,
     isProcedurePlanClearEvent,
@@ -65,7 +75,7 @@ export type {
     LiveRangeTodoListHandle,
     LiveRangeTodoListAiResult,
     LiveRangeTodoListSnapshot,
-    LiveRangeTodoListToolResult,
+    LiveRangeTodoListResult,
     LiveRangeTodoSnapshotEvent,
     LiveRangeTodoStatus,
 } from './live-range-todo-list-types';
@@ -80,12 +90,11 @@ export {
 } from './RepeatablePlan';
 export type {
     GoalComparisonOperator,
-    AiToolDispatcher,
     GoalAiResult,
     GoalStopWhen,
     GoalStopWhenResult,
     GoalStopWhenStatus,
-    GoalStopWhenTool,
+    GoalStopWhenOperation,
     RepeatablePlanDisplayProps,
     RepeatablePlanHandle,
     RepeatablePlanProps,
@@ -100,5 +109,5 @@ export type {
     GoalStepStatus,
     GoalTaskDescriptor,
     GoalTaskResult,
-    NestedAiToolResult,
+    NestedOperationResult,
 } from './RepeatablePlan';

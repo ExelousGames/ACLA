@@ -1,5 +1,5 @@
 import React from 'react';
-import type { NamedAiToolComponentHandle } from 'contexts/AiToolComponentRefContext';
+import type { NamedOperationComponentHandle } from 'contexts/OperationComponentRefContext';
 import type {
     AiOverlayComponentHandle,
     AiOverlayRenderer,
@@ -10,7 +10,7 @@ import {
     isOverlayRecord,
 } from 'views/floating-chat/overlay-renderer-validation';
 import {
-    AiToolComponentErrorConstructor,
+    OperationComponentErrorConstructor,
     DuplicateGoalStepIdError,
     GoalComponentError,
     GoalStopWhenFailedError,
@@ -23,28 +23,24 @@ import {
     InvalidGoalStepsError,
     RecursiveGoalStopWhenError,
     RecursiveGoalStepError,
-} from 'contexts/AiToolComponentError';
-import { serializeError, type SerializedError } from 'errors/AiToolError';
-import { AiToolComponentBase } from './AiToolComponentBase';
+} from 'contexts/OperationComponentError';
+import { serializeError, type SerializedError } from 'errors/OperationError';
+import { WorkflowComponentBase } from './WorkflowComponentBase';
+import { asWorkflow, type Workflow } from './workflow';
 import {
-    createControlledAiToolOperation,
-    createAiToolOperationFrom,
-    mapAiToolOperation,
-    type ControlledAiToolOperation,
-    type AiToolOperation,
-} from './ai-tool-operation';
+    createControlledOperation,
+    createOperationFrom,
+    mapOperation,
+    type ControlledOperation,
+    type Operation,
+    type OperationDispatcher,
+    type OperationNormalOutput,
+    type OperationStatusPayload,
+} from './operation';
 import RepeatablePlanOverlayDisplay, { getRepeatablePlanOverlaySummary } from './RepeatablePlanOverlayDisplay';
 
-export type NestedAiToolResult = Record<string, unknown> | string;
-export interface NestedAiToolStatus {
-    [key: string]: unknown;
-}
-
-export type AiToolDispatcher = (
-    name: string,
-    args?: Record<string, unknown>,
-    signal?: AbortSignal,
-) => AiToolOperation<NestedAiToolResult, NestedAiToolStatus>;
+export type NestedOperationResult = OperationNormalOutput | string;
+export type NestedOperationStatus = OperationStatusPayload;
 
 export const GOAL_COMPARISON_OPERATORS = [
     'eq',
@@ -67,13 +63,13 @@ export type GoalStepDescriptor = {
     arguments?: Record<string, unknown>;
 };
 
-export type GoalStopWhenTool = {
+export type GoalStopWhenOperation = {
     name: string;
     arguments?: Record<string, unknown>;
 };
 
 export type GoalStopWhen = {
-    tool: GoalStopWhenTool;
+    tool: GoalStopWhenOperation;
     operator: GoalComparisonOperator;
     target: number;
 };
@@ -155,9 +151,9 @@ export type GoalRunResult = Pick<
 
 export type GoalAiResult = Omit<GoalRunResult, 'name'> & { goal: string };
 
-export interface RepeatablePlanHandle extends NamedAiToolComponentHandle, AiOverlayComponentHandle<GoalSnapshot | null> {
-    createRepeatablePlan(input: GoalRequest): AiToolOperation<GoalAiResult>;
-    retryFailedTask(): AiToolOperation<GoalAiResult>;
+export interface RepeatablePlanHandle extends NamedOperationComponentHandle, AiOverlayComponentHandle<GoalSnapshot | null> {
+    createRepeatablePlan(input: GoalRequest): Workflow<GoalAiResult>;
+    retryFailedTask(): Workflow<GoalAiResult>;
     getSnapshot(): GoalSnapshot | null;
     clear(): void;
 }
@@ -173,7 +169,7 @@ export type RepeatablePlanProps = {
 };
 
 const RETRY_DELAY_MS = 1000;
-const RECURSIVE_GOAL_TOOL_NAMES = new Set([
+const RECURSIVE_GOAL_OPERATION_NAMES = new Set([
     'create_repeatable_plan',
     'retry_repeatable_plan_task',
 ]);
@@ -217,7 +213,7 @@ const parseGoalStepDescriptor = (value: unknown): GoalStepDescriptor | null => {
     };
 };
 
-const parseGoalStopWhenTool = (value: unknown): GoalStopWhenTool | null => {
+const parseGoalStopWhenOperation = (value: unknown): GoalStopWhenOperation | null => {
     const tool = isRecord(value) ? value : null;
     if (!tool || !hasOnlyKeys(tool, ['name', 'arguments'])) return null;
     const name = toNonEmptyString(tool.name);
@@ -234,7 +230,7 @@ const parseGoalStopWhen = (value: unknown): GoalStopWhen | null => {
         stopWhen,
         ['tool', 'operator', 'target'],
     )) return null;
-    const tool = parseGoalStopWhenTool(stopWhen.tool);
+    const tool = parseGoalStopWhenOperation(stopWhen.tool);
     if (
         !tool
         || !isGoalComparisonOperator(stopWhen.operator)
@@ -285,9 +281,9 @@ export const validateGoalRequest = (
             };
         }
         ids.add(step.id);
-        if (RECURSIVE_GOAL_TOOL_NAMES.has(step.name)) {
+        if (RECURSIVE_GOAL_OPERATION_NAMES.has(step.name)) {
             return {
-                error: new RecursiveGoalStepError(componentName, 'Repeatable plan steps cannot invoke repeatable-plan management tools.'),
+                error: new RecursiveGoalStepError(componentName, 'Repeatable plan steps cannot invoke repeatable-plan management workflows.'),
                 name,
             };
         }
@@ -299,9 +295,9 @@ export const validateGoalRequest = (
             name,
         };
     }
-    if (RECURSIVE_GOAL_TOOL_NAMES.has(stopWhen.tool.name)) {
+    if (RECURSIVE_GOAL_OPERATION_NAMES.has(stopWhen.tool.name)) {
         return {
-            error: new RecursiveGoalStopWhenError(componentName, 'Repeatable plan stop condition cannot invoke a repeatable-plan management tool.'),
+            error: new RecursiveGoalStopWhenError(componentName, 'Repeatable plan stop condition cannot invoke a repeatable-plan management workflow.'),
             name,
         };
     }
@@ -343,14 +339,14 @@ export const compareGoalValues = (
     }
 };
 
-const cloneStopWhenTool = (tool: GoalStopWhenTool): GoalStopWhenTool => ({
+const cloneStopWhenOperation = (tool: GoalStopWhenOperation): GoalStopWhenOperation => ({
     ...tool,
     ...(tool.arguments ? { arguments: { ...tool.arguments } } : {}),
 });
 
 const cloneStopWhen = (stopWhen: GoalStopWhen): GoalStopWhen => ({
     ...stopWhen,
-    tool: cloneStopWhenTool(stopWhen.tool),
+    tool: cloneStopWhenOperation(stopWhen.tool),
 });
 
 const cloneStopWhenResult = (
@@ -403,12 +399,12 @@ type RuntimeTaskExecutionResult = {
 };
 
 type ActiveGoalOperation = {
-    controller: ControlledAiToolOperation<
+    controller: ControlledOperation<
         GoalRunResult,
         never,
         'complete' | 'failed' | 'cancelled' | 'replaced'
     >;
-    nestedOperation: AiToolOperation<NestedAiToolResult, NestedAiToolStatus> | null;
+    nestedOperation: Operation<NestedOperationResult, NestedOperationStatus> | null;
 };
 
 const toGoalAiResult = (result: GoalRunResult): GoalAiResult => {
@@ -417,7 +413,7 @@ const toGoalAiResult = (result: GoalRunResult): GoalAiResult => {
 };
 
 export class RepeatablePlanRunner
-extends AiToolComponentBase<GoalSnapshot | null>
+extends WorkflowComponentBase<GoalSnapshot | null>
 implements RepeatablePlanHandle {
     private currentSnapshot: GoalSnapshot | null = null;
     private request: GoalRequest | null = null;
@@ -431,14 +427,14 @@ implements RepeatablePlanHandle {
 
     constructor(
         componentName: string,
-        private readonly dispatchTool: AiToolDispatcher,
+        private readonly dispatchOperation: OperationDispatcher,
         private readonly onChange?: (snapshot: GoalSnapshot | null) => void,
     ) {
         super(componentName, null);
     }
 
-    createRepeatablePlan(input: GoalRequest): AiToolOperation<GoalAiResult> {
-        return mapAiToolOperation(this.create(input), toGoalAiResult);
+    createRepeatablePlan(input: GoalRequest): Workflow<GoalAiResult> {
+        return asWorkflow(mapOperation(this.create(input), toGoalAiResult));
     }
 
     getComponentType(): string {
@@ -465,10 +461,10 @@ implements RepeatablePlanHandle {
         return this.currentSnapshot ? cloneSnapshot(this.currentSnapshot) : null;
     }
 
-    create(input: GoalRequest): AiToolOperation<GoalRunResult> {
+    create(input: GoalRequest): Workflow<GoalRunResult> {
         const validation = validateGoalRequest(input, this.getComponentName());
         if ('error' in validation) {
-            return createAiToolOperationFrom(() => this.runCreate(input), 'failed');
+            return asWorkflow(createOperationFrom(() => this.runCreate(input), 'failed'));
         }
         return this.startOperation(() => this.runCreate(input));
     }
@@ -502,13 +498,13 @@ implements RepeatablePlanHandle {
         return this.runPreparation(validation.request, this.generation, 0);
     }
 
-    retryFailedTask(): AiToolOperation<GoalAiResult> {
-        return mapAiToolOperation(this.retryFailedTaskResult(), toGoalAiResult);
+    retryFailedTask(): Workflow<GoalAiResult> {
+        return asWorkflow(mapOperation(this.retryFailedTaskResult(), toGoalAiResult));
     }
 
-    private retryFailedTaskResult(): AiToolOperation<GoalRunResult> {
+    private retryFailedTaskResult(): Workflow<GoalRunResult> {
         const request = this.request;
-        if (!request) return createAiToolOperationFrom(() => this.runRetryFailedTask(), 'failed');
+        if (!request) return asWorkflow(createOperationFrom(() => this.runRetryFailedTask(), 'failed'));
         return this.startOperation(() => this.runRetryFailedTask());
     }
 
@@ -571,13 +567,13 @@ implements RepeatablePlanHandle {
 
     private startOperation(
         run: () => Promise<GoalRunResult>,
-    ): AiToolOperation<GoalRunResult> {
+    ): Workflow<GoalRunResult> {
         this.cancelActiveOperation('replaced', new GoalReplacedError(
             this.getComponentName(),
             'The repeatable plan run was replaced.',
         ));
         let operation!: ActiveGoalOperation;
-        const controller = createControlledAiToolOperation<
+        const controller = createControlledOperation<
             GoalRunResult,
             never,
             'complete' | 'failed' | 'cancelled' | 'replaced'
@@ -596,7 +592,7 @@ implements RepeatablePlanHandle {
         ).finally(() => {
             if (this.activeOperation === operation) this.activeOperation = null;
         });
-        return operation.controller.operation;
+        return asWorkflow(operation.controller.operation);
     }
 
     private cancelActiveOperation(
@@ -784,14 +780,14 @@ implements RepeatablePlanHandle {
     private async executeTask(
         toolName: string,
         argumentsValue: Record<string, unknown> | undefined,
-        FailureError: AiToolComponentErrorConstructor<GoalComponentError>,
+        FailureError: OperationComponentErrorConstructor<GoalComponentError>,
         fallbackMessage: string,
         runId = createRepeatablePlanRunId(),
     ): Promise<RuntimeTaskExecutionResult> {
         const activeOperation = this.activeOperation;
-        let operation: AiToolOperation<NestedAiToolResult, NestedAiToolStatus> | null = null;
+        let operation: Operation<NestedOperationResult, NestedOperationStatus> | null = null;
         try {
-            const dispatchedOperation = this.dispatchTool(
+            const dispatchedOperation = this.dispatchOperation(
                 toolName,
                 argumentsValue,
             );
@@ -807,7 +803,7 @@ implements RepeatablePlanHandle {
             }
             const termination = await new Promise<{
                 status: string;
-                result: NestedAiToolResult | Error;
+                result: NestedOperationResult | Error;
             }>((resolve) => dispatchedOperation.notifyTerminated(resolve));
             if (termination.result instanceof Error) throw termination.result;
             return {

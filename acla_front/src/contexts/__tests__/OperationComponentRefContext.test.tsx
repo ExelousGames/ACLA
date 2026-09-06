@@ -3,19 +3,19 @@ import { act, render } from '@testing-library/react';
 import {
     ComponentMountTimeoutError,
     DuplicateComponentNameError,
-    AiToolComponentRefProvider,
+    OperationComponentRefProvider,
     awaitNamedComponentHandle,
-    createAiToolComponentRefDirectory,
-    useAiToolComponentRefDirectory,
-    useRegisterAiToolComponentRef,
-} from '../AiToolComponentRefContext';
+    createOperationComponentRefDirectory,
+    useOperationComponentRefDirectory,
+    useRegisterOperationComponentRef,
+} from '../OperationComponentRefContext';
 
 const handle = (name: string) => ({ getComponentName: () => name });
 
-describe('AiToolComponentRefDirectory', () => {
+describe('OperationComponentRefDirectory', () => {
     it('registers and unregisters the exact creator reference', () => {
         const onChange = jest.fn();
-        const directory = createAiToolComponentRefDirectory(onChange);
+        const directory = createOperationComponentRefDirectory(onChange);
         const first = handle('component');
         const ref = { current: first };
 
@@ -36,7 +36,7 @@ describe('AiToolComponentRefDirectory', () => {
     });
 
     it('derives identity only from getComponentName and rejects duplicate live names', () => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         const first = { current: handle('shared-name') };
         const second = { current: handle('shared-name') };
         directory.registerComponentRef(first);
@@ -46,7 +46,7 @@ describe('AiToolComponentRefDirectory', () => {
     });
 
     it('allows many references of one component class when runtime names differ', () => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         const create = (name: string) => ({ current: { ...handle(name), componentType: 'tool_status' } });
         const first = create('tool-status:run-1');
         const second = create('tool-status:run-2');
@@ -59,7 +59,7 @@ describe('AiToolComponentRefDirectory', () => {
 
     it('awaits registration without polling and times out with the named error', async () => {
         jest.useFakeTimers();
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         const awaiting = directory.awaitComponentRef('child');
         const child = handle('child');
         directory.registerComponentRef({ current: child });
@@ -80,42 +80,42 @@ const Registered = ({ name, value }: { name: string; value: number }) => {
     }), [name, value]);
     const ref = useRef<typeof registeredHandle | null>(registeredHandle);
     ref.current = registeredHandle;
-    useRegisterAiToolComponentRef(ref);
+    useRegisterOperationComponentRef(ref);
     return null;
 };
 
 const RegisteredWithFreshHandle = ({ name }: { name: string }) => {
     const ref = useRef<{ getComponentName(): string } | null>(null);
     ref.current = { getComponentName: () => name };
-    useRegisterAiToolComponentRef(ref);
+    useRegisterOperationComponentRef(ref);
     return null;
 };
 
 const Observer = ({ onDirectory }: {
-    onDirectory: (directory: ReturnType<typeof useAiToolComponentRefDirectory>) => void;
+    onDirectory: (directory: ReturnType<typeof useOperationComponentRefDirectory>) => void;
 }) => {
-    onDirectory(useAiToolComponentRefDirectory());
+    onDirectory(useOperationComponentRefDirectory());
     return null;
 };
 
-describe('AiToolComponentRefProvider', () => {
+describe('OperationComponentRefProvider', () => {
     it('returns the current handle when awaiting a first Strict Mode mount replay', async () => {
-        let directory: ReturnType<typeof useAiToolComponentRefDirectory> | null = null;
+        let directory: ReturnType<typeof useOperationComponentRefDirectory> | null = null;
         const view = render(
             <StrictMode>
-                <AiToolComponentRefProvider>
+                <OperationComponentRefProvider>
                     <Observer onDirectory={(value) => { directory = value; }} />
-                </AiToolComponentRefProvider>
+                </OperationComponentRefProvider>
             </StrictMode>,
         );
         const awaiting = awaitNamedComponentHandle<any>(directory!, 'strict-mount');
 
         view.rerender(
             <StrictMode>
-                <AiToolComponentRefProvider>
+                <OperationComponentRefProvider>
                     <Registered name="strict-mount" value={7} />
                     <Observer onDirectory={(value) => { directory = value; }} />
-                </AiToolComponentRefProvider>
+                </OperationComponentRefProvider>
             </StrictMode>,
         );
 
@@ -126,47 +126,47 @@ describe('AiToolComponentRefProvider', () => {
 
     it('keeps one stable registration while a component refreshes its handle', () => {
         expect(() => render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <RegisteredWithFreshHandle name="fresh" />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         )).not.toThrow();
     });
 
     it('publishes a fresh current handle through the same stable reference', () => {
-        let directory: ReturnType<typeof useAiToolComponentRefDirectory> | null = null;
+        let directory: ReturnType<typeof useOperationComponentRefDirectory> | null = null;
         const view = render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <Registered name="stable" value={1} />
                 <Observer onDirectory={(value) => { directory = value; }} />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
         const ref = directory!.findComponentRef('stable');
         expect((ref!.current as any).getValue()).toBe(1);
 
         view.rerender(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <Registered name="stable" value={7} />
                 <Observer onDirectory={(value) => { directory = value; }} />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
         expect(directory!.findComponentRef('stable')).toBe(ref);
         expect((ref!.current as any).getValue()).toBe(7);
     });
 
     it('unregisters a keyed child by its creator reference', () => {
-        let directory: ReturnType<typeof useAiToolComponentRefDirectory> | null = null;
+        let directory: ReturnType<typeof useOperationComponentRefDirectory> | null = null;
         const view = render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <Registered key="goal" name="goal" value={1} />
                 <Observer onDirectory={(value) => { directory = value; }} />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
 
         view.rerender(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <Registered key="procedure-plan" name="procedure-plan" value={2} />
                 <Observer onDirectory={(value) => { directory = value; }} />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
 
         expect(directory!.findComponentRef('goal')).toBeNull();

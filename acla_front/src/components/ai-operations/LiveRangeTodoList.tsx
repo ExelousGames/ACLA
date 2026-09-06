@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { InvalidLiveRangeTodoListError } from 'contexts/AiToolComponentError';
+import { InvalidLiveRangeTodoListError } from 'contexts/OperationComponentError';
 import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
 import {
     isOverlayFiniteOrNull,
     isOverlayNonEmptyString,
     isOverlayRecord,
 } from 'views/floating-chat/overlay-renderer-validation';
-import { AiToolComponentBase } from './AiToolComponentBase';
+import { WorkflowComponentBase } from './WorkflowComponentBase';
+import { asWorkflow } from './workflow';
 import type {
     LiveRangeTodoContent,
     LiveRangeTodoEventInput,
@@ -14,12 +15,12 @@ import type {
     LiveRangeTodoListHandle,
     LiveRangeTodoListAiResult,
     LiveRangeTodoListSnapshot,
-    LiveRangeTodoListToolResult,
+    LiveRangeTodoListResult,
     LiveRangeTodoSnapshotEvent,
 } from './live-range-todo-list-types';
 import {
-    createAiToolOperation,
-} from './ai-tool-operation';
+    createOperation,
+} from './operation';
 
 const DEFAULT_LEAD_TIME_SECONDS = 2;
 const SAMPLE_WINDOW_MS = 2000;
@@ -382,7 +383,7 @@ export interface LiveRangeTodoListProps {
     surface?: 'panel' | 'chat' | 'pill';
 }
 
-const toAiResult = (result: LiveRangeTodoListToolResult): LiveRangeTodoListAiResult => {
+const toAiResult = (result: LiveRangeTodoListResult): LiveRangeTodoListAiResult => {
     const events = result.todo_list?.events ?? [];
     return {
         status: result.status,
@@ -394,7 +395,7 @@ const toAiResult = (result: LiveRangeTodoListToolResult): LiveRangeTodoListAiRes
 };
 
 export class LiveRangeTodoListRunner
-extends AiToolComponentBase<LiveRangeTodoListSnapshot | null>
+extends WorkflowComponentBase<LiveRangeTodoListSnapshot | null>
 implements LiveRangeTodoListHandle {
     private runtime: RuntimeSnapshot;
     private samples: LiveRangeTelemetrySample[] = [];
@@ -419,7 +420,7 @@ implements LiveRangeTodoListHandle {
     }
 
     getForAi() {
-        return createAiToolOperation(toAiResult(this.get()), 'complete');
+        return asWorkflow(createOperation(toAiResult(this.get()), 'complete'));
     }
 
     getComponentType(): string {
@@ -442,7 +443,7 @@ implements LiveRangeTodoListHandle {
         // The live range list has no renderer-originated events.
     }
 
-    addEvent(eventInput: LiveRangeTodoEventInput): LiveRangeTodoListToolResult {
+    addEvent(eventInput: LiveRangeTodoEventInput): LiveRangeTodoListResult {
         const now = Date.now();
         const parsed = this.parseNewEvent(eventInput, now);
         if (!parsed.event) return this.invalidList(parsed.error || 'Invalid live range to-do event.');
@@ -467,7 +468,7 @@ implements LiveRangeTodoListHandle {
         return { status: 'ready', todo_list: next, message: `Added event '${event.id}'.` };
     }
 
-    replaceEvents(eventInputs: readonly LiveRangeTodoEventInput[]): LiveRangeTodoListToolResult {
+    replaceEvents(eventInputs: readonly LiveRangeTodoEventInput[]): LiveRangeTodoListResult {
         if (!Array.isArray(eventInputs)) return this.invalidList('Provide an events array.');
         const now = Date.now();
         const parsed = eventInputs.map((event) => this.parseNewEvent(event, now));
@@ -509,7 +510,7 @@ implements LiveRangeTodoListHandle {
         };
     }
 
-    updateEvents(eventUpdates: readonly LiveRangeTodoEventUpdate[]): LiveRangeTodoListToolResult {
+    updateEvents(eventUpdates: readonly LiveRangeTodoEventUpdate[]): LiveRangeTodoListResult {
         if (!Array.isArray(eventUpdates) || eventUpdates.length === 0) {
             return this.invalidList('Provide at least one event update.');
         }
@@ -586,7 +587,7 @@ implements LiveRangeTodoListHandle {
         return { status: 'ready', todo_list: next, message: `Updated ${updates.size} event${updates.size === 1 ? '' : 's'}.` };
     }
 
-    removeEvents(idsInput: readonly string[]): LiveRangeTodoListToolResult {
+    removeEvents(idsInput: readonly string[]): LiveRangeTodoListResult {
         const parsed = parseIds(idsInput);
         if (!parsed.ids || parsed.ids.length === 0) return this.invalidList(parsed.error || 'Provide event ids to remove.');
         const ids = new Set(parsed.ids);
@@ -601,7 +602,7 @@ implements LiveRangeTodoListHandle {
         };
     }
 
-    resetEvents(idsInput?: readonly string[]): LiveRangeTodoListToolResult {
+    resetEvents(idsInput?: readonly string[]): LiveRangeTodoListResult {
         const parsed = idsInput === undefined
             ? { ids: this.runtime.events.map((event) => event.id) }
             : parseIds(idsInput);
@@ -631,13 +632,13 @@ implements LiveRangeTodoListHandle {
         };
     }
 
-    clear(): LiveRangeTodoListToolResult {
+    clear(): LiveRangeTodoListResult {
         this.abortRunningEvents();
         const next = this.commit({ ...this.runtime, events: [], updated_at: Date.now() });
         return { status: 'empty', todo_list: next, message: 'Cleared the live range to-do list.' };
     }
 
-    get(): LiveRangeTodoListToolResult {
+    get(): LiveRangeTodoListResult {
         const current = serializeSnapshot(this.runtime);
         return {
             status: current.events.length > 0 ? 'ready' : 'empty',

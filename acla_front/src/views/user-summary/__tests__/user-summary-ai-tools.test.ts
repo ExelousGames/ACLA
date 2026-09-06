@@ -2,8 +2,8 @@ import {
     QueryRequiredError,
     UserSummaryComponentError,
     UserSummaryUnavailableError,
-} from 'contexts/AiToolComponentError';
-import { AI_TOOL_COMPONENT_NAMES } from 'contexts/AiToolComponentRefContext';
+} from 'contexts/OperationComponentError';
+import { OPERATION_COMPONENT_NAMES } from 'contexts/OperationComponentRefContext';
 import {
     getAvailableUserSummaryMaps,
     getUserSummaryMapLevel,
@@ -50,7 +50,7 @@ describe('user summary AI component operations', () => {
         expect(thrown).toBeInstanceOf(UserSummaryUnavailableError);
         expect(thrown).toMatchObject({
             name: 'UserSummaryUnavailableError',
-            componentName: AI_TOOL_COMPONENT_NAMES.USER_SUMMARY,
+            componentName: OPERATION_COMPONENT_NAMES.USER_SUMMARY,
             message: 'Summary service unavailable.',
         });
     });

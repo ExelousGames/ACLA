@@ -5,10 +5,10 @@ import CircuitMaps from '../circuit-maps';
 import apiService from 'services/api.service';
 import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    AiToolComponentRefProvider,
-    useRegisterAiToolComponentRef,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    OperationComponentRefProvider,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
@@ -116,21 +116,21 @@ const LiveSessionReference = ({ snapshot }: { snapshot: LiveSessionRuntime }) =>
     const componentRef = React.useRef<any>(null);
     if (componentRef.current === null) {
         componentRef.current = {
-            getComponentName: () => AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+            getComponentName: () => OPERATION_COMPONENT_NAMES.LIVE_SESSION,
             getAssistantSnapshot: () => snapshotRef.current,
             subscribeAssistantSnapshot: () => () => undefined,
         };
     }
-    useRegisterAiToolComponentRef(componentRef);
+    useRegisterOperationComponentRef(componentRef);
     return null;
 };
 
 const renderCircuitMaps = (context: Partial<LiveSessionRuntime> = {}) => (
     render(
-        <AiToolComponentRefProvider>
+        <OperationComponentRefProvider>
             <LiveSessionReference snapshot={{ ...baseContext, ...context }} />
             <CircuitMaps />
-        </AiToolComponentRefProvider>
+        </OperationComponentRefProvider>
     )
 );
 

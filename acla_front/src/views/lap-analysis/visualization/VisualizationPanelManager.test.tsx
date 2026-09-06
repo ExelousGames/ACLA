@@ -2,7 +2,7 @@ import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import VisualizationPanelManager, { ManagedVisualizationInstance } from './VisualizationPanelManager';
-import { VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
+import { VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
 
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');

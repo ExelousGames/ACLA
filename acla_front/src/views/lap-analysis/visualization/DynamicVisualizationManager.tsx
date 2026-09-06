@@ -1,6 +1,6 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
-import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
-import { VisualizationManagerUnavailableError } from 'contexts/AiToolComponentError';
+import { useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import { VisualizationManagerUnavailableError } from 'contexts/OperationComponentError';
 import { visualizationRegistry, VisualizationInstance } from './VisualizationRegistry';
 import MapVisualization from './charts/MapVisualization';
 import VisualizationPanelManager, {
@@ -155,8 +155,8 @@ const DynamicVisualizationManager = forwardRef<VisualizationManagerHandle, Dynam
     registeredHandleRef.current = handle;
     const registeredStaticMapRef = useRef(staticMapHandle);
     registeredStaticMapRef.current = staticMapHandle;
-    useRegisterAiToolComponentRef(registeredHandleRef);
-    useRegisterAiToolComponentRef(registeredStaticMapRef);
+    useRegisterOperationComponentRef(registeredHandleRef);
+    useRegisterOperationComponentRef(registeredStaticMapRef);
 
     return (
         <DynamicVisualizationManagerImpl

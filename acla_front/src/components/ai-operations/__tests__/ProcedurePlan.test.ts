@@ -2,17 +2,17 @@ import {
     ProcedurePlanRunner,
     advanceProcedurePlan,
     buildProcedurePlan,
-    getProcedurePlanToolArguments,
+    getProcedurePlanOperationArguments,
     isProcedurePlanOptOutRequest,
     type ProcedurePlanState,
 } from '../ProcedurePlan';
-import { ProcedurePlanStepFailedError } from '../../../contexts/AiToolComponentError';
+import { ProcedurePlanStepFailedError } from '../../../contexts/OperationComponentError';
 import {
-    createAiToolDeferred,
-    createAiToolOperation,
-    createAiToolOperationFrom,
-    resolvedAiToolOperation,
-} from '../ai-tool-operation';
+    createOperationDeferred,
+    createOperation,
+    createOperationFrom,
+    resolvedOperation,
+} from '../operation';
 
 const plan = (): ProcedurePlanState => ({
     goal: 'Review the lap',
@@ -44,7 +44,7 @@ describe('ProcedurePlan descriptors', () => {
             currentStep: 0,
             requests: [{ type: 'tool_call', title: 'Read', name: 'read', status: 'pending' }],
         });
-        expect(getProcedurePlanToolArguments(plan().requests[0])).toEqual({ lap: 2 });
+        expect(getProcedurePlanOperationArguments(plan().requests[0])).toEqual({ lap: 2 });
         expect(advanceProcedurePlan(plan(), 'done')).toMatchObject({
             status: 'advanced',
             reason: 'done',
@@ -55,7 +55,7 @@ describe('ProcedurePlan descriptors', () => {
 
 describe('ProcedurePlanRunner central dispatch callback', () => {
     it('aborts the active nested tool when the plan operation is aborted', async () => {
-        const nested = createAiToolOperation(
+        const nested = createOperation(
             new Promise<Record<string, unknown>>(() => undefined),
             'complete',
         );
@@ -78,7 +78,7 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
     });
 
     it('executes requests in order and returns dispatcher outputs unchanged', async () => {
-        const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => resolvedAiToolOperation({
+        const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => resolvedOperation({
             status: 'complete',
             name,
             lap: args?.lap,
@@ -89,6 +89,8 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         const operation = runner.createProcedurePlan(plan());
         const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
         expect(runner.getComponentName()).toBe('procedure-plan');
+        expect(runner.kind).toBe('workflow');
+        expect(operation.kind).toBe('workflow');
         expect(runner.getComponentType()).toBe('procedure_plan');
         expect(runner.getOverlayBehavior(null)).toEqual({
             placement: 'flow',
@@ -133,8 +135,8 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
     });
 
     it('notifies a superseded operation as replaced', async () => {
-        const nestedResult = createAiToolDeferred<{ status: string }>();
-        const dispatch = jest.fn(() => createAiToolOperation(nestedResult.promise, 'complete'));
+        const nestedResult = createOperationDeferred<{ status: string }>();
+        const dispatch = jest.fn(() => createOperation(nestedResult.promise, 'complete'));
         const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
         const original = runner.createProcedurePlan(plan());
         const termination = new Promise((resolve) => original.notifyTerminated(resolve));
@@ -155,7 +157,7 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         const onError = jest.fn();
         const onChange = jest.fn();
         const rootError = new Error('offline');
-        const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {
+        const dispatch = jest.fn((name: string) => createOperationFrom(() => {
             if (name === 'read') throw rootError;
             return { status: 'complete' };
         }, 'complete'));

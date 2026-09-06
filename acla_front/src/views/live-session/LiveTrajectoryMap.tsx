@@ -13,7 +13,7 @@ import { parseTelemetryFrame, TelemetryFrame, Vec3 } from 'views/lap-analysis/vi
 import { LiveSessionContext } from './LiveSessionContext';
 import { liveTelemetryStore, useTelemetryStatus } from './live-telemetry-store';
 import 'views/lap-analysis/visualization/charts/MapVisualization.css';
-import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 
 const LIVE_TRAIL_LIMIT = 900;
 const PLAYER_COLOR = '#00e676';
@@ -70,7 +70,7 @@ const drawPolyline = (
     context.stroke();
 };
 
-export interface LiveTrajectoryMapHandle extends NamedAiToolComponentHandle {
+export interface LiveTrajectoryMapHandle extends NamedOperationComponentHandle {
     focusDriver(): void;
     fitTrack(): void;
 }
@@ -113,7 +113,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     const registeredHandleRef = useRef(handle);
     registeredHandleRef.current = handle;
-    useRegisterAiToolComponentRef(registeredHandleRef);
+    useRegisterOperationComponentRef(registeredHandleRef);
 
     const trackKey = useMemo(() => getAccTelemetryTrackKey(
         liveSession.staticData.Static_track,

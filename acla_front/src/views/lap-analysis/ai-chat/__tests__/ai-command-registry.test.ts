@@ -1,7 +1,7 @@
 import {
-    FRONTEND_AI_TOOL_NAMES,
+    FRONTEND_OPERATION_NAMES,
     createAiCommandRegistry,
-    frontendAiToolRegistry,
+    frontendOperationRegistry,
     isRepeatablePlanStepAvailableForContext,
     startAgentRuntime,
 } from '../ai-command-registry';
@@ -11,30 +11,36 @@ import type {
     QueryAnalysisResultOutput,
     QueryTelemetryMetricArguments,
     QueryTelemetryMetricResult,
+    FrontendWorkflowName,
+    FrontendToolName,
 } from '../ai-command-registry';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    createAiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    createOperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import {
-    createControlledAiToolOperation,
+    asWorkflow,
+    createControlledOperation,
     LiveRangeTodoListRunner,
-    resolvedAiToolOperation,
-} from 'components/ai-engineering-tools';
+    resolvedOperation,
+} from 'components/ai-operations';
 import type {
-    AiToolOperation,
-    AiToolQueryResult,
+    Operation,
+    OperationQueryResult,
     LiveRangeTodoEventInput,
     LiveRangeTodoListHandle,
-} from 'components/ai-engineering-tools';
+    Workflow,
+    Tool,
+    ProcedurePlanRunResult,
+} from 'components/ai-operations';
 import type { AiChatHandle } from '../ai-chat';
 import type { AnalysisResultsChartHandle } from '../../visualization/charts/AnalysisResultsChart';
 import type { FilteredAnalysisSegmentsSnapshot } from '../../visualization/charts/AnalysisResultsChart';
 import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 
-// @ts-expect-error AiToolQueryResult requires an explicit data type.
-type MissingAiToolQueryResultGeneric = AiToolQueryResult;
+// @ts-expect-error OperationQueryResult requires an explicit data type.
+type MissingOperationQueryResultGeneric = OperationQueryResult;
 
 // @ts-expect-error QueryTelemetryMetricArguments requires an explicit reduction.
 type MissingTelemetryArgumentsGeneric = QueryTelemetryMetricArguments;
@@ -45,34 +51,42 @@ type MissingTelemetryResultGeneric = QueryTelemetryMetricResult;
 const queryContractCoverage: FrontendAiQueryContractCoverage = true;
 
 const assertQueryContractTypes = (registry: AiCommandRegistry) => {
-    const analysisResult: AiToolOperation<QueryAnalysisResultOutput> = (
+    const workflow: Workflow<ProcedurePlanRunResult> = registry.set_procedure_plan({});
+    const tool: Tool<QueryAnalysisResultOutput> = registry.query_analysis_result({ query: 'analyses' });
+    // @ts-expect-error Workflow commands cannot return the distinct Tool type.
+    const invalidTool: Tool<ProcedurePlanRunResult> = registry.set_procedure_plan({});
+    // @ts-expect-error Workflow names are excluded from tool names.
+    const invalidToolName: FrontendToolName = 'create_repeatable_plan';
+    // @ts-expect-error Tool names are excluded from workflow names.
+    const invalidWorkflowName: FrontendWorkflowName = 'query_analysis_result';
+    const analysisResult: Operation<QueryAnalysisResultOutput> = (
         registry.query_analysis_result({ query: '$count(analyses)' })
     );
     // @ts-expect-error Analysis result queries require an expression.
     registry.query_analysis_result({});
     // @ts-expect-error Analysis result queries accept no extra arguments.
     registry.query_analysis_result({ query: 'analyses', extra: true });
-    const avg: AiToolOperation<QueryTelemetryMetricResult<'avg'>> = registry.query_telemetry_metric({
+    const avg: Operation<QueryTelemetryMetricResult<'avg'>> = registry.query_telemetry_metric({
         fields: ['speed'],
         scope: { type: 'now' },
         reduce: 'avg',
     });
-    const min: AiToolOperation<QueryTelemetryMetricResult<'min'>> = registry.query_telemetry_metric({
+    const min: Operation<QueryTelemetryMetricResult<'min'>> = registry.query_telemetry_metric({
         fields: ['speed'],
         scope: { type: 'now' },
         reduce: 'min',
     });
-    const max: AiToolOperation<QueryTelemetryMetricResult<'max'>> = registry.query_telemetry_metric({
+    const max: Operation<QueryTelemetryMetricResult<'max'>> = registry.query_telemetry_metric({
         fields: ['speed'],
         scope: { type: 'now' },
         reduce: 'max',
     });
-    const stats: AiToolOperation<QueryTelemetryMetricResult<'stats'>> = registry.query_telemetry_metric({
+    const stats: Operation<QueryTelemetryMetricResult<'stats'>> = registry.query_telemetry_metric({
         fields: ['speed'],
         scope: { type: 'now' },
         reduce: 'stats',
     });
-    const display: AiToolOperation<'graph shown'> = registry.display_specific_result_in_overlay({
+    const display: Operation<'graph shown'> = registry.display_specific_result_in_overlay({
         page_id: 'page-id',
         result_id: 'result-id',
     });
@@ -84,9 +98,10 @@ const assertQueryContractTypes = (registry: AiCommandRegistry) => {
     // @ts-expect-error The model-facing telemetry query does not expose raw values.
     registry.query_telemetry_metric({ fields: ['speed'], scope: { type: 'now' }, reduce: 'raw' });
     // @ts-expect-error Stats results cannot be assigned to scalar telemetry results.
-    const mismatchedReduction: AiToolOperation<QueryTelemetryMetricResult<'avg'>> = stats;
+    const mismatchedReduction: Operation<QueryTelemetryMetricResult<'avg'>> = stats;
 
     return {
+        workflow, tool, invalidTool, invalidToolName, invalidWorkflowName,
         analysisResult,
         avg,
         min,
@@ -101,7 +116,7 @@ const assertQueryContractTypes = (registry: AiCommandRegistry) => {
 void assertQueryContractTypes;
 
 const register = (name: string, handle: object) => {
-    const directory = createAiToolComponentRefDirectory();
+    const directory = createOperationComponentRefDirectory();
     directory.registerComponentRef({ current: {
         getComponentName: () => name,
         ...handle,
@@ -109,7 +124,30 @@ const register = (name: string, handle: object) => {
     return directory;
 };
 
-describe('frontend AI tool registry', () => {
+describe('frontend operation registry', () => {
+    const workflowNames: FrontendWorkflowName[] = [
+        'create_repeatable_plan',
+        'retry_repeatable_plan_task',
+        'set_procedure_plan',
+        'advance_plan_step',
+        'clear_procedure_plan',
+        'add_event_to_live_range_todo_list',
+        'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        'get_live_range_todo_list',
+    ];
+
+    it('classifies plan and live range operations as workflows and other operations as tools', () => {
+        const workflows = FRONTEND_OPERATION_NAMES.filter((name) => frontendOperationRegistry[name].kind === 'workflow');
+        expect(workflows.sort()).toEqual([...workflowNames].sort());
+        expect(frontendOperationRegistry.query_analysis_result.kind).toBe('tool');
+    });
+
+    it.each(workflowNames)('retains workflow classification when %s fails before execution', async (name) => {
+        const workflow = createAiCommandRegistry({})[name]({});
+        expect(workflow.kind).toBe('workflow');
+        await expect(workflow.result).rejects.toBeInstanceOf(Error);
+    });
+
     it('publishes live analyst runtime statuses without routing them through session intelligence', async () => {
         const publishStatus = jest.fn();
         const livePerformanceAnalystState = {
@@ -153,20 +191,20 @@ describe('frontend AI tool registry', () => {
         }));
     });
 
-    it('is a name-keyed definition object covering every advertised tool', () => {
-        expect(Object.keys(frontendAiToolRegistry).sort()).toEqual(
-            [...FRONTEND_AI_TOOL_NAMES].sort(),
+    it('is a name-keyed definition object covering every advertised operation', () => {
+        expect(Object.keys(frontendOperationRegistry).sort()).toEqual(
+            [...FRONTEND_OPERATION_NAMES].sort(),
         );
-        expect(FRONTEND_AI_TOOL_NAMES).toContain('query_analysis_result');
-        expect(FRONTEND_AI_TOOL_NAMES).toContain('apply_query_to_analysis_result');
-        expect(FRONTEND_AI_TOOL_NAMES).toContain('display_specific_result_in_overlay');
-        FRONTEND_AI_TOOL_NAMES.forEach((name) => {
-            expect(frontendAiToolRegistry[name].componentName).toEqual(expect.any(String));
+        expect(FRONTEND_OPERATION_NAMES).toContain('query_analysis_result');
+        expect(FRONTEND_OPERATION_NAMES).toContain('apply_query_to_analysis_result');
+        expect(FRONTEND_OPERATION_NAMES).toContain('display_specific_result_in_overlay');
+        FRONTEND_OPERATION_NAMES.forEach((name) => {
+            expect(frontendOperationRegistry[name].componentName).toEqual(expect.any(String));
         });
     });
 
     it('preserves the component operation instead of awaiting or wrapping its result', async () => {
-        const componentOperation = resolvedAiToolOperation({
+        const componentOperation = resolvedOperation({
             status: 'started' as const,
             conversation_role: 'agent' as const,
             agent_mode: 'overtake' as const,
@@ -175,19 +213,20 @@ describe('frontend AI tool registry', () => {
             startAgentSession: jest.fn(() => componentOperation),
         };
         const registry = createAiCommandRegistry({
-            componentRefs: register(AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT, handle),
+            componentRefs: register(OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, handle),
         });
 
         const returned = registry.start_agent_session({ agent_mode: 'overtake' });
 
         expect(returned).toBe(componentOperation);
+        expect(returned.kind).toBe('tool');
         await expect(returned.result).resolves.toMatchObject({ status: 'started' });
         expect(returned.statuses).toEqual([]);
     });
 
     it('returns a rejected operation for an unavailable component', async () => {
         const registry = createAiCommandRegistry({
-            componentRefs: createAiToolComponentRefDirectory(),
+            componentRefs: createOperationComponentRefDirectory(),
         });
 
         const operation = registry.show_map({});
@@ -198,7 +237,7 @@ describe('frontend AI tool registry', () => {
     });
 
     it('preserves a reduction-specific telemetry component operation', async () => {
-        const componentOperation = resolvedAiToolOperation({
+        const componentOperation = resolvedOperation({
             status: 'ready' as const,
             data: { Physics_speed_kmh: 123 },
         }, 'ready');
@@ -206,7 +245,7 @@ describe('frontend AI tool registry', () => {
             queryTelemetryMetricForAi: jest.fn(() => componentOperation) as any,
         };
         const registry = createAiCommandRegistry({
-            componentRefs: register(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION, handle),
+            componentRefs: register(OPERATION_COMPONENT_NAMES.LIVE_SESSION, handle),
         });
 
         const returned = registry.query_telemetry_metric({
@@ -223,17 +262,17 @@ describe('frontend AI tool registry', () => {
     });
 
     it('dispatches JSONata expressions and preserves actual JSON result types', async () => {
-        const operations = new Map<string, AiToolOperation<QueryAnalysisResultOutput>>([
-            ['$count(analyses)', resolvedAiToolOperation({ status: 'ready' as const, data: 4 }, 'ready')],
-            ['{"count": $count(analyses.elements)}', resolvedAiToolOperation({
+        const operations = new Map<string, Operation<QueryAnalysisResultOutput>>([
+            ['$count(analyses)', resolvedOperation({ status: 'ready' as const, data: 4 }, 'ready')],
+            ['{"count": $count(analyses.elements)}', resolvedOperation({
                 status: 'ready' as const,
                 data: { count: 4 },
             }, 'ready')],
-            ['[analyses.elements.id]', resolvedAiToolOperation({
+            ['[analyses.elements.id]', resolvedOperation({
                 status: 'ready' as const,
                 data: ['first', 'second'],
             }, 'ready')],
-            ['analyses.elements[id = "missing"]', resolvedAiToolOperation({
+            ['analyses.elements[id = "missing"]', resolvedOperation({
                 status: 'ready' as const,
                 data: null,
             }, 'ready')],
@@ -279,13 +318,13 @@ describe('frontend AI tool registry', () => {
         const operation = registry.query_analysis_result(args as any);
 
         await expect(operation.result).rejects.toMatchObject({
-            name: 'InvalidToolCallError',
+            name: 'InvalidOperationCallError',
         });
         expect(handle.queryAnalysisResult).not.toHaveBeenCalled();
     });
 
     it('validates and dispatches an Analysis Results query apply operation unchanged', async () => {
-        const componentOperation = resolvedAiToolOperation({
+        const componentOperation = resolvedOperation({
             status: 'ready' as const,
         }, 'ready');
         const handle: Partial<AnalysisResultsChartHandle> = {
@@ -326,14 +365,14 @@ describe('frontend AI tool registry', () => {
         });
 
         await expect(registry.apply_query_to_analysis_result(args).result).rejects.toMatchObject({
-            name: 'InvalidToolCallError',
+            name: 'InvalidOperationCallError',
         });
         expect(handle.applyAnalysisResultQuery).not.toHaveBeenCalled();
     });
 
     it('rejects an analysis result expression when its tab is not mounted', async () => {
         const registry = createAiCommandRegistry({
-            componentRefs: createAiToolComponentRefDirectory(),
+            componentRefs: createOperationComponentRefDirectory(),
         });
 
         const operation = registry.query_analysis_result({ query: '$count(analyses)' });
@@ -364,7 +403,7 @@ describe('frontend AI tool registry', () => {
 });
 
 const reserve = (
-    directory: ReturnType<typeof createAiToolComponentRefDirectory>,
+    directory: ReturnType<typeof createOperationComponentRefDirectory>,
     name: string,
     handle: object,
 ) => {
@@ -400,7 +439,7 @@ const comparisonData = (durationMs: number) => ({
 });
 
 const createMockComparisonOperation = () => {
-    const controller = createControlledAiToolOperation<
+    const controller = createControlledOperation<
         'graph shown',
         never,
         'complete' | 'cancelled' | 'replaced' | 'failed'
@@ -418,7 +457,7 @@ describe('specific Analysis Results overlay tool', () => {
     const args = { page_id: 'retained-page', result_id: 'braking-result' };
 
     const setup = () => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         const displayController = createMockComparisonOperation();
         const displaySpecificResultInOverlay = jest.fn(() => displayController.operation);
         reserve(directory, 'visualization:analysis-results', {
@@ -467,7 +506,7 @@ describe('specific Analysis Results overlay tool', () => {
         const test = setup();
 
         await expect(test.registry.display_specific_result_in_overlay(invalidArgs as any).result)
-            .rejects.toMatchObject({ name: 'InvalidToolCallError' });
+            .rejects.toMatchObject({ name: 'InvalidOperationCallError' });
         expect(test.displaySpecificResultInOverlay).not.toHaveBeenCalled();
     });
 
@@ -532,7 +571,7 @@ const scheduledItem = (
 });
 
 const childLiveRegistry = (
-    directory: ReturnType<typeof createAiToolComponentRefDirectory>,
+    directory: ReturnType<typeof createOperationComponentRefDirectory>,
 ) => createAiCommandRegistry({
     componentRefs: directory,
     sessionMode: 'live',
@@ -541,7 +580,7 @@ const childLiveRegistry = (
 });
 
 const analystLiveRegistry = (
-    directory: ReturnType<typeof createAiToolComponentRefDirectory>,
+    directory: ReturnType<typeof createOperationComponentRefDirectory>,
 ) => createAiCommandRegistry({
     componentRefs: directory,
     sessionMode: 'live',
@@ -550,9 +589,9 @@ const analystLiveRegistry = (
     sessionGame: 'acc',
 });
 
-describe('live range to-do add tool', () => {
+describe('live range to-do workflow', () => {
     it('reuses the mounted list, appends every event, and completes immediately', async () => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         const inserted: LiveRangeTodoEventInput[] = [];
         const addEvent = jest.fn((event: LiveRangeTodoEventInput) => {
             inserted.push(event);
@@ -561,14 +600,14 @@ describe('live range to-do add tool', () => {
         const handle: Partial<LiveRangeTodoListHandle> = {
             addEvent,
             get: () => todoResult([{ id: 'existing' }, ...inserted]) as any,
-            getForAi: () => resolvedAiToolOperation({
+            getForAi: () => asWorkflow(resolvedOperation({
                 status: 'ready' as const,
                 event_count: inserted.length + 1,
                 pending_count: inserted.length + 1,
                 running_count: 0,
-            }, 'complete'),
+            }, 'complete')),
         };
-        reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, handle);
+        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, handle);
 
         const operation = childLiveRegistry(directory).add_event_to_live_range_todo_list({
             events: [scheduledItem('first'), scheduledItem('second')],
@@ -593,23 +632,23 @@ describe('live range to-do add tool', () => {
     });
 
     it('asks AI Chat to initialize the list when it is missing', async () => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         const addEvent = jest.fn(() => todoResult([{ id: 'mounted' }]) as any);
         const todoHandle: Partial<LiveRangeTodoListHandle> = {
             addEvent,
             get: () => todoResult() as any,
-            getForAi: () => resolvedAiToolOperation({
+            getForAi: () => asWorkflow(resolvedOperation({
                 status: 'ready' as const,
                 event_count: 1,
                 pending_count: 1,
                 running_count: 0,
-            }, 'complete'),
+            }, 'complete')),
         };
         const initializeLiveRangeTodoList = jest.fn(() => {
-            reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
+            reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
             return todoHandle as LiveRangeTodoListHandle;
         });
-        reserve(directory, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
+        reserve(directory, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
             initializeLiveRangeTodoList,
         } satisfies Partial<AiChatHandle>);
 
@@ -623,24 +662,24 @@ describe('live range to-do add tool', () => {
     });
 
     it('dispatches stored nested-tool arguments only when telemetry makes the event due', async () => {
-        const directory = createAiToolComponentRefDirectory();
-        const runner = new LiveRangeTodoListRunner(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
+        const directory = createOperationComponentRefDirectory();
+        const runner = new LiveRangeTodoListRunner(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
         const summarize = () => {
             const events = runner.get().todo_list?.events ?? [];
-            return resolvedAiToolOperation({
+            return asWorkflow(resolvedOperation({
                 status: events.length > 0 ? 'ready' as const : 'empty' as const,
                 event_count: events.length,
                 pending_count: events.filter(({ status }) => status === 'pending').length,
                 running_count: events.filter(({ status }) => status === 'running').length,
-            }, 'complete');
+            }, 'complete'));
         };
-        reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
+        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
             addEvent: (event: LiveRangeTodoEventInput) => runner.addEvent(event),
             get: () => runner.get(),
             getForAi: summarize,
         } satisfies Partial<LiveRangeTodoListHandle>);
-        const analyzeTelemetryForAi = jest.fn(() => resolvedAiToolOperation({ status: 'ready' }, 'ready'));
-        reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION, { analyzeTelemetryForAi });
+        const analyzeTelemetryForAi = jest.fn(() => resolvedOperation({ status: 'ready' }, 'ready'));
+        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_SESSION, { analyzeTelemetryForAi });
         const storedArguments = { scope: { type: 'now' } };
 
         const operation = childLiveRegistry(directory).add_event_to_live_range_todo_list({
@@ -678,9 +717,9 @@ describe('live range to-do add tool', () => {
         }],
         ['duplicate ids', { events: [scheduledItem('same'), scheduledItem('same')] }],
     ])('rejects an invalid atomic batch: %s', async (_label, payload) => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         const addEvent = jest.fn();
-        reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
+        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
             addEvent,
             get: () => todoResult() as any,
             getForAi: jest.fn(),
@@ -702,9 +741,9 @@ describe('live range to-do add tool', () => {
         'advance_plan_step',
         'clear_procedure_plan',
     ])('rejects unsafe nested tool %s without mutating the list', async (toolName) => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         const addEvent = jest.fn();
-        reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
+        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
             addEvent,
             get: () => todoResult() as any,
             getForAi: jest.fn(),
@@ -721,9 +760,9 @@ describe('live range to-do add tool', () => {
     });
 
     it('rejects collisions with existing events before adding any batch item', async () => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         const addEvent = jest.fn();
-        reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
+        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
             addEvent,
             get: () => todoResult([{ id: 'existing' }]) as any,
             getForAi: jest.fn(),
@@ -738,17 +777,17 @@ describe('live range to-do add tool', () => {
     });
 });
 
-describe('filtered Driver/Expert comparison queue tool', () => {
+describe('filtered Driver/Expert comparison queue workflow', () => {
     afterEach(() => {
         jest.useRealTimers();
     });
 
     it('appends eligible segments in filtered order and publishes overlays only when due', async () => {
         jest.useFakeTimers();
-        const directory = createAiToolComponentRefDirectory();
-        const runner = new LiveRangeTodoListRunner(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
-        const existingTask = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
-        const duplicateTask = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
+        const directory = createOperationComponentRefDirectory();
+        const runner = new LiveRangeTodoListRunner(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
+        const existingTask = jest.fn(() => resolvedOperation({}, 'complete'));
+        const duplicateTask = jest.fn(() => resolvedOperation({}, 'complete'));
         runner.addEvent({
             id: 'existing-user-event',
             normalized_position: 0.95,
@@ -763,7 +802,7 @@ describe('filtered Driver/Expert comparison queue tool', () => {
             content: { title: 'Already queued comparison' },
             taskStart: duplicateTask,
         });
-        reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
+        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
             addEvent: (event: LiveRangeTodoEventInput) => runner.addEvent(event),
             get: () => runner.get(),
         } satisfies Partial<LiveRangeTodoListHandle>);
@@ -818,7 +857,7 @@ describe('filtered Driver/Expert comparison queue tool', () => {
             getFilteredSegments: () => filteredSnapshot,
             displaySpecificResultInOverlay,
         } satisfies Partial<AnalysisResultsChartHandle>);
-        reserve(directory, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
+        reserve(directory, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
             getOpportunityTelemetryRows: () => [{
                 Graphics_normalized_car_position: 0.1,
                 Graphics_estimated_lap_time: 100_000,
@@ -911,17 +950,17 @@ describe('filtered Driver/Expert comparison queue tool', () => {
     });
 
     it('asks AI Chat to initialize the list for an eligible comparison', async () => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         const addEvent = jest.fn();
         const todoHandle: Partial<LiveRangeTodoListHandle> = {
             addEvent,
             get: () => todoResult() as any,
         };
         const initializeLiveRangeTodoList = jest.fn(() => {
-            reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
+            reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
             return todoHandle as LiveRangeTodoListHandle;
         });
-        reserve(directory, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
+        reserve(directory, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
             initializeLiveRangeTodoList,
         } satisfies Partial<AiChatHandle>);
         reserve(directory, 'visualization:analysis-results', {
@@ -963,16 +1002,16 @@ describe('filtered Driver/Expert comparison queue tool', () => {
     ])('rejects %s availability', async (_label, context) => {
         const registry = createAiCommandRegistry({
             ...context,
-            componentRefs: createAiToolComponentRefDirectory(),
+            componentRefs: createOperationComponentRefDirectory(),
         } as any);
 
         await expect(registry
             .add_filtered_driver_expert_comparisons_to_live_range_todo_list({}).result)
-            .rejects.toMatchObject({ name: 'ToolNotRegisteredError' });
+            .rejects.toMatchObject({ name: 'OperationNotRegisteredError' });
     });
 
     it('returns busy without mounting a list and rejects arguments', async () => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         reserve(directory, 'visualization:analysis-results', {
             getFilteredSegments: () => ({
                 status: 'busy',
@@ -994,11 +1033,11 @@ describe('filtered Driver/Expert comparison queue tool', () => {
             });
         await expect(registry
             .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ extra: true }).result)
-            .rejects.toMatchObject({ name: 'InvalidToolCallError' });
+            .rejects.toMatchObject({ name: 'InvalidOperationCallError' });
     });
 
     it('fails a matched batch when none of its results has a showable graph', async () => {
-        const directory = createAiToolComponentRefDirectory();
+        const directory = createOperationComponentRefDirectory();
         reserve(directory, 'visualization:analysis-results', {
             getFilteredSegments: () => ({
                 status: 'ready',
@@ -1015,9 +1054,9 @@ describe('filtered Driver/Expert comparison queue tool', () => {
 
         await expect(analystLiveRegistry(directory)
             .add_filtered_driver_expert_comparisons_to_live_range_todo_list({}).result)
-            .rejects.toMatchObject({ name: 'ToolExecutionError' });
+            .rejects.toMatchObject({ name: 'OperationExecutionError' });
         expect(directory.findComponentRef(
-            AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+            OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
         )).toBeNull();
     });
 

@@ -1,4 +1,4 @@
-export type AiToolErrorOptions = {
+export type OperationErrorOptions = {
     cause?: unknown;
 };
 
@@ -105,10 +105,10 @@ export const serializeError = (error: Error): SerializedError => (
     serializeCause(error, 0, new Set()) as SerializedError
 );
 
-export class AiToolError extends Error {
-    override name = 'AiToolError';
+export class OperationError extends Error {
+    override name = 'OperationError';
 
-    constructor(message: string, options: AiToolErrorOptions = {}) {
+    constructor(message: string, options: OperationErrorOptions = {}) {
         super(message);
         if (Object.prototype.hasOwnProperty.call(options, 'cause')) {
             Object.defineProperty(this, 'cause', {
@@ -122,84 +122,84 @@ export class AiToolError extends Error {
     }
 }
 
-export interface AiToolError {
+export interface OperationError {
     readonly cause?: unknown;
 }
 
-export class ToolExecutionError extends AiToolError {
-    override name = 'ToolExecutionError';
+export class OperationExecutionError extends OperationError {
+    override name = 'OperationExecutionError';
 }
 
-export class ToolNotRegisteredError extends AiToolError {
-    override name = 'ToolNotRegisteredError';
+export class OperationNotRegisteredError extends OperationError {
+    override name = 'OperationNotRegisteredError';
 }
 
-export class InvalidToolCallError extends AiToolError {
-    override name = 'InvalidToolCallError';
+export class InvalidOperationCallError extends OperationError {
+    override name = 'InvalidOperationCallError';
 }
 
-export class NoLiveSessionError extends AiToolError {
+export class NoLiveSessionError extends OperationError {
     override name = 'NoLiveSessionError';
 }
 
-export class NoLiveTelemetryError extends AiToolError {
+export class NoLiveTelemetryError extends OperationError {
     override name = 'NoLiveTelemetryError';
 }
 
-export class TelemetryFieldsRequiredError extends AiToolError {
+export class TelemetryFieldsRequiredError extends OperationError {
     override name = 'TelemetryFieldsRequiredError';
 }
 
-export class NoCornerDataError extends AiToolError {
+export class NoCornerDataError extends OperationError {
     override name = 'NoCornerDataError';
 }
 
-export class CreateGoalToolUnavailableError extends AiToolError {
-    override name = 'CreateGoalToolUnavailableError';
+export class CreateGoalWorkflowUnavailableError extends OperationError {
+    override name = 'CreateGoalWorkflowUnavailableError';
 }
 
-export class RetryGoalTaskToolUnavailableError extends AiToolError {
-    override name = 'RetryGoalTaskToolUnavailableError';
+export class RetryGoalTaskWorkflowUnavailableError extends OperationError {
+    override name = 'RetryGoalTaskWorkflowUnavailableError';
 }
 
-export class InvalidProcedurePlanRequestsError extends AiToolError {
+export class InvalidProcedurePlanRequestsError extends OperationError {
     override name = 'InvalidProcedurePlanRequestsError';
 }
 
-export class CircuitMapLookupFailedError extends AiToolError {
+export class CircuitMapLookupFailedError extends OperationError {
     override name = 'CircuitMapLookupFailedError';
 }
 
-export class NoTelemetryForScopeError extends AiToolError {
+export class NoTelemetryForScopeError extends OperationError {
     override name = 'NoTelemetryForScopeError';
 }
 
-export class TelemetryAnalysisFailedError extends AiToolError {
+export class TelemetryAnalysisFailedError extends OperationError {
     override name = 'TelemetryAnalysisFailedError';
 }
 
-export class AmbiguousComponentTargetError extends AiToolError {
+export class AmbiguousComponentTargetError extends OperationError {
     override name = 'AmbiguousComponentTargetError';
 }
 
-export class VisualizationControlUnavailableError extends AiToolError {
+export class VisualizationControlUnavailableError extends OperationError {
     override name = 'VisualizationControlUnavailableError';
 }
 
-export class UnsupportedAgentModeError extends AiToolError {
+export class UnsupportedAgentModeError extends OperationError {
     override name = 'UnsupportedAgentModeError';
 }
 
-export class NotRecordedModeError extends AiToolError {
+export class NotRecordedModeError extends OperationError {
     override name = 'NotRecordedModeError';
 }
 
-export const normalizeAiToolError = (error: unknown): AiToolError => {
-    if (error instanceof AiToolError) return error;
+export const normalizeOperationError = (error: unknown): OperationError => {
+    if (error instanceof OperationError) return error;
     const message = error instanceof Error && error.message.trim()
         ? error.message
         : typeof error === 'string' && error.trim()
             ? error
-            : 'Tool execution failed.';
-    return new ToolExecutionError(message, { cause: error });
+            : 'Operation execution failed.';
+    return new OperationExecutionError(message, { cause: error });
 };

@@ -2,11 +2,11 @@ import React, { useContext } from 'react';
 import { act, render } from '@testing-library/react';
 import apiService from 'services/api.service';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    AiToolComponentRefDirectory,
-    AiToolComponentRefProvider,
-    useAiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    OperationComponentRefDirectory,
+    OperationComponentRefProvider,
+    useOperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import { AnalysisContext, AnalysisContextType } from '../analysis-context';
 import {
     createEmptyRecordedPlaybackSummary,
@@ -35,13 +35,13 @@ import {
     RecordedAnalysisFailedError,
     SessionAnalysisFailedError,
     TelemetryDataFailedError,
-} from 'contexts/AiToolComponentError';
+} from 'contexts/OperationComponentError';
 
 const mockPost = apiService.post as jest.Mock;
 
-let directory: AiToolComponentRefDirectory | null = null;
+let directory: OperationComponentRefDirectory | null = null;
 const DirectoryObserver = () => {
-    directory = useAiToolComponentRefDirectory();
+    directory = useOperationComponentRefDirectory();
     return null;
 };
 
@@ -64,12 +64,12 @@ const createAnalysisContext = (overrides: Partial<AnalysisContextType> = {}): An
 });
 
 const Harness = ({ value }: { value: AnalysisContextType }) => (
-    <AiToolComponentRefProvider>
+    <OperationComponentRefProvider>
         <AnalysisContext.Provider value={value}>
-            <SessionAnalysisContent name={AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS} />
+            <SessionAnalysisContent name={OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS} />
         </AnalysisContext.Provider>
         <DirectoryObserver />
-    </AiToolComponentRefProvider>
+    </OperationComponentRefProvider>
 );
 
 describe('SessionAnalysis named component handle', () => {
@@ -80,8 +80,8 @@ describe('SessionAnalysis named component handle', () => {
 
     it('keeps its exact name and exposes fresh recorded-session operations', () => {
         const view = render(<Harness value={createAnalysisContext({ activeTab: 'sessionLists', mapSelected: 'Monza' })} />);
-        const ref = directory!.findComponentRef<SessionAnalysisHandle>(AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)!;
-        expect(ref.current!.getComponentName()).toBe(AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS);
+        const ref = directory!.findComponentRef<SessionAnalysisHandle>(OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS)!;
+        expect(ref.current!.getComponentName()).toBe(OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS);
         expect(ref.current!.getMapSelected()).toBe('Monza');
         expect(ref.current!.getSelectedSession()).toBeNull();
         expect(ref.current!.getAssistantSnapshot().mapSelected).toBe('Monza');
@@ -98,7 +98,7 @@ describe('SessionAnalysis named component handle', () => {
             },
         })} />);
 
-        expect(directory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)).toBe(ref);
+        expect(directory!.findComponentRef(OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS)).toBe(ref);
         expect(ref.current!.getSelectedSession()).toMatchObject({
             SessionId: 'session-17',
             session_name: 'Sunday Race',
@@ -123,7 +123,7 @@ describe('SessionAnalysis named component handle', () => {
     ] as const)('wraps %s transport failures with its concrete exception', async (method, args, ErrorType) => {
         render(<Harness value={createAnalysisContext()} />);
         const handle = directory!.findComponentRef<SessionAnalysisHandle>(
-            AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+            OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
         )!.current!;
         const cause = { response: { data: { message: 'Transport unavailable.' } } };
         mockPost.mockRejectedValueOnce(cause);
@@ -138,7 +138,7 @@ describe('SessionAnalysis named component handle', () => {
         expect(thrown).toBeInstanceOf(ErrorType);
         expect(thrown).toMatchObject({
             name: ErrorType.name,
-            componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+            componentName: OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
             message: 'Transport unavailable.',
             cause,
         });
@@ -181,7 +181,7 @@ describe('SessionAnalysisProvider recorded analysis failures', () => {
         expect(thrown).toBeInstanceOf(RecordedAnalysisFailedError);
         expect(thrown).toMatchObject({
             name: 'RecordedAnalysisFailedError',
-            componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+            componentName: OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
             message: 'Classifier unavailable.',
             cause,
         });

@@ -1,9 +1,9 @@
 import { ChatBubbleIcon, ChevronLeftIcon, ChevronRightIcon } from '@radix-ui/react-icons';
 import React, { useState } from 'react';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    useOptionalAiToolComponentSnapshot,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    useOptionalOperationComponentSnapshot,
+} from 'contexts/OperationComponentRefContext';
 import type { AnalysisContextType } from 'views/lap-analysis/analysis-context';
 import AiChat from 'views/lap-analysis/ai-chat/ai-chat';
 import type { AssistantActiveScreen } from 'views/lap-analysis/assistant-session-mode';
@@ -14,9 +14,9 @@ interface DashboardAssistantProps {
 }
 
 const DashboardAssistant = ({ activeDashboardTab }: DashboardAssistantProps) => {
-    const analysisContext = useOptionalAiToolComponentSnapshot<AnalysisContextType>(
+    const analysisContext = useOptionalOperationComponentSnapshot<AnalysisContextType>(
         activeDashboardTab === DASHBOARD_TABS.ANALYSIS
-            ? AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS
+            ? OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS
             : null,
     );
     const [isOpen, setIsOpen] = useState(false);
@@ -28,26 +28,26 @@ const DashboardAssistant = ({ activeDashboardTab }: DashboardAssistantProps) => 
         ? {
             assistantMode: 'live',
             label: 'Live Session',
-            componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+            componentName: OPERATION_COMPONENT_NAMES.LIVE_SESSION,
         }
         : activeDashboardTab === DASHBOARD_TABS.USER_SUMMARY
             ? {
                 assistantMode: 'user_summary',
                 label: 'User Summary',
-                componentName: AI_TOOL_COMPONENT_NAMES.USER_SUMMARY,
+                componentName: OPERATION_COMPONENT_NAMES.USER_SUMMARY,
             }
             : isRecordedSession
                 ? {
                     assistantMode: 'recorded',
                     label: analysisContext?.sessionSelected?.session_name || 'Recorded Session',
                     recordedSessionId: analysisContext?.sessionSelected?.SessionId,
-                    componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+                    componentName: OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
                 }
                 : {
                     assistantMode: 'front_desk',
                     label: 'Front Desk',
                     componentName: activeDashboardTab === DASHBOARD_TABS.ANALYSIS
-                        ? AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS
+                        ? OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS
                         : undefined,
                 };
 
@@ -69,7 +69,7 @@ const DashboardAssistant = ({ activeDashboardTab }: DashboardAssistantProps) => 
             </button>
             <div id="main-dashboard-assistant-body" className="main-dashboard-assistant__body" aria-hidden={!isOpen}>
                 <AiChat
-                    name={AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT}
+                    name={OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT}
                     activeScreen={activeScreen}
                 />
             </div>

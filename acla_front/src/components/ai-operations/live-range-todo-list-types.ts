@@ -1,4 +1,5 @@
-import type { AiToolOperation } from './ai-tool-operation';
+import type { Operation } from './operation';
+import type { Workflow } from './workflow';
 import type { AiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
 
 export type LiveRangeTodoStatus = 'pending' | 'running';
@@ -13,7 +14,7 @@ export interface LiveRangeTodoEventInput {
     normalized_position: number;
     lead_time_seconds?: number;
     content: LiveRangeTodoContent;
-    taskStart: (signal: AbortSignal) => AiToolOperation<unknown, object>;
+    taskStart: (signal: AbortSignal) => Operation<unknown, object>;
 }
 
 export interface LiveRangeTodoEventUpdate {
@@ -21,7 +22,7 @@ export interface LiveRangeTodoEventUpdate {
     normalized_position?: number;
     lead_time_seconds?: number;
     content?: Partial<LiveRangeTodoContent>;
-    taskStart?: (signal: AbortSignal) => AiToolOperation<unknown, object>;
+    taskStart?: (signal: AbortSignal) => Operation<unknown, object>;
 }
 
 export interface LiveRangeTodoSnapshotEvent {
@@ -47,7 +48,7 @@ export interface LiveRangeTodoListSnapshot {
     readonly updated_at: number;
 }
 
-export interface LiveRangeTodoListToolResult {
+export interface LiveRangeTodoListResult {
     status: 'ready' | 'empty';
     todo_list: LiveRangeTodoListSnapshot | null;
     message?: string;
@@ -62,12 +63,12 @@ export type LiveRangeTodoListAiResult = {
 };
 
 export interface LiveRangeTodoListHandle extends AiOverlayComponentHandle<LiveRangeTodoListSnapshot | null> {
-    addEvent: (event: LiveRangeTodoEventInput) => LiveRangeTodoListToolResult;
-    replaceEvents: (events: readonly LiveRangeTodoEventInput[]) => LiveRangeTodoListToolResult;
-    updateEvents: (updates: readonly LiveRangeTodoEventUpdate[]) => LiveRangeTodoListToolResult;
-    removeEvents: (ids: readonly string[]) => LiveRangeTodoListToolResult;
-    resetEvents: (ids?: readonly string[]) => LiveRangeTodoListToolResult;
-    clear: () => LiveRangeTodoListToolResult;
-    get: () => LiveRangeTodoListToolResult;
-    getForAi: () => AiToolOperation<LiveRangeTodoListAiResult>;
+    addEvent: (event: LiveRangeTodoEventInput) => LiveRangeTodoListResult;
+    replaceEvents: (events: readonly LiveRangeTodoEventInput[]) => LiveRangeTodoListResult;
+    updateEvents: (updates: readonly LiveRangeTodoEventUpdate[]) => LiveRangeTodoListResult;
+    removeEvents: (ids: readonly string[]) => LiveRangeTodoListResult;
+    resetEvents: (ids?: readonly string[]) => LiveRangeTodoListResult;
+    clear: () => LiveRangeTodoListResult;
+    get: () => LiveRangeTodoListResult;
+    getForAi: () => Workflow<LiveRangeTodoListAiResult>;
 }

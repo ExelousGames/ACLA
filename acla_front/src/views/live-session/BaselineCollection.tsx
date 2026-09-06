@@ -7,14 +7,14 @@ import React, {
     useState,
 } from 'react';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    AiToolComponentRefDirectory,
-    NamedAiToolComponentHandle,
+    OPERATION_COMPONENT_NAMES,
+    OperationComponentRefDirectory,
+    NamedOperationComponentHandle,
     awaitNamedComponentHandle,
     resolveNamedComponentHandle,
-    useAiToolComponentRefDirectory,
-    useRegisterAiToolComponentRef,
-} from 'contexts/AiToolComponentRefContext';
+    useOperationComponentRefDirectory,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
 import {
     AnalysisResultsVisualizationUnavailableError,
     BaselineAnalysisCancelledError,
@@ -23,7 +23,7 @@ import {
     BaselineCollectionNotStartedError,
     BaselineLapRecordRequiredError,
     RecordedAnalysisFailedError,
-} from 'contexts/AiToolComponentError';
+} from 'contexts/OperationComponentError';
 import apiService from 'services/api.service';
 import type { AiChatHandle } from 'views/lap-analysis/ai-chat/ai-chat';
 import {
@@ -48,14 +48,14 @@ import './baseline-collection.css';
 import { LiveSessionContext } from './LiveSessionContext';
 import { liveTelemetryStore } from './live-telemetry-store';
 import {
-    createAiToolDeferred,
-    createControlledAiToolOperation,
-    createAiToolOperation,
-    createAiToolOperationFrom,
-    type AiToolDeferred,
-    type ControlledAiToolOperation,
-    type AiToolOperation,
-} from 'components/ai-engineering-tools';
+    createOperationDeferred,
+    createControlledOperation,
+    createOperation,
+    createOperationFrom,
+    type OperationDeferred,
+    type ControlledOperation,
+    type Operation,
+} from 'components/ai-operations';
 import type { AiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
 import { OVERLAY_HOLD_MS } from 'views/floating-chat/ai-overlay-types';
 
@@ -137,22 +137,22 @@ export type BaselineCollectionOptions = {
     query?: BaselineCollectionQuery;
 };
 
-export interface BaselineCollectionHandle extends NamedAiToolComponentHandle, AiOverlayComponentHandle<BaselineCollectionTag | null> {
-    startCollection(options?: BaselineCollectionOptions): AiToolOperation<BaselineCollectionPayload, BaselineCollectionStatus>;
-    restartCollection(): AiToolOperation<BaselineCollectionPayload>;
-    requestAnalysis(options?: { limit?: number }): AiToolOperation<BaselineAnalysisPayload>;
+export interface BaselineCollectionHandle extends NamedOperationComponentHandle, AiOverlayComponentHandle<BaselineCollectionTag | null> {
+    startCollection(options?: BaselineCollectionOptions): Operation<BaselineCollectionPayload, BaselineCollectionStatus>;
+    restartCollection(): Operation<BaselineCollectionPayload>;
+    requestAnalysis(options?: { limit?: number }): Operation<BaselineAnalysisPayload>;
     getTag(): BaselineCollectionTag | null;
     getLapRecord(): BaselineLapRecord | null;
     subscribe(listener: (tag: BaselineCollectionTag | null) => void): () => void;
 }
 
 type PendingBaselineOperation = {
-    controller: ControlledAiToolOperation<
+    controller: ControlledOperation<
         BaselineCollectionPayload,
         BaselineCollectionStatus,
         'complete' | 'timed_out' | 'cancelled'
     >;
-    statuses: Array<{ milestone: number; deferred: AiToolDeferred<BaselineCollectionStatus> }>;
+    statuses: Array<{ milestone: number; deferred: OperationDeferred<BaselineCollectionStatus> }>;
     timeoutId: ReturnType<typeof setTimeout> | null;
 };
 
@@ -538,11 +538,11 @@ const buildAnalysisElements = (
 });
 
 const ensureAnalysisResultsChart = async (
-    directory: AiToolComponentRefDirectory,
+    directory: OperationComponentRefDirectory,
 ) => {
     const manager = resolveNamedComponentHandle<VisualizationManagerHandle>(
         directory,
-        AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+        OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
     );
     const name = getSingletonVisualizationComponentName('analysis-results');
     const mountedHandle = directory.findComponentRef<AnalysisResultsChartHandle>(name)?.current;
@@ -619,7 +619,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
     const {
         appendAnalysisResultPage,
     } = useContext(LiveSessionContext);
-    const componentRefs = useAiToolComponentRefDirectory();
+    const componentRefs = useOperationComponentRefDirectory();
     const currentTelemetryRef = useRef(liveTelemetryStore.getSnapshot().currentTelemetry);
 
     const [, setEnabled] = useState(false);
@@ -763,7 +763,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         const collectionInProgress = enabledRef.current
             && (status === 'waiting_for_start' || status === 'collecting');
         if (collectionInProgress) {
-            return createAiToolOperationFrom<BaselineCollectionPayload>(() => {
+            return createOperationFrom<BaselineCollectionPayload>(() => {
                 throw new BaselineCollectionAlreadyStartedError(
                     name,
                     'Baseline collection is already in progress.',
@@ -778,13 +778,13 @@ const BaselineCollection = ({ name }: { name: string }) => {
         }
         const statuses = [0, 1, 25, 50, 75, 100].map((milestone) => ({
             milestone,
-            deferred: createAiToolDeferred<BaselineCollectionStatus>(),
+            deferred: createOperationDeferred<BaselineCollectionStatus>(),
         }));
         const timeoutMs = Number.isFinite(options.timeoutMs) && Number(options.timeoutMs) > 0
             ? Number(options.timeoutMs)
             : 600000;
         let pending!: PendingBaselineOperation;
-        const controller = createControlledAiToolOperation<
+        const controller = createControlledOperation<
             BaselineCollectionPayload,
             BaselineCollectionStatus,
             'complete' | 'timed_out' | 'cancelled'
@@ -834,9 +834,9 @@ const BaselineCollection = ({ name }: { name: string }) => {
                 name,
                 'Baseline collection was cancelled because collection restarted.',
             ), 'cancelled');
-            return createAiToolOperation(beginFreshCollection(recorderRef.current.query), 'complete');
+            return createOperation(beginFreshCollection(recorderRef.current.query), 'complete');
         } catch (error) {
-            return createAiToolOperationFrom(() => { throw error; }, 'failed');
+            return createOperationFrom(() => { throw error; }, 'failed');
         }
     }, [beginFreshCollection, name, settlePendingCollectionOperations]);
 
@@ -892,7 +892,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
 
                 const chat = resolveNamedComponentHandle<AiChatHandle>(
                     componentRefs,
-                    AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+                    OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
                 );
                 const elements = buildAnalysisElements(result, chat, baseline.records);
                 let chart: Awaited<ReturnType<typeof ensureAnalysisResultsChart>>;
@@ -982,7 +982,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         getComponentName: () => name,
         startCollection,
         restartCollection,
-        requestAnalysis: (options) => createAiToolOperation(requestAnalysis(options), 'complete'),
+        requestAnalysis: (options) => createOperation(requestAnalysis(options), 'complete'),
         getTag: () => tagRef.current,
         getComponentType: () => 'baseline_progress',
         getSnapshot: () => tagRef.current,
@@ -999,7 +999,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
     }), [name, requestAnalysis, restartCollection, startCollection, subscribe]);
     const componentRef = useRef<BaselineCollectionHandle | null>(handle);
     componentRef.current = handle;
-    useRegisterAiToolComponentRef(componentRef);
+    useRegisterOperationComponentRef(componentRef);
 
     useEffect(() => {
         return liveTelemetryStore.subscribeEvents((event) => {

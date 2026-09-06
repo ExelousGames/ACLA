@@ -4,17 +4,17 @@ import type { DesktopGame, DesktopGameContextValue } from 'contexts/DesktopGameC
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import { LiveSessionContext } from '../LiveSessionContext';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    AiToolComponentRefDirectory,
-    AiToolComponentRefProvider,
-    useAiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    OperationComponentRefDirectory,
+    OperationComponentRefProvider,
+    useOperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import type { LiveSessionHandle } from '../LiveSessionView';
 import {
     BaselineCollectionAlreadyStartedError,
     BaselineCollectionNotStartedError,
-} from 'contexts/AiToolComponentError';
-import { createAiToolOperation, createAiToolOperationFrom } from 'components/ai-engineering-tools';
+} from 'contexts/OperationComponentError';
+import { createOperation, createOperationFrom } from 'components/ai-operations';
 import { liveTelemetryStore } from '../live-telemetry-store';
 
 jest.mock('contexts/DesktopGameContext', () => ({
@@ -128,27 +128,27 @@ const createRuntime = (sessionGame: DesktopGame | null = null) => ({
 
 const renderView = (runtime = createRuntime()) => render(
     <LiveSessionContext.Provider value={runtime as any}>
-        <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+        <LiveSessionContent name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
     </LiveSessionContext.Provider>,
 );
 
-let componentDirectory: AiToolComponentRefDirectory | null = null;
+let componentDirectory: OperationComponentRefDirectory | null = null;
 const RegistrationObserver = () => {
-    componentDirectory = useAiToolComponentRefDirectory();
+    componentDirectory = useOperationComponentRefDirectory();
     return null;
 };
 
 const renderRegisteredView = (runtime: any) => {
     render(
-        <AiToolComponentRefProvider>
+        <OperationComponentRefProvider>
             <LiveSessionContext.Provider value={runtime as any}>
-                <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                <LiveSessionContent name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
             </LiveSessionContext.Provider>
             <RegistrationObserver />
-        </AiToolComponentRefProvider>,
+        </OperationComponentRefProvider>,
     );
     return componentDirectory!
-        .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+        .findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)!.current!;
 };
 
 const createTelemetryRuntime = () => {
@@ -234,16 +234,16 @@ describe('LiveSessionView', () => {
         }));
 
         render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <LiveSessionContext.Provider value={runtime as any}>
-                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
 
-        const handle = componentDirectory!.findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
-        expect(handle.getComponentName()).toBe(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION);
+        const handle = componentDirectory!.findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+        expect(handle.getComponentName()).toBe(OPERATION_COMPONENT_NAMES.LIVE_SESSION);
         expect(handle.getLiveSessionSnapshot()).toMatchObject({
             track: 'Monza',
             car: 'BMW M4 GT3',
@@ -368,34 +368,34 @@ describe('LiveSessionView', () => {
         const operation = handle.queryTelemetryMetricForAi(args as any);
 
         await expect(operation.result).rejects.toMatchObject({
-            name: 'InvalidToolCallError',
+            name: 'InvalidOperationCallError',
         });
     });
 
     it('propagates a mounted collector duplicate-start failure without progress statuses', async () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
         const failure = new BaselineCollectionAlreadyStartedError(
-            AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
             'Baseline collection is already in progress.',
         );
-        const startCollection = jest.fn(() => createAiToolOperationFrom(() => { throw failure; }, 'failed'));
+        const startCollection = jest.fn(() => createOperationFrom(() => { throw failure; }, 'failed'));
 
         render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <LiveSessionContext.Provider value={createRuntime('acc') as any}>
-                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
         act(() => {
             componentDirectory!.registerComponentRef({ current: {
-                    getComponentName: () => AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                    getComponentName: () => OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
                     startCollection,
                 } as any });
         });
         const handle = componentDirectory!
-            .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+            .findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)!.current!;
 
         const operation = handle.collectLiveBaselineForAi({
             query: { preset: 'full_lap' },
@@ -433,7 +433,7 @@ describe('LiveSessionView', () => {
         const view = renderRegisteredView(createRuntime('acc'));
 
         await expect(view.collectLiveBaselineForAi(args).result).rejects.toMatchObject({
-            name: 'InvalidToolCallError',
+            name: 'InvalidOperationCallError',
         });
     });
 
@@ -537,7 +537,7 @@ describe('LiveSessionView', () => {
             track: 'brands_hatch',
             message: 'Baseline complete. Cached baseline record is ready.',
         };
-        const startCollection = jest.fn(() => createAiToolOperation(
+        const startCollection = jest.fn(() => createOperation(
             Promise.resolve(completed),
             [Promise.resolve({
                 ...completed,
@@ -550,21 +550,21 @@ describe('LiveSessionView', () => {
         ));
 
         render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <LiveSessionContext.Provider value={createRuntime('acc') as any}>
-                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
         act(() => {
             componentDirectory!.registerComponentRef({ current: {
-                    getComponentName: () => AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                    getComponentName: () => OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
                     startCollection,
                 } as any });
         });
         const handle = componentDirectory!
-            .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+            .findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)!.current!;
 
         const operation = handle.collectLiveBaselineForAi({
             query: {
@@ -594,31 +594,31 @@ describe('LiveSessionView', () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
 
         render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <LiveSessionContext.Provider value={createRuntime('acc') as any}>
-                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
         const handle = componentDirectory!
-            .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
-        expect(componentDirectory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
+            .findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+        expect(componentDirectory!.findComponentRef(OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
 
         const operation = handle.restartLiveBaselineForAi();
 
         await expect(operation.result).rejects.toMatchObject({
             name: 'BaselineCollectionNotStartedError',
-            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            componentName: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
             message: 'Baseline collection is not in progress. Start a new collection instead.',
         });
         await expect(operation.result).rejects.toBeInstanceOf(BaselineCollectionNotStartedError);
-        expect(componentDirectory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
+        expect(componentDirectory!.findComponentRef(OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
     });
 
     it('returns only the analysis status to AI', async () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
-        const requestAnalysis = jest.fn(() => createAiToolOperationFrom(() => ({
+        const requestAnalysis = jest.fn(() => createOperationFrom(() => ({
             status: 'ready' as const,
             message: 'Telemetry analysis is ready.',
             analysis: {
@@ -644,21 +644,21 @@ describe('LiveSessionView', () => {
         }), 'ready'));
 
         render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <LiveSessionContext.Provider value={createRuntime('acc') as any}>
-                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
         act(() => {
             componentDirectory!.registerComponentRef({ current: {
-                    getComponentName: () => AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                    getComponentName: () => OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
                     requestAnalysis,
                 } as any });
         });
         const handle = componentDirectory!
-            .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+            .findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)!.current!;
 
         await expect(handle.analyzeLiveRecordedAnalysisForAi({ limit: 1 }).result)
             .resolves.toEqual({ status: 'ready' });
@@ -675,16 +675,16 @@ describe('LiveSessionView', () => {
         runtime.activeAnalysisResultPageId = 'older-page';
 
         render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <LiveSessionContext.Provider value={runtime}>
-                    <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                    <LiveSessionContent name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
 
         const handle = componentDirectory!
-            .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+            .findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)!.current!;
         expect(handle.getLatestAnalysisResultPage()).toMatchObject({ id: 'latest-page' });
     });
 
@@ -737,7 +737,7 @@ describe('LiveSessionView', () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: null, detectionStatus: 'error', error: 'tasklist failed' });
         view.rerender(
             <LiveSessionContext.Provider value={runtime as any}>
-                <LiveSessionContent name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                <LiveSessionContent name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
             </LiveSessionContext.Provider>,
         );
 

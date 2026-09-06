@@ -1,42 +1,42 @@
-import { AiToolError, AiToolErrorOptions } from 'errors/AiToolError';
+import { OperationError, OperationErrorOptions } from 'errors/OperationError';
 
-export { AiToolError } from 'errors/AiToolError';
-export type { AiToolErrorOptions } from 'errors/AiToolError';
+export { OperationError } from 'errors/OperationError';
+export type { OperationErrorOptions } from 'errors/OperationError';
 
-export type AiToolComponentErrorConstructor<TError extends AiToolComponentError = AiToolComponentError> = new (
+export type OperationComponentErrorConstructor<TError extends OperationComponentError = OperationComponentError> = new (
     componentName: string,
     message: string,
-    options?: AiToolErrorOptions,
+    options?: OperationErrorOptions,
 ) => TError;
 
-export abstract class AiToolComponentError extends AiToolError {
-    override name = 'AiToolComponentError';
+export abstract class OperationComponentError extends OperationError {
+    override name = 'OperationComponentError';
     readonly componentName: string;
 
-    constructor(componentName: string, message: string, options: AiToolErrorOptions = {}) {
+    constructor(componentName: string, message: string, options: OperationErrorOptions = {}) {
         super(message, options);
         this.componentName = componentName;
         Object.setPrototypeOf(this, new.target.prototype);
     }
 }
 
-export abstract class AiToolComponentRefError extends AiToolComponentError {
-    override name = 'AiToolComponentRefError';
+export abstract class OperationComponentRefError extends OperationComponentError {
+    override name = 'OperationComponentRefError';
 }
 
-export class ComponentRefUnavailableError extends AiToolComponentRefError {
+export class ComponentRefUnavailableError extends OperationComponentRefError {
     override name = 'ComponentRefUnavailableError';
 }
 
-export class DuplicateComponentNameError extends AiToolComponentRefError {
+export class DuplicateComponentNameError extends OperationComponentRefError {
     override name = 'DuplicateComponentNameError';
 }
 
-export class ComponentMountTimeoutError extends AiToolComponentRefError {
+export class ComponentMountTimeoutError extends OperationComponentRefError {
     override name = 'ComponentMountTimeoutError';
 }
 
-export abstract class GoalComponentError extends AiToolComponentError {
+export abstract class GoalComponentError extends OperationComponentError {
     override name = 'GoalComponentError';
 }
 
@@ -108,7 +108,7 @@ export class GoalTaskRetryUnavailableError extends GoalComponentError {
     override name = 'GoalTaskRetryUnavailableError';
 }
 
-export abstract class ProcedurePlanComponentError extends AiToolComponentError {
+export abstract class ProcedurePlanComponentError extends OperationComponentError {
     override name = 'ProcedurePlanComponentError';
 }
 
@@ -120,7 +120,7 @@ export class ProcedurePlanReplacedError extends ProcedurePlanComponentError {
     override name = 'ProcedurePlanReplacedError';
 }
 
-export abstract class LiveRangeTodoListComponentError extends AiToolComponentError {
+export abstract class LiveRangeTodoListComponentError extends OperationComponentError {
     override name = 'LiveRangeTodoListComponentError';
 }
 
@@ -132,7 +132,7 @@ export class LiveRangeTodoListUnavailableError extends LiveRangeTodoListComponen
     override name = 'LiveRangeTodoListUnavailableError';
 }
 
-export abstract class BaselineCollectionComponentError extends AiToolComponentError {
+export abstract class BaselineCollectionComponentError extends OperationComponentError {
     override name = 'BaselineCollectionComponentError';
 }
 
@@ -164,7 +164,7 @@ export class BaselineCollectionIncompleteError extends BaselineCollectionCompone
     override name = 'BaselineCollectionIncompleteError';
 }
 
-export abstract class VisualizationComponentError extends AiToolComponentError {
+export abstract class VisualizationComponentError extends OperationComponentError {
     override name = 'VisualizationComponentError';
 }
 
@@ -196,7 +196,7 @@ export class ComponentDisableFailedError extends VisualizationComponentError {
     override name = 'ComponentDisableFailedError';
 }
 
-export abstract class UserSummaryComponentError extends AiToolComponentError {
+export abstract class UserSummaryComponentError extends OperationComponentError {
     override name = 'UserSummaryComponentError';
 }
 
@@ -208,7 +208,7 @@ export class QueryRequiredError extends UserSummaryComponentError {
     override name = 'QueryRequiredError';
 }
 
-export abstract class AiChatComponentError extends AiToolComponentError {
+export abstract class AiChatComponentError extends OperationComponentError {
     override name = 'AiChatComponentError';
 }
 
@@ -220,15 +220,15 @@ export class ProcedurePlanAdvanceFailedError extends AiChatComponentError {
     override name = 'ProcedurePlanAdvanceFailedError';
 }
 
-export class RecordedSessionLiveToolsUnavailableError extends AiChatComponentError {
-    override name = 'RecordedSessionLiveToolsUnavailableError';
+export class RecordedSessionLiveOperationsUnavailableError extends AiChatComponentError {
+    override name = 'RecordedSessionLiveOperationsUnavailableError';
 }
 
-export class NonLiveContextLiveToolsUnavailableError extends AiChatComponentError {
-    override name = 'NonLiveContextLiveToolsUnavailableError';
+export class NonLiveContextLiveOperationsUnavailableError extends AiChatComponentError {
+    override name = 'NonLiveContextLiveOperationsUnavailableError';
 }
 
-export abstract class SessionAnalysisComponentError extends AiToolComponentError {
+export abstract class SessionAnalysisComponentError extends OperationComponentError {
     override name = 'SessionAnalysisComponentError';
 }
 

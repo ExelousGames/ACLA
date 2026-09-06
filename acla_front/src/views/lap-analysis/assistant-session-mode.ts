@@ -1,4 +1,4 @@
-import type { AiChatAssistantMode } from 'contexts/AiToolComponentRefContext';
+import type { AiChatAssistantMode } from 'contexts/OperationComponentRefContext';
 
 export type SessionAnalysisAssistantMode = AiChatAssistantMode;
 

@@ -4,8 +4,8 @@ import {
     asRecord,
     buildPracticeTrackSummaryViews,
 } from './user-summary-model';
-import { QueryRequiredError, UserSummaryUnavailableError } from 'contexts/AiToolComponentError';
-import { AI_TOOL_COMPONENT_NAMES } from 'contexts/AiToolComponentRefContext';
+import { QueryRequiredError, UserSummaryUnavailableError } from 'contexts/OperationComponentError';
+import { OPERATION_COMPONENT_NAMES } from 'contexts/OperationComponentRefContext';
 
 export interface UserSummaryAiSource {
     userSummary?: Record<string, any>;
@@ -66,7 +66,7 @@ export const getUserSummaryMapLevel = (
     if (source.loading) return { status: 'loading', maps: [] };
     if (source.error) {
         throw new UserSummaryUnavailableError(
-            AI_TOOL_COMPONENT_NAMES.USER_SUMMARY,
+            OPERATION_COMPONENT_NAMES.USER_SUMMARY,
             source.error,
         );
     }
@@ -155,7 +155,7 @@ export const searchUserSummaryMapLevel = (
     const terms = Array.from(new Set(query.split(' ').filter(Boolean)));
     if (terms.length === 0) {
         throw new QueryRequiredError(
-            AI_TOOL_COMPONENT_NAMES.USER_SUMMARY,
+            OPERATION_COMPONENT_NAMES.USER_SUMMARY,
             'Provide a user-summary search query.',
         );
     }

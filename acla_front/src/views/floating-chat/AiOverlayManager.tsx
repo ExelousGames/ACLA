@@ -1,8 +1,8 @@
 import React from 'react';
 import type {
-    AiToolComponentRef,
-    AiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    OperationComponentRef,
+    OperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import {
     cloneJsonSnapshot,
     isAiOverlayComponentHandle,
@@ -22,7 +22,7 @@ import {
 } from './overlay-display-client';
 
 type OverlaySource = {
-    ref: AiToolComponentRef;
+    ref: OperationComponentRef;
     handle: AiOverlayComponentHandle<any>;
     unsubscribe: () => void;
 };
@@ -58,7 +58,7 @@ const deadlineFrom = (duration: number | null | undefined, now: number): number 
 );
 
 export class AiOverlayManagerController {
-    private readonly sources = new Map<AiToolComponentRef, OverlaySource>();
+    private readonly sources = new Map<OperationComponentRef, OverlaySource>();
     private readonly cards = new Map<string, ManagedOverlayCard>();
     private presentation: AiOverlayPresentationSession | null = null;
     private presentationRevision = 0;
@@ -69,7 +69,7 @@ export class AiOverlayManagerController {
 
     constructor(private readonly transport: AiOverlayManagerTransport = defaultTransport) {}
 
-    syncReferences(refs: readonly AiToolComponentRef[]): void {
+    syncReferences(refs: readonly OperationComponentRef[]): void {
         if (this.disposed) return;
         const retained = new Set(refs);
         Array.from(this.sources.entries()).forEach(([ref, source]) => {
@@ -213,7 +213,7 @@ export class AiOverlayManagerController {
         if (notify) this.changed();
     }
 
-    private detachSource(ref: AiToolComponentRef): void {
+    private detachSource(ref: OperationComponentRef): void {
         const source = this.sources.get(ref);
         if (!source) return;
         source.unsubscribe();
@@ -297,7 +297,7 @@ export class AiOverlayManagerController {
 }
 
 const AiOverlayManager: React.FC<{
-    directory: AiToolComponentRefDirectory;
+    directory: OperationComponentRefDirectory;
     directoryRevision: number;
 }> = ({ directory, directoryRevision }) => {
     const controllerRef = React.useRef<AiOverlayManagerController | null>(null);

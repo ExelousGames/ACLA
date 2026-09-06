@@ -1,16 +1,70 @@
 import {
-    AiToolOperationAbortedError,
-    createControlledAiToolOperation,
-    createAiToolDeferred,
-    createAiToolOperation,
-    createAiToolOperationFrom,
-    mapAiToolOperation,
-} from '../ai-tool-operation';
+    OperationAbortedError,
+    createControlledOperation,
+    createOperationDeferred,
+    createOperation,
+    createOperationFrom,
+    mapOperation,
+} from '../operation';
+import { asTool, type Tool } from '../tool';
+import { asWorkflow, type Workflow } from '../workflow';
+import type { Operation } from '../operation';
 
-describe('createAiToolOperation', () => {
+const assertOperationTypes = (tool: Tool<number>, workflow: Workflow<number>) => {
+    const operations: Operation<number>[] = [tool, workflow];
+    // @ts-expect-error Workflows are a distinct operation category from tools.
+    const invalidTool: Tool<number> = workflow;
+    // @ts-expect-error Tools cannot be used where a workflow is required.
+    const invalidWorkflow: Workflow<number> = tool;
+    return { operations, invalidTool, invalidWorkflow };
+};
+void assertOperationTypes;
+
+describe.each([
+    { kind: 'tool', classify: asTool },
+    { kind: 'workflow', classify: asWorkflow },
+])('$kind operation lifecycle', ({ kind, classify }) => {
+    it('preserves identity, progress, and the terminal result when classified', async () => {
+        const status = createOperationDeferred<{ progress: number }>();
+        const controller = createControlledOperation<number, { progress: number }, 'complete'>([status.promise]);
+        const operation = classify(controller.operation);
+        const terminated = jest.fn();
+        operation.notifyTerminated(terminated);
+
+        expect(operation).toBe(controller.operation);
+        expect(operation.kind).toBe(kind);
+        controller.resolve('complete', 42);
+        await Promise.resolve();
+        expect(terminated).not.toHaveBeenCalled();
+        status.resolve({ progress: 100 });
+
+        await expect(operation.statuses[0]).resolves.toEqual({ progress: 100 });
+        await expect(operation.result).resolves.toBe(42);
+        expect(terminated).toHaveBeenCalledWith({ status: 'complete', result: 42 });
+    });
+
+    it('retains abort cleanup and termination delivery', async () => {
+        const cleanup = jest.fn();
+        const controller = createControlledOperation<number>([], cleanup);
+        const operation = classify(controller.operation);
+        const terminated = jest.fn();
+        operation.notifyTerminated(terminated);
+
+        operation.abort();
+        operation.abort();
+
+        expect(cleanup).toHaveBeenCalledTimes(1);
+        expect(controller.signal.aborted).toBe(true);
+        await expect(operation.result).rejects.toBeInstanceOf(OperationAbortedError);
+        expect(terminated).toHaveBeenCalledTimes(1);
+        expect(terminated).toHaveBeenCalledWith({ status: 'aborted', result: expect.any(OperationAbortedError) });
+    });
+});
+
+describe('createOperation', () => {
     it('keeps result behind every status promise', async () => {
-        const status = createAiToolDeferred<{ progress: number }>();
-        const operation = createAiToolOperation(
+        const status = createOperationDeferred<{ progress: number }>();
+        const operation = createOperation(
             Promise.resolve({ status: 'complete' }),
             [status.promise],
             'complete',
@@ -31,7 +85,7 @@ describe('createAiToolOperation', () => {
     });
 
     it('ignores rejected statuses when determining final success', async () => {
-        const operation = createAiToolOperation(
+        const operation = createOperation(
             Promise.resolve({ status: 'complete' }),
             [Promise.reject(new Error('status failed'))],
             'complete',
@@ -42,7 +96,7 @@ describe('createAiToolOperation', () => {
 
     it('emits once, supports unsubscribe, and replays the original termination', async () => {
         const result = { status: 'payload-status', value: 7 };
-        const controller = createControlledAiToolOperation<
+        const controller = createControlledOperation<
             typeof result,
             never,
             'notified-status'
@@ -70,7 +124,7 @@ describe('createAiToolOperation', () => {
 
     it('notifies failed with the corresponding Error while preserving rejection', async () => {
         const error = new Error('broken');
-        const operation = createAiToolOperationFrom(() => { throw error; }, 'complete');
+        const operation = createOperationFrom(() => { throw error; }, 'complete');
         const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
 
         await expect(operation.result).rejects.toBe(error);
@@ -78,8 +132,8 @@ describe('createAiToolOperation', () => {
     });
 
     it('maps results while preserving the source termination status', async () => {
-        const source = createAiToolOperation({ status: 'conflicting', value: 3 }, 'source-status');
-        const mapped = mapAiToolOperation(source, ({ value }) => ({ doubled: value * 2 }));
+        const source = createOperation({ status: 'conflicting', value: 3 }, 'source-status');
+        const mapped = mapOperation(source, ({ value }) => ({ doubled: value * 2 }));
         const termination = new Promise((resolve) => mapped.notifyTerminated(resolve));
 
         await expect(mapped.result).resolves.toEqual({ doubled: 6 });
@@ -90,10 +144,10 @@ describe('createAiToolOperation', () => {
     });
 
     it('runs safe cleanup before aborting result, statuses, and termination', async () => {
-        const result = createAiToolDeferred<{ status: string }>();
-        const status = createAiToolDeferred<{ progress: number }>();
+        const result = createOperationDeferred<{ status: string }>();
+        const status = createOperationDeferred<{ progress: number }>();
         const lifecycle: string[] = [];
-        const operation = createAiToolOperation(
+        const operation = createOperation(
             result.promise,
             [status.promise],
             'complete',
@@ -110,7 +164,7 @@ describe('createAiToolOperation', () => {
         operation.abort();
 
         expect(lifecycle).toEqual(['cleanup', 'terminated']);
-        expect(terminationResult).toBeInstanceOf(AiToolOperationAbortedError);
+        expect(terminationResult).toBeInstanceOf(OperationAbortedError);
         await expect(operation.result).rejects.toBe(terminationResult);
         await expect(operation.statuses[0]).rejects.toBe(terminationResult);
 
@@ -126,7 +180,7 @@ describe('createAiToolOperation', () => {
 
     it('aborts the signal supplied to factory work', async () => {
         let signal: AbortSignal | null = null;
-        const operation = createAiToolOperationFrom((operationSignal) => {
+        const operation = createOperationFrom((operationSignal) => {
             signal = operationSignal;
             return new Promise<Record<string, never>>(() => undefined);
         }, 'complete');
@@ -135,27 +189,27 @@ describe('createAiToolOperation', () => {
         operation.abort();
 
         expect((signal as unknown as AbortSignal).aborted).toBe(true);
-        await expect(operation.result).rejects.toBeInstanceOf(AiToolOperationAbortedError);
+        await expect(operation.result).rejects.toBeInstanceOf(OperationAbortedError);
     });
 
     it('propagates mapped operation aborts to their source', async () => {
-        const source = createAiToolOperation(
+        const source = createOperation(
             new Promise<{ value: number }>(() => undefined),
             'complete',
             [],
             jest.fn(),
         );
         const sourceAbort = jest.spyOn(source, 'abort');
-        const mapped = mapAiToolOperation(source, ({ value }) => value * 2);
+        const mapped = mapOperation(source, ({ value }) => value * 2);
 
         mapped.abort();
 
         expect(sourceAbort).toHaveBeenCalledTimes(1);
-        await expect(mapped.result).rejects.toBeInstanceOf(AiToolOperationAbortedError);
+        await expect(mapped.result).rejects.toBeInstanceOf(OperationAbortedError);
     });
 
     it('does not replace a completed operation with an abort', async () => {
-        const operation = createAiToolOperation({ value: 1 }, 'complete');
+        const operation = createOperation({ value: 1 }, 'complete');
         const terminated = jest.fn();
         operation.notifyTerminated(terminated);
         await expect(operation.result).resolves.toEqual({ value: 1 });

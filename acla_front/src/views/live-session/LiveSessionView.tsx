@@ -1,23 +1,23 @@
 import React, { useContext, useLayoutEffect, useRef } from 'react';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    AiToolComponentRefDirectory,
+    OPERATION_COMPONENT_NAMES,
+    OperationComponentRefDirectory,
     ComponentRefUnavailableError,
-    ObservableAiToolComponentHandle,
+    ObservableOperationComponentHandle,
     awaitNamedComponentHandle,
     resolveNamedComponentHandle,
-    useOptionalAiToolComponentRefDirectory,
-    useRegisterAiToolComponentRef,
-} from 'contexts/AiToolComponentRefContext';
+    useOptionalOperationComponentRefDirectory,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
 import {
-    AiToolError,
+    OperationError,
     NoCornerDataError,
     NoTelemetryForScopeError,
     TelemetryAnalysisFailedError,
-    InvalidToolCallError,
-} from 'views/lap-analysis/ai-chat/ai-tool-base';
-import { BaselineCollectionNotStartedError } from 'contexts/AiToolComponentError';
+    InvalidOperationCallError,
+} from 'views/lap-analysis/ai-chat/operation-base';
+import { BaselineCollectionNotStartedError } from 'contexts/OperationComponentError';
 import apiService from 'services/api.service';
 import type {
     BaselineCollectionHandle,
@@ -63,11 +63,11 @@ import type { LiveEventLogHandle } from './LiveEventLog';
 import type { EventSearchParams } from './event-log/EventLog';
 import { liveTelemetryStore } from './live-telemetry-store';
 import {
-    createControlledAiToolOperation,
-    createAiToolOperationFrom,
-    mapAiToolOperation,
-    type AiToolOperation,
-} from 'components/ai-engineering-tools';
+    createControlledOperation,
+    createOperationFrom,
+    mapOperation,
+    type Operation,
+} from 'components/ai-operations';
 import './live-session.css';
 
 export const LIVE_SESSION_RECORDER_HOST_ID = 'live-session-recorder-host';
@@ -87,12 +87,12 @@ export type LiveBaselineAnalysisAiResult = {
     status: 'ready' | 'empty';
 };
 
-const bridgeDeferredAiToolOperation = <TResult,>(
-    load: () => Promise<AiToolOperation<TResult, any, string>>,
-): AiToolOperation<TResult> => {
-    let loadedOperation: AiToolOperation<TResult, any, string> | null = null;
+const bridgeDeferredOperation = <TResult,>(
+    load: () => Promise<Operation<TResult, any, string>>,
+): Operation<TResult> => {
+    let loadedOperation: Operation<TResult, any, string> | null = null;
     let aborted = false;
-    const controller = createControlledAiToolOperation<
+    const controller = createControlledOperation<
         TResult,
         never,
         string
@@ -129,7 +129,7 @@ export type LiveTelemetryAnalysisAiResult = {
     chart_id: string | null;
     component_name: string | null;
 };
-export interface LiveSessionHandle extends ObservableAiToolComponentHandle<LiveSessionRuntime> {
+export interface LiveSessionHandle extends ObservableOperationComponentHandle<LiveSessionRuntime> {
     getRecordingState(): RecordingState;
     getCurrentTelemetry(): Record<string, any>;
     queryTelemetryMetric<TReduce extends ReduceOp>(args: TelemetryQuery<TReduce>): Promise<QueryResult<TReduce>>;
@@ -140,13 +140,13 @@ export interface LiveSessionHandle extends ObservableAiToolComponentHandle<LiveS
     getLatestAnalysisResultPage(): LiveSessionAnalysisResultPage | null;
     queryTelemetryMetricForAi<TReduce extends TelemetryMetricReduce>(
         args: QueryTelemetryMetricArguments<TReduce>,
-    ): AiToolOperation<QueryTelemetryMetricResult<TReduce>>;
-    getEventLogForAi(args: Record<string, any>): AiToolOperation<LiveEventLogAiResult>;
-    getNextCornerForAi(): AiToolOperation<LiveNextCornerAiResult>;
-    collectLiveBaselineForAi(args: Record<string, any>): AiToolOperation<BaselineCollectionPayload>;
-    restartLiveBaselineForAi(): AiToolOperation<LiveBaselineRestartAiResult>;
-    analyzeLiveRecordedAnalysisForAi(args: Record<string, any>): AiToolOperation<LiveBaselineAnalysisAiResult>;
-    analyzeTelemetryForAi(args: Record<string, any>): AiToolOperation<LiveTelemetryAnalysisAiResult>;
+    ): Operation<QueryTelemetryMetricResult<TReduce>>;
+    getEventLogForAi(args: Record<string, any>): Operation<LiveEventLogAiResult>;
+    getNextCornerForAi(): Operation<LiveNextCornerAiResult>;
+    collectLiveBaselineForAi(args: Record<string, any>): Operation<BaselineCollectionPayload>;
+    restartLiveBaselineForAi(): Operation<LiveBaselineRestartAiResult>;
+    analyzeLiveRecordedAnalysisForAi(args: Record<string, any>): Operation<LiveBaselineAnalysisAiResult>;
+    analyzeTelemetryForAi(args: Record<string, any>): Operation<LiveTelemetryAnalysisAiResult>;
 }
 
 const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => {
@@ -199,7 +199,7 @@ const validateBaselineCollectionArguments = (
         || !isBaselineCollectionQuery(value?.query)
         || !validTimeout
     ) {
-        throw new InvalidToolCallError(
+        throw new InvalidOperationCallError(
             'collect_live_baseline requires query with either preset="full_lap" or both start_query and end_query; preset cannot be combined with start_query or end_query.',
         );
     }
@@ -252,7 +252,7 @@ const validateTelemetryMetricArguments = <TReduce extends TelemetryMetricReduce>
         || !validFields
         || !isQueryScope(value.scope)
         || !['avg', 'min', 'max', 'stats'].includes(value.reduce as string)) {
-        throw new InvalidToolCallError(
+        throw new InvalidOperationCallError(
             'query_telemetry_metric requires nonempty string fields, a valid scope, and reduce set to avg, min, max, or stats.',
         );
     }
@@ -284,29 +284,29 @@ const compactClassification = (result: SegmentClassificationResult, limit: numbe
 });
 
 const getBaselineHandle = async (
-    directory: AiToolComponentRefDirectory | null,
+    directory: OperationComponentRefDirectory | null,
 ): Promise<BaselineCollectionHandle> => {
     if (!directory) {
         throw new ComponentRefUnavailableError(
-            AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+            OPERATION_COMPONENT_NAMES.LIVE_SESSION,
             'The active dashboard component-ref directory is unavailable.',
         );
     }
     const existing = directory.findComponentRef<BaselineCollectionHandle>(
-        AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+        OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
     )?.current;
     if (existing) return existing;
     const manager = resolveNamedComponentHandle<VisualizationManagerHandle>(
         directory,
-        AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+        OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
     );
     manager.requestVisualization({
-        name: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+        name: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
         type: 'baseline-collection',
     });
     return awaitNamedComponentHandle<BaselineCollectionHandle>(
         directory,
-        AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+        OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
     );
 };
 
@@ -328,7 +328,7 @@ const LimitedLiveWorkspace = ({ game }: { game: Exclude<DesktopGame, 'acc'> }) =
 
 export const LiveSessionContent = ({ name }: { name: string }) => {
     const liveSession = useContext(LiveSessionContext);
-    const componentRefs = useOptionalAiToolComponentRefDirectory();
+    const componentRefs = useOptionalOperationComponentRefDirectory();
     const componentRefsRef = useRef(componentRefs);
     componentRefsRef.current = componentRefs;
     const liveSessionRef = useRef(liveSession);
@@ -396,18 +396,18 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                 const pages = liveSessionRef.current.analysisResultPages;
                 return pages[pages.length - 1] ?? null;
             },
-            queryTelemetryMetricForAi: (args) => createAiToolOperationFrom(async () => {
+            queryTelemetryMetricForAi: (args) => createOperationFrom(async () => {
                 const query = validateTelemetryMetricArguments(args);
                 return {
                     status: 'ready' as const,
                     data: await queryLiveTelemetry(query),
                 };
             }, 'ready'),
-            getEventLogForAi: (args) => createAiToolOperationFrom(() => ({
+            getEventLogForAi: (args) => createOperationFrom(() => ({
                 status: 'complete',
                 events: findLiveEvents(args),
             }), 'complete'),
-            getNextCornerForAi: () => createAiToolOperationFrom(() => {
+            getNextCornerForAi: () => createOperationFrom(() => {
                 const corner = liveSessionRef.current.getNextCorner();
                 if (!corner) throw new NoCornerDataError('No upcoming corner data is available.');
                 return {
@@ -424,45 +424,45 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                 try {
                     options = validateBaselineCollectionArguments(args);
                 } catch (error) {
-                    return createAiToolOperationFrom<BaselineCollectionPayload>(() => { throw error; }, 'failed');
+                    return createOperationFrom<BaselineCollectionPayload>(() => { throw error; }, 'failed');
                 }
                 const mountedHandle = componentRefs?.findComponentRef<BaselineCollectionHandle>(
-                    AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                    OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
                 )?.current;
                 if (mountedHandle) {
                     const operation = mountedHandle.startCollection(options);
-                    return bridgeDeferredAiToolOperation(async () => operation);
+                    return bridgeDeferredOperation(async () => operation);
                 }
 
-                return bridgeDeferredAiToolOperation(async () => (
+                return bridgeDeferredOperation(async () => (
                     (await getBaselineHandle(componentRefs)).startCollection(options)
                 ));
             },
             restartLiveBaselineForAi: () => {
                 const handle = componentRefs?.findComponentRef<BaselineCollectionHandle>(
-                    AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                    OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
                 )?.current;
                 if (!handle) {
-                    return createAiToolOperationFrom<LiveBaselineRestartAiResult>(() => {
+                    return createOperationFrom<LiveBaselineRestartAiResult>(() => {
                         throw new BaselineCollectionNotStartedError(
-                            AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                            OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
                             'Baseline collection is not in progress. Start a new collection instead.',
                         );
                     }, 'failed');
                 }
-                return mapAiToolOperation(handle.restartCollection(), () => ({
+                return mapOperation(handle.restartCollection(), () => ({
                     status: 'complete' as const,
                     progress_percent: 0 as const,
                     message: 'Baseline collection restart completed.',
                 }));
             },
-            analyzeLiveRecordedAnalysisForAi: (args) => mapAiToolOperation(
-                bridgeDeferredAiToolOperation(async () => (
+            analyzeLiveRecordedAnalysisForAi: (args) => mapOperation(
+                bridgeDeferredOperation(async () => (
                     (await getBaselineHandle(componentRefs)).requestAnalysis(args)
                 )),
                 (analysis) => ({ status: analysis.status }),
             ),
-            analyzeTelemetryForAi: (args) => createAiToolOperationFrom(async () => {
+            analyzeTelemetryForAi: (args) => createOperationFrom(async () => {
                 const rows = await getTelemetryForLiveScope(args.scope);
                 if (rows.length === 0) {
                     throw new NoTelemetryForScopeError('No telemetry rows matched the requested scope.');
@@ -482,7 +482,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                     const chart = componentRefs
                         ? await openAnalysisResultsVisualization({
                             directory: componentRefs,
-                            managerName: AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+                            managerName: OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
                             result,
                             records: rows,
                         })
@@ -497,7 +497,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                         ...chart,
                     };
                 } catch (error) {
-                    if (error instanceof AiToolError) throw error;
+                    if (error instanceof OperationError) throw error;
                     throw new TelemetryAnalysisFailedError(
                         error instanceof Error && error.message
                             ? error.message
@@ -508,7 +508,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
             }, 'complete'),
         };
     }
-    useRegisterAiToolComponentRef(componentRef);
+    useRegisterOperationComponentRef(componentRef);
     useLayoutEffect(() => {
         assistantSnapshotListenersRef.current.forEach((listener) => listener());
     }, [liveSession]);
@@ -542,7 +542,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                     )}
                     <div className="live-session-view__workspace">
                         {sessionGame === 'acc'
-                            ? <LiveTelemetryWorkspace name={AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
+                            ? <LiveTelemetryWorkspace name={OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
                             : <LimitedLiveWorkspace game={sessionGame} />}
                     </div>
                     <div

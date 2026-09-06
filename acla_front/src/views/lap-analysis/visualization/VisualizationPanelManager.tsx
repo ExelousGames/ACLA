@@ -1,14 +1,14 @@
 import React from 'react';
 import { Box, Button, DropdownMenu, Flex, Text } from '@radix-ui/themes';
 import { Cross2Icon, PlusIcon } from '@radix-ui/react-icons';
-import type { NamedAiToolComponentHandle } from 'contexts/AiToolComponentRefContext';
+import type { NamedOperationComponentHandle } from 'contexts/OperationComponentRefContext';
 import {
-    AiToolComponentErrorConstructor,
+    OperationComponentErrorConstructor,
     VisualizationCloseFailedError,
     VisualizationComponentError,
     VisualizationRequestFailedError,
     VisualizationUpdateFailedError,
-} from 'contexts/AiToolComponentError';
+} from 'contexts/OperationComponentError';
 import './DynamicVisualizationManager.css';
 
 export interface ManagedVisualizationInstance {
@@ -29,7 +29,7 @@ export interface VisualizationManagerResult {
     data?: any;
 }
 
-export interface VisualizationManagerHandle extends NamedAiToolComponentHandle {
+export interface VisualizationManagerHandle extends NamedOperationComponentHandle {
     getVisualizationCapabilities(): Record<string, any>;
     getCurrentVisualizations(): ManagedVisualizationInstance[];
     requestVisualization(options: {
@@ -84,7 +84,7 @@ abstract class VisualizationPanelManager<
     private resizeState: ResizeState | null = null;
 
     private runManagerOperation<T>(
-        ErrorType: AiToolComponentErrorConstructor<VisualizationComponentError>,
+        ErrorType: OperationComponentErrorConstructor<VisualizationComponentError>,
         fallbackMessage: string,
         operation: () => T,
     ): T {

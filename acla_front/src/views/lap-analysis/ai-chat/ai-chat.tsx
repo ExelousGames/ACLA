@@ -26,7 +26,7 @@ import type {
 } from './ai-command-registry';
 import {
     useVoiceConversation,
-    type FrontendToolHandler,
+    type FrontendOperationHandler,
     type VoiceEvent,
 } from './use-voice-conversation';
 import { AiMapDisplayPayload } from './AiMapToolDisplay';
@@ -42,17 +42,18 @@ import {
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
-    type AiToolDispatcher,
+    type OperationDispatcher,
     type RepeatablePlanHandle,
-    type AiToolOperation,
+    type Operation,
     type LiveRangeTodoListHandle,
     type ProcedurePlanHandle,
     type ProcedurePlanSnapshot,
     type ProcedurePlanState,
     type GoalSnapshot,
-    createAiToolOperationFrom,
+    createOperationFrom,
+    asWorkflow,
     serializeProcedurePlan,
-} from 'components/ai-engineering-tools';
+} from 'components/ai-operations';
 import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
 import {
     resolveAssistantRecordedSessionId,
@@ -60,23 +61,23 @@ import {
 } from 'views/lap-analysis/assistant-session-mode';
 import type { AssistantActiveScreen } from 'views/lap-analysis/assistant-session-mode';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    NamedAiToolComponentHandle,
-    useAiToolComponentRefs,
-    useOptionalAiToolComponentSnapshot,
-    useRegisterAiToolComponentRef,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    NamedOperationComponentHandle,
+    useOperationComponentRefs,
+    useOptionalOperationComponentSnapshot,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
 import {
     NoProcedurePlanError,
-    NonLiveContextLiveToolsUnavailableError,
+    NonLiveContextLiveOperationsUnavailableError,
     ProcedurePlanAdvanceFailedError,
-} from 'contexts/AiToolComponentError';
+} from 'contexts/OperationComponentError';
 import {
     CircuitMapLookupFailedError,
     InvalidProcedurePlanRequestsError,
-    ToolExecutionError,
+    OperationExecutionError,
     UnsupportedAgentModeError,
-} from './ai-tool-base';
+} from './operation-base';
 import { getAccTelemetryTrackKey } from 'views/lap-analysis/visualization/charts/circuitTrackLayout';
 import {
     overlaySessionClient,
@@ -91,9 +92,9 @@ import { createAiMapOverlayComponent } from './AiMapToolDisplay.overlay-source';
 import { createToolStatusOverlayComponent } from './ToolMessageDisplay.overlay-source';
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 
-const asFrontendToolHandlers = (
+const asFrontendOperationHandlers = (
     registry: AiCommandRegistry,
-): Record<string, FrontendToolHandler> => registry as unknown as Record<string, FrontendToolHandler>;
+): Record<string, FrontendOperationHandler> => registry as unknown as Record<string, FrontendOperationHandler>;
 
 type AiChatSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
@@ -183,16 +184,16 @@ interface AiChatConversationProps extends AiChatProps {
     overlayClosedGeneration: number;
 }
 
-export interface AiChatHandle extends NamedAiToolComponentHandle {
+export interface AiChatHandle extends NamedOperationComponentHandle {
     getSessionMode(): AiChatSessionMode;
     getRecordingState(): RecordingState | null;
-    startAgentSession(agentMode: AgentSessionMode, args?: Record<string, any>): AiToolOperation<AgentSessionStartResult>;
-    stopAgentSession(agentSessionId?: string | null): AiToolOperation<AgentSessionStopResult>;
+    startAgentSession(agentMode: AgentSessionMode, args?: Record<string, any>): Operation<AgentSessionStartResult>;
+    stopAgentSession(agentSessionId?: string | null): Operation<AgentSessionStopResult>;
     startTrackGuide(): void;
     setTrackGuideEnabled(enabled: boolean): void;
     setLivePerformanceAnalystEnabled(enabled: boolean): void;
-    createRepeatablePlan(args: Record<string, unknown>, dispatchTool: AiToolDispatcher): ReturnType<RepeatablePlanHandle['createRepeatablePlan']>;
-    createProcedurePlan(args: Record<string, unknown>, dispatchTool: AiToolDispatcher): ReturnType<ProcedurePlanHandle['createProcedurePlan']>;
+    createRepeatablePlan(args: Record<string, unknown>, dispatchOperation: OperationDispatcher): ReturnType<RepeatablePlanHandle['createRepeatablePlan']>;
+    createProcedurePlan(args: Record<string, unknown>, dispatchOperation: OperationDispatcher): ReturnType<ProcedurePlanHandle['createProcedurePlan']>;
     initializeLiveRangeTodoList(): LiveRangeTodoListHandle;
     setAgentTagActive(tag: string, active: boolean): void;
     getOpportunityTelemetryRows(): Record<string, any>[];
@@ -203,7 +204,7 @@ export interface AiChatHandle extends NamedAiToolComponentHandle {
     getCircuitMapById(id: string): ReturnType<ReturnType<typeof useCircuitMaps>['getCircuitMapById']>;
     getCircuitMapByTrack: ReturnType<typeof useCircuitMaps>['getCircuitMapByTrack'];
     displayMap(display: AiMapDisplayPayload): void;
-    showMap(args: Record<string, unknown>): AiToolOperation<ShowMapAiResult>;
+    showMap(args: Record<string, unknown>): Operation<ShowMapAiResult>;
 }
 
 export type ShowMapAiResult = { status: string; [key: string]: unknown };
@@ -317,7 +318,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         sessionMode,
         title,
     } = resolveRegisteredAssistantIdentity(activeScreen);
-    const { directory: componentRefs } = useAiToolComponentRefs();
+    const { directory: componentRefs } = useOperationComponentRefs();
     const [mainMessages, setMainMessages] = useState<Message[]>([]);
     const [agentMessages, setAgentMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
@@ -341,13 +342,13 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const messagesScrollRef = useRef<HTMLDivElement>(null);
     const shouldAutoScrollMessagesRef = useRef(true);
-    const recordedAnalysisContext = useOptionalAiToolComponentSnapshot<AnalysisContextType>(
-        activeScreen.componentName === AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS
-            ? AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS
+    const recordedAnalysisContext = useOptionalOperationComponentSnapshot<AnalysisContextType>(
+        activeScreen.componentName === OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS
+            ? OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS
             : null,
     );
-    const liveSession = useOptionalAiToolComponentSnapshot<LiveSessionRuntime>(
-        sessionMode === 'live' ? AI_TOOL_COMPONENT_NAMES.LIVE_SESSION : null,
+    const liveSession = useOptionalOperationComponentSnapshot<LiveSessionRuntime>(
+        sessionMode === 'live' ? OPERATION_COMPONENT_NAMES.LIVE_SESSION : null,
     );
     const liveSessionEnded = sessionMode === 'live'
         && liveSession?.recordingState === RecordingState.UPLOAD_READY;
@@ -406,7 +407,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const voiceSessionSeenActiveRef = useRef(false);
     const procedurePlanRef = useRef<ProcedurePlanState | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
-    const activeToolHandlersRef = useRef<Record<string, FrontendToolHandler>>({});
+    const activeOperationHandlersRef = useRef<Record<string, FrontendOperationHandler>>({});
     const conversationDisposedRef = useRef(false);
     const pendingTimersRef = useRef<Set<number>>(new Set());
     const liveRangeTodoListRunnerRef = useRef<LiveRangeTodoListRunner | null>(null);
@@ -455,7 +456,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             trackGuideRunTokenRef.current += 1;
             overlayInvalidationTokenRef.current += 1;
             activeAgentSessionRef.current = null;
-            activeToolHandlersRef.current = {};
+            activeOperationHandlersRef.current = {};
             const activeWorkflow = activeWorkflowRef.current;
             activeWorkflowRef.current = null;
             if (activeWorkflow?.kind === 'repeatable_plan' || activeWorkflow?.kind === 'procedure_plan') {
@@ -495,15 +496,15 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         });
     }, [componentRefs]);
 
-    const dispatchActiveVoiceTool = useCallback<AiToolDispatcher>((
+    const dispatchActiveVoiceOperation = useCallback<OperationDispatcher>((
         toolName,
         args = {},
         signal,
     ) => {
-        const handler = activeToolHandlersRef.current[toolName];
+        const handler = activeOperationHandlersRef.current[toolName];
         if (!handler) {
-            return createAiToolOperationFrom(() => {
-                throw new ToolExecutionError(
+            return createOperationFrom(() => {
+                throw new OperationExecutionError(
                     `The active AI session could not execute '${toolName}'.`,
                 );
             }, 'failed');
@@ -511,7 +512,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         return (handler as (
             input: Record<string, unknown>,
             nestedSignal?: AbortSignal,
-        ) => ReturnType<AiToolDispatcher>)(args, signal);
+        ) => ReturnType<OperationDispatcher>)(args, signal);
     }, []);
 
 
@@ -850,7 +851,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }, []);
 
     const observeBackgroundWorkflow = useCallback((
-        operation: AiToolOperation<unknown, object>,
+        operation: Operation<unknown, object>,
     ) => {
         void operation.result.catch((error) => {
             console.error('Background workflow failed.', error);
@@ -867,8 +868,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             return;
         }
         const runner = new ProcedurePlanRunner(
-            AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
-            dispatchActiveVoiceTool,
+            OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
+            dispatchActiveVoiceOperation,
             (next) => {
                 procedurePlanRef.current = next;
                 setProcedurePlanSnapshot(next ? serializeProcedurePlan(next) : null);
@@ -876,7 +877,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         );
         mountWorkflow({ kind: 'procedure_plan', runner });
         observeBackgroundWorkflow(runner.createProcedurePlan(plan));
-    }, [dispatchActiveVoiceTool, mountWorkflow, observeBackgroundWorkflow]);
+    }, [dispatchActiveVoiceOperation, mountWorkflow, observeBackgroundWorkflow]);
 
     const advanceProcedurePlanStep = useCallback(async (reason?: string) => {
         const active = activeWorkflowRef.current;
@@ -1111,16 +1112,16 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         session_mode: sessionMode,
     }), [sessionMode]);
 
-    const inactiveAgentToolHandlers = useMemo(() => ({}), []);
+    const inactiveAgentOperationHandlers = useMemo(() => ({}), []);
     const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
     const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
     const createRepeatablePlan = useCallback((
         args: Record<string, unknown>,
-        dispatchTool: AiToolDispatcher,
+        dispatchOperation: OperationDispatcher,
     ): ReturnType<RepeatablePlanHandle['createRepeatablePlan']> => {
         const runner = new RepeatablePlanRunner(
-            AI_TOOL_COMPONENT_NAMES.REPEATABLE_PLAN,
-            dispatchTool,
+            OPERATION_COMPONENT_NAMES.REPEATABLE_PLAN,
+            dispatchOperation,
             setRepeatablePlanSnapshot,
         );
         try {
@@ -1128,13 +1129,13 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             return runner.createRepeatablePlan(args as any);
         } catch (error) {
             runner.dispose();
-            return createAiToolOperationFrom(() => { throw error; }, 'failed');
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
         }
     }, [mountWorkflow]);
 
     const createProcedurePlan = useCallback((
         args: Record<string, unknown>,
-        dispatchTool: AiToolDispatcher,
+        dispatchOperation: OperationDispatcher,
     ): ReturnType<ProcedurePlanHandle['createProcedurePlan']> => {
         try {
             const plan = buildProcedurePlan({
@@ -1149,8 +1150,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 );
             }
             const runner = new ProcedurePlanRunner(
-                AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
-                dispatchTool,
+                OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
+                dispatchOperation,
                 (next) => {
                     procedurePlanRef.current = next;
                     setProcedurePlanSnapshot(next ? serializeProcedurePlan(next) : null);
@@ -1164,7 +1165,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 throw error;
             }
         } catch (error) {
-            return createAiToolOperationFrom(() => { throw error; }, 'failed');
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
         }
     }, [mountWorkflow]);
 
@@ -1172,7 +1173,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         let runner = liveRangeTodoListRunnerRef.current;
         if (!runner) {
             runner = new LiveRangeTodoListRunner(
-                AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+                OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
                 (snapshot) => {
                     if (snapshot !== null || liveRangeTodoListRunnerRef.current !== runner) return;
                     liveRangeTodoListRunnerRef.current = null;
@@ -1247,7 +1248,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             );
         }
         if (sessionMode !== 'live' || !isLiveSessionAiAvailable(analysisContext?.recordingState)) {
-            throw new NonLiveContextLiveToolsUnavailableError(
+            throw new NonLiveContextLiveOperationsUnavailableError(
                 name,
                 'Agent sessions are only available in live session mode.',
             );
@@ -1349,11 +1350,11 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         getComponentName: () => name,
         getSessionMode: () => sessionMode,
         getRecordingState: () => analysisContext?.recordingState ?? null,
-        startAgentSession: (agentMode, args) => createAiToolOperationFrom(
+        startAgentSession: (agentMode, args) => createOperationFrom(
             () => startAgentSession(agentMode, args),
             'started',
         ),
-        stopAgentSession: (agentSessionId) => createAiToolOperationFrom(
+        stopAgentSession: (agentSessionId) => createOperationFrom(
             () => stopAgentSession(agentSessionId),
             'stopped',
         ),
@@ -1372,7 +1373,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         getCircuitMapById,
         getCircuitMapByTrack,
         displayMap: displayMapInChat,
-        showMap: (args) => createAiToolOperationFrom(
+        showMap: (args) => createOperationFrom(
             async () => await showMap(args) as ShowMapAiResult,
             'complete',
         ),
@@ -1399,9 +1400,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     ]);
     const aiChatRef = useRef<AiChatHandle | null>(aiChatHandle);
     aiChatRef.current = aiChatHandle;
-    useRegisterAiToolComponentRef(aiChatRef);
+    useRegisterOperationComponentRef(aiChatRef);
 
-    const toolHandlers = useMemo(() => createAiCommandRegistry({
+    const operationHandlers = useMemo(() => createAiCommandRegistry({
         componentRefs,
         sessionId: resolvedSessionId,
         sessionMode,
@@ -1417,7 +1418,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         chatLlmModel: selectedChatLlmModelOption.value,
         sessionContext: aiSessionContext,
         onEvent: handleMainVoiceEvent,
-        toolHandlers: asFrontendToolHandlers(toolHandlers),
+        operationHandlers: asFrontendOperationHandlers(operationHandlers),
     });
     const agentSessionContext = useMemo(() => (
         activeAgentSession
@@ -1428,7 +1429,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             : null
     ), [activeAgentSession, sessionMode]);
 
-    const agentToolHandlers = useMemo(() => createAiCommandRegistry({
+    const agentOperationHandlers = useMemo(() => createAiCommandRegistry({
         componentRefs,
         sessionId: resolvedSessionId,
         sessionMode,
@@ -1442,8 +1443,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         resolvedSessionId,
         sessionMode,
     ]);
-    activeToolHandlersRef.current = asFrontendToolHandlers(
-        activeAgentSession ? agentToolHandlers : toolHandlers,
+    activeOperationHandlersRef.current = asFrontendOperationHandlers(
+        activeAgentSession ? agentOperationHandlers : operationHandlers,
     );
 
     const agentVoiceConversation = useVoiceConversation({
@@ -1454,9 +1455,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         chatLlmModel: selectedChatLlmModelOption.value,
         sessionContext: agentSessionContext || undefined,
         onEvent: handleAgentVoiceEvent,
-        toolHandlers: activeAgentSession
-            ? asFrontendToolHandlers(agentToolHandlers)
-            : inactiveAgentToolHandlers,
+        operationHandlers: activeAgentSession
+            ? asFrontendOperationHandlers(agentOperationHandlers)
+            : inactiveAgentOperationHandlers,
     });
     const sendAgentVoiceToolStatus = agentVoiceConversation.sendToolStatus;
     const stopMainVoiceConversation = voiceConversation.stop;
@@ -1812,8 +1813,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     useEffect(() => {
         if (!TrackGuideEnabled) {
             const managerNames = [
-                AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
-                AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
+                OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+                OPERATION_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
             ];
             managerNames.forEach((managerName) => {
                 const manager = componentRefs.findComponentRef<VisualizationManagerHandle>(managerName)?.current;
@@ -1839,8 +1840,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             analystAgent.enabled = false;
 
             [
-                AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
-                AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
+                OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+                OPERATION_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
             ].forEach((managerName) => {
                 const manager = componentRefs.findComponentRef<VisualizationManagerHandle>(managerName)?.current;
                 manager?.getCurrentVisualizations().forEach((chart) => {

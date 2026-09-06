@@ -22,7 +22,7 @@ import {
     getDashboardTabs,
     getDefaultDashboardTab,
 } from "views/dashboard/dashboard-navigation";
-import { AI_TOOL_COMPONENT_NAMES } from "contexts/AiToolComponentRefContext";
+import { OPERATION_COMPONENT_NAMES } from "contexts/OperationComponentRefContext";
 
 type SideMainMenuProps = {
     activeTab?: string;
@@ -137,19 +137,19 @@ const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
             <Box className="Container">
                 {environment === 'electron' && isOpened('liveSession') ? (
                     <Tabs.Content className="TabsContent" value="liveSession" forceMount>
-                        <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                        <LiveSessionView name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
                     </Tabs.Content>
                 ) : null}
 
                 {isOpened('analysis') ? (
                     <Tabs.Content className="TabsContent" value="analysis" forceMount>
-                        <SessionAnalysis name={AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS} />
+                        <SessionAnalysis name={OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS} />
                     </Tabs.Content>
                 ) : null}
 
                 {isOpened('userSummary') ? (
                     <Tabs.Content className="TabsContent" value="userSummary" forceMount>
-                        <UserSummary name={AI_TOOL_COMPONENT_NAMES.USER_SUMMARY} />
+                        <UserSummary name={OPERATION_COMPONENT_NAMES.USER_SUMMARY} />
                     </Tabs.Content>
                 ) : null}
 

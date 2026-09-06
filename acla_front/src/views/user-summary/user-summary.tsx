@@ -11,9 +11,9 @@ import {
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useUserSummary } from 'contexts/UserSummaryContext';
 import {
-    NamedAiToolComponentHandle,
-    useRegisterAiToolComponentRef,
-} from 'contexts/AiToolComponentRefContext';
+    NamedOperationComponentHandle,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
 import AnalyzeAllSessionsControl from './AnalyzeAllSessionsControl';
 import {
     asRecord,
@@ -30,9 +30,9 @@ import {
     searchUserSummaryMapLevel,
 } from './user-summary-ai-tools';
 import {
-    createAiToolOperationFrom,
-    type AiToolOperation,
-} from 'components/ai-engineering-tools';
+    createOperationFrom,
+    type Operation,
+} from 'components/ai-operations';
 
 export type UserSummaryMapLevelResult = {
     status: unknown;
@@ -62,10 +62,10 @@ export type UserSummaryMapSearchResult = {
     maps: Array<{ id: unknown; name: unknown; matched_fields: unknown }>;
 };
 
-export interface UserSummaryHandle extends NamedAiToolComponentHandle {
-    getUserSummaryMapLevel(args: Record<string, any>): AiToolOperation<UserSummaryMapLevelResult>;
-    getAvailableUserSummaryMaps(): AiToolOperation<AvailableUserSummaryMapsResult>;
-    searchUserSummaryMapLevel(args: Record<string, any>): AiToolOperation<UserSummaryMapSearchResult>;
+export interface UserSummaryHandle extends NamedOperationComponentHandle {
+    getUserSummaryMapLevel(args: Record<string, any>): Operation<UserSummaryMapLevelResult>;
+    getAvailableUserSummaryMaps(): Operation<AvailableUserSummaryMapsResult>;
+    searchUserSummaryMapLevel(args: Record<string, any>): Operation<UserSummaryMapSearchResult>;
 }
 
 const compactMapLevelForAi = (result: Record<string, any>) => ({
@@ -201,21 +201,21 @@ const UserSummary = ({ name }: { name: string }) => {
     if (componentRef.current === null) {
         componentRef.current = {
             getComponentName: () => name,
-            getUserSummaryMapLevel: (args) => createAiToolOperationFrom(() => compactMapLevelForAi(getUserSummaryMapLevel({
+            getUserSummaryMapLevel: (args) => createOperationFrom(() => compactMapLevelForAi(getUserSummaryMapLevel({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
             }, args)), 'complete'),
-            getAvailableUserSummaryMaps: () => createAiToolOperationFrom(() => compactAvailableMapsForAi(getAvailableUserSummaryMaps({
+            getAvailableUserSummaryMaps: () => createOperationFrom(() => compactAvailableMapsForAi(getAvailableUserSummaryMaps({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
             })), 'complete'),
-            searchUserSummaryMapLevel: (args) => createAiToolOperationFrom(() => compactMapSearchForAi(searchUserSummaryMapLevel({
+            searchUserSummaryMapLevel: (args) => createOperationFrom(() => compactMapSearchForAi(searchUserSummaryMapLevel({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
@@ -224,7 +224,7 @@ const UserSummary = ({ name }: { name: string }) => {
             }, args)), 'complete'),
         };
     }
-    useRegisterAiToolComponentRef(componentRef);
+    useRegisterOperationComponentRef(componentRef);
 
 
     return (

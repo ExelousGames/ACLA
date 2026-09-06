@@ -19,11 +19,11 @@ jest.mock('views/floating-chat/overlay-display-client', () => ({
     },
 }));
 
-jest.mock('contexts/AiToolComponentRefContext', () => {
-    const actual = jest.requireActual('contexts/AiToolComponentRefContext');
+jest.mock('contexts/OperationComponentRefContext', () => {
+    const actual = jest.requireActual('contexts/OperationComponentRefContext');
     return {
         ...actual,
-        useOptionalAiToolComponentRefDirectory: () => mockOverlayComponentDirectory,
+        useOptionalOperationComponentRefDirectory: () => mockOverlayComponentDirectory,
     };
 });
 
@@ -156,11 +156,11 @@ import AnalysisResultsChart, {
     type AnalysisResultsPaginationPage,
 } from './AnalysisResultsChart';
 import {
-    createAiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    createOperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import {
     VisualizationControlFailedError,
-} from 'contexts/AiToolComponentError';
+} from 'contexts/OperationComponentError';
 import {
     appendAnalysisResultElement,
     normalizeAnalysisResultsData,
@@ -231,7 +231,7 @@ const replayComparisonData = () => ({
 describe('AnalysisResultsChart', () => {
     beforeEach(() => {
         mockOverlayPresentation = { presentationId: 'analysis-overlay-session' };
-        mockOverlayComponentDirectory = createAiToolComponentRefDirectory();
+        mockOverlayComponentDirectory = createOperationComponentRefDirectory();
         mockFloatingChatClosedListener = null;
         mockOverlaySessionListeners.clear();
         (window as any).electronAPI = {

@@ -2,12 +2,12 @@ import React, { forwardRef, useImperativeHandle, useMemo, useState } from 'react
 import { Box, Grid, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { LiveTelemetry } from './live-session-types';
-import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import { runVisualizationBooleanCallback } from 'views/lap-analysis/visualization/visualization-component-callbacks';
-import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
 import { useCurrentTelemetry } from './live-telemetry-store';
 
-export interface LiveTelemetryOverviewHandle extends NamedAiToolComponentHandle {
+export interface LiveTelemetryOverviewHandle extends NamedOperationComponentHandle {
     updateLiveTelemetry(data: LiveTelemetry): true;
     disableLiveTelemetry(): true;
 }
@@ -46,7 +46,7 @@ const LiveTelemetryOverview = forwardRef<LiveTelemetryOverviewHandle, LiveTeleme
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     const registeredHandleRef = React.useRef(handle);
     registeredHandleRef.current = handle;
-    useRegisterAiToolComponentRef(registeredHandleRef);
+    useRegisterOperationComponentRef(registeredHandleRef);
     const entries = useMemo(() => {
         const term = search.trim().toLowerCase();
         return Object.entries(displayedTelemetry)

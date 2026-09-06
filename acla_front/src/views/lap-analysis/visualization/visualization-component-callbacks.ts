@@ -1,11 +1,11 @@
 import {
-    AiToolComponentErrorConstructor,
+    OperationComponentErrorConstructor,
     VisualizationComponentError,
-} from 'contexts/AiToolComponentError';
+} from 'contexts/OperationComponentError';
 
 export const runVisualizationBooleanCallback = (
     componentName: string,
-    ErrorType: AiToolComponentErrorConstructor<VisualizationComponentError>,
+    ErrorType: OperationComponentErrorConstructor<VisualizationComponentError>,
     fallbackMessage: string,
     callback: (() => boolean) | undefined,
 ): true => {

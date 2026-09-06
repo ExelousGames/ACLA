@@ -10,9 +10,9 @@ import React, {
 import { Badge, Box, Flex, Table, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { EventType, SessionEvent } from 'views/lap-analysis/session-intelligence/types';
-import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import { runVisualizationBooleanCallback } from 'views/lap-analysis/visualization/visualization-component-callbacks';
-import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
 import { getTelemetryLap, getTelemetryTrack } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import { EventLog, EventSearchParams } from './event-log/EventLog';
 import { SensorManager } from './event-log/SensorManager';
@@ -26,7 +26,7 @@ const EVENT_COLORS: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
 };
 const EMPTY_EVENTS: SessionEvent[] = [];
 
-export interface LiveEventLogHandle extends NamedAiToolComponentHandle {
+export interface LiveEventLogHandle extends NamedOperationComponentHandle {
     updateLiveEvents(events: SessionEvent[]): true;
     disableLiveEventLog(): true;
     findEvents(params: EventSearchParams): SessionEvent[];
@@ -123,7 +123,7 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     const registeredHandleRef = React.useRef(handle);
     registeredHandleRef.current = handle;
-    useRegisterAiToolComponentRef(registeredHandleRef);
+    useRegisterOperationComponentRef(registeredHandleRef);
     const filtered = useMemo(() => {
         const term = search.trim().toLowerCase();
         return events.filter((event) => !term || JSON.stringify(event).toLowerCase().includes(term)).slice().reverse();

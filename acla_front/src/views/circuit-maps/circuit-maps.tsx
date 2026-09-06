@@ -6,9 +6,9 @@ import { fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 's
 import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    useOptionalAiToolComponentSnapshot,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    useOptionalOperationComponentSnapshot,
+} from 'contexts/OperationComponentRefContext';
 import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
 import {
     liveTelemetryStore,
@@ -78,8 +78,8 @@ const getSamplesForMode = (samplesByMode: CircuitMapSamplesByMode, mode: Circuit
 );
 
 const CircuitMaps = () => {
-    const liveSession = useOptionalAiToolComponentSnapshot<LiveSessionRuntime>(
-        AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+    const liveSession = useOptionalOperationComponentSnapshot<LiveSessionRuntime>(
+        OPERATION_COMPONENT_NAMES.LIVE_SESSION,
     );
     const currentTelemetry = useCurrentTelemetry();
     const telemetryStatus = useTelemetryStatus();

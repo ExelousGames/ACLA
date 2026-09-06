@@ -1,40 +1,45 @@
 import type { CircuitMapDto, CircuitMapGame } from 'views/circuit-maps/circuit-map-types';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
-    CreateGoalToolUnavailableError,
-    InvalidToolCallError,
+    CreateGoalWorkflowUnavailableError,
+    InvalidOperationCallError,
     NoLiveSessionError,
     NoLiveTelemetryError,
-    RetryGoalTaskToolUnavailableError,
-    ToolExecutionError,
-    ToolNotRegisteredError,
-    createAiToolOperationFrom,
-    type AiToolOperation,
-    type AiToolExecutionOutput,
-    type AiToolStatusPayload,
-} from './ai-tool-base';
+    RetryGoalTaskWorkflowUnavailableError,
+    OperationExecutionError,
+    OperationNotRegisteredError,
+    createOperationFrom,
+    asTool,
+    asWorkflow,
+    type Tool,
+    type Workflow,
+    type Operation,
+    type OperationExecutionOutput,
+    type OperationStatusPayload,
+} from './operation-base';
 import {
-    AI_TOOL_COMPONENT_NAMES,
+    OPERATION_COMPONENT_NAMES,
     ComponentRefUnavailableError,
     resolveNamedComponentHandle,
-    type AiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    type OperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import {
     InvalidLiveRangeTodoListError,
-    NonLiveContextLiveToolsUnavailableError,
-    RecordedSessionLiveToolsUnavailableError,
-} from 'contexts/AiToolComponentError';
+    NonLiveContextLiveOperationsUnavailableError,
+    RecordedSessionLiveOperationsUnavailableError,
+} from 'contexts/OperationComponentError';
 import { isLiveSessionAiAvailable, type RecordingState } from 'views/lap-analysis/recording-state';
 import type {
-    AiToolDispatcher,
+    OperationDispatcher,
+    OperationKind,
     RepeatablePlanHandle,
     LiveRangeTodoEventInput,
     LiveRangeTodoListHandle,
     ProcedurePlanHandle,
     ProcedurePlanRunResult,
     ProcedurePlanState,
-    AiToolQueryResult,
-} from 'components/ai-engineering-tools';
+    OperationQueryResult,
+} from 'components/ai-operations';
 import type { BaselineCollectionHandle } from 'views/live-session/BaselineCollection';
 import type { AiChatHandle } from './ai-chat';
 import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
@@ -95,7 +100,7 @@ export type AgentSessionStopResult = {
 };
 
 export interface FrontendAiCommandContext {
-    componentRefs?: AiToolComponentRefDirectory;
+    componentRefs?: OperationComponentRefDirectory;
     sessionId?: string;
     sessionMode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
     conversationRole?: AgentSessionRole;
@@ -201,13 +206,13 @@ const isLiveSessionContext = (context: AiCommandRegistryContext): boolean =>
 
 const getLiveUnavailableError = (context: AiCommandRegistryContext) => (
     context.sessionMode === 'recorded'
-        ? RecordedSessionLiveToolsUnavailableError
-        : NonLiveContextLiveToolsUnavailableError
+        ? RecordedSessionLiveOperationsUnavailableError
+        : NonLiveContextLiveOperationsUnavailableError
 );
 
 const getBaselineReadiness = (context: AiCommandRegistryContext) => {
     const baseline = context.componentRefs?.findComponentRef<BaselineCollectionHandle>(
-        AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+        OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
     )?.current;
     const record = baseline?.getLapRecord() ?? null;
     const tag = baseline?.getTag() ?? null;
@@ -232,11 +237,11 @@ export const startAgentRuntime = async (
     context: AiCommandRegistryContext,
     args: Record<string, unknown>,
     publishStatus: (data: Record<string, unknown>) => void = () => undefined,
-): Promise<AiToolExecutionOutput> => {
+): Promise<OperationExecutionOutput> => {
     if (!isLiveSessionContext(context)) {
         const ErrorType = getLiveUnavailableError(context);
         throw new ErrorType(
-            AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+            OPERATION_COMPONENT_NAMES.LIVE_SESSION,
             'Agent runtime requires an active live recording.',
         );
     }
@@ -311,7 +316,7 @@ export const startAgentRuntime = async (
     };
 };
 
-export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
+export const FRONTEND_OPERATION_NAMES = Object.freeze([
     'start_agent_session',
     'stop_agent_session',
     'add_event_to_live_range_todo_list',
@@ -341,8 +346,8 @@ export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
     'analyze_telemetry',
 ] as const);
 
-export type FrontendAiToolName = typeof FRONTEND_AI_TOOL_NAMES[number];
-export type FrontendAiQueryName = Extract<FrontendAiToolName, `query_${string}`>;
+export type FrontendOperationName = typeof FRONTEND_OPERATION_NAMES[number];
+export type FrontendAiQueryName = Extract<FrontendOperationName, `query_${string}`>;
 
 export type TelemetryMetricReduce = 'avg' | 'min' | 'max' | 'stats';
 
@@ -356,15 +361,15 @@ export type QueryTelemetryMetricArguments<
 
 export type QueryTelemetryMetricResult<
     TReduce extends TelemetryMetricReduce,
-> = AiToolQueryResult<QueryResult<TReduce>>;
+> = OperationQueryResult<QueryResult<TReduce>>;
 
 export type FrontendAiQueryContractMap = {
     query_analysis_result: (
         args: QueryAnalysisResultInput,
-    ) => AiToolOperation<QueryAnalysisResultOutput>;
+    ) => Tool<QueryAnalysisResultOutput>;
     query_telemetry_metric: <TReduce extends TelemetryMetricReduce>(
         args: QueryTelemetryMetricArguments<TReduce>,
-    ) => AiToolOperation<QueryTelemetryMetricResult<TReduce>>;
+    ) => Tool<QueryTelemetryMetricResult<TReduce>>;
 };
 
 type AssertTrue<TValue extends true> = TValue;
@@ -383,7 +388,7 @@ const validateAnalysisResultQueryArguments = (
 ): QueryAnalysisResultInput => {
     const validationMessage = 'query_analysis_result requires exactly one non-empty string property named query.';
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
-        throw new InvalidToolCallError(validationMessage);
+        throw new InvalidOperationCallError(validationMessage);
     }
     const value = args as Record<string, unknown>;
     const keys = Reflect.ownKeys(value);
@@ -394,7 +399,7 @@ const validateAnalysisResultQueryArguments = (
         || !('value' in queryProperty)
         || typeof queryProperty.value !== 'string'
         || !queryProperty.value.trim()) {
-        throw new InvalidToolCallError(validationMessage);
+        throw new InvalidOperationCallError(validationMessage);
     }
     return { query: queryProperty.value };
 };
@@ -404,7 +409,7 @@ const validateApplyAnalysisResultQueryArguments = (
 ): ApplyAnalysisResultQueryInput => {
     const validationMessage = 'apply_query_to_analysis_result requires a non-empty string property named query and accepts only an optional integer property named page_number.';
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
-        throw new InvalidToolCallError(validationMessage);
+        throw new InvalidOperationCallError(validationMessage);
     }
     const value = args as Record<string, unknown>;
     const keys = Reflect.ownKeys(value);
@@ -422,7 +427,7 @@ const validateApplyAnalysisResultQueryArguments = (
             || !Number.isInteger(pageNumberProperty.value)
         ))
     ) {
-        throw new InvalidToolCallError(validationMessage);
+        throw new InvalidOperationCallError(validationMessage);
     }
     return {
         query: queryProperty.value,
@@ -435,7 +440,7 @@ const validateDisplaySpecificResultArguments = (
 ): DisplaySpecificResultInOverlayArguments => {
     const validationMessage = 'display_specific_result_in_overlay requires exactly two non-empty string properties named page_id and result_id.';
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
-        throw new InvalidToolCallError(validationMessage);
+        throw new InvalidOperationCallError(validationMessage);
     }
     const value = args as Record<string, unknown>;
     const keys = Reflect.ownKeys(value);
@@ -453,7 +458,7 @@ const validateDisplaySpecificResultArguments = (
         || typeof resultIdProperty.value !== 'string'
         || !resultIdProperty.value.trim()
     ) {
-        throw new InvalidToolCallError(validationMessage);
+        throw new InvalidOperationCallError(validationMessage);
     }
     return {
         page_id: pageIdProperty.value,
@@ -463,18 +468,19 @@ const validateDisplaySpecificResultArguments = (
 
 type WorkflowOwner = 'chat' | 'repeatable_plan' | 'procedure_plan' | 'live_range_todo';
 
-type FrontendAiToolDefinition = {
-    readonly name: FrontendAiToolName;
+type FrontendOperationDefinition = {
+    readonly name: FrontendOperationName;
+    readonly kind: OperationKind;
     readonly componentName: string;
     readonly execute: (
         context: FrontendAiCommandContext,
         args: Record<string, any>,
-        dispatchNested: AiToolDispatcher,
+        dispatchNested: OperationDispatcher,
         signal?: AbortSignal,
-    ) => AiToolOperation<AiToolExecutionOutput, AiToolStatusPayload>;
+    ) => Operation<OperationExecutionOutput, OperationStatusPayload>;
 };
 
-const getDirectory = (context: FrontendAiCommandContext): AiToolComponentRefDirectory => {
+const getDirectory = (context: FrontendAiCommandContext): OperationComponentRefDirectory => {
     if (context.componentRefs) return context.componentRefs;
     throw new ComponentRefUnavailableError(
         'dashboard',
@@ -486,7 +492,7 @@ const getComponent = <T,>(context: FrontendAiCommandContext, name: string): T =>
     resolveNamedComponentHandle(getDirectory(context), name) as T
 );
 
-const WORKFLOW_CONTROL_TOOLS = new Set<FrontendAiToolName>([
+const WORKFLOW_CONTROL_OPERATIONS = new Set<FrontendOperationName>([
     'create_repeatable_plan',
     'retry_repeatable_plan_task',
     'set_procedure_plan',
@@ -494,28 +500,28 @@ const WORKFLOW_CONTROL_TOOLS = new Set<FrontendAiToolName>([
     'clear_procedure_plan',
 ]);
 
-const LIVE_RANGE_TODO_TOOLS = new Set<FrontendAiToolName>([
+const LIVE_RANGE_TODO_OPERATIONS = new Set<FrontendOperationName>([
     'add_event_to_live_range_todo_list',
     'get_live_range_todo_list',
 ]);
 
-const NON_CHILD_LIVE_SESSION_TOOLS = new Set<FrontendAiToolName>([
+const NON_CHILD_LIVE_SESSION_OPERATIONS = new Set<FrontendOperationName>([
     'start_agent_session',
     'run_recorded_ai_analysis',
     'get_recorded_session_analysis',
     'get_recorded_session_context',
 ]);
 
-const LIVE_RANGE_TODO_NESTED_TOOLS = new Set<FrontendAiToolName>(
-    FRONTEND_AI_TOOL_NAMES.filter((name) => (
-        !WORKFLOW_CONTROL_TOOLS.has(name)
+const LIVE_RANGE_TODO_NESTED_OPERATIONS = new Set<FrontendOperationName>(
+    FRONTEND_OPERATION_NAMES.filter((name) => (
+        !WORKFLOW_CONTROL_OPERATIONS.has(name)
         && name !== 'add_event_to_live_range_todo_list'
         && name !== 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
-        && !NON_CHILD_LIVE_SESSION_TOOLS.has(name)
+        && !NON_CHILD_LIVE_SESSION_OPERATIONS.has(name)
     )),
 );
 
-const REPEATABLE_PLAN_STEP_TOOLS = new Set<FrontendAiToolName>([
+const REPEATABLE_PLAN_STEP_OPERATIONS = new Set<FrontendOperationName>([
     'stop_agent_session',
     'add_event_to_live_range_todo_list',
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
@@ -546,41 +552,41 @@ export const isRepeatablePlanStepAvailableForContext = (
     context.sessionMode === 'live'
     && context.conversationRole === 'agent'
     && context.agentMode === 'live_performance_analyst'
-    && REPEATABLE_PLAN_STEP_TOOLS.has(name as FrontendAiToolName)
+    && REPEATABLE_PLAN_STEP_OPERATIONS.has(name as FrontendOperationName)
 );
 
 const assertAvailable = (
     context: FrontendAiCommandContext,
-    name: FrontendAiToolName,
+    name: FrontendOperationName,
     owner: WorkflowOwner,
 ) => {
     const isChildLiveSession = context.sessionMode === 'live'
         && context.conversationRole === 'agent';
-    if (owner === 'chat' && LIVE_RANGE_TODO_TOOLS.has(name) && !isChildLiveSession) {
-        throw new ToolNotRegisteredError(
-            `Tool '${name}' is available only in child live-agent sessions.`,
+    if (owner === 'chat' && LIVE_RANGE_TODO_OPERATIONS.has(name) && !isChildLiveSession) {
+        throw new OperationNotRegisteredError(
+            `Operation '${name}' is available only in child live-agent sessions.`,
         );
     }
     if (owner === 'live_range_todo' && (
         !isChildLiveSession
-        || !LIVE_RANGE_TODO_NESTED_TOOLS.has(name)
+        || !LIVE_RANGE_TODO_NESTED_OPERATIONS.has(name)
     )) {
-        throw new ToolNotRegisteredError(
-            `Tool '${name}' cannot be scheduled by the live range to-do list.`,
+        throw new OperationNotRegisteredError(
+            `Operation '${name}' cannot be scheduled by the live range to-do list.`,
         );
     }
     if (owner === 'repeatable_plan' && !isRepeatablePlanStepAvailableForContext(context, name)) {
-        throw new ToolNotRegisteredError(`Tool '${name}' is unavailable inside a repeatable plan.`);
+        throw new OperationNotRegisteredError(`Operation '${name}' is unavailable inside a repeatable plan.`);
     }
-    if (owner === 'procedure_plan' && WORKFLOW_CONTROL_TOOLS.has(name)) {
-        throw new ToolNotRegisteredError(`Tool '${name}' is unavailable inside a procedure plan.`);
+    if (owner === 'procedure_plan' && WORKFLOW_CONTROL_OPERATIONS.has(name)) {
+        throw new OperationNotRegisteredError(`Operation '${name}' is unavailable inside a procedure plan.`);
     }
     if (name === 'create_repeatable_plan' && (
         context.sessionMode !== 'live'
         || context.conversationRole !== 'agent'
         || context.agentMode !== 'live_performance_analyst'
     )) {
-        throw new CreateGoalToolUnavailableError(
+        throw new CreateGoalWorkflowUnavailableError(
             'Repeatable plan creation is available only to the live performance analyst.',
         );
     }
@@ -589,7 +595,7 @@ const assertAvailable = (
         || context.conversationRole !== 'agent'
         || context.agentMode !== 'live_performance_analyst'
     )) {
-        throw new RetryGoalTaskToolUnavailableError(
+        throw new RetryGoalTaskWorkflowUnavailableError(
             'Repeatable plan task retry is available only to the live performance analyst.',
         );
     }
@@ -598,8 +604,8 @@ const assertAvailable = (
         || context.conversationRole !== 'agent'
         || context.agentMode !== 'live_performance_analyst'
     )) {
-        throw new ToolNotRegisteredError(
-            `Tool '${name}' is available only to the live performance analyst.`,
+        throw new OperationNotRegisteredError(
+            `Operation '${name}' is available only to the live performance analyst.`,
         );
     }
 };
@@ -614,13 +620,13 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
 
 const validateNoArguments = (args: unknown, toolName: string): void => {
     if (!isRecord(args) || Reflect.ownKeys(args).length > 0) {
-        throw new InvalidToolCallError(`${toolName} does not accept arguments.`);
+        throw new InvalidOperationCallError(`${toolName} does not accept arguments.`);
     }
 };
 
 const invalidLiveRangeTodoList = (message: string): never => {
     throw new InvalidLiveRangeTodoListError(
-        AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
         message,
     );
 };
@@ -661,7 +667,7 @@ const isJsonSafe = (value: unknown, ancestors = new Set<object>()): boolean => {
 type PreparedLiveRangeTodoEvent = {
     event: Omit<LiveRangeTodoEventInput, 'taskStart'>;
     tool: {
-        name: FrontendAiToolName;
+        name: FrontendOperationName;
         arguments: Record<string, unknown>;
     };
 };
@@ -733,7 +739,7 @@ const validateLiveRangeTodoBatch = (
         const rawTool = toolValue as Record<string, unknown>;
         assertExactKeys(rawTool, ['name', 'arguments'], `${itemLabel} tool`);
         const toolName = typeof rawTool.name === 'string' ? rawTool.name.trim() : '';
-        if (!toolName || !LIVE_RANGE_TODO_NESTED_TOOLS.has(toolName as FrontendAiToolName)) {
+        if (!toolName || !LIVE_RANGE_TODO_NESTED_OPERATIONS.has(toolName as FrontendOperationName)) {
             invalidLiveRangeTodoList(
                 `Tool '${toolName || '(missing)'}' cannot be scheduled by the live range to-do list.`,
             );
@@ -764,7 +770,7 @@ const validateLiveRangeTodoBatch = (
                 },
             },
             tool: {
-                name: toolName as FrontendAiToolName,
+                name: toolName as FrontendOperationName,
                 arguments: JSON.parse(JSON.stringify(toolArguments)),
             },
         };
@@ -776,24 +782,24 @@ const getOrInitializeLiveRangeTodoList = (
 ): LiveRangeTodoListHandle => {
     const directory = getDirectory(context);
     const mounted = directory.findComponentRef<LiveRangeTodoListHandle>(
-        AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
     )?.current;
     if (mounted) {
-        directory.findComponentRef<AiChatHandle>(AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        directory.findComponentRef<AiChatHandle>(OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
             ?.current
             ?.initializeLiveRangeTodoList?.();
         return mounted;
     }
-    return getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+    return getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
         .initializeLiveRangeTodoList();
 };
 
 const createScheduledTaskStart = (
     descriptor: PreparedLiveRangeTodoEvent['tool'],
-    dispatchNested: AiToolDispatcher,
+    dispatchNested: OperationDispatcher,
 ): LiveRangeTodoEventInput['taskStart'] => (signal) => {
     if (signal.aborted) {
-        return createAiToolOperationFrom(() => {
+        return createOperationFrom(() => {
             throw createLiveRangeAbortError();
         }, 'failed');
     }
@@ -845,7 +851,7 @@ const createFilteredComparisonResult = (
 const queueFilteredDriverExpertComparisons = (
     context: FrontendAiCommandContext,
     snapshot: FilteredAnalysisSegmentsSnapshot,
-    dispatchNested: AiToolDispatcher,
+    dispatchNested: OperationDispatcher,
 ): AddFilteredDriverExpertComparisonsResult => {
     const result = createFilteredComparisonResult(snapshot);
     if (snapshot.status !== 'ready') return result;
@@ -888,14 +894,14 @@ const queueFilteredDriverExpertComparisons = (
     });
 
     if (snapshot.segments.length > 0 && eligible.length === 0) {
-        throw new ToolExecutionError(
+        throw new OperationExecutionError(
             'The filtered analysis results contain no showable overlay graphs.',
         );
     }
 
     if (eligible.length > 0) {
         if (!snapshot.activePageId) {
-            throw new ToolExecutionError(
+            throw new OperationExecutionError(
                 'The filtered analysis results do not identify a retained page.',
             );
         }
@@ -949,19 +955,22 @@ const queueFilteredDriverExpertComparisons = (
 const definitionList = Object.freeze([
     {
         name: 'start_agent_session',
-        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args) => getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
             .startAgentSession(args.agent_mode ?? args.agentMode, args),
     },
     {
         name: 'stop_agent_session',
-        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args) => getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
             .stopAgentSession(args.agent_session_id ?? args.agentSessionId),
     },
     {
         name: 'add_event_to_live_range_todo_list',
-        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        kind: 'workflow',
+        componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
         execute: (context, args, dispatchNested) => {
             const prepared = validateLiveRangeTodoBatch(args);
             const todoList = getOrInitializeLiveRangeTodoList(context);
@@ -985,8 +994,9 @@ const definitionList = Object.freeze([
     },
     {
         name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        kind: 'workflow',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
-        execute: (context, args, dispatchNested) => createAiToolOperationFrom(() => {
+        execute: (context, args, dispatchNested) => createOperationFrom(() => {
             validateNoArguments(
                 args,
                 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
@@ -1000,6 +1010,7 @@ const definitionList = Object.freeze([
     },
     {
         name: 'display_specific_result_in_overlay',
+        kind: 'tool',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args, _dispatchNested, signal) => (
             displaySpecificResultInOverlay(context, args, signal)
@@ -1007,30 +1018,35 @@ const definitionList = Object.freeze([
     },
     {
         name: 'get_live_range_todo_list',
-        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-        execute: (context) => getComponent<LiveRangeTodoListHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
+        kind: 'workflow',
+        componentName: OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        execute: (context) => getComponent<LiveRangeTodoListHandle>(context, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
             .getForAi(),
     },
     {
         name: 'collect_live_baseline',
-        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-        execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context, args) => getComponent<LiveSessionHandle>(context, OPERATION_COMPONENT_NAMES.LIVE_SESSION)
             .collectLiveBaselineForAi(args),
     },
     {
         name: 'restart_live_baseline',
-        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-        execute: (context) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context) => getComponent<LiveSessionHandle>(context, OPERATION_COMPONENT_NAMES.LIVE_SESSION)
             .restartLiveBaselineForAi(),
     },
     {
         name: 'analyze_live_recorded_analysis',
-        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-        execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context, args) => getComponent<LiveSessionHandle>(context, OPERATION_COMPONENT_NAMES.LIVE_SESSION)
             .analyzeLiveRecordedAnalysisForAi(args),
     },
     {
         name: 'apply_query_to_analysis_result',
+        kind: 'tool',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args) => {
             const request = validateApplyAnalysisResultQueryArguments(args);
@@ -1042,6 +1058,7 @@ const definitionList = Object.freeze([
     },
     {
         name: 'query_analysis_result',
+        kind: 'tool',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args) => {
             const query = validateAnalysisResultQueryArguments(args);
@@ -1053,148 +1070,177 @@ const definitionList = Object.freeze([
     },
     {
         name: 'create_repeatable_plan',
-        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args, dispatchNested) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        kind: 'workflow',
+        componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args, dispatchNested) => getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
             .createRepeatablePlan(args, dispatchNested),
     },
     {
         name: 'retry_repeatable_plan_task',
-        componentName: AI_TOOL_COMPONENT_NAMES.REPEATABLE_PLAN,
-        execute: (context) => getComponent<RepeatablePlanHandle>(context, AI_TOOL_COMPONENT_NAMES.REPEATABLE_PLAN)
+        kind: 'workflow',
+        componentName: OPERATION_COMPONENT_NAMES.REPEATABLE_PLAN,
+        execute: (context) => getComponent<RepeatablePlanHandle>(context, OPERATION_COMPONENT_NAMES.REPEATABLE_PLAN)
             .retryFailedTask(),
     },
     {
         name: 'advance_plan_step',
-        componentName: AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
-        execute: (context, args) => getComponent<ProcedurePlanHandle>(context, AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN)
+        kind: 'workflow',
+        componentName: OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
+        execute: (context, args) => getComponent<ProcedurePlanHandle>(context, OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN)
             .advancePlanStep(typeof args.reason === 'string' ? args.reason : undefined),
     },
     {
         name: 'clear_procedure_plan',
-        componentName: AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
-        execute: (context, args) => getComponent<ProcedurePlanHandle>(context, AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN)
+        kind: 'workflow',
+        componentName: OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
+        execute: (context, args) => getComponent<ProcedurePlanHandle>(context, OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN)
             .clearProcedurePlan(typeof args.reason === 'string' ? args.reason : undefined),
     },
     {
         name: 'set_procedure_plan',
-        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args, dispatchNested) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        kind: 'workflow',
+        componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args, dispatchNested) => getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
             .createProcedurePlan(args, dispatchNested),
     },
     {
         name: 'get_next_corner',
-        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-        execute: (context) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context) => getComponent<LiveSessionHandle>(context, OPERATION_COMPONENT_NAMES.LIVE_SESSION)
             .getNextCornerForAi(),
     },
     {
         name: 'query_telemetry_metric',
-        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-        execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context, args) => getComponent<LiveSessionHandle>(context, OPERATION_COMPONENT_NAMES.LIVE_SESSION)
             .queryTelemetryMetricForAi(
                 args as QueryTelemetryMetricArguments<TelemetryMetricReduce>,
             ),
     },
     {
         name: 'get_event_log',
-        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-        execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context, args) => getComponent<LiveSessionHandle>(context, OPERATION_COMPONENT_NAMES.LIVE_SESSION)
             .getEventLogForAi(args),
     },
     {
         name: 'get_user_summary_map_level',
-        componentName: AI_TOOL_COMPONENT_NAMES.USER_SUMMARY,
-        execute: (context, args) => getComponent<UserSummaryHandle>(context, AI_TOOL_COMPONENT_NAMES.USER_SUMMARY)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.USER_SUMMARY,
+        execute: (context, args) => getComponent<UserSummaryHandle>(context, OPERATION_COMPONENT_NAMES.USER_SUMMARY)
             .getUserSummaryMapLevel(args),
     },
     {
         name: 'get_available_user_summary_maps',
-        componentName: AI_TOOL_COMPONENT_NAMES.USER_SUMMARY,
-        execute: (context) => getComponent<UserSummaryHandle>(context, AI_TOOL_COMPONENT_NAMES.USER_SUMMARY)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.USER_SUMMARY,
+        execute: (context) => getComponent<UserSummaryHandle>(context, OPERATION_COMPONENT_NAMES.USER_SUMMARY)
             .getAvailableUserSummaryMaps(),
     },
     {
         name: 'search_user_summary_map_level',
-        componentName: AI_TOOL_COMPONENT_NAMES.USER_SUMMARY,
-        execute: (context, args) => getComponent<UserSummaryHandle>(context, AI_TOOL_COMPONENT_NAMES.USER_SUMMARY)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.USER_SUMMARY,
+        execute: (context, args) => getComponent<UserSummaryHandle>(context, OPERATION_COMPONENT_NAMES.USER_SUMMARY)
             .searchUserSummaryMapLevel(args),
     },
     {
         name: 'show_map',
-        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args) => getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
             .showMap(args),
     },
     {
         name: 'run_recorded_ai_analysis',
-        componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
-        execute: (context, args) => getComponent<SessionAnalysisHandle>(context, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
+        execute: (context, args) => getComponent<SessionAnalysisHandle>(context, OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS)
             .runRecordedAnalysisForAi(args),
     },
     {
         name: 'get_recorded_session_analysis',
-        componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
-        execute: (context, args) => getComponent<SessionAnalysisHandle>(context, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
+        execute: (context, args) => getComponent<SessionAnalysisHandle>(context, OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS)
             .getRecordedAnalysisForAi(args),
     },
     {
         name: 'get_recorded_session_context',
-        componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
-        execute: (context, args) => getComponent<SessionAnalysisHandle>(context, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
+        execute: (context, args) => getComponent<SessionAnalysisHandle>(context, OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS)
             .getRecordedSessionContextForAi(args),
     },
     {
         name: 'analyze_telemetry',
+        kind: 'tool',
         componentName: 'session-mode-analysis',
         execute: (context, args) => context.sessionMode === 'recorded'
-            ? getComponent<SessionAnalysisHandle>(context, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)
+            ? getComponent<SessionAnalysisHandle>(context, OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS)
                 .analyzeTelemetryForAi(args)
-            : getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+            : getComponent<LiveSessionHandle>(context, OPERATION_COMPONENT_NAMES.LIVE_SESSION)
                 .analyzeTelemetryForAi(args),
     },
-] as const satisfies readonly FrontendAiToolDefinition[]);
+] as const satisfies readonly FrontendOperationDefinition[]);
 
-type FrontendAiToolDefinitionMap = {
+type FrontendOperationDefinitionMap = {
     [TDefinition in typeof definitionList[number] as TDefinition['name']]: TDefinition;
 };
 
-export type FrontendAiToolOperation<TName extends FrontendAiToolName> = (
+export type FrontendWorkflowName = {
+    [TName in FrontendOperationName]: FrontendOperationDefinitionMap[TName]['kind'] extends 'workflow'
+        ? TName : never;
+}[FrontendOperationName];
+
+export type FrontendToolName = Exclude<FrontendOperationName, FrontendWorkflowName>;
+
+export type FrontendOperation<TName extends FrontendOperationName> = (
     TName extends FrontendAiQueryName
         ? ReturnType<FrontendAiQueryContractMap[TName]>
-        : ReturnType<FrontendAiToolDefinitionMap[TName]['execute']>
+        : ReturnType<FrontendOperationDefinitionMap[TName]['execute']> extends Operation<
+            infer TResult, infer TStatus, infer TTerminationStatus
+        >
+            ? FrontendOperationDefinitionMap[TName]['kind'] extends 'workflow'
+                ? Workflow<TResult, TStatus, TTerminationStatus>
+                : Tool<TResult, TStatus, TTerminationStatus>
+            : never
 );
 
 type NonQueryAiCommandRegistry = {
     [TName in Exclude<
-        FrontendAiToolName,
+        FrontendOperationName,
         FrontendAiQueryName | 'display_specific_result_in_overlay'
     >]: (
         args: Record<string, unknown>,
-    ) => FrontendAiToolOperation<TName>;
+    ) => FrontendOperation<TName>;
 };
 
 export type AiCommandRegistry = NonQueryAiCommandRegistry & FrontendAiQueryContractMap & {
     display_specific_result_in_overlay(
         args: DisplaySpecificResultInOverlayArguments,
-    ): FrontendAiToolOperation<'display_specific_result_in_overlay'>;
+    ): FrontendOperation<'display_specific_result_in_overlay'>;
 };
 
 const definitions = Object.fromEntries(
     definitionList.map((definition) => [definition.name, definition]),
-) as FrontendAiToolDefinitionMap;
+) as FrontendOperationDefinitionMap;
 
-export const frontendAiToolRegistry = definitions;
+export const frontendOperationRegistry = definitions;
 
-const dispatchAiTool = (
+const dispatchOperation = (
     context: FrontendAiCommandContext,
     name: string,
     args: Record<string, unknown>,
     owner: WorkflowOwner,
     signal?: AbortSignal,
-): AiToolOperation<AiToolExecutionOutput, AiToolStatusPayload> => {
+): Tool<OperationExecutionOutput, OperationStatusPayload> | Workflow<OperationExecutionOutput, OperationStatusPayload> => {
+    const definition = definitions[name as FrontendOperationName];
     try {
-        const definition = definitions[name as FrontendAiToolName];
-        if (!definition) throw new ToolNotRegisteredError(`Tool '${name}' is not registered.`);
+        if (!definition) throw new OperationNotRegisteredError(`Operation '${name}' is not registered.`);
         assertAvailable(context, definition.name, owner);
         const nestedOwner: WorkflowOwner = definition.name === 'create_repeatable_plan'
             ? 'repeatable_plan'
@@ -1202,18 +1248,21 @@ const dispatchAiTool = (
                 || definition.name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
                 ? 'live_range_todo'
                 : 'procedure_plan';
-        const dispatchNested: AiToolDispatcher = (
+        const dispatchNested: OperationDispatcher = (
             nestedName,
             nestedArgs = {},
             nestedSignal,
-        ) => dispatchAiTool(
+        ) => dispatchOperation(
             context,
             nestedName,
             nestedArgs,
             nestedOwner,
             nestedSignal,
-        ) as ReturnType<AiToolDispatcher>;
-        const operation = definition.execute(context, args, dispatchNested, signal);
+        ) as ReturnType<OperationDispatcher>;
+        const result: Operation<OperationExecutionOutput, OperationStatusPayload> = (
+            definition.execute(context, args, dispatchNested, signal)
+        );
+        const operation = definition.kind === 'workflow' ? asWorkflow(result) : asTool(result);
         if (signal) {
             const abortOperation = () => operation.abort();
             if (signal.aborted) {
@@ -1227,7 +1276,8 @@ const dispatchAiTool = (
         }
         return operation;
     } catch (error) {
-        return createAiToolOperationFrom(() => { throw error; }, 'failed');
+        const operation = createOperationFrom(() => { throw error; }, 'failed');
+        return definition?.kind === 'workflow' ? asWorkflow(operation) : asTool(operation);
     }
 };
 
@@ -1236,7 +1286,7 @@ export const createAiCommandRegistry = (
 ): AiCommandRegistry => Object.fromEntries(
     definitionList.map((definition) => [
         definition.name,
-        (args: Record<string, any>, signal?: AbortSignal) => dispatchAiTool(
+        (args: Record<string, any>, signal?: AbortSignal) => dispatchOperation(
             context,
             definition.name,
             args,
@@ -1246,6 +1296,6 @@ export const createAiCommandRegistry = (
     ]),
 ) as unknown as AiCommandRegistry;
 
-export const isAiCommandName = (name: string): name is FrontendAiToolName => (
+export const isAiCommandName = (name: string): name is FrontendOperationName => (
     name in definitions
 );

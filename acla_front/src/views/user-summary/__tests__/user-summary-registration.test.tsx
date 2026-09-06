@@ -1,11 +1,11 @@
 import React from 'react';
 import { render } from '@testing-library/react';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    AiToolComponentRefDirectory,
-    AiToolComponentRefProvider,
-    useAiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    OperationComponentRefDirectory,
+    OperationComponentRefProvider,
+    useOperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import type { UserSummaryHandle } from '../user-summary';
 
 const mockUseUserSummary = jest.fn();
@@ -22,18 +22,18 @@ jest.mock('../AnalyzeAllSessionsControl', () => () => <button type="button">Anal
 
 import UserSummary from '../user-summary';
 
-let directory: AiToolComponentRefDirectory | null = null;
+let directory: OperationComponentRefDirectory | null = null;
 const DirectoryObserver = () => {
-    directory = useAiToolComponentRefDirectory();
+    directory = useOperationComponentRefDirectory();
     return null;
 };
 
 const summary = { sessionAnalysis: { practice: { tracks: { monza: { trackName: 'Monza', analyzedSessionCount: 3, sections: {} } } } } };
 const Harness = () => (
-    <AiToolComponentRefProvider>
-        <UserSummary name={AI_TOOL_COMPONENT_NAMES.USER_SUMMARY} />
+    <OperationComponentRefProvider>
+        <UserSummary name={OPERATION_COMPONENT_NAMES.USER_SUMMARY} />
         <DirectoryObserver />
-    </AiToolComponentRefProvider>
+    </OperationComponentRefProvider>
 );
 
 describe('UserSummary named component handle', () => {
@@ -45,8 +45,8 @@ describe('UserSummary named component handle', () => {
 
     it('exposes exact identity and fresh summary operations', async () => {
         const view = render(<Harness />);
-        const ref = directory!.findComponentRef<UserSummaryHandle>(AI_TOOL_COMPONENT_NAMES.USER_SUMMARY)!;
-        expect(ref.current!.getComponentName()).toBe(AI_TOOL_COMPONENT_NAMES.USER_SUMMARY);
+        const ref = directory!.findComponentRef<UserSummaryHandle>(OPERATION_COMPONENT_NAMES.USER_SUMMARY)!;
+        expect(ref.current!.getComponentName()).toBe(OPERATION_COMPONENT_NAMES.USER_SUMMARY);
         await expect(ref.current!.getAvailableUserSummaryMaps().result)
             .resolves.toMatchObject({ status: 'ready', map_count: 1 });
 

@@ -7,17 +7,17 @@ import {
     buildGoalRequest,
     compareGoalValues,
     validateGoalRequest,
-    type AiToolDispatcher,
     type GoalRequest,
-    type NestedAiToolResult,
+    type NestedOperationResult,
 } from '../RepeatablePlan';
 import {
-    createAiToolDeferred,
-    createAiToolOperation,
-    createAiToolOperationFrom,
-    resolvedAiToolOperation,
-} from '../ai-tool-operation';
-import { InvalidGoalStopWhenError } from '../../../contexts/AiToolComponentError';
+    type OperationDispatcher,
+    createOperationDeferred,
+    createOperation,
+    createOperationFrom,
+    resolvedOperation,
+} from '../operation';
+import { InvalidGoalStopWhenError } from '../../../contexts/OperationComponentError';
 import { isJsonSafe } from '../../../views/floating-chat/ai-overlay-types';
 
 const request = (): GoalRequest => ({
@@ -34,7 +34,7 @@ const request = (): GoalRequest => ({
 });
 
 const operationWithValue = (value: unknown, status = 'complete') => (
-    resolvedAiToolOperation(value as NestedAiToolResult, status)
+    resolvedOperation(value as NestedOperationResult, status)
 );
 
 describe('RepeatablePlanDisplay', () => {
@@ -173,12 +173,12 @@ describe('Repeatable plan descriptors', () => {
 
 describe('RepeatablePlanRunner central dispatch callback', () => {
     it('aborts the active nested tool when the goal operation is aborted', async () => {
-        const nested = createAiToolOperation(
-            new Promise<NestedAiToolResult>(() => undefined),
+        const nested = createOperation(
+            new Promise<NestedOperationResult>(() => undefined),
             'complete',
         );
         const nestedAbort = jest.spyOn(nested, 'abort');
-        const dispatch: AiToolDispatcher = jest.fn(() => nested);
+        const dispatch: OperationDispatcher = jest.fn(() => nested);
         const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
         const operation = runner.createRepeatablePlan(request());
         const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
@@ -196,10 +196,10 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
     });
 
     it('publishes overlay-safe running steps with a stable run id and defined error', async () => {
-        const collect = createAiToolDeferred<NestedAiToolResult>();
-        const dispatch: AiToolDispatcher = jest.fn((name: string) => (
+        const collect = createOperationDeferred<NestedOperationResult>();
+        const dispatch: OperationDispatcher = jest.fn((name: string) => (
             name === 'collect'
-                ? createAiToolOperation(collect.promise, 'complete')
+                ? createOperation(collect.promise, 'complete')
                 : operationWithValue(name === 'determine'
                     ? { status: 'ready', data: 0 }
                     : { status: 'complete' })
@@ -208,6 +208,8 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         const operation = runner.createRepeatablePlan(request());
 
         expect(runner.getComponentName()).toBe('repeatable-plan');
+        expect(runner.kind).toBe('workflow');
+        expect(operation.kind).toBe('workflow');
         expect(runner.getComponentType()).toBe('repeatable-plan');
         expect(runner.getOverlayBehavior(null)).toEqual({
             placement: 'flow',
@@ -226,7 +228,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         });
         const runningRunId = runningSnapshot?.steps[0].run_id;
 
-        collect.resolve({ status: 'complete' } as NestedAiToolResult);
+        collect.resolve({ status: 'complete' } as NestedOperationResult);
         const result = await operation.result;
         if (result instanceof Error) throw result;
 
@@ -386,7 +388,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         ['null', null],
         ['ordinary non-query output', { status: 'complete' }],
     ])('fails the stop condition for incompatible %s output', async (_description, output) => {
-        const dispatch: AiToolDispatcher = jest.fn((name: string) => operationWithValue(
+        const dispatch: OperationDispatcher = jest.fn((name: string) => operationWithValue(
             name === 'determine' ? output : { status: 'complete' },
         ));
         const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
@@ -442,7 +444,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
     });
 
     it('reports a rejected stop-condition operation as an execution failure', async () => {
-        const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {
+        const dispatch = jest.fn((name: string) => createOperationFrom(() => {
             if (name === 'determine') throw new Error('stop condition exploded');
             return { status: 'complete' };
         }, 'complete'));
@@ -465,7 +467,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
 
     it('retains a failed step and retries it through the same dispatcher', async () => {
         let attempts = 0;
-        const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {
+        const dispatch = jest.fn((name: string) => createOperationFrom(() => {
             if (name === 'collect' && ++attempts === 1) throw new Error('not ready');
             return name === 'determine'
                 ? { status: 'ready', data: 0 }

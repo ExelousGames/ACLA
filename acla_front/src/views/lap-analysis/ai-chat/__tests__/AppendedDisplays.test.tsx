@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import {
     LiveRangeTodoListDisplay,
     ProcedurePlan,
-} from 'components/ai-engineering-tools';
+} from 'components/ai-operations';
 import BaselineProgressDisplay from 'views/live-session/BaselineProgressDisplay';
 import ToolMessageDisplay from '../ToolMessageDisplay';
 

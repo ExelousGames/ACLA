@@ -1,7 +1,7 @@
 import {
     AiChatComponentError,
-    AiToolComponentError,
-    AiToolComponentRefError,
+    OperationComponentError,
+    OperationComponentRefError,
     BaselineCollectionComponentError,
     BaselineCollectionNotStartedError,
     BaselineLapRecordRequiredError,
@@ -20,11 +20,11 @@ import {
     UserSummaryComponentError,
     VisualizationComponentError,
     VisualizationUpdateFailedError,
-} from '../AiToolComponentError';
+} from '../OperationComponentError';
 
 describe('AI tool component errors', () => {
     const subclasses = [
-        [ComponentRefUnavailableError, AiToolComponentRefError],
+        [ComponentRefUnavailableError, OperationComponentRefError],
         [GoalStepFailedError, GoalComponentError],
         [GoalStopWhenInputIncompatibleError, GoalComponentError],
         [ProcedurePlanStepFailedError, ProcedurePlanComponentError],
@@ -47,7 +47,7 @@ describe('AI tool component errors', () => {
 
         expect(error).toBeInstanceOf(ErrorType);
         expect(error).toBeInstanceOf(Category);
-        expect(error).toBeInstanceOf(AiToolComponentError);
+        expect(error).toBeInstanceOf(OperationComponentError);
         expect(error).toBeInstanceOf(Error);
         expect(error.name).toBe(ErrorType.name);
         expect(error.componentName).toBe('test-component');

@@ -1,7 +1,7 @@
 import type { AiOverlayRenderer } from './ai-overlay-types';
-import { repeatablePlanOverlayRenderer } from 'components/ai-engineering-tools/RepeatablePlan';
-import { liveRangeTodoListOverlayRenderer } from 'components/ai-engineering-tools/LiveRangeTodoList';
-import { procedurePlanOverlayRenderer } from 'components/ai-engineering-tools/ProcedurePlan';
+import { repeatablePlanOverlayRenderer } from 'components/ai-operations/RepeatablePlan';
+import { liveRangeTodoListOverlayRenderer } from 'components/ai-operations/LiveRangeTodoList';
+import { procedurePlanOverlayRenderer } from 'components/ai-operations/ProcedurePlan';
 import { driverExpertComparisonOverlayRenderer } from 'components/driver-expert-comparison/DriverExpertComparisonGraph';
 import { aiMapToolDisplayOverlayRenderer } from 'views/lap-analysis/ai-chat/AiMapToolDisplay';
 import { aiMessageDisplayOverlayRenderer } from 'views/lap-analysis/ai-chat/AiMessageDisplay';

@@ -20,25 +20,25 @@ import { createDriverExpertComparisonOverlayComponent } from 'components/driver-
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import styles from './AnalysisResultsChart.module.css';
 import {
-    AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS,
-    NamedAiToolComponentHandle,
-    useOptionalAiToolComponentRefDirectory,
-    useRegisterAiToolComponentRef,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_MOUNT_TIMEOUT_MS,
+    NamedOperationComponentHandle,
+    useOptionalOperationComponentRefDirectory,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
 import {
     AnalysisResultsVisualizationNotReadyError,
     ComponentDisableFailedError,
     VisualizationComponentError,
     VisualizationControlFailedError,
     VisualizationUpdateFailedError,
-} from 'contexts/AiToolComponentError';
+} from 'contexts/OperationComponentError';
 import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
 import {
-    createControlledAiToolOperation,
-    createAiToolOperationFrom,
-    type AiToolOperation,
-} from 'components/ai-engineering-tools';
-import { ToolExecutionError } from 'errors/AiToolError';
+    createControlledOperation,
+    createOperationFrom,
+    type Operation,
+} from 'components/ai-operations';
+import { OperationExecutionError } from 'errors/OperationError';
 import { overlaySessionClient } from 'views/floating-chat/overlay-display-client';
 import type { MutableAiOverlayComponent } from 'views/floating-chat/MutableAiOverlayComponent';
 import {
@@ -144,7 +144,7 @@ const cloneAndFreeze = <T,>(value: T): T => {
     return value;
 };
 
-export interface AnalysisResultsChartHandle extends NamedAiToolComponentHandle {
+export interface AnalysisResultsChartHandle extends NamedOperationComponentHandle {
     waitForAnalysisResultPage(pageId: string): Promise<void>;
     getFilteredSegments(): FilteredAnalysisSegmentsSnapshot;
     displaySpecificResultInOverlay(
@@ -154,10 +154,10 @@ export interface AnalysisResultsChartHandle extends NamedAiToolComponentHandle {
     ): AnalysisResultOverlayOperation;
     applyAnalysisResultQuery(
         args: ApplyAnalysisResultQueryInput,
-    ): AiToolOperation<ApplyAnalysisResultQueryOutput>;
+    ): Operation<ApplyAnalysisResultQueryOutput>;
     queryAnalysisResult(
         args: QueryAnalysisResultInput,
-    ): AiToolOperation<QueryAnalysisResultOutput>;
+    ): Operation<QueryAnalysisResultOutput>;
     replaceAnalysisResults(data: unknown): true;
     appendAnalysisResult(element: unknown): AnalysisResultControlResult;
     updateAnalysisResult(id: unknown, changes: unknown): AnalysisResultControlResult;
@@ -171,7 +171,7 @@ export type AnalysisResultOverlayTerminationStatus =
     | 'failed'
     | 'cancelled'
     | 'replaced';
-export type AnalysisResultOverlayOperation = AiToolOperation<
+export type AnalysisResultOverlayOperation = Operation<
     AnalysisResultOverlayResult,
     never,
     AnalysisResultOverlayTerminationStatus
@@ -225,7 +225,7 @@ const createAnalysisResultsReadinessError = (
 ): AnalysisResultsVisualizationNotReadyError => new AnalysisResultsVisualizationNotReadyError(
     componentName,
     reason === 'timeout'
-        ? `Analysis Results page '${pageId}' was not committed within ${AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS}ms.`
+        ? `Analysis Results page '${pageId}' was not committed within ${OPERATION_COMPONENT_MOUNT_TIMEOUT_MS}ms.`
         : `Analysis Results unmounted before page '${pageId}' was committed.`,
 );
 
@@ -1112,7 +1112,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const mountedRef = React.useRef(false);
     const overlayComponentSequenceRef = React.useRef(0);
     const activeOverlayRef = React.useRef<ActiveAnalysisResultOverlay | null>(null);
-    const componentRefs = useOptionalAiToolComponentRefDirectory();
+    const componentRefs = useOptionalOperationComponentRefDirectory();
     const { getCategoryLabels, getLabelName } = useAiLabels();
     const retainedPages = pagination?.pages ?? EMPTY_ANALYSIS_RESULTS_PAGES;
     const activePageIndex = React.useMemo(() => {
@@ -1138,7 +1138,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     ): AnalysisResultOverlayOperation => {
         const result = resolveSpecificResult(pageId, resultId);
         if (!result) {
-            throw new ToolExecutionError(
+            throw new OperationExecutionError(
                 `Analysis result '${resultId}' was not found on page '${pageId}'.`,
             );
         }
@@ -1146,20 +1146,20 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             !result.comparison
             || !hasComparableDriverExpertData(result.comparison, sessionGame)
         ) {
-            throw new ToolExecutionError(
+            throw new OperationExecutionError(
                 `Analysis result '${resultId}' has no supported overlay graph.`,
             );
         }
         if (!componentRefs) {
-            throw new ToolExecutionError('The graph overlay component directory is unavailable.');
+            throw new OperationExecutionError('The graph overlay component directory is unavailable.');
         }
         const presentationId = overlaySessionClient.current()?.presentationId;
         if (!presentationId) {
-            throw new ToolExecutionError('The graph overlay is unavailable.');
+            throw new OperationExecutionError('The graph overlay is unavailable.');
         }
 
         let safelyAbortOverlay: () => void = () => undefined;
-        const controller = createControlledAiToolOperation<
+        const controller = createControlledOperation<
             AnalysisResultOverlayResult,
             never,
             AnalysisResultOverlayTerminationStatus
@@ -1171,7 +1171,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
 
         activeOverlayRef.current?.terminate(
             'replaced',
-            new ToolExecutionError('A newer graph replaced the active Analysis Results display.'),
+            new OperationExecutionError('A newer graph replaced the active Analysis Results display.'),
         );
 
         const componentName = `${name}:driver-expert-comparison:${++overlayComponentSequenceRef.current}`;
@@ -1192,7 +1192,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             }
             controller.reject(
                 status,
-                error ?? new ToolExecutionError('The Analysis Results graph display closed.'),
+                error ?? new OperationExecutionError('The Analysis Results graph display closed.'),
             );
         };
         const handleAbort = () => finish('cancelled', createAnalysisResultOverlayAbortError());
@@ -1264,7 +1264,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                     pendingForPage?.delete(waiter);
                     if (pendingForPage?.size === 0) pendingPageWaitersRef.current.delete(pageId);
                     reject(createAnalysisResultsReadinessError(name, pageId, 'timeout'));
-                }, AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS),
+                }, OPERATION_COMPONENT_MOUNT_TIMEOUT_MS),
             };
             const pendingForPage = pendingPageWaitersRef.current.get(pageId)
                 ?? new Set<AnalysisResultPageWaiter>();
@@ -1305,9 +1305,9 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                     pendingSelectionWaitersRef.current.delete(waiter);
                     reject(createAnalysisResultsApplyError(
                         name,
-                        `Analysis Results page selection did not render within ${AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS}ms.`,
+                        `Analysis Results page selection did not render within ${OPERATION_COMPONENT_MOUNT_TIMEOUT_MS}ms.`,
                     ));
-                }, AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS),
+                }, OPERATION_COMPONENT_MOUNT_TIMEOUT_MS),
             };
             pendingSelectionWaitersRef.current.add(waiter);
         });
@@ -1384,7 +1384,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         if (!active || active.presentationId === presentation?.presentationId) return;
         active.terminate(
             'cancelled',
-            new ToolExecutionError('The overlay session closed the Analysis Results graph.'),
+            new OperationExecutionError('The overlay session closed the Analysis Results graph.'),
         );
     }), []);
 
@@ -1392,7 +1392,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         const unsubscribe = getFloatingChatLifecycleApi()?.onFloatingChatClosed?.(() => {
             activeOverlayRef.current?.terminate(
                 'cancelled',
-                new ToolExecutionError('The floating overlay closed the Analysis Results graph.'),
+                new OperationExecutionError('The floating overlay closed the Analysis Results graph.'),
             );
         });
         return typeof unsubscribe === 'function' ? unsubscribe : undefined;
@@ -1401,7 +1401,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     React.useLayoutEffect(() => () => {
         activeOverlayRef.current?.terminate(
             'cancelled',
-            new ToolExecutionError('Analysis Results unmounted before the graph display completed.'),
+            new OperationExecutionError('Analysis Results unmounted before the graph display completed.'),
         );
     }, []);
 
@@ -1445,7 +1445,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             });
             pendingSelectionWaitersRef.current.clear();
 
-            return createAiToolOperationFrom(async () => {
+            return createOperationFrom(async () => {
                 const requestedPageNumber = args.page_number ?? null;
                 const pageCount = pagination ? retainedPages.length : 1;
                 if (pagination && pageCount === 0) {
@@ -1494,7 +1494,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 };
             }, 'ready');
         },
-        queryAnalysisResult: ({ query }) => createAiToolOperationFrom(async () => ({
+        queryAnalysisResult: ({ query }) => createOperationFrom(async () => ({
             status: 'ready' as const,
             data: await evaluateAllAnalysisResultsQuery(query, {
                 analyses: pagination ? retainedPages : [{
@@ -1583,7 +1583,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     React.useImperativeHandle(forwardedRef, () => handle, [handle]);
     const registeredHandleRef = React.useRef(handle);
     registeredHandleRef.current = handle;
-    useRegisterAiToolComponentRef(registeredHandleRef);
+    useRegisterOperationComponentRef(registeredHandleRef);
     const selectedTrendParent = TREND_PARENT_OPTIONS.find(({ value }) => value === trendParent)!;
     const trendTaxonomy = React.useMemo<OverallTrendQueryTaxonomy>(() => ({
         parent: {

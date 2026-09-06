@@ -3,7 +3,7 @@ import { AnalysisContext } from '../analysis-context';
 import DynamicVisualizationManager from '../visualization/DynamicVisualizationManager';
 import '../visualization/VisualizationRegistry'; // Initialize visualizations
 import './session-analysis-split.css';
-import { AI_TOOL_COMPONENT_NAMES } from 'contexts/AiToolComponentRefContext';
+import { OPERATION_COMPONENT_NAMES } from 'contexts/OperationComponentRefContext';
 
 const SessionAnalysisSplit: React.FC = () => {
     const analysisContext = useContext(AnalysisContext);
@@ -16,7 +16,7 @@ const SessionAnalysisSplit: React.FC = () => {
         <div className="sas-container">
             <div className="sas-panel" role="tabpanel">
                 <DynamicVisualizationManager
-                    name={AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER}
+                    name={OPERATION_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER}
                     onLayoutChange={handleVisualizationLayoutChange}
                 />
             </div>

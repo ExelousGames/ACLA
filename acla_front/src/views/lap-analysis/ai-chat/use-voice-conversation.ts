@@ -8,7 +8,7 @@
  * - **Text frames** — JSON tool-relay messages. The backend emits
  *   `{type:"tool_call",id,name,arguments}` frames; this hook dispatches
  *   them through a caller-supplied handler registry and replies with
- *   `{type:"tool_result",...}`. Workflow owners consume promise-native tool
+ *   `{type:"tool_result",...}`. Workflow owners consume promise-native
  *   operations and translate their status promises into non-terminal frames.
  */
 
@@ -16,18 +16,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import apiService from 'services/api.service';
 import { buildFormattedToolResultFrame } from './voice-tool-result-formatter';
 import {
-    AiToolError,
-    AiToolOperationAbortedError,
-    InvalidToolCallError,
-    ToolNotRegisteredError,
-    type AiToolOperation,
-    type AiToolExecutionOutput,
-    type AiToolNormalOutput,
-    type AiToolStatusPayload,
+    OperationError,
+    OperationAbortedError,
+    InvalidOperationCallError,
+    OperationNotRegisteredError,
+    type Operation,
+    type OperationExecutionOutput,
+    type OperationStatusPayload,
     type SerializedErrorCause,
-    normalizeAiToolError,
+    normalizeOperationError,
     serializeErrorCause,
-} from './ai-tool-base';
+} from './operation-base';
 
 const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
 const INLINE_FUNCTION_CALL_RE = /<function=([a-zA-Z0-9_.:-]+)\s*>?([\s\S]*?)<\/function>/g;
@@ -39,10 +38,10 @@ export type VoiceConversationState =
     | 'speaking'       // server is sending us audio
     | 'error';
 
-/** One frontend tool handler. Components expose operations, never transports. */
-export type FrontendToolHandler = (
+/** Shared handler for frontend tools and workflows. */
+export type FrontendOperationHandler = (
     args: Record<string, unknown>,
-) => AiToolOperation<AiToolNormalOutput, AiToolStatusPayload>;
+) => Operation<OperationExecutionOutput, OperationStatusPayload>;
 
 export interface AiSessionContext {
     session_mode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
@@ -93,11 +92,11 @@ export interface VoiceConversationOptions {
     chatLlmModel?: string | null;
     clientSessionId?: string;
     parentClientSessionId?: string | null;
-    /** Map of frontend tool name → handler. The LLM picks which tools to
+    /** Map of frontend operation name → handler. The LLM picks which operations to
      *  call from its system prompt; the backend routes the call to this
      *  hook over the WS via a `tool_call` text frame; we dispatch by
      *  name. Missing handlers are returned as failed tool_result frames. */
-    toolHandlers?: Record<string, FrontendToolHandler>;
+    operationHandlers?: Record<string, FrontendOperationHandler>;
     /** Compact frontend view/session state injected into the backend system
      *  context before the LLM chooses tools. */
     sessionContext?: AiSessionContext;
@@ -125,7 +124,7 @@ export interface VoiceConversation {
     micDisabled: boolean;
     /** Start the session — opens mic + WS. Throws if user denies mic. */
     start: (eventSessionId?: string) => Promise<void>;
-    /** System teardown — closes resources and aborts tools, retaining the session for resume. */
+    /** System teardown — closes resources and aborts operations, retaining the session for resume. */
     stop: () => void;
     setMicDisabled: (disabled: boolean) => void;
     /** Send a typed chat message over the WS. Returns false if no WS is
@@ -137,8 +136,8 @@ export interface VoiceConversation {
     sendToolStatus: (data: Record<string, unknown>) => boolean;
     /** Send a tool_result frame into the open voice session. */
     sendToolResult: (frame: ToolResultFrame) => boolean;
-    /** Execute a frontend tool through this session's subscription channel. */
-    executeToolCall: (call: SubscribedToolCall) => Promise<ToolSubscriptionResult | null>;
+    /** Execute a frontend operation through this session's subscription channel. */
+    executeOperationCall: (call: SubscribedOperationCall) => Promise<OperationSubscriptionResult | null>;
 }
 
 export interface ToolResultFrame {
@@ -148,20 +147,20 @@ export interface ToolResultFrame {
     arguments?: Record<string, unknown>;
 }
 
-export interface SubscribedToolCall {
+export interface SubscribedOperationCall {
     id?: string;
     name?: string;
     title?: string;
     arguments?: Record<string, unknown>;
 }
 
-interface ToolSubscriptionResultBase {
+interface OperationSubscriptionResultBase {
     id: string;
     name: string;
 }
 
-export type ToolSubscriptionResult = ToolSubscriptionResultBase & (
-    | { ok: true; result: AiToolExecutionOutput }
+export type OperationSubscriptionResult = OperationSubscriptionResultBase & (
+    | { ok: true; result: OperationExecutionOutput }
     | {
         ok: false;
         errorName: string;
@@ -173,9 +172,9 @@ export type ToolSubscriptionResult = ToolSubscriptionResultBase & (
 type ToolFrameSender = (payload: object) => void;
 type ToolEventEmitter = (event: VoiceEvent) => void;
 
-interface ExecuteSubscribedToolOptions {
-    call: SubscribedToolCall;
-    handlers: Record<string, FrontendToolHandler>;
+interface ExecuteSubscribedOperationOptions {
+    call: SubscribedOperationCall;
+    handlers: Record<string, FrontendOperationHandler>;
     sendText: ToolFrameSender;
     emitEvent?: ToolEventEmitter;
     makeRunId?: () => string;
@@ -241,7 +240,7 @@ const buildToolResultFrame = (
     };
 };
 
-const buildFailedToolResult = (error: AiToolError, status = 'failed') => ({
+const buildFailedToolResult = (error: OperationError, status = 'failed') => ({
     status,
     ok: false as const,
     name: error.name,
@@ -249,11 +248,11 @@ const buildFailedToolResult = (error: AiToolError, status = 'failed') => ({
     ...(error.cause !== undefined ? { cause: serializeErrorCause(error.cause) } : {}),
 });
 
-const buildFailedToolSubscriptionResult = (
+const buildFailedOperationSubscriptionResult = (
     id: string,
     toolName: string,
-    error: AiToolError,
-): ToolSubscriptionResult => ({
+    error: OperationError,
+): OperationSubscriptionResult => ({
     id,
     name: toolName,
     ok: false,
@@ -262,31 +261,31 @@ const buildFailedToolSubscriptionResult = (
     ...(error.cause !== undefined ? { cause: serializeErrorCause(error.cause) } : {}),
 });
 
-const getAiToolLogSummary = (payload: object): string => {
+const getOperationLogSummary = (payload: object): string => {
     const frame = payload as Record<string, unknown>;
     const parts = [frame.type, frame.name, frame.id]
         .filter((part): part is string => typeof part === 'string' && part.trim().length > 0);
     return parts.length > 0 ? ` (${parts.join(' / ')})` : '';
 };
 
-const logAiToolSend = (payload: object, json: string) => {
+const logOperationSend = (payload: object, json: string) => {
     const prettyJson = JSON.stringify(JSON.parse(json), null, 2);
-    console.groupCollapsed(`[ai-tool] sent to ai${getAiToolLogSummary(payload)}`);
+    console.groupCollapsed(`[ai-tool] sent to ai${getOperationLogSummary(payload)}`);
     console.log(prettyJson);
     console.groupEnd();
 };
 
-const defaultToolRunId = () =>
+const defaultOperationRunId = () =>
     `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-export const executeSubscribedFrontendTool = async ({
+export const executeSubscribedFrontendOperation = async ({
     call,
     handlers,
     sendText,
     emitEvent,
-    makeRunId = defaultToolRunId,
+    makeRunId = defaultOperationRunId,
     signal,
-}: ExecuteSubscribedToolOptions): Promise<ToolSubscriptionResult> => {
+}: ExecuteSubscribedOperationOptions): Promise<OperationSubscriptionResult> => {
     const id = call.id || makeRunId();
     const name = String(call.name || '').trim();
     const title = call.title || name;
@@ -297,12 +296,12 @@ export const executeSubscribedFrontendTool = async ({
     if (name !== 'start_agent_session') sendText(buildToolResultFrame(id, name, { status: 'started' }));
 
     if (!name) {
-        const error = new InvalidToolCallError(
+        const error = new InvalidOperationCallError(
             'Tool call is missing a name.',
         );
         const failure = buildFailedToolResult(error);
         sendText(buildToolResultFrame(id, name, failure));
-        return buildFailedToolSubscriptionResult(id, name, error);
+        return buildFailedOperationSubscriptionResult(id, name, error);
     }
 
     emitEvent?.({
@@ -319,9 +318,9 @@ export const executeSubscribedFrontendTool = async ({
     let removeAbortListener: (() => void) | undefined;
     let failureStatus = 'failed';
     try {
-        if (signal?.aborted) throw new AiToolOperationAbortedError();
+        if (signal?.aborted) throw new OperationAbortedError();
         if (!handler) {
-            throw new ToolNotRegisteredError(
+            throw new OperationNotRegisteredError(
                 `No handler is registered for '${name}'.`,
             );
         }
@@ -347,7 +346,7 @@ export const executeSubscribedFrontendTool = async ({
                 });
             }, (statusError) => {
                 if (signal?.aborted) return;
-                const error = normalizeAiToolError(statusError);
+                const error = normalizeOperationError(statusError);
                 const failure = buildFailedToolResult(error, 'status_failed');
                 console.error(`[ai-tool] '${name}' status failed.`, error);
                 sendText(buildToolResultFrame(id, name, failure));
@@ -366,9 +365,9 @@ export const executeSubscribedFrontendTool = async ({
         });
         const termination = await new Promise<{
             status: string;
-            result: AiToolExecutionOutput;
+            result: OperationExecutionOutput;
         }>((resolve) => operation.notifyTerminated(resolve));
-        if (signal?.aborted) throw new AiToolOperationAbortedError();
+        if (signal?.aborted) throw new OperationAbortedError();
         if (termination.result instanceof Error) {
             failureStatus = termination.status;
             throw termination.result;
@@ -386,10 +385,10 @@ export const executeSubscribedFrontendTool = async ({
         });
         return { id, name, ok: true, result: termination.result };
     } catch (err) {
-        const error = normalizeAiToolError(err);
+        const error = normalizeOperationError(err);
         const failure = buildFailedToolResult(
             error,
-            err instanceof AiToolOperationAbortedError ? 'aborted' : failureStatus,
+            err instanceof OperationAbortedError ? 'aborted' : failureStatus,
         );
         sendText(buildToolResultFrame(id, name, failure));
         emitEvent?.({
@@ -402,7 +401,7 @@ export const executeSubscribedFrontendTool = async ({
             errorName: error.name,
             message: error.message,
         });
-        return buildFailedToolSubscriptionResult(id, name, error);
+        return buildFailedOperationSubscriptionResult(id, name, error);
     } finally {
         removeAbortListener?.();
     }
@@ -469,14 +468,14 @@ export function useVoiceConversation(
         options.sessionId,
     ]);
 
-    // Always-fresh handler registry — updated as options.toolHandlers changes
+    // Always-fresh handler registry — updated as options.operationHandlers changes
     // without forcing the WS to reopen.
-    const toolHandlersRef = useRef<Record<string, FrontendToolHandler>>(
-        options.toolHandlers || {},
+    const operationHandlersRef = useRef<Record<string, FrontendOperationHandler>>(
+        options.operationHandlers || {},
     );
     useEffect(() => {
-        toolHandlersRef.current = options.toolHandlers || {};
-    }, [options.toolHandlers]);
+        operationHandlersRef.current = options.operationHandlers || {};
+    }, [options.operationHandlers]);
 
     // Same pattern for onEvent — keeps closures fresh without re-opening WS.
     const onEventRef = useRef<((event: VoiceEvent) => void) | undefined>(
@@ -771,7 +770,7 @@ export function useVoiceConversation(
                 if (ws.readyState !== WebSocket.OPEN) return;
                 try {
                     const json = JSON.stringify(payload);
-                    logAiToolSend(payload, json);
+                    logOperationSend(payload, json);
                     ws.send(json);
                 }
                 catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
@@ -785,9 +784,9 @@ export function useVoiceConversation(
                     console.warn('[ai-tool] bad tool_call frame:', msg);
                     return;
                 }
-                await executeSubscribedFrontendTool({
+                await executeSubscribedFrontendOperation({
                     call: { id, name, arguments: msg.arguments },
-                    handlers: toolHandlersRef.current,
+                    handlers: operationHandlersRef.current,
                     sendText,
                     emitEvent: emitConnectionEvent,
                     signal: connectionAbort.signal,
@@ -799,9 +798,9 @@ export function useVoiceConversation(
                 index: number,
             ) => {
                 const id = `inline-${Date.now()}-${index}-${Math.random().toString(36).substring(2, 9)}`;
-                await executeSubscribedFrontendTool({
+                await executeSubscribedFrontendOperation({
                     call: { id, name: call.name, arguments: call.arguments },
-                    handlers: toolHandlersRef.current,
+                    handlers: operationHandlersRef.current,
                     sendText,
                     emitEvent: emitConnectionEvent,
                     signal: connectionAbort.signal,
@@ -1013,9 +1012,9 @@ export function useVoiceConversation(
         if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return false;
         emitVoiceEvent({ kind: 'tool_status', data });
         try {
-            const frame = buildFormattedToolResultFrame(data, defaultToolRunId());
+            const frame = buildFormattedToolResultFrame(data, defaultOperationRunId());
             const json = JSON.stringify(frame);
-            logAiToolSend(frame, json);
+            logOperationSend(frame, json);
             ws.send(json);
             return true;
         } catch (err) {
@@ -1034,7 +1033,7 @@ export function useVoiceConversation(
                 getToolResultForAi(frame.result),
             );
             const json = JSON.stringify(payload);
-            logAiToolSend(payload, json);
+            logOperationSend(payload, json);
             ws.send(json);
             return true;
         } catch (err) {
@@ -1043,9 +1042,9 @@ export function useVoiceConversation(
         }
     }, []);
 
-    const executeToolCall = useCallback(async (
-        call: SubscribedToolCall,
-    ): Promise<ToolSubscriptionResult | null> => {
+    const executeOperationCall = useCallback(async (
+        call: SubscribedOperationCall,
+    ): Promise<OperationSubscriptionResult | null> => {
         const ws = wsRef.current;
         if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return null;
         const connectionAbort = connectionAbortRef.current;
@@ -1057,15 +1056,15 @@ export function useVoiceConversation(
             if (ws.readyState !== WebSocket.OPEN) return;
             try {
                 const json = JSON.stringify(payload);
-                logAiToolSend(payload, json);
+                logOperationSend(payload, json);
                 ws.send(json);
             }
             catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
         };
 
-        return executeSubscribedFrontendTool({
+        return executeSubscribedFrontendOperation({
             call,
-            handlers: toolHandlersRef.current,
+            handlers: operationHandlersRef.current,
             sendText,
             emitEvent: (event) => emitVoiceEvent({ ...event, clientSessionId: eventSessionId }),
             signal: connectionAbort.signal,
@@ -1092,6 +1091,6 @@ export function useVoiceConversation(
         sendUserText,
         sendToolStatus,
         sendToolResult,
-        executeToolCall,
+        executeOperationCall,
     };
 }

@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import apiService from 'services/api.service';
 import { useVoiceConversation } from '../use-voice-conversation';
-import { createAiToolDeferred, createControlledAiToolOperation } from '../ai-tool-base';
+import { createOperationDeferred, createControlledOperation } from '../operation-base';
 
 jest.mock('services/api.service', () => ({
     __esModule: true,
@@ -212,7 +212,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
         expect(result.current.sendUserText('hello')).toBe(false);
         expect(result.current.sendToolStatus({ status: 'working' })).toBe(false);
         expect(result.current.sendToolResult({ id: 'tool-1', name: 'test', result: {} })).toBe(false);
-        await expect(result.current.executeToolCall({ name: 'test' })).resolves.toBeNull();
+        await expect(result.current.executeOperationCall({ name: 'test' })).resolves.toBeNull();
         act(() => mockWorkletNodes[0].port.onmessage?.({
             data: { type: 'pcm', buffer: new ArrayBuffer(4) },
         } as MessageEvent));
@@ -361,15 +361,15 @@ describe('useVoiceConversation chat session lifecycle', () => {
         'immediately aborts all tool entry points on %s and ignores late results',
         async (disconnect) => {
             const onEvent = jest.fn();
-            const progress = createAiToolDeferred<{ status: string }>();
+            const progress = createOperationDeferred<{ status: string }>();
             const cleanups = [jest.fn(), jest.fn(), jest.fn()];
-            const controls = cleanups.map((cleanup) => createControlledAiToolOperation<
+            const controls = cleanups.map((cleanup) => createControlledOperation<
                 Record<string, unknown>, { status: string }
             >([progress.promise], cleanup));
             let nextControl = 0;
             const handler = jest.fn(() => controls[nextControl++].operation);
             const { result, unmount } = renderHook(() => useVoiceConversation({
-                clientSessionId: 'client-1', toolHandlers: { test_tool: handler }, onEvent,
+                clientSessionId: 'client-1', operationHandlers: { test_tool: handler }, onEvent,
             }));
             const socket = await startAndOpen(result);
             markReady(socket, 'server-chat-1', false);
@@ -379,9 +379,9 @@ describe('useVoiceConversation chat session lifecycle', () => {
                     type: 'assistant_transcript', text: '<function=test_tool>{}</function>',
                 });
             });
-            let directResult: ReturnType<typeof result.current.executeToolCall>;
+            let directResult: ReturnType<typeof result.current.executeOperationCall>;
             act(() => {
-                directResult = result.current.executeToolCall({ id: 'direct-1', name: 'test_tool' });
+                directResult = result.current.executeOperationCall({ id: 'direct-1', name: 'test_tool' });
             });
             expect(handler).toHaveBeenCalledTimes(3);
             const sentBeforeDisconnect = socket.send.mock.calls.length;
@@ -401,7 +401,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
             expect(mockWorkletNodes[0].disconnect).toHaveBeenCalled();
             mockAudioContexts.forEach((context) => expect(context.close).toHaveBeenCalled());
             await act(async () => {
-                await expect(directResult!).resolves.toMatchObject({ ok: false, message: 'AI tool operation was aborted.' });
+                await expect(directResult!).resolves.toMatchObject({ ok: false, message: 'Operation was aborted.' });
                 progress.resolve({ status: 'too late' });
                 controls.forEach((control) => control.resolve('complete', { value: 'too late' }));
                 await Promise.resolve();
@@ -411,7 +411,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
                 .filter((event) => event.kind === 'tool_call' && event.status === 'completed');
             expect(completed).toHaveLength(3);
             completed.forEach((event) => expect(event).toMatchObject({
-                ok: false, clientSessionId: 'client-1', message: 'AI tool operation was aborted.',
+                ok: false, clientSessionId: 'client-1', message: 'Operation was aborted.',
             }));
             act(() => socket.message({ type: 'tool_call', id: 'late-call', name: 'test_tool' }));
             expect(handler).toHaveBeenCalledTimes(3);
@@ -420,9 +420,9 @@ describe('useVoiceConversation chat session lifecycle', () => {
 
     it('keeps tools and text chat active while the microphone is disabled', async () => {
         const cleanup = jest.fn();
-        const control = createControlledAiToolOperation<Record<string, unknown>>([], cleanup);
+        const control = createControlledOperation<Record<string, unknown>>([], cleanup);
         const { result } = renderHook(() => useVoiceConversation({
-            toolHandlers: { test_tool: () => control.operation },
+            operationHandlers: { test_tool: () => control.operation },
         }));
         const socket = await startAndOpen(result);
         markReady(socket, 'server-chat-1', false);
@@ -448,10 +448,10 @@ describe('useVoiceConversation chat session lifecycle', () => {
 
     it('aborts the old connection on identity changes and isolates a newly created session', async () => {
         const cleanup = jest.fn();
-        const control = createControlledAiToolOperation<Record<string, unknown>>([], cleanup);
+        const control = createControlledOperation<Record<string, unknown>>([], cleanup);
         const handler = jest.fn(() => control.operation);
         const { result, rerender } = renderHook(({ clientSessionId }) => useVoiceConversation({
-            clientSessionId, toolHandlers: { test_tool: handler },
+            clientSessionId, operationHandlers: { test_tool: handler },
         }), { initialProps: { clientSessionId: 'client-1' } });
         const oldSocket = await startAndOpen(result);
         markReady(oldSocket, 'server-chat-1', false);
@@ -474,12 +474,12 @@ describe('useVoiceConversation chat session lifecycle', () => {
 
     it('executes fresh tools after resuming without reviving the aborted operation', async () => {
         const controls = [
-            createControlledAiToolOperation<Record<string, unknown>>(),
-            createControlledAiToolOperation<Record<string, unknown>>(),
+            createControlledOperation<Record<string, unknown>>(),
+            createControlledOperation<Record<string, unknown>>(),
         ];
         let index = 0;
         const { result } = renderHook(() => useVoiceConversation({
-            toolHandlers: { test_tool: () => controls[index++].operation },
+            operationHandlers: { test_tool: () => controls[index++].operation },
         }));
         const oldSocket = await startAndOpen(result);
         markReady(oldSocket, 'current-session', false);

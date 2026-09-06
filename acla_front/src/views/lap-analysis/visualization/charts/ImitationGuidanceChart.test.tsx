@@ -1,8 +1,8 @@
 import React, { createRef } from 'react';
 import { act, render, screen } from '@testing-library/react';
 import apiService from 'services/api.service';
-import { AiToolComponentRefProvider } from 'contexts/AiToolComponentRefContext';
-import { VisualizationControlFailedError } from 'contexts/AiToolComponentError';
+import { OperationComponentRefProvider } from 'contexts/OperationComponentRefContext';
+import { VisualizationControlFailedError } from 'contexts/OperationComponentError';
 import ImitationGuidanceChart, { ImitationGuidanceChartHandle } from './ImitationGuidanceChart';
 
 jest.mock('@radix-ui/themes', () => {
@@ -38,7 +38,7 @@ const componentName = 'visualization:imitation-guidance';
 const renderChart = (data?: any) => {
     const ref = createRef<ImitationGuidanceChartHandle>();
     render(
-        <AiToolComponentRefProvider>
+        <OperationComponentRefProvider>
             <ImitationGuidanceChart
                 ref={ref}
                 id="guidance-1"
@@ -47,7 +47,7 @@ const renderChart = (data?: any) => {
                 onUpdate={() => true}
                 onDisable={() => true}
             />
-        </AiToolComponentRefProvider>,
+        </OperationComponentRefProvider>,
     );
     return ref;
 };

@@ -1,6 +1,6 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
-import { AI_TOOL_COMPONENT_NAMES, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
-import { VisualizationManagerUnavailableError } from 'contexts/AiToolComponentError';
+import { OPERATION_COMPONENT_NAMES, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import { VisualizationManagerUnavailableError } from 'contexts/OperationComponentError';
 import VisualizationPanelManager, {
     VisualizationManagerHandle,
 } from 'views/lap-analysis/visualization/VisualizationPanelManager';
@@ -89,7 +89,7 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
     }
 
     protected getDefaultComponentName(type: string) {
-        if (type === 'baseline-collection') return AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION;
+        if (type === 'baseline-collection') return OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION;
         return getVisualizationComponentName(type);
     }
 
@@ -183,7 +183,7 @@ const LiveTelemetryWorkspace = forwardRef<VisualizationManagerHandle, LiveTeleme
         requestVisualization: (options) => managerRef.current?.requestVisualization({
             ...options,
             name: options.type === 'baseline-collection'
-                ? AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION
+                ? OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION
                 : options.name,
         }) ?? unavailable(name),
         updateVisualization: (componentName, data, config) => (
@@ -194,7 +194,7 @@ const LiveTelemetryWorkspace = forwardRef<VisualizationManagerHandle, LiveTeleme
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     const registeredHandleRef = useRef(handle);
     registeredHandleRef.current = handle;
-    useRegisterAiToolComponentRef(registeredHandleRef);
+    useRegisterOperationComponentRef(registeredHandleRef);
 
     return <LiveTelemetryWorkspaceImpl ref={managerRef} name={name} />;
 });

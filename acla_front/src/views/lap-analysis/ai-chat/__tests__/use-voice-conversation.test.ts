@@ -1,19 +1,19 @@
 import {
-    executeSubscribedFrontendTool,
+    executeSubscribedFrontendOperation,
     extractInlineFunctionCalls,
-    type FrontendToolHandler,
+    type FrontendOperationHandler,
 } from '../use-voice-conversation';
 import {
-    createAiToolOperation,
-    createAiToolOperationFrom,
-    createControlledAiToolOperation,
-} from '../ai-tool-base';
+    createOperation,
+    createOperationFrom,
+    createControlledOperation,
+} from '../operation-base';
 import { AnalysisResultsQueryError } from '../../visualization/charts/analysisResultsQuery';
 
-const execute = async (handler: FrontendToolHandler) => {
+const execute = async (handler: FrontendOperationHandler) => {
     const frames: any[] = [];
     const events: any[] = [];
-    const result = await executeSubscribedFrontendTool({
+    const result = await executeSubscribedFrontendOperation({
         call: { id: 'call-1', name: 'test_tool', title: 'Test tool' },
         handlers: { test_tool: handler },
         sendText: (frame) => frames.push(frame),
@@ -22,9 +22,9 @@ const execute = async (handler: FrontendToolHandler) => {
     return { events, frames, result };
 };
 
-describe('executeSubscribedFrontendTool', () => {
+describe('executeSubscribedFrontendOperation', () => {
     it('emits started, progress, and completion statuses without a final flag', async () => {
-        const { frames, events, result } = await execute(() => createAiToolOperation(
+        const { frames, events, result } = await execute(() => createOperation(
             Promise.resolve({ status: 'complete', value: 7 }),
             [Promise.resolve({ status: 'working', progress: 50 })],
             'complete',
@@ -41,7 +41,7 @@ describe('executeSubscribedFrontendTool', () => {
     });
 
     it('reports rejected progress delivery without changing the operation result', async () => {
-        const { frames, result } = await execute(() => createAiToolOperation(
+        const { frames, result } = await execute(() => createOperation(
             Promise.resolve({ status: 'complete' }),
             [Promise.reject(new Error('progress unavailable'))],
             'complete',
@@ -55,11 +55,11 @@ describe('executeSubscribedFrontendTool', () => {
     });
 
     it('uses the notified terminal status when the result is missing or conflicts', async () => {
-        const conflicting = await execute(() => createAiToolOperation(
+        const conflicting = await execute(() => createOperation(
             { status: 'payload-status', value: 7 },
             'notified-status',
         ));
-        const missing = await execute(() => createAiToolOperation(
+        const missing = await execute(() => createOperation(
             { value: 8 },
             'explicit-status',
         ));
@@ -75,19 +75,19 @@ describe('executeSubscribedFrontendTool', () => {
     });
 
     it.each([
-        ['resolved Error', () => createAiToolOperation(new Error('broken'), 'failed')],
-        ['rejected promise', () => createAiToolOperationFrom(() => { throw new Error('broken'); }, 'failed')],
+        ['resolved Error', () => createOperation(new Error('broken'), 'failed')],
+        ['rejected promise', () => createOperationFrom(() => { throw new Error('broken'); }, 'failed')],
     ])('normalizes a %s into the same failed status frame', async (_label, handler) => {
         const { frames, result } = await execute(handler as any);
 
         expect(frames.at(-1)).toMatchObject({
-            result: { status: 'failed', ok: false, name: 'ToolExecutionError', message: 'broken' },
+            result: { status: 'failed', ok: false, name: 'OperationExecutionError', message: 'broken' },
         });
         expect(result).toMatchObject({ ok: false, message: 'broken' });
     });
 
     it.each(['cancelled', 'replaced'])('preserves the producer error status %s', async (status) => {
-        const control = createControlledAiToolOperation<Record<string, unknown>>();
+        const control = createControlledOperation<Record<string, unknown>>();
         const execution = execute(() => control.operation);
         control.reject(status, new Error('operation stopped'));
 
@@ -99,7 +99,7 @@ describe('executeSubscribedFrontendTool', () => {
     });
 
     it('reports an aborted operation with its status', async () => {
-        const control = createControlledAiToolOperation<Record<string, unknown>>();
+        const control = createControlledOperation<Record<string, unknown>>();
         const execution = execute(() => control.operation);
         control.operation.abort();
 
@@ -108,11 +108,11 @@ describe('executeSubscribedFrontendTool', () => {
     });
 
     it.each([
-        [undefined, 'InvalidToolCallError'],
-        ['missing_tool', 'ToolNotRegisteredError'],
+        [undefined, 'InvalidOperationCallError'],
+        ['missing_tool', 'OperationNotRegisteredError'],
     ])('reports an invalid call %s with a failed status', async (name, errorName) => {
         const frames: object[] = [];
-        await executeSubscribedFrontendTool({
+        await executeSubscribedFrontendOperation({
             call: { id: 'invalid-call', name },
             handlers: {},
             sendText: (frame) => frames.push(frame),
@@ -129,7 +129,7 @@ describe('executeSubscribedFrontendTool', () => {
             token: ']',
             message: 'Expected a closing bracket.',
         };
-        const { frames, result } = await execute(() => createAiToolOperationFrom(() => {
+        const { frames, result } = await execute(() => createOperationFrom(() => {
             throw new AnalysisResultsQueryError(detail);
         }, 'failed'));
 
@@ -137,7 +137,7 @@ describe('executeSubscribedFrontendTool', () => {
             result: {
                 status: 'failed',
                 ok: false,
-                name: 'ToolExecutionError',
+                name: 'OperationExecutionError',
                 message: detail.message,
                 cause: {
                     name: 'AnalysisResultsQueryError',

@@ -4,14 +4,14 @@ import SideMainMenu from 'views/side-main-menu/side-main-menu';
 import HeaderMenu from 'views/header-menu/header-menu';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { getDefaultDashboardTab } from './dashboard-navigation';
-import { AiToolComponentRefProvider } from 'contexts/AiToolComponentRefContext';
+import { OperationComponentRefProvider } from 'contexts/OperationComponentRefContext';
 import DashboardAssistant from './DashboardAssistant';
 
 const MainDashboard = ({ onTaskCreated }) => {
     const environment = useEnvironment();
     const [mainMenuTab, setMainMenuTab] = useState(() => getDefaultDashboardTab(environment));
     return (
-        <AiToolComponentRefProvider>
+        <OperationComponentRefProvider>
             <div className="main-dashboard-container">
                 <div className="main-dashboard-header">
                     <HeaderMenu />
@@ -24,7 +24,7 @@ const MainDashboard = ({ onTaskCreated }) => {
                     <DashboardAssistant activeDashboardTab={mainMenuTab} />
                 </div>
             </div>
-        </AiToolComponentRefProvider>
+        </OperationComponentRefProvider>
     );
 };
 

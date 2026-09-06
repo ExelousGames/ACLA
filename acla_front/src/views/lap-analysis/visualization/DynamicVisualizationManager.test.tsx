@@ -2,10 +2,10 @@ import React from 'react';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
-    AiToolComponentRefDirectory,
-    AiToolComponentRefProvider,
-    useAiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    OperationComponentRefDirectory,
+    OperationComponentRefProvider,
+    useOperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import type { VisualizationManagerHandle } from './VisualizationPanelManager';
 
 jest.mock('@radix-ui/themes', () => {
@@ -45,10 +45,10 @@ jest.mock('./charts/AnalysisResultsChart', () => () => <div>Analysis results cha
 
 import DynamicVisualizationManager from './DynamicVisualizationManager';
 
-let componentDirectory: AiToolComponentRefDirectory | null = null;
+let componentDirectory: OperationComponentRefDirectory | null = null;
 
 const ComponentDirectoryObserver = () => {
-    componentDirectory = useAiToolComponentRefDirectory();
+    componentDirectory = useOperationComponentRefDirectory();
     return null;
 };
 
@@ -94,10 +94,10 @@ describe('DynamicVisualizationManager named ref', () => {
 
     it('registers the permanent map from its parent manager', () => {
         render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <ComponentDirectoryObserver />
                 <DynamicVisualizationManager name="recorded-visualization-manager" />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
 
         const map = componentDirectory!

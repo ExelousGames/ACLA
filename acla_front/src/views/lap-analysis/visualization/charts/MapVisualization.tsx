@@ -7,9 +7,9 @@ import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
 import { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { VisualizationProps } from '../VisualizationRegistry';
-import { NamedAiToolComponentHandle } from 'contexts/AiToolComponentRefContext';
+import { NamedOperationComponentHandle } from 'contexts/OperationComponentRefContext';
 import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
-import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
 import {
     buildCircuitTrackLayout,
     buildSessionPointsTrackLayout,
@@ -155,7 +155,7 @@ const getBounds = (frames: TelemetryFrame[], trackLayout: CircuitTrackLayout) =>
     };
 };
 
-export interface MapVisualizationHandle extends NamedAiToolComponentHandle {
+export interface MapVisualizationHandle extends NamedOperationComponentHandle {
     updateMap(data: any, config?: any): true;
     disableMap(): true;
 }

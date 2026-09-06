@@ -1,9 +1,9 @@
 import {
-    AI_TOOL_COMPONENT_NAMES,
+    OPERATION_COMPONENT_NAMES,
     awaitNamedComponentHandle,
     resolveNamedComponentHandle,
-    type AiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    type OperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import type { SegmentClassificationResult } from 'views/lap-analysis/recorded-session-analysis';
 import type { VisualizationManagerHandle } from './VisualizationPanelManager';
 import type { AnalysisResultsChartHandle } from './charts/AnalysisResultsChart';
@@ -65,7 +65,7 @@ export const openAnalysisResultsVisualization = async ({
     result,
     records,
 }: {
-    directory: AiToolComponentRefDirectory;
+    directory: OperationComponentRefDirectory;
     managerName: string;
     result: SegmentClassificationResult;
     records: Record<string, any>[];
@@ -107,9 +107,9 @@ export const openAnalysisResultsVisualization = async ({
 };
 
 export const resolveAnalysisLabel = (
-    directory: AiToolComponentRefDirectory | null,
+    directory: OperationComponentRefDirectory | null,
     labelId: string,
 ): string | undefined => directory?.findComponentRef<{
     getComponentName(): string;
     getLabelName(id: string): string | undefined;
-}>(AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)?.current?.getLabelName(labelId);
+}>(OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)?.current?.getLabelName(labelId);

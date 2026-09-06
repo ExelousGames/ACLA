@@ -1,20 +1,21 @@
 import React from 'react';
-import { AiToolComponentBase } from './AiToolComponentBase';
+import { WorkflowComponentBase } from './WorkflowComponentBase';
+import { asWorkflow, type Workflow } from './workflow';
 import type {
-    NamedAiToolComponentHandle,
-} from 'contexts/AiToolComponentRefContext';
-import type { AiToolDispatcher } from './RepeatablePlan';
+    NamedOperationComponentHandle,
+} from 'contexts/OperationComponentRefContext';
+import type { OperationDispatcher } from './operation';
 import {
-    createControlledAiToolOperation,
-    createAiToolOperationFrom,
-    type ControlledAiToolOperation,
-    type AiToolOperation,
-} from './ai-tool-operation';
+    createControlledOperation,
+    createOperationFrom,
+    type ControlledOperation,
+    type Operation,
+} from './operation';
 import {
     ProcedurePlanReplacedError,
     ProcedurePlanStepFailedError,
-} from 'contexts/AiToolComponentError';
-import { serializeError, type SerializedError } from 'errors/AiToolError';
+} from 'contexts/OperationComponentError';
+import { serializeError, type SerializedError } from 'errors/OperationError';
 import type {
     AiOverlayComponentHandle,
     AiOverlayRenderer,
@@ -90,22 +91,22 @@ export type ProcedurePlanRunResult = {
     reason?: string;
 };
 
-export interface ProcedurePlanHandle extends NamedAiToolComponentHandle, AiOverlayComponentHandle<ProcedurePlanSnapshot | null> {
-    createProcedurePlan(plan: ProcedurePlanState): AiToolOperation<ProcedurePlanRunResult>;
-    advancePlanStep(reason?: string): AiToolOperation<ProcedurePlanRunResult>;
-    clearProcedurePlan(reason?: string): AiToolOperation<ProcedurePlanRunResult>;
+export interface ProcedurePlanHandle extends NamedOperationComponentHandle, AiOverlayComponentHandle<ProcedurePlanSnapshot | null> {
+    createProcedurePlan(plan: ProcedurePlanState): Workflow<ProcedurePlanRunResult>;
+    advancePlanStep(reason?: string): Workflow<ProcedurePlanRunResult>;
+    clearProcedurePlan(reason?: string): Workflow<ProcedurePlanRunResult>;
     getProcedurePlan(): ProcedurePlanState | null;
 }
 
 type ActiveProcedurePlanOperation = {
-    controller: ControlledAiToolOperation<
+    controller: ControlledOperation<
         ProcedurePlanRunResult,
         never,
         'complete' | 'failed' | 'cancelled' | 'replaced'
     >;
-    nestedOperation: AiToolOperation<
-        import('./RepeatablePlan').NestedAiToolResult,
-        import('./RepeatablePlan').NestedAiToolStatus
+    nestedOperation: Operation<
+        import('./RepeatablePlan').NestedOperationResult,
+        import('./RepeatablePlan').NestedOperationStatus
     > | null;
 };
 
@@ -114,7 +115,7 @@ const defaultProcedurePlanErrorHandler: ProcedurePlanTaskErrorHandler = (request
 };
 
 export class ProcedurePlanRunner
-extends AiToolComponentBase<ProcedurePlanSnapshot | null>
+extends WorkflowComponentBase<ProcedurePlanSnapshot | null>
 implements ProcedurePlanHandle {
     private plan: ProcedurePlanState | null = null;
     private active = false;
@@ -127,7 +128,7 @@ implements ProcedurePlanHandle {
 
     constructor(
         componentName: string,
-        private readonly dispatchTool: AiToolDispatcher,
+        private readonly dispatchOperation: OperationDispatcher,
         onChange?: ProcedurePlanChangeHandler,
         onError: ProcedurePlanTaskErrorHandler = defaultProcedurePlanErrorHandler,
     ) {
@@ -136,15 +137,15 @@ implements ProcedurePlanHandle {
         this.onError = onError;
     }
 
-    createProcedurePlan(plan: ProcedurePlanState): AiToolOperation<ProcedurePlanRunResult> {
+    createProcedurePlan(plan: ProcedurePlanState): Workflow<ProcedurePlanRunResult> {
         return this.replace(plan);
     }
 
-    advancePlanStep(reason?: string): AiToolOperation<ProcedurePlanRunResult> {
+    advancePlanStep(reason?: string): Workflow<ProcedurePlanRunResult> {
         return this.advance(reason);
     }
 
-    clearProcedurePlan(reason?: string): AiToolOperation<ProcedurePlanRunResult> {
+    clearProcedurePlan(reason?: string): Workflow<ProcedurePlanRunResult> {
         return this.clear(reason);
     }
 
@@ -176,7 +177,7 @@ implements ProcedurePlanHandle {
         return this.plan ? cloneProcedurePlanState(this.plan) : null;
     }
 
-    replace(plan: ProcedurePlanState | null): AiToolOperation<ProcedurePlanRunResult> {
+    replace(plan: ProcedurePlanState | null): Workflow<ProcedurePlanRunResult> {
         return this.startOperation(() => this.runReplace(plan));
     }
 
@@ -190,8 +191,8 @@ implements ProcedurePlanHandle {
         return this.runNext(generation);
     }
 
-    clear(reason?: string): AiToolOperation<ProcedurePlanRunResult> {
-        return createAiToolOperationFrom(() => this.runClear(reason), 'cleared');
+    clear(reason?: string): Workflow<ProcedurePlanRunResult> {
+        return asWorkflow(createOperationFrom(() => this.runClear(reason), 'cleared'));
     }
 
     private runClear(reason?: string): ProcedurePlanRunResult {
@@ -206,7 +207,7 @@ implements ProcedurePlanHandle {
         return { ...cleared, ...(reason ? { reason } : {}) };
     }
 
-    advance(reason?: string): AiToolOperation<ProcedurePlanRunResult> {
+    advance(reason?: string): Workflow<ProcedurePlanRunResult> {
         return this.startOperation(() => this.runAdvance(reason));
     }
 
@@ -240,13 +241,13 @@ implements ProcedurePlanHandle {
 
     private startOperation(
         run: () => Promise<ProcedurePlanRunResult>,
-    ): AiToolOperation<ProcedurePlanRunResult> {
+    ): Workflow<ProcedurePlanRunResult> {
         this.cancelActiveOperation('replaced', new ProcedurePlanReplacedError(
             this.getComponentName(),
             'The procedure plan operation was replaced.',
         ));
         let operation!: ActiveProcedurePlanOperation;
-        const controller = createControlledAiToolOperation<
+        const controller = createControlledOperation<
             ProcedurePlanRunResult,
             never,
             'complete' | 'failed' | 'cancelled' | 'replaced'
@@ -265,7 +266,7 @@ implements ProcedurePlanHandle {
         ).finally(() => {
             if (this.activeOperation === operation) this.activeOperation = null;
         });
-        return operation.controller.operation;
+        return asWorkflow(operation.controller.operation);
     }
 
     private cancelActiveOperation(
@@ -323,17 +324,17 @@ implements ProcedurePlanHandle {
                 )),
             });
             const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-            let output: import('./RepeatablePlan').NestedAiToolResult | null = null;
+            let output: import('./RepeatablePlan').NestedOperationResult | null = null;
             let executionError: unknown;
-            let nestedOperation: AiToolOperation<
-                import('./RepeatablePlan').NestedAiToolResult,
-                import('./RepeatablePlan').NestedAiToolStatus
+            let nestedOperation: Operation<
+                import('./RepeatablePlan').NestedOperationResult,
+                import('./RepeatablePlan').NestedOperationStatus
             > | null = null;
             try {
                 const activeOperation = this.activeOperation;
-                nestedOperation = this.dispatchTool(
+                nestedOperation = this.dispatchOperation(
                     request.name || '',
-                    getProcedurePlanToolArguments(request),
+                    getProcedurePlanOperationArguments(request),
                 );
                 if (
                     !activeOperation
@@ -346,7 +347,7 @@ implements ProcedurePlanHandle {
                 }
                 const termination = await new Promise<{
                     status: string;
-                    result: import('./RepeatablePlan').NestedAiToolResult | Error;
+                    result: import('./RepeatablePlan').NestedOperationResult | Error;
                 }>((resolve) => nestedOperation!.notifyTerminated(resolve));
                 if (termination.result instanceof Error) throw termination.result;
                 output = termination.result;
@@ -405,7 +406,7 @@ implements ProcedurePlanHandle {
     private toTaskResult(
         request: ProcedurePlanRequestSnapshot,
         runId: string,
-        output: import('./RepeatablePlan').NestedAiToolResult | null,
+        output: import('./RepeatablePlan').NestedOperationResult | null,
         error: ProcedurePlanStepFailedError | undefined,
     ): ProcedurePlanTaskResult {
         return {
@@ -519,7 +520,7 @@ const toRecord = (value: unknown): Record<string, unknown> | null => (
         : null
 );
 
-export const getProcedurePlanToolArguments = (
+export const getProcedurePlanOperationArguments = (
     request: ProcedurePlanRequestSnapshot,
 ): Record<string, unknown> => {
     const payload = toRecord(request.payload);
@@ -528,7 +529,7 @@ export const getProcedurePlanToolArguments = (
     return toRecord(nested) || payload;
 };
 
-export const getProcedurePlanToolRunKey = (
+export const getProcedurePlanOperationRunKey = (
     plan: ProcedurePlanState | ProcedurePlanSnapshot,
     request: ProcedurePlanRequestSnapshot,
 ): string => `${plan.currentStep}:${request.name || ''}:${JSON.stringify(request.payload ?? null)}`;

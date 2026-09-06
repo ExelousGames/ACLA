@@ -3,9 +3,9 @@ import { Badge, Box, Card, Flex, ScrollArea, Table, Text, TextField } from '@rad
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { VisualizationProps } from '../VisualizationRegistry';
 import { EventType, SessionEvent } from '../../session-intelligence/types';
-import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
-import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
 
 const TYPE_COLOR: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
     CORNER: 'blue',
@@ -37,7 +37,7 @@ const formatMetadata = (metadata?: Record<string, any>): string => {
         .join(', ');
 };
 
-export interface EventLogChartHandle extends NamedAiToolComponentHandle {
+export interface EventLogChartHandle extends NamedOperationComponentHandle {
     updateEvents(events: SessionEvent[]): true;
     disableEventLog(): true;
 }
@@ -70,7 +70,7 @@ const EventLogChart = forwardRef<EventLogChartHandle, VisualizationProps>(({
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     const registeredHandleRef = React.useRef(handle);
     registeredHandleRef.current = handle;
-    useRegisterAiToolComponentRef(registeredHandleRef);
+    useRegisterOperationComponentRef(registeredHandleRef);
 
     const events: SessionEvent[] = useMemo(() => {
         return Array.isArray(data) ? data : [];

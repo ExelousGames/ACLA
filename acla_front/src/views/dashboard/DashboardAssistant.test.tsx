@@ -1,10 +1,10 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    AiToolComponentRefProvider,
-    useRegisterAiToolComponentRef,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    OperationComponentRefProvider,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
 import type { AnalysisContextType } from 'views/lap-analysis/analysis-context';
 import { DASHBOARD_TABS } from './dashboard-navigation';
 import DashboardAssistant from './DashboardAssistant';
@@ -27,7 +27,7 @@ const RecordedScreenReference = ({ snapshot }: { snapshot: AnalysisContextType }
     const componentRef = React.useRef<any>(null);
     if (componentRef.current === null) {
         componentRef.current = {
-            getComponentName: () => AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+            getComponentName: () => OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
             getAssistantSnapshot: () => snapshotRef.current,
             subscribeAssistantSnapshot: (listener: () => void) => {
                 listenersRef.current.add(listener);
@@ -35,7 +35,7 @@ const RecordedScreenReference = ({ snapshot }: { snapshot: AnalysisContextType }
             },
         };
     }
-    useRegisterAiToolComponentRef(componentRef);
+    useRegisterOperationComponentRef(componentRef);
     return null;
 };
 
@@ -59,7 +59,7 @@ describe('DashboardAssistant', () => {
 
     it('tracks the recorded screen within the Analysis dashboard tab', () => {
         render(
-            <AiToolComponentRefProvider>
+            <OperationComponentRefProvider>
                 <RecordedScreenReference snapshot={{
                     activeTab: 'session',
                     sessionSelected: {
@@ -68,7 +68,7 @@ describe('DashboardAssistant', () => {
                     },
                 } as any} />
                 <DashboardAssistant activeDashboardTab={DASHBOARD_TABS.ANALYSIS} />
-            </AiToolComponentRefProvider>,
+            </OperationComponentRefProvider>,
         );
 
         expect(screen.getByTestId('dashboard-ai-chat')).toHaveAttribute('data-session-mode', 'recorded');

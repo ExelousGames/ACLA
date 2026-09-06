@@ -2,11 +2,11 @@ import React, { useLayoutEffect } from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import apiService from 'services/api.service';
 import {
-    AI_TOOL_COMPONENT_NAMES,
-    AiToolComponentRefProvider,
-    useAiToolComponentRefDirectory,
-    type AiToolComponentRefDirectory,
-} from 'contexts/AiToolComponentRefContext';
+    OPERATION_COMPONENT_NAMES,
+    OperationComponentRefProvider,
+    useOperationComponentRefDirectory,
+    type OperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
 import BaselineCollection, {
     getCompletedBaselineLapTimeMs,
     type BaselineAnalysisPayload,
@@ -21,7 +21,7 @@ import {
     BaselineCollectionNotStartedError,
     RecordedAnalysisFailedError,
     VisualizationRequestFailedError,
-} from 'contexts/AiToolComponentError';
+} from 'contexts/OperationComponentError';
 
 jest.mock('services/api.service', () => ({
     __esModule: true,
@@ -68,13 +68,13 @@ const makeSample = (lap: number, position: number, currentTime: number, lastTime
     ...(lastTime === undefined ? {} : { Graphics_last_time: lastTime }),
 });
 
-let directory: AiToolComponentRefDirectory | null = null;
+let directory: OperationComponentRefDirectory | null = null;
 let appendedPages: any[] = [];
 const appendAnalysisResultPage = jest.fn();
 let telemetrySequence = 0;
 
 const DirectoryObserver = () => {
-    directory = useAiToolComponentRefDirectory();
+    directory = useOperationComponentRefDirectory();
     return null;
 };
 
@@ -98,17 +98,17 @@ const Harness = ({
         }, telemetry);
     }, [telemetry]);
     return (
-        <AiToolComponentRefProvider>
+        <OperationComponentRefProvider>
             <DirectoryObserver />
             <LiveSessionContext.Provider value={{ appendAnalysisResultPage } as any}>
-                {show && <BaselineCollection name={AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION} />}
+                {show && <BaselineCollection name={OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION} />}
             </LiveSessionContext.Provider>
-        </AiToolComponentRefProvider>
+        </OperationComponentRefProvider>
     );
 };
 
 const getHandle = () => directory!
-    .findComponentRef<BaselineCollectionHandle>(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)!
+    .findComponentRef<BaselineCollectionHandle>(OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION)!
     .current!;
 
 const reserve = (name: string, value: Record<string, any>) => {
@@ -148,7 +148,7 @@ const installAnalysisComponents = ({
         }),
     };
     act(() => {
-        reserve(AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
+        reserve(OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
             getLabelName: jest.fn((id: string) => ({
                 MSP: 'Mistake (Practice)',
                 EA: 'Expert Adherence',
@@ -157,7 +157,7 @@ const installAnalysisComponents = ({
             }[id] || id)),
         });
         if (existingChart) reserve(chartName, chartHandle);
-        reserve(AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER, manager);
+        reserve(OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER, manager);
     });
     return { chartHandle, manager, visualizations };
 };
@@ -308,7 +308,7 @@ describe('BaselineCollection visualization', () => {
 
         await expect(restart.result).rejects.toMatchObject({
             name: 'BaselineCollectionNotStartedError',
-            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            componentName: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
             message: 'Baseline collection is not in progress. Start a new collection instead.',
         });
         await expect(restart.result).rejects.toBeInstanceOf(BaselineCollectionNotStartedError);
@@ -334,7 +334,7 @@ describe('BaselineCollection visualization', () => {
         expect(duplicate.statuses).toHaveLength(0);
         await expect(duplicate.result).rejects.toMatchObject({
             name: 'BaselineCollectionAlreadyStartedError',
-            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            componentName: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
             message: 'Baseline collection is already in progress.',
         });
         await expect(duplicate.result).rejects.toBeInstanceOf(BaselineCollectionAlreadyStartedError);
@@ -392,7 +392,7 @@ describe('BaselineCollection visualization', () => {
         expect(duplicate.statuses).toHaveLength(0);
         await expect(duplicate.result).rejects.toMatchObject({
             name: 'BaselineCollectionAlreadyStartedError',
-            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            componentName: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
             message: 'Baseline collection is already in progress.',
         });
         expect(handle.getTag()).toEqual(tagBeforeDuplicate);
@@ -620,7 +620,7 @@ describe('BaselineCollection visualization', () => {
         expect(firstHandle.getTag()).toMatchObject({ status: 'collecting' });
 
         view.rerender(<Harness telemetry={makeSample(0, 0.5, 50_000)} show={false} />);
-        expect(directory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
+        expect(directory!.findComponentRef(OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
         expect(firstHandle.getTag()).toBeNull();
         expect(firstHandle.getLapRecord()).toBeNull();
         await expect(firstOperation.result).rejects.toMatchObject({
@@ -895,7 +895,7 @@ describe('BaselineCollection visualization', () => {
         expect(failure).toBeInstanceOf(RecordedAnalysisFailedError);
         expect(failure).toMatchObject({
             name: 'RecordedAnalysisFailedError',
-            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            componentName: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
             message: 'classifier unavailable',
         });
         await waitFor(() => expect(
@@ -928,7 +928,7 @@ describe('BaselineCollection visualization', () => {
         const { manager } = installAnalysisComponents();
         manager.requestVisualization.mockImplementationOnce(() => {
             throw new VisualizationRequestFailedError(
-                AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+                OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
                 'Analysis Results is unavailable.',
             );
         });
@@ -945,7 +945,7 @@ describe('BaselineCollection visualization', () => {
         expect(failure).toBeInstanceOf(AnalysisResultsVisualizationUnavailableError);
         expect(failure).toMatchObject({
             name: 'AnalysisResultsVisualizationUnavailableError',
-            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            componentName: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
             message: 'Analysis Results is unavailable.',
             cause: expect.any(VisualizationRequestFailedError),
         });
@@ -967,7 +967,7 @@ describe('BaselineCollection visualization', () => {
         await act(async () => {
             await expect(getHandle().requestAnalysis().result).rejects.toMatchObject({
                 name: 'BaselineLapRecordRequiredError',
-                componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                componentName: OPERATION_COMPONENT_NAMES.BASELINE_COLLECTION,
                 message: 'Live recorded analysis requires a recorded baseline before it can run.',
             });
         });

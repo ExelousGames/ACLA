@@ -2,11 +2,11 @@ import React, { forwardRef, useState, useMemo, useEffect, useImperativeHandle } 
 import { Card, Text, Box, Grid, TextField, Button } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { VisualizationProps } from '../VisualizationRegistry';
-import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
-import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
 
-export interface TelemetryOverviewHandle extends NamedAiToolComponentHandle {
+export interface TelemetryOverviewHandle extends NamedOperationComponentHandle {
     updateTelemetry(data: any, config?: any): true;
     disableTelemetry(): true;
 }
@@ -41,7 +41,7 @@ const TelemetryOverview = forwardRef<TelemetryOverviewHandle, VisualizationProps
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     const registeredHandleRef = React.useRef(handle);
     registeredHandleRef.current = handle;
-    useRegisterAiToolComponentRef(registeredHandleRef);
+    useRegisterOperationComponentRef(registeredHandleRef);
 
     const telemetryData = data;
 
