@@ -1,4 +1,4 @@
-"""Retrieve and validate the tool catalog for one voice session."""
+"""Retrieve Model Command Protocol tools and workflows for model-to-client communication."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Protocol, TypedDict
 import httpx
 
 
-class SessionAIToolDescriptor(TypedDict):
+class ModelCommandDescriptor(TypedDict):
     """Pipecat-independent tool shape shared with the backend registry."""
 
     name: str
@@ -18,8 +18,8 @@ class SessionAIToolDescriptor(TypedDict):
     required: List[str]
 
 
-class SessionToolCatalogError(RuntimeError):
-    """Raised when the backend session-tool catalog cannot be used safely."""
+class ModelCommandProtocolCatalogError(RuntimeError):
+    """Raised when the backend Model Command Protocol catalog cannot be used safely."""
 
 
 class _BackendClient(Protocol):
@@ -44,7 +44,7 @@ _AGENT_MODES = frozenset({"track_guide", "overtake", "live_performance_analyst"}
 _DESCRIPTOR_FIELDS = frozenset({"name", "description", "properties", "required"})
 _BACKEND_TIMEOUT_SECONDS = 5.0
 
-_SIDE_CHAT_TOOLS: tuple[SessionAIToolDescriptor, ...] = (
+_SIDE_CHAT_TOOLS: tuple[ModelCommandDescriptor, ...] = (
     {
         "name": "search_application_tool",
         "description": (
@@ -56,7 +56,7 @@ _SIDE_CHAT_TOOLS: tuple[SessionAIToolDescriptor, ...] = (
     },
 )
 
-_AI_SERVICE_TOOLS: tuple[SessionAIToolDescriptor, ...] = (
+_AI_SERVICE_TOOLS: tuple[ModelCommandDescriptor, ...] = (
     {
         "name": "explain_label",
         "description": (
@@ -122,25 +122,25 @@ _AI_SERVICE_TOOLS: tuple[SessionAIToolDescriptor, ...] = (
 )
 
 
-class SessionAIToolService:
-    """Own AI tools and fetch the backend-filtered browser-relayed tools."""
+class ModelCommandProtocolService:
+    """Own AI tools and fetch the backend-filtered Model Command Protocol catalog."""
 
     def __init__(self, backend_client: Optional[_BackendClient] = None) -> None:
         self._backend_client = backend_client
 
-    def get_ai_tools(self) -> List[SessionAIToolDescriptor]:
+    def get_ai_tools(self) -> List[ModelCommandDescriptor]:
         """Return independent copies of the three AI-owned knowledge tools."""
         return [deepcopy(tool) for tool in _AI_SERVICE_TOOLS]
 
-    def get_side_chat_tools(self) -> List[SessionAIToolDescriptor]:
+    def get_side_chat_tools(self) -> List[ModelCommandDescriptor]:
         """Return the parent-visible application-tool search group."""
         return [deepcopy(tool) for tool in _SIDE_CHAT_TOOLS]
 
-    async def get_session_tools(
+    async def get_model_commands(
         self,
         session_context: Dict[str, Any],
-    ) -> List[SessionAIToolDescriptor]:
-        """Fetch and validate the browser-relayed tools for one voice session."""
+    ) -> List[ModelCommandDescriptor]:
+        """Fetch and validate Model Command Protocol commands for one voice session."""
         canonical_context = self._validate_session_context(session_context)
 
         for attempt in range(2):
@@ -148,25 +148,25 @@ class SessionAIToolService:
                 response = await self._request_catalog(canonical_context)
             except _UnauthorizedCatalogResponse as exc:
                 if attempt == 1:
-                    raise SessionToolCatalogError(
+                    raise ModelCommandProtocolCatalogError(
                         "Backend rejected the refreshed AI service token",
                     ) from exc
                 if not await self._refresh_authentication():
-                    raise SessionToolCatalogError(
+                    raise ModelCommandProtocolCatalogError(
                         "Could not refresh the AI service backend token",
                     ) from exc
                 continue
 
             return self._validate_catalog(response)
 
-        raise SessionToolCatalogError("Backend session-tool lookup failed")
+        raise ModelCommandProtocolCatalogError("Backend Model Command Protocol lookup failed")
 
     async def _request_catalog(self, session_context: Dict[str, Any]) -> Any:
         backend_client = self._get_backend_client()
         try:
             response = await asyncio.wait_for(
                 backend_client.call_backend_function(
-                    "session-tools",
+                    "model-command-protocol",
                     "POST",
                     {"session_context": deepcopy(session_context)},
                     timeout_seconds=_BACKEND_TIMEOUT_SECONDS,
@@ -174,28 +174,28 @@ class SessionAIToolService:
                 timeout=_BACKEND_TIMEOUT_SECONDS,
             )
         except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
-            raise SessionToolCatalogError(
-                "Backend session-tool lookup timed out",
+            raise ModelCommandProtocolCatalogError(
+                "Backend Model Command Protocol lookup timed out",
             ) from exc
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 401:
                 raise _UnauthorizedCatalogResponse() from exc
-            raise SessionToolCatalogError(
-                f"Backend session-tool lookup failed with HTTP {exc.response.status_code}",
+            raise ModelCommandProtocolCatalogError(
+                f"Backend Model Command Protocol lookup failed with HTTP {exc.response.status_code}",
             ) from exc
-        except SessionToolCatalogError:
+        except ModelCommandProtocolCatalogError:
             raise
         except Exception as exc:
-            raise SessionToolCatalogError(
-                f"Backend session-tool lookup failed: {exc}",
+            raise ModelCommandProtocolCatalogError(
+                f"Backend Model Command Protocol lookup failed: {exc}",
             ) from exc
 
         if isinstance(response, dict) and "error" in response:
             error = str(response.get("error") or "unknown backend error")
             if error.lstrip().startswith("HTTP 401"):
                 raise _UnauthorizedCatalogResponse()
-            raise SessionToolCatalogError(
-                f"Backend session-tool lookup failed: {error}",
+            raise ModelCommandProtocolCatalogError(
+                f"Backend Model Command Protocol lookup failed: {error}",
             )
         return response
 
@@ -207,11 +207,11 @@ class SessionAIToolService:
                 timeout=_BACKEND_TIMEOUT_SECONDS,
             ))
         except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
-            raise SessionToolCatalogError(
+            raise ModelCommandProtocolCatalogError(
                 "AI service backend token refresh timed out",
             ) from exc
         except Exception as exc:
-            raise SessionToolCatalogError(
+            raise ModelCommandProtocolCatalogError(
                 f"AI service backend token refresh failed: {exc}",
             ) from exc
 
@@ -225,37 +225,37 @@ class SessionAIToolService:
     @staticmethod
     def _validate_session_context(session_context: Any) -> Dict[str, Any]:
         if not isinstance(session_context, dict):
-            raise SessionToolCatalogError("session_context must be an object")
+            raise ModelCommandProtocolCatalogError("session_context must be an object")
 
         session_mode = session_context.get("session_mode")
         if not isinstance(session_mode, str) or session_mode not in _SESSION_MODES:
-            raise SessionToolCatalogError("session_context.session_mode is invalid")
+            raise ModelCommandProtocolCatalogError("session_context.session_mode is invalid")
 
         agent_mode = session_context.get("agent_mode")
         if (
             agent_mode is not None
             and (not isinstance(agent_mode, str) or agent_mode not in _AGENT_MODES)
         ):
-            raise SessionToolCatalogError("session_context.agent_mode is invalid")
+            raise ModelCommandProtocolCatalogError("session_context.agent_mode is invalid")
 
         return {
             "session_mode": session_mode,
             **({"agent_mode": agent_mode} if agent_mode is not None else {}),
         }
 
-    def _validate_catalog(self, response: Any) -> List[SessionAIToolDescriptor]:
+    def _validate_catalog(self, response: Any) -> List[ModelCommandDescriptor]:
         if not isinstance(response, list):
-            raise SessionToolCatalogError("Backend session-tool response must be an array")
+            raise ModelCommandProtocolCatalogError("Backend Model Command Protocol response must be an array")
 
         names = {
             tool["name"]
             for tool in (*_AI_SERVICE_TOOLS, *_SIDE_CHAT_TOOLS)
         }
-        tools: List[SessionAIToolDescriptor] = []
+        tools: List[ModelCommandDescriptor] = []
         for index, raw_tool in enumerate(response):
             if not isinstance(raw_tool, dict) or set(raw_tool) != _DESCRIPTOR_FIELDS:
-                raise SessionToolCatalogError(
-                    f"Session tool at index {index} must contain exactly "
+                raise ModelCommandProtocolCatalogError(
+                    f"Model command at index {index} must contain exactly "
                     "name, description, properties, and required",
                 )
 
@@ -264,19 +264,19 @@ class SessionAIToolService:
             properties = raw_tool.get("properties")
             required = raw_tool.get("required")
             if not isinstance(name, str) or not name.strip():
-                raise SessionToolCatalogError(
-                    f"Session tool at index {index} has an invalid name",
+                raise ModelCommandProtocolCatalogError(
+                    f"Model command at index {index} has an invalid name",
                 )
             name = name.strip()
             if name in names:
-                raise SessionToolCatalogError(f"Duplicate tool name: {name}")
+                raise ModelCommandProtocolCatalogError(f"Duplicate tool name: {name}")
             if not isinstance(description, str):
-                raise SessionToolCatalogError(
-                    f"Session tool {name} has an invalid description",
+                raise ModelCommandProtocolCatalogError(
+                    f"Model command {name} has an invalid description",
                 )
             if not isinstance(properties, dict):
-                raise SessionToolCatalogError(
-                    f"Session tool {name} has invalid properties",
+                raise ModelCommandProtocolCatalogError(
+                    f"Model command {name} has invalid properties",
                 )
             if (
                 not isinstance(required, list)
@@ -284,8 +284,8 @@ class SessionAIToolService:
                 or len(set(required)) != len(required)
                 or any(field not in properties for field in required)
             ):
-                raise SessionToolCatalogError(
-                    f"Session tool {name} has an invalid required list",
+                raise ModelCommandProtocolCatalogError(
+                    f"Model command {name} has an invalid required list",
                 )
 
             names.add(name)
@@ -300,7 +300,7 @@ class SessionAIToolService:
 
 
 __all__ = [
-    "SessionAIToolDescriptor",
-    "SessionAIToolService",
-    "SessionToolCatalogError",
+    "ModelCommandDescriptor",
+    "ModelCommandProtocolService",
+    "ModelCommandProtocolCatalogError",
 ]

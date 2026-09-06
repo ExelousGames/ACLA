@@ -28,9 +28,9 @@ from app.voice import get_speech_core
 from app.voice.session_modes import (
     VALID_CHATBOT_SESSION_MODES,
 )
-from app.voice.session_ai_tool_service import (
-    SessionAIToolService,
-    SessionToolCatalogError,
+from app.voice.model_command_protocol_service import (
+    ModelCommandProtocolService,
+    ModelCommandProtocolCatalogError,
 )
 from app.voice.tool_relay import normalize_voice_session_context
 
@@ -275,12 +275,12 @@ async def voice_stream(
             return
 
         try:
-            session_tools = await SessionAIToolService().get_session_tools(
+            model_commands = await ModelCommandProtocolService().get_model_commands(
                 session_context,
             )
-        except SessionToolCatalogError as exc:
+        except ModelCommandProtocolCatalogError as exc:
             LOGGER.error(
-                "Voice session-tool lookup failed (user=%s): %s",
+                "Voice Model Command Protocol lookup failed (user=%s): %s",
                 owner_user_id,
                 exc,
             )
@@ -288,12 +288,12 @@ async def voice_stream(
                 await websocket.send_json({
                     "type": "error",
                     "message": str(exc),
-                    "error_type": "SessionToolCatalogError",
+                    "error_type": "ModelCommandProtocolCatalogError",
                 })
             except Exception:
                 pass
             try:
-                await websocket.close(code=1011, reason="session tool catalog error")
+                await websocket.close(code=1011, reason="model command catalog error")
             except Exception:
                 pass
             return
@@ -344,18 +344,18 @@ async def voice_stream(
 
         LOGGER.info(
             "Voice WS connected (chat_session=%s telemetry_session=%s user=%s "
-            "chat_llm_model=%s session_tools=%d resumed=%s)",
+            "chat_llm_model=%s model_commands=%d resumed=%s)",
             chat_session.chat_session_id,
             session_id,
             owner_user_id,
             selected_chat_llm_model or "default",
-            len(session_tools),
+            len(model_commands),
             resumed,
         )
 
         await run_voice_session(
             filtered_ws, config, tool_executor,
-            session_tools=session_tools,
+            model_commands=model_commands,
         )
     except WebSocketDisconnect:
         LOGGER.info("Voice WS client disconnected (user=%s)", owner_user_id)

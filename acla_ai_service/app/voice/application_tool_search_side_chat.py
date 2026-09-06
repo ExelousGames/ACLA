@@ -8,7 +8,7 @@ from typing import Any, Dict, List, TypedDict
 
 from app.chat_llm import resolve_chat_llm_config
 from app.side_ai_chat import SideAIChat, SideAIChatError
-from app.voice.session_ai_tool_service import SessionAIToolDescriptor
+from app.voice.model_command_protocol_service import ModelCommandDescriptor
 
 
 APPLICATION_TOOL_SEARCH_NAME = "search_application_tool"
@@ -17,7 +17,7 @@ APPLICATION_TOOL_SEARCH_NAME = "search_application_tool"
 class ApplicationToolSearchRequest(TypedDict):
     parent_messages: List[Dict[str, Any]]
     session_context: Dict[str, Any]
-    allowed_tools: List[SessionAIToolDescriptor]
+    allowed_tools: List[ModelCommandDescriptor]
 
 
 class SelectedToolCall(TypedDict):

@@ -745,7 +745,7 @@ export function useVoiceConversation(
                 if (wsRef.current !== ws) return;
                 // First text frame on every voice session: hand the backend
                 // compact runtime context. The AI service uses it to retrieve
-                // the authenticated session-tool catalog.
+                // the authenticated Model Command Protocol catalog.
                 try {
                     const metadata = buildVoiceSessionMetadata({
                         clientSessionId: options.clientSessionId,

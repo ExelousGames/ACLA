@@ -51,9 +51,9 @@ from app.voice.application_tool_search_side_chat import (
     APPLICATION_TOOL_SEARCH_NAME,
     ApplicationToolSearchSideChat,
 )
-from app.voice.session_ai_tool_service import (
-    SessionAIToolService,
-    SessionToolCatalogError,
+from app.voice.model_command_protocol_service import (
+    ModelCommandProtocolService,
+    ModelCommandProtocolCatalogError,
 )
 from app.voice.tool_relay import normalize_voice_session_context
 
@@ -333,21 +333,21 @@ def _build_openai_llm_service(
 
 
 def _build_voice_tool_surfaces(
-    session_tools: Optional[List[Dict[str, Any]]],
+    model_commands: Optional[List[Dict[str, Any]]],
 ) -> tuple[
     List[Dict[str, Any]],
     List[Dict[str, Any]],
     frozenset[str],
 ]:
     """Build parent-visible and selector-visible tool catalogs."""
-    tool_service = SessionAIToolService()
-    session_tool_descriptors = deepcopy(session_tools or [])
-    session_tool_names = frozenset(
-        tool["name"] for tool in session_tool_descriptors
+    tool_service = ModelCommandProtocolService()
+    model_command_descriptors = deepcopy(model_commands or [])
+    model_command_names = frozenset(
+        tool["name"] for tool in model_command_descriptors
         if isinstance(tool.get("name"), str) and tool["name"]
     )
     application_tool_descriptors = [
-        *session_tool_descriptors,
+        *model_command_descriptors,
         *tool_service.get_ai_tools(),
     ]
     descriptor_names = [
@@ -357,11 +357,11 @@ def _build_voice_tool_surfaces(
         not all(isinstance(name, str) and name for name in descriptor_names)
         or len(set(descriptor_names)) != len(descriptor_names)
     ):
-        raise SessionToolCatalogError("Voice pipeline tool names must be unique")
+        raise ModelCommandProtocolCatalogError("Voice pipeline tool names must be unique")
     return (
         tool_service.get_side_chat_tools(),
         application_tool_descriptors,
-        session_tool_names,
+        model_command_names,
     )
 
 
@@ -388,7 +388,7 @@ class VoiceSessionConfig:
 
 
 @dataclass(frozen=True)
-class _SessionToolDispatch:
+class _ModelCommandDispatch:
     """Browser dispatch awaiting its first response for the parent tool call."""
 
     call_id: Optional[str]
@@ -399,17 +399,17 @@ def _make_tool_handler(
     session_config: "VoiceSessionConfig",
     chat_session_id: str,
     *,
-    session_tool_names: frozenset[str],
+    model_command_names: frozenset[str],
     allowed_tools: Optional[List[Dict[str, Any]]] = None,
     application_tool_search: Optional[ApplicationToolSearchSideChat] = None,
     parent_message_source: Optional[Callable[[], Iterable[Any]]] = None,
-    pending_session_tool_callbacks: Optional[Dict[str, Callable[[Any], Any]]] = None,
+    pending_model_command_callbacks: Optional[Dict[str, Callable[[Any], Any]]] = None,
 ):
     """Build a per-session selector handler with two-bucket dispatch.
 
     The parent-visible selector resolves one allowed call, then:
 
-    * Names in ``session_tool_names`` (retrieved from the backend)
+    * Names in ``model_command_names`` (retrieved from the backend)
       → forwarded to the browser through the active transport bound to
       ``chat_session_id``.
     * AI-owned names → forwarded to ``tool_executor`` (server-side path,
@@ -432,18 +432,18 @@ def _make_tool_handler(
         and descriptor["name"]
     )
 
-    async def send_session_tool(function_name: str, arguments: Dict[str, Any]) -> Optional[str]:
-        """Send one browser-owned session tool call and return without waiting."""
+    async def send_model_command(function_name: str, arguments: Dict[str, Any]) -> Optional[str]:
+        """Send one browser-owned model command call and return without waiting."""
         arguments = arguments or {}
 
-        LOGGER.info("[SESSION-TOOL-CALL] name=%s args=%r", function_name, arguments)
+        LOGGER.info("[MODEL-COMMAND-CALL] name=%s args=%r", function_name, arguments)
         call_id = await relay.send_tool_call(
             chat_session_id,
             function_name,
             arguments,
         )
         LOGGER.info(
-            "[SESSION-TOOL-DISPATCHED] name=%s ok=%s call_id=%r",
+            "[MODEL-COMMAND-DISPATCHED] name=%s ok=%s call_id=%r",
             function_name, bool(call_id), call_id,
         )
         return call_id
@@ -487,17 +487,17 @@ def _make_tool_handler(
                     raise RuntimeError(
                         "Application tool selector arguments must be a JSON object",
                     )
-                if selected_name in session_tool_names:
-                    call_id = await send_session_tool(selected_name, selected_arguments)
-                    return _SessionToolDispatch(call_id)
+                if selected_name in model_command_names:
+                    call_id = await send_model_command(selected_name, selected_arguments)
+                    return _ModelCommandDispatch(call_id)
                 return await dispatch_server_tool(
                     selected_name,
                     selected_arguments,
                 )
 
-            if function_name in session_tool_names:
+            if function_name in model_command_names:
                 # dispatch() never raises — failures come back as {"error": ...}.
-                raise RuntimeError("session tool reached server dispatcher")
+                raise RuntimeError("model command reached server dispatcher")
             else:
                 # Server-side path. Context carries the connect-time IDs;
                 # track/car are intentionally absent (LLM fetches via tool).
@@ -529,19 +529,19 @@ def _make_tool_handler(
         return payload
 
     async def handle_tool_call(params):
-        if params.function_name in session_tool_names:
-            call_id = await send_session_tool(params.function_name, params.arguments or {})
-            if call_id and pending_session_tool_callbacks is not None:
-                pending_session_tool_callbacks[call_id] = params.result_callback
+        if params.function_name in model_command_names:
+            call_id = await send_model_command(params.function_name, params.arguments or {})
+            if call_id and pending_model_command_callbacks is not None:
+                pending_model_command_callbacks[call_id] = params.result_callback
             return
         payload = await dispatch_server_tool(params.function_name, params.arguments or {})
-        if isinstance(payload, _SessionToolDispatch):
-            if payload.call_id and pending_session_tool_callbacks is not None:
-                pending_session_tool_callbacks[payload.call_id] = params.result_callback
+        if isinstance(payload, _ModelCommandDispatch):
+            if payload.call_id and pending_model_command_callbacks is not None:
+                pending_model_command_callbacks[payload.call_id] = params.result_callback
             return
         await params.result_callback(payload)
 
-    return handle_tool_call, send_session_tool, dispatch_server_tool
+    return handle_tool_call, send_model_command, dispatch_server_tool
 
 
 def _split_function_tag_prefix(text: str) -> tuple[str, str]:
@@ -577,17 +577,17 @@ def _build_function_tag_recovery():
     class FunctionTagRecovery(FrameProcessor):
         def __init__(
             self,
-            send_session_tool,
+            send_model_command,
             dispatch_server_tool,
-            session_tool_names: frozenset[str],
+            model_command_names: frozenset[str],
             parent_tool_names: frozenset[str],
             context: Any,
             get_task,
         ) -> None:
             super().__init__()
-            self._send_session_tool = send_session_tool
+            self._send_model_command = send_model_command
             self._dispatch_server_tool = dispatch_server_tool
-            self._session_tool_names = session_tool_names
+            self._model_command_names = model_command_names
             self._parent_tool_names = parent_tool_names
             self._context = context
             self._get_task = get_task
@@ -691,12 +691,12 @@ def _build_function_tag_recovery():
                     name,
                 )
                 return
-            if name in self._session_tool_names:
-                await self._send_session_tool(name, args)
+            if name in self._model_command_names:
+                await self._send_model_command(name, args)
                 return
 
             result = await self._dispatch_server_tool(name, args)
-            if isinstance(result, _SessionToolDispatch):
+            if isinstance(result, _ModelCommandDispatch):
                 return
             try:
                 call_id = f"recovered_{_uuid.uuid4().hex}"
@@ -961,7 +961,7 @@ async def build_voice_pipeline_task(
     session_config: VoiceSessionConfig,
     tool_executor: Any,
     *,
-    session_tools: Optional[List[Dict[str, Any]]] = None,
+    model_commands: Optional[List[Dict[str, Any]]] = None,
 ):
     """Build a Pipecat PipelineTask bound to the given WebSocket.
 
@@ -969,7 +969,7 @@ async def build_voice_pipeline_task(
     `PipelineRunner.run(task)`.
 
     Side effect: registers the WebSocket with :mod:`app.voice.tool_relay`
-    so session tool calls and tool payloads routed via text frames
+    so model command calls and tool payloads routed via text frames
     reach this session's LLM context. The caller (api/voice.py) is
     responsible for unbinding on session end.
 
@@ -1064,13 +1064,13 @@ async def build_voice_pipeline_task(
 
     # --- Tool calling (Phase 3b) ---
     # The parent LLM sees only the application-tool selector. Its isolated
-    # side chat receives the union of backend-retrieved session tools (browser
+    # side chat receives the union of backend-retrieved model commands (browser
     # relay) and AI-owned knowledge tools (server executor).
     (
         parent_tool_descriptors,
         application_tool_descriptors,
-        session_tool_names,
-    ) = _build_voice_tool_surfaces(session_tools)
+        model_command_names,
+    ) = _build_voice_tool_surfaces(model_commands)
     tool_schemas = [
         FunctionSchema(**descriptor) for descriptor in parent_tool_descriptors
     ]
@@ -1091,16 +1091,16 @@ async def build_voice_pipeline_task(
         session_config.chat_llm_model,
     )
 
-    pending_session_tool_callbacks: Dict[str, Callable[[Any], Any]] = {}
-    tool_handler, send_session_tool, dispatch_server_tool = _make_tool_handler(
+    pending_model_command_callbacks: Dict[str, Callable[[Any], Any]] = {}
+    tool_handler, send_model_command, dispatch_server_tool = _make_tool_handler(
         tool_executor,
         session_config,
         chat_session_id=session_config.chat_session_id,
-        session_tool_names=session_tool_names,
+        model_command_names=model_command_names,
         allowed_tools=application_tool_descriptors,
         application_tool_search=application_tool_search,
         parent_message_source=lambda: getattr(context, "messages", []) or [],
-        pending_session_tool_callbacks=pending_session_tool_callbacks,
+        pending_model_command_callbacks=pending_model_command_callbacks,
     )
     for schema in tool_schemas:
         llm.register_function(schema.name, tool_handler)
@@ -1128,9 +1128,9 @@ async def build_voice_pipeline_task(
     context_logger = ContextLogger(context)
     task_ref: Dict[str, Any] = {"task": None}
     function_tag_recovery = FunctionTagRecovery(
-        send_session_tool,
+        send_model_command,
         dispatch_server_tool,
-        session_tool_names,
+        model_command_names,
         frozenset(schema.name for schema in tool_schemas),
         context,
         lambda: task_ref["task"],
@@ -1182,7 +1182,7 @@ async def build_voice_pipeline_task(
     task_ref["task"] = task
     # --- Text control sinks -------------------------------------------------
     # Tool results/errors are serialized by the relay and sent through a
-    # dedicated sink so typed chat and session tool payloads stay separate.
+    # dedicated sink so typed chat and model command payloads stay separate.
     loop = asyncio.get_running_loop()
 
     def _trigger_llm_run(source: str) -> None:
@@ -1208,7 +1208,7 @@ async def build_voice_pipeline_task(
         _trigger_llm_run("user_text_sink")
 
     def tool_result_sink(text: str) -> None:
-        """Inject a session tool response.
+        """Inject a model command response.
 
         Tool-result frames can include browser-supplied native messages for
         the LLM context.
@@ -1228,7 +1228,7 @@ async def build_voice_pipeline_task(
         # context below. Inference interprets every response's status.
         call_id = payload.get("id")
         result_callback = (
-            pending_session_tool_callbacks.pop(call_id, None)
+            pending_model_command_callbacks.pop(call_id, None)
             if isinstance(call_id, str)
             else None
         )
@@ -1271,14 +1271,14 @@ async def run_voice_session(
     session_config: VoiceSessionConfig,
     tool_executor: Any,
     *,
-    session_tools: Optional[List[Dict[str, Any]]] = None,
+    model_commands: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Bind a Pipecat pipeline to `websocket` and run it to completion.
 
     Returns when the WS closes or the pipeline exits. Caller is responsible
     for any auth/lifecycle concerns around `websocket`, supplying a
     ``tool_executor`` (typically AIService._execute_function), and passing
-    backend-retrieved ``session_tools`` (see :mod:`app.api.voice`).
+    backend-retrieved ``model_commands`` (see :mod:`app.api.voice`).
 
     On exit, committed context is copied back to the chat session registry,
     the active transport is unbound, and the session becomes resumable.
@@ -1292,7 +1292,7 @@ async def run_voice_session(
     try:
         task = await build_voice_pipeline_task(
             websocket, session_config, tool_executor,
-            session_tools=session_tools,
+            model_commands=model_commands,
         )
         runner = PipelineRunner()
         await runner.run(task)

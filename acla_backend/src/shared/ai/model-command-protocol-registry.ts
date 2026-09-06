@@ -1,7 +1,7 @@
 import { TELEMETRY_METRIC_FIELD_SCHEMA } from './telemetry-metric-fields';
 
-/** Backend-owned schemas exposed to authenticated AI voice sessions. */
-export const SESSION_TOOL_QUERY_SCOPE_SCHEMA = {
+/** Model Command Protocol: tools and workflows for model-to-client communication. */
+export const MODEL_COMMAND_QUERY_SCOPE_SCHEMA = {
     type: 'object',
     properties: {
         type: {
@@ -34,7 +34,7 @@ const BASELINE_TELEMETRY_CONDITION_SCHEMA = {
     additionalProperties: false,
 } as const;
 
-export const SESSION_TOOLS = [
+export const MODEL_COMMAND_PROTOCOL = [
     {
         name: 'start_agent_session',
         description: 'Start a separate child AI agent session. The user should interact with that child session while it is active.',
@@ -91,7 +91,7 @@ export const SESSION_TOOLS = [
                         tool: {
                             type: 'object',
                             properties: {
-                                name: { type: 'string', description: 'Available child live-session tool to execute when the event is due.' },
+                                name: { type: 'string', description: 'Available model command for this child live session to execute when the event is due.' },
                                 arguments: { type: 'object', description: 'JSON-safe arguments passed unchanged to the nested tool.' },
                             },
                             required: ['name', 'arguments'],
@@ -213,7 +213,7 @@ export const SESSION_TOOLS = [
     },
     {
         name: 'create_repeatable_plan',
-        description: 'Create one visible repeatable plan that executes ordered session tool calls, checks a numeric stopping condition, and repeats the plan until the condition is met. Repetition continues until the target is reached, an error occurs, or the user cancels the plan. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. The operator compares the returned data with the target, so both values must be finite numbers measured on the same scale.',
+        description: 'Create one visible repeatable plan that executes ordered model command calls, checks a numeric stopping condition, and repeats the plan until the condition is met. Repetition continues until the target is reached, an error occurs, or the user cancels the plan. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. The operator compares the returned data with the target, so both values must be finite numbers measured on the same scale.',
         properties: {
             name: {
                 type: 'string',
@@ -222,13 +222,13 @@ export const SESSION_TOOLS = [
             steps: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered session tool calls. Every id must be unique; create_repeatable_plan and retry_repeatable_plan_task cannot be nested.',
+                description: 'Ordered model command calls. Every id must be unique; create_repeatable_plan and retry_repeatable_plan_task cannot be nested.',
                 items: {
                     type: 'object',
                     properties: {
                         id: { type: 'string', description: 'Unique stable step id.' },
                         title: { type: 'string', description: 'Short step label displayed to the user.' },
-                        name: { type: 'string', description: 'Available session tool to execute.' },
+                        name: { type: 'string', description: 'Available model command to execute.' },
                         arguments: { type: 'object', description: 'Arguments passed unchanged to the nested tool.' },
                     },
                     required: ['id', 'title', 'name'],
@@ -242,7 +242,7 @@ export const SESSION_TOOLS = [
                         type: 'object',
                         description: 'Frontend tool call that must return { "status": "ready", "data": finiteNumber } to determine whether the repeatable plan reached its target.',
                         properties: {
-                            name: { type: 'string', description: 'Available session tool to execute.' },
+                            name: { type: 'string', description: 'Available model command to execute.' },
                             arguments: { type: 'object', description: 'Arguments passed unchanged to the stop-when tool.' },
                         },
                         required: ['name'],
@@ -329,7 +329,7 @@ export const SESSION_TOOLS = [
                 items: TELEMETRY_METRIC_FIELD_SCHEMA,
             },
             scope: {
-                ...SESSION_TOOL_QUERY_SCOPE_SCHEMA,
+                ...MODEL_COMMAND_QUERY_SCOPE_SCHEMA,
                 description: 'Telemetry window to summarize. Use type="now" for current values; use last_seconds, event, lap, or range for time/windowed summaries.',
             },
             reduce: {
@@ -467,7 +467,7 @@ export const SESSION_TOOLS = [
         description: 'Classify driving actions over a telemetry scope and return engineer labels with definitions and optional solutions. Use this to do a quick analysis of a telemetry window without launching a dedicated ai analysis agent.',
         properties: {
             scope: {
-                ...SESSION_TOOL_QUERY_SCOPE_SCHEMA,
+                ...MODEL_COMMAND_QUERY_SCOPE_SCHEMA,
                 description: 'Telemetry time window to classify.',
             },
         },
@@ -475,10 +475,10 @@ export const SESSION_TOOLS = [
     },
 ] as const;
 
-type SessionToolName = typeof SESSION_TOOLS[number]['name'];
+type ModelCommandName = typeof MODEL_COMMAND_PROTOCOL[number]['name'];
 type SessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
-const COMMON_TOOL_NAMES: SessionToolName[] = [
+const COMMON_COMMAND_NAMES: ModelCommandName[] = [
     'show_map',
     'set_procedure_plan',
     'advance_plan_step',
@@ -486,7 +486,7 @@ const COMMON_TOOL_NAMES: SessionToolName[] = [
     'stop_agent_session',
 ];
 
-const LIVE_SESSION_TOOL_NAMES: SessionToolName[] = [
+const LIVE_COMMAND_NAMES: ModelCommandName[] = [
     'start_agent_session',
     'apply_query_to_analysis_result',
     'query_analysis_result',
@@ -496,7 +496,7 @@ const LIVE_SESSION_TOOL_NAMES: SessionToolName[] = [
     'get_event_log',
 ];
 
-const LIVE_AGENT_SESSION_TOOL_NAMES: SessionToolName[] = [
+const LIVE_AGENT_COMMAND_NAMES: ModelCommandName[] = [
     'analyze_telemetry',
     'get_next_corner',
     'query_telemetry_metric',
@@ -508,13 +508,13 @@ const LIVE_AGENT_SESSION_TOOL_NAMES: SessionToolName[] = [
     'analyze_live_recorded_analysis',
 ];
 
-const LIVE_PERFORMANCE_ANALYST_TOOL_NAMES: SessionToolName[] = [
+const LIVE_PERFORMANCE_ANALYST_COMMAND_NAMES: ModelCommandName[] = [
     'create_repeatable_plan',
     'retry_repeatable_plan_task',
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
 ];
 
-const LIVE_RANGE_TODO_NESTED_TOOL_EXCLUSIONS = new Set<SessionToolName>([
+const LIVE_RANGE_TODO_NESTED_TOOL_EXCLUSIONS = new Set<ModelCommandName>([
     'create_repeatable_plan',
     'retry_repeatable_plan_task',
     'set_procedure_plan',
@@ -524,13 +524,13 @@ const LIVE_RANGE_TODO_NESTED_TOOL_EXCLUSIONS = new Set<SessionToolName>([
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
 ]);
 
-const USER_SUMMARY_SESSION_TOOL_NAMES: SessionToolName[] = [
+const USER_SUMMARY_COMMAND_NAMES: ModelCommandName[] = [
     'get_user_summary_map_level',
     'get_available_user_summary_maps',
     'search_user_summary_map_level',
 ];
 
-const RECORDED_SESSION_TOOL_NAMES: SessionToolName[] = [
+const RECORDED_COMMAND_NAMES: ModelCommandName[] = [
     'run_recorded_ai_analysis',
     'get_recorded_session_analysis',
     'get_recorded_session_context',
@@ -556,50 +556,50 @@ const getAllowedToolNames = (
     agentMode?: unknown,
 ) => {
     if (isSessionAgentMode(agentMode)) {
-        return new Set<SessionToolName>([
-            ...COMMON_TOOL_NAMES,
-            ...LIVE_AGENT_SESSION_TOOL_NAMES,
-            ...USER_SUMMARY_SESSION_TOOL_NAMES,
+        return new Set<ModelCommandName>([
+            ...COMMON_COMMAND_NAMES,
+            ...LIVE_AGENT_COMMAND_NAMES,
+            ...USER_SUMMARY_COMMAND_NAMES,
             ...(sessionMode === 'live' ? [
                 'apply_query_to_analysis_result',
                 'query_analysis_result',
             ] as const : []),
             ...(sessionMode === 'live' && agentMode === 'live_performance_analyst'
-                ? LIVE_PERFORMANCE_ANALYST_TOOL_NAMES
+                ? LIVE_PERFORMANCE_ANALYST_COMMAND_NAMES
                 : []),
         ]);
     }
 
     if (sessionMode === 'recorded') {
-        return new Set<SessionToolName>([
-            ...COMMON_TOOL_NAMES,
-            ...USER_SUMMARY_SESSION_TOOL_NAMES,
-            ...RECORDED_SESSION_TOOL_NAMES,
+        return new Set<ModelCommandName>([
+            ...COMMON_COMMAND_NAMES,
+            ...USER_SUMMARY_COMMAND_NAMES,
+            ...RECORDED_COMMAND_NAMES,
         ]);
     }
 
     if (sessionMode === 'user_summary') {
-        return new Set<SessionToolName>([
-            ...COMMON_TOOL_NAMES,
-            ...USER_SUMMARY_SESSION_TOOL_NAMES,
+        return new Set<ModelCommandName>([
+            ...COMMON_COMMAND_NAMES,
+            ...USER_SUMMARY_COMMAND_NAMES,
         ]);
     }
 
     if (sessionMode === 'front_desk') {
-        return new Set<SessionToolName>([
-            ...COMMON_TOOL_NAMES,
-            ...USER_SUMMARY_SESSION_TOOL_NAMES,
+        return new Set<ModelCommandName>([
+            ...COMMON_COMMAND_NAMES,
+            ...USER_SUMMARY_COMMAND_NAMES,
         ]);
     }
 
-    return new Set<SessionToolName>([
-        ...COMMON_TOOL_NAMES,
-        ...LIVE_SESSION_TOOL_NAMES,
-        ...USER_SUMMARY_SESSION_TOOL_NAMES,
+    return new Set<ModelCommandName>([
+        ...COMMON_COMMAND_NAMES,
+        ...LIVE_COMMAND_NAMES,
+        ...USER_SUMMARY_COMMAND_NAMES,
     ]);
 };
 
-export const getSessionToolsForSessionContext = (
+export const getModelCommandsForSessionContext = (
     sessionContext: Record<string, unknown> | null | undefined,
 ) => {
     const sessionMode = isSessionMode(sessionContext?.session_mode)
@@ -610,7 +610,7 @@ export const getSessionToolsForSessionContext = (
         sessionContext?.agent_mode,
     );
 
-    const tools = SESSION_TOOLS.filter((tool) => allowedToolNames.has(tool.name));
+    const tools = MODEL_COMMAND_PROTOCOL.filter((tool) => allowedToolNames.has(tool.name));
     const repeatablePlanNestedToolNames = tools
         .map((tool) => tool.name)
         .filter((name) => name !== 'create_repeatable_plan' && name !== 'retry_repeatable_plan_task');

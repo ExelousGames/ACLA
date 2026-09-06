@@ -145,9 +145,9 @@ def test_registry_saves_an_independent_session_context_copy():
 
 
 @pytest.fixture(autouse=True)
-def session_tool_catalog(monkeypatch):
+def model_command_catalog(monkeypatch):
     class Catalog:
-        async def get_session_tools(self, session_context):
+        async def get_model_commands(self, session_context):
             return [{
                 "name": "show_map",
                 "description": "Display a circuit map.",
@@ -155,7 +155,7 @@ def session_tool_catalog(monkeypatch):
                 "required": [],
             }]
 
-    monkeypatch.setattr(voice, "SessionAIToolService", Catalog)
+    monkeypatch.setattr(voice, "ModelCommandProtocolService", Catalog)
 
 
 def test_new_main_deletes_all_owner_sessions_and_closes_active_connections():
@@ -278,15 +278,15 @@ async def test_create_does_not_allocate_id_before_successful_handshake(
 
 
 @pytest.mark.asyncio
-async def test_session_tool_failure_closes_before_readiness_and_pipeline_start(
+async def test_model_command_failure_closes_before_readiness_and_pipeline_start(
     monkeypatch,
     registry,
 ):
     generated_id = uuid.UUID("00000000-0000-4000-8000-000000000002")
 
     class FailingCatalog:
-        async def get_session_tools(self, session_context):
-            raise voice.SessionToolCatalogError("catalog unavailable")
+        async def get_model_commands(self, session_context):
+            raise voice.ModelCommandProtocolCatalogError("catalog unavailable")
 
     pipeline_started = False
 
@@ -294,7 +294,7 @@ async def test_session_tool_failure_closes_before_readiness_and_pipeline_start(
         nonlocal pipeline_started
         pipeline_started = True
 
-    monkeypatch.setattr(voice, "SessionAIToolService", FailingCatalog)
+    monkeypatch.setattr(voice, "ModelCommandProtocolService", FailingCatalog)
     monkeypatch.setattr(pipecat_pipeline, "run_voice_session", fake_run)
     monkeypatch.setattr(chat_sessions.uuid, "uuid4", lambda: generated_id)
     websocket = _FakeWebSocket([_session_info({"session_mode": "recorded"})])
@@ -311,9 +311,9 @@ async def test_session_tool_failure_closes_before_readiness_and_pipeline_start(
     assert websocket.sent_json == [{
         "type": "error",
         "message": "catalog unavailable",
-        "error_type": "SessionToolCatalogError",
+        "error_type": "ModelCommandProtocolCatalogError",
     }]
-    assert websocket.closed == (1011, "session tool catalog error")
+    assert websocket.closed == (1011, "model command catalog error")
     assert pipeline_started is False
     assert registry.get(str(generated_id)) is None
 
@@ -329,7 +329,7 @@ async def test_create_returns_server_uuid_and_is_active_while_pipeline_runs(
 
     async def fake_run(websocket, config, tool_executor, **kwargs):
         active_states.append(registry.get(config.chat_session_id).active)
-        catalogs.append(kwargs["session_tools"])
+        catalogs.append(kwargs["model_commands"])
 
     monkeypatch.setattr(pipecat_pipeline, "run_voice_session", fake_run)
 
@@ -460,12 +460,12 @@ async def test_replacement_during_resume_setup_does_not_start_stale_pipeline(
     catalog_started, finish_catalog = asyncio.Event(), asyncio.Event()
 
     class Catalog:
-        async def get_session_tools(self, session_context):
+        async def get_model_commands(self, session_context):
             catalog_started.set()
             await finish_catalog.wait()
             return []
 
-    monkeypatch.setattr(voice, "SessionAIToolService", Catalog)
+    monkeypatch.setattr(voice, "ModelCommandProtocolService", Catalog)
     run = AsyncMock()
     monkeypatch.setattr(pipecat_pipeline, "run_voice_session", run)
     old = registry.create_attached("owner")
@@ -586,15 +586,15 @@ def test_live_performance_analyst_prompt_names_repeatable_plan_tool():
 
 
 def test_parent_startup_surface_contains_only_application_tool_search():
-    session_tool = {
+    model_command = {
         "name": "show_map",
         "description": "Display a circuit map.",
         "properties": {"map_id": {"type": "string"}},
         "required": ["map_id"],
     }
 
-    parent_tools, allowed_tools, session_tool_names = (
-        pipecat_pipeline._build_voice_tool_surfaces([session_tool])
+    parent_tools, allowed_tools, model_command_names = (
+        pipecat_pipeline._build_voice_tool_surfaces([model_command])
     )
 
     assert [tool["name"] for tool in parent_tools] == [
@@ -606,7 +606,7 @@ def test_parent_startup_surface_contains_only_application_tool_search():
         "get_track_knowledge",
         "search_racing_knowledge",
     }
-    assert session_tool_names == frozenset({"show_map"})
+    assert model_command_names == frozenset({"show_map"})
 
 
 def test_non_final_tool_result_is_not_added_to_llm_context():
@@ -697,12 +697,12 @@ async def test_tool_relay_routes_by_chat_session_after_rebinding():
 async def test_pipeline_tool_handler_preserves_session_and_server_dispatch(monkeypatch):
     relay = ToolRelay()
     monkeypatch.setattr(tool_relay, "_RELAY", relay)
-    session_tool_frames = []
+    model_command_frames = []
     server_calls = []
     server_results = []
 
     async def send_text(payload):
-        session_tool_frames.append(json.loads(payload))
+        model_command_frames.append(json.loads(payload))
 
     async def execute_server_tool(function_name, arguments, context):
         server_calls.append((function_name, arguments, context))
@@ -722,7 +722,7 @@ async def test_pipeline_tool_handler_preserves_session_and_server_dispatch(monke
         execute_server_tool,
         config,
         "chat-1",
-        session_tool_names=frozenset({"show_map"}),
+        model_command_names=frozenset({"show_map"}),
     )
 
     await handler(SimpleNamespace(
@@ -736,7 +736,7 @@ async def test_pipeline_tool_handler_preserves_session_and_server_dispatch(monke
         result_callback=receive_server_result,
     ))
 
-    assert session_tool_frames[0] | {"id": "ignored"} == {
+    assert model_command_frames[0] | {"id": "ignored"} == {
         "type": "tool_call",
         "id": "ignored",
         "name": "show_map",
@@ -783,7 +783,7 @@ async def test_application_tool_search_uses_latest_authoritative_context_and_ai_
         server_calls.append((function_name, arguments, deepcopy(context)))
         return {"definition": "trail braking"}
 
-    session_tool = {
+    model_command = {
         "name": "show_map",
         "description": "Display a circuit map.",
         "properties": {"map_id": {"type": "string"}},
@@ -826,8 +826,8 @@ async def test_application_tool_search_uses_latest_authoritative_context_and_ai_
         execute_server_tool,
         config,
         "private-chat-id",
-        session_tool_names=frozenset({"show_map"}),
-        allowed_tools=[session_tool, ai_tool],
+        model_command_names=frozenset({"show_map"}),
+        allowed_tools=[model_command, ai_tool],
         application_tool_search=Selector(),
         parent_message_source=lambda: parent_messages,
     )
@@ -845,7 +845,7 @@ async def test_application_tool_search_uses_latest_authoritative_context_and_ai_
             "session_mode": "recorded",
             "agent_mode": "track_guide",
         },
-        "allowed_tools": [session_tool, ai_tool],
+        "allowed_tools": [model_command, ai_tool],
     }]
     assert "private-routing-id" not in json.dumps(selector_requests)
     assert "private-chat-id" not in json.dumps(selector_requests)
@@ -870,15 +870,15 @@ async def test_application_tool_search_uses_latest_authoritative_context_and_ai_
 async def test_application_tool_search_preserves_browser_session_dispatch(monkeypatch):
     relay = ToolRelay()
     monkeypatch.setattr(tool_relay, "_RELAY", relay)
-    session_tool_frames = []
+    model_command_frames = []
     parent_results = []
-    pending_session_tool_callbacks = {}
+    pending_model_command_callbacks = {}
 
     async def receive_parent_result(payload):
         parent_results.append(payload)
 
     async def send_text(payload):
-        session_tool_frames.append(json.loads(payload))
+        model_command_frames.append(json.loads(payload))
 
     class Selector:
         async def run(self, request):
@@ -892,7 +892,7 @@ async def test_application_tool_search_preserves_browser_session_dispatch(monkey
         chat_session_id="chat-1",
         session_context={"session_mode": "recorded"},
     )
-    session_tool = {
+    model_command = {
         "name": "show_map",
         "description": "Display a circuit map.",
         "properties": {"map_id": {"type": "string"}},
@@ -902,13 +902,13 @@ async def test_application_tool_search_preserves_browser_session_dispatch(monkey
         None,
         config,
         "chat-1",
-        session_tool_names=frozenset({"show_map"}),
-        allowed_tools=[session_tool],
+        model_command_names=frozenset({"show_map"}),
+        allowed_tools=[model_command],
         application_tool_search=Selector(),
         parent_message_source=lambda: [
             {"role": "user", "content": "Show Spa on the circuit map."},
         ],
-        pending_session_tool_callbacks=pending_session_tool_callbacks,
+        pending_model_command_callbacks=pending_model_command_callbacks,
     )
 
     await handler(SimpleNamespace(
@@ -917,19 +917,19 @@ async def test_application_tool_search_preserves_browser_session_dispatch(monkey
         result_callback=receive_parent_result,
     ))
 
-    assert session_tool_frames[0] | {"id": "ignored"} == {
+    assert model_command_frames[0] | {"id": "ignored"} == {
         "type": "tool_call",
         "id": "ignored",
         "name": "show_map",
         "arguments": {"map_id": "spa"},
     }
     assert parent_results == []
-    call_id = session_tool_frames[0]["id"]
-    assert pending_session_tool_callbacks == {
+    call_id = model_command_frames[0]["id"]
+    assert pending_model_command_callbacks == {
         call_id: receive_parent_result,
     }
 
-    await pending_session_tool_callbacks.pop(call_id)({
+    await pending_model_command_callbacks.pop(call_id)({
         "status": "complete",
         "map_id": "spa",
     })
@@ -953,7 +953,7 @@ async def test_application_tool_search_rejects_missing_parent_session_content():
         None,
         config,
         "chat-1",
-        session_tool_names=frozenset(),
+        model_command_names=frozenset(),
         allowed_tools=[],
         application_tool_search=selector,
     )
@@ -987,7 +987,7 @@ async def test_application_tool_search_returns_selector_failure_as_tool_error():
         None,
         config,
         "chat-1",
-        session_tool_names=frozenset(),
+        model_command_names=frozenset(),
         allowed_tools=[],
         application_tool_search=Selector(),
         parent_message_source=lambda: [

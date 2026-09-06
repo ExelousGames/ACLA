@@ -1,7 +1,7 @@
 import {
-    SESSION_TOOLS,
-    getSessionToolsForSessionContext,
-} from './session-tool-registry';
+    MODEL_COMMAND_PROTOCOL,
+    getModelCommandsForSessionContext,
+} from './model-command-protocol-registry';
 import {
     TELEMETRY_METRIC_FIELD_DEFINITIONS,
     TELEMETRY_METRIC_FIELD_SCHEMA,
@@ -9,8 +9,8 @@ import {
 
 describe('live baseline tools', () => {
     it('directs new recordings through collect and limits restart to active recordings', () => {
-        const collect = SESSION_TOOLS.find(({ name }) => name === 'collect_live_baseline') as any;
-        const restart = SESSION_TOOLS.find(({ name }) => name === 'restart_live_baseline') as any;
+        const collect = MODEL_COMMAND_PROTOCOL.find(({ name }) => name === 'collect_live_baseline') as any;
+        const restart = MODEL_COMMAND_PROTOCOL.find(({ name }) => name === 'restart_live_baseline') as any;
 
         expect(collect?.description).toContain('holds only one recording at a time');
         expect(collect?.description).toContain('starts a new recording');
@@ -19,7 +19,7 @@ describe('live baseline tools', () => {
     });
 
     it('requires either the full-lap preset or mutually exclusive custom conditions', () => {
-        const collect = SESSION_TOOLS.find(({ name }) => name === 'collect_live_baseline') as any;
+        const collect = MODEL_COMMAND_PROTOCOL.find(({ name }) => name === 'collect_live_baseline') as any;
         const [presetQuery, customQuery] = collect.properties.query.oneOf;
 
         expect(collect.required).toEqual(['query']);
@@ -53,14 +53,14 @@ describe('live baseline tools', () => {
 
 describe('session live range to-do tools', () => {
     it('exposes one strict executable-event batch schema plus the read tool', () => {
-        const names = SESSION_TOOLS.map((tool) => tool.name);
+        const names = MODEL_COMMAND_PROTOCOL.map((tool) => tool.name);
         expect(names.filter((name) => name.endsWith('_live_range_todo_list'))).toEqual([
             'add_event_to_live_range_todo_list',
             'get_live_range_todo_list',
             'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
         ]);
 
-        const addTool = SESSION_TOOLS.find((tool) => (
+        const addTool = MODEL_COMMAND_PROTOCOL.find((tool) => (
             tool.name === 'add_event_to_live_range_todo_list'
         )) as any;
         expect(addTool).toMatchObject({
@@ -97,10 +97,10 @@ describe('session live range to-do tools', () => {
     });
 
     it('advertises only add/read to child live agents and derives the nested-tool enum', () => {
-        const liveMainNames = getSessionToolsForSessionContext({
+        const liveMainNames = getModelCommandsForSessionContext({
             session_mode: 'live',
         }).map((tool) => tool.name);
-        const liveAgentTools = getSessionToolsForSessionContext({
+        const liveAgentTools = getModelCommandsForSessionContext({
             session_mode: 'live',
             agent_mode: 'track_guide',
         });
@@ -138,7 +138,7 @@ describe('session live range to-do tools', () => {
         expect(addTool.description).toContain('AI Chat mounts the list');
         expect(addTool.description).toContain('returns the updated list summary immediately');
 
-        const analystAddTool = getSessionToolsForSessionContext({
+        const analystAddTool = getModelCommandsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         }).find(({ name }) => name === 'add_event_to_live_range_todo_list') as any;
@@ -148,7 +148,7 @@ describe('session live range to-do tools', () => {
 
     it('selects tools only from direct canonical mode fields', () => {
         const namesFor = (context: Record<string, unknown>) => (
-            getSessionToolsForSessionContext(context).map(({ name }) => name)
+            getModelCommandsForSessionContext(context).map(({ name }) => name)
         );
 
         expect(namesFor({
@@ -173,11 +173,11 @@ describe('session live range to-do tools', () => {
 
 describe('filtered Driver/Expert comparison queue tool', () => {
     const namesFor = (context: Record<string, unknown>) => (
-        getSessionToolsForSessionContext(context).map(({ name }) => name)
+        getModelCommandsForSessionContext(context).map(({ name }) => name)
     );
 
     it('defines a strict no-argument schema only for the live performance analyst', () => {
-        const tool = SESSION_TOOLS.find(({ name }) => (
+        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
         ));
         expect(tool).toMatchObject({ properties: {}, required: [] });
@@ -199,7 +199,7 @@ describe('filtered Driver/Expert comparison queue tool', () => {
     });
 
     it('includes the tool in analyst repeatable plans and excludes recursive Live Range scheduling', () => {
-        const analystTools = getSessionToolsForSessionContext({
+        const analystTools = getModelCommandsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
@@ -221,7 +221,7 @@ describe('filtered Driver/Expert comparison queue tool', () => {
 
 describe('analysis result query tool', () => {
     const namesFor = (context: Record<string, unknown>) => (
-        getSessionToolsForSessionContext(context).map(({ name }) => name)
+        getModelCommandsForSessionContext(context).map(({ name }) => name)
     );
     const eligibleContexts = [
         { session_mode: 'live' },
@@ -232,11 +232,11 @@ describe('analysis result query tool', () => {
     ];
 
     it('requires one non-blank JSONata expression without a legacy enum', () => {
-        const tool = SESSION_TOOLS.find(({ name }) => (
+        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'query_analysis_result'
         )) as any;
 
-        expect(SESSION_TOOLS.filter(({ name }) => name === 'query_analysis_result'))
+        expect(MODEL_COMMAND_PROTOCOL.filter(({ name }) => name === 'query_analysis_result'))
             .toHaveLength(1);
         expect(tool).toMatchObject({
             description: expect.any(String),
@@ -258,7 +258,7 @@ describe('analysis result query tool', () => {
 
     it('describes one all-analysis root in every eligible context', () => {
         eligibleContexts.forEach((context) => {
-            const tool = getSessionToolsForSessionContext(context).find(({ name }) => (
+            const tool = getModelCommandsForSessionContext(context).find(({ name }) => (
                 name === 'query_analysis_result'
             ));
             const description = tool?.description ?? '';
@@ -277,7 +277,7 @@ describe('analysis result query tool', () => {
     });
 
     it('does not advertise the old identifiers as aliases', () => {
-        const tool = SESSION_TOOLS.find(({ name }) => (
+        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'query_analysis_result'
         ));
         const serializedTool = JSON.stringify(tool);
@@ -310,7 +310,7 @@ describe('analysis result query tool', () => {
     });
 
     it('is available to compatible live analyst repeatable plan steps and stop conditions', () => {
-        const tools = getSessionToolsForSessionContext({
+        const tools = getModelCommandsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
@@ -325,7 +325,7 @@ describe('analysis result query tool', () => {
 
 describe('analysis result query apply tool', () => {
     const namesFor = (context: Record<string, unknown>) => (
-        getSessionToolsForSessionContext(context).map(({ name }) => name)
+        getModelCommandsForSessionContext(context).map(({ name }) => name)
     );
     const eligibleContexts = [
         { session_mode: 'live' },
@@ -336,11 +336,11 @@ describe('analysis result query apply tool', () => {
     ];
 
     it('requires final non-blank JSONata and accepts only an optional integer page number', () => {
-        const tool = SESSION_TOOLS.find(({ name }) => (
+        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'apply_query_to_analysis_result'
         )) as any;
 
-        expect(SESSION_TOOLS.filter(({ name }) => name === 'apply_query_to_analysis_result'))
+        expect(MODEL_COMMAND_PROTOCOL.filter(({ name }) => name === 'apply_query_to_analysis_result'))
             .toHaveLength(1);
         expect(Object.keys(tool.properties)).toEqual(['query', 'page_number']);
         expect(tool.required).toEqual(['query']);
@@ -378,7 +378,7 @@ describe('analysis result query apply tool', () => {
     });
 
     it('is available in analyst repeatable plans, stop conditions, and nested live-range workflows', () => {
-        const tools = getSessionToolsForSessionContext({
+        const tools = getModelCommandsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
@@ -398,7 +398,7 @@ describe('analysis result query apply tool', () => {
 
 describe('set_procedure_plan tool', () => {
     it('does not expose a current_request argument', () => {
-        const tool = SESSION_TOOLS.find(({ name }) => (
+        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'set_procedure_plan'
         )) as any;
 
@@ -407,7 +407,7 @@ describe('set_procedure_plan tool', () => {
     });
 
     it('exposes only assistant-authored request inputs', () => {
-        const tool = SESSION_TOOLS.find(({ name }) => (
+        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'set_procedure_plan'
         )) as any;
         const requestItems = tool.properties.requests.items;
@@ -420,7 +420,7 @@ describe('set_procedure_plan tool', () => {
 
 describe('create_repeatable_plan tool', () => {
     it('defines the canonical preparation workflow and numeric stop_when schema', () => {
-        const tools = getSessionToolsForSessionContext({
+        const tools = getModelCommandsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
@@ -474,7 +474,7 @@ describe('create_repeatable_plan tool', () => {
 
     it('exposes create_repeatable_plan only to the Live Performance Analyst and constrains nested tools by session', () => {
         const namesFor = (context: Record<string, unknown>) => (
-            getSessionToolsForSessionContext(context).map(({ name }) => name)
+            getModelCommandsForSessionContext(context).map(({ name }) => name)
         );
         expect(namesFor({ session_mode: 'live' })).not.toContain('create_repeatable_plan');
         expect(namesFor({
@@ -482,7 +482,7 @@ describe('create_repeatable_plan tool', () => {
             agent_mode: 'track_guide',
         })).not.toContain('create_repeatable_plan');
 
-        const analystTools = getSessionToolsForSessionContext({
+        const analystTools = getModelCommandsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
@@ -509,7 +509,7 @@ describe('create_repeatable_plan tool', () => {
 
 describe('telemetry metric query tool', () => {
     it('requires the described supported fields, scope, and a summarized reduction', () => {
-        const tool = SESSION_TOOLS.find(({ name }) => (
+        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'query_telemetry_metric'
         ));
 
@@ -551,9 +551,9 @@ describe('telemetry metric query tool', () => {
 describe('retry_repeatable_plan_task tool', () => {
     it('defines a no-argument schema and is exposed only to the Live Performance Analyst', () => {
         const namesFor = (context: Record<string, unknown>) => (
-            getSessionToolsForSessionContext(context).map(({ name }) => name)
+            getModelCommandsForSessionContext(context).map(({ name }) => name)
         );
-        const tool = SESSION_TOOLS.find(({ name }) => (
+        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'retry_repeatable_plan_task'
         ));
         expect(tool).toMatchObject({ properties: {}, required: [] });

@@ -7,32 +7,32 @@ import {
     METHOD_METADATA,
     PATH_METADATA,
 } from '@nestjs/common/constants';
-import { SessionToolsController } from './session-tools.controller';
+import { ModelCommandProtocolController } from './model-command-protocol.controller';
 
-describe('SessionToolsController', () => {
-    const controller = new SessionToolsController();
+describe('ModelCommandProtocolController', () => {
+    const controller = new ModelCommandProtocolController();
 
     it('requires the JWT auth guard', () => {
         const guards = Reflect.getMetadata(
             GUARDS_METADATA,
-            SessionToolsController.prototype.getSessionTools,
+            ModelCommandProtocolController.prototype.getModelCommands,
         );
         expect(guards).toHaveLength(1);
     });
 
-    it('exposes POST /session-tools', () => {
+    it('exposes POST /model-command-protocol', () => {
         expect(Reflect.getMetadata(
             PATH_METADATA,
-            SessionToolsController.prototype.getSessionTools,
-        )).toBe('session-tools');
+            ModelCommandProtocolController.prototype.getModelCommands,
+        )).toBe('model-command-protocol');
         expect(Reflect.getMetadata(
             METHOD_METADATA,
-            SessionToolsController.prototype.getSessionTools,
+            ModelCommandProtocolController.prototype.getModelCommands,
         )).toBe(RequestMethod.POST);
     });
 
     it('relies on the JWT guard without a controller-level identity check', () => {
-        expect(controller.getSessionTools({
+        expect(controller.getModelCommands({
             session_context: { session_mode: 'live' },
         }).length).toBeGreaterThan(0);
     });
@@ -44,12 +44,12 @@ describe('SessionToolsController', () => {
         { session_context: { session_mode: 'unknown' } },
         { session_context: { session_mode: 'live', agent_mode: 'unknown' } },
     ])('rejects invalid session context: %p', (body) => {
-        expect(() => controller.getSessionTools(body))
+        expect(() => controller.getModelCommands(body))
             .toThrow(BadRequestException);
     });
 
     it('preserves the recorded-session allowlist', () => {
-        const tools = controller.getSessionTools({
+        const tools = controller.getModelCommands({
             session_context: { session_mode: 'recorded' },
         });
         const names = tools.map(({ name }) => name);
@@ -67,7 +67,7 @@ describe('SessionToolsController', () => {
     });
 
     it('preserves the live analyst allowlist and exact response shape', () => {
-        const tools = controller.getSessionTools({
+        const tools = controller.getModelCommands({
             session_context: {
                 session_mode: 'live',
                 agent_mode: 'live_performance_analyst',
@@ -94,7 +94,7 @@ describe('SessionToolsController', () => {
     });
 
     it('returns the JSONata analysis-result query contract', () => {
-        const tools = controller.getSessionTools({
+        const tools = controller.getModelCommands({
             session_context: { session_mode: 'recorded' },
         });
         const tool = tools.find(({ name }) => name === 'query_analysis_result') as any;
@@ -115,7 +115,7 @@ describe('SessionToolsController', () => {
     });
 
     it('returns the JSONata analysis-result apply contract', () => {
-        const tools = controller.getSessionTools({
+        const tools = controller.getModelCommands({
             session_context: { session_mode: 'recorded' },
         });
         const tool = tools.find(({ name }) => name === 'apply_query_to_analysis_result') as any;
@@ -137,7 +137,7 @@ describe('SessionToolsController', () => {
     it.each(['front_desk', 'live', 'recorded', 'user_summary'])(
         'accepts session mode %s',
         (sessionMode) => {
-            expect(controller.getSessionTools({
+            expect(controller.getModelCommands({
                 session_context: { session_mode: sessionMode },
             }).length).toBeGreaterThan(0);
         },

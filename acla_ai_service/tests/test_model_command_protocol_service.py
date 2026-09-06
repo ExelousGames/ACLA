@@ -3,9 +3,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.voice.session_ai_tool_service import (
-    SessionAIToolService,
-    SessionToolCatalogError,
+from app.voice.model_command_protocol_service import (
+    ModelCommandProtocolService,
+    ModelCommandProtocolCatalogError,
 )
 
 
@@ -26,11 +26,11 @@ def _backend(response):
 
 
 @pytest.mark.asyncio
-async def test_get_session_tools_fetches_once_with_five_second_timeout():
+async def test_get_model_commands_fetches_once_with_five_second_timeout():
     backend = _backend([_tool()])
-    service = SessionAIToolService(backend)
+    service = ModelCommandProtocolService(backend)
 
-    tools = await service.get_session_tools({
+    tools = await service.get_model_commands({
         "session_mode": "recorded",
         "agent_mode": "track_guide",
         "ignored": "value",
@@ -38,7 +38,7 @@ async def test_get_session_tools_fetches_once_with_five_second_timeout():
 
     assert tools == [_tool()]
     backend.call_backend_function.assert_awaited_once_with(
-        "session-tools",
+        "model-command-protocol",
         "POST",
         {
             "session_context": {
@@ -52,14 +52,14 @@ async def test_get_session_tools_fetches_once_with_five_second_timeout():
 
 
 @pytest.mark.asyncio
-async def test_get_session_tools_refreshes_authentication_and_retries_once():
+async def test_get_model_commands_refreshes_authentication_and_retries_once():
     backend = _backend(None)
     backend.call_backend_function.side_effect = [
         {"error": "HTTP 401: Unauthorized"},
         [_tool()],
     ]
 
-    tools = await SessionAIToolService(backend).get_session_tools({
+    tools = await ModelCommandProtocolService(backend).get_model_commands({
         "session_mode": "live",
     })
 
@@ -69,12 +69,12 @@ async def test_get_session_tools_refreshes_authentication_and_retries_once():
 
 
 @pytest.mark.asyncio
-async def test_get_session_tools_reports_timeout_without_fallback():
+async def test_get_model_commands_reports_timeout_without_fallback():
     backend = _backend(None)
     backend.call_backend_function.side_effect = asyncio.TimeoutError
 
-    with pytest.raises(SessionToolCatalogError, match="timed out"):
-        await SessionAIToolService(backend).get_session_tools({
+    with pytest.raises(ModelCommandProtocolCatalogError, match="timed out"):
+        await ModelCommandProtocolService(backend).get_model_commands({
             "session_mode": "front_desk",
         })
 
@@ -90,9 +90,9 @@ async def test_get_session_tools_reports_timeout_without_fallback():
     [{**_tool(), "properties": []}],
     [{**_tool(), "required": ["missing"]}],
 ])
-async def test_get_session_tools_rejects_malformed_responses(response):
-    with pytest.raises(SessionToolCatalogError):
-        await SessionAIToolService(_backend(response)).get_session_tools({
+async def test_get_model_commands_rejects_malformed_responses(response):
+    with pytest.raises(ModelCommandProtocolCatalogError):
+        await ModelCommandProtocolService(_backend(response)).get_model_commands({
             "session_mode": "user_summary",
         })
 
@@ -102,18 +102,18 @@ async def test_get_session_tools_rejects_malformed_responses(response):
     ([_tool("same"), _tool("same")], "same"),
     ([_tool("explain_label")], "explain_label"),
 ])
-async def test_get_session_tools_rejects_duplicate_and_ai_owned_names(
+async def test_get_model_commands_rejects_duplicate_and_ai_owned_names(
     response,
     duplicate_name,
 ):
-    with pytest.raises(SessionToolCatalogError, match=duplicate_name):
-        await SessionAIToolService(_backend(response)).get_session_tools({
+    with pytest.raises(ModelCommandProtocolCatalogError, match=duplicate_name):
+        await ModelCommandProtocolService(_backend(response)).get_model_commands({
             "session_mode": "live",
         })
 
 
 def test_get_ai_tools_returns_independent_copies_of_three_knowledge_tools():
-    service = SessionAIToolService(_backend([]))
+    service = ModelCommandProtocolService(_backend([]))
     first = service.get_ai_tools()
     second = service.get_ai_tools()
 
@@ -129,7 +129,7 @@ def test_get_ai_tools_returns_independent_copies_of_three_knowledge_tools():
 
 
 def test_get_side_chat_tools_exposes_only_search_application_tool():
-    service = SessionAIToolService(_backend([]))
+    service = ModelCommandProtocolService(_backend([]))
     first = service.get_side_chat_tools()
     second = service.get_side_chat_tools()
 
@@ -142,8 +142,8 @@ def test_get_side_chat_tools_exposes_only_search_application_tool():
 
 
 @pytest.mark.asyncio
-async def test_get_session_tools_rejects_reserved_side_chat_name():
-    with pytest.raises(SessionToolCatalogError, match="search_application_tool"):
-        await SessionAIToolService(
+async def test_get_model_commands_rejects_reserved_side_chat_name():
+    with pytest.raises(ModelCommandProtocolCatalogError, match="search_application_tool"):
+        await ModelCommandProtocolService(
             _backend([_tool("search_application_tool")]),
-        ).get_session_tools({"session_mode": "live"})
+        ).get_model_commands({"session_mode": "live"})

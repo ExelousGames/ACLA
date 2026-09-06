@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { SessionToolsController } from './session-tools.controller';
+import { ModelCommandProtocolController } from './model-command-protocol.controller';
 import { VoiceGateway } from './voice.gateway';
 
 @Module({
-    controllers: [SessionToolsController],
+    controllers: [ModelCommandProtocolController],
     providers: [VoiceGateway],
 })
 export class VoiceModule {}

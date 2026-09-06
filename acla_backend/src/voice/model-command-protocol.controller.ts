@@ -6,7 +6,7 @@ import {
     UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { getSessionToolsForSessionContext } from '../shared/ai/session-tool-registry';
+import { getModelCommandsForSessionContext } from '../shared/ai/model-command-protocol-registry';
 
 const SESSION_MODES = new Set([
     'front_desk',
@@ -21,10 +21,10 @@ const AGENT_MODES = new Set([
 ]);
 
 @Controller()
-export class SessionToolsController {
+export class ModelCommandProtocolController {
     @UseGuards(AuthGuard('jwt'))
-    @Post('session-tools')
-    getSessionTools(@Body() body: unknown) {
+    @Post('model-command-protocol')
+    getModelCommands(@Body() body: unknown) {
         if (!body || typeof body !== 'object' || Array.isArray(body)) {
             throw new BadRequestException('session_context is required');
         }
@@ -48,7 +48,7 @@ export class SessionToolsController {
             throw new BadRequestException('session_context.agent_mode is invalid');
         }
 
-        return getSessionToolsForSessionContext({
+        return getModelCommandsForSessionContext({
             session_mode: context.session_mode,
             ...(context.agent_mode === undefined
                 ? {}

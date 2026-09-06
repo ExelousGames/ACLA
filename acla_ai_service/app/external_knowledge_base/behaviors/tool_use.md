@@ -3,6 +3,8 @@ name: tool_use
 ---
 
 Tool use:
+- Model Command Protocol is the collection of tools and workflows used to
+  communicate with the ACLA client.
 - Use the native tool call channel only. Never write XML tags, function tags,
   JSON, or tool names as spoken text.
 - Do not call tools for simple conversational replies or common racing concepts
