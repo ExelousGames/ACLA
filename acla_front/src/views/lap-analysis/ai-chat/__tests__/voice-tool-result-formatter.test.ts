@@ -10,15 +10,23 @@ describe('buildFormattedToolResultFrame', () => {
             type: 'tool_result',
             id: 'workflow-test',
             name: 'custom_alert',
-            final: false,
             result: {
                 event: 'custom_alert',
                 section: 'T1',
                 telemetry_row_count: 2,
-                status: 'complete',
             },
         });
     });
+
+    it.each(['working', 'complete', 'failed', 'custom-status'])(
+        'preserves the supplied status %s without rewriting it',
+        (status) => {
+            const data = { name: 'background_tool', status, progress: 50 };
+            expect(buildFormattedToolResultFrame(data, 'call-1')).toEqual({
+                type: 'tool_result', id: 'call-1', name: 'background_tool', result: data,
+            });
+        },
+    );
 
     it('does not duplicate the run id in a nested native tool message', () => {
         const frame = buildFormattedToolResultFrame({
@@ -49,12 +57,10 @@ describe('buildFormattedToolResultFrame', () => {
             type: 'tool_result',
             id: 'workflow-test',
             name: 'live_performance_analyst',
-            final: false,
             result: {
                 source: 'live_performance_analyst',
                 agent_mode: 'live_performance_analyst',
                 event: 'recorded_analysis_ready',
-                status: 'complete',
             },
         });
     });

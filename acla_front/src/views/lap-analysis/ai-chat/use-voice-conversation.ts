@@ -78,7 +78,6 @@ type VoiceEventPayload =
         ok?: boolean;
         errorName?: string | null;
         message?: string | null;
-        final: boolean;
     };
 
 export type VoiceEvent = VoiceEventPayload & { clientSessionId?: string };
@@ -145,7 +144,6 @@ export interface VoiceConversation {
 export interface ToolResultFrame {
     id: string;
     name: string;
-    final: boolean;
     result: unknown;
     arguments?: Record<string, unknown>;
 }
@@ -233,19 +231,18 @@ const getToolResultForAi = (result: unknown, status?: string): unknown => {
 const buildToolResultFrame = (
     id: string,
     name: string,
-    final: boolean,
     result: unknown,
 ) => {
     return {
         type: 'tool_result',
         id,
         name,
-        final,
         result,
     };
 };
 
-const buildFailedToolResult = (error: AiToolError) => ({
+const buildFailedToolResult = (error: AiToolError, status = 'failed') => ({
+    status,
     ok: false as const,
     name: error.name,
     message: error.message,
@@ -297,14 +294,14 @@ export const executeSubscribedFrontendTool = async ({
         ? call.arguments
         : {};
 
-    if (name !== 'start_agent_session') sendText(buildToolResultFrame(id, name, false, { status: 'started' }));
+    if (name !== 'start_agent_session') sendText(buildToolResultFrame(id, name, { status: 'started' }));
 
     if (!name) {
         const error = new InvalidToolCallError(
             'Tool call is missing a name.',
         );
         const failure = buildFailedToolResult(error);
-        sendText(buildToolResultFrame(id, name, true, failure));
+        sendText(buildToolResultFrame(id, name, failure));
         return buildFailedToolSubscriptionResult(id, name, error);
     }
 
@@ -315,12 +312,12 @@ export const executeSubscribedFrontendTool = async ({
         title,
         status: 'started',
         arguments: args,
-        final: false,
     });
 
     const handler = handlers[name];
 
     let removeAbortListener: (() => void) | undefined;
+    let failureStatus = 'failed';
     try {
         if (signal?.aborted) throw new AiToolOperationAbortedError();
         if (!handler) {
@@ -338,7 +335,7 @@ export const executeSubscribedFrontendTool = async ({
         operation.statuses.forEach((statusPromise) => {
             void statusPromise.then((status) => {
                 if (signal?.aborted) return;
-                sendText(buildToolResultFrame(id, name, false, getToolResultForAi(status)));
+                sendText(buildToolResultFrame(id, name, getToolResultForAi(status)));
                 emitEvent?.({
                     kind: 'tool_call',
                     runId: id,
@@ -347,14 +344,13 @@ export const executeSubscribedFrontendTool = async ({
                     status: 'started',
                     result: status,
                     ok: true,
-                    final: false,
                 });
             }, (statusError) => {
                 if (signal?.aborted) return;
                 const error = normalizeAiToolError(statusError);
-                const failure = { ...buildFailedToolResult(error), status: 'status_failed' };
+                const failure = buildFailedToolResult(error, 'status_failed');
                 console.error(`[ai-tool] '${name}' status failed.`, error);
-                sendText(buildToolResultFrame(id, name, false, failure));
+                sendText(buildToolResultFrame(id, name, failure));
                 emitEvent?.({
                     kind: 'tool_call',
                     runId: id,
@@ -365,7 +361,6 @@ export const executeSubscribedFrontendTool = async ({
                     ok: false,
                     errorName: error.name,
                     message: error.message,
-                    final: false,
                 });
             });
         });
@@ -374,24 +369,29 @@ export const executeSubscribedFrontendTool = async ({
             result: AiToolExecutionOutput;
         }>((resolve) => operation.notifyTerminated(resolve));
         if (signal?.aborted) throw new AiToolOperationAbortedError();
-        if (termination.result instanceof Error) throw termination.result;
-        const finalResult = getToolResultForAi(termination.result, termination.status);
-        sendText(buildToolResultFrame(id, name, true, finalResult));
+        if (termination.result instanceof Error) {
+            failureStatus = termination.status;
+            throw termination.result;
+        }
+        const result = getToolResultForAi(termination.result, termination.status);
+        sendText(buildToolResultFrame(id, name, result));
         emitEvent?.({
             kind: 'tool_call',
             runId: id,
             name,
             title,
             status: 'completed',
-            result: finalResult,
+            result,
             ok: true,
-            final: true,
         });
         return { id, name, ok: true, result: termination.result };
     } catch (err) {
         const error = normalizeAiToolError(err);
-        const failure = buildFailedToolResult(error);
-        sendText(buildToolResultFrame(id, name, true, failure));
+        const failure = buildFailedToolResult(
+            error,
+            err instanceof AiToolOperationAbortedError ? 'aborted' : failureStatus,
+        );
+        sendText(buildToolResultFrame(id, name, failure));
         emitEvent?.({
             kind: 'tool_call',
             runId: id,
@@ -401,7 +401,6 @@ export const executeSubscribedFrontendTool = async ({
             ok: false,
             errorName: error.name,
             message: error.message,
-            final: true,
         });
         return buildFailedToolSubscriptionResult(id, name, error);
     } finally {
@@ -1032,7 +1031,6 @@ export function useVoiceConversation(
             const payload = buildToolResultFrame(
                 frame.id,
                 frame.name,
-                frame.final,
                 getToolResultForAi(frame.result),
             );
             const json = JSON.stringify(payload);

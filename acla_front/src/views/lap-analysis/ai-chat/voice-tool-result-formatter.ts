@@ -50,24 +50,16 @@ export const buildFormattedToolResultFrame = (
 ) => {
     const rawAiData = asRecord(data);
     const aiData = omitLiveAnalystAnalysis(omitRawTelemetryRows(rawAiData));
-    const sourceStatus = typeof aiData.status === 'string' ? aiData.status : undefined;
     const id = typeof aiData.tool_run_id === 'string'
         ? aiData.tool_run_id
         : typeof data.run_id === 'string'
             ? data.run_id
             : fallbackId;
     const name = getToolResultName(aiData);
-    const payload = {
+    return {
         type: 'tool_result' as const,
         id,
         name,
-        final: false,
-        result: {
-            ...aiData,
-            ...(sourceStatus ? { source_status: sourceStatus } : {}),
-            status: 'complete',
-        },
+        result: aiData,
     };
-
-    return payload;
 };

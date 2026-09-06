@@ -563,7 +563,6 @@ describe('AiChat conversation lifecycle', () => {
                 name: 'show_map',
                 title: 'Showing map',
                 status: 'completed',
-                final: true,
             });
             onEvent({ kind: 'user_transcript', text: 'Now compare laps', source: 'voice' });
         });

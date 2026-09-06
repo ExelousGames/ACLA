@@ -12,7 +12,6 @@ export interface LiveRangeTodoEventInput {
     id: string;
     normalized_position: number;
     lead_time_seconds?: number;
-    eta_seconds?: number;
     content: LiveRangeTodoContent;
     taskStart: (signal: AbortSignal) => AiToolOperation<unknown, object>;
 }
@@ -31,6 +30,7 @@ export interface LiveRangeTodoSnapshotEvent {
     lead_time_seconds: number;
     content: LiveRangeTodoContent;
     status: LiveRangeTodoStatus;
+    // Null means no finite arrival estimate from measured forward movement.
     eta_seconds: number | null;
     created_at: number;
     updated_at: number;

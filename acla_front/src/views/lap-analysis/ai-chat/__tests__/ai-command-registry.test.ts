@@ -868,8 +868,8 @@ describe('filtered Driver/Expert comparison queue tool', () => {
             'analysis-comparison:late-first',
             'analysis-comparison:early-second',
         ]);
-        expect(queuedEvents[0].eta_seconds).toBeCloseTo(30);
-        expect(queuedEvents[1].eta_seconds).toBeCloseTo(60);
+        expect(queuedEvents[0].eta_seconds).toBeNull();
+        expect(queuedEvents[1].eta_seconds).toBeNull();
         expect(displaySpecificResultInOverlay).not.toHaveBeenCalled();
 
         runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_laps: 1 });
@@ -894,6 +894,9 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(1);
 
         runner.acceptTelemetry({ Graphics_normalized_car_position: 0.65, Graphics_completed_laps: 2 });
+        expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(1);
+        jest.advanceTimersByTime(1_000);
+        runner.acceptTelemetry({ Graphics_normalized_car_position: 0.68, Graphics_completed_laps: 2 });
         expect(displaySpecificResultInOverlay).toHaveBeenNthCalledWith(
             2,
             'analysis-page-7',

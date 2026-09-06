@@ -211,7 +211,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
 
         expect(result.current.sendUserText('hello')).toBe(false);
         expect(result.current.sendToolStatus({ status: 'working' })).toBe(false);
-        expect(result.current.sendToolResult({ id: 'tool-1', name: 'test', final: true, result: {} })).toBe(false);
+        expect(result.current.sendToolResult({ id: 'tool-1', name: 'test', result: {} })).toBe(false);
         await expect(result.current.executeToolCall({ name: 'test' })).resolves.toBeNull();
         act(() => mockWorkletNodes[0].port.onmessage?.({
             data: { type: 'pcm', buffer: new ArrayBuffer(4) },
@@ -408,7 +408,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
             });
             expect(socket.send).toHaveBeenCalledTimes(sentBeforeDisconnect);
             const completed = onEvent.mock.calls.map(([event]) => event)
-                .filter((event) => event.kind === 'tool_call' && event.final);
+                .filter((event) => event.kind === 'tool_call' && event.status === 'completed');
             expect(completed).toHaveLength(3);
             completed.forEach((event) => expect(event).toMatchObject({
                 ok: false, clientSessionId: 'client-1', message: 'AI tool operation was aborted.',
@@ -440,7 +440,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
         expect(socket.send).toHaveBeenCalledTimes(sentBeforeAudio);
         await act(async () => control.resolve('complete', { value: 1 }));
         expect(JSON.parse(socket.send.mock.calls.at(-1)![0])).toMatchObject({
-            id: 'call-1', final: true, result: { status: 'complete', value: 1 },
+            id: 'call-1', result: { status: 'complete', value: 1 },
         });
         act(() => result.current.setMicDisabled(false));
         expect(mockStreams[0].tracks[0].enabled).toBe(true);
@@ -495,7 +495,8 @@ describe('useVoiceConversation chat session lifecycle', () => {
         expect(controls[0].signal.aborted).toBe(true);
         expect(controls[1].signal.aborted).toBe(false);
         const frames = resumed.send.mock.calls.map(([frame]) => JSON.parse(frame));
-        expect(frames.filter((frame) => frame.final)).toEqual([
+        expect(frames.filter((frame) => frame.type === 'tool_result')).toEqual([
+            { type: 'tool_result', id: 'new', name: 'test_tool', result: { status: 'started' } },
             expect.objectContaining({ id: 'new', result: { status: 'complete', value: 'new' } }),
         ]);
     });

@@ -79,6 +79,32 @@ describe('appended AI display components', () => {
         expect(screen.queryByText('collect_live_baseline')).not.toBeInTheDocument();
     });
 
+    it('shows an infinite ETA when measured forward movement is zero', () => {
+        render(
+            <LiveRangeTodoListDisplay
+                snapshot={{
+                    created_at: 1,
+                    updated_at: 2,
+                    current_position: 0.1,
+                    rolling_rate: 0,
+                    events: [{
+                        id: 'stationary',
+                        normalized_position: 0.4,
+                        lead_time_seconds: 2,
+                        content: { title: 'Upcoming corner' },
+                        status: 'pending',
+                        eta_seconds: null,
+                        created_at: 1,
+                        updated_at: 2,
+                    }],
+                }}
+            />,
+        );
+
+        expect(screen.getByText('ETA ∞')).toBeInTheDocument();
+        expect(screen.getByText('pending')).toBeInTheDocument();
+    });
+
     it('renders only the closest live range event on the floating pill surface', () => {
         render(
             <LiveRangeTodoListDisplay

@@ -2,6 +2,7 @@ import {
     LiveRangeTodoListRunner,
     calculateForwardCircularDistance,
     calculateLiveRangeEta,
+    calculateRollingForwardRate,
     crossedLiveRangeTodoPosition,
 } from 'components/ai-engineering-tools/LiveRangeTodoList';
 import type {
@@ -51,9 +52,22 @@ describe('live range helpers', () => {
             0.99,
         )).toBe(true);
     });
+
+    it('has no finite ETA without measured forward movement', () => {
+        expect(calculateRollingForwardRate([
+            { position: 0.1, receivedAt: 1_000 },
+            { position: 0.1, receivedAt: 2_000 },
+        ])).toBe(0);
+        expect(calculateLiveRangeEta(0.1, 0.4, 0)).toBeNull();
+        expect(calculateLiveRangeEta(0.1, 0.4, null)).toBeNull();
+    });
 });
 
 describe('LiveRangeTodoListRunner executable events', () => {
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
     it('removes its registration completely after the final task finishes', async () => {
         const directory = createAiToolComponentRefDirectory();
         const runner = new LiveRangeTodoListRunner(
@@ -70,42 +84,112 @@ describe('LiveRangeTodoListRunner executable events', () => {
         )).toBeNull();
     });
 
-    it('preserves a tool-provided ETA until rolling telemetry can refine it', () => {
+    it('waits for measured forward movement before estimating arrival', () => {
+        const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
         const runner = new LiveRangeTodoListRunner('live-range');
-
-        runner.addEvent({
-            ...event('estimated', 0.4),
-            eta_seconds: 30,
-        });
+        runner.addEvent(event('measured', 0.4));
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.1,
             Graphics_completed_laps: 1,
         });
 
-        expect(runner.get().todo_list?.events[0]).toMatchObject({
-            id: 'estimated',
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeNull();
+
+        now.mockReturnValue(2_000);
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.2,
+            Graphics_completed_laps: 1,
         });
-        expect(runner.get().todo_list?.events[0].eta_seconds).toBeCloseTo(30, 1);
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeCloseTo(2);
     });
 
-    it('uses a tool-provided ETA for lead-time scheduling without a rolling rate', () => {
+    it('keeps stationary events pending regardless of elapsed time', () => {
         const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
         const taskStart = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
         const runner = new LiveRangeTodoListRunner('live-range');
         runner.addEvent({
-            ...event('estimated', 0.4, taskStart),
+            ...event('stationary', 0.4, taskStart),
             lead_time_seconds: 2,
-            eta_seconds: 5,
         });
 
-        now.mockReturnValue(5_000);
+        for (let time = 1_000; time <= 60_000; time += 1_000) {
+            now.mockReturnValue(time);
+            runner.acceptTelemetry({
+                Graphics_normalized_car_position: 0.1,
+                Graphics_completed_laps: 1,
+            });
+        }
+
+        expect(taskStart).not.toHaveBeenCalled();
+        expect(runner.get().todo_list?.events[0]).toMatchObject({
+            status: 'pending',
+            eta_seconds: null,
+        });
+    });
+
+    it('does not count down a previous measured ETA while stopped and resumes from movement', async () => {
+        const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+        const taskStart = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.replaceEvents([
+            { ...event('first', 0.5, taskStart), lead_time_seconds: 2 },
+            { ...event('second', 0.6, taskStart), lead_time_seconds: 2 },
+        ]);
+        const sample = (time: number, position: number) => {
+            now.mockReturnValue(time);
+            runner.acceptTelemetry({
+                Graphics_normalized_car_position: position,
+                Graphics_completed_laps: 1,
+            });
+        };
+
+        sample(1_000, 0.1);
+        sample(2_000, 0.2);
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeCloseTo(3);
+
+        for (let time = 3_000; time <= 60_000; time += 1_000) {
+            sample(time, 0.2);
+        }
+
+        expect(taskStart).not.toHaveBeenCalled();
+        expect(runner.get().todo_list?.events).toEqual([
+            expect.objectContaining({ id: 'first', status: 'pending', eta_seconds: null }),
+            expect.objectContaining({ id: 'second', status: 'pending', eta_seconds: null }),
+        ]);
+
+        sample(61_000, 0.25);
+        expect(taskStart).not.toHaveBeenCalled();
+        sample(62_000, 0.36);
+        expect(taskStart).toHaveBeenCalledTimes(1);
+        await flushPromises();
+        sample(63_000, 0.45);
+        expect(taskStart).toHaveBeenCalledTimes(2);
+    });
+
+    it('discards the previous ETA when telemetry resumes after a gap', () => {
+        const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+        const taskStart = jest.fn(() => resolvedAiToolOperation({}, 'complete'));
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent({ ...event('gap', 0.5, taskStart), lead_time_seconds: 2 });
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.1,
             Graphics_completed_laps: 1,
         });
+        now.mockReturnValue(2_000);
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.2,
+            Graphics_completed_laps: 1,
+        });
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeCloseTo(3);
 
-        expect(taskStart).toHaveBeenCalledTimes(1);
-        now.mockRestore();
+        now.mockReturnValue(60_000);
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.2,
+            Graphics_completed_laps: 1,
+        });
+
+        expect(taskStart).not.toHaveBeenCalled();
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeNull();
     });
 
     it('sorts recalculated ETAs before starting the first due task', () => {
@@ -371,6 +455,10 @@ describe('LiveRangeTodoListRunner executable events', () => {
             ...event('legacy-data', 0.2),
             data: {},
         } as LiveRangeTodoEventInput)).toThrow(/property 'data' is not supported/);
+        expect(() => runner.addEvent({
+            ...event('fallback-eta', 0.2),
+            eta_seconds: 5,
+        } as LiveRangeTodoEventInput)).toThrow(/property 'eta_seconds' is not supported/);
         expect(() => runner.addEvent({
             ...event('legacy-detail', 0.2),
             content: { title: 'Legacy', detail: 'No longer supported' },

@@ -129,7 +129,6 @@ export const calculateRollingForwardRate = (
     for (let index = 1; index < samples.length; index += 1) {
         distance += getForwardDelta(samples[index - 1], samples[index]);
     }
-    if (distance <= 0) return null;
     return distance / elapsedSeconds;
 };
 
@@ -327,7 +326,9 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
                                 )}
                                 <div className="ai-chat__range-todo-metrics">
                                     <span>Target {formatPosition(event.normalized_position)}</span>
-                                    <span>{event.eta_seconds === null ? 'ETA --' : `ETA ${event.eta_seconds.toFixed(1)}s`}</span>
+                                    <span>{event.eta_seconds === null
+                                        ? snapshot.rolling_rate === 0 ? 'ETA ∞' : 'ETA --'
+                                        : `ETA ${event.eta_seconds.toFixed(1)}s`}</span>
                                     <span>Lead {event.lead_time_seconds.toFixed(1)}s</span>
                                 </div>
                             </li>
@@ -450,13 +451,13 @@ implements LiveRangeTodoListHandle {
         }
         const event = {
             ...parsed.event,
-            eta_seconds: (this.runtime.current_position === null
+            eta_seconds: this.runtime.current_position === null
                 ? null
                 : calculateLiveRangeEta(
                     this.runtime.current_position,
                     parsed.event.normalized_position,
                     this.runtime.rolling_rate,
-                )) ?? parsed.event.eta_seconds,
+                ),
         };
         const next = this.commit({
             ...this.runtime,
@@ -483,13 +484,13 @@ implements LiveRangeTodoListHandle {
         this.previousSample = null;
         const eventsWithEta = events.map((event) => ({
             ...event,
-            eta_seconds: (this.runtime.current_position === null
+            eta_seconds: this.runtime.current_position === null
                 ? null
                 : calculateLiveRangeEta(
                     this.runtime.current_position,
                     event.normalized_position,
                     this.runtime.rolling_rate,
-                )) ?? event.eta_seconds,
+                ),
         }));
         const next = this.commit({
             events: eventsWithEta,
@@ -562,13 +563,13 @@ implements LiveRangeTodoListHandle {
             }
             next = {
                 ...next,
-                eta_seconds: (this.runtime.current_position === null
+                eta_seconds: this.runtime.current_position === null
                     ? null
                     : calculateLiveRangeEta(
                         this.runtime.current_position,
                         next.normalized_position,
                         this.runtime.rolling_rate,
-                    )) ?? next.eta_seconds,
+                    ),
                 started_at: undefined,
                 lap: undefined,
             };
@@ -611,13 +612,13 @@ implements LiveRangeTodoListHandle {
         const events = this.runtime.events.map((event): RuntimeEvent => ids.has(event.id) ? {
             ...event,
             status: 'pending',
-            eta_seconds: (this.runtime.current_position === null
+            eta_seconds: this.runtime.current_position === null
                 ? null
                 : calculateLiveRangeEta(
                     this.runtime.current_position,
                     event.normalized_position,
                     this.runtime.rolling_rate,
-                )) ?? event.eta_seconds,
+                ),
             updated_at: now,
             started_at: undefined,
             lap: undefined,
@@ -663,11 +664,7 @@ implements LiveRangeTodoListHandle {
         const dueEventIds = new Set<string>();
         const events = orderLiveRangeTodoEventsByEta(this.runtime.events.map((event): RuntimeEvent => {
             if (event.status !== 'pending') return event;
-            const measuredEta = calculateLiveRangeEta(position, event.normalized_position, rate);
-            const estimatedEta = event.eta_seconds === null
-                ? null
-                : Math.max(0, event.eta_seconds - Math.max(0, now - event.updated_at) / 1000);
-            const eta = measuredEta ?? estimatedEta;
+            const eta = calculateLiveRangeEta(position, event.normalized_position, rate);
             const crossed = previousSample
                 ? crossedLiveRangeTodoPosition(previousSample, currentSample, event.normalized_position)
                 : false;
@@ -743,7 +740,6 @@ implements LiveRangeTodoListHandle {
             'id',
             'normalized_position',
             'lead_time_seconds',
-            'eta_seconds',
             'content',
             'taskStart',
         ]);
@@ -756,12 +752,6 @@ implements LiveRangeTodoListHandle {
             ? DEFAULT_LEAD_TIME_SECONDS
             : parseLeadTime(value.lead_time_seconds);
         if (leadTime === null) return { error: `Event '${id}' lead_time_seconds must be zero or greater.` };
-        const etaSeconds = value.eta_seconds === undefined
-            ? null
-            : parseLeadTime(value.eta_seconds);
-        if (etaSeconds === null && value.eta_seconds !== undefined) {
-            return { error: `Event '${id}' eta_seconds must be zero or greater.` };
-        }
         const parsedContent = parseContent(value.content);
         if (!parsedContent.content) return { error: `Event '${id}': ${parsedContent.error}` };
         if (typeof value.taskStart !== 'function') {
@@ -775,7 +765,7 @@ implements LiveRangeTodoListHandle {
                 content: parsedContent.content as LiveRangeTodoContent,
                 taskStart: value.taskStart as LiveRangeTodoEventInput['taskStart'],
                 status: 'pending',
-                eta_seconds: etaSeconds,
+                eta_seconds: null,
                 created_at: now,
                 updated_at: now,
             },

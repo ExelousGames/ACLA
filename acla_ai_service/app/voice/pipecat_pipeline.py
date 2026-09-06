@@ -69,7 +69,6 @@ _FUNCTION_TAG_RE = re.compile(
     re.DOTALL,
 )
 _FRONTEND_TOOL_RESULT_TYPE = "tool_result"
-_FRONTEND_TOOL_STATUS_PREFIX = "Tool status update: "
 _SHARED_STARTUP_BEHAVIORS = (
     "tool_use",
     "procedure_plan",
@@ -95,12 +94,13 @@ trail-brake, kerb, slip, weight transfer, etc.).
 """
 
 _TOOL_RESULT_HANDLING_PROMPT = """Tool result handling:
-- Tools may return a status field such as running, complete, failed, blocked, or skipped.
-- Treat complete or ok=true as a successful result and use the returned result/data payload.
-- Treat running as not ready yet; wait for the final result instead of answering from partial data.
-- Treat failed, blocked, or skipped as unavailable and explain the issue or choose another available tool.
-- If no status is present, treat an error field as failed; otherwise treat the payload as a completed result.
+- Tool responses and progress updates arrive asynchronously. Receiving a response alone does not mean the requested work has finished.
+- Infer whether work is in progress, complete, or unavailable from the tool's status and returned data, using the meaning of that particular tool's status.
+- Wait for the relevant completion status before answering from results that are still being produced.
+- If a tool reports failure or unavailable data, explain the issue or choose another available tool.
+- If no status is present, use the returned data or error to decide what the result means.
 """
+
 
 _APPLICATION_TOOL_SEARCH_PROMPT = (
     "Application tool use:\n"
@@ -247,7 +247,7 @@ def _llm_context_messages_from_user_text(text: str) -> List[Dict[str, Any]]:
 
 
 def _llm_context_messages_from_tool_result(text: str) -> List[Dict[str, Any]]:
-    """Return an unmatched final result as a valid native tool-call pair."""
+    """Return a tool update as a native tool-call pair without interpreting its status."""
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
@@ -256,8 +256,6 @@ def _llm_context_messages_from_tool_result(text: str) -> List[Dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
     if payload.get("type") != _FRONTEND_TOOL_RESULT_TYPE:
-        return []
-    if payload.get("final") is False:
         return []
 
     messages = payload.get("messages")
@@ -268,11 +266,7 @@ def _llm_context_messages_from_tool_result(text: str) -> List[Dict[str, Any]]:
 
     tool_call_id = payload.get("id")
     if not isinstance(tool_call_id, str) or not tool_call_id:
-        LOGGER.warning("Dropped final frontend tool result without a call id")
-        return []
-
-    tool_status_message = _format_frontend_tool_status_for_prompt(payload)
-    if not tool_status_message:
+        LOGGER.warning("Dropped frontend tool result without a call id")
         return []
 
     tool_name = payload.get("name")
@@ -295,43 +289,9 @@ def _llm_context_messages_from_tool_result(text: str) -> List[Dict[str, Any]]:
         {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": tool_status_message,
+            "content": _compact_json(payload.get("result")),
         },
     ]
-
-
-def _format_frontend_tool_status_for_prompt(payload: Dict[str, Any]) -> str:
-    fields = _frontend_tool_status_fields(payload)
-    if not fields:
-        return ""
-
-    return f"{_FRONTEND_TOOL_STATUS_PREFIX}{_compact_json(fields)}"
-
-
-def _frontend_tool_status_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
-    payload_type = payload.get("type")
-    if payload_type != _FRONTEND_TOOL_RESULT_TYPE:
-        return {}
-
-    fields: Dict[str, Any] = {"type": payload_type}
-    name = payload.get("name")
-    if isinstance(name, str) and name:
-        fields["name"] = name
-
-    result = payload.get("result")
-    prompt_source = result if isinstance(result, dict) else payload
-    for field in ("status", "message"):
-        value = prompt_source.get(field)
-        if isinstance(value, str) and value:
-            fields[field] = value
-    if "message" not in fields:
-        text = prompt_source.get("text")
-        if isinstance(text, str) and text:
-            fields["message"] = text
-    if result is not None:
-        fields["result"] = result
-
-    return fields
 
 
 def _native_message_batch_is_valid(messages: List[Dict[str, Any]]) -> bool:
@@ -429,7 +389,7 @@ class VoiceSessionConfig:
 
 @dataclass(frozen=True)
 class _SessionToolDispatch:
-    """Browser dispatch awaiting a final result for its parent tool call."""
+    """Browser dispatch awaiting its first response for the parent tool call."""
 
     call_id: Optional[str]
 
@@ -1263,9 +1223,9 @@ async def build_voice_pipeline_task(
         if not isinstance(payload, dict) or payload.get("type") != _FRONTEND_TOOL_RESULT_TYPE:
             LOGGER.warning("Dropped invalid frontend tool result payload")
             return
-        if payload.get("final") is False:
-            return
 
+        # The first response answers the native call; later updates enter
+        # context below. Inference interprets every response's status.
         call_id = payload.get("id")
         result_callback = (
             pending_session_tool_callbacks.pop(call_id, None)
@@ -1278,7 +1238,7 @@ async def build_voice_pipeline_task(
                     await result_callback(payload.get("result"))
                 except Exception:
                     LOGGER.exception(
-                        "tool_result_sink: could not complete tool call %s",
+                        "tool_result_sink: could not deliver tool response %s",
                         call_id,
                     )
 
