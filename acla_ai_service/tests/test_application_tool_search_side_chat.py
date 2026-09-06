@@ -90,7 +90,7 @@ async def test_side_chat_sends_only_isolated_selection_messages_and_full_catalog
     }
     kwargs = create.await_args.kwargs
     assert kwargs["model"] == "selector-model"
-    assert kwargs["tool_choice"] == "required"
+    assert "tool_choice" not in kwargs
     assert len(kwargs["messages"]) == 1
     prompt = kwargs["messages"][0]["content"]
     serialized_parent = json.dumps(

@@ -118,7 +118,6 @@ class ApplicationToolSearchSideChat(SideAIChat[SelectedToolCall]):
             })
         return {
             "tools": tools,
-            "tool_choice": "required",
         }
 
     def parse_result(
