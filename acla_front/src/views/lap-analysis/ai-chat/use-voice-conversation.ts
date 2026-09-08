@@ -331,9 +331,17 @@ export const executeSubscribedFrontendOperation = async ({
         removeAbortListener = () => signal?.removeEventListener('abort', abortOperation);
         // A handler may synchronously trigger a system session transition.
         if (signal?.aborted) abortOperation();
+        let terminated = false;
+        const terminationPromise = new Promise<{
+            status: string;
+            result: OperationExecutionOutput;
+        }>((resolve) => operation.notifyTerminated((termination) => {
+            terminated = true;
+            resolve(termination);
+        }));
         operation.statuses.forEach((statusPromise) => {
             void statusPromise.then((status) => {
-                if (signal?.aborted) return;
+                if (terminated || signal?.aborted) return;
                 emitEvent?.({
                     kind: 'tool_call',
                     runId: id,
@@ -344,7 +352,7 @@ export const executeSubscribedFrontendOperation = async ({
                     ok: true,
                 });
             }, (statusError) => {
-                if (signal?.aborted) return;
+                if (terminated || signal?.aborted) return;
                 const error = normalizeOperationError(statusError);
                 const failure = buildFailedToolResult(error, 'status_failed');
                 console.error(`[ai-tool] '${name}' status failed.`, error);
@@ -361,10 +369,7 @@ export const executeSubscribedFrontendOperation = async ({
                 });
             });
         });
-        const termination = await new Promise<{
-            status: string;
-            result: OperationExecutionOutput;
-        }>((resolve) => operation.notifyTerminated(resolve));
+        const termination = await terminationPromise;
         if (signal?.aborted) throw new OperationAbortedError();
         if (termination.result instanceof Error) {
             failureStatus = termination.status;

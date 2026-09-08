@@ -200,9 +200,10 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
 
     it('publishes overlay-safe running steps with a stable run id and defined error', async () => {
         const collect = createOperationDeferred<NestedOperationResult>();
+        const progress = createOperationDeferred<{ status: string }>();
         const dispatch = jest.fn((name: string) => (
             name === 'collect'
-                ? asTool(createOperation(collect.promise, 'complete'))
+                ? asTool(createOperation(collect.promise, [progress.promise], 'working'))
                 : operationWithValue(name === 'determine'
                     ? { status: 'ready', data: 0 }
                     : { status: 'complete' })
@@ -234,6 +235,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         collect.resolve({ status: 'complete' } as NestedOperationResult);
         const result = await operation.result;
         if (result instanceof Error) throw result;
+        expect(progress.settled).toBe(false);
 
         expect(result).toMatchObject({ goal: 'Drive a clean lap', status: 'achieved' });
         expect(result).not.toHaveProperty('name');

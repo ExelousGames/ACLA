@@ -14,7 +14,6 @@ import {
     createOperationDeferred,
     createOperation,
     createOperationFrom,
-    resolvedOperation,
 } from '../operation';
 
 const plan = (): ProcedurePlanState => ({
@@ -82,12 +81,13 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         expect(dispatch).toHaveBeenCalledTimes(1);
     });
 
-    it('executes requests in order and returns dispatcher outputs unchanged', async () => {
-        const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => asTool(resolvedOperation({
+    it('executes requests in order without waiting for nested progress', async () => {
+        const progress = createOperationDeferred<{ status: string }>();
+        const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => asTool(createOperation({
             status: 'complete',
             name,
             lap: args?.lap,
-        }, 'complete')));
+        }, [progress.promise], 'working')));
         const onChange = jest.fn();
         const runner = new ProcedurePlanRunner('procedure-plan', toolDispatcher(dispatch), onChange);
 
@@ -109,6 +109,7 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         if (result instanceof Error) throw result;
 
         expect(operation.statuses).toEqual([]);
+        expect(progress.settled).toBe(false);
         expect(dispatch).toHaveBeenNthCalledWith(1, 'read', { lap: 2 });
         expect(dispatch).toHaveBeenNthCalledWith(2, 'compare', {});
         expect(result).toMatchObject({ status: 'complete', request_count: 2 });

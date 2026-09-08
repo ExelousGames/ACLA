@@ -34,13 +34,43 @@ describe.each([
         expect(operation).toBe(controller.operation);
         expect(operation.kind).toBe(kind);
         controller.resolve('complete', 42);
-        await Promise.resolve();
-        expect(terminated).not.toHaveBeenCalled();
+        await expect(operation.result).resolves.toBe(42);
+        expect(terminated).toHaveBeenCalledWith({ status: 'complete', result: 42 });
+        expect(status.settled).toBe(false);
         status.resolve({ progress: 100 });
 
         await expect(operation.statuses[0]).resolves.toEqual({ progress: 100 });
+        expect(terminated).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits for nested work and async cleanup regardless of status values', async () => {
+        const work = createOperationDeferred<number>();
+        const cleanup = createOperationDeferred<void>();
+        const cleanupStarted = createOperationDeferred<void>();
+        const progress = createOperationDeferred<{ status: string }>();
+        const child = asTool(createOperation(work.promise, 'still-running'));
+        const operation = classify(createOperationFrom(async () => {
+            try {
+                return await child.result;
+            } finally {
+                cleanupStarted.resolve();
+                await cleanup.promise;
+            }
+        }, [progress.promise], 'still-running'));
+        const lifecycle: string[] = [];
+        operation.notifyTerminated(() => lifecycle.push('terminated'));
+        void operation.result.then(() => lifecycle.push('result'));
+
+        progress.resolve({ status: 'complete' });
+        await operation.statuses[0];
+        expect(lifecycle).toEqual([]);
+        work.resolve(42);
+        await cleanupStarted.promise;
+        expect(lifecycle).toEqual([]);
+
+        cleanup.resolve();
         await expect(operation.result).resolves.toBe(42);
-        expect(terminated).toHaveBeenCalledWith({ status: 'complete', result: 42 });
+        expect(lifecycle).toEqual(['terminated', 'result']);
     });
 
     it('retains abort cleanup and termination delivery', async () => {
@@ -62,26 +92,19 @@ describe.each([
 });
 
 describe('createOperation', () => {
-    it('keeps result behind every status promise', async () => {
+    it('completes without waiting for pending status promises', async () => {
         const status = createOperationDeferred<{ progress: number }>();
         const operation = createOperation(
             Promise.resolve({ status: 'complete' }),
             [status.promise],
             'complete',
         );
-        let settled = false;
         const terminated = jest.fn();
         operation.notifyTerminated(terminated);
-        void operation.result.then(() => { settled = true; });
-
-        await Promise.resolve();
-        expect(settled).toBe(false);
-        expect(terminated).not.toHaveBeenCalled();
-        status.resolve({ progress: 100 });
 
         await expect(operation.result).resolves.toEqual({ status: 'complete' });
-        await Promise.resolve();
         expect(terminated).toHaveBeenCalledTimes(1);
+        expect(status.settled).toBe(false);
     });
 
     it('ignores rejected statuses when determining final success', async () => {
@@ -131,6 +154,50 @@ describe('createOperation', () => {
         await expect(termination).resolves.toEqual({ status: 'failed', result: error });
     });
 
+    it('preserves result and event delivery when a termination listener throws', async () => {
+        const error = new Error('listener failed');
+        const logged = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            const operation = createOperation(42, 'complete');
+            const throwingListener = () => { throw error; };
+            const notified = jest.fn();
+            operation.notifyTerminated(throwingListener);
+            operation.notifyTerminated(notified);
+
+            await expect(operation.result).resolves.toBe(42);
+            expect(notified).toHaveBeenCalledWith({ status: 'complete', result: 42 });
+            expect(() => operation.notifyTerminated(throwingListener)).not.toThrow();
+            expect(logged).toHaveBeenCalledTimes(2);
+        } finally {
+            logged.mockRestore();
+        }
+    });
+
+    it('waits for failure cleanup but not pending progress before terminating', async () => {
+        const cleanup = createOperationDeferred<void>();
+        const cleanupStarted = createOperationDeferred<void>();
+        const progress = createOperationDeferred<{ progress: number }>();
+        const error = new Error('broken');
+        const operation = createOperationFrom(async () => {
+            try {
+                throw error;
+            } finally {
+                cleanupStarted.resolve();
+                await cleanup.promise;
+            }
+        }, [progress.promise], 'complete');
+        const terminated = jest.fn();
+        operation.notifyTerminated(terminated);
+
+        await cleanupStarted.promise;
+        expect(terminated).not.toHaveBeenCalled();
+        cleanup.resolve();
+
+        await expect(operation.result).rejects.toBe(error);
+        expect(terminated).toHaveBeenCalledWith({ status: 'failed', result: error });
+        expect(progress.settled).toBe(false);
+    });
+
     it('maps results while preserving the source termination status', async () => {
         const source = createOperation({ status: 'conflicting', value: 3 }, 'source-status');
         const mapped = mapOperation(source, ({ value }) => ({ doubled: value * 2 }));
@@ -141,6 +208,27 @@ describe('createOperation', () => {
             status: 'source-status',
             result: { doubled: 6 },
         });
+    });
+
+    it('waits for async result mapping independently of mapped progress', async () => {
+        const mappedValue = createOperationDeferred<number>();
+        const mappedProgress = createOperationDeferred<{ progress: number }>();
+        const mappingStarted = createOperationDeferred<void>();
+        const source = createOperation({ value: 3 }, [Promise.resolve({ progress: 100 })], 'working');
+        const mapped = mapOperation(source, () => {
+            mappingStarted.resolve();
+            return mappedValue.promise;
+        }, () => mappedProgress.promise);
+        const terminated = jest.fn();
+        mapped.notifyTerminated(terminated);
+
+        await mappingStarted.promise;
+        expect(terminated).not.toHaveBeenCalled();
+        mappedValue.resolve(6);
+
+        await expect(mapped.result).resolves.toBe(6);
+        expect(terminated).toHaveBeenCalledWith({ status: 'working', result: 6 });
+        expect(mappedProgress.settled).toBe(false);
     });
 
     it('runs safe cleanup before aborting result, statuses, and termination', async () => {

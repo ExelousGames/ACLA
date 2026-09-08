@@ -7,6 +7,9 @@ import {
     createOperation,
     createOperationFrom,
     createControlledOperation,
+    createOperationDeferred,
+    asTool,
+    asWorkflow,
 } from '../operation-base';
 import { AnalysisResultsQueryError } from '../../visualization/charts/analysisResultsQuery';
 
@@ -23,6 +26,60 @@ const execute = async (handler: FrontendOperationHandler) => {
 };
 
 describe('executeSubscribedFrontendOperation', () => {
+    it.each([
+        { kind: 'tool', classify: asTool },
+        { kind: 'workflow', classify: asWorkflow },
+    ])('sends a $kind result only after all awaited work terminates', async ({ classify }) => {
+        const work = createOperationDeferred<{ value: number }>();
+        const cleanup = createOperationDeferred<void>();
+        const cleanupStarted = createOperationDeferred<void>();
+        const progress = createOperationDeferred<{ status: string }>();
+        const operation = classify(createOperationFrom(async () => {
+            try {
+                return await work.promise;
+            } finally {
+                cleanupStarted.resolve();
+                await cleanup.promise;
+            }
+        }, [progress.promise], 'working'));
+        const frames: any[] = [];
+        const execution = executeSubscribedFrontendOperation({
+            call: { id: 'call-1', name: 'test_tool' },
+            handlers: { test_tool: () => operation },
+            sendText: (frame) => frames.push(frame),
+        });
+
+        progress.resolve({ status: 'complete' });
+        await operation.statuses[0];
+        expect(frames).toEqual([]);
+        work.resolve({ value: 7 });
+        await cleanupStarted.promise;
+        expect(frames).toEqual([]);
+        cleanup.resolve();
+
+        await execution;
+        expect(frames).toEqual([
+            { type: 'tool_result', id: 'call-1', name: 'test_tool', result: { status: 'working', value: 7 } },
+        ]);
+    });
+
+    it.each(['resolved', 'rejected'])('ignores %s progress delivered after termination', async (outcome) => {
+        const progress = createOperationDeferred<{ progress: number }>();
+        const { frames, events } = await execute(() => createOperation(
+            { value: 7 }, [progress.promise], 'complete',
+        ));
+
+        expect(frames).toHaveLength(1);
+        expect(events).toHaveLength(2);
+        expect(events[1]).toMatchObject({ status: 'completed', ok: true });
+        if (outcome === 'resolved') progress.resolve({ progress: 100 });
+        else progress.reject(new Error('late progress failure'));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(frames).toHaveLength(1);
+        expect(events).toHaveLength(2);
+    });
+
     it('sends only completion to AI while keeping started and progress local', async () => {
         const { frames, events, result } = await execute(() => createOperation(
             Promise.resolve({ status: 'complete', value: 7 }),

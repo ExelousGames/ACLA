@@ -1,13 +1,13 @@
 /**
  * Promise-native contract shared by frontend tools and workflows.
  *
- * Status promises represent independently observable progress. On ordinary
- * completion, the result is a terminal barrier that cannot settle until every
- * advertised status has settled. A rejected status is progress-delivery
- * failure only and never changes the operation's final result.
+ * Status promises represent independently observable progress and never gate
+ * completion. Producers must await all work, including nested operations and
+ * cleanup, before settling their result.
  *
- * Termination is a separate, one-shot lifecycle signal. Its status is supplied
- * explicitly by the operation producer and is never read from the result body.
+ * Termination is a one-shot lifecycle signal emitted when that work settles,
+ * before the public result settles. Its status is producer-supplied metadata,
+ * never a completion condition or a value read from the result body.
  * Every operation can also be aborted. Aborting runs the producer's synchronous
  * cleanup first, then rejects unfinished public promises and emits termination.
  */
@@ -129,11 +129,21 @@ const createTerminationNotifier = <
         termination: OperationTermination<TResult, TTerminationStatus>
     ) => void>();
     let termination: OperationTermination<TResult, TTerminationStatus> | null = null;
+    const notifyListener = (
+        listener: (value: OperationTermination<TResult, TTerminationStatus>) => void,
+        value: OperationTermination<TResult, TTerminationStatus>,
+    ) => {
+        try {
+            listener(value);
+        } catch (error) {
+            console.error('Operation termination listener failed.', error);
+        }
+    };
 
     return {
         notifyTerminated: (listener) => {
             if (termination) {
-                listener(termination);
+                notifyListener(listener, termination);
                 return () => undefined;
             }
             listeners.add(listener);
@@ -144,7 +154,7 @@ const createTerminationNotifier = <
             termination = nextTermination;
             const currentListeners = Array.from(listeners);
             listeners.clear();
-            currentListeners.forEach((listener) => listener(nextTermination));
+            currentListeners.forEach((listener) => notifyListener(listener, nextTermination));
             return true;
         },
     };
@@ -167,36 +177,28 @@ const createOperationWithTermination = <
         status,
         aborted.promise,
     ]));
-    const statusBarrier = Promise.allSettled(publicStatuses);
-    const completedResult = Promise.resolve(result).then(
-        async (value) => {
-            await statusBarrier;
-            return value;
-        },
-        async (error) => {
-            await statusBarrier;
-            throw error;
-        },
-    );
-    const terminalResult = Promise.race([completedResult, aborted.promise]).then(
-        (value) => {
-            if (state === 'running') state = 'finished';
-            return value;
-        },
-        (error) => {
-            if (state === 'running') state = 'finished';
-            throw error;
-        },
-    );
+    publicStatuses.forEach((status) => { void status.catch(() => undefined); });
     const notifier = createTerminationNotifier<
         TResult,
         TTerminationStatus | typeof OPERATION_ABORTED_STATUS
     >();
-    void Promise.resolve(termination).then(async (value) => {
-        await statusBarrier;
-        if (state === 'aborting' || state === 'aborted') return;
+    const notifyCompletion = async () => {
+        const value = await termination;
+        if (state !== 'running') return;
+        state = 'finished';
         notifier.terminate(value);
-    });
+    };
+    const completedResult = Promise.resolve(result).then(
+        async (value) => {
+            await notifyCompletion();
+            return value;
+        },
+        async (error) => {
+            await notifyCompletion();
+            throw error;
+        },
+    );
+    const terminalResult = Promise.race([completedResult, aborted.promise]);
     // Operations are often replaced by UI lifecycle events before their owner
     // awaits them. Mark rejections observed without changing what callers
     // receive when they await `result`.
