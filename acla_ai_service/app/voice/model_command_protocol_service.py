@@ -49,7 +49,14 @@ _SIDE_CHAT_TOOLS: tuple[ModelCommandDescriptor, ...] = (
         "name": "search_application_tool",
         "description": (
             "Find and run one application tool using the complete parent "
-            "conversation and current session context."
+            "conversation and current session context. Required when the "
+            "driver's request needs application data or an action: telemetry "
+            "or history lookups, analysis, views, overlays, session controls, "
+            "or scheduled and ongoing work. Call this in the same turn "
+            "instead of only promising to act, including when the driver "
+            "accepts an offer or specifies how to proceed. Call with no "
+            "arguments; the selector chooses and executes the appropriate "
+            "tool. Wait for the returned result before claiming success."
         ),
         "properties": {},
         "required": [],
