@@ -68,11 +68,6 @@ class ApplicationToolSearchSideChat(SideAIChat[SelectedToolCall]):
         if not isinstance(allowed_tools, list) or not allowed_tools:
             raise ApplicationToolSearchError("No application tools are available")
 
-        catalog = json.dumps(
-            deepcopy(allowed_tools),
-            ensure_ascii=True,
-            sort_keys=True,
-        )
         session_context = json.dumps(
             deepcopy(request.get("session_context") or {}),
             ensure_ascii=True,
@@ -86,14 +81,13 @@ class ApplicationToolSearchSideChat(SideAIChat[SelectedToolCall]):
         )
         return (
             "You select application tools for an isolated parent chat. "
-            "Choose exactly one tool from the allowed catalog that best fulfills "
+            "Choose exactly one of the provided tools that best fulfills "
             "the parent's request. Fill every required argument from the complete "
             "parent session and session context. Do not invent missing values, "
             "choose an unlisted tool, answer conversationally, or emit more than "
             "one tool call.\n\n"
-            "Follow the selected tool's catalog description and argument schema "
+            "Follow the selected tool's description and argument schema "
             "for usage, workflow execution, and result handling.\n\n"
-            f"Complete allowed-tool catalog:\n{catalog}\n\n"
             f"Current normalized parent session context:\n{session_context}\n\n"
             f"Complete parent session messages:\n{parent_session}\n\n"
             "Selector request:\nChoose and call the one allowed application "

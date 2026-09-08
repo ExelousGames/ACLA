@@ -78,7 +78,7 @@ def _request(tools=None):
 
 
 @pytest.mark.asyncio
-async def test_side_chat_sends_only_isolated_selection_messages_and_full_catalog():
+async def test_side_chat_sends_catalog_only_through_tools():
     side_chat, create = _side_chat()
     request = _request()
 
@@ -109,7 +109,8 @@ async def test_side_chat_sends_only_isolated_selection_messages_and_full_catalog
         request["allowed_tools"],
         ensure_ascii=True,
         sort_keys=True,
-    ) in prompt
+    ) not in prompt
+    assert request["allowed_tools"][0]["description"] not in prompt
     assert kwargs["tools"] == [{
         "type": "function",
         "function": {
@@ -240,7 +241,7 @@ async def test_side_chat_preserves_workflow_schema_and_arguments(
         },
     }
     prompt = create.await_args.kwargs["messages"][0]["content"]
-    assert json.dumps([descriptor], ensure_ascii=True, sort_keys=True) in prompt
+    assert json.dumps([descriptor], ensure_ascii=True, sort_keys=True) not in prompt
     assert user_workflow_case == original
 
     name = descriptor["name"]
@@ -287,16 +288,16 @@ async def test_side_chat_rejects_creation_arguments_without_repeated_name(
         await side_chat.run(_request([descriptor]))
 
 
-def test_selector_prompt_uses_catalog_guidance(user_workflow_case):
+def test_selector_prompt_refers_to_tool_guidance_without_embedding_catalog(user_workflow_case):
     side_chat, _ = _side_chat()
     descriptor = user_workflow_case["descriptor"]
     descriptor["description"] = "Use the workflow instructions supplied by this catalog."
 
     prompt = side_chat.task_prompt(_request([descriptor]))
 
-    assert "Follow the selected tool's catalog description and argument schema" in prompt
-    assert descriptor["description"] in prompt
-    assert json.dumps([descriptor], ensure_ascii=True, sort_keys=True) in prompt
+    assert "Follow the selected tool's description and argument schema" in prompt
+    assert descriptor["description"] not in prompt
+    assert json.dumps([descriptor], ensure_ascii=True, sort_keys=True) not in prompt
     assert "User workflow creation uses a strict tool-only input protocol" not in prompt
 
 
