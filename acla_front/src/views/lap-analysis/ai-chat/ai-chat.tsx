@@ -182,6 +182,7 @@ interface AiChatConversationProps extends AiChatProps {
 }
 
 export interface AiChatHandle extends NamedOperationComponentHandle {
+    resetSession(): void;
     getSessionMode(): AiChatSessionMode;
     getRecordingState(): RecordingState | null;
     startAgentSession(agentMode: AgentSessionMode, args?: Record<string, any>): Operation<AgentSessionStartResult>;
@@ -320,6 +321,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const [agentMessages, setAgentMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
     const mainClientSessionIdRef = useRef<string>(createClientSessionId('main'));
+    const mainClientSessionId = mainClientSessionIdRef.current;
+    const previousSessionRef = useRef({ sessionMode, sessionId });
     const [activeAgentSession, setActiveAgentSession] = useState<AgentSessionInfo | null>(null);
 
     // Loading and mode states
@@ -389,6 +392,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const activeAgentSessionRef = useRef<AgentSessionInfo | null>(null);
     const agentVoiceStopRef = useRef<() => void>(() => undefined);
     const mainVoiceStopRef = useRef<() => void>(() => undefined);
+    const mainVoiceResetRef = useRef<() => void>(() => undefined);
+    const agentVoiceResetRef = useRef<() => void>(() => undefined);
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
     const endedAiShutdownAppliedRef = useRef(false);
     const overlayPresentationRef = useRef<AiOverlayPresentationSession | null>(null);
@@ -409,6 +414,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const pendingTimersRef = useRef<Set<number>>(new Set());
     const liveRangeTodoListRunnerRef = useRef<LiveRangeTodoListRunner | null>(null);
     const liveRangeTodoListSessionGameRef = useRef(liveSession?.sessionGame ?? null);
+    const lastProcessedGuidanceRef = useRef<string>('');
+    const lastGuidanceTimestampRef = useRef<number>(0);
 
     useEffect(() => {
         if (sessionMode !== 'live') return;
@@ -628,6 +635,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
 
     const displayMapInChat = useCallback((display: AiMapDisplayPayload) => {
         if (conversationDisposedRef.current) return;
+        if (mainClientSessionId !== mainClientSessionIdRef.current) return;
         const fallbackText = display.status === 'unavailable'
             ? 'Map is not available'
             : display.note || display.title || display.map?.circuit_name || 'Map';
@@ -648,7 +656,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 kind: 'chat',
                 mapDisplay: display,
             }));
-    }, [generateUniqueId, publishOverlayComponent, setMessages]);
+    }, [generateUniqueId, mainClientSessionId, publishOverlayComponent, setMessages]);
 
     const showMap = useCallback(async (
         args: Record<string, unknown>,
@@ -686,6 +694,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                         break;
                     }
                 }
+            }
+            if (conversationDisposedRef.current || mainClientSessionId !== mainClientSessionIdRef.current) {
+                return { status: 'cancelled' };
             }
             const clamp = (value: unknown) => {
                 const parsed = Number(value);
@@ -752,6 +763,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         getCircuitMapById,
         getCircuitMapByTrack,
         liveSession?.getLiveSessionSnapshot,
+        mainClientSessionId,
         recordedAnalysisContext?.mapSelected,
         recordedAnalysisContext?.sessionSelected?.map,
     ]);
@@ -832,7 +844,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         }
     }, [releaseOverlayComponents]);
 
-    useEffect(() => () => {
+    const clearOverlaySessions = useCallback(() => {
+        overlayInvalidationTokenRef.current += 1;
         overlayPresentationRef.current = null;
         releaseOverlayComponents();
         const presentationIds = Array.from(ownedOverlayPresentationIdsRef.current);
@@ -844,6 +857,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             void overlaySessionClient.destroy(presentationId).catch(() => undefined);
         });
     }, [releaseOverlayComponents]);
+
+    useEffect(() => clearOverlaySessions, [clearOverlaySessions]);
 
     useEffect(() => {
         if (overlayClosedGeneration === 0) return;
@@ -943,6 +958,13 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     // backend LLM via JSON text frames.
     const handleSessionVoiceEvent = useCallback((event: VoiceEvent, target: 'main' | 'agent') => {
         if (conversationDisposedRef.current) return;
+        if (mainClientSessionId !== mainClientSessionIdRef.current) return;
+        const voiceSessionId = target === 'agent'
+            ? activeAgentSessionRef.current?.clientSessionId
+            : mainClientSessionIdRef.current;
+        if (!voiceSessionId) return;
+        if (event.clientSessionId && event.clientSessionId !== voiceSessionId
+            && event.clientSessionId !== overlayAiSessionByVoiceSessionRef.current.get(voiceSessionId)) return;
         const setTargetMessages = target === 'agent' ? setAgentMessages : setMainMessages;
         const eventAiSessionId = event.clientSessionId ?? (
             target === 'agent'
@@ -1098,6 +1120,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             return;
         }
     }, [
+        mainClientSessionId,
         presentAssistantOverlayMessage,
         clearProcedurePlan,
         generateUniqueId,
@@ -1243,6 +1266,41 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         setTrackGuideAgentEnabled,
     ]);
 
+    const resetSession = useCallback(() => {
+        // Invalidate callbacks before stopping resources that may still emit events.
+        mainClientSessionIdRef.current = createClientSessionId('main');
+        activeAgentSessionRef.current = null;
+        activeOperationHandlersRef.current = {};
+        clearOverlaySessions();
+        mainVoiceResetRef.current();
+        agentVoiceResetRef.current();
+        pendingTimersRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+        pendingTimersRef.current.clear();
+        resetAgentRuntimes();
+        opportunityForecastRowsRef.current = [];
+        trackGuideLastPosRef.current = undefined;
+        trackGuideTriggeredRef.current.clear();
+        activeAgentTagsRef.current = [];
+        agentAutoStartSessionIdRef.current = null;
+        endedAiShutdownAppliedRef.current = false;
+        voiceSessionSeenActiveRef.current = false;
+        lastProcessedGuidanceRef.current = '';
+        lastGuidanceTimestampRef.current = 0;
+        shouldAutoScrollMessagesRef.current = true;
+        setActiveAgentSession(null);
+        setMainMessages([]);
+        setAgentMessages([]);
+        setInputValue('');
+        setShowEmoteSettings(false);
+    }, [clearOverlaySessions, resetAgentRuntimes]);
+
+    useEffect(() => {
+        const previous = previousSessionRef.current;
+        if (previous.sessionMode === sessionMode && previous.sessionId === sessionId) return;
+        previousSessionRef.current = { sessionMode, sessionId };
+        resetSession();
+    }, [resetSession, sessionId, sessionMode]);
+
     const startAgentSession = useCallback((
         agentMode: AgentSessionMode,
         args: Record<string, any> = {},
@@ -1352,6 +1410,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }, [endOverlaySession, resetAgentRuntimes, scheduleConversationTimeout, setAgentTag]);
 
     const aiChatHandle = useMemo<AiChatHandle>(() => ({
+        resetSession,
         getComponentName: () => name,
         getSessionMode: () => sessionMode,
         getRecordingState: () => analysisContext?.recordingState ?? null,
@@ -1393,6 +1452,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         getLabelName,
         getOpportunityTelemetryRows,
         initializeLiveRangeTodoList,
+        resetSession,
         name,
         sessionMode,
         setAgentTag,
@@ -1467,6 +1527,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const sendAgentVoiceToolStatus = agentVoiceConversation.sendToolStatus;
     const stopMainVoiceConversation = voiceConversation.stop;
     const stopAgentVoiceConversation = agentVoiceConversation.stop;
+    mainVoiceResetRef.current = voiceConversation.reset;
+    agentVoiceResetRef.current = agentVoiceConversation.reset;
 
     useEffect(() => {
         mainVoiceStopRef.current = voiceConversation.stop;
@@ -1511,6 +1573,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             agentAutoStartSessionIdRef.current = null;
             return;
         }
+        if (activeAgentSessionRef.current?.clientSessionId !== activeAgentSessionId) return;
         if (activeAgentSessionStatus !== 'starting') return;
         if (agentVoiceState !== 'idle' && agentVoiceState !== 'error') return;
         if (agentAutoStartSessionIdRef.current === activeAgentSessionId) return;
@@ -1526,6 +1589,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             );
         }).catch((err) => {
             if (conversationDisposedRef.current) return;
+            if (activeAgentSessionRef.current?.clientSessionId !== activeAgentSessionId) return;
             console.error('Agent voice conversation failed to start:', err);
             setActiveAgentSession((current) => current
                 ? { ...current, status: 'error' }
@@ -1540,6 +1604,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
 
     useEffect(() => {
         if (!activeAgentSession) return;
+        if (activeAgentSessionRef.current?.clientSessionId !== activeAgentSession.clientSessionId) return;
         if (agentVoiceConversation.state !== 'listening' && agentVoiceConversation.state !== 'speaking') return;
         if (activeAgentSession.status === 'starting') {
             const next = { ...activeAgentSession, status: 'active' as const };
@@ -1707,9 +1772,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }, [messages, scrollToBottom]);
 
     // Listen for guidance messages from ImitationGuidanceChart
-    const lastProcessedGuidanceRef = useRef<string>('');
-    const lastGuidanceTimestampRef = useRef<number>(0);
     useEffect(() => {
+        if (mainClientSessionId !== mainClientSessionIdRef.current) return;
         if (!TrackGuideEnabled) {
             if (analysisContext?.latestGuidanceMessage) {
                 lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
@@ -1735,7 +1799,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
             lastGuidanceTimestampRef.current = now;
         }
-    }, [analysisContext?.latestGuidanceMessage, generateUniqueId, setMessages, TrackGuideEnabled]);
+    }, [analysisContext?.latestGuidanceMessage, generateUniqueId, mainClientSessionId, setMessages, TrackGuideEnabled]);
 
     useEffect(() => {
         if (!TrackGuideEnabled) {
@@ -1955,6 +2019,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             void overlayStart
                 .catch((overlayError) => {
                     if (conversationDisposedRef.current) return;
+                    if (mainClientSessionId !== mainClientSessionIdRef.current) return;
                     console.warn(
                         'AI overlay failed to initialize; continuing voice conversation without it:',
                         overlayError,
@@ -1962,10 +2027,12 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 })
                 .then(() => {
                     if (conversationDisposedRef.current) return;
+                    if (mainClientSessionId !== mainClientSessionIdRef.current) return;
                     return activeVoiceConversation.start(overlayAiSessionId);
                 })
                 .catch((err) => {
                     if (conversationDisposedRef.current) return;
+                    if (mainClientSessionId !== mainClientSessionIdRef.current) return;
                     console.error('Voice conversation failed to start:', err);
                     void endOverlaySession(overlayAiSessionId).catch(() => undefined);
                 });
@@ -2279,7 +2346,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
 };
 
 const AiChat: React.FC<AiChatProps> = ({ name, activeScreen }) => {
-    const { conversationKey } = resolveRegisteredAssistantIdentity(activeScreen);
     const [selectedChatLlmModel, setSelectedChatLlmModel] = useState(
         DEFAULT_CHAT_LLM_MODEL_OPTION.value,
     );
@@ -2324,7 +2390,6 @@ const AiChat: React.FC<AiChatProps> = ({ name, activeScreen }) => {
 
     return (
         <AiChatConversation
-            key={conversationKey}
             name={name}
             activeScreen={activeScreen}
             selectedChatLlmModel={selectedChatLlmModel}

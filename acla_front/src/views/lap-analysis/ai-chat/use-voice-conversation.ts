@@ -126,6 +126,8 @@ export interface VoiceConversation {
     start: (eventSessionId?: string) => Promise<void>;
     /** System teardown — closes resources and aborts operations, retaining the session for resume. */
     stop: () => void;
+    /** Tear down and discard session identity so the next start creates a fresh conversation. */
+    reset: () => void;
     setMicDisabled: (disabled: boolean) => void;
     /** Send a typed chat message over the WS. Returns false if no WS is
      *  open. The backend treats it as a synthetic user turn and runs
@@ -612,6 +614,14 @@ export function useVoiceConversation(
         setState('idle');
     }, [releaseSessionResources]);
 
+    const reset = useCallback(() => {
+        stop();
+        chatSessionIdRef.current = null;
+        activeEventSessionIdRef.current = undefined;
+        setError(null);
+        setMicDisabled(false);
+    }, [setMicDisabled, stop]);
+
     const start = useCallback(async (eventSessionId?: string) => {
         if (state !== 'idle' && state !== 'error') {
             return;
@@ -1087,6 +1097,7 @@ export function useVoiceConversation(
         micDisabled,
         start,
         stop,
+        reset,
         setMicDisabled,
         sendUserText,
         sendToolStatus,

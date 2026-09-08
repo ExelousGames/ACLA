@@ -300,7 +300,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
         }));
     });
 
-    it('does not let pending microphone setup resurrect an explicitly stopped hook', async () => {
+    it.each(['stop', 'reset'] as const)('does not let pending microphone setup resurrect a hook after %s', async (action) => {
         let resolvePermission: ((stream: MediaStream) => void) | undefined;
         const track = {
             enabled: true,
@@ -320,7 +320,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
         act(() => {
             startPromise = result.current.start();
         });
-        act(() => result.current.stop());
+        act(() => result.current[action]());
         await act(async () => {
             resolvePermission?.(stream);
             await startPromise;
@@ -331,7 +331,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
         expect(result.current.state).toBe('idle');
     });
 
-    it('resumes after system teardown and creates a new identity on a fresh mount', async () => {
+    it('resumes after stopping and creates a fresh session after an explicit reset', async () => {
         const first = renderHook(() => useVoiceConversation());
         const firstSocket = await startAndOpen(first.result);
         markReady(firstSocket, 'server-chat-1', false);
@@ -346,10 +346,14 @@ describe('useVoiceConversation chat session lifecycle', () => {
             chat_session_id: 'server-chat-1',
         }));
 
-        first.unmount();
-        const remounted = renderHook(() => useVoiceConversation());
+        act(() => first.result.current.setMicDisabled(true));
+        act(() => first.result.current.reset());
+        expect(first.result.current.state).toBe('idle');
+        expect(first.result.current.error).toBeNull();
+        expect(first.result.current.micDisabled).toBe(false);
+        expect(mockSockets[1].close).toHaveBeenCalled();
         await act(async () => {
-            await remounted.result.current.start();
+            await first.result.current.start();
         });
         expect(mockOpenWebSocket).toHaveBeenNthCalledWith(3, '/voice/stream', expect.objectContaining({
             chat_session_action: 'create',
@@ -357,7 +361,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
         }));
     });
 
-    it.each(['close', 'error', 'service error', 'stop', 'unmount'])(
+    it.each(['close', 'error', 'service error', 'stop', 'reset', 'unmount'])(
         'immediately aborts all tool entry points on %s and ignores late results',
         async (disconnect) => {
             const onEvent = jest.fn();
@@ -392,6 +396,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
                     type: 'error', error_type: 'ServiceUnavailable', message: 'AI service disconnected',
                 });
                 else if (disconnect === 'stop') result.current.stop();
+                else if (disconnect === 'reset') result.current.reset();
                 else unmount();
                 // Must happen synchronously, before React effects or promises run.
                 cleanups.forEach((cleanup) => expect(cleanup).toHaveBeenCalledTimes(1));
@@ -446,30 +451,71 @@ describe('useVoiceConversation chat session lifecycle', () => {
         expect(mockStreams[0].tracks[0].enabled).toBe(true);
     });
 
-    it('aborts the old connection on identity changes and isolates a newly created session', async () => {
+    it.each(['identity change', 'explicit reset'])(
+        'isolates a newly created session after %s', async (action) => {
         const cleanup = jest.fn();
         const control = createControlledOperation<Record<string, unknown>>([], cleanup);
         const handler = jest.fn(() => control.operation);
+        const onEvent = jest.fn();
         const { result, rerender } = renderHook(({ clientSessionId }) => useVoiceConversation({
-            clientSessionId, operationHandlers: { test_tool: handler },
+            clientSessionId, onEvent, operationHandlers: { test_tool: handler },
         }), { initialProps: { clientSessionId: 'client-1' } });
         const oldSocket = await startAndOpen(result);
         markReady(oldSocket, 'server-chat-1', false);
         act(() => oldSocket.message({ type: 'tool_call', id: 'call-1', name: 'test_tool' }));
-        rerender({ clientSessionId: 'client-2' });
+        if (action === 'identity change') rerender({ clientSessionId: 'client-2' });
+        else act(() => result.current.reset());
         expect(cleanup).toHaveBeenCalledTimes(1);
         expect(result.current.state).toBe('idle');
+        expect(result.current.sendUserText('Before restart')).toBe(false);
+        expect(oldSocket.close).toHaveBeenCalled();
+        expect(mockStreams[0].tracks[0].stop).toHaveBeenCalledTimes(1);
+        expect(mockWorkletNodes[0].disconnect).toHaveBeenCalledTimes(1);
+        expect(mockAudioContexts[0].close).toHaveBeenCalledTimes(1);
         const newSocket = await startAndOpen(result);
         expect(mockOpenWebSocket).toHaveBeenLastCalledWith('/voice/stream', expect.objectContaining({
-            client_session_id: 'client-2', chat_session_action: 'create', chat_session_id: undefined,
+            client_session_id: action === 'identity change' ? 'client-2' : 'client-1',
+            chat_session_action: 'create', chat_session_id: undefined,
         }));
         markReady(newSocket, 'server-chat-2', false);
+        onEvent.mockClear();
         await act(async () => {
             control.resolve('complete', { value: 'late' });
+            oldSocket.message({ type: 'assistant_transcript', text: 'Late response' });
+            oldSocket.message({ type: 'chat_session_ready', chat_session_id: 'server-chat-1', resumed: false });
             oldSocket.error();
+            oldSocket.serverClose(1006, 'late close');
         });
+        expect(onEvent).not.toHaveBeenCalled();
         expect(result.current.state).toBe('listening');
         expect(newSocket.send).toHaveBeenCalledTimes(1);
+
+        act(() => result.current.stop());
+        await startAndOpen(result);
+        expect(mockOpenWebSocket).toHaveBeenLastCalledWith('/voice/stream', expect.objectContaining({
+            chat_session_action: 'resume', chat_session_id: 'server-chat-2',
+        }));
+        },
+    );
+
+    it('clears a transport error and muted microphone on reset before creating a fresh session', async () => {
+        const { result } = renderHook(() => useVoiceConversation());
+        const socket = await startAndOpen(result);
+        markReady(socket, 'failed-chat', false);
+        act(() => result.current.setMicDisabled(true));
+        act(() => socket.error());
+        expect(result.current.error).not.toBeNull();
+
+        act(() => result.current.reset());
+
+        expect(result.current.state).toBe('idle');
+        expect(result.current.error).toBeNull();
+        expect(result.current.micDisabled).toBe(false);
+        await startAndOpen(result);
+        expect(mockOpenWebSocket).toHaveBeenLastCalledWith('/voice/stream', expect.objectContaining({
+            chat_session_action: 'create', chat_session_id: undefined,
+        }));
+        expect(mockStreams[1].tracks[0].enabled).toBe(true);
     });
 
     it('executes fresh tools after resuming without reviving the aborted operation', async () => {

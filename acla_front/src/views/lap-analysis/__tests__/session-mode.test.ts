@@ -1,5 +1,4 @@
 import {
-    buildAssistantConversationKey,
     resolveAssistantRecordedSessionId,
     resolveRegisteredAssistantIdentity,
 } from '../assistant-session-mode';
@@ -23,7 +22,6 @@ describe('assistant session mode resolution', () => {
             sessionMode: 'front_desk',
             sessionId: undefined,
             label: 'Front Desk',
-            conversationKey: 'front_desk:none',
             title: 'AI Assistant - Front Desk',
         });
     });
@@ -32,7 +30,6 @@ describe('assistant session mode resolution', () => {
         expect(resolveRegisteredAssistantIdentity(createRegistration())).toMatchObject({
             sessionMode: 'live',
             label: 'Live Session',
-            conversationKey: 'live:none',
         });
     });
 
@@ -52,7 +49,6 @@ describe('assistant session mode resolution', () => {
             sessionMode: 'recorded',
             sessionId: 'session-1',
             label: 'Race 12',
-            conversationKey: 'recorded:session-1',
             title: 'AI Assistant - Race 12',
         });
     });
@@ -68,14 +64,6 @@ describe('assistant session mode resolution', () => {
         expect(resolveAssistantRecordedSessionId('recorded', 'session-1')).toBe('session-1');
     });
 
-    it('isolates the live conversation from a recorded session selection', () => {
-        const sessionId = resolveAssistantRecordedSessionId('live', 'session-1');
-        expect(buildAssistantConversationKey('live', sessionId)).toBe('live:none');
-    });
-
-    it('builds a stable front desk conversation key', () => {
-        expect(buildAssistantConversationKey('front_desk')).toBe('front_desk:none');
-    });
 });
 
 describe('live session detection recording transitions', () => {

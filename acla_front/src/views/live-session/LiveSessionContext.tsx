@@ -1,5 +1,10 @@
 import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
+import {
+    OPERATION_COMPONENT_NAMES,
+    useOptionalOperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
+import type { AiChatHandle } from 'views/lap-analysis/ai-chat/ai-chat';
 import { getNextRecordingState, RecordingEvent, RecordingState, StopReason } from 'views/lap-analysis/recording-state';
 import {
     detectLiveSessionType,
@@ -119,6 +124,7 @@ export const LiveSessionProvider = ({
     children: React.ReactNode;
     ownerEmail?: string | null;
 }) => {
+    const componentRefs = useOptionalOperationComponentRefDirectory();
     const normalizedOwnerEmail = normalizeLiveSessionOwnerEmail(ownerEmail);
     const [sessionGame, setSessionGame] = useState<DesktopGame | null>(null);
     const [staticData, setStaticDataState] = useState<LiveSessionStaticData>({});
@@ -539,6 +545,9 @@ export const LiveSessionProvider = ({
             if (sessionGameRef.current) return;
             draftPersistenceSuppressedRef.current = false;
             resetLiveSession(game);
+            componentRefs?.findComponentRef<AiChatHandle>(
+                OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+            )?.current?.resetSession();
             setRestorationStatus('not-found');
         };
         if (recordingActiveRef.current || recordingStopPromiseRef.current) {
@@ -546,7 +555,7 @@ export const LiveSessionProvider = ({
         } else {
             beginSession();
         }
-    }, [resetLiveSession, stopRecordingSession]);
+    }, [componentRefs, resetLiveSession, stopRecordingSession]);
 
     const endLiveSession = useCallback(() => {
         const finishSession = () => {

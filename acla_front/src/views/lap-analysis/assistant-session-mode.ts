@@ -9,9 +9,6 @@ export interface AssistantActiveScreen {
     componentName?: string;
 }
 
-export const buildAssistantConversationKey = (sessionMode: string, sessionId?: string | null): string =>
-    `${sessionMode}:${sessionId || 'none'}`;
-
 export const resolveAssistantRecordedSessionId = (
     sessionMode: SessionAnalysisAssistantMode,
     sessionId?: string | null,
@@ -31,7 +28,6 @@ export const resolveRegisteredAssistantIdentity = (
         sessionMode,
         sessionId,
         label,
-        conversationKey: buildAssistantConversationKey(sessionMode, sessionId),
         title: sessionMode === 'front_desk'
             ? 'AI Assistant - Front Desk'
             : `AI Assistant - ${label}`,

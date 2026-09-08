@@ -11,6 +11,7 @@ import { createAiCommandRegistry, createWorkflowToolDispatcher } from '../ai-com
 
 const mockVoiceCleanup = jest.fn();
 const mockVoiceStop = jest.fn();
+const mockVoiceReset = jest.fn();
 const mockVoiceStart = jest.fn(() => Promise.resolve());
 const mockVoiceSendUserText = jest.fn(() => false);
 const mockSetMicDisabled = jest.fn();
@@ -23,6 +24,12 @@ const mockOverlaySetEnabled = jest.fn<Promise<void>, [boolean]>(() => Promise.re
 const mockFindComponentRef = jest.fn(() => null);
 const mockRegisterComponentRef = jest.fn();
 const mockUnregisterComponentRef = jest.fn();
+const mockComponentDirectory = {
+    findComponentRef: mockFindComponentRef,
+    registerComponentRef: mockRegisterComponentRef,
+    unregisterComponentRef: mockUnregisterComponentRef,
+};
+const mockGetCircuitMapById = jest.fn(() => Promise.resolve(null));
 const mockRepeatablePlanRender = jest.fn();
 const mockProcedurePlanRender = jest.fn();
 let mockRegisteredAiChatHandle: any;
@@ -56,7 +63,7 @@ jest.mock('contexts/UserSummaryContext', () => ({
 
 jest.mock('contexts/CircuitMapsContext', () => ({
     useCircuitMaps: () => ({
-        getCircuitMapById: jest.fn(() => Promise.resolve(null)),
+        getCircuitMapById: mockGetCircuitMapById,
         getCircuitMapByTrack: jest.fn(() => Promise.resolve(null)),
     }),
 }));
@@ -66,11 +73,7 @@ jest.mock('contexts/OperationComponentRefContext', () => {
     return {
         ...actual,
         useOperationComponentRefs: () => ({
-            directory: {
-                findComponentRef: mockFindComponentRef,
-                registerComponentRef: mockRegisterComponentRef,
-                unregisterComponentRef: mockUnregisterComponentRef,
-            },
+            directory: mockComponentDirectory,
             revision: 0,
         }),
         useRegisterOperationComponentRef: (ref: { current: unknown }) => {
@@ -175,6 +178,9 @@ describe('AiChat conversation lifecycle', () => {
         HTMLElement.prototype.scrollIntoView = jest.fn();
         mockVoiceCleanup.mockClear();
         mockVoiceStop.mockClear();
+        mockVoiceReset.mockClear();
+        mockGetCircuitMapById.mockReset();
+        mockGetCircuitMapById.mockResolvedValue(null);
         mockVoiceStart.mockClear();
         mockVoiceSendUserText.mockReset();
         mockVoiceSendUserText.mockReturnValue(false);
@@ -191,6 +197,7 @@ describe('AiChat conversation lifecycle', () => {
                 error: null,
                 start: mockVoiceStart,
                 stop: mockVoiceStop,
+                reset: mockVoiceReset,
                 setMicDisabled: mockSetMicDisabled,
                 sendUserText: mockVoiceSendUserText,
                 sendToolStatus: jest.fn(() => true),
@@ -258,9 +265,10 @@ describe('AiChat conversation lifecycle', () => {
         expect(getLatestAgentVoiceOptions()).not.toHaveProperty('agentMode');
     });
 
-    it('uses assistant mode and recorded session identity as the remount boundary', () => {
+    it('resets on assistant mode and recorded session changes without remounting', () => {
         const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
         const frontDeskClientSessionId = getLatestMainVoiceOptions().clientSessionId;
+        const input = screen.getByRole('textbox');
 
         view.rerender(
             <AiChat
@@ -269,6 +277,7 @@ describe('AiChat conversation lifecycle', () => {
             />,
         );
         expect(getLatestMainVoiceOptions().clientSessionId).toBe(frontDeskClientSessionId);
+        expect(mockVoiceReset).not.toHaveBeenCalled();
 
         view.rerender(
             <AiChat
@@ -294,6 +303,137 @@ describe('AiChat conversation lifecycle', () => {
             />,
         );
         expect(getLatestMainVoiceOptions().clientSessionId).not.toBe(firstRecordedClientSessionId);
+        expect(mockVoiceReset).toHaveBeenCalledTimes(4);
+        expect(mockVoiceCleanup).not.toHaveBeenCalled();
+        expect(screen.getByRole('textbox')).toBe(input);
+    });
+
+    it.each(['live', 'front_desk', 'user_summary', 'recorded'] as const)(
+        'preserves messages and drafts when only screen metadata changes in %s mode',
+        (assistantMode) => {
+            const activeScreen = frontDeskScreen({ assistantMode, recordedSessionId: 'session-1' });
+            const view = render(<AiChat name="dashboard-assistant" activeScreen={activeScreen} />);
+            const options = getLatestMainVoiceOptions();
+            const input = screen.getByRole('textbox');
+            act(() => options.onEvent({ kind: 'assistant_transcript', text: 'Current response' }));
+            fireEvent.change(input, { target: { value: 'Current draft' } });
+
+            view.rerender(<AiChat name="dashboard-assistant" activeScreen={{
+                ...activeScreen,
+                label: 'Updated label',
+                recordedSessionId: assistantMode === 'recorded' ? 'session-1' : 'session-2',
+            }} />);
+
+            expect(mockVoiceReset).not.toHaveBeenCalled();
+            expect(mockVoiceCleanup).not.toHaveBeenCalled();
+            expect(getLatestMainVoiceOptions().clientSessionId).toBe(options.clientSessionId);
+            expect(screen.getByText('Current response')).toBeInTheDocument();
+            expect(screen.getByRole('textbox')).toBe(input);
+            expect(input).toHaveValue('Current draft');
+        },
+    );
+
+    it.each(['explicit reset', 'mode change', 'recorded session change'])(
+        'clears conversation resources after %s and can start again in the same component', async (action) => {
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        if (action === 'recorded session change') {
+            view.rerender(<AiChat name="dashboard-assistant" activeScreen={{
+                assistantMode: 'recorded', label: 'Race 1', recordedSessionId: 'session-1',
+            }} />);
+            mockVoiceReset.mockClear();
+        }
+        const oldOptions = getLatestMainVoiceOptions();
+        const input = screen.getByRole('textbox');
+        fireEvent.click(screen.getByRole('button', { name: 'Start assistant' }));
+        await waitFor(() => expect(mockVoiceStart).toHaveBeenCalledTimes(1));
+        act(() => oldOptions.onEvent({ kind: 'assistant_transcript', text: 'Old response' }));
+        fireEvent.change(input, { target: { value: 'Unsent draft' } });
+        const child = asTool(createOperation(new Promise<OperationExecutionOutput>(() => undefined), 'complete'));
+        const abort = jest.spyOn(child, 'abort');
+        act(() => {
+            const operation = mockRegisteredAiChatHandle.createProcedurePlan(
+                lifecycleProcedurePlan(), toolDispatcher(jest.fn(() => child)),
+            );
+            void operation.result.catch(() => undefined);
+        });
+        expect(screen.getByTestId('procedure-plan')).toBeInTheDocument();
+
+        if (action === 'explicit reset') {
+            act(() => mockRegisteredAiChatHandle.resetSession());
+        } else {
+            view.rerender(<AiChat name="dashboard-assistant" activeScreen={{
+                assistantMode: 'recorded', label: 'Race 2', recordedSessionId: 'session-2',
+            }} />);
+        }
+
+        expect(mockVoiceReset).toHaveBeenCalledTimes(2);
+        expect(mockVoiceCleanup).not.toHaveBeenCalled();
+        expect(mockOverlayDestroy).toHaveBeenCalledWith('presentation-default');
+        expect(abort).toHaveBeenCalledTimes(1);
+        expect(screen.queryByTestId('procedure-plan')).not.toBeInTheDocument();
+        expect(screen.queryByText('Old response')).not.toBeInTheDocument();
+        expect(screen.getByRole('textbox')).toBe(input);
+        expect(input).toHaveValue('');
+        const newOptions = getLatestMainVoiceOptions();
+        expect(newOptions.clientSessionId).not.toBe(oldOptions.clientSessionId);
+        act(() => {
+            oldOptions.onEvent({ kind: 'assistant_transcript', text: 'Late response' });
+            newOptions.onEvent({ kind: 'assistant_transcript', text: 'Late identified response', clientSessionId: oldOptions.clientSessionId });
+            newOptions.onEvent({ kind: 'assistant_transcript', text: 'New response' });
+        });
+        expect(screen.queryByText('Late response')).not.toBeInTheDocument();
+        expect(screen.queryByText('Late identified response')).not.toBeInTheDocument();
+        expect(screen.getByText('New response')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Start assistant' }));
+        await waitFor(() => expect(mockVoiceStart).toHaveBeenCalledTimes(2));
+        act(() => mockRegisteredAiChatHandle.resetSession());
+        expect(getLatestMainVoiceOptions().clientSessionId).not.toBe(newOptions.clientSessionId);
+        expect(screen.queryByText('New response')).not.toBeInTheDocument();
+        view.unmount();
+        expect(mockVoiceCleanup).toHaveBeenCalledTimes(2);
+        },
+    );
+
+    it('clears an active agent and its live runner when switching assistant modes', async () => {
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={{ assistantMode: 'live', label: 'Live Session' }} />);
+        await act(async () => {
+            await mockRegisteredAiChatHandle.startAgentSession('track_guide').result;
+        });
+        const agentOptions = getLatestAgentVoiceOptions();
+        let dispose: jest.SpyInstance;
+        act(() => {
+            agentOptions.onEvent({ kind: 'assistant_transcript', text: 'Old agent response' });
+            dispose = jest.spyOn(mockRegisteredAiChatHandle.initializeLiveRangeTodoList(), 'dispose');
+            mockRegisteredAiChatHandle.setLivePerformanceAnalystEnabled(true);
+        });
+        view.rerender(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        expect(dispose!).toHaveBeenCalledTimes(1);
+        expect(getLatestAgentVoiceOptions().clientSessionId).toBeUndefined();
+        expect(mockRegisteredAiChatHandle.getLivePerformanceAnalystState().enabled).toBe(false);
+        expect(mockRegisteredAiChatHandle.getOpportunityTelemetryRows()).toEqual([]);
+        act(() => agentOptions.onEvent({ kind: 'assistant_transcript', text: 'Late agent response' }));
+        await act(async () => { await mockRegisteredAiChatHandle.stopAgentSession().result; });
+        expect(screen.queryByText('Old agent response')).not.toBeInTheDocument();
+        expect(screen.queryByText('Late agent response')).not.toBeInTheDocument();
+        expect(mockVoiceCleanup).not.toHaveBeenCalled();
+    });
+
+    it.each(['pending', 'in flight'])('ignores a %s map lookup that finishes after a session reset', async (stage) => {
+        let resolveMap!: (value: null) => void;
+        mockGetCircuitMapById.mockReturnValueOnce(new Promise((resolve) => { resolveMap = resolve; }));
+        render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        let operation: any;
+        act(() => { operation = mockRegisteredAiChatHandle.showMap({ map_id: 'old-map' }); });
+        if (stage === 'in flight') {
+            await act(async () => { await Promise.resolve(); });
+        }
+        expect(mockGetCircuitMapById).toHaveBeenCalledTimes(stage === 'in flight' ? 1 : 0);
+        act(() => mockRegisteredAiChatHandle.resetSession());
+        await act(async () => {
+            resolveMap(null);
+            await operation.result;
+        });
+        expect(screen.queryAllByText('Map is not available')).toHaveLength(0);
     });
 
     it('initializes the live range runner on demand and removes it when empty', () => {
@@ -862,14 +1002,23 @@ describe('AiChat conversation lifecycle', () => {
         expect(mockVoiceStart).not.toHaveBeenCalled();
     });
 
-    it('destroys an overlay whose asynchronous creation finishes after an identity reset', async () => {
+    it.each(['main', 'agent'] as const)(
+        'destroys a pending %s overlay after reset without restarting voice', async (target) => {
         let resolveOverlay: (presentation: { presentationId: string }) => void = () => undefined;
         mockOverlayCreate.mockReturnValueOnce(new Promise((resolve) => {
             resolveOverlay = resolve;
         }));
-        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={{
+            assistantMode: 'live', label: 'Live Session',
+        }} />);
 
-        fireEvent.click(screen.getByRole('button', { name: 'Start assistant' }));
+        if (target === 'main') {
+            fireEvent.click(screen.getByRole('button', { name: 'Start assistant' }));
+        } else {
+            await act(async () => {
+                await mockRegisteredAiChatHandle.startAgentSession('track_guide').result;
+            });
+        }
         expect(mockOverlayCreate).toHaveBeenCalledTimes(1);
         view.rerender(
             <AiChat
@@ -885,7 +1034,8 @@ describe('AiChat conversation lifecycle', () => {
 
         expect(mockOverlayDestroy).toHaveBeenCalledWith('late-presentation');
         expect(mockVoiceStart).not.toHaveBeenCalled();
-    });
+        },
+    );
 });
 
 const toolDispatcher = (dispatch: (...args: any[]) => ReturnType<ToolDispatcher>): ToolDispatcher => Object.assign(dispatch, { validate: jest.fn() }) as ToolDispatcher;
