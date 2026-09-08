@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import AiChat from '../ai-chat';
 import type { AssistantActiveScreen } from '../../assistant-session-mode';
 import {
-    createOperation, asWorkflow, isProcedurePlanOptOutRequest, isProcedurePlanStartEvent,
+    createOperation, asWorkflow,
     type OperationExecutionOutput,
 } from 'components/ai-operations';
 import { createAiCommandRegistry, createWorkflowToolDispatcher } from '../ai-command-registry';
@@ -33,6 +33,7 @@ const mockGetCircuitMapById = jest.fn(() => Promise.resolve(null));
 const mockRepeatablePlanRender = jest.fn();
 const mockProcedurePlanRender = jest.fn();
 let mockRegisteredAiChatHandle: any;
+let mockRegisteredWorkflowPanelHandle: any;
 
 jest.mock('../use-voice-conversation', () => ({
     useVoiceConversation: (options: Record<string, unknown>) => mockUseVoiceConversation(options),
@@ -77,7 +78,12 @@ jest.mock('contexts/OperationComponentRefContext', () => {
             revision: 0,
         }),
         useRegisterOperationComponentRef: (ref: { current: unknown }) => {
-            mockRegisteredAiChatHandle = ref.current;
+            const handle = ref.current as any;
+            if (handle.getComponentName() === 'workflow-panel') {
+                mockRegisteredWorkflowPanelHandle = handle;
+            } else if (handle.getComponentName() === 'dashboard-assistant') {
+                mockRegisteredAiChatHandle = handle;
+            }
         },
     };
 });
@@ -90,25 +96,29 @@ jest.mock('views/lap-analysis/recording-state', () => {
     };
 });
 
-jest.mock('components/ai-operations', () => {
-    const actual = jest.requireActual('components/ai-operations');
-    return {
-        ...actual,
-        RepeatablePlan: (props: unknown) => {
-            mockRepeatablePlanRender(props);
-            return null;
-        },
-        ProcedurePlan: (props: unknown) => {
-            mockProcedurePlanRender(props);
-            return <div data-testid="procedure-plan" />;
-        },
-        LiveRangeTodoList: () => null,
-        LiveRangeTodoListRunner: actual.LiveRangeTodoListRunner,
-        isProcedurePlanClearEvent: jest.fn(() => false),
-        isProcedurePlanOptOutRequest: jest.fn(() => false),
-        isProcedurePlanStartEvent: jest.fn(() => false),
-    };
-});
+jest.mock('components/ai-operations/RepeatablePlan', () => ({
+    ...jest.requireActual('components/ai-operations/RepeatablePlan'),
+    __esModule: true,
+    default: (props: unknown) => {
+        mockRepeatablePlanRender(props);
+        return null;
+    },
+}));
+
+jest.mock('components/ai-operations/ProcedurePlan', () => ({
+    ...jest.requireActual('components/ai-operations/ProcedurePlan'),
+    __esModule: true,
+    default: (props: unknown) => {
+        mockProcedurePlanRender(props);
+        return <div data-testid="procedure-plan" />;
+    },
+}));
+
+jest.mock('components/ai-operations/LiveRangeTodoList', () => ({
+    ...jest.requireActual('components/ai-operations/LiveRangeTodoList'),
+    __esModule: true,
+    default: () => null,
+}));
 
 jest.mock('services/api.service', () => ({
     __esModule: true,
@@ -215,13 +225,11 @@ describe('AiChat conversation lifecycle', () => {
         mockRepeatablePlanRender.mockClear();
         mockProcedurePlanRender.mockClear();
         mockRegisteredAiChatHandle = undefined;
+        mockRegisteredWorkflowPanelHandle = undefined;
         (createAiCommandRegistry as jest.Mock).mockReturnValue({});
         (createWorkflowToolDispatcher as jest.Mock).mockImplementation(
             jest.requireActual('../ai-command-registry').createWorkflowToolDispatcher,
         );
-        const operations = jest.requireActual('components/ai-operations');
-        (isProcedurePlanOptOutRequest as jest.Mock).mockImplementation(operations.isProcedurePlanOptOutRequest);
-        (isProcedurePlanStartEvent as jest.Mock).mockImplementation(operations.isProcedurePlanStartEvent);
         delete (window as any).electronAPI;
     });
 
@@ -351,7 +359,7 @@ describe('AiChat conversation lifecycle', () => {
         const child = asTool(createOperation(new Promise<OperationExecutionOutput>(() => undefined), 'complete'));
         const abort = jest.spyOn(child, 'abort');
         act(() => {
-            const operation = mockRegisteredAiChatHandle.createProcedurePlan(
+            const operation = mockRegisteredWorkflowPanelHandle.createProcedurePlan(
                 lifecycleProcedurePlan(), toolDispatcher(jest.fn(() => child)),
             );
             void operation.result.catch(() => undefined);
@@ -403,7 +411,7 @@ describe('AiChat conversation lifecycle', () => {
         let dispose: jest.SpyInstance;
         act(() => {
             agentOptions.onEvent({ kind: 'assistant_transcript', text: 'Old agent response' });
-            dispose = jest.spyOn(mockRegisteredAiChatHandle.initializeLiveRangeTodoList(), 'dispose');
+            dispose = jest.spyOn(mockRegisteredWorkflowPanelHandle.initializeLiveRangeTodoList(), 'dispose');
             mockRegisteredAiChatHandle.setLivePerformanceAnalystEnabled(true);
         });
         view.rerender(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
@@ -442,7 +450,7 @@ describe('AiChat conversation lifecycle', () => {
         expect(mockRegisterComponentRef).not.toHaveBeenCalled();
         let runner: any;
         act(() => {
-            runner = mockRegisteredAiChatHandle.initializeLiveRangeTodoList();
+            runner = mockRegisteredWorkflowPanelHandle.initializeLiveRangeTodoList();
         });
         expect(mockRegisterComponentRef).toHaveBeenCalledTimes(1);
         const runnerRef = mockRegisterComponentRef.mock.calls[0][0];
@@ -460,7 +468,7 @@ describe('AiChat conversation lifecycle', () => {
 
         let replacementRunner: any;
         act(() => {
-            replacementRunner = mockRegisteredAiChatHandle.initializeLiveRangeTodoList();
+            replacementRunner = mockRegisteredWorkflowPanelHandle.initializeLiveRangeTodoList();
         });
         expect(replacementRunner).not.toBe(runner);
         expect(mockRegisterComponentRef).toHaveBeenCalledTimes(2);
@@ -485,7 +493,7 @@ describe('AiChat conversation lifecycle', () => {
 
         let operation: any;
         act(() => {
-            operation = mockRegisteredAiChatHandle.createRepeatablePlan(lifecycleGoalRequest(), toolDispatcher(dispatch));
+            operation = mockRegisteredWorkflowPanelHandle.createRepeatablePlan(lifecycleGoalRequest(), toolDispatcher(dispatch));
         });
         const toolList = container.querySelector('.ai-chat__tool-list');
         const messages = container.querySelector('.ai-chat__msgs');
@@ -527,7 +535,7 @@ describe('AiChat conversation lifecycle', () => {
 
         let operation: any;
         act(() => {
-            operation = mockRegisteredAiChatHandle
+            operation = mockRegisteredWorkflowPanelHandle
                 .createProcedurePlan(lifecycleProcedurePlan(), toolDispatcher(dispatch));
         });
         expect(mockProcedurePlanRender).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -564,7 +572,7 @@ describe('AiChat conversation lifecycle', () => {
         const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
         let goalOperation: any;
         act(() => {
-            goalOperation = mockRegisteredAiChatHandle.createRepeatablePlan(
+            goalOperation = mockRegisteredWorkflowPanelHandle.createRepeatablePlan(
                 lifecycleGoalRequest(),
                 toolDispatcher(jest.fn(() => asTool(createOperation(never, 'complete')))),
             );
@@ -575,7 +583,7 @@ describe('AiChat conversation lifecycle', () => {
 
         let planOperation: any;
         act(() => {
-            planOperation = mockRegisteredAiChatHandle.createProcedurePlan(
+            planOperation = mockRegisteredWorkflowPanelHandle.createProcedurePlan(
                 lifecycleProcedurePlan(),
                 toolDispatcher(jest.fn(() => asTool(createOperation(never, 'complete')))),
             );
@@ -605,7 +613,7 @@ describe('AiChat conversation lifecycle', () => {
         );
         let goalOperation: any;
         act(() => {
-            goalOperation = mockRegisteredAiChatHandle.createRepeatablePlan(
+            goalOperation = mockRegisteredWorkflowPanelHandle.createRepeatablePlan(
                 lifecycleGoalRequest(),
                 toolDispatcher(jest.fn(() => asTool(createOperation(never, 'complete')))),
             );
@@ -629,7 +637,7 @@ describe('AiChat conversation lifecycle', () => {
             const dispatch = toolDispatcher(jest.fn(() => child));
             render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
             let active: any;
-            act(() => { active = mockRegisteredAiChatHandle.createProcedurePlan(lifecycleProcedurePlan(), dispatch); });
+            act(() => { active = mockRegisteredWorkflowPanelHandle.createProcedurePlan(lifecycleProcedurePlan(), dispatch); });
             void active.result.catch(() => undefined);
             const mounted = mockRegisterComponentRef.mock.calls[0][0].current;
             const dispose = jest.spyOn(mounted, 'dispose');
@@ -646,14 +654,14 @@ describe('AiChat conversation lifecycle', () => {
                         : { set_procedure_plan: { ...procedureInput.set_procedure_plan,
                             tools: [...procedureInput.set_procedure_plan.tools, { forbidden: { title: 'Forbidden', arguments: {} } }],
                         } };
-                    rejected = mockRegisteredAiChatHandle.createProcedurePlan(input, invalidDispatch);
+                    rejected = mockRegisteredWorkflowPanelHandle.createProcedurePlan(input, invalidDispatch);
                 } else {
                     const input = scenario.endsWith('legacy')
                         ? { name: 'Legacy', steps: [], stop_when: {} }
                         : { create_repeatable_plan: { ...repeatableInput.create_repeatable_plan,
                             stop_when: { ...repeatableInput.create_repeatable_plan.stop_when, tool: { forbidden: {} } },
                         } };
-                    rejected = mockRegisteredAiChatHandle.createRepeatablePlan(input, invalidDispatch);
+                    rejected = mockRegisteredWorkflowPanelHandle.createRepeatablePlan(input, invalidDispatch);
                 }
             });
             await expect(rejected.result).rejects.toThrow();
@@ -680,7 +688,7 @@ describe('AiChat conversation lifecycle', () => {
         const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
         render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
         let active: any;
-        act(() => { active = mockRegisteredAiChatHandle.createProcedurePlan(lifecycleProcedurePlan(), toolDispatcher(jest.fn(() => child))); });
+        act(() => { active = mockRegisteredWorkflowPanelHandle.createProcedurePlan(lifecycleProcedurePlan(), toolDispatcher(jest.fn(() => child))); });
         void active.result.catch(() => undefined);
         const mounted = mockRegisterComponentRef.mock.calls[0][0].current;
         const dispose = jest.spyOn(mounted, 'dispose');
@@ -780,7 +788,7 @@ describe('AiChat conversation lifecycle', () => {
         expect(mockRegisterComponentRef).not.toHaveBeenCalled();
         let activeRunner: any;
         act(() => {
-            activeRunner = mockRegisteredAiChatHandle.initializeLiveRangeTodoList();
+            activeRunner = mockRegisteredWorkflowPanelHandle.initializeLiveRangeTodoList();
             activeRunner.addEvent({
                 id: 'strict-mode-event',
                 normalized_position: 0.5,

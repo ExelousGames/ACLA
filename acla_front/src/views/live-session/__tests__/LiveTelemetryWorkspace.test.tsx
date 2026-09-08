@@ -43,6 +43,38 @@ const DirectoryObserver = () => {
 };
 
 describe('LiveTelemetryWorkspace named manager', () => {
+    it('displays locally saved analysis after the provider and workspace remount', async () => {
+        localStorage.clear();
+        let runtime!: React.ContextType<typeof LiveSessionContext>;
+        const Harness = () => {
+            runtime = useContext(LiveSessionContext);
+            return <LiveTelemetryWorkspace name="live-visualization-manager" />;
+        };
+        const view = (
+            <LiveSessionProvider ownerEmail="driver@example.com"><Harness /></LiveSessionProvider>
+        );
+        const { unmount } = render(view);
+        act(() => {
+            runtime.appendAnalysisResultPage({
+                baseline: {
+                    id: 'saved-baseline', lap_id: 3, lap_time_ms: 90_000,
+                    captured_at: 1, track: 'Spa', car: 'GT3', sample_count: 2,
+                },
+                elements: [{ id: 'saved-result', title: 'Saved analysis', labels: ['MSP'] }],
+            });
+        });
+        unmount();
+
+        render(view);
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Analysis Results' }));
+        expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
+        await userEvent.selectOptions(screen.getByRole('combobox', { name: 'View' }), 'all-results');
+        expect(await screen.findByTestId('analysis-result-saved-result')).toHaveTextContent('Saved analysis');
+        expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+        expect(screen.getByText(/Baseline: Spa/)).toBeInTheDocument();
+    });
+
     it('adds and removes the live 2D telemetry trajectory', async () => {
         const ref = React.createRef<VisualizationManagerHandle>();
         render(<LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />);

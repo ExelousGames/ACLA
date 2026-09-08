@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { flushSync } from 'react-dom';
 import './ai-chat.css';
 import type { AnalysisContextType } from 'views/lap-analysis/analysis-context';
 import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
@@ -33,33 +32,14 @@ import {
 import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
 import {
-    RepeatablePlan,
-    RepeatablePlanRunner,
-    LiveRangeTodoList,
-    LiveRangeTodoListRunner,
-    ProcedurePlan,
-    ProcedurePlanRunner,
-    parseProcedurePlanInput,
-    parseRepeatablePlanInput,
+    WorkflowPanel,
     assertTool,
-    isProcedurePlanClearEvent,
-    isProcedurePlanOptOutRequest,
-    isProcedurePlanStartEvent,
+    type WorkflowPanelHandle,
     type ToolDispatcher,
-    type ProcedurePlanInput,
-    type RepeatablePlanInput,
-    type RepeatablePlanHandle,
     type Operation,
     type OperationExecutionOutput,
     type OperationStatusPayload,
-    type LiveRangeTodoListHandle,
-    type ProcedurePlanHandle,
-    type ProcedurePlanSnapshot,
-    type ProcedurePlanState,
-    type GoalSnapshot,
     createOperationFrom,
-    asWorkflow,
-    serializeProcedurePlan,
 } from 'components/ai-operations';
 import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
 import {
@@ -75,9 +55,7 @@ import {
     useRegisterOperationComponentRef,
 } from 'contexts/OperationComponentRefContext';
 import {
-    NoProcedurePlanError,
     NonLiveContextLiveOperationsUnavailableError,
-    ProcedurePlanAdvanceFailedError,
 } from 'contexts/OperationComponentError';
 import {
     CircuitMapLookupFailedError,
@@ -190,9 +168,6 @@ export interface AiChatHandle extends NamedOperationComponentHandle {
     startTrackGuide(): void;
     setTrackGuideEnabled(enabled: boolean): void;
     setLivePerformanceAnalystEnabled(enabled: boolean): void;
-    createRepeatablePlan(args: RepeatablePlanInput, dispatchOperation: ToolDispatcher): ReturnType<RepeatablePlanHandle['createRepeatablePlan']>;
-    createProcedurePlan(args: ProcedurePlanInput, dispatchOperation: ToolDispatcher): ReturnType<ProcedurePlanHandle['createProcedurePlan']>;
-    initializeLiveRangeTodoList(): LiveRangeTodoListHandle;
     setAgentTagActive(tag: string, active: boolean): void;
     getOpportunityTelemetryRows(): Record<string, any>[];
     getOpportunityAgentState(): OpportunityAgentState;
@@ -206,16 +181,6 @@ export interface AiChatHandle extends NamedOperationComponentHandle {
 }
 
 export type ShowMapAiResult = { status: string; [key: string]: unknown };
-
-type ActiveWorkflow =
-    | { kind: 'repeatable_plan'; key: number; runner: RepeatablePlanRunner }
-    | { kind: 'procedure_plan'; key: number; runner: ProcedurePlanRunner }
-    | { kind: 'live_range_todo'; key: number; runner: LiveRangeTodoListRunner };
-
-type PendingWorkflow =
-    | Omit<Extract<ActiveWorkflow, { kind: 'repeatable_plan' }>, 'key'>
-    | Omit<Extract<ActiveWorkflow, { kind: 'procedure_plan' }>, 'key'>
-    | Omit<Extract<ActiveWorkflow, { kind: 'live_range_todo' }>, 'key'>;
 
 const OverlayIcon = ({ size = 14 }: { size?: number }) => (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -328,12 +293,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     // Loading and mode states
     const [isLoading] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
-    const [procedurePlanSnapshot, setProcedurePlanSnapshot] = useState<ProcedurePlanSnapshot | null>(null);
-    const [repeatablePlanSnapshot, setRepeatablePlanSnapshot] = useState<GoalSnapshot | null>(null);
-    const [activeWorkflow, setActiveWorkflow] = useState<ActiveWorkflow | null>(null);
-    const activeWorkflowRef = useRef<ActiveWorkflow | null>(null);
-    const workflowKeyRef = useRef(0);
-
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
 
     // Emotion GIF settings — keyed by Emotion, values are data URLs.
@@ -407,13 +366,10 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         ref: React.MutableRefObject<MutableAiOverlayComponent<any> | null>;
     }>>(new Map());
     const voiceSessionSeenActiveRef = useRef(false);
-    const procedurePlanRef = useRef<ProcedurePlanState | null>(null);
-    const procedurePlanOptedOutRef = useRef(false);
     const activeOperationHandlersRef = useRef<Record<string, FrontendOperationHandler>>({});
+    const workflowPanelRef = useRef<WorkflowPanelHandle | null>(null);
     const conversationDisposedRef = useRef(false);
     const pendingTimersRef = useRef<Set<number>>(new Set());
-    const liveRangeTodoListRunnerRef = useRef<LiveRangeTodoListRunner | null>(null);
-    const liveRangeTodoListSessionGameRef = useRef(liveSession?.sessionGame ?? null);
     const lastProcessedGuidanceRef = useRef<string>('');
     const lastGuidanceTimestampRef = useRef<number>(0);
 
@@ -421,27 +377,16 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         if (sessionMode !== 'live') return;
         return liveTelemetryStore.subscribeEvents((event) => {
             if (event.type === 'session-reset') {
-                liveRangeTodoListRunnerRef.current?.reset();
                 opportunityForecastRowsRef.current = [];
                 return;
             }
             if (event.type !== 'frame') return;
-            liveRangeTodoListRunnerRef.current?.acceptTelemetry(event.sample);
             opportunityForecastRowsRef.current = [
                 ...opportunityForecastRowsRef.current,
                 event.sample,
             ].slice(-MAX_OVERTAKE_AGENT_ROWS);
         }, { replayLatest: true });
     }, [sessionMode]);
-
-    useEffect(() => {
-        const previousSessionGame = liveRangeTodoListSessionGameRef.current;
-        const sessionGame = liveSession?.sessionGame ?? null;
-        liveRangeTodoListSessionGameRef.current = sessionGame;
-        if (previousSessionGame === sessionGame) return;
-        if (sessionGame === null) return;
-        liveRangeTodoListRunnerRef.current?.reset();
-    }, [liveSession?.sessionGame]);
 
     const scheduleConversationTimeout = useCallback((callback: () => void, delay = 0) => {
         const timeoutId = window.setTimeout(() => {
@@ -461,44 +406,10 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             overlayInvalidationTokenRef.current += 1;
             activeAgentSessionRef.current = null;
             activeOperationHandlersRef.current = {};
-            const activeWorkflow = activeWorkflowRef.current;
-            activeWorkflowRef.current = null;
-            if (activeWorkflow?.kind === 'repeatable_plan' || activeWorkflow?.kind === 'procedure_plan') {
-                activeWorkflow.runner.dispose();
-            }
-            const liveRangeTodoListRunner = liveRangeTodoListRunnerRef.current;
-            liveRangeTodoListRunnerRef.current = null;
-            liveRangeTodoListRunner?.dispose();
             pendingTimers.forEach((timeoutId) => window.clearTimeout(timeoutId));
             pendingTimers.clear();
         };
     }, []);
-
-    const mountWorkflow = useCallback((workflow: PendingWorkflow) => {
-        const previous = activeWorkflowRef.current;
-        if (
-            (previous?.kind === 'repeatable_plan' || previous?.kind === 'procedure_plan')
-            && previous.runner !== workflow.runner
-        ) {
-            previous.runner.dispose();
-        }
-        if (workflow.kind === 'repeatable_plan' || workflow.kind === 'procedure_plan') {
-            try {
-                workflow.runner.addComponentRef(componentRefs);
-            } catch (error) {
-                workflow.runner.dispose();
-                throw error;
-            }
-        }
-        const next = { ...workflow, key: ++workflowKeyRef.current } as ActiveWorkflow;
-        activeWorkflowRef.current = next;
-        flushSync(() => {
-            setRepeatablePlanSnapshot(null);
-            procedurePlanRef.current = null;
-            setProcedurePlanSnapshot(null);
-            setActiveWorkflow(next);
-        });
-    }, [componentRefs]);
 
     const resolvedSessionId = resolveAssistantRecordedSessionId(
         sessionMode,
@@ -882,76 +793,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         livePerformanceAnalystStateRef.current.enabled = enabled;
     }, []);
 
-    const observeBackgroundWorkflow = useCallback((
-        operation: Operation<unknown, object>,
-    ) => {
-        void operation.result.catch((error) => {
-            console.error('Background workflow failed.', error);
-        });
-    }, []);
-
-    const setProcedurePlan = useCallback((input: ProcedurePlanInput | null) => {
-        const active = activeWorkflowRef.current;
-        const existing = active?.kind === 'procedure_plan' ? active.runner : null;
-        if (!input) {
-            existing?.clearProcedurePlan();
-            procedurePlanRef.current = null;
-            setProcedurePlanSnapshot(null);
-            return;
-        }
-        const plan = parseProcedurePlanInput(input);
-        plan.requests.forEach((request) => dispatchActiveVoiceOperation.validate(request.name!));
-        const runner = new ProcedurePlanRunner(
-            OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
-            dispatchActiveVoiceOperation,
-            (next) => {
-                procedurePlanRef.current = next;
-                setProcedurePlanSnapshot(next ? serializeProcedurePlan(next) : null);
-            },
-        );
-        mountWorkflow({ kind: 'procedure_plan', runner });
-        observeBackgroundWorkflow(runner.createProcedurePlan(input));
-    }, [dispatchActiveVoiceOperation, mountWorkflow, observeBackgroundWorkflow]);
-
-    const advanceProcedurePlanStep = useCallback(async (reason?: string) => {
-        const active = activeWorkflowRef.current;
-        const runner = active?.kind === 'procedure_plan' ? active.runner : null;
-        if (!runner) {
-            throw new NoProcedurePlanError(
-                name,
-                'The procedure plan could not be advanced.',
-            );
-        }
-
-        try {
-            const operation = runner.advancePlanStep(reason);
-            const result = await operation.result;
-            if (result instanceof Error) throw result;
-            return result;
-        } catch (error) {
-            throw new ProcedurePlanAdvanceFailedError(
-                name,
-                error instanceof Error && error.message
-                    ? error.message
-                    : 'The procedure plan could not be advanced.',
-                { cause: error },
-            );
-        }
-    }, [name]);
-
-    const clearProcedurePlan = useCallback(() => {
-        const active = activeWorkflowRef.current;
-        const runner = active?.kind === 'procedure_plan' ? active.runner : null;
-        runner?.clearProcedurePlan();
-        procedurePlanRef.current = null;
-        setProcedurePlanSnapshot(null);
-    }, []);
-
-    const optOutProcedurePlan = useCallback(() => {
-        procedurePlanOptedOutRef.current = true;
-        setProcedurePlan(null);
-    }, [setProcedurePlan]);
-
     // Racing engineer voice conversation. The hook owns mic, WS, and
     // audio playback; it ALSO multiplexes the tool-relay text channel on
     // the same WS — frontend tools listed below are reachable from the
@@ -975,9 +816,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             ? overlayPresentationsByAiSessionRef.current.get(eventAiSessionId)
             : undefined;
         if (event.kind === 'user_transcript') {
-            if (isProcedurePlanOptOutRequest(event.text)) {
-                optOutProcedurePlan();
-            }
+            workflowPanelRef.current?.handleUserText(event.text);
             setTargetMessages(prev => {
                 const messagesWithoutLoading = prev.filter(m => !m.isLoading);
                 const transcript = event.text.trim();
@@ -1040,24 +879,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             return;
         }
         if (event.kind === 'tool_status') {
-            const sourceEvent = typeof event.data.event === 'string' ? event.data.event : undefined;
-            if (isProcedurePlanClearEvent(sourceEvent)) {
-                clearProcedurePlan();
-                return;
-            }
-            if (Object.prototype.hasOwnProperty.call(event.data, 'set_procedure_plan')) {
-                const { event: _sourceEvent, ...input } = event.data;
-                const startsPlan = isProcedurePlanStartEvent(sourceEvent);
-                if (procedurePlanOptedOutRef.current && !startsPlan) {
-                    return;
-                }
-                try {
-                    setProcedurePlan(input as ProcedurePlanInput);
-                    if (startsPlan) procedurePlanOptedOutRef.current = false;
-                } catch (error) {
-                    console.error('Invalid procedure plan status.', error);
-                }
-            }
+            workflowPanelRef.current?.handleToolStatus(event.data);
             return;
         }
         if (event.kind === 'tool_call') {
@@ -1122,11 +944,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }, [
         mainClientSessionId,
         presentAssistantOverlayMessage,
-        clearProcedurePlan,
         generateUniqueId,
-        optOutProcedurePlan,
         publishOverlayComponent,
-        setProcedurePlan,
     ]);
 
     const handleMainVoiceEvent = useCallback((event: VoiceEvent) => {
@@ -1147,102 +966,12 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }), [sessionMode]);
 
     const inactiveAgentOperationHandlers = useMemo(() => ({}), []);
-    const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
     const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
-    const createRepeatablePlan = useCallback((
-        args: RepeatablePlanInput,
-        dispatchOperation: ToolDispatcher,
-    ): ReturnType<RepeatablePlanHandle['createRepeatablePlan']> => {
-        const runner = new RepeatablePlanRunner(
-            OPERATION_COMPONENT_NAMES.REPEATABLE_PLAN,
-            dispatchOperation,
-            setRepeatablePlanSnapshot,
-        );
-        try {
-            const request = parseRepeatablePlanInput(args);
-            request.steps.forEach((step) => dispatchOperation.validate(step.name));
-            dispatchOperation.validate(request.stop_when.tool.name);
-            mountWorkflow({ kind: 'repeatable_plan', runner });
-            return runner.createRepeatablePlan(args);
-        } catch (error) {
-            runner.dispose();
-            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
-        }
-    }, [mountWorkflow]);
-
-    const createProcedurePlan = useCallback((
-        args: ProcedurePlanInput,
-        dispatchOperation: ToolDispatcher,
-    ): ReturnType<ProcedurePlanHandle['createProcedurePlan']> => {
-        try {
-            const plan = parseProcedurePlanInput(args);
-            plan.requests.forEach((request) => dispatchOperation.validate(request.name!));
-            const runner = new ProcedurePlanRunner(
-                OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
-                dispatchOperation,
-                (next) => {
-                    procedurePlanRef.current = next;
-                    setProcedurePlanSnapshot(next ? serializeProcedurePlan(next) : null);
-                },
-            );
-            try {
-                mountWorkflow({ kind: 'procedure_plan', runner });
-                return runner.createProcedurePlan(args);
-            } catch (error) {
-                runner.dispose();
-                throw error;
-            }
-        } catch (error) {
-            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
-        }
-    }, [mountWorkflow]);
-
-    const initializeLiveRangeTodoList = useCallback((): LiveRangeTodoListHandle => {
-        let runner = liveRangeTodoListRunnerRef.current;
-        if (!runner) {
-            runner = new LiveRangeTodoListRunner(
-                OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-                (snapshot) => {
-                    if (snapshot !== null || liveRangeTodoListRunnerRef.current !== runner) return;
-                    liveRangeTodoListRunnerRef.current = null;
-                    const active = activeWorkflowRef.current;
-                    if (active?.kind === 'live_range_todo' && active.runner === runner) {
-                        activeWorkflowRef.current = null;
-                    }
-                    setActiveWorkflow((current) => (
-                        current?.kind === 'live_range_todo' && current.runner === runner
-                            ? null
-                            : current
-                    ));
-                },
-            );
-            liveRangeTodoListRunnerRef.current = runner;
-            runner.addComponentRef(componentRefs);
-        }
-        const active = activeWorkflowRef.current;
-        if (active?.kind !== 'live_range_todo' || active.runner !== runner) {
-            mountWorkflow({ kind: 'live_range_todo', runner });
-        }
-        return runner;
-    }, [componentRefs, mountWorkflow]);
-
     const resetLivePerformanceAnalystRuntime = useCallback(() => {
         const analystAgent = livePerformanceAnalystStateRef.current;
         analystAgent.enabled = false;
         setLivePerformanceAnalystAgentEnabled(false);
-        procedurePlanOptedOutRef.current = false;
-        const active = activeWorkflowRef.current;
-        activeWorkflowRef.current = null;
-        if (active?.kind === 'repeatable_plan' || active?.kind === 'procedure_plan') {
-            active.runner.dispose();
-        }
-        setActiveWorkflow(null);
-        setRepeatablePlanSnapshot(null);
-        const liveRangeTodoListRunner = liveRangeTodoListRunnerRef.current;
-        liveRangeTodoListRunnerRef.current = null;
-        liveRangeTodoListRunner?.dispose();
-        procedurePlanRef.current = null;
-        setProcedurePlanSnapshot(null);
+        workflowPanelRef.current?.reset();
     }, [setLivePerformanceAnalystAgentEnabled]);
 
     const resetOvertakeRuntime = useCallback(() => {
@@ -1425,9 +1154,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         startTrackGuide,
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-        createRepeatablePlan,
-        createProcedurePlan,
-        initializeLiveRangeTodoList,
         setAgentTagActive: setAgentTag,
         getOpportunityTelemetryRows,
         getOpportunityAgentState: () => opportunityAgentStateRef.current,
@@ -1443,15 +1169,12 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         ),
     }), [
         analysisContext?.recordingState,
-        createRepeatablePlan,
-        createProcedurePlan,
         displayMapInChat,
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
         getLabelName,
         getOpportunityTelemetryRows,
-        initializeLiveRangeTodoList,
         resetSession,
         name,
         sessionMode,
@@ -1643,10 +1366,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 startTrackGuide,
                 setTrackGuideEnabled: setTrackGuideAgentEnabled,
                 setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-                advanceProcedurePlanStep,
-                getProcedurePlan,
-                clearProcedurePlan,
-                setProcedurePlan,
                 setAgentTagActive: setAgentTag,
                 stopAgentSession,
                 getOpportunityTelemetryRows,
@@ -1672,10 +1391,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }, [
         activeAgentSession,
         TrackGuideEnabled,
-        advanceProcedurePlanStep,
         analysisContext,
         analysisContext?.recordingState,
-        clearProcedurePlan,
         componentRefs,
         displayMapInChat,
         agentVoiceConversation.state,
@@ -1685,13 +1402,11 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         getCircuitMapByTrack,
         getLabelName,
         getOpportunityTelemetryRows,
-        getProcedurePlan,
         resolvedSessionId,
         scheduleConversationTimeout,
         sessionMode,
         setAgentTag,
         setLivePerformanceAnalystAgentEnabled,
-        setProcedurePlan,
         setTrackGuideAgentEnabled,
         startTrackGuide,
         stopAgentSession,
@@ -1929,9 +1644,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const handleSendMessage = async (override?: string) => {
         const text = (override ?? inputValue).trim();
         if (!text || isLoading || liveSessionEnded) return;
-        if (isProcedurePlanOptOutRequest(text)) {
-            optOutProcedurePlan();
-        }
+        workflowPanelRef.current?.handleUserText(text);
 
         // Add successful typed sends immediately. The backend may echo a
         // user_transcript frame later; handleSessionVoiceEvent consumes that
@@ -2261,33 +1974,12 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 </aside>
 
                 <section className="ai-chat__transcript">
-                    {activeWorkflow
-                        && (activeWorkflow.kind !== 'procedure_plan' || procedurePlanSnapshot)
-                        && (
-                        <div className="ai-chat__tool-list">
-                            {activeWorkflow.kind === 'repeatable_plan' && (
-                                <RepeatablePlan
-                                    key={activeWorkflow.key}
-                                    snapshot={repeatablePlanSnapshot}
-                                    surface="chat"
-                                />
-                            )}
-                            {activeWorkflow.kind === 'procedure_plan' && procedurePlanSnapshot && (
-                                <ProcedurePlan
-                                    key={activeWorkflow.key}
-                                    plan={procedurePlanSnapshot}
-                                    surface="chat"
-                                />
-                            )}
-                            {activeWorkflow.kind === 'live_range_todo' && (
-                                <LiveRangeTodoList
-                                    key={activeWorkflow.key}
-                                    runner={activeWorkflow.runner}
-                                    surface="chat"
-                                />
-                            )}
-                        </div>
-                    )}
+                    <WorkflowPanel
+                        ref={workflowPanelRef}
+                        dispatchOperation={dispatchActiveVoiceOperation}
+                        live={sessionMode === 'live'}
+                        sessionGame={liveSession?.sessionGame ?? null}
+                    />
 
                     <div className="ai-chat__msgs" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
                         {liveSessionEnded && (

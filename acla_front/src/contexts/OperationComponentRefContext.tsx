@@ -27,6 +27,7 @@ export const OPERATION_COMPONENT_MOUNT_TIMEOUT_MS = 5000;
 
 export const OPERATION_COMPONENT_NAMES = Object.freeze({
     DASHBOARD_ASSISTANT: 'dashboard-assistant',
+    WORKFLOW_PANEL: 'workflow-panel',
     LIVE_SESSION: 'live-session',
     SESSION_ANALYSIS: 'session-analysis',
     USER_SUMMARY: 'user-summary',

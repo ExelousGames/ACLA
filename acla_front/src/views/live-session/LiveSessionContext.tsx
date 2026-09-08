@@ -43,8 +43,12 @@ import {
     AppendLiveSessionAnalysisResultPageInput,
     AppendLiveSessionAnalysisResultPageResult,
     createLiveSessionAnalysisResultPage,
-    LiveSessionAnalysisResultPage,
 } from './live-session-analysis-results';
+import {
+    getPersistedLiveSessionAnalysis,
+    PersistedLiveSessionAnalysis,
+    savePersistedLiveSessionAnalysis,
+} from './live-session-analysis-storage';
 import { normalizeAnalysisResultsData } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
 import { liveTelemetryStore } from './live-telemetry-store';
 
@@ -139,8 +143,8 @@ export const LiveSessionProvider = ({
     const [restorationError, setRestorationError] = useState<string | null>(null);
     const [recordingFileValidation, setRecordingFileValidation] = useState<LocalTelemetryFileValidation | null>(null);
     const [recorderControl, setRecorderControl] = useState<LiveSessionRecorderControl | null>(null);
-    const [analysisResultPages, setAnalysisResultPages] = useState<LiveSessionAnalysisResultPage[]>([]);
-    const [activeAnalysisResultPageId, setActiveAnalysisResultPageId] = useState<string | null>(null);
+    const [analysisResults, setAnalysisResults] = useState(() => getPersistedLiveSessionAnalysis(normalizedOwnerEmail));
+    const { pages: analysisResultPages, activePageId: activeAnalysisResultPageId } = analysisResults;
 
     const sessionGameRef = useRef<DesktopGame | null>(null);
     const ownerEmailRef = useRef(normalizedOwnerEmail);
@@ -152,58 +156,61 @@ export const LiveSessionProvider = ({
     const recordingGameRef = useRef<DesktopGame | null>(null);
     const recordingStartPromiseRef = useRef<Promise<RecordingStartResult> | null>(null);
     const recordingStopPromiseRef = useRef<Promise<RecordingStopResult | null> | null>(null);
-    const analysisResultPagesRef = useRef<LiveSessionAnalysisResultPage[]>([]);
-    const activeAnalysisResultPageIdRef = useRef<string | null>(null);
+    const analysisResultsRef = useRef(analysisResults);
+    const analysisOwnerEmailRef = useRef(normalizedOwnerEmail);
     const persistDraftRef = useRef<() => void>(() => undefined);
     const draftPersistenceSuppressedRef = useRef(false);
     const registerRecorderControl = useCallback((control: LiveSessionRecorderControl | null) => {
         setRecorderControl(control);
     }, []);
 
-    const clearAnalysisResultPages = useCallback(() => {
-        analysisResultPagesRef.current = [];
-        activeAnalysisResultPageIdRef.current = null;
-        setAnalysisResultPages([]);
-        setActiveAnalysisResultPageId(null);
+    // Analysis history belongs to the account, independently of recording resets.
+    useEffect(() => {
+        if (analysisOwnerEmailRef.current === normalizedOwnerEmail) return;
+        const restored = getPersistedLiveSessionAnalysis(normalizedOwnerEmail);
+        analysisOwnerEmailRef.current = normalizedOwnerEmail;
+        analysisResultsRef.current = restored;
+        setAnalysisResults(restored);
+    }, [normalizedOwnerEmail]);
+
+    const commitAnalysisResults = useCallback((next: PersistedLiveSessionAnalysis) => {
+        analysisResultsRef.current = next;
+        setAnalysisResults(next);
+        savePersistedLiveSessionAnalysis(analysisOwnerEmailRef.current, next);
     }, []);
 
     const appendAnalysisResultPage = useCallback((
         input: AppendLiveSessionAnalysisResultPageInput,
     ): AppendLiveSessionAnalysisResultPageResult => {
         const page = createLiveSessionAnalysisResultPage(input);
-        const nextPages = [...analysisResultPagesRef.current, page];
-        analysisResultPagesRef.current = nextPages;
-        setAnalysisResultPages(nextPages);
-
-        if (activeAnalysisResultPageIdRef.current === null) {
-            activeAnalysisResultPageIdRef.current = page.id;
-            setActiveAnalysisResultPageId(page.id);
-        }
+        const nextPages = [...analysisResultsRef.current.pages, page];
+        commitAnalysisResults({
+            pages: nextPages,
+            activePageId: analysisResultsRef.current.activePageId ?? page.id,
+        });
 
         return { pageId: page.id, pageCount: nextPages.length };
-    }, []);
+    }, [commitAnalysisResults]);
 
     const selectAnalysisResultPage = useCallback((pageId: string): boolean => {
-        if (!analysisResultPagesRef.current.some((page) => page.id === pageId)) return false;
-        activeAnalysisResultPageIdRef.current = pageId;
-        setActiveAnalysisResultPageId(pageId);
+        if (!analysisResultsRef.current.pages.some((page) => page.id === pageId)) return false;
+        commitAnalysisResults({ ...analysisResultsRef.current, activePageId: pageId });
         return true;
-    }, []);
+    }, [commitAnalysisResults]);
 
     const updateActiveAnalysisResultPage = useCallback((data: unknown): boolean => {
-        const activePageId = activeAnalysisResultPageIdRef.current;
+        const { pages, activePageId } = analysisResultsRef.current;
         if (
             !activePageId
-            || !analysisResultPagesRef.current.some((page) => page.id === activePageId)
+            || !pages.some((page) => page.id === activePageId)
         ) return false;
         const normalized = normalizeAnalysisResultsData(data);
-        const nextPages = analysisResultPagesRef.current.map((page) => (
+        const nextPages = pages.map((page) => (
             page.id === activePageId ? { ...page, elements: normalized.elements } : page
         ));
-        analysisResultPagesRef.current = nextPages;
-        setAnalysisResultPages(nextPages);
+        commitAnalysisResults({ pages: nextPages, activePageId });
         return true;
-    }, []);
+    }, [commitAnalysisResults]);
 
     const persistCurrentDraft = useCallback(() => {
         const currentOwnerEmail = ownerEmailRef.current;
@@ -244,8 +251,7 @@ export const LiveSessionProvider = ({
         draftPersistenceSuppressedRef.current = true;
         const currentOwnerEmail = ownerEmailRef.current;
         if (currentOwnerEmail) removePersistedLiveSessionDraft(currentOwnerEmail);
-        clearAnalysisResultPages();
-    }, [clearAnalysisResultPages]);
+    }, []);
 
     const getLatestTelemetrySample = useCallback(() => {
         const latest = liveTelemetryStore.getSnapshot().currentTelemetry;
@@ -520,8 +526,7 @@ export const LiveSessionProvider = ({
         setRecordingMetadata(null);
         resetSampleCount();
         liveTelemetryStore.beginStream();
-        clearAnalysisResultPages();
-    }, [clearAnalysisResultPages, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
+    }, [resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
 
     const resetLiveSession = useCallback((nextGame: DesktopGame | null) => {
         sessionGameRef.current = nextGame;
@@ -535,9 +540,8 @@ export const LiveSessionProvider = ({
         setRecordingMetadata(null);
         setRecordingFileKey(null);
         resetSampleCount();
-        clearAnalysisResultPages();
         setRestorationError(null);
-    }, [clearAnalysisResultPages, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
+    }, [resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
 
     const startLiveSession = useCallback((game: DesktopGame) => {
         if (sessionGameRef.current) return;

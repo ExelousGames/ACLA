@@ -4,3 +4,11 @@ import { OperationComponentBase } from './OperationComponentBase';
 export abstract class WorkflowComponentBase<TSnapshot> extends OperationComponentBase<TSnapshot> {
     readonly kind = 'workflow' as const;
 }
+
+export interface MountedWorkflow {
+    runner: WorkflowComponentBase<any>;
+    dispose: () => void;
+    retainOnHide?: boolean;
+}
+
+export type MountWorkflow = (workflow: MountedWorkflow) => void;

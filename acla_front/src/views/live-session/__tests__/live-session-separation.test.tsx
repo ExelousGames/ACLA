@@ -267,7 +267,7 @@ describe('live session state separation', () => {
         expect(screen.getByTestId('session-game')).toHaveTextContent('acc');
     });
 
-    it('appends pages chronologically, retains selection across remounts, and clears them on reset', () => {
+    it('appends pages chronologically and retains pages and selection across panel remounts and session resets', () => {
         render(
             <LiveSessionProvider>
                 <RecordedSelectionProvider>
@@ -293,8 +293,8 @@ describe('live session state separation', () => {
         expect(screen.getByTestId('active-analysis-result')).toHaveTextContent('result-2');
 
         fireEvent.click(screen.getByText('Reset live recording'));
-        expect(screen.getByTestId('analysis-page-count')).toHaveTextContent('0');
-        expect(screen.getByTestId('active-analysis-result')).toHaveTextContent('none');
+        expect(screen.getByTestId('analysis-page-count')).toHaveTextContent('2');
+        expect(screen.getByTestId('active-analysis-result')).toHaveTextContent('result-2');
     });
 
     it('does not let a later start action replace the captured game', () => {

@@ -1,4 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { OPERATION_COMPONENT_NAMES } from 'contexts/OperationComponentRefContext';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
+import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import { InvalidLiveRangeTodoListError } from 'contexts/OperationComponentError';
 import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
 import {
@@ -6,7 +9,7 @@ import {
     isOverlayNonEmptyString,
     isOverlayRecord,
 } from 'views/floating-chat/overlay-renderer-validation';
-import { WorkflowComponentBase } from './WorkflowComponentBase';
+import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
 import { asWorkflow } from './workflow';
 import { assertTool } from './tool';
 import type {
@@ -857,6 +860,67 @@ implements LiveRangeTodoListHandle {
         });
     }
 }
+
+export const useLiveRangeTodoListWorkflow = ({
+    mountWorkflow,
+    onEmpty,
+    live,
+    sessionGame,
+}: {
+    mountWorkflow: MountWorkflow;
+    onEmpty: (runner: LiveRangeTodoListRunner) => void;
+    live: boolean;
+    sessionGame: DesktopGame | null;
+}) => {
+    const runnerRef = useRef<LiveRangeTodoListRunner | null>(null);
+    const previousSessionGameRef = useRef(sessionGame);
+    const dispose = useCallback(() => {
+        const runner = runnerRef.current;
+        runnerRef.current = null;
+        runner?.dispose();
+    }, []);
+
+    useEffect(() => dispose, [dispose]);
+
+    useEffect(() => {
+        if (!live) return;
+        return liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') runnerRef.current?.reset();
+            if (event.type === 'frame') runnerRef.current?.acceptTelemetry(event.sample);
+        }, { replayLatest: true });
+    }, [live]);
+
+    useEffect(() => {
+        const previous = previousSessionGameRef.current;
+        previousSessionGameRef.current = sessionGame;
+        if (previous !== sessionGame && sessionGame !== null) runnerRef.current?.reset();
+    }, [sessionGame]);
+
+    const initializeLiveRangeTodoList = useCallback((): LiveRangeTodoListHandle => {
+        let runner = runnerRef.current;
+        if (!runner) {
+            const next = new LiveRangeTodoListRunner(
+                OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+                (snapshot) => {
+                    if (snapshot !== null || runnerRef.current !== next) return;
+                    runnerRef.current = null;
+                    onEmpty(next);
+                },
+            );
+            runner = next;
+        }
+        try {
+            mountWorkflow({ runner, dispose, retainOnHide: true });
+            runnerRef.current = runner;
+            return runner;
+        } catch (error) {
+            runner.dispose();
+            throw error;
+        }
+    }, [dispose, mountWorkflow, onEmpty]);
+
+    return { initializeLiveRangeTodoList, reset: dispose };
+};
 
 const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
     runner,

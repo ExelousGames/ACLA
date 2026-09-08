@@ -8,6 +8,8 @@ import {
 } from '../live-session-draft-storage';
 import { PERSISTED_LIVE_SESSION_DRAFT_VERSION, RecordingStartResult } from '../live-session-types';
 import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
+import { getPersistedLiveSessionAnalysis, savePersistedLiveSessionAnalysis } from '../live-session-analysis-storage';
+import { createLiveSessionAnalysisResultPage } from '../live-session-analysis-results';
 import {
     liveTelemetryStore,
     useCommittedSampleCount,
@@ -49,6 +51,7 @@ const RuntimeProbe = () => {
             <output data-testid="restoration">{runtime.restorationStatus}</output>
             <output data-testid="error">{runtime.restorationError || 'none'}</output>
             <output data-testid="has-data">{String(runtime.recordingFileValidation?.hasData)}</output>
+            <output data-testid="analysis-count">{runtime.analysisResultPages.length}</output>
         </>
     );
 };
@@ -148,6 +151,14 @@ describe('live session draft persistence', () => {
         RecordingState.UPLOAD_READY,
     ])('restores a %s draft as upload-ready without restarting live processes', async (lastRuntimeState) => {
         saveDraft('Driver@Example.com', lastRuntimeState);
+        const page = createLiveSessionAnalysisResultPage({
+            baseline: {
+                id: 'saved-baseline', lap_id: 1, lap_time_ms: null,
+                captured_at: 1, track: 'Monza', car: 'GT3', sample_count: 42,
+            },
+            elements: [{ id: 'saved-result', labels: ['MSP'] }],
+        });
+        savePersistedLiveSessionAnalysis('Driver@Example.com', { pages: [page], activePageId: page.id });
 
         render(<LiveSessionProvider ownerEmail=" driver@example.com "><RuntimeProbe /></LiveSessionProvider>);
 
@@ -157,6 +168,7 @@ describe('live session draft persistence', () => {
         expect(screen.getByTestId('name')).toHaveTextContent('Friday Practice');
         expect(screen.getByTestId('samples')).toHaveTextContent('42');
         expect(screen.getByTestId('file')).toHaveTextContent(telemetryPath);
+        expect(screen.getByTestId('analysis-count')).toHaveTextContent('1');
         expect(window.electronAPI.startRecordingSession).not.toHaveBeenCalled();
         expect(window.electronAPI.startRecordedFileRead).toHaveBeenCalledWith({
             filePath: telemetryPath,
@@ -211,7 +223,7 @@ describe('live session draft persistence', () => {
         expect(screen.getByTestId('error')).toHaveTextContent('none');
     });
 
-    it('does not recreate a terminally cleared manifest when the provider unmounts', async () => {
+    it('keeps analysis history while terminally clearing the recording draft', async () => {
         saveDraft('driver@example.com', RecordingState.UPLOAD_READY);
         const view = render(
             <LiveSessionProvider ownerEmail="driver@example.com">
@@ -223,10 +235,11 @@ describe('live session draft persistence', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Add page' }));
         expect(screen.getByTestId('clear-page-count')).toHaveTextContent('1');
         fireEvent.click(screen.getByRole('button', { name: 'Clear draft' }));
-        expect(screen.getByTestId('clear-page-count')).toHaveTextContent('0');
+        expect(screen.getByTestId('clear-page-count')).toHaveTextContent('1');
         view.unmount();
 
         expect(getPersistedLiveSessionDraft('driver@example.com')).toBeNull();
+        expect(getPersistedLiveSessionAnalysis('driver@example.com').pages).toHaveLength(1);
     });
 
     it('creates a new recording at the absolute persistent Electron path and saves it for the account', async () => {

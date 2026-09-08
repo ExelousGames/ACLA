@@ -1,8 +1,9 @@
-import React from 'react';
-import { WorkflowComponentBase } from './WorkflowComponentBase';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
 import { asWorkflow, type Workflow } from './workflow';
-import type {
-    NamedOperationComponentHandle,
+import {
+    OPERATION_COMPONENT_NAMES,
+    type NamedOperationComponentHandle,
 } from 'contexts/OperationComponentRefContext';
 import { assertTool, type ToolCall, type ToolDispatcher } from './tool';
 import type { FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
@@ -302,6 +303,7 @@ implements ProcedurePlanHandle {
         this.activeOperation = null;
         this.generation += 1;
         this.active = false;
+        this.publish(null);
     }
 
     private publish(plan: ProcedurePlanState | null): void {
@@ -660,6 +662,106 @@ export const parseProcedurePlanInput = (value: unknown): ProcedurePlanState => {
         requests,
         currentStep: 0,
     };
+};
+
+export const useProcedurePlanWorkflow = ({
+    mountWorkflow,
+    dispatchOperation,
+}: {
+    mountWorkflow: MountWorkflow;
+    dispatchOperation: ToolDispatcher;
+}) => {
+    const runnerRef = useRef<ProcedurePlanRunner | null>(null);
+    const optedOutRef = useRef(false);
+    const [snapshot, setSnapshot] = useState<ProcedurePlanSnapshot | null>(null);
+
+    const dispose = useCallback(() => {
+        const runner = runnerRef.current;
+        runnerRef.current = null;
+        runner?.dispose();
+    }, []);
+
+    useEffect(() => dispose, [dispose]);
+
+    const startProcedurePlan = useCallback((
+        input: ProcedurePlanInput,
+        dispatcher: ToolDispatcher,
+    ): Workflow<ProcedurePlanRunResult> => {
+        const plan = parseProcedurePlanInput(input);
+        plan.requests.forEach((request) => dispatcher.validate(request.name!));
+        const runner = new ProcedurePlanRunner(
+            OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
+            dispatcher,
+            (next) => {
+                if (runnerRef.current !== runner) return;
+                setSnapshot(next ? serializeProcedurePlan(next) : null);
+            },
+        );
+        try {
+            mountWorkflow({ runner, dispose });
+            runnerRef.current = runner;
+            setSnapshot(null);
+            return runner.createProcedurePlan(input);
+        } catch (error) {
+            if (runnerRef.current === runner) runnerRef.current = null;
+            runner.dispose();
+            throw error;
+        }
+    }, [dispose, mountWorkflow]);
+
+    const createProcedurePlan = useCallback((
+        input: ProcedurePlanInput,
+        dispatcher: ToolDispatcher,
+    ): Workflow<ProcedurePlanRunResult> => {
+        try {
+            return startProcedurePlan(input, dispatcher);
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
+    }, [startProcedurePlan]);
+
+    const clearProcedurePlan = useCallback(() => {
+        const operation = runnerRef.current?.clearProcedurePlan();
+        void operation?.result.catch((error) => {
+            console.error('Background workflow failed.', error);
+        });
+        setSnapshot(null);
+    }, []);
+
+    const handleUserText = useCallback((text: string) => {
+        if (!isProcedurePlanOptOutRequest(text)) return;
+        optedOutRef.current = true;
+        clearProcedurePlan();
+    }, [clearProcedurePlan]);
+
+    const handleToolStatus = useCallback((data: Record<string, unknown>) => {
+        const sourceEvent = typeof data.event === 'string' ? data.event : undefined;
+        if (isProcedurePlanClearEvent(sourceEvent)) {
+            clearProcedurePlan();
+            return;
+        }
+        if (!Object.prototype.hasOwnProperty.call(data, 'set_procedure_plan')) return;
+        const startsPlan = isProcedurePlanStartEvent(sourceEvent);
+        if (optedOutRef.current && !startsPlan) return;
+        const { event: _sourceEvent, ...input } = data;
+        try {
+            const operation = startProcedurePlan(input as ProcedurePlanInput, dispatchOperation);
+            if (startsPlan) optedOutRef.current = false;
+            void operation.result.catch((error) => {
+                console.error('Background workflow failed.', error);
+            });
+        } catch (error) {
+            console.error('Invalid procedure plan status.', error);
+        }
+    }, [clearProcedurePlan, dispatchOperation, startProcedurePlan]);
+
+    const reset = useCallback(() => {
+        optedOutRef.current = false;
+        dispose();
+        setSnapshot(null);
+    }, [dispose]);
+
+    return { createProcedurePlan, snapshot, reset, handleUserText, handleToolStatus };
 };
 
 export type ProcedurePlanProps = {

@@ -2,6 +2,9 @@ import { act, renderHook } from '@testing-library/react';
 import apiService from 'services/api.service';
 import { useVoiceConversation } from '../use-voice-conversation';
 import { createOperationDeferred, createControlledOperation } from '../operation-base';
+import { ProcedurePlanRunner, type ProcedurePlanInput } from 'components/ai-operations/ProcedurePlan';
+import { RepeatablePlanRunner, type RepeatablePlanInput } from 'components/ai-operations/RepeatablePlan';
+import { asTool } from 'components/ai-operations/tool';
 
 jest.mock('services/api.service', () => ({
     __esModule: true,
@@ -422,6 +425,49 @@ describe('useVoiceConversation chat session lifecycle', () => {
             expect(handler).toHaveBeenCalledTimes(3);
         },
     );
+
+    it.each([
+        ['procedure', 'stop'], ['procedure', 'close'],
+        ['repeatable', 'stop'], ['repeatable', 'close'],
+    ])('aborts a real %s workflow on %s without advancing or reviving it on resume', async (kind, disconnect) => {
+        const child = createControlledOperation<Record<string, unknown>>();
+        const dispatch = Object.assign(jest.fn(() => asTool(child.operation)), { validate: jest.fn() });
+        const onChange = jest.fn();
+        const runner = kind === 'procedure'
+            ? new ProcedurePlanRunner('procedure-plan', dispatch, onChange)
+            : new RepeatablePlanRunner('repeatable-plan', dispatch, onChange);
+        const tool = { query_analysis_result: { title: 'Current step', arguments: { query: 'analyses' } } };
+        const input = runner instanceof ProcedurePlanRunner
+            ? { set_procedure_plan: { goal: 'Review', tools: [tool, tool] } }
+            : { create_repeatable_plan: {
+                name: 'Review', tools: [{ query_analysis_result: { ...tool.query_analysis_result, id: 'read' } }],
+                stop_when: { tool: { query_analysis_result: { arguments: { query: '0' } } }, operator: 'eq', target: 0 },
+            } };
+        const handler = () => runner instanceof ProcedurePlanRunner
+            ? runner.createProcedurePlan(input as ProcedurePlanInput)
+            : runner.createRepeatablePlan(input as RepeatablePlanInput);
+        const { result } = renderHook(() => useVoiceConversation({ operationHandlers: { plan: handler } }));
+        const socket = await startAndOpen(result);
+        markReady(socket, 'server-chat-1', false);
+        act(() => socket.message({ type: 'tool_call', id: 'workflow-1', name: 'plan' }));
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(runner.getSnapshot()).not.toBeNull();
+
+        await act(async () => {
+            if (disconnect === 'stop') result.current.stop();
+            else socket.serverClose(1000, 'session stopped');
+            expect(child.signal.aborted).toBe(true);
+        });
+        expect(runner.getSnapshot()).toBeNull();
+        expect(onChange).toHaveBeenLastCalledWith(null);
+
+        const resumedSocket = await startAndOpen(result);
+        markReady(resumedSocket, 'server-chat-1', true);
+        await act(async () => { child.resolve('complete', { value: 'late result' }); });
+        expect(result.current.state).toBe('listening');
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(runner.getSnapshot()).toBeNull();
+    });
 
     it('keeps tools and text chat active while the microphone is disabled', async () => {
         const cleanup = jest.fn();

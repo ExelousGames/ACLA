@@ -1,6 +1,8 @@
 export { OperationComponentBase } from './OperationComponentBase';
 export type { OperationComponentSnapshotListener } from './OperationComponentBase';
 export { WorkflowComponentBase } from './WorkflowComponentBase';
+export { default as WorkflowPanel } from './WorkflowPanel';
+export type { WorkflowPanelHandle } from './WorkflowPanel';
 export { asTool, assertTool } from './tool';
 export type { Tool, ToolCall, ToolDispatcher } from './tool';
 export { asWorkflow } from './workflow';

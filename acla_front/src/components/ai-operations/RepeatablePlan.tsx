@@ -1,5 +1,8 @@
-import React from 'react';
-import type { NamedOperationComponentHandle } from 'contexts/OperationComponentRefContext';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+    OPERATION_COMPONENT_NAMES,
+    type NamedOperationComponentHandle,
+} from 'contexts/OperationComponentRefContext';
 import type {
     AiOverlayComponentHandle,
     AiOverlayRenderer,
@@ -25,7 +28,7 @@ import {
     RecursiveGoalStepError,
 } from 'contexts/OperationComponentError';
 import { serializeError, type SerializedError } from 'errors/OperationError';
-import { WorkflowComponentBase } from './WorkflowComponentBase';
+import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
 import { asWorkflow, type Workflow } from './workflow';
 import { assertTool, type ToolCall, type ToolDispatcher } from './tool';
 import type { FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
@@ -622,7 +625,8 @@ implements RepeatablePlanHandle {
         operation.nestedOperation = null;
         if (this.activeOperation !== operation) return;
         this.activeOperation = null;
-        this.generation += 1;
+        this.clear();
+        this.deleteComponentRef();
     }
 
     private async runPreparation(
@@ -916,6 +920,61 @@ implements RepeatablePlanHandle {
         return new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
     }
 }
+
+export const useRepeatablePlanWorkflow = ({
+    mountWorkflow,
+}: {
+    mountWorkflow: MountWorkflow;
+}) => {
+    const runnerRef = useRef<RepeatablePlanRunner | null>(null);
+    const [snapshot, setSnapshot] = useState<GoalSnapshot | null>(null);
+
+    const dispose = useCallback(() => {
+        const runner = runnerRef.current;
+        runnerRef.current = null;
+        runner?.dispose();
+    }, []);
+
+    useEffect(() => dispose, [dispose]);
+
+    const createRepeatablePlan = useCallback((
+        input: RepeatablePlanInput,
+        dispatcher: ToolDispatcher,
+    ): Workflow<GoalAiResult> => {
+        try {
+            const request = parseRepeatablePlanInput(input);
+            request.steps.forEach((step) => dispatcher.validate(step.name));
+            dispatcher.validate(request.stop_when.tool.name);
+            const runner = new RepeatablePlanRunner(
+                OPERATION_COMPONENT_NAMES.REPEATABLE_PLAN,
+                dispatcher,
+                (next) => {
+                    if (runnerRef.current !== runner) return;
+                    setSnapshot(next);
+                },
+            );
+            try {
+                mountWorkflow({ runner, dispose });
+                runnerRef.current = runner;
+                setSnapshot(null);
+                return runner.createRepeatablePlan(input);
+            } catch (error) {
+                if (runnerRef.current === runner) runnerRef.current = null;
+                runner.dispose();
+                throw error;
+            }
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
+    }, [dispose, mountWorkflow]);
+
+    const reset = useCallback(() => {
+        dispose();
+        setSnapshot(null);
+    }, [dispose]);
+
+    return { createRepeatablePlan, snapshot, reset };
+};
 
 const getComparisonText = (snapshot: GoalSnapshot): string => {
     const stopWhen = snapshot.stop_when;

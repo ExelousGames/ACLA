@@ -1,3 +1,4 @@
+import type { WorkflowPanelHandle } from 'components/ai-operations/WorkflowPanel';
 import {
     createAiCommandRegistry,
     createWorkflowToolDispatcher,
@@ -611,7 +612,7 @@ describe('strict workflow creation and tool dispatch', () => {
     }) => {
         const createProcedurePlan = jest.fn((_input: unknown, _dispatch: unknown) => asWorkflow(resolvedOperation({ status: 'complete' }, 'complete')));
         const createRepeatablePlan = jest.fn((_input: unknown, _dispatch: unknown) => asWorkflow(resolvedOperation({ status: 'achieved' }, 'complete')));
-        const directory = register(OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
+        const directory = register(OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, {
             createProcedurePlan, createRepeatablePlan,
         });
         return { registry: createAiCommandRegistry({ ...context, componentRefs: directory }), createProcedurePlan, createRepeatablePlan };
@@ -816,9 +817,9 @@ describe('live range to-do workflow', () => {
             reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
             return todoHandle as LiveRangeTodoListHandle;
         });
-        reserve(directory, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
+        reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, {
             initializeLiveRangeTodoList,
-        } satisfies Partial<AiChatHandle>);
+        } satisfies Partial<WorkflowPanelHandle>);
 
         const operation = childLiveRegistry(directory).add_event_to_live_range_todo_list(
             scheduledPayload([scheduledItem('mounted')]),
@@ -953,7 +954,7 @@ describe('live range to-do workflow', () => {
         const directory = createOperationComponentRefDirectory();
         const addEvent = jest.fn();
         const initializeLiveRangeTodoList = jest.fn();
-        reserve(directory, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, { initializeLiveRangeTodoList });
+        reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, { initializeLiveRangeTodoList });
         reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
             addEvent,
             get: () => todoResult([{ id: 'existing' }]) as any,
@@ -1153,9 +1154,9 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
             reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
             return todoHandle as LiveRangeTodoListHandle;
         });
-        reserve(directory, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
+        reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, {
             initializeLiveRangeTodoList,
-        } satisfies Partial<AiChatHandle>);
+        } satisfies Partial<WorkflowPanelHandle>);
         reserve(directory, 'visualization:analysis-results', {
             getFilteredSegments: () => ({
                 status: 'ready',

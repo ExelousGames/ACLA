@@ -31,11 +31,10 @@ import type {
     ToolDispatcher,
     OperationKind,
     RepeatablePlanHandle,
+    WorkflowPanelHandle,
     LiveRangeTodoEventInput,
     LiveRangeTodoListHandle,
     ProcedurePlanHandle,
-    ProcedurePlanRunResult,
-    ProcedurePlanState,
     OperationQueryResult,
 } from 'components/ai-operations';
 import type { BaselineCollectionHandle } from 'views/live-session/BaselineCollection';
@@ -170,10 +169,6 @@ export interface AiCommandRegistryContext extends FrontendAiCommandContext {
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
-    advanceProcedurePlanStep?: (reason?: string) => Promise<ProcedurePlanRunResult>;
-    getProcedurePlan?: () => ProcedurePlanState | null;
-    clearProcedurePlan?: () => void;
-    setProcedurePlan?: (plan: ProcedurePlanInput | null) => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     startAgentSession?: (
         agentMode: AgentSessionMode,
@@ -650,12 +645,12 @@ const getOrInitializeLiveRangeTodoList = (
         OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
     )?.current;
     if (mounted) {
-        directory.findComponentRef<AiChatHandle>(OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        directory.findComponentRef<WorkflowPanelHandle>(OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL)
             ?.current
             ?.initializeLiveRangeTodoList?.();
         return mounted;
     }
-    return getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+    return getComponent<WorkflowPanelHandle>(context, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL)
         .initializeLiveRangeTodoList();
 };
 
@@ -836,7 +831,7 @@ const definitionList = Object.freeze([
     {
         name: 'add_event_to_live_range_todo_list',
         kind: 'workflow',
-        componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        componentName: OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL,
         execute: (context, args, dispatchNested) => {
             const prepared = validateLiveRangeTodoBatch(args, dispatchNested);
             const mounted = getDirectory(context).findComponentRef<LiveRangeTodoListHandle>(
@@ -940,13 +935,13 @@ const definitionList = Object.freeze([
     {
         name: 'create_repeatable_plan',
         kind: 'workflow',
-        componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        componentName: OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL,
         execute: (context, args, dispatchNested) => {
             const validation = validateGoalRequest(args);
             if ('error' in validation) throw validation.error;
             validation.request.steps.forEach((step) => dispatchNested.validate(step.name));
             dispatchNested.validate(validation.request.stop_when.tool.name);
-            return getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+            return getComponent<WorkflowPanelHandle>(context, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL)
                 .createRepeatablePlan(args as RepeatablePlanInput, dispatchNested);
         },
     },
@@ -974,11 +969,11 @@ const definitionList = Object.freeze([
     {
         name: 'set_procedure_plan',
         kind: 'workflow',
-        componentName: OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        componentName: OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL,
         execute: (context, args, dispatchNested) => {
             const plan = parseProcedurePlanInput(args);
             plan.requests.forEach((request) => dispatchNested.validate(request.name!));
-            return getComponent<AiChatHandle>(context, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+            return getComponent<WorkflowPanelHandle>(context, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL)
                 .createProcedurePlan(args as ProcedurePlanInput, dispatchNested);
         },
     },
