@@ -8,8 +8,8 @@
  * - **Text frames** — JSON tool-relay messages. The backend emits
  *   `{type:"tool_call",id,name,arguments}` frames; this hook dispatches
  *   them through a caller-supplied handler registry and replies with
- *   `{type:"tool_result",...}`. Workflow owners consume promise-native
- *   operations and translate their status promises into non-terminal frames.
+ *   `{type:"tool_result",...}` on termination. Operation progress is emitted
+ *   locally for the UI.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -295,8 +295,6 @@ export const executeSubscribedFrontendOperation = async ({
         ? call.arguments
         : {};
 
-    if (name !== 'start_agent_session') sendText(buildToolResultFrame(id, name, { status: 'started' }));
-
     if (!name) {
         const error = new InvalidOperationCallError(
             'Tool call is missing a name.',
@@ -336,7 +334,6 @@ export const executeSubscribedFrontendOperation = async ({
         operation.statuses.forEach((statusPromise) => {
             void statusPromise.then((status) => {
                 if (signal?.aborted) return;
-                sendText(buildToolResultFrame(id, name, getToolResultForAi(status)));
                 emitEvent?.({
                     kind: 'tool_call',
                     runId: id,
@@ -351,7 +348,6 @@ export const executeSubscribedFrontendOperation = async ({
                 const error = normalizeOperationError(statusError);
                 const failure = buildFailedToolResult(error, 'status_failed');
                 console.error(`[ai-tool] '${name}' status failed.`, error);
-                sendText(buildToolResultFrame(id, name, failure));
                 emitEvent?.({
                     kind: 'tool_call',
                     runId: id,

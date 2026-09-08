@@ -23,7 +23,7 @@ const execute = async (handler: FrontendOperationHandler) => {
 };
 
 describe('executeSubscribedFrontendOperation', () => {
-    it('emits started, progress, and completion statuses without a final flag', async () => {
+    it('sends only completion to AI while keeping started and progress local', async () => {
         const { frames, events, result } = await execute(() => createOperation(
             Promise.resolve({ status: 'complete', value: 7 }),
             [Promise.resolve({ status: 'working', progress: 50 })],
@@ -31,26 +31,31 @@ describe('executeSubscribedFrontendOperation', () => {
         ));
 
         expect(frames).toEqual([
-            { type: 'tool_result', id: 'call-1', name: 'test_tool', result: { status: 'started' } },
-            { type: 'tool_result', id: 'call-1', name: 'test_tool', result: { status: 'working', progress: 50 } },
             { type: 'tool_result', id: 'call-1', name: 'test_tool', result: { status: 'complete', value: 7 } },
         ]);
         events.forEach((event) => expect(event).not.toHaveProperty('final'));
+        expect(events[0]).toMatchObject({ kind: 'tool_call', status: 'started' });
+        expect(events[1]).toMatchObject({
+            kind: 'tool_call', status: 'started', result: { status: 'working', progress: 50 }, ok: true,
+        });
         expect(events.at(-1)).toMatchObject({ status: 'completed', ok: true });
         expect(result).toMatchObject({ ok: true });
     });
 
-    it('reports rejected progress delivery without changing the operation result', async () => {
-        const { frames, result } = await execute(() => createOperation(
+    it('keeps rejected progress local without changing the operation result', async () => {
+        const { frames, events, result } = await execute(() => createOperation(
             Promise.resolve({ status: 'complete' }),
             [Promise.reject(new Error('progress unavailable'))],
             'complete',
         ));
 
-        expect(frames[1]).toMatchObject({
+        expect(events[1]).toMatchObject({
+            kind: 'tool_call', status: 'started', ok: false,
             result: { ok: false, status: 'status_failed', message: 'progress unavailable' },
         });
-        expect(frames.at(-1)).toMatchObject({ result: { status: 'complete' } });
+        expect(frames).toEqual([
+            { type: 'tool_result', id: 'call-1', name: 'test_tool', result: { status: 'complete' } },
+        ]);
         expect(result).toMatchObject({ ok: true });
     });
 
@@ -70,8 +75,8 @@ describe('executeSubscribedFrontendOperation', () => {
         expect(missing.frames.at(-1)).toMatchObject({
             result: { status: 'explicit-status', value: 8 },
         });
-        expect(conflicting.frames).toHaveLength(2);
-        expect(missing.frames).toHaveLength(2);
+        expect(conflicting.frames).toHaveLength(1);
+        expect(missing.frames).toHaveLength(1);
     });
 
     it.each([

@@ -588,7 +588,6 @@ describe('useVoiceConversation chat session lifecycle', () => {
         expect(controls[1].signal.aborted).toBe(false);
         const frames = resumed.send.mock.calls.map(([frame]) => JSON.parse(frame));
         expect(frames.filter((frame) => frame.type === 'tool_result')).toEqual([
-            { type: 'tool_result', id: 'new', name: 'test_tool', result: { status: 'started' } },
             expect.objectContaining({ id: 'new', result: { status: 'complete', value: 'new' } }),
         ]);
     });
