@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import {
     DRIVER_COMPARISON_COLOR,
     EXPERT_COMPARISON_COLOR,
@@ -875,17 +875,60 @@ describe('DriverExpertComparisonGraph', () => {
         render(driverExpertComparisonOverlayRenderer.renderOverlay({
             title: 'Comparison',
             comparison: completeData,
+            labelGroups: [
+                { category: 'mistakes', subLabels: ['Late braking', 'Late turn-in'] },
+                { category: 'expert', subLabels: ['Matches expert line'] },
+                { category: 'recovery', subLabels: ['Merge back to expert line'] },
+            ],
         }, 'expanded', {
             componentName: 'comparison',
             revision: 1,
             emitRendererEvent,
         }));
 
+        const mistakes = within(screen.getByRole('region', { name: 'Mistakes labels' }));
+        expect(mistakes.getByRole('heading', { name: 'Mistakes' })).toBeInTheDocument();
+        expect(mistakes.getAllByRole('listitem').map((item) => item.textContent))
+            .toEqual(['Late braking', 'Late turn-in']);
+        expect(screen.getByRole('region', { name: 'Expert labels' }))
+            .toHaveTextContent('Matches expert line');
+        expect(screen.getByRole('region', { name: 'Recovery labels' }))
+            .toHaveTextContent('Merge back to expert line');
+
         runAnimationFrame(0);
         runAnimationFrame(4_750);
 
         expect(emitRendererEvent).toHaveBeenCalledTimes(1);
         expect(emitRendererEvent).toHaveBeenCalledWith('replay_complete');
+    });
+
+    it('shows parent-only labels and removes stale groups when the segment changes', () => {
+        const view = render(<DriverExpertComparisonGraph
+            data={completeData}
+            labelGroups={[{ category: 'expert', subLabels: [] }]}
+        />);
+        expect(screen.getByRole('region', { name: 'Expert labels' }))
+            .toHaveTextContent('No sublabels provided');
+        expect(screen.queryByRole('region', { name: 'Mistakes labels' })).not.toBeInTheDocument();
+        view.rerender(<DriverExpertComparisonGraph data={completeData} />);
+        expect(screen.queryByLabelText('Segment analysis labels')).not.toBeInTheDocument();
+    });
+
+    it('validates optional label groups while accepting existing overlay snapshots', () => {
+        const snapshot = { title: 'Comparison', comparison: completeData };
+        expect(driverExpertComparisonOverlayRenderer.validateSnapshot(snapshot)).toBe(true);
+        expect(driverExpertComparisonOverlayRenderer.validateSnapshot({
+            ...snapshot, labelGroups: [{ category: 'expert', subLabels: [] }],
+        })).toBe(true);
+        for (const labelGroups of [null, {}, [null], [
+            { category: 'other', subLabels: [] },
+        ], [
+            { category: 'mistakes', subLabels: [7] },
+        ]]) {
+            expect(driverExpertComparisonOverlayRenderer.validateSnapshot({
+                ...snapshot, labelGroups,
+            })).toBe(false);
+        }
     });
 
     it('does not render telemetry pods when trajectory data is unavailable', () => {

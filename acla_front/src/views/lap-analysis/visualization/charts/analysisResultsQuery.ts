@@ -139,13 +139,14 @@ export class AnalysisResultsQueryError extends Error {
     readonly detail: AnalysisResultsQueryErrorDetail;
 
     constructor(detail: AnalysisResultsQueryErrorDetail) {
-        super(detail.message);
+        const boundedDetail = boundQueryErrorDetail(detail);
+        super(boundedDetail.message);
         Object.setPrototypeOf(this, new.target.prototype);
         this.name = 'AnalysisResultsQueryError';
-        this.code = detail.code;
-        this.position = detail.position;
-        this.token = detail.token;
-        this.detail = { ...detail };
+        this.code = boundedDetail.code;
+        this.position = boundedDetail.position;
+        this.token = boundedDetail.token;
+        this.detail = { ...boundedDetail };
     }
 }
 
@@ -155,8 +156,76 @@ export const ANALYSIS_RESULTS_QUERY_GUARDRAILS = Object.freeze({
     sequence: 10000,
 });
 
+const QUERY_RESULT_MAX_BYTES = 8192;
+const QUERY_RESULT_MAX_ARRAY_ITEMS = 50;
+const QUERY_ERROR_MAX_BYTES = 1024;
+const QUERY_READY_PAYLOAD_BYTES = '{"status":"ready","data":}'.length;
+const QUERY_LIMIT_MESSAGE = 'Query result exceeds the limit of 8192 bytes of compact UTF-8 JSON for '
+    + 'the ready payload or 50 items in any array. Filter the results, select fewer fields, or aggregate.';
+const QUERY_ERROR_LIMIT_DETAIL: AnalysisResultsQueryErrorDetail = {
+    code: 'QUERY_ERROR_DETAILS_LIMIT_EXCEEDED',
+    message: 'Query error details exceeded the 1024-byte limit. Filter the results, select fewer fields, or aggregate.',
+};
+
+// Count JSON escaping and UTF-8 incrementally, stopping before copying an oversized value.
+class JsonByteBudget {
+    private bytes = 0;
+
+    constructor(private readonly limit: number, private readonly exceeded: () => Error) {}
+
+    add(bytes: number): void {
+        this.bytes += bytes;
+        if (this.bytes > this.limit) throw this.exceeded();
+    }
+
+    string(value: string): void {
+        this.add(2); // Quotes.
+        for (let index = 0; index < value.length; index += 1) {
+            const code = value.charCodeAt(index);
+            if (code === 0x22 || code === 0x5c || [8, 9, 10, 12, 13].includes(code)) {
+                this.add(2);
+            } else if (code < 0x20) {
+                this.add(6);
+            } else if (code < 0x80) {
+                this.add(1);
+            } else if (code < 0x800) {
+                this.add(2);
+            } else if (code >= 0xd800 && code <= 0xdbff
+                && value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+                this.add(4);
+                index += 1;
+            } else {
+                // JSON.stringify escapes lone UTF-16 surrogates as six ASCII bytes.
+                this.add(code >= 0xd800 && code <= 0xdfff ? 6 : 3);
+            }
+        }
+    }
+}
+
+const boundQueryErrorDetail = (detail: AnalysisResultsQueryErrorDetail): AnalysisResultsQueryErrorDetail => {
+    const exceeded = new Error('Query error details exceeded the limit.');
+    const budget = new JsonByteBudget(QUERY_ERROR_MAX_BYTES, () => exceeded);
+    try {
+        budget.add(2);
+        let fields = 0;
+        for (const key of ['code', 'position', 'token', 'message'] as const) {
+            const value = detail[key];
+            if (value === undefined) continue;
+            budget.add(fields++ > 0 ? 2 : 1); // Comma and colon.
+            budget.string(key);
+            if (typeof value === 'string') budget.string(value);
+            else budget.add(JSON.stringify(value).length);
+        }
+        return detail;
+    } catch (error) {
+        if (error !== exceeded) throw error;
+        return { ...QUERY_ERROR_LIMIT_DETAIL };
+    }
+};
+
 type JsonCloneOptions = {
     allowJsonataArrayMetadata: boolean;
+    budget?: JsonByteBudget;
 };
 
 const JSONATA_ARRAY_METADATA_KEYS = new Set([
@@ -293,19 +362,45 @@ const isCanonicalArrayIndex = (key: string, length: number): boolean => {
         && String(index) === key;
 };
 
-const cloneJsonValue = (
+// Visit enumerable content first so an oversized object stops before allocating all its keys.
+// Once it fits, audit the remaining own keys to retain the symbol/non-enumerable checks.
+function* jsonCloneKeys(value: object, bounded: boolean): Generator<string | symbol, void> {
+    if (bounded) {
+        for (const key in value) {
+            if (hasOwn(value, key)) yield key;
+        }
+        for (const key of Reflect.ownKeys(value)) {
+            if (!Object.prototype.propertyIsEnumerable.call(value, key) || typeof key === 'symbol') {
+                yield key;
+            }
+        }
+    } else {
+        yield* Reflect.ownKeys(value);
+    }
+}
+
+type JsonCloneRequest = { value: unknown; path: string };
+
+function* cloneJsonValueSteps(
     value: unknown,
     path: string,
     ancestors: Set<object>,
     options: JsonCloneOptions,
-): JsonValue => {
-    if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+): Generator<JsonCloneRequest, JsonValue, JsonValue> {
+    const { budget } = options;
+    if (typeof value === 'string') {
+        budget?.string(value);
+        return value;
+    }
+    if (value === null || typeof value === 'boolean') {
+        budget?.add(value === null || value === true ? 4 : 5);
         return value;
     }
     if (typeof value === 'number') {
         if (!Number.isFinite(value)) {
             throw invalidJsonValueError(path, 'must be a finite number.');
         }
+        budget?.add(JSON.stringify(value).length);
         return value;
     }
     if (value === undefined) {
@@ -329,7 +424,11 @@ const cloneJsonValue = (
 
     ancestors.add(value);
     try {
+        budget?.add(2); // Container delimiters, including the eventual closing delimiter.
         if (Array.isArray(value)) {
+            if (budget && value.length > QUERY_RESULT_MAX_ARRAY_ITEMS) {
+                throw new AnalysisResultsQueryError({ code: 'QUERY_RESULT_LIMIT_EXCEEDED', message: QUERY_LIMIT_MESSAGE });
+            }
             const jsonataSequence = options.allowJsonataArrayMetadata
                 && hasOwn(value, 'sequence')
                 && (value as unknown as Record<string, unknown>).sequence === true;
@@ -337,7 +436,9 @@ const cloneJsonValue = (
                 && hasOwn(value, 'cons')
                 && (value as unknown as Record<string, unknown>).cons === true;
 
-            for (const key of Reflect.ownKeys(value)) {
+            const keys = jsonCloneKeys(value, Boolean(budget));
+            for (let step = keys.next(); !step.done; step = keys.next()) {
+                const key = step.value;
                 if (typeof key === 'symbol') {
                     throw invalidJsonValueError(path, 'cannot contain symbol properties.');
                 }
@@ -351,6 +452,7 @@ const cloneJsonValue = (
 
             const result: JsonValue[] = [];
             for (let index = 0; index < value.length; index += 1) {
+                if (index > 0) budget?.add(1);
                 if (!hasOwn(value, index)) {
                     throw invalidJsonValueError(`${path}[${index}]`, 'cannot be missing.');
                 }
@@ -361,12 +463,7 @@ const cloneJsonValue = (
                         'must be an enumerable data property.',
                     );
                 }
-                result.push(cloneJsonValue(
-                    descriptor.value,
-                    `${path}[${index}]`,
-                    ancestors,
-                    options,
-                ));
+                result.push(yield { value: descriptor.value, path: `${path}[${index}]` });
             }
             return result;
         }
@@ -377,10 +474,15 @@ const cloneJsonValue = (
         }
 
         const result: JsonObject = {};
-        for (const key of Reflect.ownKeys(value)) {
+        let fields = 0;
+        const keys = jsonCloneKeys(value, Boolean(budget));
+        for (let step = keys.next(); !step.done; step = keys.next()) {
+            const key = step.value;
             if (typeof key === 'symbol') {
                 throw invalidJsonValueError(path, 'cannot contain symbol properties.');
             }
+            budget?.add(fields++ > 0 ? 2 : 1); // Comma and colon.
+            budget?.string(key);
             const descriptor = Object.getOwnPropertyDescriptor(value, key);
             if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) {
                 throw invalidJsonValueError(
@@ -392,13 +494,34 @@ const cloneJsonValue = (
                 configurable: true,
                 enumerable: true,
                 writable: true,
-                value: cloneJsonValue(descriptor.value, `${path}.${key}`, ancestors, options),
+                value: yield { value: descriptor.value, path: `${path}.${key}` },
             });
         }
         return result;
     } finally {
         ancestors.delete(value);
     }
+}
+
+const cloneJsonValue = (
+    value: unknown,
+    path: string,
+    ancestors: Set<object>,
+    options: JsonCloneOptions,
+): JsonValue => {
+    // An explicit stack allows byte accounting to reject deep results without a JS stack overflow.
+    const stack = [cloneJsonValueSteps(value, path, ancestors, options)];
+    let result: JsonValue = null;
+    while (stack.length > 0) {
+        const step = stack[stack.length - 1].next(result);
+        if (step.done) {
+            result = step.value;
+            stack.pop();
+        } else {
+            stack.push(cloneJsonValueSteps(step.value.value, step.value.path, ancestors, options));
+        }
+    }
+    return result;
 };
 
 export const cloneJsonSafeValue = (value: unknown, path = 'value'): JsonValue => (
@@ -687,7 +810,7 @@ const ownPosition = (value: object): number | undefined => {
 export const normalizeAnalysisResultsQueryError = (
     error: unknown,
 ): AnalysisResultsQueryErrorDetail => {
-    if (error instanceof AnalysisResultsQueryError) return { ...error.detail };
+    if (error instanceof AnalysisResultsQueryError) return { ...boundQueryErrorDetail(error.detail) };
 
     const value = error && (typeof error === 'object' || typeof error === 'function')
         ? error as object
@@ -699,12 +822,12 @@ export const normalizeAnalysisResultsQueryError = (
     const message = rawMessage
         ?? (typeof error === 'string' && error ? error : 'JSONata query evaluation failed.');
 
-    return {
+    return boundQueryErrorDetail({
         code: code ?? 'JSONATA_ERROR',
         ...(position !== undefined ? { position } : {}),
         ...(token !== undefined ? { token } : {}),
         message,
-    };
+    });
 };
 
 export const toAnalysisResultsQueryError = (error: unknown): AnalysisResultsQueryError => (
@@ -713,7 +836,7 @@ export const toAnalysisResultsQueryError = (error: unknown): AnalysisResultsQuer
         : new AnalysisResultsQueryError(normalizeAnalysisResultsQueryError(error))
 );
 
-export const detachJsonataResult = (value: unknown): JsonValue => {
+const normalizeJsonataEmptyResult = (value: unknown): unknown => {
     if (value === undefined) return null;
     if (
         Array.isArray(value)
@@ -721,8 +844,12 @@ export const detachJsonataResult = (value: unknown): JsonValue => {
         && hasOwn(value, 'sequence')
         && (value as unknown as Record<string, unknown>).sequence === true
     ) return null;
+    return value;
+};
+
+export const detachJsonataResult = (value: unknown): JsonValue => {
     return cloneJsonValue(
-        value,
+        normalizeJsonataEmptyResult(value),
         'query result',
         new Set<object>(),
         { allowJsonataArrayMetadata: true },
@@ -767,12 +894,19 @@ export const evaluateAllAnalysisResultsQuery = async (
     query: unknown,
     input: unknown,
 ): Promise<JsonValue> => {
-    const source = requireQueryString(query);
-    const root = normalizeAllAnalysisResultsQueryInput(input);
     try {
+        const source = requireQueryString(query);
+        const root = normalizeAllAnalysisResultsQueryInput(input);
         const expression = compileAnalysisResultsQuery(source);
         const result = await expression.evaluate(root);
-        return detachJsonataResult(result);
+        const budget = new JsonByteBudget(QUERY_RESULT_MAX_BYTES, () => (
+            new AnalysisResultsQueryError({ code: 'QUERY_RESULT_LIMIT_EXCEEDED', message: QUERY_LIMIT_MESSAGE })
+        ));
+        budget.add(QUERY_READY_PAYLOAD_BYTES);
+        return cloneJsonValue(normalizeJsonataEmptyResult(result), 'query result', new Set<object>(), {
+            allowJsonataArrayMetadata: true,
+            budget,
+        });
     } catch (error) {
         throw toAnalysisResultsQueryError(error);
     }

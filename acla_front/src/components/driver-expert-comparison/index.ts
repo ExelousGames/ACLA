@@ -13,6 +13,7 @@ export type {
     DriverExpertComparisonData,
     DriverExpertComparisonDiagnostic,
     DriverExpertComparisonGraphProps,
+    DriverExpertComparisonLabelGroup,
     DriverExpertComparisonLayout,
     DriverExpertComparisonSample,
     DriverExpertTrajectoryPoint,

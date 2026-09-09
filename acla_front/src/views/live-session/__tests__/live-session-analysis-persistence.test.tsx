@@ -83,24 +83,64 @@ describe('local analysis history', () => {
         expect(runtime.activeAnalysisResultPageId).toBe(selectedId);
     });
 
-    it('retains history through recording cleanup, session reset, and starting another session', () => {
+    it('retains history through recording cleanup and clears it when another session starts', () => {
         const { unmount } = render(provider());
         act(() => {
             runtime.startLiveSession('acc');
             runtime.appendAnalysisResultPage(pageInput);
+            const { pageId } = runtime.appendAnalysisResultPage({
+                ...pageInput,
+                baseline: { ...pageInput.baseline, id: 'baseline-2', lap_id: 2 },
+            });
+            runtime.selectAnalysisResultPage(pageId);
         });
         const expectedPages = runtime.analysisResultPages;
+        const selectedId = runtime.activeAnalysisResultPageId;
+        act(() => { runtime.startLiveSession('acc'); });
+        expect(runtime.analysisResultPages).toEqual(expectedPages);
+        expect(runtime.activeAnalysisResultPageId).toBe(selectedId);
+
         act(() => {
             runtime.clearPersistedDraft();
             runtime.clearRecordingSession();
             runtime.endLiveSession();
-            runtime.startLiveSession('acc');
         });
         expect(runtime.analysisResultPages).toEqual(expectedPages);
+        expect(runtime.activeAnalysisResultPageId).toBe(selectedId);
+
+        act(() => { runtime.startLiveSession('acc'); });
+        expect(runtime.analysisResultPages).toEqual([]);
+        expect(runtime.activeAnalysisResultPageId).toBeNull();
+        expect(getPersistedLiveSessionAnalysis(ownerEmail)).toEqual({ pages: [], activePageId: null });
         unmount();
 
         render(provider());
-        expect(runtime.analysisResultPages).toEqual(expectedPages);
+        expect(runtime.analysisResultPages).toEqual([]);
+        expect(runtime.activeAnalysisResultPageId).toBeNull();
+    });
+
+    it('clears restored analysis only for the account starting a new session', () => {
+        const page = createLiveSessionAnalysisResultPage(pageInput);
+        const saved = { pages: [page], activePageId: page.id };
+        savePersistedLiveSessionAnalysis(ownerEmail, saved);
+        savePersistedLiveSessionAnalysis('second@example.com', saved);
+        render(provider());
+        expect(runtime.analysisResultPages).toEqual([page]);
+
+        act(() => { runtime.startLiveSession('iracing'); });
+        expect(runtime.analysisResultPages).toEqual([]);
+        expect(runtime.activeAnalysisResultPageId).toBeNull();
+        expect(getPersistedLiveSessionAnalysis(ownerEmail)).toEqual({ pages: [], activePageId: null });
+        expect(getPersistedLiveSessionAnalysis('second@example.com')).toEqual(saved);
+
+        let newPageId = '';
+        act(() => {
+            const result = runtime.appendAnalysisResultPage(pageInput);
+            newPageId = result.pageId;
+            expect(result.pageCount).toBe(1);
+        });
+        expect(runtime.analysisResultPages).toHaveLength(1);
+        expect(runtime.activeAnalysisResultPageId).toBe(newPageId);
     });
 
     it('isolates accounts and restores each history after logout and switching accounts', () => {

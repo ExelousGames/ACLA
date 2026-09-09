@@ -164,7 +164,7 @@ export const LiveSessionProvider = ({
         setRecorderControl(control);
     }, []);
 
-    // Analysis history belongs to the account, independently of recording resets.
+    // Restore the account's latest analysis until a new live session begins.
     useEffect(() => {
         if (analysisOwnerEmailRef.current === normalizedOwnerEmail) return;
         const restored = getPersistedLiveSessionAnalysis(normalizedOwnerEmail);
@@ -549,6 +549,7 @@ export const LiveSessionProvider = ({
             if (sessionGameRef.current) return;
             draftPersistenceSuppressedRef.current = false;
             resetLiveSession(game);
+            commitAnalysisResults({ pages: [], activePageId: null });
             componentRefs?.findComponentRef<AiChatHandle>(
                 OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
             )?.current?.resetSession();
@@ -559,7 +560,7 @@ export const LiveSessionProvider = ({
         } else {
             beginSession();
         }
-    }, [componentRefs, resetLiveSession, stopRecordingSession]);
+    }, [commitAnalysisResults, componentRefs, resetLiveSession, stopRecordingSession]);
 
     const endLiveSession = useCallback(() => {
         const finishSession = () => {

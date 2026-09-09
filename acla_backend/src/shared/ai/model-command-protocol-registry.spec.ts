@@ -268,6 +268,15 @@ describe('analysis result query tool', () => {
             expect(description).toContain('"elements"');
             expect(description).toContain('"normalizedPositionRange"');
             expect(description).toContain('actual JSON-safe JSONata value');
+            expect(description).toContain('8,192 bytes of compact UTF-8 JSON');
+            expect(description).toContain('excluding the transport envelope');
+            expect(description).toContain('50 items in every returned array, including nested arrays');
+            expect(description).toContain('QUERY_RESULT_LIMIT_EXCEEDED');
+            expect(description).toContain('no partial data');
+            expect(description).toContain('Filter the results, select fewer fields, or aggregate');
+            expect(description).toContain('calculate over all analysis data');
+            expect(description).toContain('1,024 serialized bytes');
+            expect(description).toContain('without the original message or cause');
             expect(description).toContain('not a count unless the expression returns one');
             expect(description).toContain('$count(analyses) counts analyses');
             expect(description).toContain('$count(analyses.elements)');

@@ -71,6 +71,17 @@ export interface DriverExpertComparisonData {
     samples: readonly DriverExpertComparisonSample[];
 }
 
+const COMPARISON_LABEL_TITLES = {
+    mistakes: 'Mistakes',
+    expert: 'Expert',
+    recovery: 'Recovery',
+} as const;
+
+export interface DriverExpertComparisonLabelGroup {
+    category: keyof typeof COMPARISON_LABEL_TITLES;
+    subLabels: readonly string[];
+}
+
 export interface DriverExpertComparisonAvailability {
     trajectory: boolean;
     gas: boolean;
@@ -94,6 +105,7 @@ export interface DriverExpertComparisonLayout {
 
 export interface DriverExpertComparisonGraphProps {
     data: DriverExpertComparisonData;
+    labelGroups?: readonly DriverExpertComparisonLabelGroup[];
     title?: string;
     className?: string;
     width?: number | string;
@@ -1500,6 +1512,7 @@ const TrackReplay: React.FC<{
 
 export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphProps> = ({
     data,
+    labelGroups,
     title,
     className,
     width = '100%',
@@ -1593,6 +1606,28 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
                 </div>
             </header>
 
+            {Boolean(labelGroups?.length) && (
+                <div className={styles.labelGroups} aria-label="Segment analysis labels">
+                    {labelGroups?.map(({ category, subLabels }) => (
+                        <section
+                            className={styles.labelGroup}
+                            data-category={category}
+                            aria-label={`${COMPARISON_LABEL_TITLES[category]} labels`}
+                            key={category}
+                        >
+                            <h3 className={styles.labelGroupTitle}>{COMPARISON_LABEL_TITLES[category]}</h3>
+                            {subLabels.length > 0 ? (
+                                <ul className={styles.subLabels}>
+                                    {subLabels.map((label) => <li key={label}>{label}</li>)}
+                                </ul>
+                            ) : (
+                                <span className={styles.noSubLabels}>No sublabels provided</span>
+                            )}
+                        </section>
+                    ))}
+                </div>
+            )}
+
             {!hasAnyComparison && (
                 <div className={styles.overallUnavailable} role="status">
                     Expert comparison unavailable
@@ -1623,6 +1658,7 @@ const DriverExpertComparisonOverlayGraph = React.memo<{
     <DriverExpertComparisonGraph
         className="floating-pill-comparison"
         data={snapshot.comparison}
+        labelGroups={snapshot.labelGroups}
         game={snapshot.game}
         title={snapshot.title}
         layout={{ trajectoryHeight: 280 }}
@@ -1640,6 +1676,16 @@ export const driverExpertComparisonOverlayRenderer: AiOverlayRenderer<DriverExpe
         isOverlayRecord(snapshot)
         && isOverlayNonEmptyString(snapshot.title)
         && Boolean(normalizeDriverExpertComparisonData(snapshot.comparison))
+        && (
+            snapshot.labelGroups === undefined
+            || (Array.isArray(snapshot.labelGroups) && snapshot.labelGroups.every((group) => (
+                isOverlayRecord(group)
+                && typeof group.category === 'string'
+                && ['mistakes', 'expert', 'recovery'].includes(group.category)
+                && Array.isArray(group.subLabels)
+                && group.subLabels.every(isOverlayNonEmptyString)
+            )))
+        )
         && (
             snapshot.game === undefined
             || snapshot.game === null

@@ -100,6 +100,8 @@ jest.mock('@radix-ui/themes', () => {
 const mockCategoryLabels: Record<string, string[]> = {
     MSP: ['MSP1', 'MSP2'],
     MSR: ['MSR1', 'MSR2'],
+    EA: ['EA1'],
+    RM: ['RM7'],
 };
 const mockLabelNames: Record<string, string> = {
     MSP: 'Training Error',
@@ -108,6 +110,8 @@ const mockLabelNames: Record<string, string> = {
     MSR: 'Race Error',
     MSR1: 'Failed overtake attempt',
     MSR2: 'Contact',
+    EA1: 'Matches expert line',
+    RM7: 'Merge back to expert line',
 };
 const mockDefaultGetCategoryLabels = (category: string) => mockCategoryLabels[category] ?? [];
 const mockDefaultGetLabelName = (labelId: string) => mockLabelNames[labelId];
@@ -168,6 +172,11 @@ import {
     updateAnalysisResultElement,
 } from './analysisResultsModel';
 import * as analysisResultsQuery from './analysisResultsQuery';
+import { ProcedurePlanRunner } from 'components/ai-operations/ProcedurePlan';
+import { RepeatablePlanRunner } from 'components/ai-operations/RepeatablePlan';
+import { createAiCommandRegistry, createWorkflowToolDispatcher } from '../../ai-chat/ai-command-registry';
+import { normalizeOperationError, serializeError } from 'errors/OperationError';
+import { buildFormattedToolResultFrame } from '../../ai-chat/voice-tool-result-formatter';
 
 const ALL_ANALYSES_COUNT_QUERY = '$count(analyses)';
 const ALL_RESULTS_COUNT_QUERY = '$count(analyses.elements)';
@@ -252,6 +261,103 @@ describe('AnalysisResultsChart', () => {
         mockOverlayPresentation = null;
         mockFloatingChatClosedListener = null;
         mockOverlaySessionListeners.clear();
+    });
+
+    it.each([
+        ['analyses', 'QUERY_RESULT_LIMIT_EXCEEDED'],
+        ['analyses.elements.id', 'QUERY_RESULT_LIMIT_EXCEEDED'],
+        ['$string(analyses)', 'QUERY_RESULT_LIMIT_EXCEEDED'],
+        ['$error($string(analyses))', 'QUERY_ERROR_DETAILS_LIMIT_EXCEEDED'],
+    ])('bounds component operations and nested workflow failures for %s', async (query, code) => {
+        const marker = 'private-analysis-output';
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const elements = Array.from({ length: 51 }, (_, index) => ({
+            id: `element-${index}`, labels: [], title: marker.repeat(20),
+        }));
+        await act(async () => {
+            render(<AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="bounded-results"
+                data={{ elements }}
+            />);
+        });
+        const directory = createOperationComponentRefDirectory();
+        directory.registerComponentRef(chartRef);
+        const registry = createAiCommandRegistry({ componentRefs: directory });
+        const dispatch = createWorkflowToolDispatcher({ componentRefs: directory });
+        const operation = registry.query_analysis_result({ query });
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
+        const error = await operation.result.catch((failure) => failure);
+        expect(error).toBeInstanceOf(analysisResultsQuery.AnalysisResultsQueryError);
+        expect(error).toMatchObject({ code });
+        expect(error).not.toHaveProperty('data');
+        await expect(termination).resolves.toMatchObject({ result: error });
+        const frame = buildFormattedToolResultFrame({
+            name: 'query_analysis_result', status: 'failed', error: serializeError(normalizeOperationError(error)),
+        });
+        expect(JSON.stringify(frame)).toContain(code);
+        expect(JSON.stringify(frame)).not.toContain(marker);
+        expect(Buffer.byteLength(JSON.stringify(error.detail), 'utf8')).toBeLessThanOrEqual(1024);
+
+        const procedure = new ProcedurePlanRunner('procedure-plan', dispatch, undefined, jest.fn());
+        const procedureResult = await procedure.createProcedurePlan({ set_procedure_plan: {
+            goal: 'Query analysis',
+            tools: [{ query_analysis_result: { title: 'Read', arguments: { query } } }],
+        } }).result;
+        expect(procedureResult).toMatchObject({
+            status: 'failed', task_results: [{ status: 'failed', error: { cause: { detail: { code } } } }],
+        });
+
+        const repeatable = new RepeatablePlanRunner('repeatable-plan', dispatch);
+        const repeatableResult = await repeatable.createRepeatablePlan({ create_repeatable_plan: {
+            name: 'Query analysis',
+            tools: [{ query_analysis_result: { id: 'read', title: 'Read', arguments: { query } } }],
+            stop_when: { tool: { query_analysis_result: { arguments: { query: '1' } } }, operator: 'eq', target: 1 },
+        } }).result;
+        expect(repeatableResult).toMatchObject({ status: 'failed', failed_step: 'read' });
+        for (const result of [procedureResult, repeatableResult]) {
+            const serialized = JSON.stringify(buildFormattedToolResultFrame({ name: 'workflow', result }));
+            expect(serialized).toContain(code);
+            expect(serialized).not.toContain(marker);
+            expect(serialized).not.toContain('"data":');
+        }
+
+        // Failure does not remove local data or consume a shared query budget.
+        for (let index = 0; index < 2; index += 1) {
+            await expect(registry.query_analysis_result({ query: '$count(analyses.elements)' }).result)
+                .resolves.toEqual({ status: 'ready', data: 51 });
+        }
+    });
+
+    it('bounds repeatable plan stop-check errors from real component queries', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        await act(async () => {
+            render(<AnalysisResultsChart
+                ref={chartRef} name="visualization:analysis-results" id="bounded-stop"
+                data={{ elements: [{ id: 'one', labels: [], title: 'private-stop-data'.repeat(1000) }] }}
+            />);
+        });
+        const directory = createOperationComponentRefDirectory();
+        directory.registerComponentRef(chartRef);
+        const dispatch = createWorkflowToolDispatcher({ componentRefs: directory });
+        const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
+        const result = await runner.createRepeatablePlan({ create_repeatable_plan: {
+            name: 'Bounded stop',
+            tools: [{ query_analysis_result: { id: 'count', title: 'Count', arguments: { query: '$count(analyses)' } } }],
+            stop_when: {
+                tool: { query_analysis_result: { arguments: { query: '$error($string(analyses))' } } },
+                operator: 'eq', target: 0,
+            },
+        } }).result;
+        expect(result).toMatchObject({
+            status: 'failed',
+            stop_when_result: { status: 'error', value: null },
+            error: expect.stringContaining('Query error details exceeded the 1024-byte limit.'),
+        });
+        const serialized = JSON.stringify(result);
+        expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThan(2048);
+        expect(serialized).not.toContain('private-stop-data');
     });
 
     it('evaluates JSONata over normalized results and preserves JSON value types', async () => {
@@ -437,7 +543,7 @@ describe('AnalysisResultsChart', () => {
                         baseline: { lap_id: 1, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
                         elements: [{
                             id: 'braking-result',
-                            labels: ['MSP'],
+                            labels: ['MSP', 'MSP1', 'EA', 'EA1', 'RM', 'RM7'],
                             title: 'Late braking',
                             comparison: replayComparisonData(),
                         }],
@@ -467,6 +573,11 @@ describe('AnalysisResultsChart', () => {
         expect(firstRef.current.getSnapshot()).toEqual({
             title: 'Late braking: Driver vs Expert',
             comparison: replayComparisonData(),
+            labelGroups: [
+                { category: 'mistakes', subLabels: ['Late turn-in'] },
+                { category: 'expert', subLabels: ['Matches expert line'] },
+                { category: 'recovery', subLabels: ['Merge back to expert line'] },
+            ],
             game: 'acc',
         });
         expect(firstRef.current.getOverlayBehavior(firstRef.current.getSnapshot()))
@@ -576,6 +687,7 @@ describe('AnalysisResultsChart', () => {
         expect(staticRef.current.getSnapshot()).toEqual({
             title: 'Driver vs Expert',
             comparison: comparableData(0.2, 0.3),
+            labelGroups: [{ category: 'mistakes', subLabels: [] }],
         });
         staticRef.current.handleOverlayRendererEvent({
             presentationId: 'analysis-overlay-session',
@@ -2300,7 +2412,7 @@ describe('AnalysisResultsChart', () => {
                 data={{
                     elements: [{
                         id: 'comparable',
-                        labels: ['MSP'],
+                        labels: ['MSP', 'MSP1', 'EA', 'EA1', 'RM', 'RM7'],
                         comparison: {
                             samples: [{
                                 driverTimeMs: 0,
@@ -2323,6 +2435,9 @@ describe('AnalysisResultsChart', () => {
         fireEvent.mouseEnter(card);
 
         expect(screen.getByTestId('driver-expert-comparison')).toBeInTheDocument();
+        expect(screen.getByRole('region', { name: 'Mistakes labels' })).toHaveTextContent('Late turn-in');
+        expect(screen.getByRole('region', { name: 'Expert labels' })).toHaveTextContent('Matches expert line');
+        expect(screen.getByRole('region', { name: 'Recovery labels' })).toHaveTextContent('Merge back to expert line');
         expect(screen.queryByTestId('driver-telemetry-pod')).not.toBeInTheDocument();
         expect(screen.queryByTestId('expert-telemetry-pod')).not.toBeInTheDocument();
         expect(screen.queryAllByRole('meter')).toHaveLength(0);

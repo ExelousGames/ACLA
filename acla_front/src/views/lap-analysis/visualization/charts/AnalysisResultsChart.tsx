@@ -10,6 +10,7 @@ import {
     updateAnalysisResultElement,
 } from './analysisResultsModel';
 import { useAiLabels } from 'contexts/AiLabelsContext';
+import { buildAnalysisResultsComparisonLabelGroups } from './analysisResultsComparisonLabels';
 import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
 import {
     DriverExpertComparisonGraph,
@@ -467,6 +468,10 @@ const AnalysisResultCard: React.FC<{
     showElementId: boolean;
     sessionGame?: DesktopGame | null;
 }> = ({ element, resultNumber, showElementId, sessionGame }) => {
+    const { getCategoryLabels, getLabelName } = useAiLabels();
+    const comparisonLabelGroups = React.useMemo(() => buildAnalysisResultsComparisonLabelGroups(
+        element.labels, getCategoryLabels, getLabelName,
+    ), [element.labels, getCategoryLabels, getLabelName]);
     const [comparisonOpen, setComparisonOpen] = React.useState(false);
     const comparisonWarningFingerprintRef = React.useRef<string | null>(null);
     const metadataEntries = Object.entries(element.metadata ?? {})
@@ -599,6 +604,7 @@ const AnalysisResultCard: React.FC<{
                 {comparisonOpen && (
                     <DriverExpertComparisonGraph
                         data={element.comparison}
+                        labelGroups={comparisonLabelGroups}
                         game={sessionGame}
                         title={element.title
                             ? `${element.title}: Driver vs Expert`
@@ -1220,13 +1226,16 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                     ? `${result.title}: Driver vs Expert`
                     : 'Driver vs Expert',
                 comparison: result.comparison,
+                labelGroups: buildAnalysisResultsComparisonLabelGroups(
+                    result.labels, getCategoryLabels, getLabelName,
+                ),
                 game: sessionGame,
             }, { presentationId });
         } catch (error) {
             finish('failed', error instanceof Error ? error : new Error(String(error)));
         }
         return controller.operation;
-    }, [componentRefs, name, resolveSpecificResult, sessionGame]);
+    }, [componentRefs, getCategoryLabels, getLabelName, name, resolveSpecificResult, sessionGame]);
     const activeMistakeCatalog = React.useMemo(() => {
         const categoryLabels = {
             MSP: getCategoryLabels('MSP'),

@@ -112,6 +112,57 @@
     text-transform: uppercase;
 }
 
+.labelGroups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-height: 132px;
+    margin-bottom: 10px;
+    overflow-y: auto;
+}
+
+.labelGroup {
+    flex: 1 1 190px;
+    min-width: 0;
+    padding: 8px 10px;
+    border-left: 2px solid var(--label-color);
+    border-radius: 5px;
+    background: rgba(4, 12, 23, 0.72);
+}
+
+.labelGroup[data-category='mistakes'] {
+    --label-color: #ff8797;
+}
+
+.labelGroup[data-category='expert'] {
+    --label-color: #80b1ff;
+}
+
+.labelGroup[data-category='recovery'] {
+    --label-color: #62dfb0;
+}
+
+.labelGroupTitle {
+    margin: 0 0 5px;
+    color: var(--label-color);
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.subLabels {
+    margin: 0;
+    padding-left: 15px;
+    color: #d4e2ef;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.noSubLabels {
+    color: #94abc0;
+    font-size: 11px;
+}
+
 .hud {
     min-width: 0;
     display: grid;

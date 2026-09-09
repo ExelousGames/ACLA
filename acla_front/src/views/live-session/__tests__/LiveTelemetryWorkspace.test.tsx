@@ -43,7 +43,7 @@ const DirectoryObserver = () => {
 };
 
 describe('LiveTelemetryWorkspace named manager', () => {
-    it('displays locally saved analysis after the provider and workspace remount', async () => {
+    it('displays locally saved analysis after remount and clears the open chart when a new session starts', async () => {
         localStorage.clear();
         let runtime!: React.ContextType<typeof LiveSessionContext>;
         const Harness = () => {
@@ -73,6 +73,13 @@ describe('LiveTelemetryWorkspace named manager', () => {
         expect(await screen.findByTestId('analysis-result-saved-result')).toHaveTextContent('Saved analysis');
         expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
         expect(screen.getByText(/Baseline: Spa/)).toBeInTheDocument();
+
+        await act(async () => { runtime.startLiveSession('acc'); });
+        expect(screen.queryByTestId('analysis-result-saved-result')).not.toBeInTheDocument();
+        expect(screen.queryByText('Page 1 of 1')).not.toBeInTheDocument();
+        expect(screen.queryByText(/Baseline: Spa/)).not.toBeInTheDocument();
+        expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent('No analyzed laps yet.');
+        expect(screen.getByRole('button', { name: 'Lap Results' })).toBeDisabled();
     });
 
     it('adds and removes the live 2D telemetry trajectory', async () => {
