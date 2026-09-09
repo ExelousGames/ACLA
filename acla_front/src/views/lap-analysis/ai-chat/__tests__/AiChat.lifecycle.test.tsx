@@ -4,7 +4,8 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import AiChat from '../ai-chat';
 import type { AssistantActiveScreen } from '../../assistant-session-mode';
 import {
-    createOperation, asWorkflow,
+    createOperation,
+    createControlledOperation, asWorkflow,
     type OperationExecutionOutput,
 } from 'components/ai-operations';
 import { createAiCommandRegistry, createWorkflowToolDispatcher } from '../ai-command-registry';
@@ -515,7 +516,7 @@ describe('AiChat conversation lifecycle', () => {
         expect(mockRepeatablePlanRender.mock.calls.map(([props]) => props.snapshot)).toEqual(
             expect.arrayContaining([
                 expect.objectContaining({ name: 'Lifecycle goal', status: 'running' }),
-                expect.objectContaining({ name: 'Lifecycle goal', status: 'achieved' }),
+                null,
             ]),
         );
     });
@@ -592,12 +593,12 @@ describe('AiChat conversation lifecycle', () => {
         const planRef = mockRegisterComponentRef.mock.calls[1][0];
         const planDispose = jest.spyOn(planRef.current, 'dispose');
 
-        expect(goalDispose).toHaveBeenCalledTimes(1);
-        expect(mockUnregisterComponentRef).toHaveBeenCalledWith(goalRef);
-        expect(mockUnregisterComponentRef.mock.invocationCallOrder[0])
-            .toBeLessThan(mockRegisterComponentRef.mock.invocationCallOrder[1]);
+        expect(goalDispose).not.toHaveBeenCalled();
+        expect(mockUnregisterComponentRef).not.toHaveBeenCalledWith(goalRef);
 
         view.unmount();
+        expect(goalDispose).toHaveBeenCalledTimes(1);
+        expect(mockUnregisterComponentRef).toHaveBeenCalledWith(goalRef);
 
         expect(planDispose).toHaveBeenCalledTimes(1);
         expect(mockUnregisterComponentRef).toHaveBeenCalledWith(planRef);
@@ -676,10 +677,7 @@ describe('AiChat conversation lifecycle', () => {
 
     it.each([
         'legacy', 'mixed', 'extra transport field', 'missing active handler',
-        'unregistered_tool', 'set_procedure_plan',
-        'create_repeatable_plan', 'retry_repeatable_plan_task', 'advance_plan_step',
-        'clear_procedure_plan', 'get_live_range_todo_list',
-        'add_event_to_live_range_todo_list', 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        'unregistered_tool',
     ])('rejects %s status input before handlers or workflow replacement', (scenario) => {
         const statusHandler = jest.fn(() => operationWithValue({ status: 'complete' }));
         (createAiCommandRegistry as jest.Mock).mockReturnValue({ 'show_map': statusHandler, [scenario]: statusHandler });
@@ -727,33 +725,31 @@ describe('AiChat conversation lifecycle', () => {
                 } });
                 for (let index = 0; index < 8; index += 1) await Promise.resolve();
             });
-            expect(handler).toHaveBeenCalledWith(args, undefined);
+            expect(handler).toHaveBeenCalledWith(args, undefined, expect.any(Object), false);
             expect(createWorkflowToolDispatcher).toHaveBeenCalledWith(expect.objectContaining({ sessionMode: 'front_desk', conversationRole: 'main' }));
             expect(screen.queryByTestId('procedure-plan')).not.toBeInTheDocument();
         },
     );
 
-    it.each(['generic operation', 'workflow'])('rejects a status handler returning a %s without conversion', async (kind) => {
-        const raw = createOperation({}, 'complete');
-        const child = kind === 'workflow' ? asWorkflow(raw) : raw;
-        const notify = jest.spyOn(child, 'notifyTerminated');
+    it('awaits a workflow status child before dispatching the next step', async () => {
+        const controlled = createControlledOperation<Record<string, unknown>>();
+        const child = asWorkflow(controlled.operation);
         const handler = jest.fn(() => child);
         const later = jest.fn(() => operationWithValue({}));
-        const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-        (createAiCommandRegistry as jest.Mock).mockReturnValue({ 'show_map': handler, 'stop_agent_session': later });
+        (createAiCommandRegistry as jest.Mock).mockReturnValue({ append_procedure_plan: handler, show_map: later });
         render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
         await act(async () => {
             getLatestMainVoiceOptions().onEvent({ kind: 'tool_status', data: { workflow: { name: 'set_procedure_plan',
-                goal: 'Show map', tools: [{ tool: { name: 'show_map', title: 'Map', arguments: {} } }, { tool: { name: 'stop_agent_session', title: 'Stop', arguments: {} } }],
+                goal: 'Show map', tools: [{ tool: { name: 'append_procedure_plan', title: 'Append', arguments: {
+                    workflow: { name: 'append_procedure_plan', tools: [{ tool: { name: 'show_map', title: 'Map', arguments: {} } }] },
+                } } }, { tool: { name: 'show_map', title: 'Map', arguments: {} } }],
             } } });
-            for (let index = 0; index < 8; index += 1) await Promise.resolve();
         });
         expect(handler).toHaveBeenCalledTimes(1);
         expect(later).not.toHaveBeenCalled();
-        expect(notify).not.toHaveBeenCalled();
-        expect(child).not.toHaveProperty('kind', 'tool');
-        expect(error).toHaveBeenCalled();
-        error.mockRestore();
+        await act(async () => { controlled.resolve('complete', {}); });
+        expect(later).toHaveBeenCalledTimes(1);
+        expect(child.kind).toBe('workflow');
     });
 
     it('keeps procedure opt-out after a malformed start status', async () => {

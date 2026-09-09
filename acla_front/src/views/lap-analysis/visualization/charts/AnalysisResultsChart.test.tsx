@@ -1384,6 +1384,11 @@ describe('AnalysisResultsChart', () => {
         const runner = new LiveRangeTodoListRunner('live-range-todo-list');
         directory.registerComponentRef(chartRef);
         directory.registerComponentRef({ current: runner });
+        const workflowPanel = {
+            getComponentName: () => 'workflow-panel',
+            appendLiveRangeTodoList: runner.appendLiveRangeTodoList.bind(runner),
+        };
+        directory.registerComponentRef({ current: workflowPanel });
         const registry = createAiCommandRegistry({ componentRefs: directory, sessionMode: 'live', sessionGame: 'acc' });
 
         try {

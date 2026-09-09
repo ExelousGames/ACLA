@@ -3,8 +3,8 @@ export type { OperationComponentSnapshotListener } from './OperationComponentBas
 export { WorkflowComponentBase } from './WorkflowComponentBase';
 export { default as WorkflowPanel } from './WorkflowPanel';
 export type { WorkflowPanelHandle } from './WorkflowPanel';
-export { asTool, assertTool } from './tool';
-export type { Tool, ToolCall, ToolDispatcher } from './tool';
+export { asTool } from './tool';
+export type { Tool, ToolCall, ToolDispatcher, WorkflowDispatcher } from './tool';
 export { asWorkflow } from './workflow';
 export type { Workflow, WorkflowCall } from './workflow';
 export {
@@ -54,6 +54,7 @@ export type {
     ProcedurePlanAdvanceResult,
     ProcedurePlanHandle,
     ProcedurePlanInput,
+    AppendProcedurePlanInput,
     ProcedurePlanProps,
     ProcedurePlanRequest,
     ProcedurePlanRequestSnapshot,
@@ -75,6 +76,7 @@ export type { LiveRangeTelemetrySample, LiveRangeTodoListProps } from './LiveRan
 export type {
     LiveRangeTodoContent,
     LiveRangeTodoListInput,
+    CreateLiveRangeTodoListInput,
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
@@ -103,6 +105,7 @@ export type {
     RepeatablePlanDisplayProps,
     RepeatablePlanHandle,
     RepeatablePlanInput,
+    AppendRepeatablePlanInput,
     RepeatablePlanProps,
     GoalRunResult,
     GoalRequest,

@@ -104,10 +104,6 @@ export class GoalDisposedError extends GoalComponentError {
     override name = 'GoalDisposedError';
 }
 
-export class GoalTaskRetryUnavailableError extends GoalComponentError {
-    override name = 'GoalTaskRetryUnavailableError';
-}
-
 export abstract class ProcedurePlanComponentError extends OperationComponentError {
     override name = 'ProcedurePlanComponentError';
 }

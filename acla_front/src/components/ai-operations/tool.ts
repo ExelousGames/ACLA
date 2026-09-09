@@ -1,5 +1,7 @@
 import type { Operation, OperationExecutionOutput, OperationStatusPayload } from './operation';
-import type { FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import type { FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import type { WorkflowComponentBase } from './WorkflowComponentBase';
+import type { Workflow } from './workflow';
 
 /** A single executable action, sharing the operation lifecycle. */
 export interface Tool<
@@ -10,9 +12,9 @@ export interface Tool<
     readonly kind: 'tool';
 }
 
-/** A single named tool call; workflow names are excluded from executable input. */
+/** Native step descriptor. Workflow arguments contain the complete workflow envelope. */
 export type ToolCall<TMetadata> = {
-    tool: { name: FrontendToolName } & TMetadata;
+    tool: { name: FrontendOperationName } & TMetadata;
 };
 
 /** Read the explicit tool envelope without interpreting its arguments. */
@@ -28,21 +30,24 @@ export const readToolCall = (value: unknown): Record<string, unknown> | null => 
         ? call : null;
 };
 
-export type ToolDispatcher = ((
-    name: FrontendToolName,
+export type WorkflowDispatcher = ((
+    name: FrontendOperationName,
     args?: Record<string, unknown>,
     signal?: AbortSignal,
-) => Tool<OperationExecutionOutput, OperationStatusPayload>) & {
+    caller?: WorkflowComponentBase<any>,
+) => Tool<OperationExecutionOutput, OperationStatusPayload> | Workflow<OperationExecutionOutput, OperationStatusPayload>) & {
     validate(name: string): void;
+    workflowCaller?: WorkflowComponentBase<any>;
 };
 
-export function assertTool<TResult, TStatus extends object, TTerminationStatus extends string>(
-    operation: Operation<TResult, TStatus, TTerminationStatus>,
-): asserts operation is Tool<TResult, TStatus, TTerminationStatus> {
-    if (!operation || (operation as Tool<TResult, TStatus, TTerminationStatus>).kind !== 'tool') {
-        throw new Error('Workflow children must return a Tool.');
-    }
-}
+export const bindWorkflowDispatcher = (dispatch: WorkflowDispatcher, owner: WorkflowComponentBase<any>): WorkflowDispatcher => (
+    Object.assign((name: FrontendOperationName, args?: Record<string, unknown>, signal?: AbortSignal) => (
+        dispatch(name, args, signal, owner)
+    ), { validate: dispatch.validate, workflowCaller: owner })
+);
+
+/** Compatibility alias for callers migrating to the workflow dispatcher. */
+export type ToolDispatcher = WorkflowDispatcher;
 
 export const asTool = <
     TResult,

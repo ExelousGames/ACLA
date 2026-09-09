@@ -1,4 +1,5 @@
-import type { Tool, ToolCall } from './tool';
+import type { ToolCall, WorkflowDispatcher } from './tool';
+import type { Operation } from './operation';
 import type { Workflow, WorkflowCall } from './workflow';
 import type { AiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
 
@@ -16,12 +17,16 @@ export type LiveRangeTodoListInput = WorkflowCall<'add_event_to_live_range_todo_
     }>[];
 }>;
 
+export type CreateLiveRangeTodoListInput = WorkflowCall<'create_live_range_todo_list', {
+    tools: LiveRangeTodoListInput['workflow']['tools'];
+}>;
+
 export interface LiveRangeTodoEventInput {
     id: string;
     normalized_position: number;
     lead_time_seconds?: number;
     content: LiveRangeTodoContent;
-    taskStart: (signal: AbortSignal) => Tool<unknown, object>;
+    taskStart: (signal: AbortSignal) => Operation<unknown, object>;
 }
 
 export interface LiveRangeTodoEventUpdate {
@@ -29,7 +34,7 @@ export interface LiveRangeTodoEventUpdate {
     normalized_position?: number;
     lead_time_seconds?: number;
     content?: Partial<LiveRangeTodoContent>;
-    taskStart?: (signal: AbortSignal) => Tool<unknown, object>;
+    taskStart?: (signal: AbortSignal) => Operation<unknown, object>;
 }
 
 export interface LiveRangeTodoSnapshotEvent {
@@ -70,6 +75,8 @@ export type LiveRangeTodoListAiResult = {
 };
 
 export interface LiveRangeTodoListHandle extends AiOverlayComponentHandle<LiveRangeTodoListSnapshot | null> {
+    createLiveRangeTodoList: (input: CreateLiveRangeTodoListInput, dispatch: WorkflowDispatcher) => Workflow<LiveRangeTodoListAiResult>;
+    appendLiveRangeTodoList: (input: LiveRangeTodoListInput, dispatch: WorkflowDispatcher) => Workflow<LiveRangeTodoListAiResult>;
     addEvent: (event: LiveRangeTodoEventInput) => LiveRangeTodoListResult;
     replaceEvents: (events: readonly LiveRangeTodoEventInput[]) => LiveRangeTodoListResult;
     updateEvents: (updates: readonly LiveRangeTodoEventUpdate[]) => LiveRangeTodoListResult;

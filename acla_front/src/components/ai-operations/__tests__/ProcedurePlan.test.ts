@@ -110,8 +110,8 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
 
         expect(operation.statuses).toEqual([]);
         expect(progress.settled).toBe(false);
-        expect(dispatch).toHaveBeenNthCalledWith(1, 'read', { lap: 2 });
-        expect(dispatch).toHaveBeenNthCalledWith(2, 'compare', {});
+        expect(dispatch).toHaveBeenNthCalledWith(1, 'read', { lap: 2 }, undefined, runner);
+        expect(dispatch).toHaveBeenNthCalledWith(2, 'compare', {}, undefined, runner);
         expect(result).toMatchObject({ status: 'complete', request_count: 2 });
         expect(result.task_results[0].output).toEqual({
             status: 'complete',

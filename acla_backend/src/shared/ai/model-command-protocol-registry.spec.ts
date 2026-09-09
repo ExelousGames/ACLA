@@ -11,8 +11,10 @@ import {
 const getToolArguments = (command: any): any => ({ ...command, ...command.properties.tool.properties.arguments });
 
 const WORKFLOW_NAMES = [
+    'append_procedure_plan',
+    'append_repeatable_plan',
+    'create_live_range_todo_list',
     'create_repeatable_plan',
-    'retry_repeatable_plan_task',
     'set_procedure_plan',
     'advance_plan_step',
     'clear_procedure_plan',
@@ -98,6 +100,7 @@ describe('session live range to-do tools', () => {
     it('exposes one strict executable-event batch schema plus the read tool', () => {
         const names = MODEL_COMMAND_PROTOCOL.map((tool) => tool.name);
         expect(names.filter((name) => name.endsWith('_live_range_todo_list'))).toEqual([
+            'create_live_range_todo_list',
             'add_event_to_live_range_todo_list',
             'get_live_range_todo_list',
             'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
@@ -133,7 +136,7 @@ describe('session live range to-do tools', () => {
         expect(eventSchema.properties.lead_time_seconds.description).toContain('Defaults to 2 seconds');
     });
 
-    it('advertises only add/read to child live agents and derives tool-only alternatives', () => {
+    it('advertises create/append/read to child live agents and derives available child commands', () => {
         const liveMainNames = getModelCommandsForSessionContext({
             session_mode: 'live',
         }).map((tool) => tool.name);
@@ -147,6 +150,7 @@ describe('session live range to-do tools', () => {
             .toEqual([]);
         expect(liveAgentNames.filter((name) => name.endsWith('_live_range_todo_list')))
             .toEqual([
+                'create_live_range_todo_list',
                 'add_event_to_live_range_todo_list',
                 'get_live_range_todo_list',
             ]);
@@ -159,7 +163,7 @@ describe('session live range to-do tools', () => {
             'analyze_telemetry',
             'query_telemetry_metric',
         ]));
-        WORKFLOW_NAMES.forEach((name) => expect(nestedNames).not.toContain(name));
+        WORKFLOW_NAMES.filter((name) => liveAgentNames.includes(name as any)).forEach((name) => expect(nestedNames).toContain(name));
         const liveAgentNameSet = new Set<string>(liveAgentNames);
         expect(nestedNames.every((name: string) => liveAgentNameSet.has(name))).toBe(true);
         expect(addTool.description).toContain('AI Chat mounts the list');
@@ -170,7 +174,7 @@ describe('session live range to-do tools', () => {
             agent_mode: 'live_performance_analyst',
         }).find(({ name }) => name === 'add_event_to_live_range_todo_list') as any;
         expect(getCallNames(getWorkflowSchema(analystAddTool).properties.tools.items))
-            .toEqual(nestedNames);
+            .toEqual(expect.arrayContaining(nestedNames));
     });
 
     it('selects tools only from direct canonical mode fields', () => {
@@ -225,7 +229,7 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         })).toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
     });
 
-    it('keeps automatic comparison queueing standalone and excludes it from child calls', () => {
+    it('allows automatic comparison queueing as a child workflow', () => {
         const analystTools = getModelCommandsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
@@ -238,9 +242,9 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         const nestedLiveRangeNames = getCallNames(getWorkflowSchema(addEvents).properties.tools.items);
 
         expect(repeatablePlanNames)
-            .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+            .toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
         expect(nestedLiveRangeNames)
-            .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+            .toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
         expect(analystTools.map(({ name }) => name)).toContain('set_procedure_plan');
     });
 });
@@ -556,15 +560,13 @@ describe('telemetry metric query tool', () => {
     });
 });
 
-describe('retry_repeatable_plan_task tool', () => {
-    it('defines a no-argument schema and is exposed only to the Live Performance Analyst', () => {
+describe('removed repeatable plan retry command', () => {
+    it('is absent from the protocol and session command catalogs', () => {
         const namesFor = (context: Record<string, unknown>) => (
             getModelCommandsForSessionContext(context).map(({ name }) => name)
         );
-        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
-            name === 'retry_repeatable_plan_task'
-        ));
-        expect(tool).toMatchObject({ properties: { workflow: { required: ['name', 'tools'], properties: { tools: { maxItems: 0 } } } }, required: ['workflow'] });
+        expect(MODEL_COMMAND_PROTOCOL.map(({ name }) => name))
+            .not.toContain('retry_repeatable_plan_task');
 
         expect(namesFor({ session_mode: 'live' })).not.toContain('retry_repeatable_plan_task');
         expect(namesFor({
@@ -578,12 +580,12 @@ describe('retry_repeatable_plan_task tool', () => {
         expect(namesFor({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
-        })).toContain('retry_repeatable_plan_task');
+        })).not.toContain('retry_repeatable_plan_task');
     });
 });
 
 
-describe('tool-only workflow schema validation', () => {
+describe('nested workflow schema validation', () => {
     const context = { session_mode: 'live', agent_mode: 'live_performance_analyst' };
     const commands = getModelCommandsForSessionContext(context);
     const ajv = new Ajv({ allErrors: true, strictNumbers: true });
@@ -594,6 +596,24 @@ describe('tool-only workflow schema validation', () => {
         content: { title: 'Review corner', description: 'Compare the driving line.' },
     };
     const cases = [
+        {
+            name: 'append_procedure_plan',
+            body: { tools: [{ tool: { name: 'query_analysis_result', title: 'Count', arguments: { query: '1' } } }] },
+            metadata: { title: 'Count', arguments: { query: '1' } },
+            legacyKey: 'requests',
+        },
+        {
+            name: 'append_repeatable_plan',
+            body: { tools: [{ tool: { name: 'query_analysis_result', id: 'count', title: 'Count', arguments: { query: '1' } } }] },
+            metadata: { id: 'count', title: 'Count', arguments: { query: '1' } },
+            legacyKey: 'steps',
+        },
+        {
+            name: 'create_live_range_todo_list',
+            body: { tools: [{ tool: { name: 'query_analysis_result', event, arguments: { query: '1' } } }] },
+            metadata: { event, arguments: { query: '1' } },
+            legacyKey: 'events',
+        },
         {
             name: 'set_procedure_plan',
             body: {
@@ -695,8 +715,9 @@ describe('tool-only workflow schema validation', () => {
             [null, {}, 'tools'].forEach((tools) => expect(validate(withTools(tools))).toBe(false));
         });
 
-        it.each(WORKFLOW_NAMES)('rejects workflow child %s, including reads and controls', (childName) => {
-            expect(validate(withTools([{ [childName]: metadata }]))).toBe(false);
+        it.each(WORKFLOW_NAMES)('accepts workflow child %s with its complete native envelope', (childName) => {
+            const child = { workflow: { name: childName, tools: [] } };
+            expect(validate(withTools([{ tool: { ...metadata, name: childName, arguments: child } }]))).toBe(true);
         });
 
         it.each(['unknown_tool', 'start_agent_session', 'run_recorded_ai_analysis'])(
@@ -708,7 +729,7 @@ describe('tool-only workflow schema validation', () => {
             const missingArguments: any = { ...metadata };
             delete missingArguments.arguments;
             expect(validate(withTools([{ tool: { name: 'query_analysis_result', ...missingArguments } }])))
-                .toBe(name === 'create_repeatable_plan');
+                .toBe(name === 'create_repeatable_plan' || name === 'append_repeatable_plan');
             Object.keys(metadata).filter((key) => key !== 'arguments').forEach((key) => {
                 const missing: any = { ...metadata };
                 delete missing[key];
@@ -753,7 +774,7 @@ describe('tool-only workflow schema validation', () => {
             delete missing[key];
             expect(validate(withStop(missing))).toBe(false);
         });
-        [...WORKFLOW_NAMES, 'unknown_tool', 'start_agent_session', 'run_recorded_ai_analysis']
+        ['unknown_tool', 'start_agent_session', 'run_recorded_ai_analysis']
             .forEach((name) => expect(validate(withStop({ ...stop, tool: { name } }))).toBe(false));
     });
 
@@ -784,7 +805,7 @@ describe('tool-only workflow schema validation', () => {
         }))
     )))('derives exactly session-available tools for every workflow and stop check: %p', (sessionContext) => {
         const available = getModelCommandsForSessionContext(sessionContext);
-        const expectedNames = available.map(({ name }) => name).filter((name) => !WORKFLOW_NAMES.includes(name));
+        const expectedNames = available.map(({ name }) => name);
         available.forEach((command) => {
             expect(Object.keys(command).sort()).toEqual(['description', 'name', 'properties', 'required']);
             if (!cases.some(({ name }) => name === command.name)) {
@@ -837,12 +858,13 @@ describe('catalog workflow guidance', () => {
     it.each(contexts)('supplies executable workflow examples for %p', (context) => {
         const commands = getModelCommandsForSessionContext(context);
         const workflows = commands.filter(({ name }) => [
-            'set_procedure_plan', 'create_repeatable_plan', 'add_event_to_live_range_todo_list',
+            'set_procedure_plan', 'append_procedure_plan', 'create_repeatable_plan', 'append_repeatable_plan', 'add_event_to_live_range_todo_list', 'create_live_range_todo_list',
         ].includes(name));
         expect(workflows.length).toBeGreaterThan(0);
         workflows.forEach((command) => {
             expect(command.description).toContain('single outer key');
-            expect(command.description).toContain('All workflow categories are forbidden as children');
+            expect(command.description).toContain('workflow');
+            expect(command.description).not.toContain('forbidden as children');
             expect(command.description).toContain('No legacy compatibility');
             const example = command.description.match(/```json\s*([\s\S]*?)```/);
             expect(example).not.toBeNull();
@@ -852,10 +874,9 @@ describe('catalog workflow guidance', () => {
             const children = [...body.tools, ...(body.stop_when ? [{ tool: body.stop_when.tool }] : [])];
             children.forEach((child) => {
                 const { name } = child.tool;
-                expect(WORKFLOW_NAMES).not.toContain(name);
                 const tool = commands.find((candidate) => candidate.name === name);
                 expect(tool).toBeDefined();
-                validateArguments(tool, { tool: { name, arguments: child.tool.arguments ?? {} } });
+                validateArguments(tool, WORKFLOW_NAMES.includes(name) ? child.tool.arguments : { tool: { name, arguments: child.tool.arguments ?? {} } });
             });
         });
     });
@@ -864,10 +885,36 @@ describe('catalog workflow guidance', () => {
         const commands = getModelCommandsForSessionContext({ session_mode: 'live' });
         const description = (name: string) => commands.find((command) => command.name === name)!.description;
         expect(description('set_procedure_plan')).toContain('The application owns visible plan state');
-        expect(description('set_procedure_plan')).toContain('Tool calls are fire-and-forget');
+        expect(description('set_procedure_plan')).toContain('creation operation waits');
         expect(description('set_procedure_plan')).toContain('Do not skip, clear, replace, or abandon an active plan');
         expect(description('advance_plan_step')).toContain('confirm completion before advancing');
         expect(description('clear_procedure_plan')).toContain('only when the driver explicitly asks');
         expect(description('clear_procedure_plan')).not.toContain('when the plan is no longer useful');
+    });
+});
+describe('workflow create and append contracts', () => {
+    const contexts = [{ session_mode: 'live' }, { session_mode: 'recorded' }, { session_mode: 'front_desk' },
+        { session_mode: 'user_summary' }, { session_mode: 'live', agent_mode: 'track_guide' },
+        { session_mode: 'live', agent_mode: 'overtake' }, { session_mode: 'live', agent_mode: 'live_performance_analyst' }];
+    it.each(contexts)('exposes the new commands with their existing type in %p', (context) => {
+        const commands = getModelCommandsForSessionContext(context);
+        const names = commands.map(({ name }) => name);
+        for (const [existing, added] of [['set_procedure_plan', 'append_procedure_plan'],
+            ['create_repeatable_plan', 'append_repeatable_plan'], ['add_event_to_live_range_todo_list', 'create_live_range_todo_list']]) {
+            expect(names.includes(added as any)).toBe(names.includes(existing as any));
+        }
+    });
+
+    it('requires only steps for append, and retains the stop condition on create', () => {
+        const commands = getModelCommandsForSessionContext({ session_mode: 'live', agent_mode: 'live_performance_analyst' });
+        for (const name of ['append_procedure_plan', 'append_repeatable_plan', 'create_live_range_todo_list']) {
+            expect(getWorkflowSchema(commands.find((c) => c.name === name)).required).toEqual(['name', 'tools']);
+        }
+        expect(getWorkflowSchema(commands.find((c) => c.name === 'create_repeatable_plan')).required).toContain('stop_when');
+        const descriptions = commands.map((c) => c.description).join(' ');
+        expect(descriptions).toContain('active ancestor');
+        expect(descriptions).toContain('ancestor or descendant');
+        expect(descriptions).toContain('fresh check');
+        expect(descriptions).toContain('independent execution');
     });
 });

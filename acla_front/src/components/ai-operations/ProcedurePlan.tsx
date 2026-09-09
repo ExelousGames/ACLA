@@ -5,8 +5,8 @@ import {
     OPERATION_COMPONENT_NAMES,
     type NamedOperationComponentHandle,
 } from 'contexts/OperationComponentRefContext';
-import { assertTool, readToolCall, type ToolCall, type ToolDispatcher } from './tool';
-import type { FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import { bindWorkflowDispatcher, readToolCall, type ToolCall, type WorkflowDispatcher } from './tool';
+import type { FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import {
     createControlledOperation,
     createOperationFrom,
@@ -42,6 +42,10 @@ export type ProcedurePlanStepStatus = typeof PROCEDURE_PLAN_STEP_STATUSES[number
 export type ProcedurePlanInput = WorkflowCall<'set_procedure_plan', {
     goal: string;
     tools: ToolCall<{ title: string; arguments: Record<string, unknown> }>[];
+}>;
+
+export type AppendProcedurePlanInput = WorkflowCall<'append_procedure_plan', {
+    tools: ProcedurePlanInput['workflow']['tools'];
 }>;
 
 export type ProcedurePlanRequestSnapshot = {
@@ -100,6 +104,7 @@ export type ProcedurePlanRunResult = {
 
 export interface ProcedurePlanHandle extends NamedOperationComponentHandle, AiOverlayComponentHandle<ProcedurePlanSnapshot | null> {
     createProcedurePlan(input: ProcedurePlanInput): Workflow<ProcedurePlanRunResult>;
+    appendProcedurePlan(input: AppendProcedurePlanInput, caller?: WorkflowComponentBase<any>): Workflow<ProcedurePlanRunResult>;
     advancePlanStep(reason?: string): Workflow<ProcedurePlanRunResult>;
     clearProcedurePlan(reason?: string): Workflow<ProcedurePlanRunResult>;
     getProcedurePlan(): ProcedurePlanState | null;
@@ -130,22 +135,38 @@ implements ProcedurePlanHandle {
     private lastRunId: string | undefined;
     private generation = 0;
     private activeOperation: ActiveProcedurePlanOperation | null = null;
+    private executionParent?: WorkflowComponentBase<any>;
     private readonly onChange: ProcedurePlanChangeHandler;
     private readonly onError: ProcedurePlanTaskErrorHandler;
 
     constructor(
         componentName: string,
-        private readonly dispatchOperation: ToolDispatcher,
+        private readonly dispatchOperation: WorkflowDispatcher,
         onChange?: ProcedurePlanChangeHandler,
         onError: ProcedurePlanTaskErrorHandler = defaultProcedurePlanErrorHandler,
     ) {
         super(componentName, null);
+        this.executionParent = dispatchOperation.workflowCaller;
+        this.dispatchOperation = bindWorkflowDispatcher(dispatchOperation, this);
         this.onChange = onChange ?? (() => undefined);
         this.onError = onError;
     }
 
     createProcedurePlan(input: ProcedurePlanInput): Workflow<ProcedurePlanRunResult> {
         return this.replace(input);
+    }
+
+    appendProcedurePlan(input: AppendProcedurePlanInput, caller?: WorkflowComponentBase<any>): Workflow<ProcedurePlanRunResult> {
+        try {
+            const plan = parseAppendProcedurePlanInput(input);
+            plan.requests.forEach((request) => this.dispatchOperation.validate(request.name!));
+            this.assertCanAppend(caller);
+            if (!this.plan) throw new Error('The procedure plan is empty.');
+            this.publish({ ...this.plan, requests: [...this.plan.requests, ...plan.requests] });
+            return asWorkflow(createOperationFrom(() => this.result('advanced'), 'complete'));
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
     }
 
     advancePlanStep(reason?: string): Workflow<ProcedurePlanRunResult> {
@@ -270,6 +291,9 @@ implements ProcedurePlanHandle {
             nestedOperation: null,
         };
         this.activeOperation = operation;
+        const token = this.beginExecution(this.executionParent);
+        this.executionParent = undefined;
+        this.trackExecution(controller.operation, token);
         void run().then(
             (result) => operation.controller.resolve('complete', result),
             (error) => operation.controller.reject(
@@ -347,10 +371,9 @@ implements ProcedurePlanHandle {
             try {
                 const activeOperation = this.activeOperation;
                 nestedOperation = this.dispatchOperation(
-                    request.name as FrontendToolName,
+                    request.name as FrontendOperationName,
                     getProcedurePlanOperationArguments(request),
                 );
-                assertTool(nestedOperation);
                 if (
                     !activeOperation
                     || this.activeOperation !== activeOperation
@@ -373,13 +396,13 @@ implements ProcedurePlanHandle {
                     this.activeOperation.nestedOperation = null;
                 }
             }
-            this.active = false;
             if (generation !== this.generation) {
                 throw new ProcedurePlanReplacedError(
                     this.getComponentName(),
                     'The procedure plan operation was replaced.',
                 );
             }
+            this.active = false;
             if (!this.plan) return this.result('cleared');
             const stepError = executionError === undefined
                 ? undefined
@@ -656,12 +679,20 @@ export const parseProcedurePlanInput = (value: unknown): ProcedurePlanState => {
     };
 };
 
+export const parseAppendProcedurePlanInput = (value: unknown): ProcedurePlanState => {
+    const input = readWorkflowCall(value, 'append_procedure_plan');
+    if (!input || Reflect.ownKeys(input).some((key) => key !== 'name' && key !== 'tools')) {
+        throw new InvalidProcedurePlanRequestsError('Provide append_procedure_plan with tools.');
+    }
+    return parseProcedurePlanInput({ workflow: { name: 'set_procedure_plan', goal: '', tools: input.tools } });
+};
+
 export const useProcedurePlanWorkflow = ({
     mountWorkflow,
     dispatchOperation,
 }: {
     mountWorkflow: MountWorkflow;
-    dispatchOperation: ToolDispatcher;
+    dispatchOperation: WorkflowDispatcher;
 }) => {
     const runnerRef = useRef<ProcedurePlanRunner | null>(null);
     const optedOutRef = useRef(false);
@@ -677,10 +708,12 @@ export const useProcedurePlanWorkflow = ({
 
     const startProcedurePlan = useCallback((
         input: ProcedurePlanInput,
-        dispatcher: ToolDispatcher,
+        dispatcher: WorkflowDispatcher,
     ): Workflow<ProcedurePlanRunResult> => {
         const plan = parseProcedurePlanInput(input);
         plan.requests.forEach((request) => dispatcher.validate(request.name!));
+        runnerRef.current?.assertCanReplace(dispatcher.workflowCaller);
+        dispose();
         const runner = new ProcedurePlanRunner(
             OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
             dispatcher,
@@ -690,8 +723,8 @@ export const useProcedurePlanWorkflow = ({
             },
         );
         try {
-            mountWorkflow({ runner, dispose });
             runnerRef.current = runner;
+            mountWorkflow({ runner, dispose });
             setSnapshot(null);
             return runner.createProcedurePlan(input);
         } catch (error) {
@@ -703,10 +736,26 @@ export const useProcedurePlanWorkflow = ({
 
     const createProcedurePlan = useCallback((
         input: ProcedurePlanInput,
-        dispatcher: ToolDispatcher,
+        dispatcher: WorkflowDispatcher,
     ): Workflow<ProcedurePlanRunResult> => {
         try {
             return startProcedurePlan(input, dispatcher);
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
+    }, [startProcedurePlan]);
+
+    const appendProcedurePlan = useCallback((input: AppendProcedurePlanInput, dispatcher: WorkflowDispatcher) => {
+        try {
+            const plan = parseAppendProcedurePlanInput(input);
+            plan.requests.forEach((request) => dispatcher.validate(request.name!));
+            const runner = runnerRef.current;
+            if (runner?.getProcedurePlan()) return runner.appendProcedurePlan(input, dispatcher.workflowCaller);
+            // Missing-target append starts independent execution and acknowledges immediately.
+            const independent = Object.assign((...args: Parameters<WorkflowDispatcher>) => dispatcher(...args), { validate: dispatcher.validate });
+            startProcedurePlan({ workflow: { name: 'set_procedure_plan', goal: plan.goal, tools: input.workflow.tools } }, independent);
+            return asWorkflow(createOperationFrom(() => ({ status: 'advanced' as const, goal: plan.goal,
+                current_request: 0, task_results: [], request_count: plan.requests.length }), 'complete'));
         } catch (error) {
             return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
         }
@@ -753,7 +802,7 @@ export const useProcedurePlanWorkflow = ({
         setSnapshot(null);
     }, [dispose]);
 
-    return { createProcedurePlan, snapshot, reset, handleUserText, handleToolStatus };
+    return { createProcedurePlan, appendProcedurePlan, snapshot, reset, handleUserText, handleToolStatus };
 };
 
 export type ProcedurePlanProps = {

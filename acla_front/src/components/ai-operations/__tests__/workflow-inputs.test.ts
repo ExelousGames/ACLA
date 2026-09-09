@@ -1,6 +1,5 @@
 import {
     asTool,
-    assertTool,
     asWorkflow,
     createControlledOperation,
     createOperation,
@@ -95,7 +94,7 @@ describe('strict workflow inputs', () => {
         const dispatch = Object.assign(jest.fn(() => asTool(createOperation({ status: 'ready', data: 0 }, 'complete'))), { validate: jest.fn() });
         const runner = new RepeatablePlanRunner('repeatable', dispatch);
         await expect(runner.create(repeatable()).result).resolves.toMatchObject({ status: 'achieved' });
-        expect(dispatch.mock.calls).toEqual([['query_analysis_result', {}], ['query_analysis_result', {}]]);
+        expect(dispatch.mock.calls).toEqual([['query_analysis_result', {}, undefined, runner], ['query_analysis_result', {}, undefined, runner]]);
         expect(dispatch.validate.mock.calls).toEqual([['query_analysis_result'], ['query_analysis_result']]);
         runner.dispose();
     });
@@ -170,58 +169,14 @@ describe('workflow replacement preflight', () => {
     });
 });
 
-describe.each(['generic operation', 'workflow'])('rejects a returned %s at runner boundaries', (kind) => {
-    const child = () => {
-        const operation = createControlledOperation<Record<string, unknown>>().operation;
-        return kind === 'workflow' ? asWorkflow(operation) : operation;
-    };
-
-    it('asserts without converting the operation', () => {
-        const operation = child();
-        expect(() => assertTool(operation)).toThrow('must return a Tool');
-        expect(operation).not.toHaveProperty('kind', 'tool');
-    });
-
-    it('fails a procedure without subscribing to the non-tool', async () => {
-        const operation = child();
-        const notify = jest.spyOn(operation, 'notifyTerminated');
-        const dispatch = Object.assign(jest.fn(() => operation), { validate: jest.fn() }) as unknown as ToolDispatcher;
-        const runner = new ProcedurePlanRunner('procedure', dispatch, undefined, jest.fn());
-        await expect(runner.createProcedurePlan(procedure('query_analysis_result')).result).resolves.toMatchObject({ status: 'failed' });
-        expect(notify).not.toHaveBeenCalled();
-        expect(operation).not.toHaveProperty('kind', 'tool');
-        runner.dispose();
-    });
-
-    it.each(['step', 'stop'])('fails a repeatable %s without subscribing to the non-tool', async (where) => {
-        const operation = child();
-        const notify = jest.spyOn(operation, 'notifyTerminated');
-        let calls = 0;
-        const dispatch = Object.assign(jest.fn(() => (
-            where === 'stop' && ++calls === 1 ? asTool(createOperation({}, 'complete')) : operation
-        )), { validate: jest.fn() }) as unknown as ToolDispatcher;
+describe('workflow children at runner boundaries', () => {
+    it('accepts a workflow in both repeatable steps and stop checks without changing its kind', async () => {
+        const operation = asWorkflow(createOperation({ status: 'ready', data: 0 }, 'complete'));
+        const dispatch = Object.assign(jest.fn(() => operation), { validate: jest.fn() });
         const runner = new RepeatablePlanRunner('repeatable', dispatch);
-        await expect(runner.create(repeatable()).result).resolves.toMatchObject({ status: 'failed', error: 'Workflow children must return a Tool.' });
-        expect(notify).not.toHaveBeenCalled();
-        expect(operation).not.toHaveProperty('kind', 'tool');
+        await expect(runner.create(repeatable()).result).resolves.toMatchObject({ status: 'achieved' });
+        expect(operation.kind).toBe('workflow');
+        expect(runner.getSnapshot()).toBeNull();
         runner.dispose();
-    });
-
-    it('rejects a live task without subscribing to the non-tool', () => {
-        const operation = child();
-        const notify = jest.spyOn(operation, 'notifyTerminated');
-        const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-        const runner = new LiveRangeTodoListRunner('live');
-        runner.addEvent({ id: 'event', normalized_position: 0.2, lead_time_seconds: 0,
-            content: { title: 'Query' }, taskStart: (() => operation) as unknown as LiveRangeTodoEventInput['taskStart'],
-        });
-        runner.acceptTelemetry({ Graphics_normalized_car_position: 0 });
-        runner.acceptTelemetry({ Graphics_normalized_car_position: 0.3 });
-        expect(notify).not.toHaveBeenCalled();
-        expect(error).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ message: 'Workflow children must return a Tool.' }));
-        expect(runner.get().status).toBe('empty');
-        expect(operation).not.toHaveProperty('kind', 'tool');
-        runner.dispose();
-        error.mockRestore();
     });
 });

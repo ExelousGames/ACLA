@@ -33,7 +33,6 @@ import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
 import {
     WorkflowPanel,
-    assertTool,
     type WorkflowPanelHandle,
     type ToolDispatcher,
     type Operation,
@@ -438,14 +437,13 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             toolName: Parameters<ToolDispatcher>[0],
             args: Record<string, unknown> = {},
             signal?: AbortSignal,
+            caller?: Parameters<ToolDispatcher>[3],
         ) => {
             validate(toolName);
             const handler = activeOperationHandlersRef.current[toolName] as (
-                args: Record<string, unknown>, signal?: AbortSignal,
-            ) => Operation<OperationExecutionOutput, OperationStatusPayload>;
-            const operation = handler(args, signal);
-            assertTool(operation);
-            return operation;
+                args: Record<string, unknown>, signal?: AbortSignal, caller?: Parameters<ToolDispatcher>[3], nativeCall?: boolean,
+            ) => ReturnType<ToolDispatcher>;
+            return handler(args, signal, caller, false);
         }, { validate });
         return dispatchTool;
     }, [componentRefs, liveSession?.sessionGame, resolvedSessionId, sessionMode]);

@@ -45,6 +45,7 @@ describe('explicit AI command envelopes', () => {
 
     it.each(definitions.filter(({ name, kind }) => kind === 'workflow' && ![
         'set_procedure_plan', 'create_repeatable_plan', 'add_event_to_live_range_todo_list',
+        'append_procedure_plan', 'append_repeatable_plan', 'create_live_range_todo_list',
     ].includes(name)))('requires the named empty tools list for $name', async (definition) => {
         const execute = jest.spyOn(definition, 'execute').mockImplementation(() => createOperation({ status: 'ready' }, 'ready') as any);
         try {

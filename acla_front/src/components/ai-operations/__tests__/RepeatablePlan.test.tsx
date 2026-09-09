@@ -142,7 +142,7 @@ describe('Repeatable plan descriptors', () => {
         expect(validateGoalRequest(toInput({
             ...request(),
             steps: [{ id: 'nested', title: 'Nested', name: 'create_repeatable_plan' }],
-        }))).toHaveProperty('error');
+        }))).toHaveProperty('request');
         expect(compareGoalValues(2, 'lte', 2)).toBe(true);
     });
 
@@ -242,11 +242,8 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         const completedSnapshot = runner.getSnapshot();
         expect(isJsonSafe(completedSnapshot)).toBe(true);
         expect(runner.getOverlayBehavior(completedSnapshot)).toMatchObject({ remove: true });
-        expect(completedSnapshot?.steps[0]).toMatchObject({
-            status: 'completed',
-            run_id: runningRunId,
-            error: null,
-        });
+        expect(completedSnapshot).toBeNull();
+        expect(result.task_results[0].source_result?.run_id).toBe(runningRunId);
     });
 
     it('executes ordered steps and achieves a goal from a numeric query envelope', async () => {
@@ -288,7 +285,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
             },
         });
         expect(result.stop_when).toEqual(input.stop_when);
-        expect(runner.getSnapshot()?.stop_when).toEqual(input.stop_when);
+        expect(runner.getSnapshot()).toBeNull();
         expect(result.task_results).toEqual([
             {
                 step_id: 'collect',
@@ -318,7 +315,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         expect(order).toEqual(['collect', 'analyze:4', 'query_analysis_result']);
         expect(dispatch).toHaveBeenLastCalledWith('query_analysis_result', {
             query: '$count(analyses)',
-        });
+        }, undefined, runner);
     });
 
     it('records notified statuses instead of result payload statuses', async () => {
@@ -415,38 +412,6 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         });
     });
 
-    it('retries only the stop condition after incompatible input', async () => {
-        let stopWhenAttempts = 0;
-        const dispatch = jest.fn((name: string) => operationWithValue(
-            name === 'determine'
-                ? (++stopWhenAttempts === 1
-                    ? { status: 'ready', data: '0' }
-                    : { status: 'ready', data: 0 })
-                : { status: 'complete' },
-        ));
-        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
-
-        const failedResult = await runner.create(toInput(request())).result;
-        if (failedResult instanceof Error) throw failedResult;
-        expect(failedResult.status).toBe('failed');
-
-        const retryResult = await runner.retryFailedTask().result;
-        if (retryResult instanceof Error) throw retryResult;
-
-        expect(retryResult).toMatchObject({
-            status: 'achieved',
-            actual: 0,
-            stop_when_result: { attempt: 2, value: 0 },
-        });
-        expect(dispatch.mock.calls.map(([name]) => name)).toEqual([
-            'collect',
-            'analyze',
-            'determine',
-            'determine',
-        ]);
-        expect(retryResult.task_results).toHaveLength(2);
-    });
-
     it('reports a rejected stop-condition operation as an execution failure', async () => {
         const dispatch = jest.fn((name: string) => asTool(createOperationFrom(() => {
             if (name === 'determine') throw new Error('stop condition exploded');
@@ -469,7 +434,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         });
     });
 
-    it('retains a failed step and retries it through the same dispatcher', async () => {
+    it('retains a failed step without rerunning it', async () => {
         let attempts = 0;
         const dispatch = jest.fn((name: string) => asTool(createOperationFrom(() => {
             if (name === 'collect' && ++attempts === 1) throw new Error('not ready');
@@ -518,30 +483,8 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         });
         expect(failedSnapshot?.steps[0]).toMatchObject({ id: 'collect', error: 'not ready' });
 
-        const retryResult = await runner.retryFailedTask().result;
-        if (retryResult instanceof Error) throw retryResult;
-
-        expect(retryResult.status).toBe('achieved');
-        expect(retryResult.task_results.map(({ source_result: _sourceResult, ...result }) => result))
-            .toEqual([
-                {
-                    step_id: 'collect',
-                    tool_name: 'collect',
-                    attempt: 1,
-                    status: 'error',
-                    error: {
-                        name: 'GoalStepFailedError',
-                        message: 'not ready',
-                        cause: {
-                            name: 'Error',
-                            message: 'not ready',
-                        },
-                    },
-                },
-                { step_id: 'collect', tool_name: 'collect', attempt: 2, status: 'completed' },
-                { step_id: 'analyze', tool_name: 'analyze', attempt: 1, status: 'completed' },
-            ]);
-        expect(attempts).toBe(2);
+        expect(dispatch.mock.calls.map(([name]) => name)).toEqual(['collect']);
+        expect(attempts).toBe(1);
     });
 });
 

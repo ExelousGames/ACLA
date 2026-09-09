@@ -80,7 +80,6 @@ describe('ModelCommandProtocolController', () => {
             'apply_query_to_analysis_result',
             'query_analysis_result',
             'create_repeatable_plan',
-            'retry_repeatable_plan_task',
             'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
         ]));
         expect(names).not.toContain('start_agent_session');
@@ -111,7 +110,6 @@ describe('ModelCommandProtocolController', () => {
         });
         [
             'get_live_range_todo_list',
-            'retry_repeatable_plan_task',
             'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
         ].forEach((name) => {
             expect(commands.find((entry) => entry.name === name))

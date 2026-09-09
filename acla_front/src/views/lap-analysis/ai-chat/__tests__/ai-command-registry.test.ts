@@ -1,3 +1,6 @@
+import { parseProcedurePlanInput } from 'components/ai-operations/ProcedurePlan';
+import { parseRepeatablePlanInput } from 'components/ai-operations/RepeatablePlan';
+import type { WorkflowDispatcher } from 'components/ai-operations/tool';
 import type { WorkflowPanelHandle } from 'components/ai-operations/WorkflowPanel';
 import {
     createAiCommandRegistry,
@@ -137,7 +140,9 @@ const register = (name: string, handle: object) => {
 describe('frontend operation registry', () => {
     const workflowNames: FrontendWorkflowName[] = [
         'create_repeatable_plan',
-        'retry_repeatable_plan_task',
+        'append_repeatable_plan',
+        'append_procedure_plan',
+        'create_live_range_todo_list',
         'set_procedure_plan',
         'advance_plan_step',
         'clear_procedure_plan',
@@ -613,7 +618,16 @@ describe('strict workflow creation and tool dispatch', () => {
         const createProcedurePlan = jest.fn((_input: unknown, _dispatch: unknown) => asWorkflow(resolvedOperation({ status: 'complete' }, 'complete')));
         const createRepeatablePlan = jest.fn((_input: unknown, _dispatch: unknown) => asWorkflow(resolvedOperation({ status: 'achieved' }, 'complete')));
         const directory = register(OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, {
-            createProcedurePlan, createRepeatablePlan,
+            createProcedurePlan: (input: unknown, dispatch: WorkflowDispatcher) => {
+                parseProcedurePlanInput(input).requests.forEach((step) => dispatch.validate(step.name!));
+                return createProcedurePlan(input, dispatch);
+            },
+            createRepeatablePlan: (input: unknown, dispatch: WorkflowDispatcher) => {
+                const request = parseRepeatablePlanInput(input);
+                request.steps.forEach((step) => dispatch.validate(step.name));
+                dispatch.validate(request.stop_when.tool.name);
+                return createRepeatablePlan(input, dispatch);
+            },
         });
         return { registry: createAiCommandRegistry({ ...context, componentRefs: directory }), createProcedurePlan, createRepeatablePlan };
     };
@@ -635,7 +649,7 @@ describe('strict workflow creation and tool dispatch', () => {
     it.each(Object.values(frontendOperationRegistry)
         .filter(({ kind }) => kind === 'workflow')
         .map(({ name }) => name))(
-        'rejects workflow child %s in both plans and stop checks before creation', async (name) => {
+        'forwards workflow children in %s to component-owned validation and execution', async (name) => {
             const test = setup();
             const plan: any = procedure();
             plan.workflow.tools.push({ tool: { name: name, title: 'Invalid later call', arguments: {} } });
@@ -643,11 +657,11 @@ describe('strict workflow creation and tool dispatch', () => {
             goal.workflow.tools.push({ tool: { name: name, id: 'invalid', title: 'Invalid later call' } });
             const stop: any = repeatable();
             stop.workflow.stop_when.tool = { name };
-            await expect(test.registry.set_procedure_plan(plan).result).rejects.toBeInstanceOf(Error);
-            await expect(test.registry.create_repeatable_plan(goal).result).rejects.toBeInstanceOf(Error);
-            await expect(test.registry.create_repeatable_plan(stop).result).rejects.toBeInstanceOf(Error);
-            expect(test.createProcedurePlan).not.toHaveBeenCalled();
-            expect(test.createRepeatablePlan).not.toHaveBeenCalled();
+            await expect(test.registry.set_procedure_plan(plan).result).resolves.toBeDefined();
+            await expect(test.registry.create_repeatable_plan(goal).result).resolves.toBeDefined();
+            await expect(test.registry.create_repeatable_plan(stop).result).resolves.toBeDefined();
+            expect(test.createProcedurePlan).toHaveBeenCalled();
+            expect(test.createRepeatablePlan).toHaveBeenCalled();
         },
     );
 
@@ -712,8 +726,7 @@ describe('strict workflow creation and tool dispatch', () => {
         Object.values(frontendOperationRegistry).filter(({ kind }) => kind === 'workflow')
             .forEach((definition) => {
                 const handler = jest.spyOn(definition, 'execute');
-                expect(() => dispatcher(definition.name as any, {})).toThrow(/workflow/i);
-                expect(handler).not.toHaveBeenCalled();
+                expect(() => dispatcher.validate(definition.name)).not.toThrow();
                 handler.mockRestore();
             });
     });
@@ -757,115 +770,42 @@ describe('strict workflow creation and tool dispatch', () => {
     });
 });
 
-describe('live range to-do workflow', () => {
-    it('reuses the mounted list, appends every event, and completes immediately', async () => {
-        const directory = createOperationComponentRefDirectory();
-        const inserted: LiveRangeTodoEventInput[] = [];
-        const addEvent = jest.fn((event: LiveRangeTodoEventInput) => {
-            inserted.push(event);
-            return todoResult(inserted) as any;
-        });
-        const handle: Partial<LiveRangeTodoListHandle> = {
-            addEvent,
-            get: () => todoResult([{ id: 'existing' }, ...inserted]) as any,
-            getForAi: () => asWorkflow(resolvedOperation({
-                status: 'ready' as const,
-                event_count: inserted.length + 1,
-                pending_count: inserted.length + 1,
-                running_count: 0,
-            }, 'complete')),
-        };
-        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, handle);
+const mountLiveQueue = (directory: ReturnType<typeof createOperationComponentRefDirectory>, runner = new LiveRangeTodoListRunner(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)) => {
+    runner.addComponentRef(directory);
+    reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, {
+        appendLiveRangeTodoList: (input: LiveRangeTodoListInput, dispatch: WorkflowDispatcher) => runner.appendLiveRangeTodoList(input, dispatch),
+    });
+    return runner;
+};
 
-        const operation = childLiveRegistry(directory).add_event_to_live_range_todo_list(
-            scheduledPayload([scheduledItem('first'), scheduledItem('second')]),
-        );
-
-        expect(addEvent).toHaveBeenCalledTimes(2);
-        expect(addEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
-            id: 'first',
-            taskStart: expect.any(Function),
-        }));
-        expect(addEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
-            id: 'second',
-            taskStart: expect.any(Function),
-        }));
-        expect(operation.statuses).toEqual([]);
-        await expect(operation.result).resolves.toEqual({
-            status: 'ready',
-            event_count: 3,
-            pending_count: 3,
-            running_count: 0,
-        });
+describe('live range to-do workflow forwarding', () => {
+    it('forwards the complete native envelope and immediate append operation to the component', async () => {
+        const result = asWorkflow(resolvedOperation({ status: 'ready', event_count: 2 }, 'complete'));
+        const appendLiveRangeTodoList = jest.fn(() => result);
+        const registry = childLiveRegistry(register(OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, { appendLiveRangeTodoList }));
+        const payload = scheduledPayload([scheduledItem('first'), scheduledItem('second')]);
+        const operation = registry.add_event_to_live_range_todo_list(payload);
+        expect(appendLiveRangeTodoList).toHaveBeenCalledWith(payload, expect.any(Function));
+        expect(operation).toBe(result);
+        await expect(operation.result).resolves.toMatchObject({ event_count: 2 });
     });
 
-    it('asks AI Chat to initialize the list when it is missing', async () => {
+    it.each(['analyze_telemetry', 'run_recorded_ai_analysis'])('preserves literal %s arguments until telemetry makes the event due', async (toolName) => {
         const directory = createOperationComponentRefDirectory();
-        const addEvent = jest.fn(() => todoResult([{ id: 'mounted' }]) as any);
-        const todoHandle: Partial<LiveRangeTodoListHandle> = {
-            addEvent,
-            get: () => todoResult() as any,
-            getForAi: () => asWorkflow(resolvedOperation({
-                status: 'ready' as const,
-                event_count: 1,
-                pending_count: 1,
-                running_count: 0,
-            }, 'complete')),
-        };
-        const initializeLiveRangeTodoList = jest.fn(() => {
-            reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
-            return todoHandle as LiveRangeTodoListHandle;
-        });
-        reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, {
-            initializeLiveRangeTodoList,
-        } satisfies Partial<WorkflowPanelHandle>);
-
-        const operation = childLiveRegistry(directory).add_event_to_live_range_todo_list(
-            scheduledPayload([scheduledItem('mounted')]),
-        );
-
-        expect(initializeLiveRangeTodoList).toHaveBeenCalledTimes(1);
-        expect(addEvent).toHaveBeenCalledTimes(1);
-        await expect(operation.result).resolves.toMatchObject({ event_count: 1 });
+        const runner = mountLiveQueue(directory);
+        const toolHandler = jest.fn(() => asTool(resolvedOperation({ status: 'ready' }, 'ready')));
+        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_SESSION, { analyzeTelemetryForAi: toolHandler });
+        reserve(directory, OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS, { runRecordedAnalysisForAi: toolHandler });
+        const args = { scope: { type: 'now' }, tool: { name: 'literal data' } };
+        await expect(childLiveRegistry(directory).add_event_to_live_range_todo_list(scheduledPayload([scheduledItem('deferred', toolName, args)])).result)
+            .resolves.toMatchObject({ event_count: 1 });
+        args.scope.type = 'changed';
+        expect(toolHandler).not.toHaveBeenCalled();
+        runner.acceptTelemetry({ Graphics_normalized_car_position: 0 });
+        runner.acceptTelemetry({ Graphics_normalized_car_position: 0.6 });
+        expect(toolHandler).toHaveBeenCalledWith({ scope: { type: 'now' }, tool: { name: 'literal data' } });
+        runner.dispose();
     });
-
-    it.each(['analyze_telemetry', 'run_recorded_ai_analysis'])(
-        'dispatches stored %s arguments only when telemetry makes the event due', async (toolName) => {
-            const directory = createOperationComponentRefDirectory();
-            const runner = new LiveRangeTodoListRunner(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
-            const summarize = () => {
-                const events = runner.get().todo_list?.events ?? [];
-                return asWorkflow(resolvedOperation({
-                    status: events.length > 0 ? 'ready' as const : 'empty' as const,
-                    event_count: events.length,
-                    pending_count: events.filter(({ status }) => status === 'pending').length,
-                    running_count: events.filter(({ status }) => status === 'running').length,
-                }, 'complete'));
-            };
-            reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
-                addEvent: (event: LiveRangeTodoEventInput) => runner.addEvent(event),
-                get: () => runner.get(),
-                getForAi: summarize,
-            } satisfies Partial<LiveRangeTodoListHandle>);
-            const toolHandler = jest.fn(() => resolvedOperation({ status: 'ready' }, 'ready'));
-            reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_SESSION, { analyzeTelemetryForAi: toolHandler });
-            reserve(directory, OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS, { runRecordedAnalysisForAi: toolHandler });
-            const storedArguments = { scope: { type: 'now' } };
-
-            const operation = childLiveRegistry(directory).add_event_to_live_range_todo_list(
-                scheduledPayload([scheduledItem('deferred', toolName, storedArguments)]),
-            );
-            storedArguments.scope.type = 'last_seconds';
-
-            await expect(operation.result).resolves.toMatchObject({ event_count: 1 });
-            expect(toolHandler).not.toHaveBeenCalled();
-            runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_laps: 1 });
-            runner.acceptTelemetry({ Graphics_normalized_car_position: 0.6, Graphics_completed_laps: 1 });
-            expect(toolHandler).toHaveBeenCalledWith({ scope: { type: 'now' } });
-            for (let index = 0; index < 6; index += 1) await Promise.resolve();
-            expect(runner.get().todo_list?.events).toHaveLength(0);
-        },
-    );
 
     it.each([
         ['unwrapped', { tools: [scheduledItem('bad')] }],
@@ -890,11 +830,6 @@ describe('live range to-do workflow', () => {
         } as any])],
         ['unknown later tool', scheduledPayload([scheduledItem('first'), scheduledItem('bad', 'missing')])],
         ['inherited name', scheduledPayload([scheduledItem('bad', 'toString')])],
-        ['recursive tool', scheduledPayload([scheduledItem('bad', 'add_event_to_live_range_todo_list')])],
-        ['filtered comparison recursion', scheduledPayload([scheduledItem(
-                'bad',
-                'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
-            )])],
         ['invalid arguments', scheduledPayload([scheduledItem('bad', 'analyze_telemetry', { value: undefined })])],
         ['AI-provided ETA', scheduledPayload([{
             tool: {
@@ -905,68 +840,23 @@ describe('live range to-do workflow', () => {
         ['duplicate ids', scheduledPayload([scheduledItem('same'), scheduledItem('same')])],
     ])('rejects an invalid atomic batch: %s', async (_label, payload) => {
         const directory = createOperationComponentRefDirectory();
-        const addEvent = jest.fn();
-        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
-            addEvent,
-            get: () => todoResult() as any,
-            getForAi: jest.fn(),
-        } satisfies Partial<LiveRangeTodoListHandle>);
-
-        const operation = childLiveRegistry(directory)
-            .add_event_to_live_range_todo_list(payload as any);
-
-        await expect(operation.result).rejects.toMatchObject({
-            name: 'InvalidLiveRangeTodoListError',
-        });
-        expect(addEvent).not.toHaveBeenCalled();
+        const runner = mountLiveQueue(directory);
+        const added = jest.spyOn(runner, 'addEvent');
+        await expect(childLiveRegistry(directory).add_event_to_live_range_todo_list(payload as any).result)
+            .rejects.toMatchObject({ name: 'InvalidLiveRangeTodoListError' });
+        expect(added).not.toHaveBeenCalled();
+        runner.dispose();
     });
 
-    it.each([
-        'create_repeatable_plan',
-        'retry_repeatable_plan_task',
-        'set_procedure_plan',
-        'advance_plan_step',
-        'clear_procedure_plan',
-        'add_event_to_live_range_todo_list',
-        'get_live_range_todo_list',
-        'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
-    ])('rejects unsafe nested tool %s without mutating the list', async (toolName) => {
+    it('rejects existing event IDs before adding any part of a batch', async () => {
         const directory = createOperationComponentRefDirectory();
-        const addEvent = jest.fn();
-        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
-            addEvent,
-            get: () => todoResult() as any,
-            getForAi: jest.fn(),
-        } satisfies Partial<LiveRangeTodoListHandle>);
-
-        const operation = childLiveRegistry(directory).add_event_to_live_range_todo_list(
-            scheduledPayload([scheduledItem('valid'), scheduledItem('unsafe', toolName)]),
-        );
-
-        await expect(operation.result).rejects.toMatchObject({
-            name: 'InvalidLiveRangeTodoListError',
-        });
-        expect(addEvent).not.toHaveBeenCalled();
-    });
-
-    it('rejects collisions with existing events before adding any batch item', async () => {
-        const directory = createOperationComponentRefDirectory();
-        const addEvent = jest.fn();
-        const initializeLiveRangeTodoList = jest.fn();
-        reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, { initializeLiveRangeTodoList });
-        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
-            addEvent,
-            get: () => todoResult([{ id: 'existing' }]) as any,
-            getForAi: jest.fn(),
-        } satisfies Partial<LiveRangeTodoListHandle>);
-
-        const operation = childLiveRegistry(directory).add_event_to_live_range_todo_list(
-            scheduledPayload([scheduledItem('new'), scheduledItem('existing')]),
-        );
-
-        await expect(operation.result).rejects.toThrow(/Duplicate/);
-        expect(addEvent).not.toHaveBeenCalled();
-        expect(initializeLiveRangeTodoList).not.toHaveBeenCalled();
+        const runner = mountLiveQueue(directory);
+        const registry = childLiveRegistry(directory);
+        await registry.add_event_to_live_range_todo_list(scheduledPayload([scheduledItem('existing')])).result;
+        const before = runner.getSnapshot();
+        await expect(registry.add_event_to_live_range_todo_list(scheduledPayload([scheduledItem('new'), scheduledItem('existing')])).result).rejects.toThrow(/Duplicate/);
+        expect(runner.getSnapshot()).toEqual(before);
+        runner.dispose();
     });
 });
 
@@ -1026,10 +916,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
             content: { title: 'Already queued comparison' },
             taskStart: duplicateTask,
         });
-        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
-            addEvent: (event: LiveRangeTodoEventInput) => runner.addEvent(event),
-            get: () => runner.get(),
-        } satisfies Partial<LiveRangeTodoListHandle>);
+        mountLiveQueue(directory, runner);
 
         const fiveSecondComparison = comparisonData(5_000);
         const secondComparison = comparisonData(2_000);
@@ -1173,20 +1060,10 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         runner.dispose();
     });
 
-    it('asks AI Chat to initialize the list for an eligible comparison', async () => {
+    it('routes eligible comparisons through the panel append command', async () => {
         const directory = createOperationComponentRefDirectory();
-        const addEvent = jest.fn();
-        const todoHandle: Partial<LiveRangeTodoListHandle> = {
-            addEvent,
-            get: () => todoResult() as any,
-        };
-        const initializeLiveRangeTodoList = jest.fn(() => {
-            reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todoHandle);
-            return todoHandle as LiveRangeTodoListHandle;
-        });
-        reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, {
-            initializeLiveRangeTodoList,
-        } satisfies Partial<WorkflowPanelHandle>);
+        const appendLiveRangeTodoList = jest.fn(() => asWorkflow(resolvedOperation({ status: 'ready', event_count: 1 }, 'complete')));
+        reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, { appendLiveRangeTodoList });
         reserve(directory, 'visualization:analysis-results', {
             prepareComparisonVoices: async () => ({ 'mounted-comparison': 8_000 }),
             getFilteredSegments: () => ({
@@ -1207,13 +1084,13 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
             .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  } }).result)
             .resolves.toMatchObject({ queued_count: 1 });
 
-        expect(initializeLiveRangeTodoList).toHaveBeenCalledTimes(1);
-        expect(addEvent).toHaveBeenCalledWith(expect.objectContaining({
-            id: 'analysis-comparison:mounted-comparison',
-            normalized_position: 0.25,
-            lead_time_seconds: 10,
-            taskStart: expect.any(Function),
-        }));
+        expect(appendLiveRangeTodoList).toHaveBeenCalledWith({ workflow: {
+            name: 'add_event_to_live_range_todo_list',
+            tools: [{ tool: { name: 'display_specific_result_in_overlay',
+                event: { id: 'analysis-comparison:mounted-comparison', normalized_position: 0.25, lead_time_seconds: 10,
+                    content: { title: 'Driver vs Expert' } },
+                arguments: { page_id: 'mounted-page', result_id: 'mounted-comparison' } } }],
+        } }, expect.any(Function));
     });
 
     it.each([

@@ -237,23 +237,24 @@ describe('WorkflowPanel standalone lifecycle', () => {
             second = ref.current!.createRepeatablePlan(repeatable(), dispatch);
             void second.result.catch(() => undefined);
             expect(registrations).toHaveLength(2);
-            expect(registrations[1]).toEqual(['repeatable-plan', 'workflow-panel']);
+            expect(registrations[1]).toEqual(['procedure-plan', 'repeatable-plan', 'workflow-panel']);
         });
-        expect(children[0].abort).toHaveBeenCalledTimes(1);
+        expect(children[0].abort).not.toHaveBeenCalled();
         expect(screen.queryByLabelText('Procedure plan')).not.toBeInTheDocument();
         expect(screen.getByText('Improve consistency')).toBeInTheDocument();
-        await expect(first.result).rejects.toBeInstanceOf(Error);
 
         act(() => {
             third = ref.current!.createProcedurePlan(procedure(), dispatch);
             void third.result.catch(() => undefined);
             expect(registrations).toHaveLength(3);
-            expect(registrations[2]).toEqual(['procedure-plan', 'workflow-panel']);
+            expect(registrations[2]).toEqual(['procedure-plan', 'repeatable-plan', 'workflow-panel']);
         });
-        expect(children[1].abort).toHaveBeenCalledTimes(1);
+        expect(children[0].abort).toHaveBeenCalledTimes(1);
+        expect(children[1].abort).not.toHaveBeenCalled();
         expect(children[2].abort).not.toHaveBeenCalled();
-        await expect(second.result).rejects.toBeInstanceOf(Error);
+        await expect(first.result).rejects.toBeInstanceOf(Error);
         unmount();
+        await expect(second.result).rejects.toBeInstanceOf(Error);
         await expect(third.result).rejects.toBeInstanceOf(Error);
         children.forEach((child) => expect(child.abort).toHaveBeenCalledTimes(1));
         expect(mockDirectory.getComponentNames()).toEqual([]);

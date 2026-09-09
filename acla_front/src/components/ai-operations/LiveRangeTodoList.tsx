@@ -11,8 +11,11 @@ import {
 } from 'views/floating-chat/overlay-renderer-validation';
 import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
 import { asWorkflow } from './workflow';
-import { assertTool } from './tool';
+import { bindWorkflowDispatcher, type WorkflowDispatcher } from './tool';
+import { validateLiveRangeTodoBatch } from './live-range-todo-validation';
 import type {
+    LiveRangeTodoListInput,
+    CreateLiveRangeTodoListInput,
     LiveRangeTodoContent,
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
@@ -24,6 +27,10 @@ import type {
 } from './live-range-todo-list-types';
 import {
     createOperation,
+    createOperationFrom,
+    createControlledOperation,
+    OperationAbortedError,
+    type ControlledOperation,
 } from './operation';
 
 const DEFAULT_LEAD_TIME_SECONDS = 2;
@@ -402,6 +409,9 @@ export class LiveRangeTodoListRunner
 extends WorkflowComponentBase<LiveRangeTodoListSnapshot | null>
 implements LiveRangeTodoListHandle {
     private runtime: RuntimeSnapshot;
+    private completion: ControlledOperation<LiveRangeTodoListAiResult, never, string> | null = null;
+    private executionError: Error | null = null;
+    private unsubscribeTelemetry?: () => void;
     private samples: LiveRangeTelemetrySample[] = [];
     private previousSample: LiveRangeTelemetrySample | null = null;
     private readonly activeRuns = new Map<string, ActiveRun>();
@@ -423,8 +433,64 @@ implements LiveRangeTodoListHandle {
         this.onChange = onChange;
     }
 
+    createLiveRangeTodoList(input: CreateLiveRangeTodoListInput, dispatch: WorkflowDispatcher) {
+        try {
+            const prepared = validateLiveRangeTodoBatch(input, dispatch, 'create_live_range_todo_list');
+            this.assertCanReplace(dispatch.workflowCaller);
+            this.cancelCompletion();
+            this.executionError = null;
+            const completion = createControlledOperation<LiveRangeTodoListAiResult>([], () => this.reset());
+            this.completion = completion;
+            const token = this.beginExecution(dispatch.workflowCaller);
+            this.trackExecution(completion.operation, token);
+            const owned = bindWorkflowDispatcher(dispatch, this);
+            this.replaceEvents(prepared.map(({ event, tool }) => ({ ...event,
+                taskStart: (signal) => owned(tool.name, tool.arguments, signal) })));
+            return asWorkflow(completion.operation);
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
+    }
+
+    appendLiveRangeTodoList(input: LiveRangeTodoListInput, dispatch: WorkflowDispatcher) {
+        try {
+            const prepared = validateLiveRangeTodoBatch(input, dispatch);
+            this.assertCanAppend(dispatch.workflowCaller);
+            const ids = new Set(this.runtime.events.map((event) => event.id));
+            for (const { event } of prepared) {
+                if (ids.has(event.id)) this.invalidList(`Duplicate live range to-do event id: ${event.id}.`);
+            }
+            const owned = bindWorkflowDispatcher(dispatch, this);
+            // Validation of the complete batch precedes every mutation.
+            prepared.forEach(({ event, tool }) => this.addEvent({ ...event,
+                taskStart: (signal) => owned(tool.name, tool.arguments, signal) }));
+            return this.getForAi();
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
+    }
+
+    private cancelCompletion(): void {
+        const completion = this.completion;
+        this.completion = null;
+        completion?.reject('cancelled', new OperationAbortedError());
+    }
+
     getForAi() {
         return asWorkflow(createOperation(toAiResult(this.get()), 'complete'));
+    }
+
+    connectTelemetry(): void {
+        if (this.unsubscribeTelemetry || this.isDisposed()) return;
+        this.unsubscribeTelemetry = liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') this.reset();
+            if (event.type === 'frame') this.acceptTelemetry(event.sample);
+        });
+    }
+
+    disconnectTelemetry(): void {
+        this.unsubscribeTelemetry?.();
+        this.unsubscribeTelemetry = undefined;
     }
 
     getComponentType(): string {
@@ -637,6 +703,7 @@ implements LiveRangeTodoListHandle {
     }
 
     clear(): LiveRangeTodoListResult {
+        this.cancelCompletion();
         this.abortRunningEvents();
         const next = this.commit({ ...this.runtime, events: [], updated_at: Date.now() });
         return { status: 'empty', todo_list: next, message: 'Cleared the live range to-do list.' };
@@ -694,6 +761,7 @@ implements LiveRangeTodoListHandle {
     }
 
     reset(): void {
+        this.cancelCompletion();
         this.abortRunningEvents();
         this.samples = [];
         this.previousSample = null;
@@ -708,6 +776,8 @@ implements LiveRangeTodoListHandle {
     }
 
     protected onDispose(): void {
+        this.disconnectTelemetry();
+        this.cancelCompletion();
         this.abortRunningEvents();
         this.samples = [];
         this.previousSample = null;
@@ -723,7 +793,13 @@ implements LiveRangeTodoListHandle {
         const visibleSnapshot = snapshot.events.length > 0 ? snapshot : null;
         this.publishSnapshot(visibleSnapshot);
         this.onChange?.(visibleSnapshot);
-        if (snapshot.events.length === 0) this.dispose();
+        if (snapshot.events.length === 0) {
+            const completion = this.completion;
+            this.completion = null;
+            if (this.executionError) completion?.reject('failed', this.executionError);
+            else completion?.resolve('complete', toAiResult(this.get()));
+            this.dispose();
+        }
         return snapshot;
     }
 
@@ -782,8 +858,8 @@ implements LiveRangeTodoListHandle {
             if (ids && !ids.has(id)) return;
             run.unsubscribeTermination();
             this.activeRuns.delete(id);
-            run.controller.abort();
             run.operation?.abort();
+            run.controller.abort();
         });
     }
 
@@ -823,7 +899,6 @@ implements LiveRangeTodoListHandle {
 
         try {
             const operation = runningEvent.taskStart(controller.signal);
-            assertTool(operation);
             activeRun.operation = operation;
             const unsubscribeTermination = operation.notifyTerminated((termination) => {
                 this.finishEvent(
@@ -849,7 +924,10 @@ implements LiveRangeTodoListHandle {
         if (!activeRun || activeRun.token !== token || activeRun.controller.signal.aborted) return;
         activeRun.unsubscribeTermination();
         this.activeRuns.delete(id);
-        if (error !== undefined) console.error(`Live range to-do event '${id}' task failed.`, error);
+        if (error !== undefined) {
+            this.executionError ??= error instanceof Error ? error : new Error(String(error));
+            console.error(`Live range to-do event '${id}' task failed.`, error);
+        }
         if (!this.runtime.events.some((event) => event.id === id)) {
             return;
         }
@@ -883,11 +961,8 @@ export const useLiveRangeTodoListWorkflow = ({
     useEffect(() => dispose, [dispose]);
 
     useEffect(() => {
-        if (!live) return;
-        return liveTelemetryStore.subscribeEvents((event) => {
-            if (event.type === 'session-reset') runnerRef.current?.reset();
-            if (event.type === 'frame') runnerRef.current?.acceptTelemetry(event.sample);
-        }, { replayLatest: true });
+        if (live) runnerRef.current?.connectTelemetry();
+        else runnerRef.current?.disconnectTelemetry();
     }, [live]);
 
     useEffect(() => {
@@ -910,16 +985,38 @@ export const useLiveRangeTodoListWorkflow = ({
             runner = next;
         }
         try {
-            mountWorkflow({ runner, dispose, retainOnHide: true });
+            mountWorkflow({ runner, dispose });
             runnerRef.current = runner;
+            if (live) runner.connectTelemetry();
             return runner;
         } catch (error) {
             runner.dispose();
             throw error;
         }
-    }, [dispose, mountWorkflow, onEmpty]);
+    }, [dispose, mountWorkflow, onEmpty, live]);
 
-    return { initializeLiveRangeTodoList, reset: dispose };
+    const createLiveRangeTodoList = useCallback((input: CreateLiveRangeTodoListInput, dispatch: WorkflowDispatcher) => {
+        try {
+            validateLiveRangeTodoBatch(input, dispatch, 'create_live_range_todo_list');
+            runnerRef.current?.assertCanReplace(dispatch.workflowCaller);
+            dispose();
+            return initializeLiveRangeTodoList().createLiveRangeTodoList(input, dispatch);
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
+    }, [dispose, initializeLiveRangeTodoList]);
+
+    const appendLiveRangeTodoList = useCallback((input: LiveRangeTodoListInput, dispatch: WorkflowDispatcher) => {
+        try {
+            validateLiveRangeTodoBatch(input, dispatch);
+            runnerRef.current?.assertCanAppend(dispatch.workflowCaller);
+            return initializeLiveRangeTodoList().appendLiveRangeTodoList(input, dispatch);
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
+    }, [initializeLiveRangeTodoList]);
+
+    return { initializeLiveRangeTodoList, createLiveRangeTodoList, appendLiveRangeTodoList, reset: dispose };
 };
 
 const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({

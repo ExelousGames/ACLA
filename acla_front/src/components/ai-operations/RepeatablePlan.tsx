@@ -20,18 +20,15 @@ import {
     GoalStopWhenInputIncompatibleError,
     GoalReplacedError,
     GoalStepFailedError,
-    GoalTaskRetryUnavailableError,
     InvalidGoalStopWhenError,
     InvalidGoalNameError,
     InvalidGoalStepsError,
-    RecursiveGoalStopWhenError,
-    RecursiveGoalStepError,
 } from 'contexts/OperationComponentError';
 import { serializeError, type SerializedError } from 'errors/OperationError';
 import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
 import { asWorkflow, readWorkflowCall, type Workflow, type WorkflowCall } from './workflow';
-import { assertTool, readToolCall, type ToolCall, type ToolDispatcher } from './tool';
-import type { FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import { bindWorkflowDispatcher, readToolCall, type ToolCall, type WorkflowDispatcher } from './tool';
+import type { FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import {
     createControlledOperation,
     createOperationFrom,
@@ -65,6 +62,10 @@ export type RepeatablePlanInput = WorkflowCall<'create_repeatable_plan', {
         target: number;
     };
 }>;
+export type AppendRepeatablePlanInput = WorkflowCall<'append_repeatable_plan', {
+    tools: RepeatablePlanInput['workflow']['tools'];
+}>;
+
 export type GoalStatus = 'running' | 'achieved' | 'missed' | 'error';
 export type GoalStepStatus = 'pending' | 'running' | 'completed' | 'error';
 export type GoalStopWhenStatus = GoalStepStatus;
@@ -166,7 +167,7 @@ export type GoalAiResult = Omit<GoalRunResult, 'name'> & { goal: string };
 
 export interface RepeatablePlanHandle extends NamedOperationComponentHandle, AiOverlayComponentHandle<GoalSnapshot | null> {
     createRepeatablePlan(input: RepeatablePlanInput): Workflow<GoalAiResult>;
-    retryFailedTask(): Workflow<GoalAiResult>;
+    appendRepeatablePlan(input: AppendRepeatablePlanInput, caller?: WorkflowComponentBase<any>): Workflow<{ status: 'ready'; step_count: number }>;
     getSnapshot(): GoalSnapshot | null;
     clear(): void;
 }
@@ -182,10 +183,6 @@ export type RepeatablePlanProps = {
 };
 
 const RETRY_DELAY_MS = 1000;
-const RECURSIVE_GOAL_OPERATION_NAMES = new Set([
-    'create_repeatable_plan',
-    'retry_repeatable_plan_task',
-]);
 const createRepeatablePlanRunId = (): string => (
     `goal-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
 );
@@ -294,23 +291,11 @@ export const validateGoalRequest = (
             };
         }
         ids.add(step.id);
-        if (RECURSIVE_GOAL_OPERATION_NAMES.has(step.name)) {
-            return {
-                error: new RecursiveGoalStepError(componentName, 'Repeatable plan steps cannot invoke repeatable-plan management workflows.'),
-                name,
-            };
-        }
     }
     const stopWhen = parseGoalStopWhen(input.stop_when);
     if (!stopWhen) {
         return {
             error: new InvalidGoalStopWhenError(componentName, 'Provide a valid repeatable plan stop condition.'),
-            name,
-        };
-    }
-    if (RECURSIVE_GOAL_OPERATION_NAMES.has(stopWhen.tool.name)) {
-        return {
-            error: new RecursiveGoalStopWhenError(componentName, 'Repeatable plan stop condition cannot invoke a repeatable-plan management workflow.'),
             name,
         };
     }
@@ -432,24 +417,49 @@ extends WorkflowComponentBase<GoalSnapshot | null>
 implements RepeatablePlanHandle {
     private currentSnapshot: GoalSnapshot | null = null;
     private request: GoalRequest | null = null;
-    private failedStepIndex: number | null = null;
-    private stopWhenFailed = false;
     private stepAttempts: number[] = [];
     private stopWhenAttempts = 0;
     private taskResults: GoalTaskResult[] = [];
     private generation = 0;
+    private executionParent?: WorkflowComponentBase<any>;
+    private cancelRetryDelay?: () => void;
     private activeOperation: ActiveGoalOperation | null = null;
 
     constructor(
         componentName: string,
-        private readonly dispatchOperation: ToolDispatcher,
+        private readonly dispatchOperation: WorkflowDispatcher,
         private readonly onChange?: (snapshot: GoalSnapshot | null) => void,
     ) {
         super(componentName, null);
+        this.executionParent = dispatchOperation.workflowCaller;
+        this.dispatchOperation = bindWorkflowDispatcher(dispatchOperation, this);
     }
 
     createRepeatablePlan(input: RepeatablePlanInput): Workflow<GoalAiResult> {
         return asWorkflow(mapOperation(this.create(input), toGoalAiResult));
+    }
+
+    appendRepeatablePlan(input: AppendRepeatablePlanInput, caller?: WorkflowComponentBase<any>) {
+        try {
+            const steps = parseAppendRepeatablePlanInput(input);
+            steps.forEach((step) => this.dispatchOperation.validate(step.name));
+            this.assertCanAppend(caller);
+            if (!this.request || !this.currentSnapshot) throw new Error('Create a repeatable plan with a stop condition before appending.');
+            const ids = new Set(this.request.steps.map((step) => step.id));
+            for (const step of steps) {
+                if (ids.has(step.id)) throw new DuplicateGoalStepIdError(this.getComponentName(), `Repeatable plan step id '${step.id}' is duplicated.`);
+                ids.add(step.id);
+            }
+            this.request.steps.push(...steps);
+            this.stepAttempts.push(...steps.map(() => 0));
+            this.publish({ ...this.currentSnapshot, steps: [...this.currentSnapshot.steps,
+                ...steps.map((step) => ({ ...step, status: 'pending' as const, attempts: 0, run_id: null, error: null }))] });
+            this.cancelRetryDelay?.();
+            const step_count = this.request.steps.length;
+            return asWorkflow(createOperationFrom(() => ({ status: 'ready' as const, step_count }), 'complete'));
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
     }
 
     getComponentType(): string {
@@ -490,56 +500,11 @@ implements RepeatablePlanHandle {
     private async runCreate(input: GoalRequest): Promise<GoalRunResult> {
         this.generation += 1;
         this.request = input;
-        this.failedStepIndex = null;
-        this.stopWhenFailed = false;
         this.stepAttempts = input.steps.map(() => 0);
         this.stopWhenAttempts = 0;
         this.taskResults = [];
         this.publish(this.createRunningSnapshot(input));
         return this.runPreparation(input, this.generation, 0);
-    }
-
-    retryFailedTask(): Workflow<GoalAiResult> {
-        return asWorkflow(mapOperation(this.retryFailedTaskResult(), toGoalAiResult));
-    }
-
-    private retryFailedTaskResult(): Workflow<GoalRunResult> {
-        const request = this.request;
-        if (!request) return asWorkflow(createOperationFrom(() => this.runRetryFailedTask(), 'failed'));
-        return this.startOperation(() => this.runRetryFailedTask());
-    }
-
-    private async runRetryFailedTask(): Promise<GoalRunResult> {
-        const request = this.request;
-        if (!request || !this.currentSnapshot || this.currentSnapshot.status !== 'error') {
-            throw new GoalTaskRetryUnavailableError(
-                this.getComponentName(),
-                'The failed repeatable plan task could not be retried.',
-            );
-        }
-        const generation = ++this.generation;
-        if (this.failedStepIndex !== null) {
-            const index = this.failedStepIndex;
-            this.failedStepIndex = null;
-            const { failed_step: _failedStep, error: _error, ...snapshot } = this.currentSnapshot;
-            this.publish({ ...snapshot, status: 'running', actual: null });
-            return this.runPreparation(request, generation, index);
-        }
-        if (this.stopWhenFailed) {
-            this.stopWhenFailed = false;
-            const { failed_step: _failedStep, error: _error, ...snapshot } = this.currentSnapshot;
-            this.publish({
-                ...snapshot,
-                status: 'running',
-                actual: null,
-                stop_when_result: this.pendingStopWhenResult(request),
-            });
-            return this.runStopWhen(request, generation);
-        }
-        throw new GoalTaskRetryUnavailableError(
-            this.getComponentName(),
-            'The failed repeatable plan task could not be retried.',
-        );
     }
 
     clear(): void {
@@ -550,10 +515,12 @@ implements RepeatablePlanHandle {
         this.generation += 1;
         this.currentSnapshot = null;
         this.request = null;
-        this.failedStepIndex = null;
-        this.stopWhenFailed = false;
         this.onChange?.(null);
         this.publishSnapshot(null);
+        this.stepAttempts = [];
+        this.stopWhenAttempts = 0;
+        this.taskResults = [];
+        this.deleteComponentRef();
     }
 
     protected onDispose(): void {
@@ -564,6 +531,9 @@ implements RepeatablePlanHandle {
         this.generation += 1;
         this.currentSnapshot = null;
         this.request = null;
+        this.stepAttempts = [];
+        this.stopWhenAttempts = 0;
+        this.taskResults = [];
     }
 
     private startOperation(
@@ -584,6 +554,9 @@ implements RepeatablePlanHandle {
             nestedOperation: null,
         };
         this.activeOperation = operation;
+        const token = this.beginExecution(this.executionParent);
+        this.executionParent = undefined;
+        this.trackExecution(controller.operation, token);
         void run().then(
             (result) => operation.controller.resolve('complete', result),
             (error) => operation.controller.reject(
@@ -600,6 +573,7 @@ implements RepeatablePlanHandle {
         status: 'cancelled' | 'replaced',
         error: Error,
     ): void {
+        this.cancelRetryDelay?.();
         const operation = this.activeOperation;
         if (!operation) return;
         this.activeOperation = null;
@@ -656,8 +630,6 @@ implements RepeatablePlanHandle {
                 ...(execution.error ? { error: serializeError(execution.error) } : {}),
             });
             if (execution.error) {
-                this.failedStepIndex = index;
-                this.stopWhenFailed = false;
                 this.updateStep(index, {
                     status: 'error',
                     run_id: sourceResult.run_id,
@@ -692,6 +664,7 @@ implements RepeatablePlanHandle {
         request: GoalRequest,
         generation: number,
     ): Promise<GoalRunResult> {
+        const checkedStepCount = request.steps.length;
         const attempt = ++this.stopWhenAttempts;
         this.publish({
             ...this.currentSnapshot!,
@@ -711,6 +684,9 @@ implements RepeatablePlanHandle {
         if (generation !== this.generation) {
             throw new GoalReplacedError(this.getComponentName(), 'The repeatable plan run was cancelled.');
         }
+        if (request.steps.length > checkedStepCount) {
+            return this.runPreparation(request, generation, checkedStepCount);
+        }
         let error = execution.error;
         let actual: number | null = null;
         if (!error) {
@@ -723,8 +699,6 @@ implements RepeatablePlanHandle {
             }
         }
         if (error) {
-            this.failedStepIndex = null;
-            this.stopWhenFailed = true;
             const snapshot: GoalSnapshot = {
                 ...this.currentSnapshot!,
                 status: 'error',
@@ -745,8 +719,6 @@ implements RepeatablePlanHandle {
             return this.failedRunResult(snapshot);
         }
 
-        this.failedStepIndex = null;
-        this.stopWhenFailed = false;
         const achieved = compareGoalValues(
             actual!,
             request.stop_when.operator,
@@ -767,16 +739,23 @@ implements RepeatablePlanHandle {
                 },
             };
         this.publish(snapshot);
+        if (request.steps.length > checkedStepCount) {
+            return this.runPreparation(request, generation, checkedStepCount);
+        }
         if (!achieved) {
             await this.retryDelay();
             if (generation !== this.generation) {
                 throw new GoalReplacedError(this.getComponentName(), 'The repeatable plan run was cancelled.');
             }
+            if (request.steps.length > checkedStepCount) {
+                return this.runPreparation(request, generation, checkedStepCount);
+            }
             this.publish(this.createRunningSnapshot(request));
             return this.runPreparation(request, generation, 0);
         }
+        const result = toRunResult(snapshot, this.taskResults);
         this.finish();
-        return toRunResult(snapshot, this.taskResults);
+        return result;
     }
 
     private async executeTask(
@@ -790,10 +769,9 @@ implements RepeatablePlanHandle {
         let operation: Operation<NestedOperationResult, NestedOperationStatus> | null = null;
         try {
             const dispatchedOperation = this.dispatchOperation(
-                toolName as FrontendToolName,
+                toolName as FrontendOperationName,
                 argumentsValue ?? {},
             );
-            assertTool(dispatchedOperation);
             operation = dispatchedOperation;
             if (
                 !activeOperation
@@ -901,13 +879,35 @@ implements RepeatablePlanHandle {
     }
 
     private finish(): void {
-        // The completed repeatable plan stays mounted until AI Chat replaces it.
+        this.currentSnapshot = null;
+        this.request = null;
+        this.stepAttempts = [];
+        this.stopWhenAttempts = 0;
+        this.taskResults = [];
+        this.publishSnapshot(null);
+        this.onChange?.(null);
+        this.deleteComponentRef();
     }
 
     private retryDelay(): Promise<void> {
-        return new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        return new Promise((resolve) => {
+            const finish = () => {
+                clearTimeout(timer);
+                this.cancelRetryDelay = undefined;
+                resolve();
+            };
+            const timer = setTimeout(finish, RETRY_DELAY_MS);
+            this.cancelRetryDelay = finish;
+        });
     }
 }
+
+export const parseAppendRepeatablePlanInput = (value: unknown): GoalStepDescriptor[] => {
+    const input = readWorkflowCall(value, 'append_repeatable_plan');
+    if (!input || !hasOnlyKeys(input, ['name', 'tools'])) throw new InvalidGoalStepsError('repeatable-plan', 'Provide append_repeatable_plan with tools.');
+    return parseRepeatablePlanInput({ workflow: { name: 'create_repeatable_plan', goal: 'Append', tools: input.tools,
+        stop_when: { tool: { name: 'query_analysis_result' }, operator: 'eq', target: 0 } } }).steps;
+};
 
 export const useRepeatablePlanWorkflow = ({
     mountWorkflow,
@@ -927,12 +927,14 @@ export const useRepeatablePlanWorkflow = ({
 
     const createRepeatablePlan = useCallback((
         input: RepeatablePlanInput,
-        dispatcher: ToolDispatcher,
+        dispatcher: WorkflowDispatcher,
     ): Workflow<GoalAiResult> => {
         try {
             const request = parseRepeatablePlanInput(input);
             request.steps.forEach((step) => dispatcher.validate(step.name));
             dispatcher.validate(request.stop_when.tool.name);
+            runnerRef.current?.assertCanReplace(dispatcher.workflowCaller);
+            dispose();
             const runner = new RepeatablePlanRunner(
                 OPERATION_COMPONENT_NAMES.REPEATABLE_PLAN,
                 dispatcher,
@@ -942,8 +944,8 @@ export const useRepeatablePlanWorkflow = ({
                 },
             );
             try {
-                mountWorkflow({ runner, dispose });
                 runnerRef.current = runner;
+                mountWorkflow({ runner, dispose });
                 setSnapshot(null);
                 return runner.createRepeatablePlan(input);
             } catch (error) {
@@ -956,12 +958,23 @@ export const useRepeatablePlanWorkflow = ({
         }
     }, [dispose, mountWorkflow]);
 
+    const appendRepeatablePlan = useCallback((input: AppendRepeatablePlanInput, dispatcher: WorkflowDispatcher) => {
+        try {
+            const steps = parseAppendRepeatablePlanInput(input);
+            steps.forEach((step) => dispatcher.validate(step.name));
+            if (!runnerRef.current?.getSnapshot()) throw new Error('Create a repeatable plan with a stop condition before appending.');
+            return runnerRef.current.appendRepeatablePlan(input, dispatcher.workflowCaller);
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+        }
+    }, []);
+
     const reset = useCallback(() => {
         dispose();
         setSnapshot(null);
     }, [dispose]);
 
-    return { createRepeatablePlan, snapshot, reset };
+    return { createRepeatablePlan, appendRepeatablePlan, snapshot, reset };
 };
 
 const getComparisonText = (snapshot: GoalSnapshot): string => {

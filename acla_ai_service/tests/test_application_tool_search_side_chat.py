@@ -305,7 +305,6 @@ def test_selector_prompt_refers_to_tool_guidance_without_embedding_catalog(user_
 @pytest.mark.parametrize("name, arguments", [
     ("advance_plan_step", {"reason": "The current request is complete."}),
     ("clear_procedure_plan", {"reason": "The driver cancelled."}),
-    ("retry_repeatable_plan_task", {}),
     ("get_live_range_todo_list", {}),
 ])
 async def test_side_chat_keeps_control_and_read_arguments_unwrapped(name, arguments):
