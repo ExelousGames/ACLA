@@ -148,7 +148,7 @@ const MODEL_COMMAND_DEFINITIONS = [
     {
         name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
         description: [
-            'Visualize analysis results with Driver vs Expert comparisons in the overlay while driving. Use when the user asks to visualize analysis results while driving or show driver-versus-expert comparisons in the overlay.',
+            'Visualize analysis results with Driver vs Expert comparisons in the overlay while driving. Use when the user asks to visualize analysis results while driving.',
             'Append Driver vs Expert comparison events for the active Analysis Results page\'s last successfully applied segment filter. Events keep the displayed segment order, retain existing to-do items, and publish only when live telemetry makes each event due.',
         ].join(' '),
         properties: {},
@@ -211,7 +211,7 @@ const MODEL_COMMAND_DEFINITIONS = [
     {
         name: 'apply_query_to_analysis_result',
         description: [
-            'Apply a final JSONata expression to the visible Analysis Results. The tool returns only its status and does not return the matched results.',
+            'Apply a final JSONata expression to the visible Analysis Results tab. The tool returns only its status and does not return the matched results.',
             'The expression receives only { "elements": [{ "id": "...", "labels": ["..."], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] } for the selected page; it does not receive the current View selection or hidden page data.',
             'The JSONata expression must evaluate to null, one element ID string, one object with a string id, or a flat array of element IDs or objects with string ids. Unknown IDs and nested arrays are rejected.',
             'Examples: elements; elements[labels[$ = "Lockup"]]; elements[labels[$ = "Mistake (Practice)"]].id.',
