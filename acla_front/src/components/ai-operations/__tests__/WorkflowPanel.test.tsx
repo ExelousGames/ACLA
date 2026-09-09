@@ -7,6 +7,8 @@ import {
     type OperationComponentRefDirectory,
 } from 'contexts/OperationComponentRefContext';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
+import { createAiCommandRegistry } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import type { AnalysisResultsChartHandle } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
 import WorkflowPanel, { type WorkflowPanelHandle } from '../WorkflowPanel';
 import type { ProcedurePlanInput } from '../ProcedurePlan';
 import type { RepeatablePlanInput } from '../RepeatablePlan';
@@ -111,6 +113,78 @@ describe('WorkflowPanel standalone lifecycle', () => {
         cleanup();
         liveTelemetryStore.resetSession();
         jest.restoreAllMocks();
+    });
+
+    it.each(['new', 'drained'] as const)('shows filtered comparisons after telemetry updates a %s queue during voice preparation', async (queueState) => {
+        const task = pendingTool();
+        const dispatch = Object.assign(jest.fn(() => task.operation), { validate: jest.fn() });
+        const { ref } = renderPanel(dispatch);
+        if (queueState === 'drained') act(() => { addLiveTask(ref.current!, task); });
+        let finishVoices!: (durations: Record<string, number>) => void;
+        const prepareComparisonVoices = jest.fn(() => new Promise<Record<string, number>>((resolve) => {
+            finishVoices = resolve;
+        }));
+        const segments = Array.from({ length: 11 }, (_, index) => ({
+            id: `corner-${index}`,
+            title: `Turn ${index + 1}`,
+            labels: ['MSP'],
+            normalizedPositionRange: { start: 0.6 + index * 0.03, end: 0.62 + index * 0.03 },
+            comparison: {
+                samples: [0, 1_000].map((time) => ({
+                    driverTimeMs: time,
+                    expertTimeMs: time,
+                    driverTrackPosition: 0.1 + time / 10_000,
+                    expertTrackPosition: 0.1 + time / 10_000,
+                    driverGas: 0.2,
+                    expertGas: 0.3,
+                })),
+            },
+        }));
+        const displaySpecificResultInOverlay = jest.fn(() => { throw new Error('Unexpected comparison playback'); });
+        mockDirectory.registerComponentRef({ current: {
+            getComponentName: () => 'visualization:analysis-results',
+            getFilteredSegments: () => ({
+                status: 'ready',
+                activePageId: 'baseline-page',
+                appliedView: 'mistakes',
+                committedQuery: 'elements[labels[$ = "MSP"]]',
+                segments,
+            }),
+            prepareComparisonVoices,
+            displaySpecificResultInOverlay,
+        } satisfies Partial<AnalysisResultsChartHandle> });
+        const registry = createAiCommandRegistry({
+            componentRefs: mockDirectory,
+            sessionMode: 'live',
+            conversationRole: 'agent',
+            agentMode: 'live_performance_analyst',
+            sessionGame: 'acc',
+        });
+        let operation!: ReturnType<typeof registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list>;
+        await act(async () => {
+            operation = registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({});
+        });
+        expect(prepareComparisonVoices).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            makeLiveTaskDue();
+            if (queueState === 'drained') task.controller.resolve('complete', {});
+        });
+        expect(screen.queryByLabelText('Live range to-do list')).not.toBeInTheDocument();
+
+        await act(async () => {
+            finishVoices(Object.fromEntries(segments.map(({ id }) => [id, 8_000])));
+            await expect(operation.result).resolves.toMatchObject({
+                matched_count: 11, queued_count: 11, skipped_count: 0,
+            });
+        });
+        expect(screen.getByLabelText('Live range to-do list')).toBeInTheDocument();
+        expect(screen.getByText('11 planned events')).toBeInTheDocument();
+        expect(screen.getByText('Turn 1: Driver vs Expert')).toBeInTheDocument();
+        const runner = mockDirectory.findComponentRef<LiveRangeTodoListHandle>('live-range-todo-list')?.current;
+        expect(runner?.getSnapshot()?.events).toHaveLength(11);
+        expect(runner?.getOverlayBehavior(runner.getSnapshot())).toMatchObject({ remove: false });
+        expect(displaySpecificResultInOverlay).not.toHaveBeenCalled();
     });
 
     it.each(['procedure', 'repeatable'] as const)('removes an aborted %s plan from the panel and component directory', async (kind) => {

@@ -1,4 +1,5 @@
 import type { DesktopGame } from 'contexts/DesktopGameContext';
+import type { TtsPack } from 'components/tts';
 import type {
     DriverExpertComparisonData,
     DriverExpertComparisonLabelGroup,
@@ -9,4 +10,5 @@ export interface DriverExpertComparisonSnapshot {
     comparison: DriverExpertComparisonData;
     labelGroups?: readonly DriverExpertComparisonLabelGroup[];
     game?: DesktopGame | null;
+    voice?: TtsPack;
 }

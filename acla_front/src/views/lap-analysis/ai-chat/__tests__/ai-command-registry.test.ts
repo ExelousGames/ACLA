@@ -976,6 +976,37 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         jest.useRealTimers();
     });
 
+    it.each(['failure', 'abort'] as const)('does not queue comparisons after voice generation %s', async (outcome) => {
+        const directory = createOperationComponentRefDirectory();
+        const addEvent = jest.fn();
+        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
+            addEvent, get: () => todoResult() as any,
+        } satisfies Partial<LiveRangeTodoListHandle>);
+        let finish!: (value: Record<string, number>) => void;
+        let fail!: (error: Error) => void;
+        const preparation = new Promise<Record<string, number>>((resolve, reject) => { finish = resolve; fail = reject; });
+        const prepareComparisonVoices = jest.fn(() => preparation);
+        reserve(directory, 'visualization:analysis-results', {
+            prepareComparisonVoices,
+            getFilteredSegments: () => ({
+                status: 'ready', activePageId: 'page', appliedView: 'mistakes', committedQuery: 'elements',
+                segments: [{ id: 'corner', labels: [], normalizedPositionRange: { start: 0.5, end: 0.6 }, comparison: comparisonData(1000) }],
+            }),
+        } satisfies Partial<AnalysisResultsChartHandle>);
+        const operation = analystLiveRegistry(directory).add_filtered_driver_expert_comparisons_to_live_range_todo_list({});
+        await Promise.resolve();
+        expect(prepareComparisonVoices).toHaveBeenCalled();
+        expect(addEvent).not.toHaveBeenCalled();
+        if (outcome === 'abort') {
+            operation.abort();
+            finish({ corner: 8000 });
+        } else {
+            fail(new Error('Speech unavailable'));
+        }
+        await expect(operation.result).rejects.toBeInstanceOf(Error);
+        expect(addEvent).not.toHaveBeenCalled();
+    });
+
     it('appends eligible segments in filtered order and publishes overlays only when due', async () => {
         jest.useFakeTimers();
         const directory = createOperationComponentRefDirectory();
@@ -1049,6 +1080,11 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         });
         reserve(directory, 'visualization:analysis-results', {
             getFilteredSegments: () => filteredSnapshot,
+            prepareComparisonVoices: jest.fn(async (_pageId, ids) => {
+                expect(ids).toEqual(['late-first', 'early-second']);
+                expect(runner.get().todo_list?.events).toHaveLength(2);
+                return { 'late-first': 1_000, 'early-second': 1_000 };
+            }),
             displaySpecificResultInOverlay,
         } satisfies Partial<AnalysisResultsChartHandle>);
         reserve(directory, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
@@ -1060,8 +1096,11 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
 
         const operation = analystLiveRegistry(directory)
             .add_filtered_driver_expert_comparisons_to_live_range_todo_list({});
+        const terminated = jest.fn();
+        operation.notifyTerminated(terminated);
         const result = await operation.result;
 
+        expect(terminated).toHaveBeenCalledWith({ status: 'ready', result });
         expect(result).toMatchObject({
             status: 'ready',
             active_page_id: 'analysis-page-7',
@@ -1070,20 +1109,8 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
             matched_count: 6,
             queued_count: 2,
             skipped_count: 4,
-            queued_timing: [{
-                segment_id: 'late-first',
-                event_id: 'analysis-comparison:late-first',
-                normalized_position: 0.4,
-                replay_duration_ms: 5_000,
-                lead_time_seconds: 7,
-            }, {
-                segment_id: 'early-second',
-                event_id: 'analysis-comparison:early-second',
-                normalized_position: 0.7,
-                replay_duration_ms: 2_000,
-                lead_time_seconds: 4,
-            }],
         });
+        expect(result).not.toHaveProperty('queued_timing');
         expect((result as any).skipped_segments).toEqual([
             expect.objectContaining({ segment_id: 'bad-position', reason_code: 'invalid_start_position' }),
             expect.objectContaining({ segment_id: 'missing-comparison', reason_code: 'comparison_unavailable' }),
@@ -1100,6 +1127,10 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         expect(queuedEvents.map(({ id }) => id)).toEqual([
             'analysis-comparison:late-first',
             'analysis-comparison:early-second',
+        ]);
+        expect(queuedEvents).toMatchObject([
+            { normalized_position: 0.4, lead_time_seconds: 7 },
+            { normalized_position: 0.7, lead_time_seconds: 4 },
         ]);
         expect(queuedEvents[0].eta_seconds).toBeNull();
         expect(queuedEvents[1].eta_seconds).toBeNull();
@@ -1158,6 +1189,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
             initializeLiveRangeTodoList,
         } satisfies Partial<WorkflowPanelHandle>);
         reserve(directory, 'visualization:analysis-results', {
+            prepareComparisonVoices: async () => ({ 'mounted-comparison': 8_000 }),
             getFilteredSegments: () => ({
                 status: 'ready',
                 activePageId: 'mounted-page',
@@ -1180,7 +1212,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         expect(addEvent).toHaveBeenCalledWith(expect.objectContaining({
             id: 'analysis-comparison:mounted-comparison',
             normalized_position: 0.25,
-            lead_time_seconds: 3,
+            lead_time_seconds: 10,
             taskStart: expect.any(Function),
         }));
     });
@@ -1212,11 +1244,11 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         expect(getFilteredSegments).toHaveBeenCalledTimes(1);
     });
 
-    it('returns busy without mounting a list and rejects arguments', async () => {
+    it.each(['busy', 'empty'] as const)('reports %s on termination without mounting a list and rejects arguments', async (status) => {
         const directory = createOperationComponentRefDirectory();
         reserve(directory, 'visualization:analysis-results', {
             getFilteredSegments: () => ({
-                status: 'busy',
+                status,
                 activePageId: 'busy-page',
                 appliedView: 'mistakes',
                 committedQuery: 'elements',
@@ -1225,14 +1257,21 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } satisfies Partial<AnalysisResultsChartHandle>);
         const registry = analystLiveRegistry(directory);
 
-        await expect(registry
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({}).result)
+        const operation = registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({});
+        const terminated = jest.fn();
+        operation.notifyTerminated(terminated);
+        await expect(operation.result)
             .resolves.toMatchObject({
-                status: 'busy',
+                status,
                 matched_count: 0,
                 queued_count: 0,
                 skipped_count: 0,
             });
+        expect(terminated).toHaveBeenCalledWith({
+            status,
+            result: expect.objectContaining({ status, queued_count: 0 }),
+        });
+        expect(directory.findComponentRef(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)).toBeNull();
         await expect(registry
             .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ extra: true }).result)
             .rejects.toMatchObject({ name: 'InvalidOperationCallError' });

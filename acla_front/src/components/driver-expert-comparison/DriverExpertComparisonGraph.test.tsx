@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import {
     DRIVER_COMPARISON_COLOR,
     EXPERT_COMPARISON_COLOR,
@@ -170,6 +170,58 @@ describe('DriverExpertComparisonGraph', () => {
             value: cancelAnimationFrameMock,
         });
         setReducedMotion(false);
+    });
+
+    it('plays stored narration on the first animation frame, waits for speech, and stops on unmount', () => {
+        const play = jest.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+        const pause = jest.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+        const onReplayComplete = jest.fn();
+        const voice = { text: 'Brake smoothly.', audioDataUrl: 'data:audio/wav;base64,UklGRg==', durationMs: 8000 };
+        const view = render(<DriverExpertComparisonGraph data={completeData} voice={voice} onReplayComplete={onReplayComplete} />);
+        expect(play).not.toHaveBeenCalled();
+        runAnimationFrame(0);
+        expect(play).toHaveBeenCalledTimes(1);
+        view.rerender(<DriverExpertComparisonGraph data={completeData} voice={voice} onReplayComplete={onReplayComplete} />);
+        runAnimationFrame(4750);
+        expect(play).toHaveBeenCalledTimes(1);
+        expect(onReplayComplete).not.toHaveBeenCalled();
+        expect(screen.getByTestId('replay-status')).toHaveTextContent('Finishing narration');
+        fireEvent.ended(view.container.querySelector('audio')!);
+        expect(onReplayComplete).toHaveBeenCalledTimes(1);
+        view.unmount();
+        expect(pause).toHaveBeenCalled();
+        play.mockRestore();
+        pause.mockRestore();
+    });
+
+    it('finishes the graph if audio playback is blocked', async () => {
+        const play = jest.spyOn(HTMLMediaElement.prototype, 'play').mockRejectedValue(new Error('Autoplay blocked'));
+        const pause = jest.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+        const onReplayComplete = jest.fn();
+        const voice = { text: 'Brake smoothly.', audioDataUrl: 'data:audio/wav;base64,UklGRg==', durationMs: 8000 };
+        const view = render(<DriverExpertComparisonGraph data={completeData} voice={voice} onReplayComplete={onReplayComplete} />);
+        await act(async () => runAnimationFrame(0));
+        expect(screen.getByText('Narration unavailable')).toBeInTheDocument();
+        runAnimationFrame(4750);
+        expect(onReplayComplete).toHaveBeenCalledTimes(1);
+        view.unmount();
+        play.mockRestore();
+        pause.mockRestore();
+    });
+
+    it('stops narration when the graph is replaced and starts the new replay once', () => {
+        const play = jest.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+        const pause = jest.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+        const voice = { text: 'Brake smoothly.', audioDataUrl: 'data:audio/wav;base64,UklGRg==', durationMs: 8000 };
+        const view = render(<DriverExpertComparisonGraph data={completeData} voice={voice} />);
+        runAnimationFrame(0);
+        view.rerender(<DriverExpertComparisonGraph data={{ samples: [...completeData.samples] }} voice={voice} />);
+        expect(pause).toHaveBeenCalled();
+        runAnimationFrame(1000);
+        expect(play).toHaveBeenCalledTimes(2);
+        view.unmount();
+        play.mockRestore();
+        pause.mockRestore();
     });
 
     it('renders a compact HUD with no conventional telemetry charts or axes', () => {

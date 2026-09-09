@@ -6,6 +6,7 @@ import {
     NoLiveTelemetryError,
     OperationExecutionError,
     OperationNotRegisteredError,
+    createControlledOperation,
     createOperationFrom,
     asTool,
     asWorkflow,
@@ -138,13 +139,6 @@ export interface AddFilteredDriverExpertComparisonsResult {
     matched_count: number;
     queued_count: number;
     skipped_count: number;
-    queued_timing: Array<{
-        segment_id: string;
-        event_id: string;
-        normalized_position: number;
-        replay_duration_ms: number;
-        lead_time_seconds: number;
-    }>;
     skipped_segments: Array<{
         segment_id: string;
         event_id: string;
@@ -704,15 +698,15 @@ const createFilteredComparisonResult = (
     matched_count: snapshot.segments.length,
     queued_count: 0,
     skipped_count: 0,
-    queued_timing: [],
     skipped_segments: [],
 });
 
-const queueFilteredDriverExpertComparisons = (
+const queueFilteredDriverExpertComparisons = async (
     context: FrontendAiCommandContext,
     snapshot: FilteredAnalysisSegmentsSnapshot,
     dispatchNested: ToolDispatcher,
-): AddFilteredDriverExpertComparisonsResult => {
+    signal: AbortSignal,
+): Promise<AddFilteredDriverExpertComparisonsResult> => {
     const result = createFilteredComparisonResult(snapshot);
     if (snapshot.status !== 'ready') return result;
 
@@ -766,12 +760,35 @@ const queueFilteredDriverExpertComparisons = (
                 'The filtered analysis results do not identify a retained page.',
             );
         }
-        const todoList = getOrInitializeLiveRangeTodoList(context);
+        const mounted = getDirectory(context).findComponentRef<LiveRangeTodoListHandle>(
+            OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        )?.current;
         const existingIds = new Set(
-            todoList.get().todo_list?.events.map((event) => event.id) ?? [],
+            mounted?.get().todo_list?.events.map((event) => event.id) ?? [],
         );
-        eligible.forEach((comparison) => {
+        const pending = eligible.filter((comparison) => {
             if (existingIds.has(comparison.eventId)) {
+                result.skipped_segments.push({
+                    segment_id: comparison.segmentId,
+                    event_id: comparison.eventId,
+                    reason_code: 'already_queued',
+                });
+                return false;
+            }
+            existingIds.add(comparison.eventId);
+            return true;
+        });
+        const voiceDurations = pending.length > 0
+            ? await getComponent<AnalysisResultsChartHandle>(
+                context, getSingletonVisualizationComponentName('analysis-results'),
+            ).prepareComparisonVoices(snapshot.activePageId, pending.map(({ segmentId }) => segmentId), signal)
+            : {};
+        if (signal.aborted) throw createLiveRangeAbortError();
+        // Telemetry can drain and dispose the queue while voices are being prepared.
+        const todoList = getOrInitializeLiveRangeTodoList(context);
+        const queuedIds = new Set(todoList.get().todo_list?.events.map((event) => event.id) ?? []);
+        pending.forEach((comparison) => {
+            if (queuedIds.has(comparison.eventId)) {
                 result.skipped_segments.push({
                     segment_id: comparison.segmentId,
                     event_id: comparison.eventId,
@@ -779,7 +796,9 @@ const queueFilteredDriverExpertComparisons = (
                 });
                 return;
             }
-            existingIds.add(comparison.eventId);
+            comparison.leadTimeSeconds = Math.max(
+                comparison.replayDurationMs, voiceDurations[comparison.segmentId],
+            ) / 1000 + 2;
             todoList.addEvent({
                 id: comparison.eventId,
                 normalized_position: comparison.normalizedPosition,
@@ -798,17 +817,10 @@ const queueFilteredDriverExpertComparisons = (
                     },
                 }, dispatchNested),
             });
-            result.queued_timing.push({
-                segment_id: comparison.segmentId,
-                event_id: comparison.eventId,
-                normalized_position: comparison.normalizedPosition,
-                replay_duration_ms: comparison.replayDurationMs,
-                lead_time_seconds: comparison.leadTimeSeconds,
-            });
+            result.queued_count += 1;
         });
     }
 
-    result.queued_count = result.queued_timing.length;
     result.skipped_count = result.skipped_segments.length;
     return result;
 };
@@ -860,17 +872,27 @@ const definitionList = Object.freeze([
         name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
         kind: 'workflow',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
-        execute: (context, args, dispatchNested) => createOperationFrom(() => {
-            validateNoArguments(
-                args,
-                'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
-            );
-            const snapshot = getComponent<AnalysisResultsChartHandle>(
-                context,
-                getSingletonVisualizationComponentName('analysis-results'),
-            ).getFilteredSegments();
-            return queueFilteredDriverExpertComparisons(context, snapshot, dispatchNested);
-        }, 'complete'),
+        execute: (context, args, dispatchNested) => {
+            const controller = createControlledOperation<AddFilteredDriverExpertComparisonsResult>();
+            void Promise.resolve().then(async () => {
+                if (controller.signal.aborted) return;
+                validateNoArguments(
+                    args,
+                    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+                );
+                const snapshot = getComponent<AnalysisResultsChartHandle>(
+                    context,
+                    getSingletonVisualizationComponentName('analysis-results'),
+                ).getFilteredSegments();
+                const result = await queueFilteredDriverExpertComparisons(
+                    context, snapshot, dispatchNested, controller.signal,
+                );
+                controller.resolve(result.status, result);
+            }).catch((error) => {
+                controller.reject('failed', error instanceof Error ? error : new Error(String(error)));
+            });
+            return controller.operation;
+        },
     },
     {
         name: 'display_specific_result_in_overlay',

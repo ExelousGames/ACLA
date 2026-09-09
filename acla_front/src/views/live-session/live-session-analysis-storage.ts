@@ -55,7 +55,7 @@ export const getPersistedLiveSessionAnalysis = (
             elements: normalizeAnalysisResultsData(page.elements).elements,
         }));
         const activePageId = pages.find((page) => page.id === parsed.activePageId)?.id
-            ?? pages[0]?.id ?? null;
+            ?? pages[pages.length - 1]?.id ?? null;
         return { pages, activePageId };
     } catch {
         return emptyAnalysis();

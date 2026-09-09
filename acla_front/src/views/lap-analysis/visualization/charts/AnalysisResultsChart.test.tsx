@@ -1,5 +1,11 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { synthesizeTtsPack } from 'components/tts';
+
+jest.mock('components/tts/tts-service', () => ({
+    ...jest.requireActual('components/tts/tts-service'),
+    synthesizeTtsPack: jest.fn(),
+}));
 
 let mockOverlayPresentation: { presentationId: string } | null = null;
 let mockOverlayComponentDirectory: any = null;
@@ -174,6 +180,7 @@ import {
 import * as analysisResultsQuery from './analysisResultsQuery';
 import { ProcedurePlanRunner } from 'components/ai-operations/ProcedurePlan';
 import { RepeatablePlanRunner } from 'components/ai-operations/RepeatablePlan';
+import { LiveRangeTodoListRunner } from 'components/ai-operations/LiveRangeTodoList';
 import { createAiCommandRegistry, createWorkflowToolDispatcher } from '../../ai-chat/ai-command-registry';
 import { normalizeOperationError, serializeError } from 'errors/OperationError';
 import { buildFormattedToolResultFrame } from '../../ai-chat/voice-tool-result-formatter';
@@ -583,6 +590,16 @@ describe('AnalysisResultsChart', () => {
         expect(firstRef.current.getOverlayBehavior(firstRef.current.getSnapshot()))
             .toMatchObject({ requestedStatus: 'focus' });
 
+        const voice = { text: 'Late braking.', audioDataUrl: 'data:audio/wav;base64,UklGRg==', durationMs: 8000 };
+        (synthesizeTtsPack as jest.Mock).mockResolvedValueOnce([voice]);
+        const signal = new AbortController().signal;
+        await expect(chartRef.current!.prepareComparisonVoices('retained-page', ['braking-result'], signal))
+            .resolves.toEqual({ 'braking-result': 8000 });
+        expect(synthesizeTtsPack).toHaveBeenCalledWith([{
+            text: 'Late braking: Driver vs Expert. Mistakes: Late turn-in. Expert: Matches expert line. Recovery: Merge back to expert line',
+        }], signal);
+        expect(mockOverlayComponentDirectory.getComponentRefs()).toHaveLength(1);
+
         const second = chartRef.current!.displaySpecificResultInOverlay(
             'retained-page',
             'braking-result',
@@ -592,6 +609,7 @@ describe('AnalysisResultsChart', () => {
         expect(mockOverlayComponentDirectory.getComponentRefs()).not.toContain(firstRef);
 
         const secondRef = mockOverlayComponentDirectory.getComponentRefs()[0];
+        expect(JSON.parse(JSON.stringify(secondRef.current.getSnapshot())).voice).toEqual(voice);
         secondRef.current.handleOverlayRendererEvent({
             presentationId: 'analysis-overlay-session',
             componentName: secondRef.current.getComponentName(),
@@ -1218,7 +1236,7 @@ describe('AnalysisResultsChart', () => {
         expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
     });
 
-    it('exposes immutable committed-filter snapshots for only the displayed concrete page', async () => {
+    it.each(['filtered-first', null, 'removed-page'])('exposes the selected/latest page filter in either view when activePageId is %s', async (initialPageId) => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const pages: AnalysisResultsPaginationPage[] = [{
             id: 'filtered-first',
@@ -1245,7 +1263,7 @@ describe('AnalysisResultsChart', () => {
             }],
         }];
         const Harness = () => {
-            const [activePageId, setActivePageId] = React.useState('filtered-first');
+            const [activePageId, setActivePageId] = React.useState<string | null>(initialPageId);
             return (
                 <AnalysisResultsChart
                     ref={chartRef}
@@ -1257,31 +1275,31 @@ describe('AnalysisResultsChart', () => {
         };
         render(<Harness />);
 
-        expect(chartRef.current!.getFilteredSegments()).toEqual({
-            status: 'empty',
-            activePageId: null,
-            appliedView: null,
-            committedQuery: null,
+        const expectedInitialPage = initialPageId === 'filtered-first' ? pages[0] : pages[1];
+        expect(chartRef.current!.getFilteredSegments()).toMatchObject({
+            status: 'busy',
+            activePageId: expectedInitialPage.id,
             segments: [],
         });
 
-        fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
         await waitFor(() => expect(chartRef.current!.getFilteredSegments().status).toBe('ready'));
         expect(chartRef.current!.getFilteredSegments()).toMatchObject({
-            activePageId: 'filtered-first',
+            activePageId: expectedInitialPage.id,
             appliedView: 'mistakes',
-            segments: [{ id: 'early' }],
+            segments: [{ id: expectedInitialPage.elements[0].id }],
         });
+        expect(screen.getByRole('button', { name: 'Overall Trends' })).toHaveAttribute('aria-pressed', 'true');
 
+        fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
         selectView('all-results');
         await waitFor(() => expect(chartRef.current!.getFilteredSegments().appliedView)
             .toBe('all-results'));
-        await act(async () => {
-            await chartRef.current!.applyAnalysisResultQuery({
-                query: 'elements^(>normalizedPositionRange.start)',
-                page_number: 1,
-            }).result;
+        const applyOperation = chartRef.current!.applyAnalysisResultQuery({
+            query: 'elements^(>normalizedPositionRange.start)',
+            page_number: 1,
         });
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments().activePageId).toBe('filtered-first'));
+        await act(async () => { await applyOperation.result; });
         await waitFor(() => expect(chartRef.current!.getFilteredSegments().appliedView).toBe('custom'));
         const custom = chartRef.current!.getFilteredSegments();
         expect(custom).toMatchObject({
@@ -1294,6 +1312,10 @@ describe('AnalysisResultsChart', () => {
         expect(Object.isFrozen(custom)).toBe(true);
         expect(Object.isFrozen(custom.segments)).toBe(true);
         expect(Object.isFrozen(custom.segments[1].comparison?.samples)).toBe(true);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Overall Trends' }));
+        expect(chartRef.current!.getFilteredSegments()).toEqual(custom);
+        fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
 
         fireEvent.click(screen.getByRole('button', { name: 'Next' }));
         await waitFor(() => expect(chartRef.current!.getFilteredSegments()).toMatchObject({
@@ -1318,6 +1340,92 @@ describe('AnalysisResultsChart', () => {
         }));
     });
 
+    it.each([null, 'removed-page', 'older-page'])('queues the selected/latest lap while Overall Trends is open and activePageId is %s', async (activePageId) => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const pages: AnalysisResultsPaginationPage[] = [{
+            id: 'older-page',
+            createdAt: 0,
+            baseline: { lap_id: 1, lap_time_ms: 101_000, track: 'Spa', car: 'GT3' },
+            elements: [{
+                id: 'older-mistake',
+                labels: ['MSP'],
+                normalizedPositionRange: { start: 0.2, end: 0.3 },
+                comparison: replayComparisonData(),
+            }],
+        }, {
+            id: 'default-page',
+            createdAt: 1,
+            baseline: { lap_id: 2, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
+            elements: [{
+                id: 'default-mistake',
+                labels: ['MSP'],
+                normalizedPositionRange: { start: 0.2, end: 0.3 },
+                comparison: replayComparisonData(),
+            }, {
+                id: 'excluded-by-filter',
+                labels: ['Telemetry'],
+                normalizedPositionRange: { start: 0.4, end: 0.5 },
+                comparison: replayComparisonData(),
+            }],
+        }];
+        render(<AnalysisResultsChart
+            ref={chartRef}
+            name="visualization:analysis-results"
+            id="default-page-queue"
+            sessionGame="acc"
+            pagination={{ pages, activePageId, onSelectPage: jest.fn() }}
+        />);
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments().status).toBe('ready'));
+        const expectedPage = activePageId === 'older-page' ? pages[0] : pages[1];
+        const expectedResultId = expectedPage.elements[0].id;
+        const prepareVoices = jest.spyOn(chartRef.current!, 'prepareComparisonVoices')
+            .mockResolvedValue({ 'older-mistake': 8_000, 'default-mistake': 8_000 });
+        const directory = createOperationComponentRefDirectory();
+        const runner = new LiveRangeTodoListRunner('live-range-todo-list');
+        directory.registerComponentRef(chartRef);
+        directory.registerComponentRef({ current: runner });
+        const registry = createAiCommandRegistry({ componentRefs: directory, sessionMode: 'live', sessionGame: 'acc' });
+
+        try {
+            await expect(registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({}).result)
+                .resolves.toMatchObject({
+                    status: 'ready',
+                    active_page_id: expectedPage.id,
+                    applied_view: 'mistakes',
+                    matched_count: 1,
+                    queued_count: 1,
+                });
+            expect(prepareVoices).toHaveBeenCalledWith(expectedPage.id, [expectedResultId], expect.any(AbortSignal));
+            expect(runner.get().todo_list?.events.map(({ id }) => id)).toEqual([`analysis-comparison:${expectedResultId}`]);
+            expect(screen.getByRole('button', { name: 'Overall Trends' })).toHaveAttribute('aria-pressed', 'true');
+        } finally {
+            prepareVoices.mockRestore();
+            runner.dispose();
+        }
+    });
+
+    it('returns an empty filtered snapshot when no retained pages exist', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        await act(async () => {
+            render(
+                <AnalysisResultsChart
+                    ref={chartRef}
+                    name="visualization:analysis-results"
+                    id="no-retained-pages"
+                    pagination={{ pages: [], activePageId: null, onSelectPage: jest.fn() }}
+                />,
+            );
+        });
+
+        expect(chartRef.current!.getFilteredSegments()).toEqual({
+            status: 'empty',
+            activePageId: null,
+            appliedView: null,
+            committedQuery: null,
+            segments: [],
+        });
+    });
+
     it('reports a busy filtered snapshot while the active filter is evaluating', async () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         render(
@@ -1335,6 +1443,7 @@ describe('AnalysisResultsChart', () => {
         });
         await waitFor(() => expect(chartRef.current!.getFilteredSegments()).toMatchObject({
             status: 'ready',
+            activePageId: 'busy-filtered-snapshot',
             segments: [{ id: 'one' }],
         }));
     });

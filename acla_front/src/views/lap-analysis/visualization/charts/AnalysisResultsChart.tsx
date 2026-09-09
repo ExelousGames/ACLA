@@ -17,7 +17,11 @@ import {
     getDriverExpertComparisonUnavailableDiagnostics,
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
-import { createDriverExpertComparisonOverlayComponent } from 'components/driver-expert-comparison/DriverExpertComparisonGraph.overlay-source';
+import {
+    createDriverExpertComparisonOverlayComponent,
+    prepareDriverExpertComparisonVoices,
+} from 'components/driver-expert-comparison/DriverExpertComparisonGraph.overlay-source';
+import type { DriverExpertComparisonSnapshot } from 'components/driver-expert-comparison';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import styles from './AnalysisResultsChart.module.css';
 import {
@@ -148,6 +152,11 @@ const cloneAndFreeze = <T,>(value: T): T => {
 export interface AnalysisResultsChartHandle extends NamedOperationComponentHandle {
     waitForAnalysisResultPage(pageId: string): Promise<void>;
     getFilteredSegments(): FilteredAnalysisSegmentsSnapshot;
+    prepareComparisonVoices(
+        pageId: string,
+        resultIds: readonly string[],
+        signal: AbortSignal,
+    ): Promise<Record<string, number>>;
     displaySpecificResultInOverlay(
         pageId: string,
         resultId: string,
@@ -1118,13 +1127,17 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const mountedRef = React.useRef(false);
     const overlayComponentSequenceRef = React.useRef(0);
     const activeOverlayRef = React.useRef<ActiveAnalysisResultOverlay | null>(null);
+    const comparisonVoicesRef = React.useRef(new Map<string, {
+        source: string;
+        snapshot: DriverExpertComparisonSnapshot;
+    }>());
     const componentRefs = useOptionalOperationComponentRefDirectory();
     const { getCategoryLabels, getLabelName } = useAiLabels();
     const retainedPages = pagination?.pages ?? EMPTY_ANALYSIS_RESULTS_PAGES;
     const activePageIndex = React.useMemo(() => {
         if (!pagination || retainedPages.length === 0) return -1;
         const selectedIndex = retainedPages.findIndex((page) => page.id === pagination.activePageId);
-        return selectedIndex >= 0 ? selectedIndex : 0;
+        return selectedIndex >= 0 ? selectedIndex : retainedPages.length - 1;
     }, [pagination, retainedPages]);
     const activePage = activePageIndex >= 0 ? retainedPages[activePageIndex] : null;
     const isOverallTrend = Boolean(pagination) && (showOverallTrend || !activePage);
@@ -1137,6 +1150,46 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         const result = pageElements?.find((element) => element.id === resultId);
         return result ? cloneAndFreeze(result) : null;
     }, [elements, id, pagination, retainedPages]);
+    const createComparisonSnapshot = React.useCallback((result: AnalysisResultElement): DriverExpertComparisonSnapshot => {
+        if (!result.comparison || !hasComparableDriverExpertData(result.comparison, sessionGame)) {
+            throw new OperationExecutionError(`Analysis result '${result.id}' has no supported overlay graph.`);
+        }
+        return {
+            title: result.title ? `${result.title}: Driver vs Expert` : 'Driver vs Expert',
+            comparison: result.comparison,
+            labelGroups: buildAnalysisResultsComparisonLabelGroups(result.labels, getCategoryLabels, getLabelName),
+            game: sessionGame,
+        };
+    }, [getCategoryLabels, getLabelName, sessionGame]);
+    const prepareComparisonVoices = React.useCallback(async (
+        pageId: string,
+        resultIds: readonly string[],
+        signal: AbortSignal,
+    ): Promise<Record<string, number>> => {
+        const snapshots = resultIds.map((resultId) => {
+            const result = resolveSpecificResult(pageId, resultId);
+            if (!result) throw new OperationExecutionError(`Analysis result '${resultId}' was not found on page '${pageId}'.`);
+            return createComparisonSnapshot(result);
+        });
+        const prepared = await prepareDriverExpertComparisonVoices(snapshots, signal);
+        if (signal.aborted || !mountedRef.current) throw createAnalysisResultOverlayAbortError();
+        const durations: Record<string, number> = {};
+        prepared.forEach((snapshot, index) => {
+            const resultId = resultIds[index];
+            comparisonVoicesRef.current.set(JSON.stringify([pageId, resultId]), {
+                source: JSON.stringify(snapshots[index]),
+                snapshot,
+            });
+            durations[resultId] = snapshot.voice!.durationMs;
+        });
+        return durations;
+    }, [createComparisonSnapshot, resolveSpecificResult]);
+    React.useEffect(() => {
+        const pageIds = new Set(pagination ? retainedPages.map((page) => page.id) : [id]);
+        comparisonVoicesRef.current.forEach((_value, key) => {
+            if (!pageIds.has(JSON.parse(key)[0])) comparisonVoicesRef.current.delete(key);
+        });
+    }, [id, pagination, retainedPages]);
     const displaySpecificResultInOverlay = React.useCallback((
         pageId: string,
         resultId: string,
@@ -1221,21 +1274,15 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
 
         try {
             componentRefs.registerComponentRef(ref);
-            ref.current?.publish({
-                title: result.title
-                    ? `${result.title}: Driver vs Expert`
-                    : 'Driver vs Expert',
-                comparison: result.comparison,
-                labelGroups: buildAnalysisResultsComparisonLabelGroups(
-                    result.labels, getCategoryLabels, getLabelName,
-                ),
-                game: sessionGame,
-            }, { presentationId });
+            const snapshot = createComparisonSnapshot(result);
+            const prepared = comparisonVoicesRef.current.get(JSON.stringify([pageId, resultId]));
+            ref.current?.publish(prepared?.source === JSON.stringify(snapshot)
+                ? prepared.snapshot : snapshot, { presentationId });
         } catch (error) {
             finish('failed', error instanceof Error ? error : new Error(String(error)));
         }
         return controller.operation;
-    }, [componentRefs, getCategoryLabels, getLabelName, name, resolveSpecificResult, sessionGame]);
+    }, [componentRefs, createComparisonSnapshot, name, resolveSpecificResult, sessionGame]);
     const activeMistakeCatalog = React.useMemo(() => {
         const categoryLabels = {
             MSP: getCategoryLabels('MSP'),
@@ -1418,7 +1465,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         getComponentName: () => name,
         waitForAnalysisResultPage,
         getFilteredSegments: () => {
-            if (isOverallTrend) {
+            if (pagination && !activePage) {
                 return cloneAndFreeze({
                     status: 'empty' as const,
                     activePageId: null,
@@ -1435,13 +1482,14 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 status: appliedQuery.isEvaluating
                     ? 'busy' as const
                     : segments.length > 0 ? 'ready' as const : 'empty' as const,
-                activePageId: activePage?.id ?? null,
+                activePageId: activePage?.id ?? id,
                 appliedView: appliedQuery.committedView,
                 committedQuery: appliedQuery.committedExpression,
                 segments,
             });
         },
         displaySpecificResultInOverlay,
+        prepareComparisonVoices,
         applyAnalysisResultQuery: (args) => {
             const operationGeneration = applyOperationGenerationRef.current + 1;
             applyOperationGenerationRef.current = operationGeneration;
@@ -1578,9 +1626,9 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         activeData,
         activePage?.id,
         displaySpecificResultInOverlay,
+        prepareComparisonVoices,
         elements,
         id,
-        isOverallTrend,
         name,
         onDisable,
         onUpdate,

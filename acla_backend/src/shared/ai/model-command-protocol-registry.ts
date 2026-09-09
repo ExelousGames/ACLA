@@ -147,8 +147,9 @@ const MODEL_COMMAND_DEFINITIONS = [
     {
         name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
         description: [
+            'Visualize analysis results with Driver vs Expert comparisons in the overlay while driving. Use when the user asks to visualize analysis results while driving or show driver-versus-expert comparisons in the overlay.',
             'Append Driver vs Expert comparison events for the active Analysis Results page\'s last successfully applied segment filter. Events keep the displayed segment order, retain existing to-do items, and publish only when live telemetry makes each event due.',
-            'Call with an empty arguments object {}; do not add a add_filtered_driver_expert_comparisons_to_live_range_todo_list wrapper.',
+            'Call with an empty arguments object {}; do not add an add_filtered_driver_expert_comparisons_to_live_range_todo_list wrapper.',
         ].join(' '),
         properties: {},
         required: [],

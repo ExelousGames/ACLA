@@ -1,4 +1,5 @@
 import React from 'react';
+import { isTtsPack, Tts, type TtsHandle, type TtsPack } from 'components/tts';
 import { useDesktopGame } from 'contexts/DesktopGameContext';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import type {
@@ -112,6 +113,7 @@ export interface DriverExpertComparisonGraphProps {
     layout?: DriverExpertComparisonLayout;
     game?: DesktopGame | null;
     onReplayComplete?: () => void;
+    voice?: TtsPack;
 }
 
 type ReplayContinuousKey = 'trackPosition' | 'gas' | 'brake';
@@ -834,7 +836,12 @@ const useReplayTimeline = (
     replay: DriverExpertReplay<PlottingTrajectoryPoint> | undefined,
     durationMs: number,
     introduceCamera: boolean,
+    voice: TtsPack | undefined,
+    onStart: () => void,
+    onStop: () => void,
 ): ReplayTimeline => {
+    const callbacksRef = React.useRef({ onStart, onStop });
+    callbacksRef.current = { onStart, onStop };
     const reduceMotion = prefersReducedMotion();
     const introductionDurationMs = introduceCamera
         ? OVERVIEW_HOLD_DURATION_MS + CAMERA_FOCUS_DURATION_MS
@@ -845,8 +852,10 @@ const useReplayTimeline = (
         shouldFinishImmediately ? animationDurationMs : 0,
     );
     const renderedReplayRef = React.useRef(replay);
-    const replayChanged = renderedReplayRef.current !== replay;
+    const renderedVoiceRef = React.useRef(voice);
+    const replayChanged = renderedReplayRef.current !== replay || renderedVoiceRef.current !== voice;
     renderedReplayRef.current = replay;
+    renderedVoiceRef.current = voice;
 
     React.useEffect(() => {
         if (!replay || animationDurationMs <= 0 || prefersReducedMotion()) {
@@ -859,7 +868,10 @@ const useReplayTimeline = (
         setAnimationElapsedTimeMs(0);
 
         const animate = (timestamp: number) => {
-            if (startedAt === null) startedAt = timestamp;
+            if (startedAt === null) {
+                startedAt = timestamp;
+                callbacksRef.current.onStart();
+            }
             const nextElapsedTimeMs = clamp(timestamp - startedAt, 0, animationDurationMs);
             setAnimationElapsedTimeMs(nextElapsedTimeMs);
             if (nextElapsedTimeMs < animationDurationMs) {
@@ -872,8 +884,9 @@ const useReplayTimeline = (
         animationFrame = window.requestAnimationFrame(animate);
         return () => {
             if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+            callbacksRef.current.onStop();
         };
-    }, [animationDurationMs, replay]);
+    }, [animationDurationMs, replay, voice]);
 
     const effectiveAnimationElapsedTimeMs = replayChanged
         ? shouldFinishImmediately ? animationDurationMs : 0
@@ -1519,6 +1532,7 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     layout,
     game,
     onReplayComplete,
+    voice,
 }) => {
     const { detectedGame } = useDesktopGame();
     const comparisonGame = game === undefined ? detectedGame : game;
@@ -1546,7 +1560,21 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     const replayDurationMs = replay?.durationMs ?? 0;
     const geometry = React.useMemo(() => createTrackGeometry(plottingReplay), [plottingReplay]);
     const hasTrajectory = geometry.driver.length > 0 || geometry.expert.length > 0;
-    const timeline = useReplayTimeline(plottingReplay, replayDurationMs, hasTrajectory);
+    const ttsRef = React.useRef<TtsHandle>(null);
+    const [voiceCompletion, setVoiceCompletion] = React.useState<{
+        replay: typeof plottingReplay;
+        voice: TtsPack;
+        error?: string;
+    }>();
+    const shouldSpeak = Boolean(voice && replay && replayDurationMs > 0 && !prefersReducedMotion());
+    const voiceFinished = !shouldSpeak || (
+        voiceCompletion?.replay === plottingReplay && voiceCompletion?.voice === voice
+    );
+    const timeline = useReplayTimeline(plottingReplay, replayDurationMs, hasTrajectory, voice, () => {
+        replayCompleteFiredRef.current = false;
+        setVoiceCompletion(undefined);
+        if (shouldSpeak) ttsRef.current?.play();
+    }, () => ttsRef.current?.stop());
     const { elapsedTimeMs } = timeline;
     const frame = React.useMemo(
         () => buildReplayFrame(plottingReplay, elapsedTimeMs),
@@ -1555,7 +1583,9 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     const reactId = React.useId();
     const filterId = React.useMemo(() => `driver-expert-${reactId.replace(/:/g, '')}`, [reactId]);
     const isComplete = timeline.isComplete;
-    const replayStatus = !replay ? 'No data' : isComplete ? 'Replay complete' : 'Replaying';
+    const replayStatus = !replay ? 'No data' : isComplete
+        ? voiceFinished ? 'Replay complete' : 'Finishing narration'
+        : 'Replaying';
     const replayCompleteFiredRef = React.useRef(false);
     const completionReplayRef = React.useRef(replay);
     if (completionReplayRef.current !== replay) {
@@ -1566,10 +1596,10 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     replayCompleteCallbackRef.current = onReplayComplete;
 
     React.useEffect(() => {
-        if (!replay || !isComplete || replayCompleteFiredRef.current) return;
+        if (!replay || !isComplete || !voiceFinished || replayCompleteFiredRef.current) return;
         replayCompleteFiredRef.current = true;
         replayCompleteCallbackRef.current?.();
-    }, [isComplete, replay]);
+    }, [isComplete, replay, voiceFinished]);
 
     return (
         <section
@@ -1578,6 +1608,14 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
             aria-label={title ?? 'Segment comparison replay'}
             data-testid="driver-expert-comparison"
         >
+            {voice && <Tts
+                ref={ttsRef}
+                pack={voice}
+                onEnded={() => setVoiceCompletion({ replay: plottingReplay, voice })}
+                onError={(error) => setVoiceCompletion({ replay: plottingReplay, voice, error: error.message })}
+            />}
+            {voiceCompletion?.voice === voice && voiceCompletion?.replay === plottingReplay
+                && voiceCompletion?.error && <span role="status">Narration unavailable</span>}
             <header className={styles.header}>
                 <div className={styles.titleBlock}>
                     <h2 className={styles.title}>{title ?? 'Segment comparison replay'}</h2>
@@ -1658,6 +1696,7 @@ const DriverExpertComparisonOverlayGraph = React.memo<{
     <DriverExpertComparisonGraph
         className="floating-pill-comparison"
         data={snapshot.comparison}
+        voice={snapshot.voice}
         labelGroups={snapshot.labelGroups}
         game={snapshot.game}
         title={snapshot.title}
@@ -1676,6 +1715,7 @@ export const driverExpertComparisonOverlayRenderer: AiOverlayRenderer<DriverExpe
         isOverlayRecord(snapshot)
         && isOverlayNonEmptyString(snapshot.title)
         && Boolean(normalizeDriverExpertComparisonData(snapshot.comparison))
+        && (snapshot.voice === undefined || isTtsPack(snapshot.voice))
         && (
             snapshot.labelGroups === undefined
             || (Array.isArray(snapshot.labelGroups) && snapshot.labelGroups.every((group) => (

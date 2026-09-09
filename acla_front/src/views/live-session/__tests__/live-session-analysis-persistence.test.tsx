@@ -176,18 +176,20 @@ describe('local analysis history', () => {
         },
     );
 
-    it('skips malformed and duplicate pages and falls back to the first valid selection', () => {
+    it.each([null, undefined, 'missing-page', 'older-page'])('restores the selected/latest valid page when stored selection is %s', (activePageId) => {
+        const olderPage = { ...createLiveSessionAnalysisResultPage(pageInput), id: 'older-page' };
         const page = createLiveSessionAnalysisResultPage(pageInput);
         localStorage.setItem(storageKey, JSON.stringify({
             version: 1,
-            pages: [null, { id: 'broken' }, page, page],
-            activePageId: 'missing-page',
+            pages: [null, olderPage, { id: 'broken' }, page, page, { id: 'invalid-latest' }],
+            activePageId,
         }));
         render(provider());
-        expect(runtime.analysisResultPages).toEqual([page]);
-        expect(runtime.activeAnalysisResultPageId).toBe(page.id);
+        const expectedPageId = activePageId === olderPage.id ? olderPage.id : page.id;
+        expect(runtime.analysisResultPages).toEqual([olderPage, page]);
+        expect(runtime.activeAnalysisResultPageId).toBe(expectedPageId);
         act(() => { expect(runtime.selectAnalysisResultPage('unknown')).toBe(false); });
-        expect(runtime.activeAnalysisResultPageId).toBe(page.id);
+        expect(runtime.activeAnalysisResultPageId).toBe(expectedPageId);
     });
 
     it('keeps the last saved history and usable in-memory results if storage is full', () => {
