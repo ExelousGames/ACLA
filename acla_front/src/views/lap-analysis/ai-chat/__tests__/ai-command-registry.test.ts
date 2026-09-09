@@ -56,8 +56,8 @@ type MissingTelemetryResultGeneric = QueryTelemetryMetricResult;
 const queryContractCoverage: FrontendAiQueryContractCoverage = true;
 
 const assertQueryContractTypes = (registry: AiCommandRegistry) => {
-    const input: ProcedurePlanInput = { set_procedure_plan: {
-        goal: 'Count', tools: [{ query_analysis_result: { title: 'Count', arguments: { query: '1' } } }],
+    const input: ProcedurePlanInput = { workflow: { name: 'set_procedure_plan',
+        goal: 'Count', tools: [{ tool: { name: 'query_analysis_result', title: 'Count', arguments: { query: '1' } } }],
     } };
     const workflow: Workflow<ProcedurePlanRunResult> = registry.set_procedure_plan(input);
     const tool: Tool<QueryAnalysisResultOutput> = registry.query_analysis_result({ query: 'analyses' });
@@ -557,7 +557,7 @@ const scheduledItem = (
     toolName = 'analyze_telemetry',
     args: Record<string, unknown> = { scope: { type: 'now' } },
 ) => ({
-    [toolName]: {
+    tool: { name: toolName,
         event: {
             id,
             normalized_position: 0.5,
@@ -569,7 +569,7 @@ const scheduledItem = (
 });
 
 const scheduledPayload = (tools: ReturnType<typeof scheduledItem>[]) => ({
-    add_event_to_live_range_todo_list: { tools },
+    workflow: { name: 'add_event_to_live_range_todo_list', tools },
 } as unknown as LiveRangeTodoListInput);
 
 const childLiveRegistry = (
@@ -592,20 +592,20 @@ const analystLiveRegistry = (
 });
 
 describe('strict workflow creation and tool dispatch', () => {
-    const procedure = (): ProcedurePlanInput => ({ set_procedure_plan: {
+    const procedure = (): ProcedurePlanInput => ({ workflow: { name: 'set_procedure_plan',
         goal: 'Review the session',
         tools: [
-            { query_analysis_result: { title: 'Count analyses', arguments: { query: '$count(analyses)' } } },
-            { query_analysis_result: { title: 'Read analyses', arguments: { query: 'analyses' } } },
+            { tool: { name: 'query_analysis_result', title: 'Count analyses', arguments: { query: '$count(analyses)' } } },
+            { tool: { name: 'query_analysis_result', title: 'Read analyses', arguments: { query: 'analyses' } } },
         ],
     } });
-    const repeatable = (): RepeatablePlanInput => ({ create_repeatable_plan: {
-        name: 'Review until ready',
+    const repeatable = (): RepeatablePlanInput => ({ workflow: { name: 'create_repeatable_plan',
+        goal: 'Review until ready',
         tools: [
-            { query_analysis_result: { id: 'one', title: 'First count', arguments: { query: '1' } } },
-            { query_analysis_result: { id: 'two', title: 'Second count', arguments: { query: '2' } } },
+            { tool: { name: 'query_analysis_result', id: 'one', title: 'First count', arguments: { query: '1' } } },
+            { tool: { name: 'query_analysis_result', id: 'two', title: 'Second count', arguments: { query: '2' } } },
         ],
-        stop_when: { tool: { query_analysis_result: { arguments: { query: '3' } } }, operator: 'gte', target: 3 },
+        stop_when: { tool: { name: 'query_analysis_result', arguments: { query: '3' }  }, operator: 'gte', target: 3 },
     } });
     const setup = (context: FrontendAiCommandContext = {
         sessionMode: 'live', conversationRole: 'agent', agentMode: 'live_performance_analyst',
@@ -638,11 +638,11 @@ describe('strict workflow creation and tool dispatch', () => {
         'rejects workflow child %s in both plans and stop checks before creation', async (name) => {
             const test = setup();
             const plan: any = procedure();
-            plan.set_procedure_plan.tools.push({ [name]: { title: 'Invalid later call', arguments: {} } });
+            plan.workflow.tools.push({ tool: { name: name, title: 'Invalid later call', arguments: {} } });
             const goal: any = repeatable();
-            goal.create_repeatable_plan.tools.push({ [name]: { id: 'invalid', title: 'Invalid later call' } });
+            goal.workflow.tools.push({ tool: { name: name, id: 'invalid', title: 'Invalid later call' } });
             const stop: any = repeatable();
-            stop.create_repeatable_plan.stop_when.tool = { [name]: {} };
+            stop.workflow.stop_when.tool = { name };
             await expect(test.registry.set_procedure_plan(plan).result).rejects.toBeInstanceOf(Error);
             await expect(test.registry.create_repeatable_plan(goal).result).rejects.toBeInstanceOf(Error);
             await expect(test.registry.create_repeatable_plan(stop).result).rejects.toBeInstanceOf(Error);
@@ -656,9 +656,9 @@ describe('strict workflow creation and tool dispatch', () => {
     ])('preflights unregistered later tool %s before either plan is created', async (name) => {
         const test = setup();
         const plan: any = procedure();
-        plan.set_procedure_plan.tools.push({ [name]: { title: 'Later', arguments: {} } });
+        plan.workflow.tools.push({ tool: { name: name, title: 'Later', arguments: {} } });
         const goal: any = repeatable();
-        goal.create_repeatable_plan.stop_when.tool = { [name]: { arguments: {} } };
+        goal.workflow.stop_when.tool = { name, arguments: {} };
         await expect(test.registry.set_procedure_plan(plan).result).rejects.toBeInstanceOf(Error);
         await expect(test.registry.create_repeatable_plan(goal).result).rejects.toBeInstanceOf(Error);
         expect(test.createProcedurePlan).not.toHaveBeenCalled();
@@ -669,10 +669,10 @@ describe('strict workflow creation and tool dispatch', () => {
         'accepts registered tool %s in both plans and stop checks', async (name) => {
             const test = setup();
             const plan: any = procedure();
-            plan.set_procedure_plan.tools.push({ [name]: { title: 'Later', arguments: {} } });
+            plan.workflow.tools.push({ tool: { name: name, title: 'Later', arguments: {} } });
             const goal: any = repeatable();
-            goal.create_repeatable_plan.tools.push({ [name]: { id: 'later', title: 'Later', arguments: {} } });
-            goal.create_repeatable_plan.stop_when.tool = { [name]: { arguments: {} } };
+            goal.workflow.tools.push({ tool: { name: name, id: 'later', title: 'Later', arguments: {} } });
+            goal.workflow.stop_when.tool = { name, arguments: {} };
 
             await expect(test.registry.set_procedure_plan(plan).result).resolves.toMatchObject({ status: 'complete' });
             await expect(test.registry.create_repeatable_plan(goal).result).resolves.toMatchObject({ status: 'achieved' });
@@ -687,17 +687,16 @@ describe('strict workflow creation and tool dispatch', () => {
         ['wrong procedure wrapper', 'set_procedure_plan', repeatable()],
         ['mixed procedure', 'set_procedure_plan', { ...procedure(), requests: [] }],
         ...['payload', 'args', 'parameters'].map((alias): [string, string, unknown] => [
-            `procedure ${alias}`, 'set_procedure_plan', { set_procedure_plan: {
-                goal: 'Invalid', tools: [{ query_analysis_result: { title: 'Count', arguments: {}, [alias]: {} } }],
+            `procedure ${alias}`, 'set_procedure_plan', { workflow: { name: 'set_procedure_plan',
+                goal: 'Invalid', tools: [{ tool: { name: 'query_analysis_result', title: 'Count', arguments: {}, [alias]: {} } }],
             } },
         ]),
-        ['unwrapped repeatable', 'create_repeatable_plan', repeatable().create_repeatable_plan],
+        ['unwrapped repeatable', 'create_repeatable_plan', repeatable().workflow],
         ['legacy repeatable', 'create_repeatable_plan', { name: 'Legacy', steps: [], stop_when: {} }],
         ['wrong repeatable wrapper', 'create_repeatable_plan', procedure()],
-        ['mixed repeatable', 'create_repeatable_plan', { create_repeatable_plan: { ...repeatable().create_repeatable_plan, steps: [] } }],
-        ['name stop descriptor', 'create_repeatable_plan', { create_repeatable_plan: {
-            ...repeatable().create_repeatable_plan,
-            stop_when: { tool: { name: 'query_analysis_result', arguments: { query: '3' } }, operator: 'gte', target: 3 },
+        ['mixed repeatable', 'create_repeatable_plan', { workflow: { ...repeatable().workflow, steps: [] } }],
+        ['name stop descriptor', 'create_repeatable_plan', { workflow: { ...repeatable().workflow,
+            stop_when: { tool: { query_analysis_result: { arguments: { query: '3' } } }, operator: 'gte', target: 3 },
         } }],
     ])('rejects %s without invoking creation handlers', async (_label, name, input) => {
         const test = setup();
@@ -871,22 +870,22 @@ describe('live range to-do workflow', () => {
     it.each([
         ['unwrapped', { tools: [scheduledItem('bad')] }],
         ['legacy events', { events: [scheduledItem('bad')] }],
-        ['wrong wrapper', { set_procedure_plan: { tools: [scheduledItem('bad')] } }],
+        ['wrong wrapper', { workflow: { name: 'set_procedure_plan', tools: [scheduledItem('bad')] } }],
         ['mixed envelope', { ...scheduledPayload([scheduledItem('bad')]), events: [] }],
-        ['mixed body', { add_event_to_live_range_todo_list: { tools: [scheduledItem('bad')], events: [] } }],
+        ['mixed body', { workflow: { name: 'add_event_to_live_range_todo_list', tools: [scheduledItem('bad')], events: [] } }],
         ['empty batch', scheduledPayload([])],
-        ['zero names', scheduledPayload([{}])],
+        ['zero names', scheduledPayload([{} as any])],
         ['multiple names', scheduledPayload([{
-            ...scheduledItem('first'), ...scheduledItem('second', 'get_event_log'),
-        }])],
+            ...scheduledItem('first'), get_event_log: {},
+        } as any])],
         ['malformed later event', scheduledPayload([
-            scheduledItem('first'), { analyze_telemetry: { event: { id: 'bad' }, arguments: {} } } as any,
+            scheduledItem('first'), { tool: { name: 'analyze_telemetry', event: { id: 'bad' }, arguments: {} } } as any,
         ])],
         ['missing arguments', scheduledPayload([{
-            analyze_telemetry: { event: scheduledItem('bad').analyze_telemetry.event },
+            tool: { name: 'analyze_telemetry', event: scheduledItem('bad').tool.event },
         } as any])],
         ['name descriptor', scheduledPayload([{
-            event: scheduledItem('bad').analyze_telemetry.event,
+            event: scheduledItem('bad').tool.event,
             tool: { name: 'analyze_telemetry', arguments: {} },
         } as any])],
         ['unknown later tool', scheduledPayload([scheduledItem('first'), scheduledItem('bad', 'missing')])],
@@ -898,9 +897,9 @@ describe('live range to-do workflow', () => {
             )])],
         ['invalid arguments', scheduledPayload([scheduledItem('bad', 'analyze_telemetry', { value: undefined })])],
         ['AI-provided ETA', scheduledPayload([{
-            analyze_telemetry: {
-                ...scheduledItem('bad').analyze_telemetry,
-                event: { ...scheduledItem('bad').analyze_telemetry.event, eta_seconds: 10 },
+            tool: {
+                ...scheduledItem('bad').tool,
+                event: { ...scheduledItem('bad').tool.event, eta_seconds: 10 },
             },
         } as any])],
         ['duplicate ids', scheduledPayload([scheduledItem('same'), scheduledItem('same')])],
@@ -993,7 +992,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
                 segments: [{ id: 'corner', labels: [], normalizedPositionRange: { start: 0.5, end: 0.6 }, comparison: comparisonData(1000) }],
             }),
         } satisfies Partial<AnalysisResultsChartHandle>);
-        const operation = analystLiveRegistry(directory).add_filtered_driver_expert_comparisons_to_live_range_todo_list({});
+        const operation = analystLiveRegistry(directory).add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  } });
         await Promise.resolve();
         expect(prepareComparisonVoices).toHaveBeenCalled();
         expect(addEvent).not.toHaveBeenCalled();
@@ -1095,7 +1094,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } satisfies Partial<AiChatHandle>);
 
         const operation = analystLiveRegistry(directory)
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({});
+            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  } });
         const terminated = jest.fn();
         operation.notifyTerminated(terminated);
         const result = await operation.result;
@@ -1205,7 +1204,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } satisfies Partial<AnalysisResultsChartHandle>);
 
         await expect(analystLiveRegistry(directory)
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({}).result)
+            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  } }).result)
             .resolves.toMatchObject({ queued_count: 1 });
 
         expect(initializeLiveRangeTodoList).toHaveBeenCalledTimes(1);
@@ -1239,7 +1238,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } as any);
 
         await expect(registry
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({}).result)
+            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  } }).result)
             .resolves.toMatchObject({ status: 'busy' });
         expect(getFilteredSegments).toHaveBeenCalledTimes(1);
     });
@@ -1257,7 +1256,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } satisfies Partial<AnalysisResultsChartHandle>);
         const registry = analystLiveRegistry(directory);
 
-        const operation = registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({});
+        const operation = registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  } });
         const terminated = jest.fn();
         operation.notifyTerminated(terminated);
         await expect(operation.result)
@@ -1273,7 +1272,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         });
         expect(directory.findComponentRef(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)).toBeNull();
         await expect(registry
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ extra: true }).result)
+            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  extra: true  } } as any).result)
             .rejects.toMatchObject({ name: 'InvalidOperationCallError' });
     });
 
@@ -1294,7 +1293,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } satisfies Partial<AnalysisResultsChartHandle>);
 
         await expect(analystLiveRegistry(directory)
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({}).result)
+            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  } }).result)
             .rejects.toMatchObject({ name: 'OperationExecutionError' });
         expect(directory.findComponentRef(
             OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,

@@ -39,9 +39,9 @@ const plan = (): ProcedurePlanState => ({
 describe('ProcedurePlan descriptors', () => {
     it('builds stable requests and advances the active request', () => {
         expect(buildProcedurePlan({
-            set_procedure_plan: {
+            workflow: { name: 'set_procedure_plan',
                 goal: 'Review',
-                tools: [{ read: { title: 'Read', arguments: {} } }],
+                tools: [{ tool: { name: 'read', title: 'Read', arguments: {} } }],
             },
         })).toMatchObject({
             goal: 'Review',
@@ -209,10 +209,10 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
 const toolDispatcher = (dispatch: (...args: any[]) => ReturnType<ToolDispatcher>): ToolDispatcher => Object.assign(dispatch, { validate: jest.fn() }) as ToolDispatcher;
 
 const toInput = (plan: ProcedurePlanState): ProcedurePlanInput => ({
-    set_procedure_plan: {
+    workflow: { name: 'set_procedure_plan',
         goal: plan.goal,
         tools: plan.requests.map((request) => ({
-            [request.name!]: { title: request.title, arguments: request.payload ?? {} },
-        })) as unknown as ProcedurePlanInput['set_procedure_plan']['tools'],
+            tool: { name: request.name!, title: request.title, arguments: request.payload ?? {} },
+        })) as unknown as ProcedurePlanInput['workflow']['tools'],
     },
 });

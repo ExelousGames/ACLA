@@ -1,5 +1,5 @@
 import type { Tool, ToolCall } from './tool';
-import type { Workflow } from './workflow';
+import type { Workflow, WorkflowCall } from './workflow';
 import type { AiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
 
 export type LiveRangeTodoStatus = 'pending' | 'running';
@@ -9,14 +9,12 @@ export interface LiveRangeTodoContent {
     description?: string;
 }
 
-export type LiveRangeTodoListInput = {
-    add_event_to_live_range_todo_list: {
-        tools: ToolCall<{
-            event: Omit<LiveRangeTodoEventInput, 'taskStart'>;
-            arguments: Record<string, unknown>;
-        }>[];
-    };
-};
+export type LiveRangeTodoListInput = WorkflowCall<'add_event_to_live_range_todo_list', {
+    tools: ToolCall<{
+        event: Omit<LiveRangeTodoEventInput, 'taskStart'>;
+        arguments: Record<string, unknown>;
+    }>[];
+}>;
 
 export interface LiveRangeTodoEventInput {
     id: string;

@@ -436,12 +436,12 @@ describe('useVoiceConversation chat session lifecycle', () => {
         const runner = kind === 'procedure'
             ? new ProcedurePlanRunner('procedure-plan', dispatch, onChange)
             : new RepeatablePlanRunner('repeatable-plan', dispatch, onChange);
-        const tool = { query_analysis_result: { title: 'Current step', arguments: { query: 'analyses' } } };
+        const tool = { tool: { name: 'query_analysis_result', title: 'Current step', arguments: { query: 'analyses' } } };
         const input = runner instanceof ProcedurePlanRunner
-            ? { set_procedure_plan: { goal: 'Review', tools: [tool, tool] } }
-            : { create_repeatable_plan: {
-                name: 'Review', tools: [{ query_analysis_result: { ...tool.query_analysis_result, id: 'read' } }],
-                stop_when: { tool: { query_analysis_result: { arguments: { query: '0' } } }, operator: 'eq', target: 0 },
+            ? { workflow: { name: 'set_procedure_plan', goal: 'Review', tools: [tool, tool] } }
+            : { workflow: { name: 'create_repeatable_plan',
+                goal: 'Review', tools: [{ tool: { ...tool.tool, id: 'read' } }],
+                stop_when: { tool: { name: 'query_analysis_result', arguments: { query: '0' }  }, operator: 'eq', target: 0 },
             } };
         const handler = () => runner instanceof ProcedurePlanRunner
             ? runner.createProcedurePlan(input as ProcedurePlanInput)

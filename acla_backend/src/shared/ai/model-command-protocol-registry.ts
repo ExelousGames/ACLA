@@ -65,19 +65,21 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'add_event_to_live_range_todo_list',
         description: [
             'Atomically append executable events to the visible Live Range To-do List. AI Chat mounts the list when needed. Each nested tool runs only when telemetry makes its event due; this add call returns the updated list summary immediately after insertion.',
-            'Use the native tool call channel. The arguments object must repeat the function name as its single outer key: add_event_to_live_range_todo_list.',
-            'Inside that wrapper, provide an explicit ordered tools list. Each child has exactly one ordinary tool-name key allowed by the current catalog child schema. All workflow categories are forbidden as children, including creation, control, and read commands. Do not include prose-only tasks or hidden steps.',
+            'Use the native tool call channel. The arguments object must use workflow as its single outer key, with name set to add_event_to_live_range_todo_list.',
+            'Inside that wrapper, provide an explicit ordered tools list. Each child has a tool object with a name allowed by the current catalog child schema. All workflow categories are forbidden as children, including creation, control, and read commands. Do not include prose-only tasks or hidden steps.',
             'Preserve each child\'s tool-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
-            'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, flat child name fields, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
-            'Keep metadata inside the tool-keyed child event: id, normalized_position, optional lead_time_seconds, and content with title and optional description. Keep the required arguments object alongside event, using {} for a tool with no inputs.',
+            'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, tool-name keys, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
+            'Keep metadata inside the tool object event: id, normalized_position, optional lead_time_seconds, and content with title and optional description. Keep the required arguments object alongside event, using {} for a tool with no inputs.',
             'The immediate insertion summary does not mean the nested tools have run. Wait for the later event results before describing their outcomes.',
             `Example native arguments:
 \`\`\`json
 {
-  "add_event_to_live_range_todo_list": {
+  "workflow": {
+    "name": "add_event_to_live_range_todo_list",
     "tools": [
       {
-        "show_map": {
+        "tool": {
+          "name": "show_map",
           "event": {
             "id": "spa-opening-map",
             "normalized_position": 0.1,
@@ -103,7 +105,7 @@ const MODEL_COMMAND_DEFINITIONS = [
             tools: {
                 type: 'array',
                 minItems: 1,
-                description: 'Tool-keyed events to append without replacing the existing queue. Each entry contains exactly one tool name. Every event id must be unique in this batch and the active list. Workflow commands cannot be nested.',
+                description: 'Explicit tool events to append without replacing the existing queue. Each entry contains tool with a name. Every event id must be unique in this batch and the active list. Workflow commands cannot be nested.',
                 items: {
                     type: 'object',
                     properties: {
@@ -139,7 +141,6 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'get_live_range_todo_list',
         description: [
             'Read the active Live Range To-do List summary, including event and lifecycle counts.',
-            'Call with an empty arguments object {}; do not add a get_live_range_todo_list wrapper.',
         ].join(' '),
         properties: {},
         required: [],
@@ -149,7 +150,6 @@ const MODEL_COMMAND_DEFINITIONS = [
         description: [
             'Visualize analysis results with Driver vs Expert comparisons in the overlay while driving. Use when the user asks to visualize analysis results while driving or show driver-versus-expert comparisons in the overlay.',
             'Append Driver vs Expert comparison events for the active Analysis Results page\'s last successfully applied segment filter. Events keep the displayed segment order, retain existing to-do items, and publish only when live telemetry makes each event due.',
-            'Call with an empty arguments object {}; do not add an add_filtered_driver_expert_comparisons_to_live_range_todo_list wrapper.',
         ].join(' '),
         properties: {},
         required: [],
@@ -257,21 +257,22 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'create_repeatable_plan',
         description: [
             'Create one visible repeatable plan that executes ordered model command calls, checks a numeric stopping condition, and repeats the plan until the condition is met. Repetition continues until the target is reached, an error occurs, or the user cancels the plan. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. The operator compares the returned data with the target, so both values must be finite numbers measured on the same scale.',
-            'Use the native tool call channel. The arguments object must repeat the function name as its single outer key: create_repeatable_plan.',
-            'Inside that wrapper, provide an explicit ordered tools list. Each child has exactly one ordinary tool-name key allowed by the current catalog child schema. All workflow categories are forbidden as children, including creation, control, and read commands. Do not include prose-only tasks or hidden steps.',
+            'Use the native tool call channel. The arguments object must use workflow as its single outer key, with name set to create_repeatable_plan.',
+            'Inside that wrapper, provide an explicit ordered tools list. Each child has a tool object with a name allowed by the current catalog child schema. All workflow categories are forbidden as children, including creation, control, and read commands. Do not include prose-only tasks or hidden steps.',
             'Preserve each child\'s tool-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
-            'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, flat child name fields, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
-            'Each tool-name key contains a unique id, title, and arguments. stop_when.tool also has exactly one ordinary tool-name key containing arguments, and cannot contain any workflow creation, control, or read command. Child and stop-check arguments may be omitted only when the chosen tool needs no inputs.',
+            'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, tool-name keys, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
+            'Each tool object contains a name, a unique id, title, and arguments. stop_when.tool also contains a name and arguments, and cannot contain any workflow creation, control, or read command. Child and stop-check arguments may be omitted only when the chosen tool needs no inputs.',
             'The application executes the ordered calls and stop check. Wait for its later results before reporting completion; do not run the subscribed children again yourself.',
             'For a five-lap analysis, collect a full_lap baseline, analyze it, and query $count(analyses) until at least five analyzed laps are retained. This target counts all retained analyses, including any that already exist.',
             `Example native arguments:
 \`\`\`json
 {
-  "create_repeatable_plan": {
-    "name": "Analyze five laps",
+  "workflow": {
+    "name": "create_repeatable_plan",
     "tools": [
       {
-        "collect_live_baseline": {
+        "tool": {
+          "name": "collect_live_baseline",
           "id": "collect",
           "title": "Record a full lap",
           "arguments": {
@@ -282,7 +283,8 @@ const MODEL_COMMAND_DEFINITIONS = [
         }
       },
       {
-        "analyze_live_recorded_analysis": {
+        "tool": {
+          "name": "analyze_live_recorded_analysis",
           "id": "analyze",
           "title": "Analyze the recorded lap"
         }
@@ -290,28 +292,28 @@ const MODEL_COMMAND_DEFINITIONS = [
     ],
     "stop_when": {
       "tool": {
-        "query_analysis_result": {
-          "arguments": {
-            "query": "$count(analyses)"
-          }
+        "name": "query_analysis_result",
+        "arguments": {
+          "query": "$count(analyses)"
         }
       },
       "operator": "gte",
       "target": 5
-    }
+    },
+    "goal": "Analyze five laps"
   }
 }
 \`\`\``,
         ].join(' '),
         properties: {
-            name: {
+            goal: {
                 type: 'string',
                 description: 'Short name displayed on the repeatable plan card.',
             },
             tools: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered tool-keyed calls. Each entry contains exactly one tool name, and every id must be unique. Workflow commands cannot be nested.',
+                description: 'Ordered tool calls. Each entry contains tool with a name, and every id must be unique. Workflow commands cannot be nested.',
                 items: {
                     type: 'object',
                     properties: {
@@ -343,13 +345,12 @@ const MODEL_COMMAND_DEFINITIONS = [
                 additionalProperties: false,
             },
         },
-        required: ['name', 'tools', 'stop_when'],
+        required: ['goal', 'tools', 'stop_when'],
     },
     {
         name: 'retry_repeatable_plan_task',
         description: [
             'Retry the currently failed repeatable plan task once with its stored arguments, then continue the remaining plan after success. Available only when the visible repeatable plan is in an error state with a failed task.',
-            'Call with an empty arguments object {}; do not add a retry_repeatable_plan_task wrapper.',
         ].join(' '),
         properties: {},
         required: [],
@@ -358,7 +359,6 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'advance_plan_step',
         description: [
             'Report that the current visible procedure plan request is complete so the UI can move to the next request. The application owns subscribed request execution; use the later tool result or user message to confirm completion before advancing. Do not skip an unfinished request unless the driver explicitly asks to skip it.',
-            'Pass the optional reason directly in the arguments object; do not add an advance_plan_step wrapper.',
         ].join(' '),
         properties: {
             reason: {
@@ -372,7 +372,6 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'clear_procedure_plan',
         description: [
             'Clear or terminate the visible procedure plan only when the driver explicitly asks to cancel, clear, stop, or opt out of the plan. Do not abandon an active plan merely because it no longer seems useful.',
-            'Pass the optional reason directly in the arguments object; do not add a clear_procedure_plan wrapper.',
         ].join(' '),
         properties: {
             reason: {
@@ -386,22 +385,24 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'set_procedure_plan',
         description: [
             'Create or replace the visible procedure plan to execute ordered tools through the active AI session subscription. Each tool call executes sequentially, and the plan ends when the last call is complete. The plan can be cleared or terminated with clear_procedure_plan.',
-            'Use the native tool call channel. The arguments object must repeat the function name as its single outer key: set_procedure_plan.',
-            'Inside that wrapper, provide an explicit ordered tools list. Each child has exactly one ordinary tool-name key allowed by the current catalog child schema. All workflow categories are forbidden as children, including creation, control, and read commands. Do not include prose-only tasks or hidden steps.',
+            'Use the native tool call channel. The arguments object must use workflow as its single outer key, with name set to set_procedure_plan.',
+            'Inside that wrapper, provide an explicit ordered tools list. Each child has a tool object with a name allowed by the current catalog child schema. All workflow categories are forbidden as children, including creation, control, and read commands. Do not include prose-only tasks or hidden steps.',
             'Preserve each child\'s tool-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
-            'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, flat child name fields, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
-            'Each tool-name key contains title and arguments; arguments is required, using {} for a tool with no inputs.',
+            'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, tool-name keys, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
+            'Each tool object contains a name, title and arguments; arguments is required, using {} for a tool with no inputs.',
             'A procedure plan is active when procedure_plan exists in session context or a tool result includes goal, requests, and current_request. The application owns visible plan state and subscribed request execution.',
             'Tool calls are fire-and-forget. Use the later tool result or user message before deciding what to say or whether another plan step should advance. Do not execute subscribed children again yourself.',
             'Do not skip, clear, replace, or abandon an active plan unless the driver explicitly asks to cancel, clear, stop, skip, or opt out of the plan.',
             `Example native arguments:
 \`\`\`json
 {
-  "set_procedure_plan": {
+  "workflow": {
+    "name": "set_procedure_plan",
     "goal": "Review the Spa opening section",
     "tools": [
       {
-        "show_map": {
+        "tool": {
+          "name": "show_map",
           "title": "Show the opening section",
           "arguments": {
             "source_track_key": "spa",
@@ -423,7 +424,7 @@ const MODEL_COMMAND_DEFINITIONS = [
             tools: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered tool-keyed calls. Each entry contains exactly one tool name; repeated calls to the same tool are allowed. Workflow commands cannot be nested.',
+                description: 'Ordered tool calls. Each entry contains tool with a name; repeated calls to the same tool are allowed. Workflow commands cannot be nested.',
                 items: {
                     type: 'object',
                     properties: {
@@ -664,7 +665,7 @@ const LIVE_PERFORMANCE_ANALYST_COMMAND_NAMES: ModelCommandName[] = [
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
 ];
 
-// Classification stays internal; public descriptors retain their existing format.
+// All AI calls use explicit workflow or tool envelopes.
 const WORKFLOW_COMMAND_NAMES = new Set<ModelCommandName>([
     'create_repeatable_plan',
     'retry_repeatable_plan_task',
@@ -751,17 +752,27 @@ const getAllowedToolNames = (
     ]);
 };
 
-const createToolCallSchema = (
+const createToolBodySchema = (
     toolNames: ModelCommandName[],
-    metadata: Record<string, unknown>,
+    metadata: { properties: object; required: readonly string[] },
 ) => ({
     type: 'object',
     oneOf: toolNames.map((name) => ({
         type: 'object',
-        properties: { [name]: metadata },
-        required: [name],
+        properties: { name: { type: 'string', enum: [name] }, ...metadata.properties },
+        required: ['name', ...metadata.required],
         additionalProperties: false,
     })),
+});
+
+const createToolCallSchema = (
+    toolNames: ModelCommandName[],
+    metadata: { properties: object; required: readonly string[] },
+) => ({
+    type: 'object',
+    properties: { tool: createToolBodySchema(toolNames, metadata) },
+    required: ['tool'],
+    additionalProperties: false,
 });
 
 const expandWorkflowSchemas = (commands: readonly ModelCommandDefinition[]) => {
@@ -770,13 +781,53 @@ const expandWorkflowSchemas = (commands: readonly ModelCommandDefinition[]) => {
         .filter((name) => !WORKFLOW_COMMAND_NAMES.has(name));
 
     return commands.map((command) => {
+        if (!WORKFLOW_COMMAND_NAMES.has(command.name)) {
+            return {
+                ...command,
+                description: `${command.description} Use native arguments { "tool": { "name": "${command.name}", "arguments": { ... } } }. Put this tool's inputs inside arguments; omit arguments only for a tool with no required inputs.`,
+                properties: {
+                    tool: {
+                        type: 'object',
+                        properties: {
+                            name: { type: 'string', enum: [command.name] },
+                            arguments: {
+                                type: 'object',
+                                properties: command.properties,
+                                required: command.required,
+                                additionalProperties: false,
+                            },
+                        },
+                        required: command.required.length ? ['name', 'arguments'] : ['name'],
+                        additionalProperties: false,
+                    },
+                },
+                required: ['tool'],
+            };
+        }
         if (
             command.name !== 'set_procedure_plan'
             && command.name !== 'create_repeatable_plan'
             && command.name !== 'add_event_to_live_range_todo_list'
-        ) return command;
+        ) return {
+            ...command,
+            description: `${command.description} Use native arguments { "workflow": { "name": "${command.name}", "tools": [] } }. Put any optional reason inside workflow. This command uses the existing workflow, so tools must be empty.`,
+            properties: {
+                workflow: {
+                    type: 'object',
+                    properties: {
+                        name: { type: 'string', enum: [command.name] },
+                        tools: { type: 'array', items: {}, maxItems: 0 },
+                        ...command.properties,
+                    },
+                    required: ['name', 'tools', ...command.required],
+                    additionalProperties: false,
+                },
+            },
+            required: ['workflow'],
+        };
 
         const properties = {
+            name: { type: 'string', enum: [command.name] },
             ...command.properties,
             tools: {
                 ...command.properties.tools,
@@ -788,7 +839,7 @@ const expandWorkflowSchemas = (commands: readonly ModelCommandDefinition[]) => {
                     properties: {
                         ...command.properties.stop_when.properties,
                         tool: {
-                            ...createToolCallSchema(
+                            ...createToolBodySchema(
                                 nestedToolNames,
                                 command.properties.stop_when.properties.tool,
                             ),
@@ -802,14 +853,14 @@ const expandWorkflowSchemas = (commands: readonly ModelCommandDefinition[]) => {
         return {
             ...command,
             properties: {
-                [command.name]: {
+                workflow: {
                     type: 'object',
                     properties,
-                    required: command.required,
+                    required: ['name', ...command.required],
                     additionalProperties: false,
                 },
             },
-            required: [command.name],
+            required: ['workflow'],
         };
     });
 };

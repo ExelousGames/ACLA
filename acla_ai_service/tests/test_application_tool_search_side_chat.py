@@ -258,7 +258,7 @@ async def test_side_chat_rejects_creation_arguments_without_repeated_name(
 ):
     descriptor = user_workflow_case["descriptor"]
     name = descriptor["name"]
-    arguments = deepcopy(user_workflow_case["arguments"][name])
+    arguments = deepcopy(user_workflow_case["arguments"]["workflow"])
     if legacy_list:
         children = arguments.pop("tools")
         if name == "set_procedure_plan":

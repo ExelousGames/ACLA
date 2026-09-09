@@ -64,6 +64,8 @@ import {
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { parseProcedurePlanInput } from 'components/ai-operations/ProcedurePlan';
 import { validateGoalRequest } from 'components/ai-operations/RepeatablePlan';
+import { readToolCall, type ToolCall } from 'components/ai-operations/tool';
+import { readWorkflowCall, type WorkflowCall } from 'components/ai-operations/workflow';
 import type {
     ProcedurePlanInput,
     RepeatablePlanInput,
@@ -521,14 +523,10 @@ const validateLiveRangeTodoBatch = (
     dispatchNested: ToolDispatcher,
 ): PreparedLiveRangeTodoEvent[] => {
     const workflowName = 'add_event_to_live_range_todo_list';
-    if (!isRecord(args)) invalidLiveRangeTodoList(`Provide a ${workflowName} envelope.`);
-    const envelope = args as Record<string, unknown>;
-    assertExactKeys(envelope, [workflowName], 'Live range to-do envelope');
-    if (!hasOwn(envelope, workflowName) || !isRecord(envelope[workflowName])) {
-        invalidLiveRangeTodoList(`Provide a ${workflowName} envelope.`);
-    }
-    const request = envelope[workflowName] as Record<string, unknown>;
-    assertExactKeys(request, ['tools'], 'Live range to-do request');
+    const input = readWorkflowCall(args, workflowName);
+    if (!input) invalidLiveRangeTodoList(`Provide workflow with name ${workflowName}.`);
+    const request = input as Record<string, unknown>;
+    assertExactKeys(request, ['name', 'tools'], 'Live range to-do request');
     if (!Array.isArray(request.tools) || request.tools.length === 0) {
         invalidLiveRangeTodoList('Provide at least one tool to schedule.');
     }
@@ -537,21 +535,16 @@ const validateLiveRangeTodoBatch = (
     const ids = new Set<string>();
     return rawEvents.map((item, index) => {
         const itemLabel = `Live range to-do item ${index + 1}`;
-        if (!isRecord(item)) invalidLiveRangeTodoList(`${itemLabel} must be an object.`);
-        const keys = Reflect.ownKeys(item as object);
-        if (keys.length !== 1 || typeof keys[0] !== 'string') {
-            invalidLiveRangeTodoList(`${itemLabel} requires exactly one tool-name key.`);
-        }
-        const toolName = keys[0] as string;
+        const toolValue = readToolCall(item);
+        if (!toolValue) invalidLiveRangeTodoList(`${itemLabel} requires tool with a name.`);
+        const rawItem = toolValue as Record<string, unknown>;
+        const toolName = rawItem.name as string;
         try {
             dispatchNested.validate(toolName);
         } catch (error) {
             invalidLiveRangeTodoList(error instanceof Error ? error.message : String(error));
         }
-        const toolValue = (item as Record<string, unknown>)[toolName];
-        if (!isRecord(toolValue)) invalidLiveRangeTodoList(`${itemLabel} tool must be an object.`);
-        const rawItem = toolValue as Record<string, unknown>;
-        assertExactKeys(rawItem, ['event', 'arguments'], itemLabel);
+        assertExactKeys(rawItem, ['name', 'event', 'arguments'], itemLabel);
         if (!hasOwn(rawItem, 'event') || !hasOwn(rawItem, 'arguments')) {
             invalidLiveRangeTodoList(`${itemLabel} requires event and arguments objects.`);
         }
@@ -1121,10 +1114,19 @@ type WorkflowInputMap = {
     add_event_to_live_range_todo_list: LiveRangeTodoListInput;
 };
 
-export type AiCommandRegistry = NonQueryAiCommandRegistry & FrontendAiQueryContractMap & {
+type RawAiCommandRegistry = NonQueryAiCommandRegistry & FrontendAiQueryContractMap & {
     display_specific_result_in_overlay(
         args: DisplaySpecificResultInOverlayArguments,
     ): FrontendOperation<'display_specific_result_in_overlay'>;
+};
+
+export type AiCommandRegistry = {
+    [Name in keyof RawAiCommandRegistry]: Name extends FrontendToolName
+        ? RawAiCommandRegistry[Name] & ((
+            args: ToolCall<{ arguments?: Parameters<RawAiCommandRegistry[Name]>[0] }>,
+        ) => ReturnType<RawAiCommandRegistry[Name]>)
+        : (args: Name extends keyof WorkflowInputMap ? WorkflowInputMap[Name]
+            : WorkflowCall<Name & FrontendWorkflowName, { tools: []; reason?: string }>) => ReturnType<RawAiCommandRegistry[Name]>;
 };
 
 const definitions = Object.fromEntries(
@@ -1160,12 +1162,33 @@ const dispatchOperation = (
     name: string,
     args: Record<string, unknown>,
     signal?: AbortSignal,
+    nativeCall = false,
 ): Tool<OperationExecutionOutput, OperationStatusPayload> | Workflow<OperationExecutionOutput, OperationStatusPayload> => {
     const definition = Object.prototype.hasOwnProperty.call(definitions, name)
         ? definitions[name as FrontendOperationName]
         : undefined;
     try {
         if (!definition) throw new OperationNotRegisteredError(`Operation '${name}' is not registered.`);
+        if (nativeCall && definition.kind === 'tool' && isRecord(args) && hasOwn(args, 'tool')) {
+            const call = readToolCall(args);
+            if (!call || call.name !== name
+                || Reflect.ownKeys(call).some((key) => key !== 'name' && key !== 'arguments')
+                || (call.arguments !== undefined && !isRecord(call.arguments))) {
+                throw new InvalidOperationCallError(`Provide tool with name '${name}' and an arguments object.`);
+            }
+            args = (call.arguments as Record<string, unknown> | undefined) ?? {};
+        } else if (definition.kind === 'workflow'
+            && name !== 'set_procedure_plan' && name !== 'create_repeatable_plan'
+            && name !== 'add_event_to_live_range_todo_list') {
+            const call = readWorkflowCall(args, definition.name);
+            const supportsReason = name === 'advance_plan_step' || name === 'clear_procedure_plan';
+            if (!call || !Array.isArray(call.tools) || call.tools.length !== 0
+                || Reflect.ownKeys(call).some((key) => key !== 'name' && key !== 'tools' && !(supportsReason && key === 'reason'))
+                || (call.reason !== undefined && typeof call.reason !== 'string')) {
+                throw new InvalidOperationCallError(`Provide workflow with name '${name}' and an empty tools list.`);
+            }
+            args = call.reason !== undefined ? { reason: call.reason } : {};
+        }
         const dispatchNested = createWorkflowToolDispatcher(context);
         const result: Operation<OperationExecutionOutput, OperationStatusPayload> = (
             definition.execute(context, args, dispatchNested, signal)
@@ -1202,6 +1225,7 @@ export const createAiCommandRegistry = (
             definition.name,
             args,
             signal,
+            true,
         ),
     ]),
 ) as unknown as AiCommandRegistry;

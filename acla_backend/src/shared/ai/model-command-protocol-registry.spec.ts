@@ -8,6 +8,8 @@ import {
     TELEMETRY_METRIC_FIELD_SCHEMA,
 } from './telemetry-metric-fields';
 
+const getToolArguments = (command: any): any => ({ ...command, ...command.properties.tool.properties.arguments });
+
 const WORKFLOW_NAMES = [
     'create_repeatable_plan',
     'retry_repeatable_plan_task',
@@ -18,16 +20,40 @@ const WORKFLOW_NAMES = [
     'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
     'get_live_range_todo_list',
 ];
-const getWorkflowSchema = (command: any) => command.properties[command.name];
-const getCallNames = (schema: any): string[] => schema.oneOf.map((branch: any) => branch.required[0]);
+const getWorkflowSchema = (command: any) => command.properties.workflow;
+const getCallNames = (schema: any): string[] => (schema.properties?.tool ?? schema).oneOf.map((branch: any) => branch.properties.name.enum[0]);
 const getCallMetadata = (schema: any, name: string) => (
-    schema.oneOf.find((branch: any) => branch.required[0] === name).properties[name]
+    (schema.properties?.tool ?? schema).oneOf.find((branch: any) => branch.properties.name.enum[0] === name)
 );
+
+describe('explicit command envelopes', () => {
+    const ajv = new Ajv({ allErrors: true, strictNumbers: true });
+    it.each(MODEL_COMMAND_PROTOCOL)('advertises the name and wrapper for $name', (command) => {
+        const kind = WORKFLOW_NAMES.includes(command.name) ? 'workflow' : 'tool';
+        expect(Object.keys(command.properties)).toEqual([kind]);
+        expect(command.required).toEqual([kind]);
+        const body = (command.properties as any)[kind];
+        expect(body.properties.name).toEqual({ type: 'string', enum: [command.name] });
+        expect(body.required).toContain('name');
+        expect(body.additionalProperties).toBe(false);
+        if (kind === 'workflow') expect(body.required).toContain('tools');
+        const validate = ajv.compile({ type: 'object', properties: command.properties, required: command.required, additionalProperties: false });
+        expect(validate({ [kind]: { name: 'wrong_command' } })).toBe(false);
+        expect(validate({ [command.name]: {} })).toBe(false);
+        if (kind === 'tool' && !body.required.includes('arguments')) {
+            expect(validate({ tool: { name: command.name } })).toBe(true);
+        }
+        if (kind === 'workflow' && body.properties.tools.maxItems === 0) {
+            expect(validate({ workflow: { name: command.name, tools: [] } })).toBe(true);
+            expect(validate({ workflow: { name: command.name, tools: [{ tool: { name: 'show_map' } }] } })).toBe(false);
+        }
+    });
+});
 
 describe('live baseline tools', () => {
     it('directs new recordings through collect and limits restart to active recordings', () => {
-        const collect = MODEL_COMMAND_PROTOCOL.find(({ name }) => name === 'collect_live_baseline') as any;
-        const restart = MODEL_COMMAND_PROTOCOL.find(({ name }) => name === 'restart_live_baseline') as any;
+        const collect = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => name === 'collect_live_baseline')) as any;
+        const restart = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => name === 'restart_live_baseline')) as any;
 
         expect(collect?.description).toContain('holds only one recording at a time');
         expect(collect?.description).toContain('starts a new recording');
@@ -36,7 +62,7 @@ describe('live baseline tools', () => {
     });
 
     it('requires either the full-lap preset or mutually exclusive custom conditions', () => {
-        const collect = MODEL_COMMAND_PROTOCOL.find(({ name }) => name === 'collect_live_baseline') as any;
+        const collect = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => name === 'collect_live_baseline')) as any;
         const [presetQuery, customQuery] = collect.properties.query.oneOf;
 
         expect(collect.required).toEqual(['query']);
@@ -80,18 +106,18 @@ describe('session live range to-do tools', () => {
         const addTool = MODEL_COMMAND_PROTOCOL.find((tool) => (
             tool.name === 'add_event_to_live_range_todo_list'
         )) as any;
-        expect(addTool.required).toEqual(['add_event_to_live_range_todo_list']);
+        expect(addTool.required).toEqual(['workflow']);
         const workflowSchema = getWorkflowSchema(addTool);
         expect(workflowSchema).toMatchObject({
-            required: ['tools'],
+            required: ['name', 'tools'],
             additionalProperties: false,
             properties: { tools: { minItems: 1 } },
         });
         const metadata = getCallMetadata(workflowSchema.properties.tools.items, 'show_map');
         const eventSchema = metadata.properties.event;
         const contentSchema = eventSchema.properties.content;
-        expect(Object.keys(metadata.properties)).toEqual(['event', 'arguments']);
-        expect(metadata.required).toEqual(['event', 'arguments']);
+        expect(Object.keys(metadata.properties)).toEqual(['name', 'event', 'arguments']);
+        expect(metadata.required).toEqual(['name', 'event', 'arguments']);
         expect(metadata.additionalProperties).toBe(false);
         expect(Object.keys(eventSchema.properties)).toEqual([
             'id',
@@ -181,7 +207,7 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
         ));
-        expect(tool).toMatchObject({ properties: {}, required: [] });
+        expect(tool).toMatchObject({ properties: { workflow: { required: ['name', 'tools'], properties: { tools: { maxItems: 0 } } } }, required: ['workflow'] });
 
         expect(namesFor({ session_mode: 'live' }))
             .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
@@ -232,9 +258,9 @@ describe('analysis result query tool', () => {
     ];
 
     it('requires one non-blank JSONata expression without a legacy enum', () => {
-        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
+        const tool = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'query_analysis_result'
-        )) as any;
+        ))) as any;
 
         expect(MODEL_COMMAND_PROTOCOL.filter(({ name }) => name === 'query_analysis_result'))
             .toHaveLength(1);
@@ -258,9 +284,9 @@ describe('analysis result query tool', () => {
 
     it('describes one all-analysis root in every eligible context', () => {
         eligibleContexts.forEach((context) => {
-            const tool = getModelCommandsForSessionContext(context).find(({ name }) => (
+            const tool = getToolArguments(getModelCommandsForSessionContext(context).find(({ name }) => (
                 name === 'query_analysis_result'
-            ));
+            )));
             const description = tool?.description ?? '';
 
             expect(description).toContain('exactly one root structure');
@@ -286,9 +312,9 @@ describe('analysis result query tool', () => {
     });
 
     it('does not advertise the old identifiers as aliases', () => {
-        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
+        const tool = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'query_analysis_result'
-        ));
+        )));
         const serializedTool = JSON.stringify(tool);
 
         expect(serializedTool).not.toContain('result_count');
@@ -345,9 +371,9 @@ describe('analysis result query apply tool', () => {
     ];
 
     it('requires final non-blank JSONata and accepts only an optional integer page number', () => {
-        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
+        const tool = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'apply_query_to_analysis_result'
-        )) as any;
+        ))) as any;
 
         expect(MODEL_COMMAND_PROTOCOL.filter(({ name }) => name === 'apply_query_to_analysis_result'))
             .toHaveLength(1);
@@ -406,38 +432,38 @@ describe('analysis result query apply tool', () => {
 });
 
 describe('set_procedure_plan tool', () => {
-    it('requires a same-name envelope with a goal and ordered titled tool calls', () => {
+    it('requires an explicit workflow envelope with a goal and ordered titled tool calls', () => {
         const command = MODEL_COMMAND_PROTOCOL.find(({ name }) => name === 'set_procedure_plan') as any;
-        expect(command.required).toEqual(['set_procedure_plan']);
-        expect(Object.keys(command.properties)).toEqual(['set_procedure_plan']);
+        expect(command.required).toEqual(['workflow']);
+        expect(Object.keys(command.properties)).toEqual(['workflow']);
         const workflow = getWorkflowSchema(command);
-        expect(Object.keys(workflow.properties)).toEqual(['goal', 'tools']);
-        expect(workflow.required).toEqual(['goal', 'tools']);
+        expect(Object.keys(workflow.properties)).toEqual(['name', 'goal', 'tools']);
+        expect(workflow.required).toEqual(['name', 'goal', 'tools']);
         expect(workflow.additionalProperties).toBe(false);
         expect(workflow.properties.tools.minItems).toBe(1);
         expect(workflow.properties.goal.type).toBe('string');
         expect(workflow.properties.goal).not.toHaveProperty('minLength');
         expect(workflow.properties.goal).not.toHaveProperty('pattern');
         const metadata = getCallMetadata(workflow.properties.tools.items, 'show_map');
-        expect(Object.keys(metadata.properties)).toEqual(['title', 'arguments']);
-        expect(metadata.required).toEqual(['title', 'arguments']);
+        expect(Object.keys(metadata.properties)).toEqual(['name', 'title', 'arguments']);
+        expect(metadata.required).toEqual(['name', 'title', 'arguments']);
         expect(metadata.additionalProperties).toBe(false);
         expect(metadata.properties.title).toEqual({ type: 'string', minLength: 1, pattern: '\\S' });
     });
 });
 
 describe('create_repeatable_plan tool', () => {
-    it('defines ordered keyed calls and a keyed numeric stop_when call', () => {
+    it('defines named tool calls and a named numeric stop_when call', () => {
         const commands = getModelCommandsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
         const command = commands.find(({ name }) => name === 'create_repeatable_plan') as any;
-        expect(command.required).toEqual(['create_repeatable_plan']);
-        expect(Object.keys(command.properties)).toEqual(['create_repeatable_plan']);
+        expect(command.required).toEqual(['workflow']);
+        expect(Object.keys(command.properties)).toEqual(['workflow']);
         const workflow = getWorkflowSchema(command);
         expect(workflow).toMatchObject({
-            required: ['name', 'tools', 'stop_when'],
+            required: ['name', 'goal', 'tools', 'stop_when'],
             additionalProperties: false,
             properties: {
                 name: { type: 'string' },
@@ -452,16 +478,16 @@ describe('create_repeatable_plan tool', () => {
                 },
             },
         });
-        expect(Object.keys(workflow.properties)).toEqual(['name', 'tools', 'stop_when']);
+        expect(Object.keys(workflow.properties)).toEqual(['name', 'goal', 'tools', 'stop_when']);
         const step = getCallMetadata(workflow.properties.tools.items, 'query_analysis_result');
-        expect(Object.keys(step.properties)).toEqual(['id', 'title', 'arguments']);
-        expect(step.required).toEqual(['id', 'title']);
+        expect(Object.keys(step.properties)).toEqual(['name', 'id', 'title', 'arguments']);
+        expect(step.required).toEqual(['name', 'id', 'title']);
         expect(step.additionalProperties).toBe(false);
         expect(step.properties.arguments).toMatchObject({ type: 'object', default: {} });
         const stopWhen = workflow.properties.stop_when;
         const stopCall = getCallMetadata(stopWhen.properties.tool, 'query_analysis_result');
-        expect(Object.keys(stopCall.properties)).toEqual(['arguments']);
-        expect(stopCall.required).toEqual([]);
+        expect(Object.keys(stopCall.properties)).toEqual(['name', 'arguments']);
+        expect(stopCall.required).toEqual(['name']);
         expect(stopCall.additionalProperties).toBe(false);
         expect(stopCall.properties.arguments).toMatchObject({ type: 'object', default: {} });
         expect(Object.keys(stopWhen.properties)).toEqual(['tool', 'operator', 'target']);
@@ -491,9 +517,9 @@ describe('create_repeatable_plan tool', () => {
 
 describe('telemetry metric query tool', () => {
     it('requires the described supported fields, scope, and a summarized reduction', () => {
-        const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
+        const tool = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'query_telemetry_metric'
-        ));
+        )));
 
         expect(tool).toMatchObject({
             properties: {
@@ -538,7 +564,7 @@ describe('retry_repeatable_plan_task tool', () => {
         const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'retry_repeatable_plan_task'
         ));
-        expect(tool).toMatchObject({ properties: {}, required: [] });
+        expect(tool).toMatchObject({ properties: { workflow: { required: ['name', 'tools'], properties: { tools: { maxItems: 0 } } } }, required: ['workflow'] });
 
         expect(namesFor({ session_mode: 'live' })).not.toContain('retry_repeatable_plan_task');
         expect(namesFor({
@@ -572,7 +598,7 @@ describe('tool-only workflow schema validation', () => {
             name: 'set_procedure_plan',
             body: {
                 goal: 'Review the session',
-                tools: [{ query_analysis_result: { title: 'Count analyses', arguments: { query: '$count(analyses)' } } }],
+                tools: [{ tool: { name: 'query_analysis_result', title: 'Count analyses', arguments: { query: '$count(analyses)' } } }],
             },
             metadata: { title: 'Count analyses', arguments: { query: '$count(analyses)' } },
             legacyKey: 'requests',
@@ -580,9 +606,9 @@ describe('tool-only workflow schema validation', () => {
         {
             name: 'create_repeatable_plan',
             body: {
-                name: 'Practice a clean lap',
-                tools: [{ query_analysis_result: { id: 'count', title: 'Count analyses', arguments: { query: '$count(analyses)' } } }],
-                stop_when: { tool: { query_analysis_result: { arguments: { query: '$count(analyses)' } } }, operator: 'gte', target: 3 },
+                goal: 'Practice a clean lap',
+                tools: [{ tool: { name: 'query_analysis_result', id: 'count', title: 'Count analyses', arguments: { query: '$count(analyses)' } } }],
+                stop_when: { tool: { name: 'query_analysis_result', arguments: { query: '$count(analyses)' }  }, operator: 'gte', target: 3 },
             },
             metadata: { id: 'count', title: 'Count analyses', arguments: { query: '$count(analyses)' } },
             legacyKey: 'steps',
@@ -590,7 +616,7 @@ describe('tool-only workflow schema validation', () => {
         {
             name: 'add_event_to_live_range_todo_list',
             body: {
-                tools: [{ query_analysis_result: { event, arguments: { query: '$count(analyses)' } } }],
+                tools: [{ tool: { name: 'query_analysis_result', event, arguments: { query: '$count(analyses)' } } }],
             },
             metadata: { event, arguments: { query: '$count(analyses)' } },
             legacyKey: 'events',
@@ -607,7 +633,7 @@ describe('tool-only workflow schema validation', () => {
     describe.each(cases)('$name', ({ name, body, metadata, legacyKey }) => {
         const command = commands.find((entry) => entry.name === name) as any;
         const validate = compileCommand(command);
-        const envelope = (value: unknown) => ({ [name]: value });
+        const envelope = (value: unknown) => ({ workflow: value && typeof value === 'object' && !Array.isArray(value) ? { name, ...value } : value });
         const withTools = (tools: unknown) => envelope({ ...body, tools });
 
         it('accepts ordered repeated tool calls and preserves metadata and arguments', () => {
@@ -616,8 +642,8 @@ describe('tool-only workflow schema validation', () => {
             if ('event' in second) second.event.id = 'corner-2';
             second.arguments = { query: '$count(analyses.elements)', nested: { payload: ['kept', 2] } };
             const input = withTools([
-                { query_analysis_result: metadata },
-                { query_analysis_result: second },
+                { tool: { name: 'query_analysis_result', ...metadata } },
+                { tool: { name: 'query_analysis_result', ...second } },
             ]);
             const before = JSON.stringify(input);
             expect(validate(input)).toBe(true);
@@ -641,13 +667,13 @@ describe('tool-only workflow schema validation', () => {
             });
         });
 
-        it('rejects empty or multiple tool keys, name descriptors, and metadata aliases', () => {
+        it('rejects missing or malformed tool envelopes and metadata aliases', () => {
             const invalidEntries: unknown[] = [
                 null, [], 'query_analysis_result', {},
-                { query_analysis_result: metadata, show_map: metadata },
+                { tool: { name: 'query_analysis_result', ...metadata }, show_map: metadata },
                 { name: 'query_analysis_result', ...metadata },
                 { tool: { name: 'query_analysis_result', arguments: {} } },
-                { query_analysis_result: { ...metadata, name: 'query_analysis_result' } },
+                { tool: { ...metadata, name: '' } },
                 { query_analysis_result: null },
                 { query_analysis_result: [] },
             ];
@@ -655,16 +681,16 @@ describe('tool-only workflow schema validation', () => {
                 const missingArguments: any = { ...metadata, [alias]: {} };
                 delete missingArguments.arguments;
                 invalidEntries.push(
-                    { query_analysis_result: missingArguments },
-                    { query_analysis_result: { ...metadata, [alias]: {} } },
+                    { tool: { name: 'query_analysis_result', ...missingArguments } },
+                    { tool: { name: 'query_analysis_result', ...metadata, [alias]: {} } },
                 );
             });
             [null, [], 'query'].forEach((argumentsValue) => {
-                invalidEntries.push({ query_analysis_result: { ...metadata, arguments: argumentsValue } });
+                invalidEntries.push({ tool: { name: 'query_analysis_result', ...metadata, arguments: argumentsValue } });
             });
             invalidEntries.forEach((entry) => {
                 // A malformed later entry invalidates the entire batch.
-                expect(validate(withTools([{ query_analysis_result: metadata }, entry]))).toBe(false);
+                expect(validate(withTools([{ tool: { name: 'query_analysis_result', ...metadata } }, entry]))).toBe(false);
             });
             [null, {}, 'tools'].forEach((tools) => expect(validate(withTools(tools))).toBe(false));
         });
@@ -681,41 +707,41 @@ describe('tool-only workflow schema validation', () => {
         it('retains metadata requirements and permits omitted arguments only for repeatable calls', () => {
             const missingArguments: any = { ...metadata };
             delete missingArguments.arguments;
-            expect(validate(withTools([{ query_analysis_result: missingArguments }])))
+            expect(validate(withTools([{ tool: { name: 'query_analysis_result', ...missingArguments } }])))
                 .toBe(name === 'create_repeatable_plan');
             Object.keys(metadata).filter((key) => key !== 'arguments').forEach((key) => {
                 const missing: any = { ...metadata };
                 delete missing[key];
-                expect(validate(withTools([{ query_analysis_result: missing }]))).toBe(false);
+                expect(validate(withTools([{ tool: { name: 'query_analysis_result', ...missing } }]))).toBe(false);
             });
             expect(validate(withTools([]))).toBe(false);
             if (name === 'set_procedure_plan') {
                 ['', ' \t\n '].forEach((blank) => {
                     expect(validate(envelope({ ...body, goal: blank }))).toBe(true);
                     expect(validate(withTools([
-                        { query_analysis_result: metadata },
-                        { query_analysis_result: { ...metadata, title: blank } },
+                        { tool: { name: 'query_analysis_result', ...metadata } },
+                        { tool: { name: 'query_analysis_result', ...metadata, title: blank } },
                     ]))).toBe(false);
                 });
             }
         });
     });
 
-    it('keeps keyed stop arguments optional and rejects invalid stop conditions', () => {
+    it('keeps named stop arguments optional and rejects invalid stop conditions', () => {
         const repeatable = cases.find(({ name }) => name === 'create_repeatable_plan')!;
         const validate = compileCommand(commands.find(({ name }) => name === repeatable.name));
-        const withStop = (stop_when: unknown) => ({ [repeatable.name]: { ...repeatable.body, stop_when } });
-        const stop = { tool: { query_analysis_result: {} }, operator: 'gte', target: 3 };
+        const withStop = (stop_when: unknown) => ({ workflow: { name: repeatable.name, ...repeatable.body, stop_when } });
+        const stop = { tool: { name: 'query_analysis_result', }, operator: 'gte', target: 3 };
         ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'].forEach((operator) => {
             expect(validate(withStop({ ...stop, operator }))).toBe(true);
         });
         [
             null, [], {},
             { ...stop, tool: {} },
-            { ...stop, tool: { query_analysis_result: {}, show_map: {} } },
-            { ...stop, tool: { name: 'query_analysis_result', arguments: {} } },
-            { ...stop, tool: { query_analysis_result: { title: 'Not stop metadata' } } },
-            { ...stop, tool: { query_analysis_result: { arguments: null } } },
+            { ...stop, tool: { name: 'query_analysis_result', show_map: {} } },
+            { ...stop, tool: { query_analysis_result: { arguments: {} } } },
+            { ...stop, tool: { name: 'query_analysis_result', title: 'Not stop metadata'  } },
+            { ...stop, tool: { name: 'query_analysis_result', arguments: null  } },
             { ...stop, operator: 'equals' },
             { ...stop, target: '3' },
             { ...stop, target: Infinity },
@@ -728,14 +754,14 @@ describe('tool-only workflow schema validation', () => {
             expect(validate(withStop(missing))).toBe(false);
         });
         [...WORKFLOW_NAMES, 'unknown_tool', 'start_agent_session', 'run_recorded_ai_analysis']
-            .forEach((name) => expect(validate(withStop({ ...stop, tool: { [name]: {} } }))).toBe(false));
+            .forEach((name) => expect(validate(withStop({ ...stop, tool: { name } }))).toBe(false));
     });
 
     it('retains live-range event bounds, required content, and optional lead time', () => {
         const liveRange = cases.find(({ name }) => name === 'add_event_to_live_range_todo_list')!;
         const validate = compileCommand(commands.find(({ name }) => name === liveRange.name));
         const withEvent = (value: unknown) => ({
-            [liveRange.name]: { tools: [{ query_analysis_result: { event: value, arguments: {} } }] },
+            workflow: { name: liveRange.name, tools: [{ tool: { name: 'query_analysis_result', event: value, arguments: {} } }] },
         });
         expect(validate(withEvent({ id: 'corner', normalized_position: 0, content: { title: 'Start' } }))).toBe(true);
         expect(validate(withEvent({ ...event, normalized_position: 1 }))).toBe(true);
@@ -822,14 +848,14 @@ describe('catalog workflow guidance', () => {
             expect(example).not.toBeNull();
             const argumentsValue = JSON.parse(example![1]);
             validateArguments(command, argumentsValue);
-            const body = argumentsValue[command.name];
-            const children = [...body.tools, ...(body.stop_when ? [body.stop_when.tool] : [])];
+            const body = argumentsValue.workflow;
+            const children = [...body.tools, ...(body.stop_when ? [{ tool: body.stop_when.tool }] : [])];
             children.forEach((child) => {
-                const [name] = Object.keys(child);
+                const { name } = child.tool;
                 expect(WORKFLOW_NAMES).not.toContain(name);
                 const tool = commands.find((candidate) => candidate.name === name);
                 expect(tool).toBeDefined();
-                validateArguments(tool, child[name].arguments ?? {});
+                validateArguments(tool, { tool: { name, arguments: child.tool.arguments ?? {} } });
             });
         });
     });

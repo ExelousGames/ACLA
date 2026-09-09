@@ -14,8 +14,8 @@ def _object_schema(properties, required=()):
 
 def _child_schema(name, properties, required):
     return _object_schema({
-        name: _object_schema(properties, required),
-    }, [name])
+        "tool": _object_schema({"name": {"type": "string", "enum": [name]}, **properties}, ["name", *required]),
+    }, ["tool"])
 
 
 @pytest.fixture(params=[
@@ -44,7 +44,7 @@ def user_workflow_case(request):
         properties = {"goal": {"type": "string"}}
         body = {
             "goal": "Review the Spa opening section",
-            "tools": [{"show_map": {
+            "tools": [{"tool": {"name": "show_map",
                 "title": "Show the opening section",
                 "arguments": map_arguments,
             }}],
@@ -80,13 +80,13 @@ def user_workflow_case(request):
             }, ["id", "title"]),
         ]
         properties = {
-            "name": {"type": "string"},
+            "goal": {"type": "string"},
             "stop_when": _object_schema({
                 "tool": {"oneOf": [_child_schema("query_analysis_result", {
                     "arguments": _object_schema({
                         "query": {"type": "string", "minLength": 1},
                     }, ["query"]),
-                }, [])]},
+                }, [])["properties"]["tool"]]},
                 "operator": {"type": "string", "enum": [
                     "eq", "neq", "lt", "lte", "gt", "gte",
                 ]},
@@ -94,22 +94,22 @@ def user_workflow_case(request):
             }, ["tool", "operator", "target"]),
         }
         body = {
-            "name": "Analyze five laps",
+            "goal": "Analyze five laps",
             "tools": [
-                {"collect_live_baseline": {
+                {"tool": {"name": "collect_live_baseline",
                     "id": "collect",
                     "title": "Record a full lap",
                     "arguments": {"query": {"preset": "full_lap"}},
                 }},
-                {"analyze_live_recorded_analysis": {
+                {"tool": {"name": "analyze_live_recorded_analysis",
                     "id": "analyze",
                     "title": "Analyze the recorded lap",
                 }},
             ],
             "stop_when": {
-                "tool": {"query_analysis_result": {
+                "tool": {"name": "query_analysis_result",
                     "arguments": {"query": "$count(analyses)"},
-                }},
+                },
                 "operator": "gte",
                 "target": 5,
             },
@@ -130,7 +130,7 @@ def user_workflow_case(request):
             "arguments": map_schema,
         }, ["event", "arguments"])]
         properties = {}
-        body = {"tools": [{"show_map": {
+        body = {"tools": [{"tool": {"name": "show_map",
             "event": {
                 "id": "spa-opening-map",
                 "normalized_position": 0.1,
@@ -143,6 +143,8 @@ def user_workflow_case(request):
             "arguments": map_arguments,
         }}]}
 
+    properties = {"name": {"type": "string", "enum": [name]}, **properties}
+    body = {"name": name, **body}
     properties["tools"] = {
         "type": "array",
         "minItems": 1,
@@ -152,8 +154,8 @@ def user_workflow_case(request):
         "descriptor": {
             "name": name,
             "description": "Create a visible tool-only workflow.",
-            "properties": {name: _object_schema(properties, properties)},
-            "required": [name],
+            "properties": {"workflow": _object_schema(properties, properties)},
+            "required": ["workflow"],
         },
-        "arguments": {name: body},
+        "arguments": {"workflow": body},
     })

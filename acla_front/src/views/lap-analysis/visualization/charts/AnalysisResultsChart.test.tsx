@@ -308,19 +308,19 @@ describe('AnalysisResultsChart', () => {
         expect(Buffer.byteLength(JSON.stringify(error.detail), 'utf8')).toBeLessThanOrEqual(1024);
 
         const procedure = new ProcedurePlanRunner('procedure-plan', dispatch, undefined, jest.fn());
-        const procedureResult = await procedure.createProcedurePlan({ set_procedure_plan: {
+        const procedureResult = await procedure.createProcedurePlan({ workflow: { name: 'set_procedure_plan',
             goal: 'Query analysis',
-            tools: [{ query_analysis_result: { title: 'Read', arguments: { query } } }],
+            tools: [{ tool: { name: 'query_analysis_result', title: 'Read', arguments: { query } } }],
         } }).result;
         expect(procedureResult).toMatchObject({
             status: 'failed', task_results: [{ status: 'failed', error: { cause: { detail: { code } } } }],
         });
 
         const repeatable = new RepeatablePlanRunner('repeatable-plan', dispatch);
-        const repeatableResult = await repeatable.createRepeatablePlan({ create_repeatable_plan: {
-            name: 'Query analysis',
-            tools: [{ query_analysis_result: { id: 'read', title: 'Read', arguments: { query } } }],
-            stop_when: { tool: { query_analysis_result: { arguments: { query: '1' } } }, operator: 'eq', target: 1 },
+        const repeatableResult = await repeatable.createRepeatablePlan({ workflow: { name: 'create_repeatable_plan',
+            goal: 'Query analysis',
+            tools: [{ tool: { name: 'query_analysis_result', id: 'read', title: 'Read', arguments: { query } } }],
+            stop_when: { tool: { name: 'query_analysis_result', arguments: { query: '1' }  }, operator: 'eq', target: 1 },
         } }).result;
         expect(repeatableResult).toMatchObject({ status: 'failed', failed_step: 'read' });
         for (const result of [procedureResult, repeatableResult]) {
@@ -349,11 +349,11 @@ describe('AnalysisResultsChart', () => {
         directory.registerComponentRef(chartRef);
         const dispatch = createWorkflowToolDispatcher({ componentRefs: directory });
         const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
-        const result = await runner.createRepeatablePlan({ create_repeatable_plan: {
-            name: 'Bounded stop',
-            tools: [{ query_analysis_result: { id: 'count', title: 'Count', arguments: { query: '$count(analyses)' } } }],
+        const result = await runner.createRepeatablePlan({ workflow: { name: 'create_repeatable_plan',
+            goal: 'Bounded stop',
+            tools: [{ tool: { name: 'query_analysis_result', id: 'count', title: 'Count', arguments: { query: '$count(analyses)' } } }],
             stop_when: {
-                tool: { query_analysis_result: { arguments: { query: '$error($string(analyses))' } } },
+                tool: { name: 'query_analysis_result', arguments: { query: '$error($string(analyses))' }  },
                 operator: 'eq', target: 0,
             },
         } }).result;
@@ -1387,7 +1387,7 @@ describe('AnalysisResultsChart', () => {
         const registry = createAiCommandRegistry({ componentRefs: directory, sessionMode: 'live', sessionGame: 'acc' });
 
         try {
-            await expect(registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({}).result)
+            await expect(registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  } }).result)
                 .resolves.toMatchObject({
                     status: 'ready',
                     active_page_id: expectedPage.id,

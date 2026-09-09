@@ -12,9 +12,21 @@ export interface Tool<
 
 /** A single named tool call; workflow names are excluded from executable input. */
 export type ToolCall<TMetadata> = {
-    [Name in FrontendToolName]: Record<Name, TMetadata>
-        & Partial<Record<Exclude<FrontendToolName, Name>, never>>;
-}[FrontendToolName];
+    tool: { name: FrontendToolName } & TMetadata;
+};
+
+/** Read the explicit tool envelope without interpreting its arguments. */
+export const readToolCall = (value: unknown): Record<string, unknown> | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Reflect.ownKeys(value).length !== 1
+        || !Object.prototype.hasOwnProperty.call(value, 'tool')) return null;
+    const tool = (value as Record<string, unknown>).tool;
+    if (!tool || typeof tool !== 'object' || Array.isArray(tool)
+        || !Object.prototype.hasOwnProperty.call(tool, 'name')) return null;
+    const call = tool as Record<string, unknown>;
+    return typeof call.name === 'string' && call.name.trim() === call.name && call.name.length > 0
+        ? call : null;
+};
 
 export type ToolDispatcher = ((
     name: FrontendToolName,

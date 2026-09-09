@@ -162,11 +162,11 @@ const getLatestAgentVoiceOptions = () => {
 };
 
 const lifecycleGoalRequest = () => ({
-    create_repeatable_plan: {
-        name: 'Lifecycle goal',
-        tools: [{ collect: { id: 'collect', title: 'Collect data' } }],
+    workflow: { name: 'create_repeatable_plan',
+        goal: 'Lifecycle goal',
+        tools: [{ tool: { name: 'collect', id: 'collect', title: 'Collect data' } }],
         stop_when: {
-            tool: { determine: {} },
+            tool: { name: 'determine', },
             operator: 'eq',
             target: 0,
         },
@@ -174,9 +174,9 @@ const lifecycleGoalRequest = () => ({
 });
 
 const lifecycleProcedurePlan = () => ({
-    set_procedure_plan: {
+    workflow: { name: 'set_procedure_plan',
         goal: 'Lifecycle plan',
-        tools: [{ read: { title: 'Read data', arguments: {} } }],
+        tools: [{ tool: { name: 'read', title: 'Read data', arguments: {} } }],
     },
 });
 
@@ -651,15 +651,15 @@ describe('AiChat conversation lifecycle', () => {
                 if (scenario.startsWith('procedure')) {
                     const input = scenario.endsWith('legacy')
                         ? { goal: 'Legacy', requests: [{ name: 'read', title: 'Read', payload: {} }] }
-                        : { set_procedure_plan: { ...procedureInput.set_procedure_plan,
-                            tools: [...procedureInput.set_procedure_plan.tools, { forbidden: { title: 'Forbidden', arguments: {} } }],
+                        : { workflow: { ...procedureInput.workflow,
+                            tools: [...procedureInput.workflow.tools, { forbidden: { title: 'Forbidden', arguments: {} } }],
                         } };
                     rejected = mockRegisteredWorkflowPanelHandle.createProcedurePlan(input, invalidDispatch);
                 } else {
                     const input = scenario.endsWith('legacy')
                         ? { name: 'Legacy', steps: [], stop_when: {} }
-                        : { create_repeatable_plan: { ...repeatableInput.create_repeatable_plan,
-                            stop_when: { ...repeatableInput.create_repeatable_plan.stop_when, tool: { forbidden: {} } },
+                        : { workflow: { ...repeatableInput.workflow,
+                            stop_when: { ...repeatableInput.workflow.stop_when, tool: { forbidden: {} } },
                         } };
                     rejected = mockRegisteredWorkflowPanelHandle.createRepeatablePlan(input, invalidDispatch);
                 }
@@ -682,7 +682,7 @@ describe('AiChat conversation lifecycle', () => {
         'add_event_to_live_range_todo_list', 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
     ])('rejects %s status input before handlers or workflow replacement', (scenario) => {
         const statusHandler = jest.fn(() => operationWithValue({ status: 'complete' }));
-        (createAiCommandRegistry as jest.Mock).mockReturnValue({ show_map: statusHandler, [scenario]: statusHandler });
+        (createAiCommandRegistry as jest.Mock).mockReturnValue({ 'show_map': statusHandler, [scenario]: statusHandler });
         const child = asTool(createOperation(new Promise<Record<string, unknown>>(() => undefined), 'complete'));
         const abort = jest.spyOn(child, 'abort');
         const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -693,13 +693,13 @@ describe('AiChat conversation lifecycle', () => {
         const mounted = mockRegisterComponentRef.mock.calls[0][0].current;
         const dispose = jest.spyOn(mounted, 'dispose');
         const legacy = { event: 'procedure_plan_started', goal: 'Legacy', requests: [{ name: 'show_map', title: 'Map', payload: {} }] };
-        const input = { event: 'procedure_plan_started', set_procedure_plan: {
-            goal: 'Status plan', tools: [{ show_map: { title: 'Map', arguments: {} } }],
+        const input = { event: 'procedure_plan_started', workflow: { name: 'set_procedure_plan',
+            goal: 'Status plan', tools: [{ tool: { name: 'show_map', title: 'Map', arguments: {} } }],
         } };
         const data = scenario === 'legacy' ? legacy : scenario === 'mixed' ? { ...input, requests: legacy.requests }
             : scenario === 'extra transport field' ? { ...input, current_request: 0 }
-                : { ...input, set_procedure_plan: { ...input.set_procedure_plan,
-                    tools: [...input.set_procedure_plan.tools, {
+                : { ...input, workflow: { ...input.workflow,
+                    tools: [...input.workflow.tools, {
                         [scenario === 'missing active handler' ? 'stop_agent_session' : scenario]: { title: 'Later tool', arguments: {} },
                     }],
                 } };
@@ -721,8 +721,8 @@ describe('AiChat conversation lifecycle', () => {
             const args = { args: { track: 'test' }, parameters: { view: 1 } };
             await act(async () => {
                 getLatestMainVoiceOptions().onEvent({ kind: 'tool_status', data: {
-                    event: 'procedure_plan_started', set_procedure_plan: {
-                        goal: 'Run tool', tools: [{ [toolName]: { title: 'Tool', arguments: args } }],
+                    event: 'procedure_plan_started', workflow: { name: 'set_procedure_plan',
+                        goal: 'Run tool', tools: [{ tool: { name: toolName, title: 'Tool', arguments: args } }],
                     },
                 } });
                 for (let index = 0; index < 8; index += 1) await Promise.resolve();
@@ -740,11 +740,11 @@ describe('AiChat conversation lifecycle', () => {
         const handler = jest.fn(() => child);
         const later = jest.fn(() => operationWithValue({}));
         const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-        (createAiCommandRegistry as jest.Mock).mockReturnValue({ show_map: handler, stop_agent_session: later });
+        (createAiCommandRegistry as jest.Mock).mockReturnValue({ 'show_map': handler, 'stop_agent_session': later });
         render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
         await act(async () => {
-            getLatestMainVoiceOptions().onEvent({ kind: 'tool_status', data: { set_procedure_plan: {
-                goal: 'Show map', tools: [{ show_map: { title: 'Map', arguments: {} } }, { stop_agent_session: { title: 'Stop', arguments: {} } }],
+            getLatestMainVoiceOptions().onEvent({ kind: 'tool_status', data: { workflow: { name: 'set_procedure_plan',
+                goal: 'Show map', tools: [{ tool: { name: 'show_map', title: 'Map', arguments: {} } }, { tool: { name: 'stop_agent_session', title: 'Stop', arguments: {} } }],
             } } });
             for (let index = 0; index < 8; index += 1) await Promise.resolve();
         });
@@ -759,13 +759,13 @@ describe('AiChat conversation lifecycle', () => {
     it('keeps procedure opt-out after a malformed start status', async () => {
         const handler = jest.fn(() => operationWithValue({}));
         const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-        (createAiCommandRegistry as jest.Mock).mockReturnValue({ show_map: handler });
+        (createAiCommandRegistry as jest.Mock).mockReturnValue({ 'show_map': handler });
         render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
-        const input = { set_procedure_plan: { goal: 'Map', tools: [{ show_map: { title: 'Map', arguments: {} } }] } };
+        const input = { workflow: { name: 'set_procedure_plan', goal: 'Map', tools: [{ tool: { name: 'show_map', title: 'Map', arguments: {} } }] } };
         act(() => {
             const { onEvent } = getLatestMainVoiceOptions();
             onEvent({ kind: 'user_transcript', text: 'Stop the plan.' });
-            onEvent({ kind: 'tool_status', data: { event: 'procedure_plan_started', set_procedure_plan: { goal: 'Broken' } } });
+            onEvent({ kind: 'tool_status', data: { event: 'procedure_plan_started', workflow: { name: 'set_procedure_plan', goal: 'Broken' } } });
             onEvent({ kind: 'tool_status', data: input });
         });
         expect(handler).not.toHaveBeenCalled();

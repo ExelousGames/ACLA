@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
-import { asWorkflow, type Workflow } from './workflow';
+import { asWorkflow, readWorkflowCall, type Workflow, type WorkflowCall } from './workflow';
 import {
     OPERATION_COMPONENT_NAMES,
     type NamedOperationComponentHandle,
 } from 'contexts/OperationComponentRefContext';
-import { assertTool, type ToolCall, type ToolDispatcher } from './tool';
+import { assertTool, readToolCall, type ToolCall, type ToolDispatcher } from './tool';
 import type { FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import {
     createControlledOperation,
@@ -39,12 +39,10 @@ export const PROCEDURE_PLAN_STEP_STATUSES = [
 
 export type ProcedurePlanStepStatus = typeof PROCEDURE_PLAN_STEP_STATUSES[number];
 
-export type ProcedurePlanInput = {
-    set_procedure_plan: {
-        goal: string;
-        tools: ToolCall<{ title: string; arguments: Record<string, unknown> }>[];
-    };
-};
+export type ProcedurePlanInput = WorkflowCall<'set_procedure_plan', {
+    goal: string;
+    tools: ToolCall<{ title: string; arguments: Record<string, unknown> }>[];
+}>;
 
 export type ProcedurePlanRequestSnapshot = {
     type: string;
@@ -634,24 +632,18 @@ export const buildProcedurePlan = (
 export const parseProcedurePlanInput = (value: unknown): ProcedurePlanState => {
     const invalid = (): never => {
         throw new InvalidProcedurePlanRequestsError(
-            'Provide set_procedure_plan with a goal and tools containing one tool name, title, and arguments object each.',
+            'Provide workflow with name set_procedure_plan, a goal, and tools containing tool with name, title, and arguments each.',
         );
     };
-    const envelope = toRecord(value);
-    if (!envelope || Reflect.ownKeys(envelope).length !== 1
-        || !Object.prototype.hasOwnProperty.call(envelope, 'set_procedure_plan')) return invalid();
-    const input = toRecord(envelope.set_procedure_plan);
-    if (!input || Reflect.ownKeys(input).some((key) => key !== 'goal' && key !== 'tools')) return invalid();
+    const input = readWorkflowCall(value, 'set_procedure_plan');
+    if (!input || Reflect.ownKeys(input).some((key) => key !== 'name' && key !== 'goal' && key !== 'tools')) return invalid();
     if (!Object.prototype.hasOwnProperty.call(input, 'goal') || typeof input.goal !== 'string'
         || !Array.isArray(input.tools) || input.tools.length === 0) return invalid();
     const goal = input.goal.trim();
     const requests = input.tools.map((value): ProcedurePlanRequestSnapshot => {
-        const entry = toRecord(value);
-        if (!entry || Reflect.ownKeys(entry).length !== 1) return invalid();
-        const name = Object.keys(entry)[0];
-        if (!name || name.trim() !== name) return invalid();
-        const metadata = toRecord(entry[name]);
-        if (!metadata || Reflect.ownKeys(metadata).some((key) => key !== 'title' && key !== 'arguments')) return invalid();
+        const metadata = readToolCall(value);
+        if (!metadata || Reflect.ownKeys(metadata).some((key) => key !== 'name' && key !== 'title' && key !== 'arguments')) return invalid();
+        const name = metadata.name as string;
         const title = toNonEmptyString(metadata.title);
         const args = toRecord(metadata.arguments);
         if (!title || !args || !Object.prototype.hasOwnProperty.call(metadata, 'arguments')) return invalid();
@@ -740,7 +732,7 @@ export const useProcedurePlanWorkflow = ({
             clearProcedurePlan();
             return;
         }
-        if (!Object.prototype.hasOwnProperty.call(data, 'set_procedure_plan')) return;
+        if (toRecord(data.workflow)?.name !== 'set_procedure_plan') return;
         const startsPlan = isProcedurePlanStartEvent(sourceEvent);
         if (optedOutRef.current && !startsPlan) return;
         const { event: _sourceEvent, ...input } = data;

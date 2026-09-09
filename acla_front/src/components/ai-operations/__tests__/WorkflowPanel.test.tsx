@@ -37,18 +37,18 @@ jest.mock('contexts/OperationComponentRefContext', () => ({
 }));
 
 const procedure = (): ProcedurePlanInput => ({
-    set_procedure_plan: {
+    workflow: { name: 'set_procedure_plan',
         goal: 'Review telemetry',
-        tools: [{ query_analysis_result: { title: 'Read telemetry', arguments: { query: 'analyses' } } }],
+        tools: [{ tool: { name: 'query_analysis_result', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
     },
 });
 
 const repeatable = (): RepeatablePlanInput => ({
-    create_repeatable_plan: {
-        name: 'Improve consistency',
-        tools: [{ query_analysis_result: { id: 'read', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
+    workflow: { name: 'create_repeatable_plan',
+        goal: 'Improve consistency',
+        tools: [{ tool: { name: 'query_analysis_result', id: 'read', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
         stop_when: {
-            tool: { query_analysis_result: { arguments: { query: '0' } } },
+            tool: { name: 'query_analysis_result', arguments: { query: '0' }  },
             operator: 'eq',
             target: 0,
         },
@@ -162,7 +162,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
         });
         let operation!: ReturnType<typeof registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list>;
         await act(async () => {
-            operation = registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({});
+            operation = registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  } });
         });
         expect(prepareComparisonVoices).toHaveBeenCalledTimes(1);
 
@@ -192,7 +192,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
         const dispatch = Object.assign(jest.fn(() => child.operation), { validate: jest.fn() });
         const { ref } = renderPanel(dispatch);
         const input = procedure();
-        input.set_procedure_plan.tools.push({ query_analysis_result: { title: 'Next step', arguments: { query: '0' } } });
+        input.workflow.tools.push({ tool: { name: 'query_analysis_result', title: 'Next step', arguments: { query: '0' } } });
         let operation!: ReturnType<WorkflowPanelHandle['createProcedurePlan']> | ReturnType<WorkflowPanelHandle['createRepeatablePlan']>;
         act(() => {
             operation = kind === 'procedure'
@@ -273,11 +273,11 @@ describe('WorkflowPanel standalone lifecycle', () => {
             }),
         });
         const invalidProcedure = procedure();
-        invalidProcedure.set_procedure_plan.tools.push({ show_map: { title: 'Invalid later tool', arguments: {} } });
+        invalidProcedure.workflow.tools.push({ tool: { name: 'show_map', title: 'Invalid later tool', arguments: {} } });
         const invalidRepeatable = repeatable();
-        invalidRepeatable.create_repeatable_plan.tools.push({ show_map: { id: 'invalid', title: 'Invalid later tool' } });
+        invalidRepeatable.workflow.tools.push({ tool: { name: 'show_map', id: 'invalid', title: 'Invalid later tool' } });
         const invalidStop = repeatable();
-        invalidStop.create_repeatable_plan.stop_when.tool = { show_map: {} };
+        invalidStop.workflow.stop_when.tool = { name: 'show_map' };
 
         for (const create of [
             () => ref.current!.createProcedurePlan(invalidProcedure, invalidDispatch),

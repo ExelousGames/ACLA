@@ -16,18 +16,18 @@ import {
 } from '..';
 
 const procedure = (...names: string[]): ProcedurePlanInput => ({
-    set_procedure_plan: {
+    workflow: { name: 'set_procedure_plan',
         goal: 'Review telemetry',
-        tools: names.map((name) => ({ [name]: { title: name, arguments: {} } })) as unknown as ProcedurePlanInput['set_procedure_plan']['tools'],
+        tools: names.map((name) => ({ tool: { name: name, title: name, arguments: {} } })) as unknown as ProcedurePlanInput['workflow']['tools'],
     },
 });
 
 const repeatable = (names = ['query_analysis_result'], stop = 'query_analysis_result'): RepeatablePlanInput => ({
-    create_repeatable_plan: {
-        name: 'Improve consistency',
-        tools: names.map((name, index) => ({ [name]: { id: String(index), title: name } })) as unknown as RepeatablePlanInput['create_repeatable_plan']['tools'],
+    workflow: { name: 'create_repeatable_plan',
+        goal: 'Improve consistency',
+        tools: names.map((name, index) => ({ tool: { name: name, id: String(index), title: name } })) as unknown as RepeatablePlanInput['workflow']['tools'],
         stop_when: {
-            tool: { [stop]: {} } as unknown as RepeatablePlanInput['create_repeatable_plan']['stop_when']['tool'],
+            tool: { name: stop,} as unknown as RepeatablePlanInput['workflow']['stop_when']['tool'],
             operator: 'eq',
             target: 0,
         },
@@ -37,16 +37,16 @@ const repeatable = (names = ['query_analysis_result'], stop = 'query_analysis_re
 describe('strict workflow inputs', () => {
     it.each([
         { goal: 'Legacy', requests: [{ name: 'query_analysis_result', title: 'Query', payload: {} }] },
-        { set_procedure_plan: { tools: [{ query_analysis_result: { title: 'Query', arguments: {} } }] } },
-        { set_procedure_plan: { goal: 'Review', tools: [] } },
-        { set_procedure_plan: { goal: 'Review', tools: [{ query_analysis_result: { title: 'Query' } }] } },
-        { set_procedure_plan: { goal: 'Review', tools: [{ query_analysis_result: { arguments: {} } }] } },
-        { set_procedure_plan: { goal: 'Review', tools: [{ query_analysis_result: { title: 'Query', arguments: [] } }] } },
+        { workflow: { name: 'set_procedure_plan', tools: [{ tool: { name: 'query_analysis_result', title: 'Query', arguments: {} } }] } },
+        { workflow: { name: 'set_procedure_plan', goal: 'Review', tools: [] } },
+        { workflow: { name: 'set_procedure_plan', goal: 'Review', tools: [{ tool: { name: 'query_analysis_result', title: 'Query' } }] } },
+        { workflow: { name: 'set_procedure_plan', goal: 'Review', tools: [{ tool: { name: 'query_analysis_result', arguments: {} } }] } },
+        { workflow: { name: 'set_procedure_plan', goal: 'Review', tools: [{ tool: { name: 'query_analysis_result', title: 'Query', arguments: [] } }] } },
         { ...procedure('query_analysis_result'), requests: [] },
-        { set_procedure_plan: { ...procedure('query_analysis_result').set_procedure_plan, requests: [] } },
-        { set_procedure_plan: { goal: 'Review', tools: [{ query_analysis_result: { title: 'Query', arguments: {} }, show_map: { title: 'Map', arguments: {} } }] } },
+        { workflow: { ...procedure('query_analysis_result').workflow, requests: [] } },
+        { workflow: { name: 'set_procedure_plan', goal: 'Review', tools: [{ tool: { name: 'query_analysis_result', title: 'Query', arguments: {} }, show_map: { title: 'Map', arguments: {} } }] } },
         ...['payload', 'args', 'parameters', 'name', 'status'].map((alias) => ({
-            set_procedure_plan: { goal: 'Review', tools: [{ query_analysis_result: { title: 'Query', arguments: {}, [alias]: {} } }] },
+            workflow: { name: 'set_procedure_plan', goal: 'Review', tools: [{ tool: { name: 'query_analysis_result', title: 'Query', arguments: {}, [alias]: {} } }] },
         })),
     ])('rejects malformed or legacy procedure input %#', (input) => {
         expect(() => parseProcedurePlanInput(input)).toThrow();
@@ -54,39 +54,39 @@ describe('strict workflow inputs', () => {
 
     it('forwards argument keys literally instead of unwrapping former aliases', () => {
         const args = { arguments: { a: 1 }, args: { b: 2 }, parameters: { c: 3 } };
-        expect(parseProcedurePlanInput({ set_procedure_plan: {
-            goal: 'Review', tools: [{ query_analysis_result: { title: 'Query', arguments: args } }],
+        expect(parseProcedurePlanInput({ workflow: { name: 'set_procedure_plan',
+            goal: 'Review', tools: [{ tool: { name: 'query_analysis_result', title: 'Query', arguments: args } }],
         } }).requests[0].payload).toEqual(args);
     });
 
     it.each(['', '   '])('defaults a present blank procedure goal to the first title (%j)', (goal) => {
-        expect(parseProcedurePlanInput({ set_procedure_plan: {
-            goal, tools: [{ query_analysis_result: { title: 'First query', arguments: {} } }],
+        expect(parseProcedurePlanInput({ workflow: { name: 'set_procedure_plan',
+            goal, tools: [{ tool: { name: 'query_analysis_result', title: 'First query', arguments: {} } }],
         } }).goal).toBe('First query');
     });
 
     it('requires own envelope, goal, and procedure arguments properties', () => {
         expect(() => parseRepeatablePlanInput(Object.create(repeatable()))).toThrow();
         expect(() => parseProcedurePlanInput(Object.create(procedure('query_analysis_result')))).toThrow();
-        expect(() => parseProcedurePlanInput({ set_procedure_plan: Object.assign(Object.create({ goal: 'Inherited' }), {
-            tools: [{ query_analysis_result: { title: 'Query', arguments: {} } }],
+        expect(() => parseProcedurePlanInput({ workflow: Object.assign(Object.create({ goal: 'Inherited' }), {
+            tools: [{ tool: { name: 'query_analysis_result', title: 'Query', arguments: {} } }],
         }) })).toThrow();
-        expect(() => parseProcedurePlanInput({ set_procedure_plan: {
-            goal: 'Review', tools: [{ query_analysis_result: Object.assign(Object.create({ arguments: {} }), { title: 'Query' }) }],
+        expect(() => parseProcedurePlanInput({ workflow: { name: 'set_procedure_plan',
+            goal: 'Review', tools: [{ tool: { name: 'query_analysis_result', ...Object.assign(Object.create({ arguments: {} }), { title: 'Query' }) } }],
         } })).toThrow();
     });
 
     it.each([
         { name: 'Legacy', steps: [], stop_when: { tool: { name: 'query_analysis_result' }, operator: 'eq', target: 0 } },
         { ...repeatable(), steps: [] },
-        { create_repeatable_plan: { ...repeatable().create_repeatable_plan, steps: [] } },
-        { create_repeatable_plan: { ...repeatable().create_repeatable_plan, name: '' } },
-        { create_repeatable_plan: { ...repeatable().create_repeatable_plan, tools: [] } },
-        { create_repeatable_plan: { ...repeatable().create_repeatable_plan, tools: [{ query_analysis_result: { title: 'Query' } }] } },
-        { create_repeatable_plan: { ...repeatable().create_repeatable_plan, tools: [{ query_analysis_result: { id: 'query' } }] } },
-        { create_repeatable_plan: { ...repeatable().create_repeatable_plan, tools: [{ query_analysis_result: { id: 'query', title: 'Query', arguments: [] } }] } },
-        { create_repeatable_plan: { ...repeatable().create_repeatable_plan, stop_when: { tool: { name: 'query_analysis_result' }, operator: 'eq', target: 0 } } },
-        { create_repeatable_plan: { ...repeatable().create_repeatable_plan, stop_when: { tool: { query_analysis_result: {} }, operator: 'eq', target: '0' } } },
+        { workflow: { ...repeatable().workflow, steps: [] } },
+        { workflow: { ...repeatable().workflow, goal: '' } },
+        { workflow: { ...repeatable().workflow, tools: [] } },
+        { workflow: { ...repeatable().workflow, tools: [{ tool: { name: 'query_analysis_result', title: 'Query' } }] } },
+        { workflow: { ...repeatable().workflow, tools: [{ tool: { name: 'query_analysis_result', id: 'query' } }] } },
+        { workflow: { ...repeatable().workflow, tools: [{ tool: { name: 'query_analysis_result', id: 'query', title: 'Query', arguments: [] } }] } },
+        { workflow: { ...repeatable().workflow, stop_when: { tool: { query_analysis_result: {} }, operator: 'eq', target: 0 } } },
+        { workflow: { ...repeatable().workflow, stop_when: { tool: { name: 'query_analysis_result', }, operator: 'eq', target: '0' } } },
     ])('rejects malformed or legacy repeatable input %#', (input) => {
         expect(() => parseRepeatablePlanInput(input)).toThrow();
     });

@@ -158,10 +158,9 @@ describe('Repeatable plan descriptors', () => {
     it('rejects unexpected stop_when properties', () => {
         const input = toInput(request());
         const validation = validateGoalRequest({
-            create_repeatable_plan: {
-                ...input.create_repeatable_plan,
+            workflow: { ...input.workflow,
                 stop_when: {
-                    ...input.create_repeatable_plan.stop_when,
+                    ...input.workflow.stop_when,
                     unexpected: true,
                 },
             },
@@ -549,16 +548,14 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
 const toolDispatcher = (dispatch: (...args: any[]) => ReturnType<ToolDispatcher>): ToolDispatcher => Object.assign(dispatch, { validate: jest.fn() }) as ToolDispatcher;
 
 const toInput = (request: GoalRequest): RepeatablePlanInput => ({
-    create_repeatable_plan: {
-        name: request.name,
-        tools: request.steps.map(({ name, ...metadata }) => ({ [name]: metadata })) as unknown as RepeatablePlanInput['create_repeatable_plan']['tools'],
+    workflow: { name: 'create_repeatable_plan',
+        goal: request.name,
+        tools: request.steps.map(({ name, ...metadata }) => ({ tool: { name: name, ...metadata } })) as unknown as RepeatablePlanInput['workflow']['tools'],
         stop_when: {
             ...request.stop_when,
-            tool: {
-                [request.stop_when.tool.name]: {
+            tool: { name: request.stop_when.tool.name,
                     ...(request.stop_when.tool.arguments ? { arguments: request.stop_when.tool.arguments } : {}),
-                },
-            } as unknown as RepeatablePlanInput['create_repeatable_plan']['stop_when']['tool'],
+                } as unknown as RepeatablePlanInput['workflow']['stop_when']['tool'],
         },
     },
 });

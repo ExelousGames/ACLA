@@ -93,7 +93,7 @@ describe('ModelCommandProtocolController', () => {
         expect(tools.some((tool) => 'title' in tool)).toBe(false);
     });
 
-    it('returns workflow envelopes while preserving standalone control payloads', () => {
+    it('returns workflow envelopes for creation, reads, and controls', () => {
         const commands = controller.getModelCommands({
             session_context: { session_mode: 'live', agent_mode: 'live_performance_analyst' },
         });
@@ -104,10 +104,10 @@ describe('ModelCommandProtocolController', () => {
         ];
         creationNames.forEach((name) => {
             const command = commands.find((entry) => entry.name === name) as any;
-            expect(Object.keys(command.properties)).toEqual([name]);
-            expect(command.required).toEqual([name]);
-            expect(command.properties[name].additionalProperties).toBe(false);
-            expect(command.properties[name].properties.tools.items.oneOf.length).toBeGreaterThan(0);
+            expect(Object.keys(command.properties)).toEqual(['workflow']);
+            expect(command.required).toEqual(['workflow']);
+            expect(command.properties.workflow.additionalProperties).toBe(false);
+            expect(command.properties.workflow.properties.tools.items.properties.tool.oneOf.length).toBeGreaterThan(0);
         });
         [
             'get_live_range_todo_list',
@@ -115,12 +115,12 @@ describe('ModelCommandProtocolController', () => {
             'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
         ].forEach((name) => {
             expect(commands.find((entry) => entry.name === name))
-                .toMatchObject({ properties: {}, required: [] });
+                .toMatchObject({ properties: { workflow: { required: ['name', 'tools'], properties: { tools: { maxItems: 0 } } } }, required: ['workflow'] });
         });
         ['advance_plan_step', 'clear_procedure_plan'].forEach((name) => {
             const command = commands.find((entry) => entry.name === name) as any;
-            expect(Object.keys(command.properties)).toEqual(['reason']);
-            expect(command.required).toEqual([]);
+            expect(Object.keys(command.properties.workflow.properties)).toEqual(['name', 'tools', 'reason']);
+            expect(command.required).toEqual(['workflow']);
         });
     });
 
@@ -130,14 +130,14 @@ describe('ModelCommandProtocolController', () => {
         });
         const tool = tools.find(({ name }) => name === 'query_analysis_result') as any;
 
-        expect(tool.required).toEqual(['query']);
-        expect(Object.keys(tool.properties)).toEqual(['query']);
-        expect(tool.properties.query).toMatchObject({
+        expect(tool.properties.tool.properties.arguments.required).toEqual(['query']);
+        expect(Object.keys(tool.properties.tool.properties.arguments.properties)).toEqual(['query']);
+        expect(tool.properties.tool.properties.arguments.properties.query).toMatchObject({
             type: 'string',
             minLength: 1,
             pattern: '\\S',
         });
-        expect(tool.properties.query).not.toHaveProperty('enum');
+        expect(tool.properties.tool.properties.arguments.properties.query).not.toHaveProperty('enum');
         expect(tool.description).toContain('actual JSON-safe JSONata value');
         expect(tool.description).toContain('$count(analyses)');
         expect(tool.description).toContain('exactly one root structure');
@@ -151,14 +151,14 @@ describe('ModelCommandProtocolController', () => {
         });
         const tool = tools.find(({ name }) => name === 'apply_query_to_analysis_result') as any;
 
-        expect(tool.required).toEqual(['query']);
-        expect(Object.keys(tool.properties)).toEqual(['query', 'page_number']);
-        expect(tool.properties.query).toMatchObject({
+        expect(tool.properties.tool.properties.arguments.required).toEqual(['query']);
+        expect(Object.keys(tool.properties.tool.properties.arguments.properties)).toEqual(['query', 'page_number']);
+        expect(tool.properties.tool.properties.arguments.properties.query).toMatchObject({
             type: 'string',
             minLength: 1,
             pattern: '\\S',
         });
-        expect(tool.properties.page_number).toMatchObject({ type: 'integer' });
+        expect(tool.properties.tool.properties.arguments.properties.page_number).toMatchObject({ type: 'integer' });
         expect(tool.description).toContain('returns only its status');
         expect(tool.description).not.toContain('matched element count');
         expect(tool.description).toContain('retained-page array order');

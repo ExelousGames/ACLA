@@ -6,7 +6,7 @@ export type { WorkflowPanelHandle } from './WorkflowPanel';
 export { asTool, assertTool } from './tool';
 export type { Tool, ToolCall, ToolDispatcher } from './tool';
 export { asWorkflow } from './workflow';
-export type { Workflow } from './workflow';
+export type { Workflow, WorkflowCall } from './workflow';
 export {
     OPERATION_ABORTED_STATUS,
     OperationAbortedError,

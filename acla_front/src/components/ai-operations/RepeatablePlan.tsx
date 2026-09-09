@@ -29,8 +29,8 @@ import {
 } from 'contexts/OperationComponentError';
 import { serializeError, type SerializedError } from 'errors/OperationError';
 import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
-import { asWorkflow, type Workflow } from './workflow';
-import { assertTool, type ToolCall, type ToolDispatcher } from './tool';
+import { asWorkflow, readWorkflowCall, type Workflow, type WorkflowCall } from './workflow';
+import { assertTool, readToolCall, type ToolCall, type ToolDispatcher } from './tool';
 import type { FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import {
     createControlledOperation,
@@ -56,17 +56,15 @@ export const GOAL_COMPARISON_OPERATORS = [
 ] as const;
 
 export type GoalComparisonOperator = typeof GOAL_COMPARISON_OPERATORS[number];
-export type RepeatablePlanInput = {
-    create_repeatable_plan: {
-        name: string;
-        tools: ToolCall<{ id: string; title: string; arguments?: Record<string, unknown> }>[];
-        stop_when: {
-            tool: ToolCall<{ arguments?: Record<string, unknown> }>;
-            operator: GoalComparisonOperator;
-            target: number;
-        };
+export type RepeatablePlanInput = WorkflowCall<'create_repeatable_plan', {
+    goal: string;
+    tools: ToolCall<{ id: string; title: string; arguments?: Record<string, unknown> }>[];
+    stop_when: {
+        tool: ToolCall<{ arguments?: Record<string, unknown> }>['tool'];
+        operator: GoalComparisonOperator;
+        target: number;
     };
-};
+}>;
 export type GoalStatus = 'running' | 'achieved' | 'missed' | 'error';
 export type GoalStepStatus = 'pending' | 'running' | 'completed' | 'error';
 export type GoalStopWhenStatus = GoalStepStatus;
@@ -213,12 +211,9 @@ const isGoalComparisonOperator = (value: unknown): value is GoalComparisonOperat
 );
 
 const parseGoalStepDescriptor = (value: unknown): GoalStepDescriptor | null => {
-    const entry = isRecord(value) ? value : null;
-    if (!entry || Reflect.ownKeys(entry).length !== 1) return null;
-    const name = Object.keys(entry)[0];
-    if (!name || name.trim() !== name) return null;
-    const step = isRecord(entry[name]) ? entry[name] as Record<string, unknown> : null;
-    if (!step || !hasOnlyKeys(step, ['id', 'title', 'arguments'])) return null;
+    const step = readToolCall(value);
+    if (!step || !hasOnlyKeys(step, ['name', 'id', 'title', 'arguments'])) return null;
+    const name = step.name as string;
     const id = toNonEmptyString(step.id);
     const title = toNonEmptyString(step.title);
     if (!id || !title || !name) return null;
@@ -232,12 +227,9 @@ const parseGoalStepDescriptor = (value: unknown): GoalStepDescriptor | null => {
 };
 
 const parseGoalStopWhenOperation = (value: unknown): GoalStopWhenOperation | null => {
-    const entry = isRecord(value) ? value : null;
-    if (!entry || Reflect.ownKeys(entry).length !== 1) return null;
-    const name = Object.keys(entry)[0];
-    if (!name || name.trim() !== name) return null;
-    const tool = isRecord(entry[name]) ? entry[name] as Record<string, unknown> : null;
-    if (!tool || !hasOnlyKeys(tool, ['arguments'])) return null;
+    const tool = readToolCall({ tool: value });
+    if (!tool || !hasOnlyKeys(tool, ['name', 'arguments'])) return null;
+    const name = tool.name as string;
     if (!name || (tool.arguments !== undefined && !isRecord(tool.arguments))) return null;
     return {
         name,
@@ -271,13 +263,9 @@ export const validateGoalRequest = (
     value: unknown,
     componentName = 'repeatable-plan',
 ): { request: GoalRequest } | { error: GoalComponentError; name?: string } => {
-    const envelope = isRecord(value)
-        && Reflect.ownKeys(value).length === 1
-        && Object.prototype.hasOwnProperty.call(value, 'create_repeatable_plan')
-        ? value : null;
-    const input = isRecord(envelope?.create_repeatable_plan) ? envelope!.create_repeatable_plan : null;
-    const name = toNonEmptyString(input?.name);
-    if (!input || !name || !hasOnlyKeys(input, ['name', 'tools', 'stop_when'])) {
+    const input = readWorkflowCall(value, 'create_repeatable_plan');
+    const name = toNonEmptyString(input?.goal);
+    if (!input || !name || !hasOnlyKeys(input, ['name', 'goal', 'tools', 'stop_when'])) {
         return {
             error: new InvalidGoalNameError(componentName, 'Provide a valid repeatable plan name.'),
             ...(name ? { name } : {}),
