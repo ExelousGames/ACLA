@@ -19,7 +19,7 @@ const WORKFLOW_NAMES = [
     'advance_plan_step',
     'clear_procedure_plan',
     'add_event_to_live_range_todo_list',
-    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+    'add_analysis_result_to_do_list',
     'get_live_range_todo_list',
 ];
 const getWorkflowSchema = (command: any) => command.properties.workflow;
@@ -99,11 +99,11 @@ describe('live baseline tools', () => {
 describe('session live range to-do tools', () => {
     it('exposes one strict executable-event batch schema plus the read tool', () => {
         const names = MODEL_COMMAND_PROTOCOL.map((tool) => tool.name);
-        expect(names.filter((name) => name.endsWith('_live_range_todo_list'))).toEqual([
+        expect(names.filter((name) => name.endsWith('_live_range_todo_list') || name === 'add_analysis_result_to_do_list')).toEqual([
             'create_live_range_todo_list',
             'add_event_to_live_range_todo_list',
             'get_live_range_todo_list',
-            'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+            'add_analysis_result_to_do_list',
         ]);
 
         const addTool = MODEL_COMMAND_PROTOCOL.find((tool) => (
@@ -202,31 +202,44 @@ describe('session live range to-do tools', () => {
     });
 });
 
-describe('filtered Driver/Expert comparison queue tool', () => {
+describe('displayed analysis result queue command', () => {
     const namesFor = (context: Record<string, unknown>) => (
         getModelCommandsForSessionContext(context).map(({ name }) => name)
     );
 
     it('defines a strict no-argument schema only for the live performance analyst', () => {
         const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
-            name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
+            name === 'add_analysis_result_to_do_list'
         ));
         expect(tool).toMatchObject({ properties: { workflow: { required: ['name', 'operations'], properties: { operations: { maxItems: 0 } } } }, required: ['workflow'] });
 
+        const schema = getWorkflowSchema(tool);
+        expect(Object.keys(schema.properties)).toEqual(['name', 'operations']);
+        expect(schema.additionalProperties).toBe(false);
+        const validate = new Ajv({ allErrors: true }).compile(schema);
+        const call = { name: 'add_analysis_result_to_do_list', operations: [] };
+        expect(validate(call)).toBe(true);
+        expect(validate({ ...call, filter: 'mistakes' })).toBe(false);
+        expect(validate({ ...call, query: 'elements' })).toBe(false);
+        expect(validate({ ...call, arguments: { filter: 'mistakes' } })).toBe(false);
+        expect(tool?.description).toContain('results currently displayed on the active Analysis Results page');
+        expect(tool?.description).toContain('current view and any already-applied filter');
+        expect(tool?.description).toContain('takes no filter, query, or other input arguments');
+
         expect(namesFor({ session_mode: 'live' }))
-            .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+            .not.toContain('add_analysis_result_to_do_list');
         expect(namesFor({ session_mode: 'live', agent_mode: 'track_guide' }))
-            .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+            .not.toContain('add_analysis_result_to_do_list');
         expect(namesFor({ session_mode: 'live', agent_mode: 'overtake' }))
-            .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+            .not.toContain('add_analysis_result_to_do_list');
         expect(namesFor({
             session_mode: 'recorded',
             agent_mode: 'live_performance_analyst',
-        })).not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+        })).not.toContain('add_analysis_result_to_do_list');
         expect(namesFor({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
-        })).toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+        })).toContain('add_analysis_result_to_do_list');
     });
 
     it('allows automatic comparison queueing as a child workflow', () => {
@@ -242,9 +255,9 @@ describe('filtered Driver/Expert comparison queue tool', () => {
         const nestedLiveRangeNames = getCallNames(getWorkflowSchema(addEvents).properties.operations.items);
 
         expect(repeatablePlanNames)
-            .toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+            .toContain('add_analysis_result_to_do_list');
         expect(nestedLiveRangeNames)
-            .toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+            .toContain('add_analysis_result_to_do_list');
         expect(analystTools.map(({ name }) => name)).toContain('set_procedure_plan');
     });
 });

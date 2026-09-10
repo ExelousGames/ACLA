@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
-import { asWorkflow, readWorkflowCall, type Workflow, type WorkflowCall } from './workflow';
+import { asWorkflow, readWorkflowCall, type Workflow, type WorkflowCall, type WorkflowProgress } from './workflow';
 import {
     OPERATION_COMPONENT_NAMES,
     type NamedOperationComponentHandle,
@@ -93,7 +93,30 @@ export type ProcedurePlanTaskResult = {
     error?: SerializedError;
 };
 
-export type ProcedurePlanRunResult = {
+export type ProcedurePlanProgress = WorkflowProgress<{
+    step: number;
+    title: string;
+    detail?: string;
+}>;
+
+const createProcedurePlanProgress = (): ProcedurePlanProgress => ({
+    completed_step_count: 0,
+    stopped_at_step: null,
+});
+
+const describeProcedurePlanStep = (
+    plan: ProcedurePlanState | null,
+    index: number,
+): ProcedurePlanProgress['stopped_at_step'] => {
+    const request = plan?.requests[index];
+    return request ? {
+        step: index + 1,
+        title: request.title,
+        ...(request.detail ? { detail: request.detail } : {}),
+    } : null;
+};
+
+export type ProcedurePlanRunResult = ProcedurePlanProgress & {
     status: 'complete' | 'advanced' | 'cleared';
     goal: string;
     current_request: number;
@@ -113,6 +136,7 @@ export interface ProcedurePlanHandle extends NamedOperationComponentHandle, AiOv
 }
 
 type ActiveProcedurePlanOperation = {
+    progress: ProcedurePlanProgress;
     controller: ControlledOperation<
         ProcedurePlanRunResult,
         never,
@@ -167,7 +191,7 @@ implements ProcedurePlanHandle {
             this.publish({ ...this.plan, requests: [...this.plan.requests, ...plan.requests] });
             return asWorkflow(createOperationFrom(() => this.result('advanced'), 'advanced'));
         } catch (error) {
-            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createProcedurePlanProgress());
         }
     }
 
@@ -213,7 +237,7 @@ implements ProcedurePlanHandle {
             plan?.requests.forEach((request) => this.dispatchOperation.validate(request.name!));
             return this.startOperation(() => this.runReplace(plan));
         } catch (error) {
-            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createProcedurePlanProgress());
         }
     }
 
@@ -291,6 +315,7 @@ implements ProcedurePlanHandle {
         operation = {
             controller,
             nestedOperation: null,
+            progress: createProcedurePlanProgress(),
         };
         this.activeOperation = operation;
         const token = this.beginExecution(this.executionParent);
@@ -308,7 +333,7 @@ implements ProcedurePlanHandle {
                 error instanceof Error ? error : new Error(String(error)),
             ),
         );
-        return asWorkflow(operation.controller.operation);
+        return asWorkflow(operation.controller.operation, operation.progress);
     }
 
     private cancelActiveOperation(
@@ -341,6 +366,7 @@ implements ProcedurePlanHandle {
     }
 
     private async runNext(generation: number): Promise<ProcedurePlanRunResult> {
+        const progress = this.activeOperation!.progress;
         while (this.plan) {
             if (generation !== this.generation) {
                 throw new ProcedurePlanReplacedError(
@@ -350,6 +376,7 @@ implements ProcedurePlanHandle {
             }
             const request = this.plan.requests[this.plan.currentStep];
             if (!request) {
+                progress.stopped_at_step = null;
                 return this.result('complete');
             }
             if (request.status !== 'pending') {
@@ -357,6 +384,7 @@ implements ProcedurePlanHandle {
                 continue;
             }
             this.active = true;
+            progress.stopped_at_step = describeProcedurePlanStep(this.plan, this.plan.currentStep);
             this.publish({
                 ...this.plan,
                 requests: this.plan.requests.map((item, index) => (
@@ -427,6 +455,8 @@ implements ProcedurePlanHandle {
                 throw stepError;
             }
             const nextIndex = this.plan.currentStep + 1;
+            progress.completed_step_count += 1;
+            progress.stopped_at_step = describeProcedurePlanStep(this.plan, nextIndex);
             this.publish({
                 ...this.plan,
                 currentStep: nextIndex,
@@ -462,6 +492,9 @@ implements ProcedurePlanHandle {
     ): ProcedurePlanRunResult {
         return {
             status,
+            completed_step_count: this.taskResults.filter((result) => result.status === 'completed').length,
+            stopped_at_step: status === 'cleared'
+                ? describeProcedurePlanStep(this.plan, this.plan?.currentStep ?? 0) : null,
             goal: this.plan?.goal ?? '',
             current_request: this.plan?.currentStep ?? 0,
             ...(request ? { request: serializeProcedurePlanRequest(request) } : {}),
@@ -734,7 +767,7 @@ export const useProcedurePlanWorkflow = ({
         try {
             return startProcedurePlan(input, dispatcher);
         } catch (error) {
-            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createProcedurePlanProgress());
         }
     }, [startProcedurePlan]);
 
@@ -748,9 +781,10 @@ export const useProcedurePlanWorkflow = ({
             const independent = Object.assign((...args: Parameters<WorkflowDispatcher>) => dispatcher(...args), { validate: dispatcher.validate });
             startProcedurePlan({ workflow: { name: 'set_procedure_plan', goal: plan.goal, operations: input.workflow.operations } }, independent);
             return asWorkflow(createOperationFrom(() => ({ status: 'advanced' as const, goal: plan.goal,
-                current_request: 0, task_results: [], request_count: plan.requests.length }), 'complete'));
+                current_request: 0, task_results: [], request_count: plan.requests.length,
+                completed_step_count: 0, stopped_at_step: null }), 'complete'));
         } catch (error) {
-            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createProcedurePlanProgress());
         }
     }, [startProcedurePlan]);
 

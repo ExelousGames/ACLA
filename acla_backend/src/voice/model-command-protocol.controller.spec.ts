@@ -80,7 +80,7 @@ describe('ModelCommandProtocolController', () => {
             'apply_query_to_analysis_result',
             'query_analysis_result',
             'create_repeatable_plan',
-            'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+            'add_analysis_result_to_do_list',
         ]));
         expect(names).not.toContain('start_agent_session');
         expect(tools.every((tool) => (
@@ -110,7 +110,7 @@ describe('ModelCommandProtocolController', () => {
         });
         [
             'get_live_range_todo_list',
-            'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+            'add_analysis_result_to_do_list',
         ].forEach((name) => {
             expect(commands.find((entry) => entry.name === name))
                 .toMatchObject({ properties: { workflow: { required: ['name', 'operations'], properties: { operations: { maxItems: 0 } } } }, required: ['workflow'] });

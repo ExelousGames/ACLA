@@ -311,10 +311,11 @@ const MODEL_COMMAND_DEFINITIONS = [
         required: [],
     },
     {
-        name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        name: 'add_analysis_result_to_do_list',
         description: [
             'Visualize analysis results with Driver vs Expert comparisons in the overlay while driving. Use when the user asks to visualize analysis results while driving.',
-            'Append Driver vs Expert comparison events for the active Analysis Results page\'s last successfully applied segment filter. Events keep the displayed segment order, retain existing to-do items, and publish only when live telemetry makes each event due.',
+            'Add the results currently displayed on the active Analysis Results page to the Live Range To-do List as Driver vs Expert comparison events, using the current view and any already-applied filter. Events keep the displayed result order, retain existing to-do items, and publish only when live telemetry makes each event due.',
+            'This command takes no filter, query, or other input arguments. To change which results are queued, first update the displayed Analysis Results view with apply_query_to_analysis_result, then call add_analysis_result_to_do_list. Results without a showable comparison are skipped; the command fails if none can be shown.',
         ].join(' '),
         properties: {},
         required: [],
@@ -363,7 +364,7 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'analyze_live_recorded_analysis',
         description: [
             'Submit the already recorded baseline to live recorded analysis and return classified sections with time gaps when available. Returns an error until baseline collection has recorded a cached baseline.',
-            'The completed analysis opens the Analysis Results panel. Use apply_query_to_analysis_result when the driver asks to filter that view, and add_filtered_driver_expert_comparisons_to_live_range_todo_list to display its filtered comparisons in the overlay while driving when available.',
+            'The completed analysis opens the Analysis Results panel. Use apply_query_to_analysis_result when the driver asks to filter that view, and add_analysis_result_to_do_list to add the currently displayed results to the Live Range To-do List for overlay playback while driving when available.',
         ].join(' '),
         properties: {
             limit: {
@@ -832,7 +833,7 @@ const LIVE_AGENT_COMMAND_NAMES: ModelCommandName[] = [
 const LIVE_PERFORMANCE_ANALYST_COMMAND_NAMES: ModelCommandName[] = [
     'create_repeatable_plan',
     'append_repeatable_plan',
-    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+    'add_analysis_result_to_do_list',
 ];
 
 // All AI calls use explicit workflow or tool envelopes.
@@ -846,7 +847,7 @@ const WORKFLOW_COMMAND_NAMES = new Set<ModelCommandName>([
     'clear_procedure_plan',
     'add_event_to_live_range_todo_list',
     'get_live_range_todo_list',
-    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+    'add_analysis_result_to_do_list',
 ]);
 
 const USER_SUMMARY_COMMAND_NAMES: ModelCommandName[] = [

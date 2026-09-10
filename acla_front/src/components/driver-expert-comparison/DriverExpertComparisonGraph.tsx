@@ -1511,7 +1511,7 @@ const TrackReplay: React.FC<{
                             camera={camera}
                             viewportWidth={TRACK_VIEWBOX_WIDTH}
                             viewportHeight={viewportHeight}
-                            scale={podSize.scale * 0.525}
+                            scale={podSize.scale * 0.63}
                         />
                         <g
                             className={styles.cameraOverlay}

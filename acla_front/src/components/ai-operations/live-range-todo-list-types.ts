@@ -1,6 +1,6 @@
 import type { WorkflowDispatcher } from './tool';
 import type { Operation, OperationCall } from './operation';
-import type { Workflow, WorkflowCall } from './workflow';
+import type { Workflow, WorkflowCall, WorkflowProgress } from './workflow';
 import type { AiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
 
 export type LiveRangeTodoStatus = 'pending' | 'running';
@@ -66,7 +66,14 @@ export interface LiveRangeTodoListResult {
     message?: string;
 }
 
-export type LiveRangeTodoListAiResult = {
+export type LiveRangeTodoListProgress = WorkflowProgress<{
+    step: number;
+    id: string;
+    title: string;
+    description?: string;
+}>;
+
+export type LiveRangeTodoListAiResult = LiveRangeTodoListProgress & {
     status: 'ready' | 'empty';
     event_count: number;
     pending_count: number;

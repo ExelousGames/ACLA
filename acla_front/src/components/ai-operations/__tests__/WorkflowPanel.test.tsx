@@ -160,9 +160,9 @@ describe('WorkflowPanel standalone lifecycle', () => {
             agentMode: 'live_performance_analyst',
             sessionGame: 'acc',
         });
-        let operation!: ReturnType<typeof registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list>;
+        let operation!: ReturnType<typeof registry.add_analysis_result_to_do_list>;
         await act(async () => {
-            operation = registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', operations: [],  } });
+            operation = registry.add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } });
         });
         expect(prepareComparisonVoices).toHaveBeenCalledTimes(1);
 

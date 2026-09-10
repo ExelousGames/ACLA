@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import apiService from 'services/api.service';
 import { buildFormattedToolResultFrame } from './voice-tool-result-formatter';
+import { readWorkflowProgress } from 'components/ai-operations/workflow';
 import {
     OperationError,
     OperationAbortedError,
@@ -370,11 +371,11 @@ export const executeSubscribedFrontendOperation = async ({
             });
         });
         const termination = await terminationPromise;
-        if (signal?.aborted) throw new OperationAbortedError();
         if (termination.result instanceof Error) {
             failureStatus = termination.status;
             throw termination.result;
         }
+        if (signal?.aborted) throw new OperationAbortedError();
         const result = getToolResultForAi(termination.result, termination.status);
         sendText(buildToolResultFrame(id, name, result));
         emitEvent?.({
@@ -389,10 +390,13 @@ export const executeSubscribedFrontendOperation = async ({
         return { id, name, ok: true, result: termination.result };
     } catch (err) {
         const error = normalizeOperationError(err);
-        const failure = buildFailedToolResult(
-            error,
-            err instanceof OperationAbortedError ? 'aborted' : failureStatus,
-        );
+        const failure = {
+            ...buildFailedToolResult(
+                error,
+                err instanceof OperationAbortedError ? 'aborted' : failureStatus,
+            ),
+            ...readWorkflowProgress(err),
+        };
         sendText(buildToolResultFrame(id, name, failure));
         emitEvent?.({
             kind: 'tool_call',

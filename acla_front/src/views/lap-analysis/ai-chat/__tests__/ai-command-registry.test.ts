@@ -147,7 +147,7 @@ describe('frontend operation registry', () => {
         'advance_plan_step',
         'clear_procedure_plan',
         'add_event_to_live_range_todo_list',
-        'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        'add_analysis_result_to_do_list',
         'get_live_range_todo_list',
     ];
 
@@ -860,7 +860,7 @@ describe('live range to-do workflow forwarding', () => {
     });
 });
 
-describe('filtered Driver/Expert comparison queue workflow', () => {
+describe('displayed analysis result queue workflow', () => {
     afterEach(() => {
         jest.useRealTimers();
     });
@@ -882,7 +882,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
                 segments: [{ id: 'corner', labels: [], normalizedPositionRange: { start: 0.5, end: 0.6 }, comparison: comparisonData(1000) }],
             }),
         } satisfies Partial<AnalysisResultsChartHandle>);
-        const operation = analystLiveRegistry(directory).add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', operations: [],  } });
+        const operation = analystLiveRegistry(directory).add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } });
         await Promise.resolve();
         expect(prepareComparisonVoices).toHaveBeenCalled();
         expect(addEvent).not.toHaveBeenCalled();
@@ -981,7 +981,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } satisfies Partial<AiChatHandle>);
 
         const operation = analystLiveRegistry(directory)
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', operations: [],  } });
+            .add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } });
         const terminated = jest.fn();
         operation.notifyTerminated(terminated);
         const result = await operation.result;
@@ -1081,7 +1081,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } satisfies Partial<AnalysisResultsChartHandle>);
 
         await expect(analystLiveRegistry(directory)
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', operations: [],  } }).result)
+            .add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } }).result)
             .resolves.toMatchObject({ queued_count: 1 });
 
         expect(appendLiveRangeTodoList).toHaveBeenCalledWith({ workflow: {
@@ -1115,12 +1115,12 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } as any);
 
         await expect(registry
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', operations: [],  } }).result)
+            .add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } }).result)
             .resolves.toMatchObject({ status: 'busy' });
         expect(getFilteredSegments).toHaveBeenCalledTimes(1);
     });
 
-    it.each(['busy', 'empty'] as const)('reports %s on termination without mounting a list and rejects arguments', async (status) => {
+    it.each(['busy', 'empty'] as const)('reports %s on termination without mounting a list and rejects a filter', async (status) => {
         const directory = createOperationComponentRefDirectory();
         reserve(directory, 'visualization:analysis-results', {
             getFilteredSegments: () => ({
@@ -1133,7 +1133,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } satisfies Partial<AnalysisResultsChartHandle>);
         const registry = analystLiveRegistry(directory);
 
-        const operation = registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', operations: [],  } });
+        const operation = registry.add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } });
         const terminated = jest.fn();
         operation.notifyTerminated(terminated);
         await expect(operation.result)
@@ -1149,7 +1149,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         });
         expect(directory.findComponentRef(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)).toBeNull();
         await expect(registry
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', operations: [],  extra: true  } } as any).result)
+            .add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [], filter: 'mistakes' } } as any).result)
             .rejects.toMatchObject({ name: 'InvalidOperationCallError' });
     });
 
@@ -1170,7 +1170,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         } satisfies Partial<AnalysisResultsChartHandle>);
 
         await expect(analystLiveRegistry(directory)
-            .add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', operations: [],  } }).result)
+            .add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } }).result)
             .rejects.toMatchObject({ name: 'OperationExecutionError' });
         expect(directory.findComponentRef(
             OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,

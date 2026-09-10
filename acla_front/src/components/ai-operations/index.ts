@@ -6,7 +6,7 @@ export type { WorkflowPanelHandle } from './WorkflowPanel';
 export { asTool } from './tool';
 export type { Tool, ToolCall, ToolDispatcher, WorkflowDispatcher } from './tool';
 export { asWorkflow } from './workflow';
-export type { Workflow, WorkflowCall } from './workflow';
+export type { Workflow, WorkflowCall, WorkflowProgress } from './workflow';
 export {
     OPERATION_ABORTED_STATUS,
     OperationAbortedError,
@@ -58,6 +58,7 @@ export type {
     ProcedurePlanInput,
     AppendProcedurePlanInput,
     ProcedurePlanProps,
+    ProcedurePlanProgress,
     ProcedurePlanRequest,
     ProcedurePlanRequestSnapshot,
     ProcedurePlanRunResult,
@@ -83,6 +84,7 @@ export type {
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
     LiveRangeTodoListAiResult,
+    LiveRangeTodoListProgress,
     LiveRangeTodoListSnapshot,
     LiveRangeTodoListResult,
     LiveRangeTodoSnapshotEvent,
@@ -108,6 +110,8 @@ export type {
     RepeatablePlanHandle,
     RepeatablePlanInput,
     AppendRepeatablePlanInput,
+    AppendRepeatablePlanResult,
+    RepeatablePlanProgress,
     RepeatablePlanProps,
     GoalRunResult,
     GoalRequest,

@@ -3,6 +3,7 @@ import { OPERATION_COMPONENT_NAMES } from 'contexts/OperationComponentRefContext
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import { InvalidLiveRangeTodoListError } from 'contexts/OperationComponentError';
+import { OperationExecutionError } from 'errors/OperationError';
 import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
 import {
     isOverlayFiniteOrNull,
@@ -21,6 +22,7 @@ import type {
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
     LiveRangeTodoListAiResult,
+    LiveRangeTodoListProgress,
     LiveRangeTodoListSnapshot,
     LiveRangeTodoListResult,
     LiveRangeTodoSnapshotEvent,
@@ -394,9 +396,18 @@ export interface LiveRangeTodoListProps {
     surface?: 'panel' | 'chat' | 'pill';
 }
 
-const toAiResult = (result: LiveRangeTodoListResult): LiveRangeTodoListAiResult => {
+const createLiveRangeProgress = (): LiveRangeTodoListProgress => ({
+    completed_step_count: 0,
+    stopped_at_step: null,
+});
+
+const toAiResult = (
+    result: LiveRangeTodoListResult,
+    progress: LiveRangeTodoListProgress,
+): LiveRangeTodoListAiResult => {
     const events = result.todo_list?.events ?? [];
     return {
+        ...progress,
         status: result.status,
         event_count: events.length,
         pending_count: events.filter((event) => event.status === 'pending').length,
@@ -411,6 +422,8 @@ implements LiveRangeTodoListHandle {
     private runtime: RuntimeSnapshot;
     private completion: ControlledOperation<LiveRangeTodoListAiResult, never, string> | null = null;
     private executionError: Error | null = null;
+    private progress: LiveRangeTodoListProgress = createLiveRangeProgress();
+    private eventSteps = new Map<string, number>();
     private unsubscribeTelemetry?: () => void;
     private samples: LiveRangeTelemetrySample[] = [];
     private previousSample: LiveRangeTelemetrySample | null = null;
@@ -439,16 +452,18 @@ implements LiveRangeTodoListHandle {
             this.assertCanReplace(dispatch.workflowCaller);
             this.cancelCompletion();
             this.executionError = null;
+            this.progress = createLiveRangeProgress();
             const completion = createControlledOperation<LiveRangeTodoListAiResult>([], () => this.reset());
+            const workflow = asWorkflow(completion.operation, this.progress);
             this.completion = completion;
             const token = this.beginExecution(dispatch.workflowCaller);
             this.trackExecution(completion.operation, token);
             const owned = bindWorkflowDispatcher(dispatch, this);
             this.replaceEvents(prepared.map(({ event, operation }) => ({ ...event,
                 taskStart: (signal) => owned(operation.name, operation.arguments, signal) })));
-            return asWorkflow(completion.operation);
+            return workflow;
         } catch (error) {
-            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createLiveRangeProgress());
         }
     }
 
@@ -466,7 +481,7 @@ implements LiveRangeTodoListHandle {
                 taskStart: (signal) => owned(operation.name, operation.arguments, signal) }));
             return this.getForAi();
         } catch (error) {
-            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createLiveRangeProgress());
         }
     }
 
@@ -474,10 +489,15 @@ implements LiveRangeTodoListHandle {
         const completion = this.completion;
         this.completion = null;
         completion?.reject('cancelled', new OperationAbortedError());
+        // The cancelled operation retains its progress while reset clears the queue.
+        if (completion) this.progress = { ...this.progress };
     }
 
     getForAi() {
-        return asWorkflow(createOperation(toAiResult(this.get()), 'complete'));
+        return asWorkflow(createOperation(toAiResult(this.get(), {
+            completed_step_count: this.progress.completed_step_count,
+            stopped_at_step: null,
+        }), 'complete'));
     }
 
     connectTelemetry(): void {
@@ -530,6 +550,7 @@ implements LiveRangeTodoListHandle {
                     this.runtime.rolling_rate,
                 ),
         };
+        this.eventSteps.set(event.id, Math.max(0, ...Array.from(this.eventSteps.values())) + 1);
         const next = this.commit({
             ...this.runtime,
             events: [...this.runtime.events, event],
@@ -553,6 +574,7 @@ implements LiveRangeTodoListHandle {
 
         this.abortRunningEvents();
         this.previousSample = null;
+        this.eventSteps = new Map(events.map((event, index) => [event.id, index + 1]));
         const eventsWithEta = events.map((event) => ({
             ...event,
             eta_seconds: this.runtime.current_position === null
@@ -789,6 +811,11 @@ implements LiveRangeTodoListHandle {
             events: orderLiveRangeTodoEventsByEta(next.events),
         };
         this.runtime = orderedNext;
+        if (!this.executionError) {
+            const nextEvent = orderedNext.events.find((event) => event.status === 'running')
+                ?? orderedNext.events[0];
+            this.progress.stopped_at_step = nextEvent ? this.describeStep(nextEvent) : null;
+        }
         const snapshot = serializeSnapshot(orderedNext);
         const visibleSnapshot = snapshot.events.length > 0 ? snapshot : null;
         this.publishSnapshot(visibleSnapshot);
@@ -797,7 +824,7 @@ implements LiveRangeTodoListHandle {
             const completion = this.completion;
             this.completion = null;
             if (this.executionError) completion?.reject('failed', this.executionError);
-            else completion?.resolve('complete', toAiResult(this.get()));
+            else completion?.resolve('complete', toAiResult(this.get(), this.progress));
             this.dispose();
         }
         return snapshot;
@@ -918,6 +945,10 @@ implements LiveRangeTodoListHandle {
         }
     }
 
+    private describeStep(event: RuntimeEvent): NonNullable<LiveRangeTodoListProgress['stopped_at_step']> {
+        return { step: this.eventSteps.get(event.id)!, id: event.id, ...event.content };
+    }
+
     private finishEvent(id: string, token: symbol, error?: unknown): void {
         if (this.isDisposed()) return;
         const activeRun = this.activeRuns.get(id);
@@ -925,8 +956,14 @@ implements LiveRangeTodoListHandle {
         activeRun.unsubscribeTermination();
         this.activeRuns.delete(id);
         if (error !== undefined) {
-            this.executionError ??= error instanceof Error ? error : new Error(String(error));
+            if (!this.executionError) this.progress.stopped_at_step = this.describeStep(activeRun.event);
+            this.executionError ??= new OperationExecutionError(
+                error instanceof Error ? error.message : String(error),
+                { cause: error },
+            );
             console.error(`Live range to-do event '${id}' task failed.`, error);
+        } else {
+            this.progress.completed_step_count += 1;
         }
         if (!this.runtime.events.some((event) => event.id === id)) {
             return;
@@ -1002,7 +1039,7 @@ export const useLiveRangeTodoListWorkflow = ({
             dispose();
             return initializeLiveRangeTodoList().createLiveRangeTodoList(input, dispatch);
         } catch (error) {
-            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createLiveRangeProgress());
         }
     }, [dispose, initializeLiveRangeTodoList]);
 
@@ -1012,7 +1049,7 @@ export const useLiveRangeTodoListWorkflow = ({
             runnerRef.current?.assertCanAppend(dispatch.workflowCaller);
             return initializeLiveRangeTodoList().appendLiveRangeTodoList(input, dispatch);
         } catch (error) {
-            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createLiveRangeProgress());
         }
     }, [initializeLiveRangeTodoList]);
 

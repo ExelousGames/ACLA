@@ -134,6 +134,8 @@ export type FilteredComparisonSkipReason =
 
 export interface AddFilteredDriverExpertComparisonsResult {
     [key: string]: unknown;
+    completed_step_count: number;
+    stopped_at_step: null;
     status: 'ready' | 'empty' | 'busy';
     active_page_id: string | null;
     applied_view: string | null;
@@ -501,6 +503,9 @@ type EligibleFilteredComparison = {
 const createFilteredComparisonResult = (
     snapshot: FilteredAnalysisSegmentsSnapshot,
 ): AddFilteredDriverExpertComparisonsResult => ({
+    // This workflow queues events; their execution belongs to the live range workflow.
+    completed_step_count: 0,
+    stopped_at_step: null,
     status: snapshot.status,
     active_page_id: snapshot.activePageId,
     applied_view: snapshot.appliedView,
@@ -665,7 +670,7 @@ const definitionList = Object.freeze([
             .createLiveRangeTodoList(args as CreateLiveRangeTodoListInput, dispatchNested),
     },
     {
-        name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        name: 'add_analysis_result_to_do_list',
         kind: 'workflow',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args, dispatchNested) => {
@@ -674,8 +679,9 @@ const definitionList = Object.freeze([
                 if (controller.signal.aborted) return;
                 validateNoArguments(
                     args,
-                    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+                    'add_analysis_result_to_do_list',
                 );
+                // Queue the currently displayed results, preserving the view's applied filter and order.
                 const snapshot = getComponent<AnalysisResultsChartHandle>(
                     context,
                     getSingletonVisualizationComponentName('analysis-results'),
@@ -687,7 +693,7 @@ const definitionList = Object.freeze([
             }).catch((error) => {
                 controller.reject('failed', error instanceof Error ? error : new Error(String(error)));
             });
-            return controller.operation;
+            return asWorkflow(controller.operation, { completed_step_count: 0, stopped_at_step: null });
         },
     },
     {
@@ -1019,7 +1025,8 @@ const dispatchOperation = (
         return operation;
     } catch (error) {
         const operation = createOperationFrom(() => { throw error; }, 'failed');
-        return definition?.kind === 'workflow' ? asWorkflow(operation) : asTool(operation);
+        return definition?.kind === 'workflow'
+            ? asWorkflow(operation, { completed_step_count: 0, stopped_at_step: null }) : asTool(operation);
     }
 };
 

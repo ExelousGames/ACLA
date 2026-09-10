@@ -172,6 +172,8 @@ describe('executeSubscribedFrontendOperation', () => {
             expect(frames[0].result).toEqual({
                 status: 'failed', ok: false, name: errorName, message: 'offline',
                 cause: { name: 'Error', message: 'offline' },
+                completed_step_count: 0,
+                stopped_at_step: { step: 1, title: 'Read telemetry', ...(kind === 'repeatable' ? { id: 'read' } : {}) },
             });
             expect(result).toMatchObject({ ok: false, errorName, message: 'offline' });
             return;

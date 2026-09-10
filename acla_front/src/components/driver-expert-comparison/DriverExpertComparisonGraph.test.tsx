@@ -1411,7 +1411,7 @@ describe('DriverExpertComparisonGraph', () => {
         const distant = signs.find((sign) => sign.getAttribute('aria-label') === 'Distant')!;
         const width = (sign: HTMLElement) => Number(within(sign).getByTestId('comparison-label-sign-board').getAttribute('width'));
         const cardWidth = Number(screen.getByTestId('driver-telemetry-pod').querySelector('rect')!.getAttribute('width'));
-        expect(width(nearby)).toBeCloseTo(cardWidth * 0.525);
+        expect(width(nearby)).toBeCloseTo(cardWidth * 0.63);
         expect(width(distant)).toBeLessThan(width(nearby));
         expect(signs.indexOf(distant)).toBeLessThan(signs.indexOf(nearby));
     });
