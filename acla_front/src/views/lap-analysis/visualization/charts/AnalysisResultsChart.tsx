@@ -1180,7 +1180,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 source: JSON.stringify(snapshots[index]),
                 snapshot,
             });
-            durations[resultId] = snapshot.voice!.durationMs;
+            durations[resultId] = snapshot.voice?.durationMs ?? 0;
         });
         return durations;
     }, [createComparisonSnapshot, resolveSpecificResult]);

@@ -598,7 +598,7 @@ describe('AnalysisResultsChart', () => {
         await expect(chartRef.current!.prepareComparisonVoices('retained-page', ['braking-result'], signal))
             .resolves.toEqual({ 'braking-result': 8000 });
         expect(synthesizeTtsPack).toHaveBeenCalledWith([{
-            text: 'Late braking: Driver vs Expert. Mistakes: Late turn-in. Expert: Matches expert line. Recovery: Merge back to expert line',
+            text: 'Late braking. Mistakes: Late turn-in. Expert: Matches expert line. Recovery: Merge back to expert line',
         }], signal);
         expect(mockOverlayComponentDirectory.getComponentRefs()).toHaveLength(1);
 
