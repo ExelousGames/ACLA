@@ -539,6 +539,14 @@ describe('AnalysisResultsChart', () => {
                 { category: 'expert', subLabels: ['Matches expert line'] },
                 { category: 'recovery', subLabels: ['Merge back to expert line'] },
             ],
+            labelRanges: [
+                { category: 'mistakes', label: 'Training Error', startIndex: 0, endIndex: 1 },
+                { category: 'mistakes', label: 'Late turn-in', startIndex: 0, endIndex: 1 },
+                { category: 'expert', label: 'EA', startIndex: 0, endIndex: 1 },
+                { category: 'expert', label: 'Matches expert line', startIndex: 0, endIndex: 1 },
+                { category: 'recovery', label: 'RM', startIndex: 0, endIndex: 1 },
+                { category: 'recovery', label: 'Merge back to expert line', startIndex: 0, endIndex: 1 },
+            ],
             game: 'acc',
         });
         expect(firstRef.current.getOverlayBehavior(firstRef.current.getSnapshot()))
@@ -660,6 +668,7 @@ describe('AnalysisResultsChart', () => {
             title: 'Driver vs Expert',
             comparison: comparableData(0.2, 0.3),
             labelGroups: [{ category: 'mistakes', subLabels: [] }],
+            labelRanges: [{ category: 'mistakes', label: 'Training Error', startIndex: 0, endIndex: 1 }],
         });
         staticRef.current.handleOverlayRendererEvent({
             presentationId: 'analysis-overlay-session',

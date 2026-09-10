@@ -19,6 +19,7 @@ export interface AnalysisResultsComparisonResolution {
 }
 
 interface DriverSourcePoint {
+    sourceIndex: number;
     timeMs: number;
     normalizedPosition: number;
     unwrappedPosition: number;
@@ -228,6 +229,7 @@ const buildDriverPoints = (
         const brake = normalizedInput(row.Physics_brake);
         const gear = finiteNumber(row.Physics_gear);
         return {
+            sourceIndex,
             timeMs: sequence.timesMs[index],
             normalizedPosition: position,
             unwrappedPosition: sequence.positions[index],
@@ -399,6 +401,7 @@ const interpolateDriverAtPosition = (
     return {
         rightIndex,
         point: {
+            sourceIndex: previous.sourceIndex + ((next.sourceIndex - previous.sourceIndex) * ratio),
             timeMs: previous.timeMs + ((next.timeMs - previous.timeMs) * ratio),
             normalizedPosition: ((targetPosition % 1) + 1) % 1,
             ...(trajectory ? { trajectory } : {}),
@@ -476,6 +479,7 @@ const buildComparisonSamples = (
             const expertGear = finiteNumber(expertPoint.row.expert_optimal_gear);
 
             return {
+                driverSourceIndex: driverPoint.sourceIndex,
                 driverTimeMs: driverPoint.timeMs,
                 expertTimeMs: expertPoint.timeMs,
                 driverTrackPosition: expertPoint.normalizedPosition,

@@ -1,4 +1,4 @@
-import { buildAnalysisResultsComparisonLabelGroups } from './analysisResultsComparisonLabels';
+import { buildAnalysisResultsComparisonLabelGroups, buildAnalysisResultsComparisonLabelRanges } from './analysisResultsComparisonLabels';
 
 const categories: Record<string, string[]> = {
     MSP: ['MSP1', 'MSP2'],
@@ -19,6 +19,19 @@ const buildGroups = (labels: string[]) => buildAnalysisResultsComparisonLabelGro
 );
 
 describe('comparison analysis labels', () => {
+    it('preserves separate intervals for repeated labels and resolves names without losing indices', () => {
+        expect(buildAnalysisResultsComparisonLabelRanges([
+            { label_name: 'MSP1', start_index: 120, end_index: 130 },
+            { label_name: 'Late braking', start_index: 120, end_index: 130 },
+            { label_name: 'MSP1', start_index: 150, end_index: 180 },
+            { label_name: 'O', start_index: 160, end_index: 175 },
+            { label_name: 'EA1', start_index: 180, end_index: 180 },
+        ], (id) => categories[id] ?? [], (id) => names[id])).toEqual([
+            { label: 'Late braking', category: 'mistakes', startIndex: 120, endIndex: 130 },
+            { label: 'Late braking', category: 'mistakes', startIndex: 150, endIndex: 180 },
+            { label: 'O', startIndex: 160, endIndex: 175 },
+        ]);
+    });
     it('groups selected IDs and display names, deduplicating aliases and ignoring unrelated labels', () => {
         expect(buildGroups([
             'RM', 'RM7', 'Merge back to expert line',

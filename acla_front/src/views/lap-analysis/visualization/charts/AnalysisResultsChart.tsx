@@ -11,7 +11,7 @@ import {
     updateAnalysisResultElement,
 } from './analysisResultsModel';
 import { useAiLabels } from 'contexts/AiLabelsContext';
-import { buildAnalysisResultsComparisonLabelGroups } from './analysisResultsComparisonLabels';
+import { buildAnalysisResultsComparisonLabelGroups, buildAnalysisResultsComparisonLabelRanges } from './analysisResultsComparisonLabels';
 import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
 import {
     DriverExpertComparisonGraph,
@@ -474,6 +474,9 @@ const AnalysisResultCard: React.FC<{
     const comparisonLabelGroups = React.useMemo(() => buildAnalysisResultsComparisonLabelGroups(
         element.labels.map((label) => label.label_name), getCategoryLabels, getLabelName,
     ), [element.labels, getCategoryLabels, getLabelName]);
+    const comparisonLabelRanges = React.useMemo(() => buildAnalysisResultsComparisonLabelRanges(
+        element.labels, getCategoryLabels, getLabelName,
+    ), [element.labels, getCategoryLabels, getLabelName]);
     const comparisonWarningFingerprintRef = React.useRef<string | null>(null);
     const metadataEntries = Object.entries(element.metadata ?? {})
         .filter(([key]) => !HIDDEN_METADATA_KEYS.has(key));
@@ -597,6 +600,7 @@ const AnalysisResultCard: React.FC<{
                         <DriverExpertComparisonGraph
                             data={element.comparison}
                             labelGroups={comparisonLabelGroups}
+                            labelRanges={comparisonLabelRanges}
                             game={sessionGame}
                             title={element.title
                                 ? `${element.title}: Driver vs Expert`
@@ -1189,6 +1193,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             title: result.title ? `${result.title}: Driver vs Expert` : 'Driver vs Expert',
             comparison: result.comparison,
             labelGroups: buildAnalysisResultsComparisonLabelGroups(result.labels.map((label) => label.label_name), getCategoryLabels, getLabelName),
+            labelRanges: buildAnalysisResultsComparisonLabelRanges(result.labels, getCategoryLabels, getLabelName),
             game: sessionGame,
         };
     }, [getCategoryLabels, getLabelName, sessionGame]);

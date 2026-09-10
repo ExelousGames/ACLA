@@ -1,5 +1,6 @@
-import type { DriverExpertComparisonLabelGroup } from 'components/driver-expert-comparison';
+import type { DriverExpertComparisonLabelGroup, DriverExpertComparisonLabelRange } from 'components/driver-expert-comparison';
 import type { AnalysisResultLabelResolver } from './analysisResultsModel';
+import { normalizeSegmentLabels } from './segmentClassificationDisplay';
 
 const COMPARISON_LABEL_CATEGORIES = [
     { category: 'mistakes', parents: { MSP: 'Mistake (Practice)', MSR: 'Mistake (Racing)' } },
@@ -34,5 +35,28 @@ export const buildAnalysisResultsComparisonLabelGroups = (
         return hasParent || subLabels.size > 0
             ? [{ category, subLabels: Array.from(subLabels) }]
             : [];
+    });
+};
+
+export const buildAnalysisResultsComparisonLabelRanges = (
+    labels: unknown,
+    getCategoryLabels: (category: string) => readonly string[],
+    getLabelName: AnalysisResultLabelResolver,
+): DriverExpertComparisonLabelRange[] => {
+    const seen = new Set<string>();
+    return normalizeSegmentLabels(labels).flatMap((label) => {
+        const labelName = getLabelName(label.label_name) ?? label.label_name;
+        const key = JSON.stringify([labelName, label.start_index, label.end_index]);
+        if (seen.has(key)) return [];
+        seen.add(key);
+        const category = buildAnalysisResultsComparisonLabelGroups(
+            [label.label_name], getCategoryLabels, getLabelName,
+        )[0]?.category;
+        return [{
+            label: labelName,
+            startIndex: label.start_index,
+            endIndex: label.end_index,
+            ...(category ? { category } : {}),
+        }];
     });
 };

@@ -13,13 +13,15 @@ import {
 } from 'views/floating-chat/overlay-renderer-validation';
 import type { DriverExpertComparisonSnapshot } from './DriverExpertComparisonOverlay';
 import { unwrapLapTelemetrySequence } from './lapTelemetrySequence';
+import { buildRoadsideLabelGeometry, DriverExpertComparisonRoadSigns, isComparisonLabelRange } from './DriverExpertComparisonRoadSigns';
+import type { DriverExpertComparisonLabelRange, RoadsideLabelGeometry } from './DriverExpertComparisonRoadSigns';
 import styles from './DriverExpertComparisonGraph.module.css';
 
 export const DRIVER_COMPARISON_COLOR = '#00e676';
 export const EXPERT_COMPARISON_COLOR = '#448aff';
 
-const THROTTLE_COLOR = '#21e58b';
-const BRAKE_COLOR = '#ff4d62';
+const THROTTLE_COLOR = '#43836f';
+const BRAKE_COLOR = '#b85f70';
 const TRACK_VIEWBOX_WIDTH = 760;
 const TRACK_VIEWBOX_HEIGHT = 220;
 const TRACK_PADDING = 28;
@@ -55,6 +57,8 @@ export interface DriverExpertTrajectoryPoint {
 }
 
 export interface DriverExpertComparisonSample {
+    /** Original Driver telemetry index; fractional when aligned between source rows. */
+    driverSourceIndex?: number;
     driverTimeMs: number;
     expertTimeMs: number;
     driverTrackPosition: number;
@@ -108,6 +112,7 @@ export interface DriverExpertComparisonLayout {
 export interface DriverExpertComparisonGraphProps {
     data: DriverExpertComparisonData;
     labelGroups?: readonly DriverExpertComparisonLabelGroup[];
+    labelRanges?: readonly DriverExpertComparisonLabelRange[];
     title?: string;
     className?: string;
     width?: number | string;
@@ -118,7 +123,7 @@ export interface DriverExpertComparisonGraphProps {
     voice?: TtsPack;
 }
 
-type ReplayContinuousKey = 'trackPosition' | 'gas' | 'brake';
+type ReplayContinuousKey = 'sourceIndex' | 'trackPosition' | 'gas' | 'brake';
 type OptionalSampleScalarKey = (
     'driverGas'
     | 'expertGas'
@@ -134,6 +139,7 @@ interface PlottingTrajectoryPoint {
 }
 
 interface ReplayStreamPoint<TTrajectory = DriverExpertTrajectoryPoint> {
+    sourceIndex?: number;
     timeMs: number;
     trackPosition: number;
     trajectory?: TTrajectory;
@@ -149,6 +155,7 @@ interface DriverExpertReplay<TTrajectory = DriverExpertTrajectoryPoint> {
 }
 
 interface ReplayFrame {
+    driverSourceIndex?: number;
     driverTrackPosition?: number;
     expertTrackPosition?: number;
     driverGas?: number;
@@ -192,7 +199,7 @@ interface FollowCamera {
     anchorX: number;
     anchorY: number;
     rotationRadians: number;
-    project: (point: PositionedTrajectoryPoint | undefined) => PositionedTrajectoryPoint | undefined;
+    project: (point: PositionedTrajectoryPoint | undefined) => (PositionedTrajectoryPoint & { perspectiveScale: number }) | undefined;
     path: (points: readonly PositionedTrajectoryPoint[], closed?: boolean) => string;
 }
 
@@ -317,6 +324,10 @@ export const normalizeDriverExpertComparisonData = (
         }
         normalized.driverTrackPosition = driverTrackPosition;
         normalized.expertTrackPosition = expertTrackPosition;
+        const driverSourceIndex = finiteNumber(sample.driverSourceIndex);
+        if (driverSourceIndex !== undefined && driverSourceIndex >= 0) {
+            normalized.driverSourceIndex = driverSourceIndex;
+        }
         const driverTrajectory = normalizeSourceTrajectory(sample.driverTrajectory);
         const expertTrajectory = normalizeSourceTrajectory(sample.expertTrajectory);
         if (driverTrajectory) normalized.driverTrajectory = driverTrajectory;
@@ -377,6 +388,8 @@ const buildUnwrappedReplayStream = (
         const brake = finiteNumber(identity === 'driver' ? sample.driverBrake : sample.expertBrake);
         const gear = finiteNumber(identity === 'driver' ? sample.driverGear : sample.expertGear);
         return {
+            ...(identity === 'driver' && sample.driverSourceIndex !== undefined
+                ? { sourceIndex: sample.driverSourceIndex } : {}),
             timeMs: sequence.timesMs[index],
             trackPosition: sequence.positions[index],
             ...(trajectory ? { trajectory } : {}),
@@ -708,6 +721,13 @@ const buildReplayFrame = (
         driverIndexes.upper,
     );
     return {
+        driverSourceIndex: interpolateScalar(
+            replay.driver,
+            'sourceIndex',
+            elapsedTimeMs,
+            driverIndexes.lower,
+            driverIndexes.upper,
+        ),
         driverTrackPosition: interpolateScalar(
             replay.driver,
             'trackPosition',
@@ -1026,6 +1046,7 @@ const getFollowCamera = (
     const projectCameraPoint = ({ x, y, depth }: CameraSpacePoint) => ({
         svgX: currentAnchorX + x / Math.max(CAMERA_NEAR_PLANE, depth),
         svgY: currentAnchorY + y / Math.max(CAMERA_NEAR_PLANE, depth),
+        perspectiveScale: depth >= CAMERA_NEAR_PLANE ? 1 / depth : 0,
     });
     const clipIntersection = (from: CameraSpacePoint, to: CameraSpacePoint): CameraSpacePoint => {
         const ratio = (CAMERA_NEAR_PLANE - from.depth) / (to.depth - from.depth);
@@ -1120,8 +1141,6 @@ const PedalGauge: React.FC<{
     const normalizedValue = clamp(value ?? 0, 0, 1);
     const percentage = Math.round(normalizedValue * 100);
     const angle = getPedalGaugeAngle(normalizedValue);
-    const armEnd = polarPoint(angle, PEDAL_RADIUS - 4);
-    const marker = polarPoint(angle);
     const color = label === 'Throttle' ? THROTTLE_COLOR : BRAKE_COLOR;
     const channel = label.toLowerCase();
 
@@ -1141,31 +1160,13 @@ const PedalGauge: React.FC<{
         >
             <path className={styles.gaugeTrack} d={PEDAL_ARC_PATH} pathLength={100} />
             {available && (
-                <>
-                    <path
-                        className={styles.gaugeFill}
-                        d={PEDAL_ARC_PATH}
-                        pathLength={100}
-                        stroke={color}
-                        strokeDasharray={`${normalizedValue * 100} 100`}
-                    />
-                    <line
-                        className={styles.gaugeArm}
-                        x1={PEDAL_CENTER.x}
-                        y1={PEDAL_CENTER.y}
-                        x2={armEnd.x}
-                        y2={armEnd.y}
-                        stroke={color}
-                    />
-                    <circle cx={PEDAL_CENTER.x} cy={PEDAL_CENTER.y} r="4" fill={color} />
-                    <circle
-                        className={styles.gaugeMarker}
-                        cx={marker.x}
-                        cy={marker.y}
-                        r="4.5"
-                        fill={color}
-                    />
-                </>
+                <path
+                    className={styles.gaugeFill}
+                    d={PEDAL_ARC_PATH}
+                    pathLength={100}
+                    stroke={color}
+                    strokeDasharray={`${normalizedValue * 100} 100`}
+                />
             )}
             <text
                 className={styles.gaugeLabel}
@@ -1182,7 +1183,7 @@ const PedalGauge: React.FC<{
                 textAnchor="middle"
                 dominantBaseline="middle"
             >
-                {available ? `${percentage}%` : 'N/A'}
+                {available ? <>{percentage}<tspan className={styles.gaugeUnit}>%</tspan></> : 'N/A'}
             </text>
         </g>
     );
@@ -1242,18 +1243,16 @@ const TelemetryPod: React.FC<{
                 className={styles.telemetryPodBody}
                 width={size.width}
                 height={size.height}
-                rx={7 * size.scale}
+                rx={14 * size.scale}
             />
             <g transform={`scale(${size.scale})`}>
-                <rect width="3" height={TELEMETRY_POD_BASE_HEIGHT} rx="1.5" fill={color} />
                 <circle
-                    className={styles.telemetryIdentityDot}
-                    cx="13"
-                    cy="14"
-                    r="3"
-                    fill={color}
+                    cx="16"
+                    cy="18"
+                    r="2.5"
+                    fill="var(--identity-color)"
                 />
-                <text className={styles.telemetryIdentity} x="22" y="17" fill={color}>
+                <text className={styles.telemetryIdentity} x="25" y="22">
                     {label}
                 </text>
                 <g
@@ -1263,27 +1262,20 @@ const TelemetryPod: React.FC<{
                 >
                     <text
                         className={styles.telemetryGearLabel}
-                        x={TELEMETRY_POD_BASE_WIDTH - 55}
-                        y="17"
+                        x={TELEMETRY_POD_BASE_WIDTH - 65}
+                        y="22"
                     >
                         Gear
                     </text>
                     <text
                         className={styles.telemetryGearValue}
-                        x={TELEMETRY_POD_BASE_WIDTH - 11}
-                        y="18"
+                        x={TELEMETRY_POD_BASE_WIDTH - 15}
+                        y="23"
                         textAnchor="end"
                     >
                         {gearValue}
                     </text>
                 </g>
-                <line
-                    className={styles.telemetryDivider}
-                    x1="10"
-                    y1="25"
-                    x2={TELEMETRY_POD_BASE_WIDTH - 10}
-                    y2="25"
-                />
                 <PedalGauge
                     available={gasAvailable}
                     identity={identity}
@@ -1307,6 +1299,7 @@ const TrackReplay: React.FC<{
     availability: DriverExpertComparisonAvailability;
     frame: ReplayFrame;
     geometry: TrackGeometry;
+    labelGeometry: readonly RoadsideLabelGeometry[];
     height: number | string;
     filterId: string;
     cameraProgress: number;
@@ -1316,6 +1309,7 @@ const TrackReplay: React.FC<{
     availability,
     frame,
     geometry,
+    labelGeometry,
     height,
     filterId,
     cameraProgress,
@@ -1510,6 +1504,15 @@ const TrackReplay: React.FC<{
                                 />
                             )}
                         </g>
+                        <DriverExpertComparisonRoadSigns
+                            ranges={labelGeometry}
+                            sourceIndex={frame.driverSourceIndex}
+                            driverPosition={driverWorldMarker}
+                            camera={camera}
+                            viewportWidth={TRACK_VIEWBOX_WIDTH}
+                            viewportHeight={viewportHeight}
+                            scale={podSize.scale * 0.525}
+                        />
                         <g
                             className={styles.cameraOverlay}
                             data-testid="comparison-camera-overlay"
@@ -1600,6 +1603,7 @@ const TrackReplay: React.FC<{
 export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphProps> = ({
     data,
     labelGroups,
+    labelRanges,
     title,
     className,
     width = '100%',
@@ -1634,6 +1638,16 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     const rootStyle = { width: toCssSize(width) } as React.CSSProperties;
     const replayDurationMs = replay?.durationMs ?? 0;
     const geometry = React.useMemo(() => createTrackGeometry(plottingReplay), [plottingReplay]);
+    const labelGeometry = React.useMemo(() => {
+        const displayedLabels = new Set((labelGroups ?? []).flatMap((group) => (
+            group.subLabels.map((label) => label.trim())
+        )));
+        return buildRoadsideLabelGeometry(
+            (labelRanges ?? []).filter((range) => isComparisonLabelRange(range)
+                && displayedLabels.has(range.label.trim())),
+            plottingReplay?.driver ?? [], geometry.project,
+        );
+    }, [labelGroups, labelRanges, plottingReplay, geometry]);
     const hasTrajectory = geometry.driver.length > 0 || geometry.expert.length > 0;
     const [replayRequest, setReplayRequest] = React.useState(0);
     const ttsRef = React.useRef<TtsHandle>(null);
@@ -1767,6 +1781,7 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
                     availability={availability}
                     frame={frame}
                     geometry={geometry}
+                    labelGeometry={labelGeometry}
                     height={trajectoryHeight}
                     filterId={filterId}
                     cameraProgress={timeline.cameraProgress}
@@ -1788,6 +1803,7 @@ const DriverExpertComparisonOverlayGraph = React.memo<{
         data={snapshot.comparison}
         voice={snapshot.voice}
         labelGroups={snapshot.labelGroups}
+        labelRanges={snapshot.labelRanges}
         game={snapshot.game}
         title={snapshot.title}
         layout={{ trajectoryHeight: 280 }}
@@ -1807,6 +1823,8 @@ export const driverExpertComparisonOverlayRenderer: AiOverlayRenderer<DriverExpe
         && isOverlayNonEmptyString(snapshot.title)
         && Boolean(normalizeDriverExpertComparisonData(snapshot.comparison))
         && (snapshot.voice === undefined || isTtsPack(snapshot.voice))
+        && (snapshot.labelRanges === undefined
+            || (Array.isArray(snapshot.labelRanges) && snapshot.labelRanges.every(isComparisonLabelRange)))
         && (
             snapshot.labelGroups === undefined
             || (Array.isArray(snapshot.labelGroups) && snapshot.labelGroups.every((group) => (

@@ -19,3 +19,4 @@ export type {
     DriverExpertTrajectoryPoint,
 } from './DriverExpertComparisonGraph';
 export type { DriverExpertComparisonSnapshot } from './DriverExpertComparisonOverlay';
+export type { DriverExpertComparisonLabelRange } from './DriverExpertComparisonRoadSigns';

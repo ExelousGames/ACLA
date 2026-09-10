@@ -3,14 +3,15 @@
     min-width: 0;
     padding: 13px;
     overflow: hidden;
-    border: 1px solid rgba(123, 168, 210, 0.2);
+    border: 1px solid rgba(171, 175, 181, 0.18);
     border-radius: 14px;
     color: #e9f4ff;
+    filter: saturate(1.56);
     background:
-        linear-gradient(rgba(96, 149, 193, 0.035) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(96, 149, 193, 0.035) 1px, transparent 1px),
-        radial-gradient(circle at 50% -25%, rgba(42, 100, 155, 0.2), transparent 52%),
-        #07111f;
+        linear-gradient(rgba(171, 175, 181, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(171, 175, 181, 0.025) 1px, transparent 1px),
+        radial-gradient(circle at 50% -25%, rgba(124, 128, 136, 0.06), transparent 52%),
+        #202124;
     background-size: 24px 24px, 24px 24px, auto, auto;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
     font-family: var(--lp-sans, 'Geist', system-ui, sans-serif);
@@ -30,12 +31,7 @@
 }
 
 .replayStatus,
-.progressValue,
-.telemetryIdentity,
-.telemetryGearLabel,
-.telemetryGearValue,
-.gaugeLabel,
-.gaugeUnavailableValue {
+.progressValue {
     font-family: var(--lp-mono, 'Geist Mono', monospace);
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -55,12 +51,12 @@
 .replayReadout {
     min-width: max-content;
     padding: 6px 8px;
-    border: 1px solid rgba(113, 157, 194, 0.18);
+    border: 1px solid rgba(171, 175, 181, 0.16);
     border-radius: 6px;
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    background: rgba(5, 14, 26, 0.78);
+    background: #26272b;
 }
 
 .statusDot {
@@ -85,13 +81,13 @@
 }
 
 .replayStatus {
-    color: #94abc0;
+    color: #bdd0e2;
 }
 
 .progressDivider {
     width: 1px;
     height: 10px;
-    background: rgba(139, 177, 210, 0.2);
+    background: rgba(171, 175, 181, 0.2);
 }
 
 .progressValue {
@@ -103,9 +99,9 @@
 .overallUnavailable {
     margin: -2px 0 9px;
     padding: 6px 8px;
-    border-left: 2px solid #42556a;
-    color: #6f859a;
-    background: rgba(42, 61, 80, 0.17);
+    border-left: 2px solid #8da9c3;
+    color: #bdd0e2;
+    background: #26272b;
     font-family: var(--lp-mono, 'Geist Mono', monospace);
     font-size: 9px;
     letter-spacing: 0.08em;
@@ -153,7 +149,7 @@
     padding: 8px 10px;
     border-left: 2px solid var(--label-color);
     border-radius: 5px;
-    background: rgba(4, 12, 23, 0.72);
+    background: #26272b;
 }
 
 .labelGroup[data-category='mistakes'] {
@@ -185,7 +181,7 @@
 }
 
 .noSubLabels {
-    color: #94abc0;
+    color: #bdd0e2;
     font-size: 11px;
 }
 
@@ -199,10 +195,10 @@
     box-sizing: border-box;
     min-width: 0;
     overflow: hidden;
-    border: 1px solid rgba(111, 155, 194, 0.17);
+    border: 1px solid rgba(171, 175, 181, 0.16);
     border-radius: 9px;
-    background: rgba(4, 12, 23, 0.72);
-    box-shadow: inset 0 0 20px rgba(30, 83, 126, 0.055);
+    background: #232427;
+    box-shadow: inset 0 0 20px rgba(171, 175, 181, 0.02);
 }
 
 .trackPanel {
@@ -220,7 +216,7 @@
 }
 
 .trackViewport {
-    fill: rgba(7, 19, 34, 0.35);
+    fill: #232427;
 }
 
 .cameraLayer {
@@ -239,9 +235,62 @@
     stroke-linejoin: round;
 }
 
+.roadSign {
+    --label-color: #9b7a45;
+}
+
+.roadSign[data-state] {
+    transition: opacity 240ms ease-out;
+}
+
+.roadSign[data-state='released'] {
+    transition-duration: 40ms;
+}
+
+.roadSign[data-category='mistakes'] {
+    --label-color: #b85f70;
+}
+
+.roadSign[data-category='expert'] {
+    --label-color: #507faf;
+}
+
+.roadSign[data-category='recovery'] {
+    --label-color: #43836f;
+}
+
+.roadSignPost {
+    fill: none;
+    stroke: #a8bbbf;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1;
+    opacity: 0.55;
+}
+
+.roadSignBoard,
+.telemetryPodBody {
+    fill: rgba(40, 41, 45, 0.96);
+    stroke: rgba(171, 175, 181, 0.24);
+    stroke-width: 0.65;
+    filter: drop-shadow(0 5px 10px rgba(0, 0, 0, 0.24));
+}
+
+.roadSignDot {
+    fill: var(--label-color);
+}
+
+.roadSignLabel {
+    fill: #fff;
+    font-family: var(--lp-sans, 'Geist', system-ui, sans-serif);
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+}
+
 .groundGrid {
     fill: none;
-    stroke: rgba(100, 160, 202, 0.18);
+    stroke: rgba(171, 175, 181, 0.12);
     stroke-width: 0.65;
 }
 
@@ -270,7 +319,7 @@
 }
 
 .trackUnavailable {
-    fill: #526a80;
+    fill: #bdd0e2;
     font-family: var(--lp-mono, 'Geist Mono', monospace);
     font-size: 8px;
     letter-spacing: 0.12em;
@@ -279,7 +328,7 @@
 
 .placeholderTrack {
     fill: none;
-    stroke: rgba(98, 126, 151, 0.34);
+    stroke: rgba(171, 175, 181, 0.34);
     stroke-dasharray: 4 4;
     stroke-width: 1.2;
 }
@@ -289,95 +338,79 @@
 }
 
 .telemetryPodBody {
-    fill: rgba(5, 15, 27, 0.96);
-    stroke: rgba(139, 177, 210, 0.32);
-    stroke-width: 1;
-    filter: drop-shadow(0 3px 7px rgba(0, 0, 0, 0.44));
+    fill: rgba(44, 45, 49, 0.98);
 }
 
 .telemetryLeader {
-    opacity: 0.76;
+    opacity: 0.45;
     stroke-linecap: round;
-    stroke-width: 1.5;
-}
-
-.telemetryIdentityDot {
-    filter: drop-shadow(0 0 4px var(--identity-color));
+    stroke-width: 1;
 }
 
 .telemetryIdentity {
-    font-size: 8px;
-    font-weight: 700;
+    fill: #fff;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: -0.02em;
 }
 
 .telemetryGearLabel {
-    fill: #627c94;
-    font-size: 6px;
-    font-weight: 650;
+    fill: rgba(255, 255, 255, 0.78);
+    font-size: 8px;
+    font-weight: 400;
 }
 
 .telemetryGearValue {
-    fill: #f1f7ff;
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
+    fill: #fff;
+    font-size: 15px;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
 }
 
 .telemetryGearUnavailable {
-    opacity: 0.48;
-}
-
-.telemetryDivider {
-    stroke: rgba(139, 177, 210, 0.17);
-    stroke-width: 1;
+    opacity: 0.75;
 }
 
 .gaugeTrack,
 .gaugeFill {
     fill: none;
     stroke-linecap: round;
-    stroke-width: 6;
+    stroke-width: 3;
 }
 
 .gaugeTrack {
-    stroke: rgba(111, 139, 164, 0.15);
-}
-
-.gaugeFill {
-    filter: drop-shadow(0 0 3px currentColor);
-}
-
-.gaugeArm {
-    opacity: 0.48;
-    stroke-linecap: round;
-    stroke-width: 1.5;
-}
-
-.gaugeMarker {
-    filter: drop-shadow(0 0 4px currentColor);
+    stroke: rgba(171, 175, 181, 0.2);
 }
 
 .gaugeLabel {
-    fill: #627c94;
-    font-size: 8px;
-    font-weight: 650;
+    fill: rgba(255, 255, 255, 0.78);
+    font-size: 12px;
+    font-weight: 400;
 }
 
 .gaugeValue {
-    fill: #eaf5ff;
-    font-family: var(--lp-mono, 'Geist Mono', monospace);
-    font-size: 16px;
+    fill: #fff;
+    font-size: 32px;
+    font-weight: 350;
     font-variant-numeric: tabular-nums;
+    letter-spacing: -0.05em;
     line-height: 1;
 }
 
-.gaugeUnavailableValue {
-    fill: #5a7186;
-    font-size: 8px;
+.gaugeUnit {
+    fill: rgba(255, 255, 255, 0.78);
+    font-size: 0.58em;
+    letter-spacing: -0.02em;
 }
 
-.gaugeUnavailable {
-    opacity: 0.46;
+.gaugeUnavailableValue {
+    fill: rgba(255, 255, 255, 0.78);
+    font-size: 20px;
+    font-weight: 400;
+}
+
+.gaugeUnavailable .gaugeTrack {
+    opacity: 0.5;
 }
 
 @keyframes replayPulse {
@@ -403,6 +436,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+    .roadSign[data-state] {
+        transition: none;
+    }
+
     .statusDot {
         animation: none;
     }

@@ -201,8 +201,8 @@ html, body, #root, .App {
 
 .overlay-shell .floating-pill-comparison {
     padding: 10px;
-    border: 1px solid rgba(112, 164, 207, .24);
-    background: rgba(7, 17, 31, .96);
+    border: 1px solid rgba(171, 175, 181, .18);
+    background: #202124;
 }
 
 .overlay-shell .baseline-timeline--pill { padding: 8px 10px; }

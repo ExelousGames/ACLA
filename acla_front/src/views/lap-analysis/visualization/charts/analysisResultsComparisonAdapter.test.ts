@@ -55,6 +55,7 @@ describe('adaptAnalysisResultsComparison', () => {
         });
 
         expect(result.samples).toHaveLength(3);
+        expect(result.samples.map((sample) => sample.driverSourceIndex)).toEqual([0, 1, 2]);
         expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual([100, 200, 300]);
         expect(result.samples.map((sample) => sample.expertTimeMs)).toEqual([1_000, 1_100, 1_200]);
         expect(result.samples.map((sample) => sample.driverTrackPosition)).toEqual([0.1, 0.2, 0.3]);
@@ -92,6 +93,7 @@ describe('adaptAnalysisResultsComparison', () => {
             driverGear: 2,
         })]);
         expect(result.samples[0].driverTimeMs).toBeCloseTo(200);
+        expect(result.samples[0].driverSourceIndex).toBeCloseTo(0.5);
         expect(result.samples[0].driverGas).toBeCloseTo(0.5);
         expect(result.samples[0].driverBrake).toBeCloseTo(0.3);
     });
@@ -149,6 +151,7 @@ describe('adaptAnalysisResultsComparison', () => {
         expect(result.samples).toHaveLength(3);
         expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual([100, 200, 300]);
         expect(result.samples.map((sample) => sample.driverTrackPosition)).toEqual([0.1, 0.2, 0.3]);
+        expect(result.samples.map((sample) => sample.driverSourceIndex)).toEqual([0, 1, 5]);
     });
 
     it('steps gear from the preceding Driver sample and advances repeated positions in source order', () => {

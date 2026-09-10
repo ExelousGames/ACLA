@@ -1295,6 +1295,127 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.queryByLabelText('Segment analysis labels')).not.toBeInTheDocument();
     });
 
+    it('picks up trajectory signs, merges active labels, and releases them at their end points', () => {
+        const data = { samples: completeData.samples.map((sample, index) => ({
+            ...sample, driverSourceIndex: 100 + index * 10,
+        })) };
+        expect(normalizeDriverExpertComparisonData(data)?.samples.map((sample) => sample.driverSourceIndex))
+            .toEqual([100, 110, 120]);
+        const range = { label: 'Late braking', category: 'mistakes' as const, startIndex: 104, endIndex: 116 };
+        const ranges = [range, { label: 'Smooth recovery', category: 'recovery' as const, startIndex: 112, endIndex: 120 }];
+        const labelGroups = [
+            { category: 'mistakes' as const, subLabels: ['Late braking'] },
+            { category: 'recovery' as const, subLabels: ['Smooth recovery'] },
+        ];
+        const view = render(<DriverExpertComparisonGraph data={data} labelGroups={labelGroups} labelRanges={ranges} />);
+        const following = () => view.container.querySelector('[data-testid="comparison-road-sign"][data-state="following"]');
+        expect(screen.getAllByTestId('comparison-label-sign')).toHaveLength(2);
+        expect(following()).toBeNull();
+        runAnimationFrame(0);
+        runAnimationFrame(2_149);
+        expect(following()).toBeNull();
+        runAnimationFrame(2_150);
+        expect(following()).toHaveAttribute('aria-label', 'Late braking');
+        const marker = screen.getByTestId('driver-position-marker').querySelector('circle')!;
+        expect(Number(following()!.getAttribute('data-anchor-x'))).toBeCloseTo(Number(marker.getAttribute('cx')));
+        expect(Number(following()!.getAttribute('data-anchor-y'))).toBeCloseTo(Number(marker.getAttribute('cy')));
+        runAnimationFrame(3_150);
+        expect(screen.getAllByTestId('comparison-label-sign')).toHaveLength(1);
+        expect(screen.getByTestId('comparison-label-sign')).toHaveAttribute('aria-label', 'Late braking, Smooth recovery');
+        expect(screen.getByTestId('comparison-label-sign').getAttribute('transform')).not.toMatch(/NaN|Infinity/);
+        runAnimationFrame(3_950);
+        expect(following()).toHaveAttribute('aria-label', 'Smooth recovery');
+        const released = view.container.querySelector('[data-testid="comparison-road-sign"][data-state="released"]')!;
+        expect(released).toHaveAttribute('aria-label', 'Late braking');
+        const endX = released.getAttribute('data-world-x');
+        const endY = released.getAttribute('data-world-y');
+        const previousAnchorY = released.getAttribute('data-anchor-y');
+        runAnimationFrame(4_150);
+        expect(released).toHaveAttribute('data-world-x', endX);
+        expect(released).toHaveAttribute('data-world-y', endY);
+        expect(released.getAttribute('data-anchor-y')).not.toBe(previousAnchorY);
+        runAnimationFrame(4_750);
+        expect(following()).toBeNull();
+        expect(view.container.querySelector('[data-state="released"][aria-label="Smooth recovery"]')).toBeInTheDocument();
+        expect(screen.queryByTestId('comparison-label-range')).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Replay comparison' }));
+        expect(screen.getAllByTestId('comparison-label-sign')).toHaveLength(2);
+        expect(following()).toBeNull();
+        runAnimationFrame(5_000);
+        runAnimationFrame(7_150);
+        expect(following()).toHaveAttribute('aria-label', 'Late braking');
+        view.rerender(<DriverExpertComparisonGraph data={data} labelRanges={[]} />);
+        expect(screen.queryByTestId('comparison-road-signs')).not.toBeInTheDocument();
+    });
+
+    it('validates and renders label ranges in overlay snapshots', () => {
+        const labelRange = { label: 'Late braking', startIndex: 104, endIndex: 116 };
+        const snapshot = { title: 'Comparison', comparison: {
+            samples: completeData.samples.map((sample, index) => ({ ...sample, driverSourceIndex: 100 + index * 10 })),
+        }, labelRanges: [labelRange], labelGroups: [{ category: 'mistakes' as const, subLabels: ['Late braking'] }] };
+        expect(driverExpertComparisonOverlayRenderer.validateSnapshot(snapshot)).toBe(true);
+        for (const labelRanges of [null, {}, [null], [{ ...labelRange, endIndex: 104 }], [{ ...labelRange, startIndex: -1 }]]) {
+            expect(driverExpertComparisonOverlayRenderer.validateSnapshot({ ...snapshot, labelRanges })).toBe(false);
+        }
+        render(driverExpertComparisonOverlayRenderer.renderOverlay(snapshot, 'expanded', {
+            componentName: 'comparison', revision: 1, emitRendererEvent: jest.fn(),
+        }));
+        expect(screen.getByTestId('comparison-road-sign')).toHaveAttribute('data-state', 'waiting');
+        runAnimationFrame(0);
+        runAnimationFrame(2_150);
+        expect(screen.getByTestId('comparison-label-sign')).toHaveAttribute('aria-label', 'Late braking');
+        expect(screen.getByTestId('comparison-road-sign')).toHaveAttribute('data-state', 'following');
+    });
+
+    it('only shows road signs for labels listed above the graph and updates them when the list changes', () => {
+        const data = { samples: completeData.samples.map((sample, index) => ({
+            ...sample, driverSourceIndex: 100 + index * 10,
+        })) };
+        const labelRanges = [' Late braking ', 'Smooth recovery', 'Mistake (Practice)', 'Unlisted label']
+            .map((label) => ({ label, startIndex: 104, endIndex: 116 }));
+        const view = render(<DriverExpertComparisonGraph data={data} labelRanges={labelRanges}
+            labelGroups={[{ category: 'mistakes', subLabels: ['Late braking'] }]} />);
+        const signLabels = () => screen.queryAllByTestId('comparison-road-sign')
+            .map((sign) => sign.getAttribute('aria-label'));
+        expect(signLabels()).toEqual(['Late braking']);
+        runAnimationFrame(0);
+        runAnimationFrame(2_150);
+        expect(signLabels()).toEqual(['Late braking']);
+        view.rerender(<DriverExpertComparisonGraph data={data} labelRanges={labelRanges}
+            labelGroups={[{ category: 'recovery', subLabels: ['Smooth recovery'] }]} />);
+        expect(signLabels()).toEqual(['Smooth recovery']);
+        view.rerender(<DriverExpertComparisonGraph data={data} labelRanges={labelRanges}
+            labelGroups={[{ category: 'mistakes', subLabels: [] }]} />);
+        expect(signLabels()).toEqual([]);
+        view.rerender(<DriverExpertComparisonGraph data={data} labelRanges={labelRanges} labelGroups={[]} />);
+        expect(signLabels()).toEqual([]);
+        view.rerender(<DriverExpertComparisonGraph data={data} labelRanges={labelRanges} />);
+        expect(signLabels()).toEqual([]);
+    });
+
+    it('uses the track camera depth to shrink distant road signs', () => {
+        const data = { samples: completeData.samples.map((sample, index) => ({
+            ...sample, driverSourceIndex: 100 + index * 10,
+        })) };
+        render(<DriverExpertComparisonGraph data={data}
+            labelGroups={[{ category: 'mistakes', subLabels: ['Nearby', 'Distant'] }]}
+            labelRanges={[
+                { label: 'Nearby', startIndex: 100, endIndex: 110 },
+                { label: 'Distant', startIndex: 115, endIndex: 120 },
+            ]} />);
+        runAnimationFrame(0);
+        runAnimationFrame(1_750);
+        const signs = screen.getAllByTestId('comparison-road-sign');
+        const nearby = signs.find((sign) => sign.getAttribute('aria-label') === 'Nearby')!;
+        const distant = signs.find((sign) => sign.getAttribute('aria-label') === 'Distant')!;
+        const width = (sign: HTMLElement) => Number(within(sign).getByTestId('comparison-label-sign-board').getAttribute('width'));
+        const cardWidth = Number(screen.getByTestId('driver-telemetry-pod').querySelector('rect')!.getAttribute('width'));
+        expect(width(nearby)).toBeCloseTo(cardWidth * 0.525);
+        expect(width(distant)).toBeLessThan(width(nearby));
+        expect(signs.indexOf(distant)).toBeLessThan(signs.indexOf(nearby));
+    });
+
     it('validates optional label groups while accepting existing overlay snapshots', () => {
         const snapshot = { title: 'Comparison', comparison: completeData };
         expect(driverExpertComparisonOverlayRenderer.validateSnapshot(snapshot)).toBe(true);
@@ -1463,7 +1584,7 @@ describe('DriverExpertComparisonGraph', () => {
         expectCameraLockedOn('driver');
     });
 
-    it('resizes both cards and the driver anchor with the panel while preserving camera zoom', () => {
+    it('resizes road signs, both cards and the driver anchor with the panel while preserving camera zoom', () => {
         setReducedMotion(true);
         let notifyResize: ((width: number, height: number) => void) | undefined;
         const originalResizeObserver = window.ResizeObserver;
@@ -1485,6 +1606,7 @@ describe('DriverExpertComparisonGraph', () => {
         try {
             const view = render(<DriverExpertComparisonGraph data={{
                 samples: [{
+                    driverSourceIndex: 0,
                     driverTimeMs: 0,
                     expertTimeMs: 0,
                     driverTrackPosition: 0.4,
@@ -1498,7 +1620,8 @@ describe('DriverExpertComparisonGraph', () => {
                     driverGear: 3,
                     expertGear: 4,
                 }],
-            }} />);
+            }} labelGroups={[{ category: 'mistakes', subLabels: ['Late braking'] }]}
+                labelRanges={[{ label: 'Late braking', startIndex: 0, endIndex: 1 }]} />);
 
             const initialMatrix = parseMatrix(screen.getByTestId('comparison-camera-layer'));
             const initialScale = Math.hypot(initialMatrix[0], initialMatrix[2]);
@@ -1506,6 +1629,7 @@ describe('DriverExpertComparisonGraph', () => {
             expect(initialScale).toBeCloseTo(4, 6);
             expect(initialTiltedScale).toBeCloseTo(2, 6);
             const cardWidths: number[] = [];
+            const signWidths: number[] = [];
             for (const [width, height] of [[320, 640], [1280, 640], [1280, 160], [2400, 130]]) {
                 act(() => notifyResize?.(width, height));
                 const driver = expectTelemetryPodWithinViewport('driver');
@@ -1517,6 +1641,10 @@ describe('DriverExpertComparisonGraph', () => {
                     .getAttribute('viewBox')!.split(' ').map(Number);
                 const pixelScale = Math.min(width / svgWidth, height / svgHeight);
                 cardWidths.push(driver.width * pixelScale);
+                const sign = screen.getByTestId('comparison-label-sign-board');
+                signWidths.push(Number(sign.getAttribute('width')) * pixelScale);
+                expect(signWidths[signWidths.length - 1] / signWidths[0])
+                    .toBeCloseTo(cardWidths[cardWidths.length - 1] / cardWidths[0], 5);
                 expect(driver.width * pixelScale).toBeLessThan(width / 2);
                 expect(driver.height * pixelScale).toBeLessThan(height / 2);
                 expectCameraLockedOn('driver');
