@@ -129,14 +129,19 @@ def _classify_telemetry_segments(
     )
     raw_segments = []
 
+    def label_ranges(segment):
+        yield {
+            "label_name": segment.label,
+            "start_index": segment.start_index,
+            "end_index": segment.end_index,
+        }
+        for child in segment.subsegments:
+            yield from label_ranges(child)
+
     for segment in predicted_segments:
-        labels = list(dict.fromkeys([
-            segment.label,
-            *(child.label for child in segment.subsegments),
-        ]))
         raw_segments.append({
             "id": segment.id,
-            "labels": labels,
+            "labels": list(label_ranges(segment)),
             "start_index": segment.start_index,
             "end_index": segment.end_index,
         })
@@ -296,6 +301,15 @@ def _translate_segment_ranges_to_raw_indices(
         end_exclusive = min(end_exclusive, len(raw_indices))
         translated_segment["start_index"] = raw_indices[start]
         translated_segment["end_index"] = raw_indices[end_exclusive - 1] + 1
+        if "labels" in segment:
+            translated_segment["labels"] = _translate_segment_ranges_to_raw_indices(
+                segment["labels"], raw_indices,
+            )
+        if segment.get("track_section"):
+            translated_segment["id"] = (
+                f"{segment['track_section']}:"
+                f"{translated_segment['start_index']}-{translated_segment['end_index']}"
+            )
         translated_segments.append(translated_segment)
 
     return translated_segments
@@ -438,6 +452,7 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
             splitter_result["circuit_id"],
             splitter_result=splitter_result,
         )
+        segments = _annotate_segments_with_time_gaps(segments, enriched_rows)
         segments = _attach_expert_reference_data_to_segments(
             segments,
             enriched_rows,

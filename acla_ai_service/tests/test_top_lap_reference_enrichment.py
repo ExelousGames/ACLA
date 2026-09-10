@@ -232,7 +232,7 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
             classified.append(rows)
             or [{
                 "id": "segment-1",
-                "labels": ["EA"],
+                "labels": [{"label_name": "EA", "start_index": 0, "end_index": 1}],
                 "start_index": 0,
                 "end_index": 1,
             }]
@@ -332,7 +332,7 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
             classified.append(rows)
             or [{
                 "id": "segment-1",
-                "labels": ["EA"],
+                "labels": [{"label_name": "EA", "start_index": 0, "end_index": 2}],
                 "start_index": 0,
                 "end_index": 2,
             }]
