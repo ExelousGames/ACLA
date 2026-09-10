@@ -148,7 +148,7 @@ export const initializeVisualizations = () => {
                 name: 'append_element',
                 description: 'Normalize and append one labeled element, generating its ID when omitted.',
                 requiresOpenChart: true,
-                params: { element: 'Generic labeled element object.' },
+                params: { element: 'Element object with labels: [{ label_name: string, start_index: number, end_index: number }]. Label ranges use original telemetry sample indices, with an exclusive end_index.' },
             },
             {
                 name: 'update_element',

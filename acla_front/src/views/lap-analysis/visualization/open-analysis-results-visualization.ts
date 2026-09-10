@@ -9,7 +9,6 @@ import type { VisualizationManagerHandle } from './VisualizationPanelManager';
 import type { AnalysisResultsChartHandle } from './charts/AnalysisResultsChart';
 import type { AnalysisResultElement } from './charts/analysisResultsModel';
 import { resolveAnalysisResultsComparison } from './charts/analysisResultsComparisonAdapter';
-import { getSegmentLabelIds } from './charts/segmentClassificationDisplay';
 import { getSingletonVisualizationComponentName } from './visualization-component-names';
 
 const getNormalizedPosition = (
@@ -39,13 +38,22 @@ const buildAnalysisElements = (
     const comparison = comparisonResolution.comparison;
     return {
         id: segment.id || `${result.session_id}:segment:${index}`,
-        labels: getSegmentLabelIds(segment)
-            .map((labelId) => getLabelName(labelId) || labelId),
+        labels: segment.labels.map((label) => ({
+            ...label,
+            label_name: getLabelName(label.label_name) || label.label_name,
+        })),
         ...(segment.track_section ? {
             section: getLabelName(segment.track_section) || segment.track_section,
         } : {}),
         ...(start !== null && end !== null ? {
             normalizedPositionRange: { start, end },
+        } : {}),
+        ...(segment.time_gap ? {
+            timeGap: {
+                startMs: segment.time_gap.start_ms,
+                endMs: segment.time_gap.end_ms,
+                deltaMs: segment.time_gap.delta_ms,
+            },
         } : {}),
         ...(comparison?.samples.length ? { comparison } : {}),
         ...(comparisonResolution.diagnostics.length > 0

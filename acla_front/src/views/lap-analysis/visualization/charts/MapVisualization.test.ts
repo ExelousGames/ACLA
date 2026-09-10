@@ -308,7 +308,11 @@ describe('MapVisualization AI segment labels', () => {
     it('formats track sections with flat analysis labels', () => {
         const segment = {
             track_section: 'brands_hatch2',
-            labels: ['MSP', 'MSP1', 'EA'],
+            labels: [
+                { label_name: 'MSP', start_index: 10, end_index: 30 },
+                { label_name: 'MSP1', start_index: 14, end_index: 18 },
+                { label_name: 'EA', start_index: 10, end_index: 15 },
+            ],
             start_index: 10,
             end_index: 30,
         };
@@ -320,6 +324,13 @@ describe('MapVisualization AI segment labels', () => {
             'Initiate brake too late',
             'Expert Adherence (Training)'
         ]);
+        expect(resolveActiveSegmentLabelTexts(segment, 13, resolveLabel)).toEqual([
+            'Mistake (Practice)', 'Expert Adherence (Training)',
+        ]);
+        expect(resolveActiveSegmentLabelTexts(segment, 18, resolveLabel)).toEqual([
+            'Mistake (Practice)',
+        ]);
+        expect(resolveActiveSegmentLabelTexts(segment, 30, resolveLabel)).toEqual([]);
         expect(resolveActiveSegmentLabelTexts(segment, 14, resolveLabel)).toEqual([
             'Mistake (Practice)',
             'Initiate brake too late',
@@ -329,7 +340,9 @@ describe('MapVisualization AI segment labels', () => {
 
     it('formats behavior labels without a track section', () => {
         const segment = {
-            labels: ['MSP', 'MSP1', 'ST3'],
+            labels: ['MSP', 'MSP1', 'ST3'].map((label_name) => ({
+                label_name, start_index: 0, end_index: 3,
+            })),
             start_index: 0,
             end_index: 3,
         };

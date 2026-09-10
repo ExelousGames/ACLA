@@ -186,9 +186,15 @@ export class ExpertReferenceRowDto {
     expert_optimal_gear: number;
 }
 
+export class SegmentClassificationLabelDto {
+    label_name: string;
+    start_index: number;
+    end_index: number;
+}
+
 export class SegmentClassificationSegmentDto {
     id?: string;
-    labels: string[];
+    labels: SegmentClassificationLabelDto[];
     track_section?: string;
     start_index: number;
     end_index: number;

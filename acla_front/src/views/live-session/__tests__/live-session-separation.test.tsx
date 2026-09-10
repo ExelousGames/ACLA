@@ -79,7 +79,7 @@ const SeparationHarness = () => {
                         car: 'GT3',
                         sample_count: pageNumber,
                     },
-                    elements: [{ id: `result-${pageNumber}`, labels: ['MSP'] }],
+                    elements: [{ id: `result-${pageNumber}`, labels: [{ label_name: 'MSP', start_index: 0, end_index: 1 }] }],
                 });
             }}>Append result page</button>
             <button onClick={() => {

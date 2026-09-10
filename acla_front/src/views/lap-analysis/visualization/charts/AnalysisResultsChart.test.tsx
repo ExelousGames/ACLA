@@ -139,7 +139,7 @@ import { buildFormattedToolResultFrame } from '../../ai-chat/voice-tool-result-f
 
 const ALL_ANALYSES_COUNT_QUERY = '$count(analyses)';
 const ALL_RESULTS_COUNT_QUERY = '$count(analyses.elements)';
-const MISTAKE_COUNT_QUERY = '$count(analyses.elements[labels[$ in ["MSP", "Mistake (Practice)", "Training Error", "MSR", "Mistake (Racing)", "Race Error"]]])';
+const MISTAKE_COUNT_QUERY = '$count(analyses.elements[labels[label_name in ["MSP", "Mistake (Practice)", "Training Error", "MSR", "Mistake (Racing)", "Race Error"]]])';
 
 const renderedResultIds = (): string[] => (
     screen.queryAllByTestId(/^analysis-result-/).map((element) => (
@@ -360,15 +360,15 @@ describe('AnalysisResultsChart', () => {
                 id="count-results"
                 data={{
                     elements: [
-                        { id: 'practice-id', labels: ['MSP', 'MSP'] },
-                        { id: 'practice-canonical', labels: ['Mistake (Practice)'] },
-                        { id: 'practice-configured', labels: ['Training Error'] },
-                        { id: 'racing-id', labels: ['MSR'] },
-                        { id: 'racing-canonical', labels: ['Mistake (Racing)'] },
-                        { id: 'racing-configured', labels: ['Race Error'] },
-                        { id: 'combined', labels: ['MSP', 'MSR', 'MSP', 'MSR'] },
-                        { id: 'children-only', labels: ['MSP1', 'MSR1'] },
-                        { id: 'unrelated', labels: ['Expert Adherence'] },
+                        { id: 'practice-id', labels: labelRanges('MSP', 'MSP') },
+                        { id: 'practice-canonical', labels: labelRanges('Mistake (Practice)') },
+                        { id: 'practice-configured', labels: labelRanges('Training Error') },
+                        { id: 'racing-id', labels: labelRanges('MSR') },
+                        { id: 'racing-canonical', labels: labelRanges('Mistake (Racing)') },
+                        { id: 'racing-configured', labels: labelRanges('Race Error') },
+                        { id: 'combined', labels: labelRanges('MSP', 'MSR', 'MSP', 'MSR') },
+                        { id: 'children-only', labels: labelRanges('MSP1', 'MSR1') },
+                        { id: 'unrelated', labels: labelRanges('Expert Adherence') },
                         null,
                         'invalid',
                     ],
@@ -413,17 +413,17 @@ describe('AnalysisResultsChart', () => {
             createdAt: 1,
             baseline: { lap_id: 1, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
             elements: [
-                { id: 'active-mistake', labels: ['MSP'] },
-                { id: 'active-unrelated', labels: ['Telemetry'] },
+                { id: 'active-mistake', labels: labelRanges('MSP') },
+                { id: 'active-unrelated', labels: labelRanges('Telemetry') },
             ],
         }, {
             id: 'latest-page',
             createdAt: 2,
             baseline: { lap_id: 2, lap_time_ms: 98_000, track: 'Spa', car: 'GT3' },
             elements: [
-                { id: 'latest-one', labels: ['MSP'] },
-                { id: 'latest-two', labels: ['MSR'] },
-                { id: 'latest-three', labels: ['Mistake (Practice)'] },
+                { id: 'latest-one', labels: labelRanges('MSP') },
+                { id: 'latest-two', labels: labelRanges('MSR') },
+                { id: 'latest-three', labels: labelRanges('Mistake (Practice)') },
             ],
         }];
         const view = render(
@@ -504,7 +504,7 @@ describe('AnalysisResultsChart', () => {
                         baseline: { lap_id: 1, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
                         elements: [{
                             id: 'braking-result',
-                            labels: ['MSP', 'MSP1', 'EA', 'EA1', 'RM', 'RM7'],
+                            labels: labelRanges('MSP', 'MSP1', 'EA', 'EA1', 'RM', 'RM7'),
                             title: 'Late braking',
                             comparison: replayComparisonData(),
                         }],
@@ -512,7 +512,7 @@ describe('AnalysisResultsChart', () => {
                         id: 'active-page',
                         createdAt: 2,
                         baseline: { lap_id: 2, lap_time_ms: 98_000, track: 'Spa', car: 'GT3' },
-                        elements: [{ id: 'active-result', labels: ['MSR'] }],
+                        elements: [{ id: 'active-result', labels: labelRanges('MSR') }],
                     }],
                     activePageId: 'active-page',
                     onSelectPage: jest.fn(),
@@ -585,7 +585,7 @@ describe('AnalysisResultsChart', () => {
                 data={{
                     elements: [{
                         id: 'corner-result',
-                        labels: ['MSR'],
+                        labels: labelRanges('MSR'),
                         comparison: replayComparisonData(),
                     }],
                 }}
@@ -636,11 +636,11 @@ describe('AnalysisResultsChart', () => {
                 data={{
                     elements: [{
                         id: 'static-result',
-                        labels: ['MSP'],
+                        labels: labelRanges('MSP'),
                         comparison: comparableData(0.2, 0.3),
                     }, {
                         id: 'replay-result',
-                        labels: ['MSP'],
+                        labels: labelRanges('MSP'),
                         comparison: replayComparisonData(),
                     }],
                 }}
@@ -695,7 +695,7 @@ describe('AnalysisResultsChart', () => {
                             track: 'Spa',
                             car: 'GT3',
                         },
-                        elements: [{ id: 'zero-lap-mistake', labels: ['MSP'], title: 'Zero lap mistake' }],
+                        elements: [{ id: 'zero-lap-mistake', labels: labelRanges('MSP'), title: 'Zero lap mistake' }],
                     }],
                     activePageId: 'zero-lap-page',
                     onSelectPage: jest.fn(),
@@ -734,14 +734,14 @@ describe('AnalysisResultsChart', () => {
             id: 'array-page-1',
             createdAt: 999,
             baseline: { lap_id: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'first-only', labels: ['MSP'] }],
+            elements: [{ id: 'first-only', labels: labelRanges('MSP') }],
         }, {
             id: 'array-page-2',
             createdAt: -999,
             baseline: { lap_id: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
             elements: [
-                { id: 'latest-match', labels: ['MSP'] },
-                { id: 'latest-other', labels: ['Telemetry'] },
+                { id: 'latest-match', labels: labelRanges('MSP') },
+                { id: 'latest-other', labels: labelRanges('Telemetry') },
             ],
         }];
         const Harness = () => {
@@ -795,12 +795,12 @@ describe('AnalysisResultsChart', () => {
             id: 'displayed-page-1',
             createdAt: 200,
             baseline: { lap_id: 4, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'page-one-match', labels: ['MSP'] }],
+            elements: [{ id: 'page-one-match', labels: labelRanges('MSP') }],
         }, {
             id: 'displayed-page-2',
             createdAt: 100,
             baseline: { lap_id: 5, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'page-two-match', labels: ['MSP'] }],
+            elements: [{ id: 'page-two-match', labels: labelRanges('MSP') }],
         }];
         const Harness = () => {
             const [activePageId, setActivePageId] = React.useState('displayed-page-2');
@@ -841,8 +841,8 @@ describe('AnalysisResultsChart', () => {
                 name="visualization:analysis-results"
                 id="recorded-apply"
                 data={{ elements: [
-                    { id: 'recorded-match', labels: ['MSP'] },
-                    { id: 'recorded-other', labels: ['Telemetry'] },
+                    { id: 'recorded-match', labels: labelRanges('MSP') },
+                    { id: 'recorded-other', labels: labelRanges('Telemetry') },
                 ] }}
             />,
         );
@@ -889,8 +889,8 @@ describe('AnalysisResultsChart', () => {
                 name="visualization:analysis-results"
                 id="invalid-ai-apply"
                 data={{ elements: [
-                    { id: 'preserved', labels: ['MSP'] },
-                    { id: 'excluded', labels: ['MSP'] },
+                    { id: 'preserved', labels: labelRanges('MSP') },
+                    { id: 'excluded', labels: labelRanges('MSP') },
                 ] }}
             />,
         );
@@ -928,12 +928,12 @@ describe('AnalysisResultsChart', () => {
             id: 'stale-page-1',
             createdAt: 2,
             baseline: { lap_id: 1, lap_time_ms: null, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'newest-wins', labels: ['MSP'] }],
+            elements: [{ id: 'newest-wins', labels: labelRanges('MSP') }],
         }, {
             id: 'stale-page-2',
             createdAt: 1,
             baseline: { lap_id: 2, lap_time_ms: null, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'stale-result', labels: ['MSP'] }],
+            elements: [{ id: 'stale-result', labels: labelRanges('MSP') }],
         }];
         const onSelectPage = jest.fn();
         const Harness = () => {
@@ -1082,12 +1082,12 @@ describe('AnalysisResultsChart', () => {
             id: 'page-2',
             createdAt: 2,
             baseline: { lap_id: 7, lap_time_ms: 98_000, track: 'Monza', car: 'GT4' },
-            elements: [{ id: 'second-page-result', labels: ['MSP', 'MSP2'], title: 'Second page mistake' }],
+            elements: [{ id: 'second-page-result', labels: labelRanges('MSP', 'MSP2'), title: 'Second page mistake' }],
         }, {
             id: 'page-1',
             createdAt: 1,
             baseline: { lap_id: 4, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'first-page-result', labels: ['MSP', 'MSP1'], title: 'First page mistake' }],
+            elements: [{ id: 'first-page-result', labels: labelRanges('MSP', 'MSP1'), title: 'First page mistake' }],
         }];
 
         const PagingHarness = () => {
@@ -1174,7 +1174,7 @@ describe('AnalysisResultsChart', () => {
         expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
 
         act(() => {
-            chartRef.current.appendAnalysisResult({ id: 'active-only', labels: ['MSP'] });
+            chartRef.current.appendAnalysisResult({ id: 'active-only', labels: labelRanges('MSP') });
         });
         expect(onUpdate).toHaveBeenCalledWith({
             elements: [
@@ -1198,12 +1198,12 @@ describe('AnalysisResultsChart', () => {
             baseline: { lap_id: 1, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
             elements: [{
                 id: 'early',
-                labels: ['MSP'],
+                labels: labelRanges('MSP'),
                 normalizedPositionRange: { start: 0.2, end: 0.25 },
                 comparison: comparableData(0.2, 0.4),
             }, {
                 id: 'late',
-                labels: ['Telemetry'],
+                labels: labelRanges('Telemetry'),
                 normalizedPositionRange: { start: 0.8, end: 0.85 },
             }],
         }, {
@@ -1212,7 +1212,7 @@ describe('AnalysisResultsChart', () => {
             baseline: { lap_id: 2, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
             elements: [{
                 id: 'second-page-only',
-                labels: ['MSR'],
+                labels: labelRanges('MSR'),
                 normalizedPositionRange: { start: 0.5, end: 0.55 },
             }],
         }];
@@ -1302,7 +1302,7 @@ describe('AnalysisResultsChart', () => {
             baseline: { lap_id: 1, lap_time_ms: 101_000, track: 'Spa', car: 'GT3' },
             elements: [{
                 id: 'older-mistake',
-                labels: ['MSP'],
+                labels: labelRanges('MSP'),
                 normalizedPositionRange: { start: 0.2, end: 0.3 },
                 comparison: replayComparisonData(),
             }],
@@ -1312,12 +1312,12 @@ describe('AnalysisResultsChart', () => {
             baseline: { lap_id: 2, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
             elements: [{
                 id: 'default-mistake',
-                labels: ['MSP'],
+                labels: labelRanges('MSP'),
                 normalizedPositionRange: { start: 0.2, end: 0.3 },
                 comparison: replayComparisonData(),
             }, {
                 id: 'excluded-by-filter',
-                labels: ['Telemetry'],
+                labels: labelRanges('Telemetry'),
                 normalizedPositionRange: { start: 0.4, end: 0.5 },
                 comparison: replayComparisonData(),
             }],
@@ -1392,7 +1392,7 @@ describe('AnalysisResultsChart', () => {
                 ref={chartRef}
                 name="visualization:analysis-results"
                 id="busy-filtered-snapshot"
-                data={{ elements: [{ id: 'one', labels: ['MSP'] }] }}
+                data={{ elements: [{ id: 'one', labels: labelRanges('MSP') }] }}
             />,
         );
 
@@ -1428,12 +1428,12 @@ describe('AnalysisResultsChart', () => {
             id: 'latest',
             createdAt: 400,
             baseline: { lap_id: 21, lap_time_ms: 95_000, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'latest-mistake', labels: ['MSP', 'MSP1'] }],
+            elements: [{ id: 'latest-mistake', labels: labelRanges('MSP', 'MSP1') }],
         }, {
             id: 'first',
             createdAt: 100,
             baseline: { lap_id: 3, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'first-mistake', labels: ['MSP', 'MSP1'] }],
+            elements: [{ id: 'first-mistake', labels: labelRanges('MSP', 'MSP1') }],
         }, {
             id: 'missing',
             createdAt: 300,
@@ -1443,7 +1443,7 @@ describe('AnalysisResultsChart', () => {
             id: 'slower',
             createdAt: 200,
             baseline: { lap_id: 9, lap_time_ms: 105_000, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'slower-mistake', labels: ['MSR', 'MSR1'] }],
+            elements: [{ id: 'slower-mistake', labels: labelRanges('MSR', 'MSR1') }],
         }];
         const model = buildLapTimeTrendData([
             {
@@ -1519,28 +1519,28 @@ describe('AnalysisResultsChart', () => {
             createdAt: 200,
             baseline: { lap_id: 12, lap_time_ms: null, track: 'Spa', car: 'GT3' },
             elements: [
-                { id: 'b-wheel-1', labels: ['MSP', 'MSP2'] },
-                { id: 'b-wheel-2', labels: ['Mistake (Practice)', 'Wheel lock'] },
-                { id: 'b-racing', labels: ['MSR', 'MSR1'] },
+                { id: 'b-wheel-1', labels: labelRanges('MSP', 'MSP2') },
+                { id: 'b-wheel-2', labels: labelRanges('Mistake (Practice)', 'Wheel lock') },
+                { id: 'b-racing', labels: labelRanges('MSR', 'MSR1') },
             ],
         }, {
             id: 'first-page',
             createdAt: 100,
             baseline: { lap_id: 8, lap_time_ms: null, track: 'Spa', car: 'GT3' },
             elements: [
-                { id: 'a-late', labels: ['MSP', 'MSP1', 'Late turn-in', 'MSP1'] },
-                { id: 'a-wheel', labels: ['MSP', 'MSP2'] },
-                { id: 'a-parent-only', labels: ['Mistake (Practice)'] },
-                { id: 'a-child-without-parent', labels: ['MSP1'] },
+                { id: 'a-late', labels: labelRanges('MSP', 'MSP1', 'Late turn-in', 'MSP1') },
+                { id: 'a-wheel', labels: labelRanges('MSP', 'MSP2') },
+                { id: 'a-parent-only', labels: labelRanges('Mistake (Practice)') },
+                { id: 'a-child-without-parent', labels: labelRanges('MSP1') },
             ],
         }, {
             id: 'last-page',
             createdAt: 300,
             baseline: { lap_id: 15, lap_time_ms: null, track: 'Spa', car: 'GT3' },
             elements: [
-                { id: 'c-wheel', labels: ['MSP', 'MSP2', 'Wheel lock'] },
-                { id: 'c-racing-1', labels: ['Mistake (Racing)', 'MSR1'] },
-                { id: 'c-racing-2', labels: ['MSR', 'Failed overtake attempt', 'MSR1'] },
+                { id: 'c-wheel', labels: labelRanges('MSP', 'MSP2', 'Wheel lock') },
+                { id: 'c-racing-1', labels: labelRanges('Mistake (Racing)', 'MSR1') },
+                { id: 'c-racing-2', labels: labelRanges('MSR', 'Failed overtake attempt', 'MSR1') },
             ],
         }];
 
@@ -1598,7 +1598,7 @@ describe('AnalysisResultsChart', () => {
             id: 'taxonomy-page',
             createdAt: 1,
             baseline: { lap_id: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'fresh-labels', labels: ['Fresh Training', 'Fresh brake'] }],
+            elements: [{ id: 'fresh-labels', labels: labelRanges('Fresh Training', 'Fresh brake') }],
         }];
         const renderChart = () => (
             <AnalysisResultsChart
@@ -1630,7 +1630,7 @@ describe('AnalysisResultsChart', () => {
                 id: 'retained-page',
                 createdAt: 2,
                 baseline: { lap_id: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
-                elements: [{ id: 'retained-mistake', labels: ['MSP', 'MSP1'] }],
+                elements: [{ id: 'retained-mistake', labels: labelRanges('MSP', 'MSP1') }],
             }];
             view.rerender(renderChart());
 
@@ -1655,9 +1655,9 @@ describe('AnalysisResultsChart', () => {
             createdAt: 1,
             baseline: { lap_id: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
             elements: [
-                { id: 'training', labels: ['MSP', 'MSP1'] },
-                { id: 'racing-one', labels: ['MSR', 'MSR1'] },
-                { id: 'racing-two', labels: ['MSR', 'MSR2'] },
+                { id: 'training', labels: labelRanges('MSP', 'MSP1') },
+                { id: 'racing-one', labels: labelRanges('MSR', 'MSR1') },
+                { id: 'racing-two', labels: labelRanges('MSR', 'MSR2') },
             ],
         }];
         render(
@@ -1716,9 +1716,9 @@ describe('AnalysisResultsChart', () => {
             createdAt: 1,
             baseline: { lap_id: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
             elements: [
-                { id: 'training', labels: ['MSP', 'MSP1'] },
-                { id: 'racing-one', labels: ['MSR', 'MSR1'] },
-                { id: 'racing-two', labels: ['MSR', 'MSR2'] },
+                { id: 'training', labels: labelRanges('MSP', 'MSP1') },
+                { id: 'racing-one', labels: labelRanges('MSR', 'MSR1') },
+                { id: 'racing-two', labels: labelRanges('MSR', 'MSR2') },
             ],
         }];
         render(
@@ -1764,7 +1764,7 @@ describe('AnalysisResultsChart', () => {
             id: 'old-page',
             createdAt: 1,
             baseline: { lap_id: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
-            elements: [{ id: 'old-mistake', labels: ['MSP', 'MSP1'] }],
+            elements: [{ id: 'old-mistake', labels: labelRanges('MSP', 'MSP1') }],
         }];
         const renderChart = (pages: typeof initialPages) => (
             <AnalysisResultsChart
@@ -1789,7 +1789,7 @@ describe('AnalysisResultsChart', () => {
                 id: 'new-page',
                 createdAt: 2,
                 baseline: { lap_id: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
-                elements: [{ id: 'new-mistake', labels: ['MSP', 'MSP2'] }],
+                elements: [{ id: 'new-mistake', labels: labelRanges('MSP', 'MSP2') }],
             }]));
 
             const diagnostic = await screen.findByTestId('overall-trend-query-error');
@@ -1832,7 +1832,7 @@ describe('AnalysisResultsChart', () => {
                         id: 'only-page',
                         createdAt: 1,
                         baseline: { lap_id: 6, lap_time_ms: 98_567, track: 'Spa', car: 'GT3' },
-                        elements: [{ id: 'only-result', labels: ['MSP', 'MSP1'] }],
+                        elements: [{ id: 'only-result', labels: labelRanges('MSP', 'MSP1') }],
                     }],
                     activePageId: 'only-page',
                     onSelectPage: jest.fn(),
@@ -1866,7 +1866,7 @@ describe('AnalysisResultsChart', () => {
                 data={{
                     elements: [{
                         id: 'future-1',
-                        labels: ['Mistake (Practice)', 'Future category', 'Recovery'],
+                        labels: labelRanges('Mistake (Practice)', 'Future category', 'Recovery'),
                         title: 'Generated form result',
                         section: 'Turn 4',
                         normalizedPositionRange: { start: 0.2, end: 0.35 },
@@ -1902,11 +1902,11 @@ describe('AnalysisResultsChart', () => {
                 id="default-filter"
                 data={{
                     elements: [
-                        { id: 'practice-id', labels: ['MSP'] },
-                        { id: 'practice-name', labels: ['Mistake (Practice)'] },
-                        { id: 'racing-id', labels: ['MSR'] },
-                        { id: 'racing-name', labels: ['Mistake (Racing)'] },
-                        { id: 'unrelated', labels: ['Telemetry'] },
+                        { id: 'practice-id', labels: labelRanges('MSP') },
+                        { id: 'practice-name', labels: labelRanges('Mistake (Practice)') },
+                        { id: 'racing-id', labels: labelRanges('MSR') },
+                        { id: 'racing-name', labels: labelRanges('Mistake (Racing)') },
+                        { id: 'unrelated', labels: labelRanges('Telemetry') },
                         { id: 'unlabeled', labels: [] },
                     ],
                 }}
@@ -1956,7 +1956,7 @@ describe('AnalysisResultsChart', () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="empty"
-                data={{ elements: [{ id: 'telemetry', labels: ['Telemetry'] }] }}
+                data={{ elements: [{ id: 'telemetry', labels: labelRanges('Telemetry') }] }}
             />,
         );
 
@@ -1973,9 +1973,9 @@ describe('AnalysisResultsChart', () => {
                 id="source-order"
                 data={{
                     elements: [
-                        { id: 'third-fastest', labels: ['MSP', 'Lockup'], timeGap: { deltaMs: 20 } },
-                        { id: 'racing', labels: ['MSR', 'Wide exit'], timeGap: { deltaMs: 80 } },
-                        { id: 'least-time', labels: ['Mistake (Practice)', 'Lockup'], timeGap: { deltaMs: 5 } },
+                        { id: 'third-fastest', labels: labelRanges('MSP', 'Lockup'), timeGap: { deltaMs: 20 } },
+                        { id: 'racing', labels: labelRanges('MSR', 'Wide exit'), timeGap: { deltaMs: 80 } },
+                        { id: 'least-time', labels: labelRanges('Mistake (Practice)', 'Lockup'), timeGap: { deltaMs: 5 } },
                     ],
                 }}
             />,
@@ -2004,8 +2004,8 @@ describe('AnalysisResultsChart', () => {
                 id="dynamic-sort-name"
                 data={{
                     elements: [
-                        { id: 'practice', labels: ['MSP', 'MSP1'] },
-                        { id: 'racing', labels: ['MSR', 'MSR1'] },
+                        { id: 'practice', labels: labelRanges('MSP', 'MSP1') },
+                        { id: 'racing', labels: labelRanges('MSR', 'MSR1') },
                     ],
                 }}
             />,
@@ -2032,7 +2032,7 @@ describe('AnalysisResultsChart', () => {
                 ref={chartRef}
                 name="visualization:analysis-results"
                 id="invalid-custom-query"
-                data={{ elements: [{ id: 'mistake', labels: ['MSP'] }] }}
+                data={{ elements: [{ id: 'mistake', labels: labelRanges('MSP') }] }}
             />,
         );
         await waitFor(() => expect(renderedResultIds()).toEqual(['mistake']));
@@ -2055,9 +2055,9 @@ describe('AnalysisResultsChart', () => {
                 showElementId={false}
                 data={{
                     elements: [
-                        { id: 'first', labels: ['MSP'], title: 'First result', timeGap: { deltaMs: 5 } },
-                        { id: 'racing', labels: ['MSR'], title: 'Filtered result', timeGap: { deltaMs: 50 } },
-                        { id: 'third', labels: ['MSP'], title: 'Third result', timeGap: { deltaMs: 25 } },
+                        { id: 'first', labels: labelRanges('MSP'), title: 'First result', timeGap: { deltaMs: 5 } },
+                        { id: 'racing', labels: labelRanges('MSR'), title: 'Filtered result', timeGap: { deltaMs: 50 } },
+                        { id: 'third', labels: labelRanges('MSP'), title: 'Third result', timeGap: { deltaMs: 25 } },
                     ],
                 }}
             />,
@@ -2086,15 +2086,15 @@ describe('AnalysisResultsChart', () => {
                 id="frequency-order"
                 data={{
                     elements: [
-                        { id: 'unknown-first', labels: ['MSP', 'Telemetry', 'Telemetry'] },
-                        { id: 'wheel-duplicate', labels: ['Mistake (Practice)', 'MSP2', 'Wheel lock', 'MSP2'] },
-                        { id: 'wheel-name', labels: ['MSP', 'Wheel lock', 'Telemetry'] },
-                        { id: 'late-id', labels: ['MSP', 'MSP1'] },
-                        { id: 'late-name', labels: ['Mistake (Practice)', 'Late turn-in'] },
-                        { id: 'multi', labels: ['MSP', 'Telemetry', 'MSP2', 'Late turn-in'] },
-                        { id: 'racing-sub-label-only', labels: ['MSP', 'MSR1', 'Failed overtake attempt'] },
-                        { id: 'racing-id', labels: ['MSR', 'MSR1'] },
-                        { id: 'unrelated', labels: ['Telemetry', 'Late turn-in'] },
+                        { id: 'unknown-first', labels: labelRanges('MSP', 'Telemetry', 'Telemetry') },
+                        { id: 'wheel-duplicate', labels: labelRanges('Mistake (Practice)', 'MSP2', 'Wheel lock', 'MSP2') },
+                        { id: 'wheel-name', labels: labelRanges('MSP', 'Wheel lock', 'Telemetry') },
+                        { id: 'late-id', labels: labelRanges('MSP', 'MSP1') },
+                        { id: 'late-name', labels: labelRanges('Mistake (Practice)', 'Late turn-in') },
+                        { id: 'multi', labels: labelRanges('MSP', 'Telemetry', 'MSP2', 'Late turn-in') },
+                        { id: 'racing-sub-label-only', labels: labelRanges('MSP', 'MSR1', 'Failed overtake attempt') },
+                        { id: 'racing-id', labels: labelRanges('MSR', 'MSR1') },
+                        { id: 'unrelated', labels: labelRanges('Telemetry', 'Late turn-in') },
                     ],
                 }}
             />,
@@ -2139,13 +2139,13 @@ describe('AnalysisResultsChart', () => {
                 id="racing-frequency-order"
                 data={{
                     elements: [
-                        { id: 'unknown-first', labels: ['Mistake (Racing)', 'Unknown racing label'] },
-                        { id: 'failed-id', labels: ['MSR', 'MSR1'] },
-                        { id: 'practice-sub-label-only', labels: ['MSR', 'MSP1', 'Late turn-in'] },
-                        { id: 'failed-name', labels: ['Mistake (Racing)', 'Failed overtake attempt'] },
-                        { id: 'contact-duplicate', labels: ['MSR', 'MSR2', 'Contact', 'MSR2'] },
-                        { id: 'multi', labels: ['MSR', 'MSR2', 'Failed overtake attempt'] },
-                        { id: 'unknown-second', labels: ['MSR', 'Telemetry'] },
+                        { id: 'unknown-first', labels: labelRanges('Mistake (Racing)', 'Unknown racing label') },
+                        { id: 'failed-id', labels: labelRanges('MSR', 'MSR1') },
+                        { id: 'practice-sub-label-only', labels: labelRanges('MSR', 'MSP1', 'Late turn-in') },
+                        { id: 'failed-name', labels: labelRanges('Mistake (Racing)', 'Failed overtake attempt') },
+                        { id: 'contact-duplicate', labels: labelRanges('MSR', 'MSR2', 'Contact', 'MSR2') },
+                        { id: 'multi', labels: labelRanges('MSR', 'MSR2', 'Failed overtake attempt') },
+                        { id: 'unknown-second', labels: labelRanges('MSR', 'Telemetry') },
                     ],
                 }}
             />,
@@ -2176,9 +2176,9 @@ describe('AnalysisResultsChart', () => {
                 id="independent-graph-order"
                 data={{
                     elements: [
-                        { id: 'late', labels: ['MSP', 'MSP1'], timeGap: { deltaMs: 5 } },
-                        { id: 'wheel', labels: ['MSP', 'MSP2'], timeGap: { deltaMs: 50 } },
-                        { id: 'both', labels: ['MSP', 'Late turn-in', 'Wheel lock'], timeGap: { deltaMs: 10 } },
+                        { id: 'late', labels: labelRanges('MSP', 'MSP1'), timeGap: { deltaMs: 5 } },
+                        { id: 'wheel', labels: labelRanges('MSP', 'MSP2'), timeGap: { deltaMs: 50 } },
+                        { id: 'both', labels: labelRanges('MSP', 'Late turn-in', 'Wheel lock'), timeGap: { deltaMs: 10 } },
                     ],
                 }}
             />,
@@ -2203,7 +2203,7 @@ describe('AnalysisResultsChart', () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="empty-frequency"
-                data={{ elements: [{ id: 'unknown', labels: ['MSP', 'Unknown mistake'] }] }}
+                data={{ elements: [{ id: 'unknown', labels: labelRanges('MSP', 'Unknown mistake') }] }}
             />,
         );
 
@@ -2224,13 +2224,13 @@ describe('AnalysisResultsChart', () => {
                 id="time-order"
                 data={{
                     elements: [
-                        { id: 'missing', labels: ['MSP'] },
-                        { id: 'equal-first', labels: ['MSP'], timeGap: { deltaMs: 10 } },
-                        { id: 'highest', labels: ['Mistake (Practice)'], timeGap: { deltaMs: 25 } },
-                        { id: 'invalid', labels: ['MSP'], timeGap: { deltaMs: 'not-a-number' } },
-                        { id: 'equal-second', labels: ['MSP'], timeGap: { deltaMs: 10 } },
-                        { id: 'negative', labels: ['MSP'], timeGap: { deltaMs: -5 } },
-                        { id: 'racing-highest', labels: ['MSR'], timeGap: { deltaMs: 1000 } },
+                        { id: 'missing', labels: labelRanges('MSP') },
+                        { id: 'equal-first', labels: labelRanges('MSP'), timeGap: { deltaMs: 10 } },
+                        { id: 'highest', labels: labelRanges('Mistake (Practice)'), timeGap: { deltaMs: 25 } },
+                        { id: 'invalid', labels: labelRanges('MSP'), timeGap: { deltaMs: 'not-a-number' } },
+                        { id: 'equal-second', labels: labelRanges('MSP'), timeGap: { deltaMs: 10 } },
+                        { id: 'negative', labels: labelRanges('MSP'), timeGap: { deltaMs: -5 } },
+                        { id: 'racing-highest', labels: labelRanges('MSR'), timeGap: { deltaMs: 1000 } },
                     ],
                 }}
             />,
@@ -2256,9 +2256,9 @@ describe('AnalysisResultsChart', () => {
                 id="live-ranking"
                 data={{
                     elements: [
-                        { id: 'one', labels: ['MSR', 'Unknown racing mistake'] },
-                        { id: 'two', labels: ['Mistake (Racing)', 'MSR1'] },
-                        { id: 'practice', labels: ['MSP', 'MSP1'] },
+                        { id: 'one', labels: labelRanges('MSR', 'Unknown racing mistake') },
+                        { id: 'two', labels: labelRanges('Mistake (Racing)', 'MSR1') },
+                        { id: 'practice', labels: labelRanges('MSP', 'MSP1') },
                     ],
                 }}
             />,
@@ -2266,7 +2266,7 @@ describe('AnalysisResultsChart', () => {
         await waitFor(() => expect(renderedResultIds()).toEqual(['one', 'two', 'practice']));
         await act(async () => {
             await chartRef.current!.applyAnalysisResultQuery({
-                query: 'elements[labels[$ in ["MSR", "Mistake (Racing)"]]]',
+                query: 'elements[labels[label_name in ["MSR", "Mistake (Racing)"]]]',
             }).result;
         });
         await waitFor(() => expect(renderedResultIds()).toEqual(['one', 'two']));
@@ -2276,10 +2276,10 @@ describe('AnalysisResultsChart', () => {
                 id="live-ranking"
                 data={{
                     elements: [
-                        { id: 'one', labels: ['MSR', 'Unknown racing mistake'] },
-                        { id: 'two', labels: ['Mistake (Racing)', 'MSR1'], title: 'Updated canonical result' },
-                        { id: 'three', labels: ['MSR', 'Failed overtake attempt'] },
-                        { id: 'practice', labels: ['MSP', 'MSP1'] },
+                        { id: 'one', labels: labelRanges('MSR', 'Unknown racing mistake') },
+                        { id: 'two', labels: labelRanges('Mistake (Racing)', 'MSR1'), title: 'Updated canonical result' },
+                        { id: 'three', labels: labelRanges('MSR', 'Failed overtake attempt') },
+                        { id: 'practice', labels: labelRanges('MSP', 'MSP1') },
                     ],
                 }}
             />,
@@ -2299,7 +2299,7 @@ describe('AnalysisResultsChart', () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const Harness = () => {
             const [currentData, setCurrentData] = React.useState(() => normalizeAnalysisResultsData({
-                elements: [{ id: 'initial', labels: ['MSP', 'MSP1'] }],
+                elements: [{ id: 'initial', labels: labelRanges('MSP', 'MSP1') }],
             }));
             return (
                 <AnalysisResultsChart
@@ -2318,13 +2318,13 @@ describe('AnalysisResultsChart', () => {
         await waitFor(() => expect(renderedResultIds()).toEqual(['initial']));
 
         act(() => {
-            chartRef.current!.appendAnalysisResult({ id: 'appended', labels: ['MSR', 'MSR1'] });
+            chartRef.current!.appendAnalysisResult({ id: 'appended', labels: labelRanges('MSR', 'MSR1') });
         });
         await waitFor(() => expect(renderedResultIds()).toEqual(['initial', 'appended']));
         expect(screen.getByText('2 of 2 total')).toBeInTheDocument();
 
         act(() => {
-            chartRef.current!.updateAnalysisResult('initial', { labels: ['Telemetry'] });
+            chartRef.current!.updateAnalysisResult('initial', { labels: labelRanges('Telemetry') });
         });
         await waitFor(() => expect(renderedResultIds()).toEqual(['appended']));
         expect(screen.getByText('1 of 2 total')).toBeInTheDocument();
@@ -2344,7 +2344,7 @@ describe('AnalysisResultsChart', () => {
                 ref={chartRef}
                 name="visualization:analysis-results"
                 id="automatic-query-failure"
-                data={{ elements: [{ id: 'old', labels: ['MSP'] }] }}
+                data={{ elements: [{ id: 'old', labels: labelRanges('MSP') }] }}
             />,
         );
         await waitFor(() => expect(renderedResultIds()).toEqual(['old']));
@@ -2361,7 +2361,7 @@ describe('AnalysisResultsChart', () => {
                 ref={chartRef}
                 name="visualization:analysis-results"
                 id="automatic-query-failure"
-                data={{ elements: [{ id: 'new', labels: ['MSP'] }] }}
+                data={{ elements: [{ id: 'new', labels: labelRanges('MSP') }] }}
             />,
         );
 
@@ -2377,7 +2377,7 @@ describe('AnalysisResultsChart', () => {
                 ref={chartRef}
                 name="visualization:analysis-results"
                 id="stale-query"
-                data={{ elements: [{ id: 'old', labels: ['MSP'] }] }}
+                data={{ elements: [{ id: 'old', labels: labelRanges('MSP') }] }}
             />,
         );
         await waitFor(() => expect(renderedResultIds()).toEqual(['old']));
@@ -2404,7 +2404,7 @@ describe('AnalysisResultsChart', () => {
                     ref={chartRef}
                     name="visualization:analysis-results"
                     id="stale-query"
-                    data={{ elements: [{ id: 'new', labels: ['MSP'] }] }}
+                    data={{ elements: [{ id: 'new', labels: labelRanges('MSP') }] }}
                 />,
             );
             await act(async () => resolvePage([{ id: 'new' }]));
@@ -2429,7 +2429,7 @@ describe('AnalysisResultsChart', () => {
                 ref={chartRef}
                 name="visualization:analysis-results"
                 id="taxonomy-refresh"
-                data={{ elements: [{ id: 'fresh', labels: ['Fresh Training'] }] }}
+                data={{ elements: [{ id: 'fresh', labels: labelRanges('Fresh Training') }] }}
             />
         );
         const view = render(renderChart());
@@ -2464,7 +2464,7 @@ describe('AnalysisResultsChart', () => {
                 id="analysis-without-queue-action"
                 data={{ elements: [{
                     id: 'common-mistake',
-                    labels: ['MSP', 'MSP1'],
+                    labels: labelRanges('MSP', 'MSP1'),
                     normalizedPositionRange: { start: 0.25, end: 0.3 },
                     comparison: comparableData(0.2, 0.4),
                 }] }}
@@ -2482,7 +2482,7 @@ describe('AnalysisResultsChart', () => {
                 data={{
                     elements: [{
                         id: 'comparable',
-                        labels: ['MSP', 'MSP1', 'EA', 'EA1', 'RM', 'RM7'],
+                        labels: labelRanges('MSP', 'MSP1', 'EA', 'EA1', 'RM', 'RM7'),
                         section: 'Turn 4',
                         normalizedPositionRange: { start: 0.2, end: 0.35 },
                         timeGap: { startMs: 250, endMs: 375, deltaMs: 125 },
@@ -2552,7 +2552,7 @@ describe('AnalysisResultsChart', () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="section-timing"
-                data={{ elements: [{ id: 'timing', labels: ['MSP'], timeGap }] }}
+                data={{ elements: [{ id: 'timing', labels: labelRanges('MSP'), timeGap }] }}
             />,
         );
 
@@ -2570,7 +2570,7 @@ describe('AnalysisResultsChart', () => {
                 data={{
                     elements: [{
                         id: 'unavailable-comparison',
-                        labels: ['MSP'],
+                        labels: labelRanges('MSP'),
                         comparison: { samples: [{
                             driverTimeMs: 0,
                             expertTimeMs: 0,
@@ -2642,7 +2642,7 @@ describe('AnalysisResultsChart', () => {
                     id="comparison-reason"
                     data={{ elements: [{
                         id: 'segment-reason',
-                        labels: ['MSP'],
+                        labels: labelRanges('MSP'),
                         metadata: { source: 'ai_classifier' },
                         ...fields,
                     }] }}
@@ -2673,7 +2673,7 @@ describe('AnalysisResultsChart', () => {
                 data={{
                     elements: [{
                         id: 'segment-warning',
-                        labels: ['MSP'],
+                        labels: labelRanges('MSP'),
                         section: 'Turn 5',
                         comparisonDiagnostics: [{
                             code: 'expert_reference_missing',
@@ -2739,9 +2739,21 @@ describe('analysis results mutations', () => {
         }));
     });
 
+    it('preserves independent ranges through append, update, and normalization', () => {
+        const labels = [
+            { label_name: 'MSP1', start_index: 120, end_index: 130 },
+            { label_name: 'MSP1', start_index: 150, end_index: 180 },
+        ];
+        const appended = appendAnalysisResultElement({ elements: [] }, { id: 'section', labels });
+        expect(appended.data.elements[0].labels).toEqual(labels);
+        const updated = updateAnalysisResultElement(appended.data, 'section', { title: 'Turn 1' });
+        expect(updated.data.elements[0].labels).toEqual(labels);
+        expect(normalizeAnalysisResultsData(updated.data).elements[0].labels).toEqual(labels);
+    });
+
     it('normalizes aliases and generates IDs for appended elements', () => {
         const mutation = appendAnalysisResultElement({ elements: [] }, {
-            labels: [' Unknown label '],
+            labels: labelRanges(' Unknown label '),
             track_section: 'Section A',
             start_position: '0.1',
             end_position: 0.2,
@@ -2753,7 +2765,7 @@ describe('analysis results mutations', () => {
         expect(mutation.result.data).toMatchObject({ count: 1 });
         expect(mutation.data.elements[0]).toMatchObject({
             id: expect.stringMatching(/^analysis-result-/),
-            labels: ['Unknown label'],
+            labels: labelRanges('Unknown label'),
             section: 'Section A',
             normalizedPositionRange: { start: 0.1, end: 0.2 },
             timeGap: { deltaMs: 50 },
@@ -2763,7 +2775,7 @@ describe('analysis results mutations', () => {
 
     it('rejects duplicates and invalid or unknown mutation targets', () => {
         const data = normalizeAnalysisResultsData({
-            elements: [{ id: 'one', labels: ['Mistake'] }],
+            elements: [{ id: 'one', labels: labelRanges('Mistake') }],
         });
 
         expect(appendAnalysisResultElement(data, { id: 'one', labels: [] }).result).toMatchObject({
@@ -2782,12 +2794,12 @@ describe('analysis results mutations', () => {
     it('updates and removes elements while reporting the resulting count', () => {
         const data = normalizeAnalysisResultsData({
             elements: [
-                { id: 'one', labels: ['Mistake'] },
-                { id: 'two', labels: ['Adherence'] },
+                { id: 'one', labels: labelRanges('Mistake') },
+                { id: 'two', labels: labelRanges('Adherence') },
             ],
         });
         const updated = updateAnalysisResultElement(data, 'one', {
-            labels: ['Recovery'],
+            labels: labelRanges('Recovery'),
             metadata: { note: 'kept local' },
         });
 
@@ -2795,7 +2807,7 @@ describe('analysis results mutations', () => {
             success: true,
             data: {
                 count: 2,
-                element: { id: 'one', labels: ['Recovery'] },
+                element: { id: 'one', labels: labelRanges('Recovery') },
             },
         });
         const removed = removeAnalysisResultElement(updated.data, 'two');
@@ -2810,7 +2822,7 @@ describe('analysis results mutations', () => {
         const data = normalizeAnalysisResultsData({
             elements: [{
                 id: 'comparison',
-                labels: ['MSP'],
+                labels: labelRanges('MSP'),
                 comparison: {
                     samples: [{
                         driverTimeMs: 250,
@@ -2844,3 +2856,7 @@ describe('analysis results mutations', () => {
         expect(updated.data.elements[0].comparison).toEqual(data.elements[0].comparison);
     });
 });
+
+function labelRanges(...names: string[]) {
+    return names.map((label_name) => ({ label_name, start_index: 0, end_index: 1 }));
+}

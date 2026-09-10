@@ -50,7 +50,7 @@ describe('buildFormattedToolResultFrame', () => {
             event: 'recorded_analysis_ready',
             analysis: {
                 analysis: {
-                    segments: [{ id: 'segment-1', labels: ['late brake'] }],
+                    segments: [{ id: 'segment-1', labels: [{ label_name: 'late brake', start_index: 0, end_index: 1 }] }],
                 },
             },
         }, 'workflow-test')).toEqual({

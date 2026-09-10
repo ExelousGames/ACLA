@@ -37,7 +37,7 @@ const analysisResult = {
     parent_segment_count: 2,
     segments: [{
         id: 'segment-1',
-        labels: ['MSP'],
+        labels: [{ label_name: 'MSP', start_index: 0, end_index: 1 }],
         track_section: 'turn-1',
         start_index: 0,
         end_index: 1,
@@ -50,7 +50,7 @@ const analysisResult = {
         }],
     }, {
         id: 'segment-2',
-        labels: ['EA'],
+        labels: [{ label_name: 'EA', start_index: 1, end_index: 2 }],
         track_section: 'turn-2',
         start_index: 1,
         end_index: 2,
@@ -690,7 +690,7 @@ describe('BaselineCollection visualization', () => {
             elements: [
                 expect.objectContaining({
                     id: 'segment-1',
-                    labels: ['Mistake (Practice)'],
+                    labels: [{ label_name: 'Mistake (Practice)', start_index: 0, end_index: 1 }],
                     section: 'Turn One',
                     comparison: {
                         samples: [
@@ -707,7 +707,7 @@ describe('BaselineCollection visualization', () => {
                         ],
                     },
                 }),
-                expect.objectContaining({ id: 'segment-2', labels: ['Expert Adherence'] }),
+                expect.objectContaining({ id: 'segment-2', labels: [{ label_name: 'Expert Adherence', start_index: 1, end_index: 2 }] }),
             ],
         });
         expect(payload).toMatchObject({
@@ -719,7 +719,7 @@ describe('BaselineCollection visualization', () => {
                 samples_analyzed: 3,
                 segments: [{
                     id: 'segment-1',
-                    labels: ['Mistake (Practice)'],
+                    labels: [{ label_name: 'Mistake (Practice)', start_index: 0, end_index: 1 }],
                     track_section: 'Turn One',
                 }],
             },

@@ -310,7 +310,7 @@ describe('analysis result query tool', () => {
             expect(description).toContain('not a count unless the expression returns one');
             expect(description).toContain('$count(analyses) counts analyses');
             expect(description).toContain('$count(analyses.elements)');
-            expect(description).toContain('analyses.elements[labels[$ = "Lockup"]].{ "id": id, "section": section }');
+            expect(description).toContain('analyses.elements[labels[label_name = "Lockup"]].{ "id": id, "section": section }');
             expect(description).not.toContain('active lap analysis');
         });
     });

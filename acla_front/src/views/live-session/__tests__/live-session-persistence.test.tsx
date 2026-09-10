@@ -93,7 +93,7 @@ const ClearDraftHarness = () => {
                     car: 'GT3',
                     sample_count: 1,
                 },
-                elements: [{ id: 'result-before-discard', labels: ['MSP'] }],
+                elements: [{ id: 'result-before-discard', labels: [{ label_name: 'MSP', start_index: 0, end_index: 1 }] }],
             })}>Add page</button>
             <button type="button" onClick={runtime.clearPersistedDraft}>Clear draft</button>
         </>
@@ -156,7 +156,7 @@ describe('live session draft persistence', () => {
                 id: 'saved-baseline', lap_id: 1, lap_time_ms: null,
                 captured_at: 1, track: 'Monza', car: 'GT3', sample_count: 42,
             },
-            elements: [{ id: 'saved-result', labels: ['MSP'] }],
+            elements: [{ id: 'saved-result', labels: [{ label_name: 'MSP', start_index: 0, end_index: 1 }] }],
         });
         savePersistedLiveSessionAnalysis('Driver@Example.com', { pages: [page], activePageId: page.id });
 

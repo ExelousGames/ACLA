@@ -281,7 +281,7 @@ const getSubLabels = (
     recognizedSubLabels: RecognizedSubLabels,
 ): RecognizedSubLabel[] => {
     const matches = new Map<string, RecognizedSubLabel>();
-    element.labels.forEach((label) => {
+    element.labels.forEach(({ label_name: label }) => {
         const recognized = recognizedSubLabels.get(label);
         if (recognized) matches.set(recognized.id, recognized);
     });
@@ -421,7 +421,7 @@ export const buildLabelFrequencyData = (
             return;
         }
 
-        element.labels.forEach((label) => {
+        element.labels.forEach(({ label_name: label }) => {
             const current = frequencies.get(label);
             frequencies.set(label, {
                 label,
@@ -472,7 +472,7 @@ const AnalysisResultCard: React.FC<{
     const [comparisonOpen, setComparisonOpen] = React.useState(false);
     const comparisonId = React.useId();
     const comparisonLabelGroups = React.useMemo(() => buildAnalysisResultsComparisonLabelGroups(
-        element.labels, getCategoryLabels, getLabelName,
+        element.labels.map((label) => label.label_name), getCategoryLabels, getLabelName,
     ), [element.labels, getCategoryLabels, getLabelName]);
     const comparisonWarningFingerprintRef = React.useRef<string | null>(null);
     const metadataEntries = Object.entries(element.metadata ?? {})
@@ -579,7 +579,9 @@ const AnalysisResultCard: React.FC<{
                     <Flex gap="1" wrap="wrap" justify="end">
                         {element.labels.length > 0
                             ? element.labels.map((label, index) => (
-                                <Badge className={styles.label} variant="soft" key={`${label}-${index}`}>{label}</Badge>
+                                <Badge className={styles.label} variant="soft" key={`${label.label_name}-${index}`}>
+                                    {label.label_name}
+                                </Badge>
                             ))
                             : <Badge color="gray" variant="outline">Unlabeled</Badge>}
                     </Flex>
@@ -1186,7 +1188,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         return {
             title: result.title ? `${result.title}: Driver vs Expert` : 'Driver vs Expert',
             comparison: result.comparison,
-            labelGroups: buildAnalysisResultsComparisonLabelGroups(result.labels, getCategoryLabels, getLabelName),
+            labelGroups: buildAnalysisResultsComparisonLabelGroups(result.labels.map((label) => label.label_name), getCategoryLabels, getLabelName),
             game: sessionGame,
         };
     }, [getCategoryLabels, getLabelName, sessionGame]);

@@ -112,7 +112,10 @@ export const jsonataLanguage = StreamLanguage.define(jsonataStreamParser);
 const NORMALIZED_QUERY_COMPLETIONS: readonly Completion[] = [
     { label: 'elements', type: 'variable', detail: 'Active-page query root' },
     { label: 'id', type: 'property', detail: 'Normalized element field' },
-    { label: 'labels', type: 'property', detail: 'Normalized element field' },
+    { label: 'labels', type: 'property', detail: 'Label objects with their own sample ranges' },
+    { label: 'label_name', type: 'property', detail: 'Label identifier or display name' },
+    { label: 'start_index', type: 'property', detail: 'First included telemetry sample' },
+    { label: 'end_index', type: 'property', detail: 'Exclusive telemetry sample end' },
     { label: 'title', type: 'property', detail: 'Normalized element field' },
     { label: 'section', type: 'property', detail: 'Normalized element field' },
     { label: 'normalizedPositionRange', type: 'property', detail: 'Normalized element field' },

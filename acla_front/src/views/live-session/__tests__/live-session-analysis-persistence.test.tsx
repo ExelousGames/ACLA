@@ -22,7 +22,7 @@ const pageInput = {
     },
     elements: [{
         id: 'result-1',
-        labels: ['MSP'],
+        labels: labelRanges('MSP'),
         normalizedPositionRange: { start: 0.2, end: 0.3 },
         timeGap: { deltaMs: 250 },
         comparison: { samples: [{
@@ -216,3 +216,7 @@ describe('local analysis history', () => {
         expect(warning).toHaveBeenCalled();
     });
 });
+
+function labelRanges(...names: string[]) {
+    return names.map((label_name) => ({ label_name, start_index: 0, end_index: 1 }));
+}

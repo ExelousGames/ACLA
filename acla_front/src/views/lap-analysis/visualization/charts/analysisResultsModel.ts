@@ -3,6 +3,7 @@ import {
     DriverExpertComparisonDiagnostic,
     normalizeDriverExpertComparisonData,
 } from 'components/driver-expert-comparison';
+import { normalizeSegmentLabels, type SegmentClassificationLabel } from './segmentClassificationDisplay';
 
 export interface AnalysisResultPositionRange {
     start: number;
@@ -18,7 +19,7 @@ export interface AnalysisResultTimeGap {
 
 export interface AnalysisResultElement {
     id: string;
-    labels: string[];
+    labels: SegmentClassificationLabel[];
     title?: string;
     section?: string;
     normalizedPositionRange?: AnalysisResultPositionRange;
@@ -85,14 +86,6 @@ const optionalText = (value: unknown): string | undefined => {
 const finiteNumber = (value: unknown): number | undefined => {
     const parsed = typeof value === 'number' ? value : Number(value);
     return Number.isFinite(parsed) ? parsed : undefined;
-};
-
-const normalizeLabels = (value: unknown): string[] => {
-    if (!Array.isArray(value)) return [];
-    return value
-        .filter((label): label is string => typeof label === 'string')
-        .map((label) => label.trim())
-        .filter(Boolean);
 };
 
 const normalizeComparisonDiagnostics = (
@@ -170,7 +163,7 @@ export const normalizeAnalysisResultElement = (
 
     return {
         id,
-        labels: normalizeLabels(input.labels),
+        labels: normalizeSegmentLabels(input.labels),
         ...(title ? { title } : {}),
         ...(section ? { section } : {}),
         ...(normalizedPositionRange ? { normalizedPositionRange } : {}),

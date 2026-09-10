@@ -127,7 +127,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
         const segments = Array.from({ length: 11 }, (_, index) => ({
             id: `corner-${index}`,
             title: `Turn ${index + 1}`,
-            labels: ['MSP'],
+            labels: labelRanges('MSP'),
             normalizedPositionRange: { start: 0.6 + index * 0.03, end: 0.62 + index * 0.03 },
             comparison: {
                 samples: [0, 1_000].map((time) => ({
@@ -147,7 +147,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
                 status: 'ready',
                 activePageId: 'baseline-page',
                 appliedView: 'mistakes',
-                committedQuery: 'elements[labels[$ = "MSP"]]',
+                committedQuery: 'elements[labels[label_name = "MSP"]]',
                 segments,
             }),
             prepareComparisonVoices,
@@ -362,3 +362,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
         }
     });
 });
+
+function labelRanges(...names: string[]) {
+    return names.map((label_name) => ({ label_name, start_index: 0, end_index: 1 }));
+}

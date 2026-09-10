@@ -377,9 +377,9 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'apply_query_to_analysis_result',
         description: [
             'Apply a final JSONata expression to the visible Analysis Results tab. The tool returns only its status and does not return the matched results.',
-            'The expression receives only { "elements": [{ "id": "...", "labels": ["..."], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] } for the selected page; it does not receive the current View selection or hidden page data.',
+            'The expression receives only { "elements": [{ "id": "...", "labels": [{ "label_name": "...", "start_index": 0, "end_index": 1 }], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] } for the selected page; it does not receive the current View selection or hidden page data.',
             'The JSONata expression must evaluate to null, one element ID string, one object with a string id, or a flat array of element IDs or objects with string ids. Unknown IDs and nested arrays are rejected.',
-            'Examples: elements; elements[labels[$ = "Lockup"]]; elements[labels[$ = "Mistake (Practice)"]].id.',
+            'Examples: elements; elements[labels[label_name = "Lockup"]]; elements[labels[label_name = "Mistake (Practice)"]].id.',
             'page_number uses the displayed 1-based retained-page array order: Page 1 is array index 0 and the highest page number is the most recent analysis.',
             'When page_number is omitted, below 1, or above the existing page count, the highest existing page is selected.',
             'The tool switches from Overall Trends to Lap Results, waits for the selected page to render, populates the editor, and uses the same commit path as manual Apply.',
@@ -402,11 +402,11 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'query_analysis_result',
         description: [
             'Evaluate a JSONata expression against all Analysis Results without rerunning analysis. The current View and active page do not change the query input.',
-            'The expression receives exactly one root structure: { "analyses": [{ "id": "...", "createdAt": 0, "sourceIndex": 0, "baseline": { "lap": 1, "lapTimeMs": 0, "track": "...", "car": "..." }, "elements": [{ "id": "...", "labels": ["..."], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] }] }. analyses contains every retained lap analysis in displayed order. For a non-paginated recorded result it contains one analysis with null createdAt and baseline.',
+            'The expression receives exactly one root structure: { "analyses": [{ "id": "...", "createdAt": 0, "sourceIndex": 0, "baseline": { "lap": 1, "lapTimeMs": 0, "track": "...", "car": "..." }, "elements": [{ "id": "...", "labels": [{ "label_name": "...", "start_index": 0, "end_index": 1 }], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] }] }. analyses contains every retained lap analysis in displayed order. For a non-paginated recorded result it contains one analysis with null createdAt and baseline.',
             'The response is { "status": "ready", "data": ... }, where data is the actual JSON-safe JSONata value (scalar, object, array, or null), not a count unless the expression returns one.',
             'Each query independently enforces a maximum of 8,192 bytes of compact UTF-8 JSON for the entire { "status": "ready", "data": ... } payload, excluding the transport envelope, and a maximum of 50 items in every returned array, including nested arrays. Oversized results are rejected completely with QUERY_RESULT_LIMIT_EXCEEDED; no partial data is returned. Filter the results, select fewer fields, or aggregate to fit these limits. There are no caller-controlled overrides or pagination parameters.',
             'JSONata can calculate over all analysis data before these output limits are applied. Small complete datasets and repeated bounded queries are allowed. Normalized error details are limited to 1,024 serialized bytes; oversized diagnostics are replaced with a fixed error without the original message or cause.',
-            'Examples: $count(analyses) counts analyses; $count(analyses.elements) counts segments across all analyses; analyses.elements[labels[$ = "Lockup"]].{ "id": id, "section": section }.',
+            'Examples: $count(analyses) counts analyses; $count(analyses.elements) counts segments across all analyses; analyses.elements[labels[label_name = "Lockup"]].{ "id": id, "section": section }.',
         ].join(' '),
         properties: {
             query: {

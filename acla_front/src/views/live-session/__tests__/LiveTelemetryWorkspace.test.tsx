@@ -23,7 +23,12 @@ jest.mock('@radix-ui/themes', () => {
         Text: ({ children, as, ...props }: any) => { const Component = as === 'div' ? 'div' : 'span'; return <Component {...props}>{children}</Component>; },
     };
 });
-jest.mock('@radix-ui/react-icons', () => ({ Cross2Icon: () => <span>Close</span>, PlusIcon: () => <span>Add</span> }));
+jest.mock('@radix-ui/react-icons', () => ({
+    Cross2Icon: () => <span>Close</span>,
+    PlusIcon: () => <span>Add</span>,
+    ChevronDownIcon: () => <span />,
+    ChevronUpIcon: () => <span />,
+}));
 jest.mock('contexts/AiLabelsContext', () => {
     const getCategoryLabels = () => [];
     const getLabelName = () => undefined;
@@ -60,7 +65,7 @@ describe('LiveTelemetryWorkspace named manager', () => {
                     id: 'saved-baseline', lap_id: 3, lap_time_ms: 90_000,
                     captured_at: 1, track: 'Spa', car: 'GT3', sample_count: 2,
                 },
-                elements: [{ id: 'saved-result', title: 'Saved analysis', labels: ['MSP'] }],
+                elements: [{ id: 'saved-result', title: 'Saved analysis', labels: [{ label_name: 'MSP', start_index: 0, end_index: 1 }] }],
             });
         });
         unmount();
@@ -143,7 +148,7 @@ describe('LiveTelemetryWorkspace named manager', () => {
                     car: 'GT3',
                     sample_count: 2,
                 },
-                elements: [{ id: 'retained-result', title: 'Retained result', labels: ['MSP'] }],
+                elements: [{ id: 'retained-result', title: 'Retained result', labels: [{ label_name: 'MSP', start_index: 0, end_index: 1 }] }],
             });
         });
 
@@ -210,7 +215,7 @@ describe('LiveTelemetryWorkspace named manager', () => {
                 },
                 elements: [{
                     id: 'acc-result',
-                    labels: ['MSP'],
+                    labels: [{ label_name: 'MSP', start_index: 0, end_index: 1 }],
                     comparison: {
                         samples: [{
                             driverTimeMs: 0,
@@ -226,7 +231,8 @@ describe('LiveTelemetryWorkspace named manager', () => {
         });
 
         await userEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
-        expect(await screen.findByTestId('analysis-result-acc-result')).toHaveAttribute('tabindex', '0');
+        const result = await screen.findByTestId('analysis-result-acc-result');
+        expect(result.querySelector('[role="button"]')).toHaveAttribute('tabindex', '0');
     });
 
     it('supports separate speed and brake telemetry displays and same-name reuse', () => {

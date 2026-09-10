@@ -82,7 +82,7 @@ const getCarColor = (carKey: string, isPlayer: boolean): string => {
 };
 
 const getSegmentColor = (segment: SegmentClassificationSegment, index: number): string => {
-    const key = segment.labels?.join('|') || segment.track_section || segment.id || String(index);
+    const key = segment.labels?.map((label) => label.label_name).join('|') || segment.track_section || segment.id || String(index);
     let hash = index;
 
     for (let charIndex = 0; charIndex < key.length; charIndex += 1) {

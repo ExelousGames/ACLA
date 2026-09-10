@@ -927,33 +927,33 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
             committedQuery: 'elements^(>normalizedPositionRange.start)',
             segments: [{
                 id: 'late-first',
-                labels: ['MSP'],
+                labels: labelRanges('MSP'),
                 title: 'Late braking',
                 section: 'Turn 1',
                 normalizedPositionRange: { start: 0.4, end: 0.45 },
                 comparison: fiveSecondComparison,
             }, {
                 id: 'early-second',
-                labels: ['MSR'],
+                labels: labelRanges('MSR'),
                 normalizedPositionRange: { start: 0.7, end: 0.75 },
                 comparison: secondComparison,
             }, {
                 id: 'duplicate',
-                labels: ['MSP'],
+                labels: labelRanges('MSP'),
                 normalizedPositionRange: { start: 0.8, end: 0.85 },
                 comparison: secondComparison,
             }, {
                 id: 'bad-position',
-                labels: ['MSP'],
+                labels: labelRanges('MSP'),
                 normalizedPositionRange: { start: 1.2, end: 1.3 },
                 comparison: secondComparison,
             }, {
                 id: 'missing-comparison',
-                labels: ['MSP'],
+                labels: labelRanges('MSP'),
                 normalizedPositionRange: { start: 0.2, end: 0.25 },
             }, {
                 id: 'zero-duration',
-                labels: ['MSP'],
+                labels: labelRanges('MSP'),
                 normalizedPositionRange: { start: 0.3, end: 0.35 },
                 comparison: comparisonData(0),
             }],
@@ -1073,7 +1073,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
                 committedQuery: 'elements',
                 segments: [{
                     id: 'mounted-comparison',
-                    labels: ['MSP'],
+                    labels: labelRanges('MSP'),
                     normalizedPositionRange: { start: 0.25, end: 0.3 },
                     comparison: comparisonData(1_000),
                 }],
@@ -1163,7 +1163,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
                 committedQuery: 'elements',
                 segments: [{
                     id: 'unsupported-result',
-                    labels: ['MSP'],
+                    labels: labelRanges('MSP'),
                     normalizedPositionRange: { start: 0.2, end: 0.3 },
                 }],
             }),
@@ -1177,3 +1177,7 @@ describe('filtered Driver/Expert comparison queue workflow', () => {
         )).toBeNull();
     });
 });
+
+function labelRanges(...names: string[]) {
+    return names.map((label_name) => ({ label_name, start_index: 0, end_index: 1 }));
+}

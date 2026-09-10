@@ -1,6 +1,27 @@
 import { normalizeSegmentClassificationResult } from './recorded-session-analysis';
 
 describe('normalizeSegmentClassificationResult', () => {
+    it('preserves repeated label names at distinct ranges without adding hierarchy', () => {
+        const labels = [
+            { label_name: 'MSP1', start_index: 125, end_index: 130 },
+            { label_name: 'MSP1', start_index: 150, end_index: 160 },
+        ];
+        const result = normalizeSegmentClassificationResult({
+            segments: [{
+                id: 'section-id:120-180',
+                labels,
+                track_section: 'section-id',
+                start_index: 120,
+                end_index: 180,
+                time_gap: { start_ms: 150, end_ms: 420, delta_ms: 270 },
+                expert_reference_data: [],
+            }],
+        }, 'session-1');
+
+        expect(result.segments[0].labels).toEqual(labels);
+        expect(result.segments[0].time_gap).toEqual({ start_ms: 150, end_ms: 420, delta_ms: 270 });
+    });
+
     it('normalizes expert references on each segment and preserves live availability', () => {
         const expertReferenceData = [{
             raw_index: 7,
@@ -22,13 +43,13 @@ describe('normalizeSegmentClassificationResult', () => {
             parent_segment_count: 2,
             segments: [{
                 id: 'segment-1',
-                labels: ['EA'],
+                labels: [{ label_name: 'EA', start_index: 7, end_index: 8 }],
                 start_index: 7,
                 end_index: 8,
                 expert_reference_data: expertReferenceData,
             }, {
                 id: 'segment-2',
-                labels: ['MSP'],
+                labels: [{ label_name: 'MSP', start_index: 12, end_index: 13 }],
                 start_index: 12,
                 end_index: 13,
             }],

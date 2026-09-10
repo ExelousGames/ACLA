@@ -21,7 +21,7 @@ import {
 const activeElements: ActivePageQueryElement[] = [
     {
         id: 'a',
-        labels: ['MSP', 'Lockup'],
+        labels: labelRanges('MSP', 'Lockup'),
         title: 'First',
         section: 'Turn 1',
         normalizedPositionRange: { start: 0.1, end: 0.2 },
@@ -31,7 +31,7 @@ const activeElements: ActivePageQueryElement[] = [
     },
     {
         id: 'b',
-        labels: ['Informational'],
+        labels: labelRanges('Informational'),
         title: 'Second',
         section: 'Turn 2',
     },
@@ -49,6 +49,31 @@ const getTemplate = (
 };
 
 describe('analysisResultsQuery evaluator', () => {
+    it('queries independent label intervals and returns the complete label objects', async () => {
+        const labels = [
+            { label_name: 'MSP1', start_index: 120, end_index: 130 },
+            { label_name: 'MSP1', start_index: 150, end_index: 180 },
+        ];
+        const input = { elements: [{ id: 'section', labels }] };
+        await expect(evaluateAnalysisResultsQuery(
+            '[elements.labels[label_name = "MSP1" and start_index <= 155 and end_index > 155]]',
+            input,
+        )).resolves.toEqual([labels[1]]);
+        expect(normalizeActivePageQueryInput(input).elements[0].labels).toEqual(labels);
+    });
+
+    it.each([
+        'MSP1',
+        { label_name: 'MSP1', start_index: 1 },
+        { label_name: 'MSP1', start_index: -1, end_index: 2 },
+        { label_name: 'MSP1', start_index: 2, end_index: 2 },
+        { label_name: 'MSP1', start_index: 0.5, end_index: 2 },
+    ])('rejects malformed label ranges: %p', (label) => {
+        expect(() => normalizeActivePageQueryInput({
+            elements: [{ id: 'section', labels: [label] }],
+        })).toThrow(AnalysisResultsQueryError);
+    });
+
     it('evaluates scalars, objects, arrays, projections, aggregations, filters, and comments', async () => {
         await expect(evaluateAnalysisResultsQuery('$count(elements)', activeInput)).resolves.toBe(2);
         await expect(evaluateAnalysisResultsQuery(
@@ -68,7 +93,7 @@ describe('analysisResultsQuery evaluator', () => {
             activeInput,
         )).resolves.toEqual({ count: 2, sections: ['Turn 1', 'Turn 2'] });
         await expect(evaluateAnalysisResultsQuery(
-            'elements[labels[$ = "Lockup"]].id',
+            'elements[labels[label_name = "Lockup"]].id',
             activeInput,
         )).resolves.toBe('a');
         await expect(evaluateAnalysisResultsQuery(
@@ -389,13 +414,13 @@ describe('active-page query templates', () => {
     };
     const templates = buildActivePageQueryTemplates(taxonomy);
     const elements: ActivePageQueryElement[] = [
-        { id: 'p1', labels: ['MSP', 'P1', 'Lockup'], timeGap: { deltaMs: 5 } },
-        { id: 'p2', labels: ['Mistake (Practice)', 'Lockup'], timeGap: { deltaMs: 9 } },
-        { id: 'wide', labels: ['Training mistake current', 'P2'], timeGap: { deltaMs: 'invalid' } },
-        { id: 'spin', labels: ['MSR', 'Spin'], timeGap: { deltaMs: 5 } },
-        { id: 'plain', labels: ['P1'], timeGap: { deltaMs: 500 } },
-        { id: 'unlabelled', labels: ['Racing mistake current'], timeGap: {} },
-        { id: 'negative', labels: ['Mistake (Racing)', 'R1'], timeGap: { deltaMs: -1 } },
+        { id: 'p1', labels: labelRanges('MSP', 'P1', 'Lockup'), timeGap: { deltaMs: 5 } },
+        { id: 'p2', labels: labelRanges('Mistake (Practice)', 'Lockup'), timeGap: { deltaMs: 9 } },
+        { id: 'wide', labels: labelRanges('Training mistake current', 'P2'), timeGap: { deltaMs: 'invalid' } },
+        { id: 'spin', labels: labelRanges('MSR', 'Spin'), timeGap: { deltaMs: 5 } },
+        { id: 'plain', labels: labelRanges('P1'), timeGap: { deltaMs: 500 } },
+        { id: 'unlabelled', labels: labelRanges('Racing mistake current'), timeGap: {} },
+        { id: 'negative', labels: labelRanges('Mistake (Racing)', 'R1'), timeGap: { deltaMs: -1 } },
     ];
 
     const evaluateIds = async (key: ActivePageQueryTemplate['key']): Promise<string[]> => {
@@ -450,10 +475,10 @@ describe('active-page query templates', () => {
             }[id]),
         });
         const tiedElements: ActivePageQueryElement[] = [
-            { id: 'lower-first', labels: ['MSP', 'lower'] },
-            { id: 'upper-first', labels: ['MSP', 'upper'] },
-            { id: 'upper-second', labels: ['MSP', 'upper'] },
-            { id: 'lower-second', labels: ['MSP', 'lower'] },
+            { id: 'lower-first', labels: labelRanges('MSP', 'lower') },
+            { id: 'upper-first', labels: labelRanges('MSP', 'upper') },
+            { id: 'upper-second', labels: labelRanges('MSP', 'upper') },
+            { id: 'lower-second', labels: labelRanges('MSP', 'lower') },
         ];
         const result = await evaluateAnalysisResultsQuery(
             getTemplate(tiedTemplates, 'common-label-mistakes').expression,
@@ -490,7 +515,7 @@ describe('active-page query templates', () => {
             }[id]),
         });
         const specialElements: ActivePageQueryElement[] = [
-            { id: 'special', labels: [specialParent, specialChildName] },
+            { id: 'special', labels: labelRanges(specialParent, specialChildName) },
         ];
 
         for (const key of ['mistakes', 'common-label-mistakes'] as const) {
@@ -559,7 +584,7 @@ describe('Overall Trends query path', () => {
                 elements: [
                     {
                         id: 'resolved-parent-and-child',
-                        labels: ['Training "mistake" 雪', 'Locked "輪"'],
+                        labels: labelRanges('Training "mistake" 雪', 'Locked "輪"'),
                     },
                 ],
             },
@@ -576,15 +601,15 @@ describe('Overall Trends query path', () => {
                 elements: [
                     {
                         id: 'deduplicated-labels',
-                        labels: ['MSP', 'LOCK', 'LOCK', 'Locked "輪"'],
+                        labels: labelRanges('MSP', 'LOCK', 'LOCK', 'Locked "輪"'),
                     },
                     {
                         id: 'two-categories',
-                        labels: ['Mistake (Practice)', 'Lock "up"', 'WIDE'],
+                        labels: labelRanges('Mistake (Practice)', 'Lock "up"', 'WIDE'),
                     },
                     {
                         id: 'child-without-parent',
-                        labels: ['LOCK'],
+                        labels: labelRanges('LOCK'),
                     },
                 ],
             },
@@ -599,8 +624,8 @@ describe('Overall Trends query path', () => {
                     car: 'GT3',
                 },
                 elements: [
-                    { id: 'wide-one', labels: ['Mistake (Practice)', 'Wide\\exit'] },
-                    { id: 'wide-two', labels: ['MSP', 'WIDE'] },
+                    { id: 'wide-one', labels: labelRanges('Mistake (Practice)', 'Wide\\exit') },
+                    { id: 'wide-two', labels: labelRanges('MSP', 'WIDE') },
                 ],
             },
             {
@@ -706,9 +731,9 @@ describe('Overall Trends query path', () => {
                     car: 'GT4',
                 },
                 elements: [
-                    { id: 'canonical', labels: ['MSR', 'SPIN'] },
-                    { id: 'fallback', labels: ['Mistake (Racing)', 'Spin fallback'] },
-                    { id: 'resolved', labels: ['Race Ω', 'Spin "resolved"'] },
+                    { id: 'canonical', labels: labelRanges('MSR', 'SPIN') },
+                    { id: 'fallback', labels: labelRanges('Mistake (Racing)', 'Spin fallback') },
+                    { id: 'resolved', labels: labelRanges('Race Ω', 'Spin "resolved"') },
                 ],
             }],
         };
@@ -730,7 +755,7 @@ describe('Overall Trends query path', () => {
                 createdAt: 1,
                 sourceIndex: 0,
                 baseline: { lap_id: 1, lapTimeMs: null, track: '', car: '' },
-                elements: [{ id: 'informational', labels: ['Informational'] }],
+                elements: [{ id: 'informational', labels: labelRanges('Informational') }],
             }],
         };
 
@@ -770,7 +795,7 @@ describe('Overall Trends query path', () => {
                 createdAt: 1,
                 sourceIndex: 0,
                 baseline: { lap_id: 1, lapTimeMs: null, track: '', car: '' },
-                elements: [{ id: 'special-element', labels: ['Parent\n雪', 'Child "\\輪"\n'] }],
+                elements: [{ id: 'special-element', labels: labelRanges('Parent\n雪', 'Child "\\輪"\n') }],
             }],
         };
         await expect(evaluateAndResolve(duplicated, input)).resolves.toMatchObject({
@@ -800,7 +825,7 @@ describe('Overall Trends query path', () => {
                 },
                 elements: Array.from({ length: 4 }, (_, elementIndex) => ({
                     id: `matching-element-${pageIndex}-${elementIndex}`,
-                    labels: ['P', 'C51'],
+                    labels: labelRanges('P', 'C51'),
                 })),
             })),
         };
@@ -951,3 +976,7 @@ describe('Overall Trends query path', () => {
         });
     });
 });
+
+function labelRanges(...names: string[]) {
+    return names.map((label_name) => ({ label_name, start_index: 0, end_index: 1 }));
+}

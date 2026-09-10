@@ -126,7 +126,7 @@ describe('RacingSessionController', () => {
       parent_segment_count: 1,
       segments: [{
         id: 'segment-1',
-        labels: ['EA'],
+        labels: [{ label_name: 'EA', start_index: 0, end_index: 1 }],
         track_section: 'brands_hatch2',
         start_index: 0,
         end_index: 1,
@@ -158,7 +158,7 @@ describe('RacingSessionController', () => {
       parent_segment_count: 1,
       segments: [{
         id: 'segment-1',
-        labels: ['EA'],
+        labels: [{ label_name: 'EA', start_index: 0, end_index: 1 }],
         track_section: 'brands_hatch2',
         start_index: 0,
         end_index: 1,
@@ -194,7 +194,7 @@ describe('RacingSessionController', () => {
       parent_segment_count: 1,
       segments: [{
         id: 'live-segment-1',
-        labels: ['EA'],
+        labels: [{ label_name: 'EA', start_index: 0, end_index: 1 }],
         start_index: 0,
         end_index: 1,
         expert_reference_data: [{
@@ -231,7 +231,7 @@ describe('RacingSessionController', () => {
       parent_segment_count: 1,
       segments: [{
         id: 'live-segment-1',
-        labels: ['EA'],
+        labels: [{ label_name: 'EA', start_index: 0, end_index: 1 }],
         start_index: 0,
         end_index: 1,
         expert_reference_data: [{

@@ -153,9 +153,15 @@ export interface ExpertReferenceRow {
     expert_optimal_gear: number;
 }
 
+export interface SegmentClassificationLabel {
+    label_name: string;
+    start_index: number;
+    end_index: number;
+}
+
 export interface SegmentClassificationSegment {
     id?: string;
-    labels: string[];
+    labels: SegmentClassificationLabel[];
     track_section?: string;
     start_index: number;
     end_index: number;

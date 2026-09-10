@@ -6,13 +6,37 @@ export type SegmentTimeGap = {
     delta_ms: number;
 };
 
+/** A flat label interval in original telemetry indices; end_index is exclusive. */
+export type SegmentClassificationLabel = {
+    label_name: string;
+    start_index: number;
+    end_index: number;
+};
+
 export type SegmentClassificationSegment = {
     id?: string;
-    labels: string[];
+    labels: SegmentClassificationLabel[];
     track_section?: string;
     start_index: number;
     end_index: number;
     time_gap?: SegmentTimeGap;
+};
+
+export const normalizeSegmentLabels = (value: unknown): SegmentClassificationLabel[] => {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((label): SegmentClassificationLabel[] => {
+        if (!label || typeof label !== 'object'
+            || typeof label.label_name !== 'string' || !label.label_name.trim()
+            || !Number.isInteger(label.start_index) || label.start_index < 0
+            || !Number.isInteger(label.end_index) || label.end_index <= label.start_index) {
+            return [];
+        }
+        return [{
+            label_name: label.label_name.trim(),
+            start_index: label.start_index,
+            end_index: label.end_index,
+        }];
+    });
 };
 
 export const getSegmentLabelText = (labelId: string, resolveLabel?: SegmentLabelResolver): string => (
@@ -40,7 +64,7 @@ export const getSegmentTrackSectionText = (
 };
 
 export const getSegmentLabelIds = (segment: SegmentClassificationSegment): string[] => (
-    Array.isArray(segment.labels) ? dedupeTexts(segment.labels) : []
+    Array.isArray(segment.labels) ? dedupeTexts(segment.labels.map((label) => label.label_name)) : []
 );
 
 export const resolveSegmentLabelTexts = (
@@ -52,6 +76,11 @@ export const resolveSegmentLabelTexts = (
 
 export const resolveActiveSegmentLabelTexts = (
     segment: SegmentClassificationSegment,
-    _sourceIndex: number,
+    sourceIndex: number,
     resolveLabel?: SegmentLabelResolver,
-): string[] => resolveSegmentLabelTexts(segment, resolveLabel);
+): string[] => resolveSegmentLabelTexts({
+    ...segment,
+    labels: segment.labels.filter((label) => (
+        sourceIndex >= label.start_index && sourceIndex < label.end_index
+    )),
+}, resolveLabel);

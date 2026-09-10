@@ -73,7 +73,7 @@ describe('AI analysis query result limits', () => {
         const input = { analyses: Array.from({ length: 100 }, (_, index) => ({
             id: `analysis-${index}`, createdAt: null, baseline: null,
             elements: Array.from({ length: 60 }, (_, element) => ({
-                id: `element-${element}`, labels: ['MSP'], title: 'private-telemetry '.repeat(20),
+                id: `element-${element}`, labels: [{ label_name: 'MSP', start_index: 0, end_index: 1 }], title: 'private-telemetry '.repeat(20),
             })),
         })) };
         for (const query of ['analyses', '$', 'analyses.elements', '{"all":analyses}', '$string(analyses)', '{"text":$string(analyses)}']) {
@@ -83,7 +83,7 @@ describe('AI analysis query result limits', () => {
             '{"analyses":$count(analyses),"elements":$count(analyses.elements)}', input,
         )).resolves.toEqual({ analyses: 100, elements: 6000 });
         await expect(evaluateAllAnalysisResultsQuery(
-            '$count(analyses.elements[labels[$ = "MSP"]])', input,
+            '$count(analyses.elements[labels[label_name = "MSP"]])', input,
         )).resolves.toBe(6000);
     });
 

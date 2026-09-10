@@ -14,7 +14,7 @@ describe('live session analysis result pages', () => {
                 car: 'GT3',
                 sample_count: 3,
             },
-            elements: [{ id: 'result-1', labels: ['MSP'] }],
+            elements: [{ id: 'result-1', labels: labelRanges('MSP') }],
         });
 
         expect(page.baseline.lap_time_ms).toBe(98_765);
@@ -22,3 +22,7 @@ describe('live session analysis result pages', () => {
         expect(page.elements).toEqual([expect.objectContaining({ id: 'result-1' })]);
     });
 });
+
+function labelRanges(...names: string[]) {
+    return names.map((label_name) => ({ label_name, start_index: 0, end_index: 1 }));
+}

@@ -41,7 +41,7 @@ import type { VisualizationManagerHandle } from 'views/lap-analysis/visualizatio
 import type { AnalysisResultsChartHandle } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
 import type { AnalysisResultElement } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
 import { resolveAnalysisResultsComparison } from 'views/lap-analysis/visualization/charts/analysisResultsComparisonAdapter';
-import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
+import type { SegmentClassificationLabel } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
 import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
 import BaselineProgressDisplay from './BaselineProgressDisplay';
 import './baseline-collection.css';
@@ -487,9 +487,10 @@ const compactSegment = (segment: any, chat: AiChatHandle) => ({
     start_index: segment.start_index,
     end_index: segment.end_index,
     track_section: getLabelText(chat, segment.track_section),
-    labels: getSegmentLabelIds(segment)
-        .map((labelId) => getLabelText(chat, labelId))
-        .filter(Boolean),
+    labels: segment.labels.map((label: SegmentClassificationLabel) => ({
+        ...label,
+        label_name: chat.getLabelName(label.label_name) || label.label_name,
+    })),
     ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
 });
 
@@ -517,13 +518,22 @@ const buildAnalysisElements = (
     const comparison = comparisonResolution.comparison;
     return {
         id: segment.id || `${result.session_id}:segment:${index}`,
-        labels: getSegmentLabelIds(segment)
-            .map((labelId) => chat.getLabelName(labelId) || labelId),
+        labels: segment.labels.map((label) => ({
+            ...label,
+            label_name: chat.getLabelName(label.label_name) || label.label_name,
+        })),
         ...(segment.track_section ? {
             section: chat.getLabelName(segment.track_section) || segment.track_section,
         } : {}),
         ...(start !== null && end !== null ? {
             normalizedPositionRange: { start, end },
+        } : {}),
+        ...(segment.time_gap ? {
+            timeGap: {
+                startMs: segment.time_gap.start_ms,
+                endMs: segment.time_gap.end_ms,
+                deltaMs: segment.time_gap.delta_ms,
+            },
         } : {}),
         ...(comparison?.samples.length ? { comparison } : {}),
         ...(comparisonResolution.diagnostics.length > 0

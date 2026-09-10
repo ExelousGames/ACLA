@@ -1,4 +1,5 @@
 import jsonata from 'jsonata';
+import type { SegmentClassificationLabel } from './segmentClassificationDisplay';
 import {
     getAnalysisResultMistakeParentLabels,
     type AnalysisResultLabelResolver,
@@ -29,7 +30,7 @@ export type ApplyAnalysisResultQueryOutput = {
 
 export type ActivePageQueryElement = {
     id: string;
-    labels: string[];
+    labels: SegmentClassificationLabel[];
     title?: string;
     section?: string;
     normalizedPositionRange?: {
@@ -557,9 +558,23 @@ const normalizeActivePageElement = (
     const input = assertPlainRecord(value, path);
     const id = requireNonEmptyString(requireDataProperty(input, 'id', path), `${path}.id`);
     const rawLabels = requireDenseArray(requireDataProperty(input, 'labels', path), `${path}.labels`);
-    const labels = rawLabels.map((label, index) => (
-        requireString(label, `${path}.labels[${index}]`)
-    ));
+    const labels = rawLabels.map((value, index): SegmentClassificationLabel => {
+        const labelPath = `${path}.labels[${index}]`;
+        const label = assertPlainRecord(value, labelPath);
+        const labelName = requireNonEmptyString(
+            requireDataProperty(label, 'label_name', labelPath), `${labelPath}.label_name`,
+        );
+        const start = requireFiniteNumber(
+            requireDataProperty(label, 'start_index', labelPath), `${labelPath}.start_index`,
+        );
+        const end = requireFiniteNumber(
+            requireDataProperty(label, 'end_index', labelPath), `${labelPath}.end_index`,
+        );
+        if (!Number.isInteger(start) || start < 0 || !Number.isInteger(end) || end <= start) {
+            throw invalidInputError(`${labelPath} must have a non-negative integer start_index and a greater integer end_index.`);
+        }
+        return { label_name: labelName, start_index: start, end_index: end };
+    });
     const result: ActivePageQueryElement = { id, labels };
 
     for (const key of ['title', 'section'] as const) {
@@ -984,7 +999,7 @@ const buildMistakeCategories = (
 
 const buildMistakesExpression = (parentValues: readonly string[]): string => `(
   $parentLabels := ${JSON.stringify(parentValues)};
-  elements[labels[$ in $parentLabels]]
+  elements[labels[label_name in $parentLabels]]
 )`;
 
 const buildCommonLabelMistakesExpression = (
@@ -994,10 +1009,10 @@ const buildCommonLabelMistakesExpression = (
   $parentLabels := ${JSON.stringify(parentValues)};
   $categories := ${JSON.stringify(categories)};
   $matchesParent := function($element) {
-    $exists($element.labels[$ in $parentLabels])
+    $exists($element.labels[label_name in $parentLabels])
   };
   $matchesCategory := function($element, $category) {
-    $exists($element.labels[$ in $category.aliases])
+    $exists($element.labels[label_name in $category.aliases])
   };
   $indexedMistakes := $filter(
     $map(elements, function($element, $sourceIndex) {
@@ -1050,7 +1065,7 @@ const buildTimeLostMistakesExpression = (parentValues: readonly string[]): strin
       {"element": $element, "sourceIndex": $sourceIndex}
     }),
     function($item) {
-      $exists($item.element.labels[$ in $parentLabels])
+      $exists($item.element.labels[label_name in $parentLabels])
     }
   );
   $rankedMistakes := $map($indexedMistakes, function($item) {(
@@ -1226,7 +1241,7 @@ export const buildOverallTrendQueryDefinition = (
   );
   $orderedPages := pages;
   $laps := [$map($orderedPages, function($page) {(
-    $mistakes := $page.elements[labels[$ in $parentLabels]];
+    $mistakes := $page.elements[labels[label_name in $parentLabels]];
     $categoryCounts := [$map($categories, function($category) {(
       $categoryId := $category[0];
       $categoryLabel := $category[1];
@@ -1234,7 +1249,7 @@ export const buildOverallTrendQueryDefinition = (
       {
         "id": $categoryId,
         "label": $categoryLabel,
-        "count": $count($mistakes[labels[$ in $categoryAliases]])
+        "count": $count($mistakes[labels[label_name in $categoryAliases]])
       }
     )})];
     {

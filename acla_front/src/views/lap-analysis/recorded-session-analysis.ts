@@ -1,4 +1,4 @@
-import { SegmentClassificationSegment } from './visualization/charts/segmentClassificationDisplay';
+import { normalizeSegmentLabels, SegmentClassificationSegment } from './visualization/charts/segmentClassificationDisplay';
 
 export type RecordedAiAnalysisStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
 
@@ -74,7 +74,7 @@ export const normalizeSegmentClassificationResult = (
     const segments = result && Array.isArray(result.segments)
         ? result.segments.map((segment) => ({
             ...segment,
-            labels: Array.isArray(segment.labels) ? segment.labels : [],
+            labels: normalizeSegmentLabels(segment.labels),
             track_section: typeof segment.track_section === 'string' ? segment.track_section : undefined,
             expert_reference_data: Array.isArray(segment.expert_reference_data)
                 ? segment.expert_reference_data
