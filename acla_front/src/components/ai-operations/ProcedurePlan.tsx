@@ -94,7 +94,7 @@ export type ProcedurePlanTaskResult = {
 };
 
 export type ProcedurePlanRunResult = {
-    status: 'complete' | 'failed' | 'advanced' | 'cleared';
+    status: 'complete' | 'advanced' | 'cleared';
     goal: string;
     current_request: number;
     request?: ProcedurePlanRequestSnapshot;
@@ -116,7 +116,7 @@ type ActiveProcedurePlanOperation = {
     controller: ControlledOperation<
         ProcedurePlanRunResult,
         never,
-        'complete' | 'failed' | 'cancelled' | 'replaced'
+        ProcedurePlanRunResult['status'] | 'failed' | 'cancelled' | 'replaced'
     >;
     nestedOperation: Operation<
         import('./RepeatablePlan').NestedOperationResult,
@@ -165,7 +165,7 @@ implements ProcedurePlanHandle {
             this.assertCanAppend(caller);
             if (!this.plan) throw new Error('The procedure plan is empty.');
             this.publish({ ...this.plan, requests: [...this.plan.requests, ...plan.requests] });
-            return asWorkflow(createOperationFrom(() => this.result('advanced'), 'complete'));
+            return asWorkflow(createOperationFrom(() => this.result('advanced'), 'advanced'));
         } catch (error) {
             return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
         }
@@ -253,7 +253,7 @@ implements ProcedurePlanHandle {
         const generation = ++this.generation;
         const result = advanceProcedurePlan(this.plan, reason);
         if (result.status === 'complete') {
-            return this.finish(this.result('complete'));
+            return this.result('complete');
         }
         this.publish(result.plan);
         return this.runNext(generation);
@@ -286,7 +286,7 @@ implements ProcedurePlanHandle {
         const controller = createControlledOperation<
             ProcedurePlanRunResult,
             never,
-            'complete' | 'failed' | 'cancelled' | 'replaced'
+            ProcedurePlanRunResult['status'] | 'failed' | 'cancelled' | 'replaced'
         >([], () => this.abortOperation(operation));
         operation = {
             controller,
@@ -296,15 +296,18 @@ implements ProcedurePlanHandle {
         const token = this.beginExecution(this.executionParent);
         this.executionParent = undefined;
         this.trackExecution(controller.operation, token);
-        void run().then(
-            (result) => operation.controller.resolve('complete', result),
+        void run().finally(() => {
+            if (this.activeOperation !== operation) return;
+            this.activeOperation = null;
+            this.active = false;
+            this.publish(null);
+        }).then(
+            (result) => operation.controller.resolve(result.status, result),
             (error) => operation.controller.reject(
                 'failed',
                 error instanceof Error ? error : new Error(String(error)),
             ),
-        ).finally(() => {
-            if (this.activeOperation === operation) this.activeOperation = null;
-        });
+        );
         return asWorkflow(operation.controller.operation);
     }
 
@@ -347,10 +350,7 @@ implements ProcedurePlanHandle {
             }
             const request = this.plan.requests[this.plan.currentStep];
             if (!request) {
-                return this.finish(this.result('complete'));
-            }
-            if (request.status === 'failed') {
-                return this.finish(this.result('failed', request));
+                return this.result('complete');
             }
             if (request.status !== 'pending') {
                 this.publish({ ...this.plan, currentStep: this.plan.currentStep + 1 });
@@ -423,13 +423,8 @@ implements ProcedurePlanHandle {
                     ...serializeProcedurePlanRequest(request),
                     status: 'failed',
                 };
-                const failed = this.finish(this.result(
-                    'failed',
-                    failedRequest,
-                    runId,
-                ));
                 this.onError(failedRequest, stepError);
-                return failed;
+                throw stepError;
             }
             const nextIndex = this.plan.currentStep + 1;
             this.publish({
@@ -476,10 +471,6 @@ implements ProcedurePlanHandle {
         };
     }
 
-    private finish(result: ProcedurePlanRunResult): ProcedurePlanRunResult {
-        this.publish(null);
-        return result;
-    }
 }
 
 export type ProcedurePlanAdvanceResult = {

@@ -24,7 +24,7 @@ import {
     InvalidGoalNameError,
     InvalidGoalStepsError,
 } from 'contexts/OperationComponentError';
-import { serializeError, type SerializedError } from 'errors/OperationError';
+import type { SerializedError } from 'errors/OperationError';
 import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
 import { asWorkflow, readWorkflowCall, type Workflow, type WorkflowCall } from './workflow';
 import { bindWorkflowDispatcher, readToolCall, type ToolCall, type WorkflowDispatcher } from './tool';
@@ -159,10 +159,8 @@ export type GoalRunResult = Pick<
     | 'stop_when'
     | 'stop_when_result'
 > & {
-    status: 'achieved' | 'missed' | 'failed';
+    status: 'achieved' | 'missed';
     task_results: GoalTaskResult[];
-    failed_step?: string;
-    error?: string;
 };
 
 export type GoalAiResult = Omit<GoalRunResult, 'name'> & { goal: string };
@@ -397,7 +395,6 @@ const toRunResult = (
 
 type RuntimeTaskExecutionResult = {
     value: unknown;
-    error?: GoalComponentError;
     source_result: GoalSourceResultMetadata;
 };
 
@@ -405,7 +402,7 @@ type ActiveGoalOperation = {
     controller: ControlledOperation<
         GoalRunResult,
         never,
-        'complete' | 'failed' | 'cancelled' | 'replaced'
+        GoalRunResult['status'] | 'failed' | 'cancelled' | 'replaced'
     >;
     nestedOperation: Operation<NestedOperationResult, NestedOperationStatus> | null;
 };
@@ -459,7 +456,7 @@ implements RepeatablePlanHandle {
                 ...steps.map((step) => ({ ...step, status: 'pending' as const, attempts: 0, run_id: null, error: null }))] });
             this.cancelRetryDelay?.();
             const step_count = this.request.steps.length;
-            return asWorkflow(createOperationFrom(() => ({ status: 'ready' as const, step_count }), 'complete'));
+            return asWorkflow(createOperationFrom(() => ({ status: 'ready' as const, step_count }), 'ready'));
         } catch (error) {
             return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
         }
@@ -550,7 +547,7 @@ implements RepeatablePlanHandle {
         const controller = createControlledOperation<
             GoalRunResult,
             never,
-            'complete' | 'failed' | 'cancelled' | 'replaced'
+            GoalRunResult['status'] | 'failed' | 'cancelled' | 'replaced'
         >([], () => this.abortOperation(operation));
         operation = {
             controller,
@@ -560,15 +557,17 @@ implements RepeatablePlanHandle {
         const token = this.beginExecution(this.executionParent);
         this.executionParent = undefined;
         this.trackExecution(controller.operation, token);
-        void run().then(
-            (result) => operation.controller.resolve('complete', result),
+        void run().finally(() => {
+            if (this.activeOperation !== operation) return;
+            this.activeOperation = null;
+            this.finish();
+        }).then(
+            (result) => operation.controller.resolve(result.status, result),
             (error) => operation.controller.reject(
                 'failed',
                 error instanceof Error ? error : new Error(String(error)),
             ),
-        ).finally(() => {
-            if (this.activeOperation === operation) this.activeOperation = null;
-        });
+        );
         return asWorkflow(operation.controller.operation);
     }
 
@@ -628,26 +627,9 @@ implements RepeatablePlanHandle {
                 step_id: step.id,
                 tool_name: step.name,
                 attempt,
-                status: execution.error ? 'error' : 'completed',
+                status: 'completed',
                 source_result: sourceResult,
-                ...(execution.error ? { error: serializeError(execution.error) } : {}),
             });
-            if (execution.error) {
-                this.updateStep(index, {
-                    status: 'error',
-                    run_id: sourceResult.run_id,
-                    error: execution.error.message,
-                });
-                const snapshot: GoalSnapshot = {
-                    ...this.currentSnapshot!,
-                    status: 'error',
-                    actual: null,
-                    failed_step: step.id,
-                    error: execution.error.message,
-                };
-                this.publish(snapshot);
-                return this.failedRunResult(snapshot);
-            }
             this.updateStep(index, {
                 status: 'completed',
                 run_id: sourceResult.run_id,
@@ -690,36 +672,12 @@ implements RepeatablePlanHandle {
         if (request.steps.length > checkedStepCount) {
             return this.runPreparation(request, generation, checkedStepCount);
         }
-        let error = execution.error;
-        let actual: number | null = null;
-        if (!error) {
-            actual = evaluateGoalStopWhenInput(execution.value);
-            if (actual === null) {
-                error = new GoalStopWhenInputIncompatibleError(
-                    this.getComponentName(),
-                    'Repeatable plan stop condition requires a ready query result with finite numeric data.',
-                );
-            }
-        }
-        if (error) {
-            const snapshot: GoalSnapshot = {
-                ...this.currentSnapshot!,
-                status: 'error',
-                actual: null,
-                error: error.message,
-                stop_when_result: {
-                    tool_name: request.stop_when.tool.name,
-                    attempt,
-                    status: 'error',
-                    value: null,
-                    error: error.message,
-                    ...(execution.source_result
-                        ? { source_result: { ...execution.source_result } }
-                        : {}),
-                },
-            };
-            this.publish(snapshot);
-            return this.failedRunResult(snapshot);
+        const actual = evaluateGoalStopWhenInput(execution.value);
+        if (actual === null) {
+            throw new GoalStopWhenInputIncompatibleError(
+                this.getComponentName(),
+                'Repeatable plan stop condition requires a ready query result with finite numeric data.',
+            );
         }
 
         const achieved = compareGoalValues(
@@ -756,9 +714,7 @@ implements RepeatablePlanHandle {
             this.publish(this.createRunningSnapshot(request));
             return this.runPreparation(request, generation, 0);
         }
-        const result = toRunResult(snapshot, this.taskResults);
-        this.finish();
-        return result;
+        return toRunResult(snapshot, this.taskResults);
     }
 
     private async executeTask(
@@ -799,19 +755,11 @@ implements RepeatablePlanHandle {
                 },
             };
         } catch (error) {
-            return {
-                value: null,
-                source_result: {
-                    tool_name: toolName,
-                    run_id: runId,
-                    status: 'failed',
-                },
-                error: new FailureError(
-                    this.getComponentName(),
-                    error instanceof Error && error.message ? error.message : fallbackMessage,
-                    { cause: error },
-                ),
-            };
+            throw new FailureError(
+                this.getComponentName(),
+                error instanceof Error && error.message ? error.message : fallbackMessage,
+                { cause: error },
+            );
         } finally {
             if (activeOperation?.nestedOperation === operation) {
                 activeOperation.nestedOperation = null;
@@ -845,23 +793,6 @@ implements RepeatablePlanHandle {
             attempt: this.stopWhenAttempts,
             status: 'pending',
             value: null,
-        };
-    }
-
-    private failedRunResult(snapshot: GoalSnapshot): GoalRunResult {
-        return {
-            name: snapshot.name,
-            status: 'failed',
-            stop_when: snapshot.stop_when
-                ? cloneStopWhen(snapshot.stop_when)
-                : null,
-            stop_when_result: cloneStopWhenResult(snapshot.stop_when_result),
-            target: snapshot.target,
-            actual: snapshot.actual,
-            completed_steps: [...snapshot.completed_steps],
-            task_results: cloneTaskResults(this.taskResults),
-            ...(snapshot.failed_step ? { failed_step: snapshot.failed_step } : {}),
-            ...(snapshot.error ? { error: snapshot.error } : {}),
         };
     }
 

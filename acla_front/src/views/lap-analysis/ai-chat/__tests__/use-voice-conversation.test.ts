@@ -12,6 +12,9 @@ import {
     asWorkflow,
 } from '../operation-base';
 import { AnalysisResultsQueryError } from '../../visualization/charts/analysisResultsQuery';
+import { ProcedurePlanRunner } from 'components/ai-operations/ProcedurePlan';
+import { RepeatablePlanRunner } from 'components/ai-operations/RepeatablePlan';
+import type { ToolDispatcher } from 'components/ai-operations/tool';
 
 const execute = async (handler: FrontendOperationHandler) => {
     const frames: any[] = [];
@@ -134,6 +137,50 @@ describe('executeSubscribedFrontendOperation', () => {
         });
         expect(conflicting.frames).toHaveLength(1);
         expect(missing.frames).toHaveLength(1);
+    });
+
+    it.each([
+        ['procedure', 'failed'], ['repeatable', 'failed'],
+        ['procedure', 'complete'], ['repeatable', 'achieved'],
+    ] as const)('propagates an actual %s workflow outcome %s to AI', async (kind, status) => {
+        const ok = status !== 'failed';
+        const dispatch = Object.assign(jest.fn(() => asTool(createOperationFrom(() => {
+            if (!ok) throw new Error('offline');
+            return { status: 'ready', data: 0 };
+        }, 'complete'))), { validate: jest.fn() }) as ToolDispatcher;
+        const operation = kind === 'procedure'
+            ? new ProcedurePlanRunner('procedure-plan', dispatch, undefined, jest.fn()).createProcedurePlan({
+                workflow: {
+                    name: 'set_procedure_plan', goal: 'Review the lap',
+                    operations: [{ operation: { name: 'query_analysis_result', title: 'Read telemetry', arguments: {} } }],
+                },
+            })
+            : new RepeatablePlanRunner('repeatable-plan', dispatch).createRepeatablePlan({
+                workflow: {
+                    name: 'create_repeatable_plan', goal: 'Drive a clean lap',
+                    operations: [{ operation: { name: 'query_analysis_result', id: 'read', title: 'Read telemetry', arguments: {} } }],
+                    stop_when: { tool: { name: 'query_analysis_result' }, operator: 'eq', target: 0 },
+                },
+            });
+        const { frames, events, result } = await execute(() => operation);
+        expect(frames).toHaveLength(1);
+        expect(events.at(-1)).toMatchObject({ status: 'completed', ok });
+        expect(dispatch).toHaveBeenCalledTimes(kind === 'repeatable' && ok ? 2 : 1);
+        if (!ok) {
+            const errorName = kind === 'procedure' ? 'ProcedurePlanStepFailedError' : 'GoalStepFailedError';
+            await expect(operation.result).rejects.toMatchObject({ name: errorName, message: 'offline' });
+            expect(frames[0].result).toEqual({
+                status: 'failed', ok: false, name: errorName, message: 'offline',
+                cause: { name: 'Error', message: 'offline' },
+            });
+            expect(result).toMatchObject({ ok: false, errorName, message: 'offline' });
+            return;
+        }
+        const payload = await operation.result;
+
+        expect(payload).toMatchObject({ status, task_results: [expect.any(Object)] });
+        expect(frames[0].result).toEqual(payload);
+        expect(result).toMatchObject({ ok, result: payload });
     });
 
     it.each([

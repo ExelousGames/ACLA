@@ -85,7 +85,33 @@ describe('nested workflow ownership and lifetime', () => {
         expect(runner(child)).toBeUndefined();
     });
 
-    it.each(['finish', 'cancel', 'reset', 'unmount'] as const)('handles a three-type chain on %s', async (action) => {
+    it.each<[Kind, Kind]>([
+        ['procedure', 'repeatable'], ['procedure', 'live'], ['repeatable', 'procedure'],
+        ['repeatable', 'live'], ['live', 'procedure'], ['live', 'repeatable'],
+    ])('%s catches a failed %s child and releases both workflows before termination', async (parent, child) => {
+        jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        const test = setup();
+        let operation: any;
+        await act(async () => {
+            operation = test.create(parent, input(parent, [step(parent, 'child', names[child], input(child))]));
+            if (parent === 'live' || child === 'live') due();
+        });
+        const terminated = jest.fn(() => [runner(parent), runner(child)]);
+        operation.notifyTerminated(terminated);
+        await act(async () => {
+            test.waiting.reject('failed', new Error('leaf failed'));
+            await expect(operation.result).rejects.toThrow('leaf failed');
+        });
+        expect(terminated).toHaveBeenCalledTimes(1);
+        expect(terminated).toHaveBeenCalledWith({ status: 'failed', result: expect.any(Error) });
+        expect(terminated).toHaveReturnedWith([undefined, undefined]);
+        expect(test.query).toHaveBeenCalledTimes(1);
+        expect(screen.queryByLabelText('Procedure plan')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Repeatable plan')).not.toBeInTheDocument();
+    });
+
+    it.each(['finish', 'failure', 'cancel', 'reset', 'unmount'] as const)('handles a three-type chain on %s', async (action) => {
+        jest.spyOn(console, 'error').mockImplementation(() => undefined);
         const test = setup();
         const leaf = input('live');
         const middle = input('repeatable', [step('repeatable', 'live', names.live, leaf)]);
@@ -100,13 +126,14 @@ describe('nested workflow ownership and lifetime', () => {
         expect(terminated).not.toHaveBeenCalled();
         await act(async () => {
             if (action === 'finish') test.waiting.resolve('complete', {});
+            if (action === 'failure') test.waiting.reject('failed', new Error('leaf failed'));
             if (action === 'cancel') operation.abort();
             if (action === 'reset') test.ref.current!.reset();
             if (action === 'unmount') test.unmount();
             if (action === 'finish') await operation.result;
             else await expect(operation.result).rejects.toBeInstanceOf(Error);
         });
-        expect(aborted).toHaveBeenCalledTimes(action === 'finish' ? 0 : 1);
+        expect(aborted).toHaveBeenCalledTimes(action === 'finish' || action === 'failure' ? 0 : 1);
         for (const kind of Object.keys(names) as Kind[]) expect(runner(kind)).toBeUndefined();
         await act(async () => { test.waiting.resolve('complete', { late: true }); });
         expect(screen.queryByLabelText('Procedure plan')).not.toBeInTheDocument();
@@ -133,7 +160,13 @@ describe('nested workflow ownership and lifetime', () => {
         await act(async () => { test.create(kind); });
         const owner = runner(kind);
         await act(async () => {
-            await expect(test.append(kind, 'self', owner).result).resolves.toBeDefined();
+            const appended = test.append(kind, 'self', owner);
+            await expect(appended.result).resolves.toBeDefined();
+            if (kind !== 'live') {
+                await expect(new Promise((resolve) => appended.notifyTerminated(resolve))).resolves.toMatchObject({
+                    status: kind === 'procedure' ? 'advanced' : 'ready',
+                });
+            }
             await expect(test.append(kind, 'independent').result).resolves.toBeDefined();
         });
         const snapshot = owner.getSnapshot();

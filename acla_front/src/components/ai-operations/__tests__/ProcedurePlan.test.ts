@@ -148,6 +148,7 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         const termination = new Promise((resolve) => original.notifyTerminated(resolve));
 
         const replacement = runner.replace(null);
+        const replacementTermination = new Promise((resolve) => replacement.notifyTerminated(resolve));
 
         await expect(original.result).rejects.toMatchObject({
             name: 'ProcedurePlanReplacedError',
@@ -157,9 +158,10 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
             result: { name: 'ProcedurePlanReplacedError' },
         });
         await expect(replacement.result).resolves.toMatchObject({ status: 'cleared' });
+        await expect(replacementTermination).resolves.toMatchObject({ status: 'cleared' });
     });
 
-    it('returns failure details and removes a failed plan', async () => {
+    it('rejects with the step error and releases the plan before termination', async () => {
         const onError = jest.fn();
         const onChange = jest.fn();
         const rootError = new Error('offline');
@@ -168,29 +170,13 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
             return { status: 'complete' };
         }, 'complete')));
         const runner = new ProcedurePlanRunner('procedure-plan', toolDispatcher(dispatch), onChange, onError);
+        const release = jest.spyOn(runner, 'deleteComponentRef');
 
-        const failedResult = await runner.createProcedurePlan(toInput(plan())).result;
-        expect(failedResult).not.toBeInstanceOf(Error);
-        if (failedResult instanceof Error) throw failedResult;
-        expect(failedResult).toMatchObject({
-            status: 'failed',
-            request: {
-                title: 'Read telemetry',
-                status: 'failed',
-            },
-            task_results: [{
-                title: 'Read telemetry',
-                tool_name: 'read',
-                status: 'failed',
-                error: {
-                    name: 'ProcedurePlanStepFailedError',
-                    message: 'offline',
-                    cause: {
-                        name: 'Error',
-                        message: 'offline',
-                    },
-                },
-            }],
+        const operation = runner.createProcedurePlan(toInput(plan()));
+        const terminated = jest.fn(() => ({ snapshot: runner.getSnapshot(), releases: release.mock.calls.length }));
+        operation.notifyTerminated(terminated);
+        await expect(operation.result).rejects.toMatchObject({
+            name: 'ProcedurePlanStepFailedError', message: 'offline', cause: rootError,
         });
         expect(onError).toHaveBeenCalledWith(
             expect.objectContaining({ title: 'Read telemetry', status: 'failed' }),
@@ -203,6 +189,10 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         expect(onChange).toHaveBeenLastCalledWith(null);
         expect(runner.getProcedurePlan()).toBeNull();
         expect(runner.getSnapshot()).toBeNull();
+        expect(terminated).toHaveBeenCalledTimes(1);
+        expect(terminated).toHaveBeenCalledWith({ status: 'failed', result: onError.mock.calls[0][1] });
+        expect(terminated).toHaveReturnedWith({ snapshot: null, releases: 1 });
+        expect(dispatch).toHaveBeenCalledTimes(1);
     });
 });
 

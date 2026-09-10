@@ -311,9 +311,10 @@ describe('AnalysisResultsChart', () => {
         const procedureResult = await procedure.createProcedurePlan({ workflow: { name: 'set_procedure_plan',
             goal: 'Query analysis',
             operations: [{ operation: { name: 'query_analysis_result', title: 'Read', arguments: { query } } }],
-        } }).result;
+        } }).result.catch((failure) => failure);
+        expect(procedureResult).toBeInstanceOf(Error);
         expect(procedureResult).toMatchObject({
-            status: 'failed', task_results: [{ status: 'failed', error: { cause: { detail: { code } } } }],
+            name: 'ProcedurePlanStepFailedError', cause: { detail: { code } },
         });
 
         const repeatable = new RepeatablePlanRunner('repeatable-plan', dispatch);
@@ -321,10 +322,11 @@ describe('AnalysisResultsChart', () => {
             goal: 'Query analysis',
             operations: [{ operation: { name: 'query_analysis_result', id: 'read', title: 'Read', arguments: { query } } }],
             stop_when: { tool: { name: 'query_analysis_result', arguments: { query: '1' }  }, operator: 'eq', target: 1 },
-        } }).result;
-        expect(repeatableResult).toMatchObject({ status: 'failed', failed_step: 'read' });
+        } }).result.catch((failure) => failure);
+        expect(repeatableResult).toBeInstanceOf(Error);
+        expect(repeatableResult).toMatchObject({ name: 'GoalStepFailedError', cause: { detail: { code } } });
         for (const result of [procedureResult, repeatableResult]) {
-            const serialized = JSON.stringify(buildFormattedToolResultFrame({ name: 'workflow', result }));
+            const serialized = JSON.stringify(buildFormattedToolResultFrame({ name: 'workflow', error: serializeError(result) }));
             expect(serialized).toContain(code);
             expect(serialized).not.toContain(marker);
             expect(serialized).not.toContain('"data":');
@@ -356,13 +358,13 @@ describe('AnalysisResultsChart', () => {
                 tool: { name: 'query_analysis_result', arguments: { query: '$error($string(analyses))' }  },
                 operator: 'eq', target: 0,
             },
-        } }).result;
+        } }).result.catch((failure) => failure);
+        expect(result).toBeInstanceOf(Error);
         expect(result).toMatchObject({
-            status: 'failed',
-            stop_when_result: { status: 'error', value: null },
-            error: expect.stringContaining('Query error details exceeded the 1024-byte limit.'),
+            name: 'GoalStopWhenFailedError',
+            message: expect.stringContaining('Query error details exceeded the 1024-byte limit.'),
         });
-        const serialized = JSON.stringify(result);
+        const serialized = JSON.stringify(serializeError(result));
         expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThan(2048);
         expect(serialized).not.toContain('private-stop-data');
     });

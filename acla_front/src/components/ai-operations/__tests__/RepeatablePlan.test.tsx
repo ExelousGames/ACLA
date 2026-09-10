@@ -238,6 +238,9 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
 
         expect(result).toMatchObject({ goal: 'Drive a clean lap', status: 'achieved' });
         expect(result).not.toHaveProperty('name');
+        await expect(new Promise((resolve) => operation.notifyTerminated(resolve))).resolves.toEqual({
+            status: 'achieved', result,
+        });
 
         const completedSnapshot = runner.getSnapshot();
         expect(isJsonSafe(completedSnapshot)).toBe(true);
@@ -394,22 +397,16 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         ));
         const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
 
-        const result = await runner.create(toInput(request())).result;
-        if (result instanceof Error) throw result;
-
-        expect(result).toMatchObject({
-            status: 'failed',
-            actual: null,
-            completed_steps: ['collect', 'analyze'],
-            error: 'Repeatable plan stop condition requires a ready query result with finite numeric data.',
-            stop_when_result: {
-                tool_name: 'determine',
-                attempt: 1,
-                status: 'error',
-                value: null,
-                error: 'Repeatable plan stop condition requires a ready query result with finite numeric data.',
-            },
+        const operation = runner.create(toInput(request()));
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
+        await expect(operation.result).rejects.toMatchObject({
+            name: 'GoalStopWhenInputIncompatibleError',
+            message: 'Repeatable plan stop condition requires a ready query result with finite numeric data.',
         });
+        await expect(termination).resolves.toMatchObject({
+            status: 'failed', result: { name: 'GoalStopWhenInputIncompatibleError' },
+        });
+        expect(runner.getSnapshot()).toBeNull();
     });
 
     it('reports a rejected stop-condition operation as an execution failure', async () => {
@@ -419,22 +416,15 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         }, 'complete')));
         const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
 
-        const result = await runner.create(toInput(request())).result;
-        if (result instanceof Error) throw result;
-
-        expect(result).toMatchObject({
-            status: 'failed',
-            actual: null,
-            error: 'stop condition exploded',
-            stop_when_result: {
-                status: 'error',
-                error: 'stop condition exploded',
-                source_result: { status: 'failed' },
-            },
+        await expect(runner.create(toInput(request())).result).rejects.toMatchObject({
+            name: 'GoalStopWhenFailedError',
+            message: 'stop condition exploded',
+            cause: { message: 'stop condition exploded' },
         });
+        expect(runner.getSnapshot()).toBeNull();
     });
 
-    it('retains a failed step without rerunning it', async () => {
+    it('rejects a failed step and releases the plan before termination without rerunning it', async () => {
         let attempts = 0;
         const dispatch = jest.fn((name: string) => asTool(createOperationFrom(() => {
             if (name === 'collect' && ++attempts === 1) throw new Error('not ready');
@@ -443,45 +433,22 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
                 : { status: 'complete' };
         }, 'complete')));
         const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+        const release = jest.spyOn(runner, 'deleteComponentRef');
 
         const failedOperation = runner.create(toInput(request()));
-        const failedResult = await failedOperation.result;
-        if (failedResult instanceof Error) throw failedResult;
+        const terminated = jest.fn(() => ({ snapshot: runner.getSnapshot(), releases: release.mock.calls.length }));
+        failedOperation.notifyTerminated(terminated);
+        await expect(failedOperation.result).rejects.toMatchObject({
+            name: 'GoalStepFailedError', message: 'not ready', cause: { message: 'not ready' },
+        });
 
         expect(failedOperation.statuses).toEqual([]);
-        expect(failedResult).toMatchObject({
+        expect(terminated).toHaveBeenCalledTimes(1);
+        expect(terminated).toHaveBeenCalledWith({
             status: 'failed',
-            failed_step: 'collect',
-            error: 'not ready',
+            result: expect.objectContaining({ name: 'GoalStepFailedError', message: 'not ready' }),
         });
-        expect(failedResult.task_results).toEqual([
-            {
-                step_id: 'collect',
-                tool_name: 'collect',
-                attempt: 1,
-                status: 'error',
-                source_result: {
-                    step_id: 'collect',
-                    tool_name: 'collect',
-                    run_id: expect.any(String),
-                    status: 'failed',
-                },
-                error: {
-                    name: 'GoalStepFailedError',
-                    message: 'not ready',
-                    cause: {
-                        name: 'Error',
-                        message: 'not ready',
-                    },
-                },
-            },
-        ]);
-        const failedSnapshot = runner.getSnapshot();
-        expect(failedSnapshot).toMatchObject({
-            failed_step: 'collect',
-            error: 'not ready',
-        });
-        expect(failedSnapshot?.steps[0]).toMatchObject({ id: 'collect', error: 'not ready' });
+        expect(terminated).toHaveReturnedWith({ snapshot: null, releases: 1 });
 
         expect(dispatch.mock.calls.map(([name]) => name)).toEqual(['collect']);
         expect(attempts).toBe(1);
