@@ -444,8 +444,8 @@ implements LiveRangeTodoListHandle {
             const token = this.beginExecution(dispatch.workflowCaller);
             this.trackExecution(completion.operation, token);
             const owned = bindWorkflowDispatcher(dispatch, this);
-            this.replaceEvents(prepared.map(({ event, tool }) => ({ ...event,
-                taskStart: (signal) => owned(tool.name, tool.arguments, signal) })));
+            this.replaceEvents(prepared.map(({ event, operation }) => ({ ...event,
+                taskStart: (signal) => owned(operation.name, operation.arguments, signal) })));
             return asWorkflow(completion.operation);
         } catch (error) {
             return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));
@@ -462,8 +462,8 @@ implements LiveRangeTodoListHandle {
             }
             const owned = bindWorkflowDispatcher(dispatch, this);
             // Validation of the complete batch precedes every mutation.
-            prepared.forEach(({ event, tool }) => this.addEvent({ ...event,
-                taskStart: (signal) => owned(tool.name, tool.arguments, signal) }));
+            prepared.forEach(({ event, operation }) => this.addEvent({ ...event,
+                taskStart: (signal) => owned(operation.name, operation.arguments, signal) }));
             return this.getForAi();
         } catch (error) {
             return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'));

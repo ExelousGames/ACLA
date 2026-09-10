@@ -28,11 +28,13 @@ import { serializeError, type SerializedError } from 'errors/OperationError';
 import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
 import { asWorkflow, readWorkflowCall, type Workflow, type WorkflowCall } from './workflow';
 import { bindWorkflowDispatcher, readToolCall, type ToolCall, type WorkflowDispatcher } from './tool';
-import type { FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import { frontendOperationRegistry, type FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import {
     createControlledOperation,
     createOperationFrom,
     mapOperation,
+    readOperationCall,
+    type OperationCall,
     type ControlledOperation,
     type Operation,
     type OperationExecutionOutput,
@@ -55,7 +57,7 @@ export const GOAL_COMPARISON_OPERATORS = [
 export type GoalComparisonOperator = typeof GOAL_COMPARISON_OPERATORS[number];
 export type RepeatablePlanInput = WorkflowCall<'create_repeatable_plan', {
     goal: string;
-    tools: ToolCall<{ id: string; title: string; arguments?: Record<string, unknown> }>[];
+    operations: OperationCall<{ id: string; title: string; arguments?: Record<string, unknown> }>[];
     stop_when: {
         tool: ToolCall<{ arguments?: Record<string, unknown> }>['tool'];
         operator: GoalComparisonOperator;
@@ -63,7 +65,7 @@ export type RepeatablePlanInput = WorkflowCall<'create_repeatable_plan', {
     };
 }>;
 export type AppendRepeatablePlanInput = WorkflowCall<'append_repeatable_plan', {
-    tools: RepeatablePlanInput['workflow']['tools'];
+    operations: RepeatablePlanInput['workflow']['operations'];
 }>;
 
 export type GoalStatus = 'running' | 'achieved' | 'missed' | 'error';
@@ -208,7 +210,7 @@ const isGoalComparisonOperator = (value: unknown): value is GoalComparisonOperat
 );
 
 const parseGoalStepDescriptor = (value: unknown): GoalStepDescriptor | null => {
-    const step = readToolCall(value);
+    const step = readOperationCall(value);
     if (!step || !hasOnlyKeys(step, ['name', 'id', 'title', 'arguments'])) return null;
     const name = step.name as string;
     const id = toNonEmptyString(step.id);
@@ -227,7 +229,8 @@ const parseGoalStopWhenOperation = (value: unknown): GoalStopWhenOperation | nul
     const tool = readToolCall({ tool: value });
     if (!tool || !hasOnlyKeys(tool, ['name', 'arguments'])) return null;
     const name = tool.name as string;
-    if (!name || (tool.arguments !== undefined && !isRecord(tool.arguments))) return null;
+    if (!name || frontendOperationRegistry[name as FrontendOperationName]?.kind === 'workflow'
+        || (tool.arguments !== undefined && !isRecord(tool.arguments))) return null;
     return {
         name,
         ...(tool.arguments !== undefined ? { arguments: { ...tool.arguments } } : {}),
@@ -262,19 +265,19 @@ export const validateGoalRequest = (
 ): { request: GoalRequest } | { error: GoalComponentError; name?: string } => {
     const input = readWorkflowCall(value, 'create_repeatable_plan');
     const name = toNonEmptyString(input?.goal);
-    if (!input || !name || !hasOnlyKeys(input, ['name', 'goal', 'tools', 'stop_when'])) {
+    if (!input || !name || !hasOnlyKeys(input, ['name', 'goal', 'operations', 'stop_when'])) {
         return {
             error: new InvalidGoalNameError(componentName, 'Provide a valid repeatable plan name.'),
             ...(name ? { name } : {}),
         };
     }
-    if (!Array.isArray(input.tools) || input.tools.length === 0) {
+    if (!Array.isArray(input.operations) || input.operations.length === 0) {
         return {
             error: new InvalidGoalStepsError(componentName, 'Provide at least one valid repeatable plan step.'),
             name,
         };
     }
-    const steps = input.tools.map(parseGoalStepDescriptor);
+    const steps = input.operations.map(parseGoalStepDescriptor);
     if (steps.some((step) => !step)) {
         return {
             error: new InvalidGoalStepsError(componentName, 'Every repeatable plan step must have a valid id, title, name, and arguments object.'),
@@ -904,8 +907,8 @@ implements RepeatablePlanHandle {
 
 export const parseAppendRepeatablePlanInput = (value: unknown): GoalStepDescriptor[] => {
     const input = readWorkflowCall(value, 'append_repeatable_plan');
-    if (!input || !hasOnlyKeys(input, ['name', 'tools'])) throw new InvalidGoalStepsError('repeatable-plan', 'Provide append_repeatable_plan with tools.');
-    return parseRepeatablePlanInput({ workflow: { name: 'create_repeatable_plan', goal: 'Append', tools: input.tools,
+    if (!input || !hasOnlyKeys(input, ['name', 'operations'])) throw new InvalidGoalStepsError('repeatable-plan', 'Provide append_repeatable_plan with operations.');
+    return parseRepeatablePlanInput({ workflow: { name: 'create_repeatable_plan', goal: 'Append', operations: input.operations,
         stop_when: { tool: { name: 'query_analysis_result' }, operator: 'eq', target: 0 } } }).steps;
 };
 

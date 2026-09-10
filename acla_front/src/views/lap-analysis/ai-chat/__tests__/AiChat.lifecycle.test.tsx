@@ -41,6 +41,7 @@ jest.mock('../use-voice-conversation', () => ({
 }));
 
 jest.mock('../ai-command-registry', () => ({
+    frontendOperationRegistry: {},
     createAiCommandRegistry: jest.fn(() => ({})),
     createWorkflowToolDispatcher: jest.fn(() => Object.assign(jest.fn(), { validate: jest.fn() })),
     startAgentRuntime: jest.fn(() => Promise.resolve({ status: 'started' })),
@@ -165,7 +166,7 @@ const getLatestAgentVoiceOptions = () => {
 const lifecycleGoalRequest = () => ({
     workflow: { name: 'create_repeatable_plan',
         goal: 'Lifecycle goal',
-        tools: [{ tool: { name: 'collect', id: 'collect', title: 'Collect data' } }],
+        operations: [{ operation: { name: 'collect', id: 'collect', title: 'Collect data' } }],
         stop_when: {
             tool: { name: 'determine', },
             operator: 'eq',
@@ -177,7 +178,7 @@ const lifecycleGoalRequest = () => ({
 const lifecycleProcedurePlan = () => ({
     workflow: { name: 'set_procedure_plan',
         goal: 'Lifecycle plan',
-        tools: [{ tool: { name: 'read', title: 'Read data', arguments: {} } }],
+        operations: [{ operation: { name: 'read', title: 'Read data', arguments: {} } }],
     },
 });
 
@@ -653,7 +654,7 @@ describe('AiChat conversation lifecycle', () => {
                     const input = scenario.endsWith('legacy')
                         ? { goal: 'Legacy', requests: [{ name: 'read', title: 'Read', payload: {} }] }
                         : { workflow: { ...procedureInput.workflow,
-                            tools: [...procedureInput.workflow.tools, { forbidden: { title: 'Forbidden', arguments: {} } }],
+                            operations: [...procedureInput.workflow.operations, { forbidden: { title: 'Forbidden', arguments: {} } }],
                         } };
                     rejected = mockRegisteredWorkflowPanelHandle.createProcedurePlan(input, invalidDispatch);
                 } else {
@@ -692,12 +693,12 @@ describe('AiChat conversation lifecycle', () => {
         const dispose = jest.spyOn(mounted, 'dispose');
         const legacy = { event: 'procedure_plan_started', goal: 'Legacy', requests: [{ name: 'show_map', title: 'Map', payload: {} }] };
         const input = { event: 'procedure_plan_started', workflow: { name: 'set_procedure_plan',
-            goal: 'Status plan', tools: [{ tool: { name: 'show_map', title: 'Map', arguments: {} } }],
+            goal: 'Status plan', operations: [{ operation: { name: 'show_map', title: 'Map', arguments: {} } }],
         } };
         const data = scenario === 'legacy' ? legacy : scenario === 'mixed' ? { ...input, requests: legacy.requests }
             : scenario === 'extra transport field' ? { ...input, current_request: 0 }
                 : { ...input, workflow: { ...input.workflow,
-                    tools: [...input.workflow.tools, {
+                    operations: [...input.workflow.operations, {
                         [scenario === 'missing active handler' ? 'stop_agent_session' : scenario]: { title: 'Later tool', arguments: {} },
                     }],
                 } };
@@ -720,7 +721,7 @@ describe('AiChat conversation lifecycle', () => {
             await act(async () => {
                 getLatestMainVoiceOptions().onEvent({ kind: 'tool_status', data: {
                     event: 'procedure_plan_started', workflow: { name: 'set_procedure_plan',
-                        goal: 'Run tool', tools: [{ tool: { name: toolName, title: 'Tool', arguments: args } }],
+                        goal: 'Run tool', operations: [{ operation: { name: toolName, title: 'Tool', arguments: args } }],
                     },
                 } });
                 for (let index = 0; index < 8; index += 1) await Promise.resolve();
@@ -740,9 +741,9 @@ describe('AiChat conversation lifecycle', () => {
         render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
         await act(async () => {
             getLatestMainVoiceOptions().onEvent({ kind: 'tool_status', data: { workflow: { name: 'set_procedure_plan',
-                goal: 'Show map', tools: [{ tool: { name: 'append_procedure_plan', title: 'Append', arguments: {
-                    workflow: { name: 'append_procedure_plan', tools: [{ tool: { name: 'show_map', title: 'Map', arguments: {} } }] },
-                } } }, { tool: { name: 'show_map', title: 'Map', arguments: {} } }],
+                goal: 'Show map', operations: [{ operation: { name: 'append_procedure_plan', title: 'Append', arguments: {
+                    workflow: { name: 'append_procedure_plan', operations: [{ operation: { name: 'show_map', title: 'Map', arguments: {} } }] },
+                } } }, { operation: { name: 'show_map', title: 'Map', arguments: {} } }],
             } } });
         });
         expect(handler).toHaveBeenCalledTimes(1);
@@ -757,7 +758,7 @@ describe('AiChat conversation lifecycle', () => {
         const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
         (createAiCommandRegistry as jest.Mock).mockReturnValue({ 'show_map': handler });
         render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
-        const input = { workflow: { name: 'set_procedure_plan', goal: 'Map', tools: [{ tool: { name: 'show_map', title: 'Map', arguments: {} } }] } };
+        const input = { workflow: { name: 'set_procedure_plan', goal: 'Map', operations: [{ operation: { name: 'show_map', title: 'Map', arguments: {} } }] } };
         act(() => {
             const { onEvent } = getLatestMainVoiceOptions();
             onEvent({ kind: 'user_transcript', text: 'Stop the plan.' });

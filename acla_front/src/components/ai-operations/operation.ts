@@ -1,3 +1,23 @@
+import type { FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+
+/** A workflow child call. The name may identify a tool or a workflow. */
+export type OperationCall<TMetadata> = {
+    operation: { name: FrontendOperationName } & TMetadata;
+};
+
+/** Read the explicit operation envelope without interpreting its arguments. */
+export const readOperationCall = (value: unknown): Record<string, unknown> | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Reflect.ownKeys(value).length !== 1
+        || !Object.prototype.hasOwnProperty.call(value, 'operation')) return null;
+    const operation = (value as Record<string, unknown>).operation;
+    if (!operation || typeof operation !== 'object' || Array.isArray(operation)
+        || !Object.prototype.hasOwnProperty.call(operation, 'name')) return null;
+    const call = operation as Record<string, unknown>;
+    return typeof call.name === 'string' && call.name.trim() === call.name && call.name.length > 0
+        ? call : null;
+};
+
 /**
  * Promise-native contract shared by frontend tools and workflows.
  *

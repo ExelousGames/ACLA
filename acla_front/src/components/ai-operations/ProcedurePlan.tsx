@@ -5,11 +5,13 @@ import {
     OPERATION_COMPONENT_NAMES,
     type NamedOperationComponentHandle,
 } from 'contexts/OperationComponentRefContext';
-import { bindWorkflowDispatcher, readToolCall, type ToolCall, type WorkflowDispatcher } from './tool';
+import { bindWorkflowDispatcher, type WorkflowDispatcher } from './tool';
 import type { FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import {
     createControlledOperation,
     createOperationFrom,
+    readOperationCall,
+    type OperationCall,
     type ControlledOperation,
     type Operation,
 } from './operation';
@@ -41,11 +43,11 @@ export type ProcedurePlanStepStatus = typeof PROCEDURE_PLAN_STEP_STATUSES[number
 
 export type ProcedurePlanInput = WorkflowCall<'set_procedure_plan', {
     goal: string;
-    tools: ToolCall<{ title: string; arguments: Record<string, unknown> }>[];
+    operations: OperationCall<{ title: string; arguments: Record<string, unknown> }>[];
 }>;
 
 export type AppendProcedurePlanInput = WorkflowCall<'append_procedure_plan', {
-    tools: ProcedurePlanInput['workflow']['tools'];
+    operations: ProcedurePlanInput['workflow']['operations'];
 }>;
 
 export type ProcedurePlanRequestSnapshot = {
@@ -655,16 +657,16 @@ export const buildProcedurePlan = (
 export const parseProcedurePlanInput = (value: unknown): ProcedurePlanState => {
     const invalid = (): never => {
         throw new InvalidProcedurePlanRequestsError(
-            'Provide workflow with name set_procedure_plan, a goal, and tools containing tool with name, title, and arguments each.',
+            'Provide workflow with name set_procedure_plan, a goal, and operations containing operation with name, title, and arguments each.',
         );
     };
     const input = readWorkflowCall(value, 'set_procedure_plan');
-    if (!input || Reflect.ownKeys(input).some((key) => key !== 'name' && key !== 'goal' && key !== 'tools')) return invalid();
+    if (!input || Reflect.ownKeys(input).some((key) => key !== 'name' && key !== 'goal' && key !== 'operations')) return invalid();
     if (!Object.prototype.hasOwnProperty.call(input, 'goal') || typeof input.goal !== 'string'
-        || !Array.isArray(input.tools) || input.tools.length === 0) return invalid();
+        || !Array.isArray(input.operations) || input.operations.length === 0) return invalid();
     const goal = input.goal.trim();
-    const requests = input.tools.map((value): ProcedurePlanRequestSnapshot => {
-        const metadata = readToolCall(value);
+    const requests = input.operations.map((value): ProcedurePlanRequestSnapshot => {
+        const metadata = readOperationCall(value);
         if (!metadata || Reflect.ownKeys(metadata).some((key) => key !== 'name' && key !== 'title' && key !== 'arguments')) return invalid();
         const name = metadata.name as string;
         const title = toNonEmptyString(metadata.title);
@@ -681,10 +683,10 @@ export const parseProcedurePlanInput = (value: unknown): ProcedurePlanState => {
 
 export const parseAppendProcedurePlanInput = (value: unknown): ProcedurePlanState => {
     const input = readWorkflowCall(value, 'append_procedure_plan');
-    if (!input || Reflect.ownKeys(input).some((key) => key !== 'name' && key !== 'tools')) {
-        throw new InvalidProcedurePlanRequestsError('Provide append_procedure_plan with tools.');
+    if (!input || Reflect.ownKeys(input).some((key) => key !== 'name' && key !== 'operations')) {
+        throw new InvalidProcedurePlanRequestsError('Provide append_procedure_plan with operations.');
     }
-    return parseProcedurePlanInput({ workflow: { name: 'set_procedure_plan', goal: '', tools: input.tools } });
+    return parseProcedurePlanInput({ workflow: { name: 'set_procedure_plan', goal: '', operations: input.operations } });
 };
 
 export const useProcedurePlanWorkflow = ({
@@ -753,7 +755,7 @@ export const useProcedurePlanWorkflow = ({
             if (runner?.getProcedurePlan()) return runner.appendProcedurePlan(input, dispatcher.workflowCaller);
             // Missing-target append starts independent execution and acknowledges immediately.
             const independent = Object.assign((...args: Parameters<WorkflowDispatcher>) => dispatcher(...args), { validate: dispatcher.validate });
-            startProcedurePlan({ workflow: { name: 'set_procedure_plan', goal: plan.goal, tools: input.workflow.tools } }, independent);
+            startProcedurePlan({ workflow: { name: 'set_procedure_plan', goal: plan.goal, operations: input.workflow.operations } }, independent);
             return asWorkflow(createOperationFrom(() => ({ status: 'advanced' as const, goal: plan.goal,
                 current_request: 0, task_results: [], request_count: plan.requests.length }), 'complete'));
         } catch (error) {

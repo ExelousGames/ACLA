@@ -106,18 +106,18 @@ describe('ModelCommandProtocolController', () => {
             expect(Object.keys(command.properties)).toEqual(['workflow']);
             expect(command.required).toEqual(['workflow']);
             expect(command.properties.workflow.additionalProperties).toBe(false);
-            expect(command.properties.workflow.properties.tools.items.properties.tool.oneOf.length).toBeGreaterThan(0);
+            expect(command.properties.workflow.properties.operations.items.properties.operation.oneOf.length).toBeGreaterThan(0);
         });
         [
             'get_live_range_todo_list',
             'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
         ].forEach((name) => {
             expect(commands.find((entry) => entry.name === name))
-                .toMatchObject({ properties: { workflow: { required: ['name', 'tools'], properties: { tools: { maxItems: 0 } } } }, required: ['workflow'] });
+                .toMatchObject({ properties: { workflow: { required: ['name', 'operations'], properties: { operations: { maxItems: 0 } } } }, required: ['workflow'] });
         });
         ['advance_plan_step', 'clear_procedure_plan'].forEach((name) => {
             const command = commands.find((entry) => entry.name === name) as any;
-            expect(Object.keys(command.properties.workflow.properties)).toEqual(['name', 'tools', 'reason']);
+            expect(Object.keys(command.properties.workflow.properties)).toEqual(['name', 'operations', 'reason']);
             expect(command.required).toEqual(['workflow']);
         });
     });

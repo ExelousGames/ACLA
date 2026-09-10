@@ -46,14 +46,14 @@ describe('explicit AI command envelopes', () => {
     it.each(definitions.filter(({ name, kind }) => kind === 'workflow' && ![
         'set_procedure_plan', 'create_repeatable_plan', 'add_event_to_live_range_todo_list',
         'append_procedure_plan', 'append_repeatable_plan', 'create_live_range_todo_list',
-    ].includes(name)))('requires the named empty tools list for $name', async (definition) => {
+    ].includes(name)))('requires the named empty operations list for $name', async (definition) => {
         const execute = jest.spyOn(definition, 'execute').mockImplementation(() => createOperation({ status: 'ready' }, 'ready') as any);
         try {
             const handler = createAiCommandRegistry({ sessionMode: 'live' })[definition.name] as any;
-            await handler({ workflow: { name: definition.name, tools: [] } }).result;
+            await handler({ workflow: { name: definition.name, operations: [] } }).result;
             expect(execute).toHaveBeenCalledTimes(1);
             execute.mockClear();
-            for (const input of [{}, { workflow: { name: definition.name } }, { workflow: { name: definition.name, tools: [{ tool: { name: 'show_map' } }] } }]) {
+            for (const input of [{}, { workflow: { name: definition.name } }, { workflow: { name: definition.name, operations: [{ operation: { name: 'show_map' } }] } }]) {
                 await expect(handler(input).result).rejects.toThrow();
             }
             expect(execute).not.toHaveBeenCalled();

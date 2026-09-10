@@ -39,14 +39,14 @@ jest.mock('contexts/OperationComponentRefContext', () => ({
 const procedure = (): ProcedurePlanInput => ({
     workflow: { name: 'set_procedure_plan',
         goal: 'Review telemetry',
-        tools: [{ tool: { name: 'query_analysis_result', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
+        operations: [{ operation: { name: 'query_analysis_result', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
     },
 });
 
 const repeatable = (): RepeatablePlanInput => ({
     workflow: { name: 'create_repeatable_plan',
         goal: 'Improve consistency',
-        tools: [{ tool: { name: 'query_analysis_result', id: 'read', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
+        operations: [{ operation: { name: 'query_analysis_result', id: 'read', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
         stop_when: {
             tool: { name: 'query_analysis_result', arguments: { query: '0' }  },
             operator: 'eq',
@@ -162,7 +162,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
         });
         let operation!: ReturnType<typeof registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list>;
         await act(async () => {
-            operation = registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', tools: [],  } });
+            operation = registry.add_filtered_driver_expert_comparisons_to_live_range_todo_list({ workflow: { name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list', operations: [],  } });
         });
         expect(prepareComparisonVoices).toHaveBeenCalledTimes(1);
 
@@ -192,7 +192,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
         const dispatch = Object.assign(jest.fn(() => child.operation), { validate: jest.fn() });
         const { ref } = renderPanel(dispatch);
         const input = procedure();
-        input.workflow.tools.push({ tool: { name: 'query_analysis_result', title: 'Next step', arguments: { query: '0' } } });
+        input.workflow.operations.push({ operation: { name: 'query_analysis_result', title: 'Next step', arguments: { query: '0' } } });
         let operation!: ReturnType<WorkflowPanelHandle['createProcedurePlan']> | ReturnType<WorkflowPanelHandle['createRepeatablePlan']>;
         act(() => {
             operation = kind === 'procedure'
@@ -215,7 +215,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
         expect(screen.queryByText(title)).not.toBeInTheDocument();
     });
 
-    it('registers each runner before dispatch and aborts replaced procedure and repeatable tools once', async () => {
+    it('registers each runner before dispatch and aborts replaced procedure and repeatable operations once', async () => {
         const children = [pendingTool(), pendingTool(), pendingTool()];
         const registrations: string[][] = [];
         const dispatch = Object.assign(jest.fn(() => {
@@ -274,9 +274,9 @@ describe('WorkflowPanel standalone lifecycle', () => {
             }),
         });
         const invalidProcedure = procedure();
-        invalidProcedure.workflow.tools.push({ tool: { name: 'show_map', title: 'Invalid later tool', arguments: {} } });
+        invalidProcedure.workflow.operations.push({ operation: { name: 'show_map', title: 'Invalid later tool', arguments: {} } });
         const invalidRepeatable = repeatable();
-        invalidRepeatable.workflow.tools.push({ tool: { name: 'show_map', id: 'invalid', title: 'Invalid later tool' } });
+        invalidRepeatable.workflow.operations.push({ operation: { name: 'show_map', id: 'invalid', title: 'Invalid later tool' } });
         const invalidStop = repeatable();
         invalidStop.workflow.stop_when.tool = { name: 'show_map' };
 

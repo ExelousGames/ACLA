@@ -597,7 +597,7 @@ const queueFilteredDriverExpertComparisons = async (
         // Telemetry can drain and dispose the queue while voices are being prepared.
         const current = getDirectory(context).findComponentRef<LiveRangeTodoListHandle>(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)?.current;
         const queuedIds = new Set(current?.get().todo_list?.events.map((event) => event.id) ?? []);
-        const tools: LiveRangeTodoListInput['workflow']['tools'] = [];
+        const operations: LiveRangeTodoListInput['workflow']['operations'] = [];
         pending.forEach((comparison) => {
             if (queuedIds.has(comparison.eventId)) {
                 result.skipped_segments.push({
@@ -610,7 +610,7 @@ const queueFilteredDriverExpertComparisons = async (
             comparison.leadTimeSeconds = Math.max(
                 comparison.replayDurationMs, voiceDurations[comparison.segmentId],
             ) / 1000 + 2;
-            tools.push({ tool: { name: 'display_specific_result_in_overlay', event: {
+            operations.push({ operation: { name: 'display_specific_result_in_overlay', event: {
                 id: comparison.eventId,
                 normalized_position: comparison.normalizedPosition,
                 lead_time_seconds: comparison.leadTimeSeconds,
@@ -623,9 +623,9 @@ const queueFilteredDriverExpertComparisons = async (
                 }, arguments: { page_id: snapshot.activePageId, result_id: comparison.segmentId } } });
             result.queued_count += 1;
         });
-        if (tools.length) {
+        if (operations.length) {
             const appended = getComponent<WorkflowPanelHandle>(context, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL)
-                .appendLiveRangeTodoList({ workflow: { name: 'add_event_to_live_range_todo_list', tools } }, dispatchNested);
+                .appendLiveRangeTodoList({ workflow: { name: 'add_event_to_live_range_todo_list', operations } }, dispatchNested);
             const output = await appended.result;
             if (output instanceof Error) throw output;
         }
@@ -933,7 +933,7 @@ export type AiCommandRegistry = {
             args: ToolCall<{ arguments?: Parameters<RawAiCommandRegistry[Name]>[0] }>,
         ) => ReturnType<RawAiCommandRegistry[Name]>)
         : (args: Name extends keyof WorkflowInputMap ? WorkflowInputMap[Name]
-            : WorkflowCall<Name & FrontendWorkflowName, { tools: []; reason?: string }>) => ReturnType<RawAiCommandRegistry[Name]>;
+            : WorkflowCall<Name & FrontendWorkflowName, { operations: []; reason?: string }>) => ReturnType<RawAiCommandRegistry[Name]>;
 };
 
 const definitions = Object.fromEntries(
@@ -986,10 +986,10 @@ const dispatchOperation = (
             && name !== 'append_procedure_plan' && name !== 'append_repeatable_plan') {
             const call = readWorkflowCall(args, definition.name);
             const supportsReason = name === 'advance_plan_step' || name === 'clear_procedure_plan';
-            if (!call || !Array.isArray(call.tools) || call.tools.length !== 0
-                || Reflect.ownKeys(call).some((key) => key !== 'name' && key !== 'tools' && !(supportsReason && key === 'reason'))
+            if (!call || !Array.isArray(call.operations) || call.operations.length !== 0
+                || Reflect.ownKeys(call).some((key) => key !== 'name' && key !== 'operations' && !(supportsReason && key === 'reason'))
                 || (call.reason !== undefined && typeof call.reason !== 'string')) {
-                throw new InvalidOperationCallError(`Provide workflow with name '${name}' and an empty tools list.`);
+                throw new InvalidOperationCallError(`Provide workflow with name '${name}' and an empty operations list.`);
             }
             args = call.reason !== undefined ? { reason: call.reason } : {};
         }

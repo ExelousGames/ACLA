@@ -1,6 +1,7 @@
+import { readOperationCall } from './operation';
 import { InvalidLiveRangeTodoListError } from 'contexts/OperationComponentError';
 import { OPERATION_COMPONENT_NAMES } from 'contexts/OperationComponentRefContext';
-import { readToolCall, type WorkflowDispatcher } from './tool';
+import type { WorkflowDispatcher } from './tool';
 import { readWorkflowCall } from './workflow';
 import type { FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import type { LiveRangeTodoEventInput } from './live-range-todo-list-types';
@@ -50,7 +51,7 @@ const isJsonSafe = (value: unknown, ancestors = new Set<object>()): boolean => {
 
 type PreparedLiveRangeTodoEvent = {
     event: Omit<LiveRangeTodoEventInput, 'taskStart'>;
-    tool: {
+    operation: {
         name: FrontendOperationName;
         arguments: Record<string, unknown>;
     };
@@ -64,21 +65,21 @@ export const validateLiveRangeTodoBatch = (
     const input = readWorkflowCall(args, workflowName);
     if (!input) invalidLiveRangeTodoList(`Provide workflow with name ${workflowName}.`);
     const request = input as Record<string, unknown>;
-    assertExactKeys(request, ['name', 'tools'], 'Live range to-do request');
-    if (!Array.isArray(request.tools) || request.tools.length === 0) {
-        invalidLiveRangeTodoList('Provide at least one tool to schedule.');
+    assertExactKeys(request, ['name', 'operations'], 'Live range to-do request');
+    if (!Array.isArray(request.operations) || request.operations.length === 0) {
+        invalidLiveRangeTodoList('Provide at least one operation to schedule.');
     }
-    const rawEvents = request.tools as unknown[];
+    const rawEvents = request.operations as unknown[];
 
     const ids = new Set<string>();
     return rawEvents.map((item, index) => {
         const itemLabel = `Live range to-do item ${index + 1}`;
-        const toolValue = readToolCall(item);
-        if (!toolValue) invalidLiveRangeTodoList(`${itemLabel} requires tool with a name.`);
-        const rawItem = toolValue as Record<string, unknown>;
-        const toolName = rawItem.name as string;
+        const operationValue = readOperationCall(item);
+        if (!operationValue) invalidLiveRangeTodoList(`${itemLabel} requires operation with a name.`);
+        const rawItem = operationValue as Record<string, unknown>;
+        const operationName = rawItem.name as string;
         try {
-            dispatchNested.validate(toolName);
+            dispatchNested.validate(operationName);
         } catch (error) {
             invalidLiveRangeTodoList(error instanceof Error ? error.message : String(error));
         }
@@ -128,17 +129,17 @@ export const validateLiveRangeTodoBatch = (
             invalidLiveRangeTodoList(`Event '${id}' content description must be a string.`);
         }
 
-        const rawTool = rawItem;
-        if (!hasOwn(rawTool, 'arguments') || !isRecord(rawTool.arguments)) {
-            invalidLiveRangeTodoList(`Scheduled tool '${toolName}' requires an arguments object.`);
+        const rawOperation = rawItem;
+        if (!hasOwn(rawOperation, 'arguments') || !isRecord(rawOperation.arguments)) {
+            invalidLiveRangeTodoList(`Scheduled operation '${operationName}' requires an arguments object.`);
         }
-        if (!isJsonSafe(rawTool.arguments)) {
-            invalidLiveRangeTodoList(`Scheduled tool '${toolName}' arguments must be JSON-safe.`);
+        if (!isJsonSafe(rawOperation.arguments)) {
+            invalidLiveRangeTodoList(`Scheduled operation '${operationName}' arguments must be JSON-safe.`);
         }
         const normalizedPosition = rawEvent.normalized_position as number;
         const leadTimeSeconds = rawEvent.lead_time_seconds as number | undefined;
         const description = rawContent.description as string | undefined;
-        const toolArguments = rawTool.arguments as Record<string, unknown>;
+        const operationArguments = rawOperation.arguments as Record<string, unknown>;
 
         return {
             event: {
@@ -154,9 +155,9 @@ export const validateLiveRangeTodoBatch = (
                         : {}),
                 },
             },
-            tool: {
-                name: toolName as FrontendOperationName,
-                arguments: JSON.parse(JSON.stringify(toolArguments)),
+            operation: {
+                name: operationName as FrontendOperationName,
+                arguments: JSON.parse(JSON.stringify(operationArguments)),
             },
         };
     });

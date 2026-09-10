@@ -493,7 +493,7 @@ const toolDispatcher = (dispatch: (...args: any[]) => ReturnType<ToolDispatcher>
 const toInput = (request: GoalRequest): RepeatablePlanInput => ({
     workflow: { name: 'create_repeatable_plan',
         goal: request.name,
-        tools: request.steps.map(({ name, ...metadata }) => ({ tool: { name: name, ...metadata } })) as unknown as RepeatablePlanInput['workflow']['tools'],
+        operations: request.steps.map(({ name, ...metadata }) => ({ operation: { name: name, ...metadata } })) as unknown as RepeatablePlanInput['workflow']['operations'],
         stop_when: {
             ...request.stop_when,
             tool: { name: request.stop_when.tool.name,

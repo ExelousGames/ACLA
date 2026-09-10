@@ -44,9 +44,9 @@ const MODEL_COMMAND_DEFINITIONS = [
 {
   "workflow": {
     "name": "append_procedure_plan",
-    "tools": [
+    "operations": [
       {
-        "tool": {
+        "operation": {
           "name": "show_map",
           "title": "Show map",
           "arguments": {}
@@ -58,17 +58,17 @@ const MODEL_COMMAND_DEFINITIONS = [
 \`\`\``,
         ].join(' '),
         properties: {
-            tools: {
+            operations: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered tool calls. Each entry contains tool with a name; repeated calls to the same tool are allowed. Tool and workflow commands can be nested.',
+                description: 'Ordered operation calls. Each entry contains operation with a name; repeated calls to the same tool are allowed. Tool and workflow commands can be nested.',
                 items: {
                     type: 'object',
                     properties: {
                         title: { type: 'string', minLength: 1, pattern: '\\S' },
                         arguments: {
                             type: 'object',
-                            description: 'Arguments passed unchanged to the nested tool.',
+                            description: 'Arguments passed unchanged to the nested operation.',
                         },
                     },
                     required: ['title', 'arguments'],
@@ -76,7 +76,7 @@ const MODEL_COMMAND_DEFINITIONS = [
                 },
             },
         },
-        required: ['tools'],
+        required: ['operations'],
     },
     {
         name: 'append_repeatable_plan',
@@ -87,9 +87,9 @@ const MODEL_COMMAND_DEFINITIONS = [
 {
   "workflow": {
     "name": "append_repeatable_plan",
-    "tools": [
+    "operations": [
       {
-        "tool": {
+        "operation": {
           "name": "show_map",
           "title": "Show map",
           "arguments": {},
@@ -102,23 +102,23 @@ const MODEL_COMMAND_DEFINITIONS = [
 \`\`\``,
         ].join(' '),
         properties: {
-            tools: {
+            operations: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered tool calls. Each entry contains tool with a name, and every id must be unique. Tool and workflow commands can be nested.',
+                description: 'Ordered operation calls. Each entry contains operation with a name, and every id must be unique. Tool and workflow commands can be nested.',
                 items: {
                     type: 'object',
                     properties: {
                         id: { type: 'string', description: 'Unique stable step id.' },
                         title: { type: 'string', description: 'Short step label displayed to the user.' },
-                        arguments: { type: 'object', default: {}, description: 'Arguments passed unchanged to the nested tool. Defaults to {}.' },
+                        arguments: { type: 'object', default: {}, description: 'Arguments passed unchanged to the nested operation. Defaults to {}.' },
                     },
                     required: ['id', 'title'],
                     additionalProperties: false,
                 },
             },
         },
-        required: ['tools'],
+        required: ['operations'],
     },
     {
         name: 'create_live_range_todo_list',
@@ -129,9 +129,9 @@ const MODEL_COMMAND_DEFINITIONS = [
 {
   "workflow": {
     "name": "create_live_range_todo_list",
-    "tools": [
+    "operations": [
       {
-        "tool": {
+        "operation": {
           "name": "set_procedure_plan",
           "event": {
             "id": "review",
@@ -144,9 +144,9 @@ const MODEL_COMMAND_DEFINITIONS = [
             "workflow": {
               "name": "set_procedure_plan",
               "goal": "Review map",
-              "tools": [
+              "operations": [
                 {
-                  "tool": {
+                  "operation": {
                     "name": "show_map",
                     "title": "Show map",
                     "arguments": {}
@@ -163,10 +163,10 @@ const MODEL_COMMAND_DEFINITIONS = [
 \`\`\``,
         ].join(' '),
         properties: {
-            tools: {
+            operations: {
                 type: 'array',
                 minItems: 1,
-                description: 'Explicit events for a new queue, replacing the existing queue of this type. Each entry contains tool with a name and an event id unique within the batch. Tool and workflow commands can be nested; workflow arguments contain the complete native workflow envelope.',
+                description: 'Explicit events for a new queue, replacing the existing queue of this type. Each entry contains operation with a name and an event id unique within the batch. Tool and workflow commands can be nested; workflow arguments contain the complete native workflow envelope.',
                 items: {
                     type: 'object',
                     properties: {
@@ -189,14 +189,14 @@ const MODEL_COMMAND_DEFINITIONS = [
                             required: ['id', 'normalized_position', 'content'],
                             additionalProperties: false,
                         },
-                        arguments: { type: 'object', description: 'JSON-safe arguments passed unchanged to the nested tool.' },
+                        arguments: { type: 'object', description: 'JSON-safe arguments passed unchanged to the nested operation.' },
                     },
                     required: ['event', 'arguments'],
                     additionalProperties: false,
                 },
             },
         },
-        required: ['tools'],
+        required: ['operations'],
     },
 
     {
@@ -229,21 +229,21 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'add_event_to_live_range_todo_list',
         description: [
             'Create replaces only its own workflow type and waits for execution to finish. Creation cannot replace the executing workflow or an active ancestor; independent same-type replacement is allowed. Append acknowledges insertion immediately and may target itself or an independent workflow, but never an ancestor or descendant. Showing a workflow preserves other types and does not automatically restore a parent.',
-            'Atomically append executable events to the session Live Range To-do List, including a hidden queue. AI Chat mounts the list when needed. Each nested tool runs only when telemetry makes its event due; this add call returns the updated list summary immediately after insertion.',
+            'Atomically append executable events to the session Live Range To-do List, including a hidden queue. AI Chat mounts the list when needed. Each nested operation runs only when telemetry makes its event due; this add call returns the updated list summary immediately after insertion.',
             'Use the native tool call channel. The arguments object must use workflow as its single outer key, with name set to add_event_to_live_range_todo_list.',
-            'Inside that wrapper, provide an explicit ordered tools list. Each child has a tool object with a name allowed by the current catalog child schema. Children may be tools or workflows. A workflow child receives its complete native workflow envelope inside arguments. Do not include prose-only tasks or hidden steps.',
-            'Preserve each child\'s tool-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
+            'Inside that wrapper, provide an explicit ordered operations list. Each child has an operation object with a name allowed by the current catalog child schema. Children may be tools or workflows. A workflow child receives its complete native workflow envelope inside arguments. Do not include prose-only tasks or hidden steps.',
+            'Preserve each child\'s operation-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
             'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, tool-name keys, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
-            'Keep metadata inside the tool object event: id, normalized_position, optional lead_time_seconds, and content with title and optional description. Keep the required arguments object alongside event, using {} for a tool with no inputs.',
-            'Appending to a missing queue starts independent execution. The immediate insertion summary does not mean the nested tools have run. Wait for the later event results before describing their outcomes.',
+            'Keep metadata inside the operation object event: id, normalized_position, optional lead_time_seconds, and content with title and optional description. Keep the required arguments object alongside event, using {} for an operation with no inputs.',
+            'Appending to a missing queue starts independent execution. The immediate insertion summary does not mean the nested operations have run. Wait for the later event results before describing their outcomes.',
             `Example native arguments:
 \`\`\`json
 {
   "workflow": {
     "name": "add_event_to_live_range_todo_list",
-    "tools": [
+    "operations": [
       {
-        "tool": {
+        "operation": {
           "name": "show_map",
           "event": {
             "id": "spa-opening-map",
@@ -267,10 +267,10 @@ const MODEL_COMMAND_DEFINITIONS = [
 \`\`\``,
         ].join(' '),
         properties: {
-            tools: {
+            operations: {
                 type: 'array',
                 minItems: 1,
-                description: 'Explicit tool events to append without replacing the existing queue. Each entry contains tool with a name. Every event id must be unique in this batch and the active list. Tool and workflow commands can be nested.',
+                description: 'Explicit operation events to append without replacing the existing queue. Each entry contains operation with a name. Every event id must be unique in this batch and the active list. Tool and workflow commands can be nested.',
                 items: {
                     type: 'object',
                     properties: {
@@ -293,14 +293,14 @@ const MODEL_COMMAND_DEFINITIONS = [
                             required: ['id', 'normalized_position', 'content'],
                             additionalProperties: false,
                         },
-                        arguments: { type: 'object', description: 'JSON-safe arguments passed unchanged to the nested tool.' },
+                        arguments: { type: 'object', description: 'JSON-safe arguments passed unchanged to the nested operation.' },
                     },
                     required: ['event', 'arguments'],
                     additionalProperties: false,
                 },
             },
         },
-        required: ['tools'],
+        required: ['operations'],
     },
     {
         name: 'get_live_range_todo_list',
@@ -422,12 +422,12 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'create_repeatable_plan',
         description: [
             'Create replaces only its own workflow type and waits for execution to finish. Creation cannot replace the executing workflow or an active ancestor; independent same-type replacement is allowed. Append acknowledges insertion immediately and may target itself or an independent workflow, but never an ancestor or descendant. Showing a workflow preserves other types and does not automatically restore a parent.',
-            'Create one repeatable plan per AI session that executes ordered model command calls, checks a numeric stopping condition, and repeats the plan until the condition is met. Repetition continues until the target is reached, an error occurs, or the user cancels the plan. The stop-when tool call must return { "status": "ready", "data": finiteNumber }. The operator compares the returned data with the target, so both values must be finite numbers measured on the same scale.',
+            'Create one repeatable plan per AI session that executes ordered model command calls, checks a numeric stopping condition, and repeats the plan until the condition is met. Repetition continues until the target is reached, an error occurs, or the user cancels the plan. The stop-when operation call must return { "status": "ready", "data": finiteNumber }. The operator compares the returned data with the target, so both values must be finite numbers measured on the same scale.',
             'Use the native tool call channel. The arguments object must use workflow as its single outer key, with name set to create_repeatable_plan.',
-            'Inside that wrapper, provide an explicit ordered tools list. Each child has a tool object with a name allowed by the current catalog child schema. Children may be tools or workflows. A workflow child receives its complete native workflow envelope inside arguments. Do not include prose-only tasks or hidden steps.',
-            'Preserve each child\'s tool-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
+            'Inside that wrapper, provide an explicit ordered operations list. Each child has an operation object with a name allowed by the current catalog child schema. Children may be tools or workflows. A workflow child receives its complete native workflow envelope inside arguments. Do not include prose-only tasks or hidden steps.',
+            'Preserve each child\'s operation-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
             'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, tool-name keys, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
-            'Each tool object contains a name, a unique id, title, and arguments. stop_when.tool also contains a name and arguments, and may name a tool or workflow; the finite numeric result requirement still applies. Child and stop-check arguments may be omitted only when the chosen tool needs no inputs.',
+            'Each operation object contains a name, a unique id, title, and arguments. stop_when.tool contains a tool name and arguments; workflows are not allowed as stop checks. The finite numeric result requirement still applies. Child and stop-check arguments may be omitted only when the chosen operation needs no inputs.',
             'Appended steps join the current pass before the next stop check and remain in later passes. Appends during a check or retry delay run before a fresh check. Completion releases stored state and registration; failed steps remain retryable until completion, replacement, or clearing. The application executes the ordered calls and stop check. Wait for its later results before reporting completion; do not run the subscribed children again yourself.',
             'For a five-lap analysis, collect a full_lap baseline, analyze it, and query $count(analyses) until at least five analyzed laps are retained. This target counts all retained analyses, including any that already exist.',
             `Example native arguments:
@@ -435,9 +435,9 @@ const MODEL_COMMAND_DEFINITIONS = [
 {
   "workflow": {
     "name": "create_repeatable_plan",
-    "tools": [
+    "operations": [
       {
-        "tool": {
+        "operation": {
           "name": "collect_live_baseline",
           "id": "collect",
           "title": "Record a full lap",
@@ -449,7 +449,7 @@ const MODEL_COMMAND_DEFINITIONS = [
         }
       },
       {
-        "tool": {
+        "operation": {
           "name": "analyze_live_recorded_analysis",
           "id": "analyze",
           "title": "Analyze the recorded lap"
@@ -476,16 +476,16 @@ const MODEL_COMMAND_DEFINITIONS = [
                 type: 'string',
                 description: 'Short name displayed on the repeatable plan card.',
             },
-            tools: {
+            operations: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered tool calls. Each entry contains tool with a name, and every id must be unique. Tool and workflow commands can be nested.',
+                description: 'Ordered operation calls. Each entry contains operation with a name, and every id must be unique. Tool and workflow commands can be nested.',
                 items: {
                     type: 'object',
                     properties: {
                         id: { type: 'string', description: 'Unique stable step id.' },
                         title: { type: 'string', description: 'Short step label displayed to the user.' },
-                        arguments: { type: 'object', default: {}, description: 'Arguments passed unchanged to the nested tool. Defaults to {}.' },
+                        arguments: { type: 'object', default: {}, description: 'Arguments passed unchanged to the nested operation. Defaults to {}.' },
                     },
                     required: ['id', 'title'],
                     additionalProperties: false,
@@ -511,7 +511,7 @@ const MODEL_COMMAND_DEFINITIONS = [
                 additionalProperties: false,
             },
         },
-        required: ['goal', 'tools', 'stop_when'],
+        required: ['goal', 'operations', 'stop_when'],
     },
     {
         name: 'advance_plan_step',
@@ -543,12 +543,12 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'set_procedure_plan',
         description: [
             'Create replaces only its own workflow type and waits for execution to finish. Creation cannot replace the executing workflow or an active ancestor; independent same-type replacement is allowed. Append acknowledges insertion immediately and may target itself or an independent workflow, but never an ancestor or descendant. Showing a workflow preserves other types and does not automatically restore a parent.',
-            'Create or replace the session procedure plan, including a hidden instance, to execute ordered tools through the active AI session subscription. Each tool call executes sequentially, and the plan ends when the last call is complete. The plan can be cleared or terminated with clear_procedure_plan.',
+            'Create or replace the session procedure plan, including a hidden instance, to execute ordered operations through the active AI session subscription. Each operation call executes sequentially, and the plan ends when the last call is complete. The plan can be cleared or terminated with clear_procedure_plan.',
             'Use the native tool call channel. The arguments object must use workflow as its single outer key, with name set to set_procedure_plan.',
-            'Inside that wrapper, provide an explicit ordered tools list. Each child has a tool object with a name allowed by the current catalog child schema. Children may be tools or workflows. A workflow child receives its complete native workflow envelope inside arguments. Do not include prose-only tasks or hidden steps.',
-            'Preserve each child\'s tool-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
+            'Inside that wrapper, provide an explicit ordered operations list. Each child has an operation object with a name allowed by the current catalog child schema. Children may be tools or workflows. A workflow child receives its complete native workflow envelope inside arguments. Do not include prose-only tasks or hidden steps.',
+            'Preserve each child\'s operation-specific arguments object unchanged. Do not unwrap, flatten, rename, or reinterpret keys inside it.',
             'No legacy compatibility: do not use unwrapped creation bodies, requests/steps/events lists, tool-name keys, or payload/args/parameters aliases for child arguments. Result and state fields are not creation inputs.',
-            'Each tool object contains a name, title and arguments; arguments is required, using {} for a tool with no inputs.',
+            'Each operation object contains a name, title and arguments; arguments is required, using {} for a tool with no inputs.',
             'A procedure plan is active when procedure_plan exists in session context or a tool result includes goal, requests, and current_request. The application owns visible plan state and subscribed request execution.',
             'The creation operation waits for every child to terminate. Native AI calls return their results later. Use the later tool result or user message before deciding what to say or whether another plan step should advance. Do not execute subscribed children again yourself.',
             'Do not skip, clear, replace, or abandon an active plan unless the driver explicitly asks to cancel, clear, stop, skip, or opt out of the plan.',
@@ -558,17 +558,17 @@ const MODEL_COMMAND_DEFINITIONS = [
   "workflow": {
     "name": "set_procedure_plan",
     "goal": "Review the Spa opening section",
-    "tools": [
+    "operations": [
       {
-        "tool": {
+        "operation": {
           "name": "append_procedure_plan",
           "title": "Queue the map review",
           "arguments": {
             "workflow": {
               "name": "append_procedure_plan",
-              "tools": [
+              "operations": [
                 {
-                  "tool": {
+                  "operation": {
                     "name": "show_map",
                     "title": "Show map",
                     "arguments": {}
@@ -589,17 +589,17 @@ const MODEL_COMMAND_DEFINITIONS = [
                 type: 'string',
                 description: 'Short goal shown above the request list.',
             },
-            tools: {
+            operations: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered tool calls. Each entry contains tool with a name; repeated calls to the same tool are allowed. Tool and workflow commands can be nested.',
+                description: 'Ordered operation calls. Each entry contains operation with a name; repeated calls to the same tool are allowed. Tool and workflow commands can be nested.',
                 items: {
                     type: 'object',
                     properties: {
                         title: { type: 'string', minLength: 1, pattern: '\\S' },
                         arguments: {
                             type: 'object',
-                            description: 'Arguments passed unchanged to the nested tool.',
+                            description: 'Arguments passed unchanged to the nested operation.',
                         },
                     },
                     required: ['title', 'arguments'],
@@ -607,7 +607,7 @@ const MODEL_COMMAND_DEFINITIONS = [
                 },
             },
         },
-        required: ['goal', 'tools'],
+        required: ['goal', 'operations'],
     },
     {
         name: 'get_next_corner',
@@ -924,12 +924,12 @@ const getAllowedToolNames = (
     ]);
 };
 
-const createToolBodySchema = (
-    toolNames: ModelCommandName[],
+const createOperationBodySchema = (
+    operationNames: ModelCommandName[],
     metadata: { properties: object; required: readonly string[] },
 ) => ({
     type: 'object',
-    oneOf: toolNames.map((name) => ({
+    oneOf: operationNames.map((name) => ({
         type: 'object',
         properties: { name: { type: 'string', enum: [name] }, ...metadata.properties },
         required: ['name', ...metadata.required],
@@ -937,13 +937,13 @@ const createToolBodySchema = (
     })),
 });
 
-const createToolCallSchema = (
-    toolNames: ModelCommandName[],
+const createOperationCallSchema = (
+    operationNames: ModelCommandName[],
     metadata: { properties: object; required: readonly string[] },
 ) => ({
     type: 'object',
-    properties: { tool: createToolBodySchema(toolNames, metadata) },
-    required: ['tool'],
+    properties: { operation: createOperationBodySchema(operationNames, metadata) },
+    required: ['operation'],
     additionalProperties: false,
 });
 
@@ -955,7 +955,7 @@ type ModelCommandSchema = {
 };
 
 const expandWorkflowSchemas = (commands: readonly ModelCommandDefinition[]): ModelCommandSchema[] => {
-    const nestedToolNames = commands
+    const nestedOperationNames = commands
         .map(({ name }) => name);
 
     return commands.map((command) => {
@@ -991,16 +991,16 @@ const expandWorkflowSchemas = (commands: readonly ModelCommandDefinition[]): Mod
             && command.name !== 'append_repeatable_plan'
         ) return {
             ...command,
-            description: `${command.description} Use native arguments { "workflow": { "name": "${command.name}", "tools": [] } }. Put any optional reason inside workflow. This command uses the existing workflow, so tools must be empty.`,
+            description: `${command.description} Use native arguments { "workflow": { "name": "${command.name}", "operations": [] } }. Put any optional reason inside workflow. This command uses the existing workflow, so operations must be empty.`,
             properties: {
                 workflow: {
                     type: 'object',
                     properties: {
                         name: { type: 'string', enum: [command.name] },
-                        tools: { type: 'array', items: {}, maxItems: 0 },
+                        operations: { type: 'array', items: {}, maxItems: 0 },
                         ...command.properties,
                     },
-                    required: ['name', 'tools', ...command.required],
+                    required: ['name', 'operations', ...command.required],
                     additionalProperties: false,
                 },
             },
@@ -1010,9 +1010,9 @@ const expandWorkflowSchemas = (commands: readonly ModelCommandDefinition[]): Mod
         const properties = {
             name: { type: 'string', enum: [command.name] },
             ...command.properties,
-            tools: {
-                ...command.properties.tools,
-                items: createToolCallSchema(nestedToolNames, command.properties.tools.items),
+            operations: {
+                ...command.properties.operations,
+                items: createOperationCallSchema(nestedOperationNames, command.properties.operations.items),
             },
             ...(command.name === 'create_repeatable_plan' ? {
                 stop_when: {
@@ -1020,8 +1020,8 @@ const expandWorkflowSchemas = (commands: readonly ModelCommandDefinition[]): Mod
                     properties: {
                         ...command.properties.stop_when.properties,
                         tool: {
-                            ...createToolBodySchema(
-                                nestedToolNames,
+                            ...createOperationBodySchema(
+                                nestedOperationNames.filter((name) => !WORKFLOW_COMMAND_NAMES.has(name)),
                                 command.properties.stop_when.properties.tool,
                             ),
                             description: command.properties.stop_when.properties.tool.description,

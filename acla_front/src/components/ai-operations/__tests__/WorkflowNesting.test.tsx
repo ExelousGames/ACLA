@@ -26,12 +26,12 @@ jest.mock('contexts/OperationComponentRefContext', () => ({
 const names = { procedure: 'set_procedure_plan', repeatable: 'create_repeatable_plan', live: 'create_live_range_todo_list' } as const;
 type Kind = keyof typeof names;
 const componentNames = { procedure: 'procedure-plan', repeatable: 'repeatable-plan', live: 'live-range-todo-list' };
-const step = (kind: Kind, id: string, name = 'query_analysis_result', args: object = { query: id }) => ({ tool: {
+const step = (kind: Kind, id: string, name = 'query_analysis_result', args: object = { query: id }) => ({ operation: {
     name, arguments: args,
     ...(kind === 'live' ? { event: { id, normalized_position: 0.2, lead_time_seconds: 0, content: { title: id } } }
         : { title: id, ...(kind === 'repeatable' ? { id } : {}) }),
 } });
-const input = (kind: Kind, tools = [step(kind, 'wait')]): any => ({ workflow: { name: names[kind], tools,
+const input = (kind: Kind, operations = [step(kind, 'wait')]): any => ({ workflow: { name: names[kind], operations,
     ...(kind === 'live' ? {} : { goal: kind }),
     ...(kind === 'repeatable' ? { stop_when: { tool: { name: 'query_analysis_result', arguments: { query: 'stop' } }, operator: 'eq', target: 1 } } : {}),
 } });
@@ -53,9 +53,9 @@ const setup = () => {
     const create = (kind: Kind, value = input(kind), caller?: WorkflowComponentBase<any>) => (
         (createAiCommandRegistry({ ...context, workflowCaller: caller })[names[kind]] as any)(value)
     );
-    const append = (kind: Kind, id = 'added', caller?: WorkflowComponentBase<any>, tools = [step(kind, id)]) => {
+    const append = (kind: Kind, id = 'added', caller?: WorkflowComponentBase<any>, operations = [step(kind, id)]) => {
         const name = kind === 'live' ? 'add_event_to_live_range_todo_list' : `append_${kind}_plan`;
-        return (createAiCommandRegistry({ ...context, workflowCaller: caller }) as any)[name]({ workflow: { name, tools } });
+        return (createAiCommandRegistry({ ...context, workflowCaller: caller }) as any)[name]({ workflow: { name, operations } });
     };
     return { ...view, waiting, query, registry, ref, create, append };
 };
@@ -209,9 +209,9 @@ describe('nested workflow ownership and lifetime', () => {
         act(() => { test.create(kind); });
         const owner = runner(kind);
         const before = owner.getSnapshot();
-        for (const tools of [[step(kind, 'valid'), { tool: { name: 'query_analysis_result' } }],
+        for (const operations of [[step(kind, 'valid'), { operation: { name: 'query_analysis_result' } }],
             ...(kind === 'procedure' ? [] : [[step(kind, 'valid'), step(kind, 'wait')]])]) {
-            await act(async () => { await expect(test.append(kind, 'bad', undefined, tools as any).result).rejects.toBeInstanceOf(Error); });
+            await act(async () => { await expect(test.append(kind, 'bad', undefined, operations as any).result).rejects.toBeInstanceOf(Error); });
             expect(owner.getSnapshot()).toEqual(before);
         }
     });

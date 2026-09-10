@@ -16,9 +16,11 @@ export {
     createOperationFrom,
     mapOperation,
     resolvedOperation,
+    readOperationCall,
 } from './operation';
 export type {
     OperationKind,
+    OperationCall,
     OperationDispatcher,
     OperationNormalOutput,
     OperationExecutionOutput,

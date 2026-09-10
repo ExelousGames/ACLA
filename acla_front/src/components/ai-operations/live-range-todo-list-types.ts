@@ -1,5 +1,5 @@
-import type { ToolCall, WorkflowDispatcher } from './tool';
-import type { Operation } from './operation';
+import type { WorkflowDispatcher } from './tool';
+import type { Operation, OperationCall } from './operation';
 import type { Workflow, WorkflowCall } from './workflow';
 import type { AiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
 
@@ -11,14 +11,14 @@ export interface LiveRangeTodoContent {
 }
 
 export type LiveRangeTodoListInput = WorkflowCall<'add_event_to_live_range_todo_list', {
-    tools: ToolCall<{
+    operations: OperationCall<{
         event: Omit<LiveRangeTodoEventInput, 'taskStart'>;
         arguments: Record<string, unknown>;
     }>[];
 }>;
 
 export type CreateLiveRangeTodoListInput = WorkflowCall<'create_live_range_todo_list', {
-    tools: LiveRangeTodoListInput['workflow']['tools'];
+    operations: LiveRangeTodoListInput['workflow']['operations'];
 }>;
 
 export interface LiveRangeTodoEventInput {

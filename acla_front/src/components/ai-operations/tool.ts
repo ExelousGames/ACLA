@@ -1,5 +1,5 @@
 import type { Operation, OperationExecutionOutput, OperationStatusPayload } from './operation';
-import type { FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import type { FrontendOperationName, FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
 import type { WorkflowComponentBase } from './WorkflowComponentBase';
 import type { Workflow } from './workflow';
 
@@ -12,9 +12,9 @@ export interface Tool<
     readonly kind: 'tool';
 }
 
-/** Native step descriptor. Workflow arguments contain the complete workflow envelope. */
+/** Native tool call descriptor. Workflow children use OperationCall. */
 export type ToolCall<TMetadata> = {
-    tool: { name: FrontendOperationName } & TMetadata;
+    tool: { name: FrontendToolName } & TMetadata;
 };
 
 /** Read the explicit tool envelope without interpreting its arguments. */

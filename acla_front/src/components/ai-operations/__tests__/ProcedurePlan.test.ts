@@ -41,7 +41,7 @@ describe('ProcedurePlan descriptors', () => {
         expect(buildProcedurePlan({
             workflow: { name: 'set_procedure_plan',
                 goal: 'Review',
-                tools: [{ tool: { name: 'read', title: 'Read', arguments: {} } }],
+                operations: [{ operation: { name: 'read', title: 'Read', arguments: {} } }],
             },
         })).toMatchObject({
             goal: 'Review',
@@ -211,8 +211,8 @@ const toolDispatcher = (dispatch: (...args: any[]) => ReturnType<ToolDispatcher>
 const toInput = (plan: ProcedurePlanState): ProcedurePlanInput => ({
     workflow: { name: 'set_procedure_plan',
         goal: plan.goal,
-        tools: plan.requests.map((request) => ({
-            tool: { name: request.name!, title: request.title, arguments: request.payload ?? {} },
-        })) as unknown as ProcedurePlanInput['workflow']['tools'],
+        operations: plan.requests.map((request) => ({
+            operation: { name: request.name!, title: request.title, arguments: request.payload ?? {} },
+        })) as unknown as ProcedurePlanInput['workflow']['operations'],
     },
 });
