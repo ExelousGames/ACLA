@@ -31,7 +31,11 @@ const TELEMETRY_POD_EDGE_PADDING = 12;
 const DRIVER_MARKER_HALO_RADIUS = 11;
 const EXPERT_MARKER_HALO_RADIUS = 10;
 const FOLLOW_CAMERA_SCALE = 4;
-const CAMERA_HEADING_SMOOTHING_RADIUS = 2;
+const FOLLOW_CAMERA_TILT_RADIANS = Math.PI / 3;
+const CAMERA_NEAR_PLANE = 0.05;
+const GROUND_GRID_SPACING = 24;
+const GROUND_GRID_EXTENT = GROUND_GRID_SPACING * 50;
+const CAMERA_HEADING_SMOOTHING_RADIUS_MS = 500;
 const OVERVIEW_HOLD_DURATION_MS = 1_000;
 const CAMERA_FOCUS_DURATION_MS = 750;
 const DRIVER_CAMERA_ANCHOR_Y_RATIO = 2 / 3;
@@ -189,6 +193,13 @@ interface FollowCamera {
     anchorY: number;
     rotationRadians: number;
     project: (point: PositionedTrajectoryPoint | undefined) => PositionedTrajectoryPoint | undefined;
+    path: (points: readonly PositionedTrajectoryPoint[], closed?: boolean) => string;
+}
+
+interface CameraSpacePoint {
+    x: number;
+    y: number;
+    depth: number;
 }
 
 type TrackPresentationPhase = 'overview' | 'focusing' | 'following';
@@ -391,7 +402,7 @@ const buildDriverExpertReplay = (
     return {
         driver,
         expert,
-        durationMs: Math.max(
+        durationMs: Math.min(
             getReplayStreamDurationMs(driver),
             getReplayStreamDurationMs(expert),
         ),
@@ -615,133 +626,57 @@ const interpolateTrajectory = (
 
 const trajectoryDirection = (
     stream: readonly ReplayStreamPoint<PlottingTrajectoryPoint>[],
-    current: PlottingTrajectoryPoint | undefined,
-    lower: number,
-    upper: number,
     elapsedTimeMs: number,
 ): PlottingTrajectoryPoint | undefined => {
-    if (!current) return undefined;
+    if (stream.length < 2) return undefined;
+    const timeMs = clamp(elapsedTimeMs, 0, normalizedSampleTime(stream, stream.length - 1));
 
-    const directionBetween = (
-        from: PlottingTrajectoryPoint | undefined,
-        to: PlottingTrajectoryPoint | undefined,
-    ): PlottingTrajectoryPoint | undefined => {
-        if (!from || !to) return undefined;
-        const x = to.x - from.x;
-        const y = to.y - from.y;
-        const magnitude = Math.hypot(x, y);
-        return magnitude > POSITION_EPSILON
-            ? { x: x / magnitude, y: y / magnitude }
-            : undefined;
+    // Average travel directions over a raised-cosine time window. A fixed time
+    // window filters telemetry noise independently of sample density, and its
+    // smooth edges avoid restarting an ease-in/out at every sample boundary.
+    const cumulativeWeight = (sampleTimeMs: number): number => {
+        const offset = clamp(
+            (sampleTimeMs - timeMs) / CAMERA_HEADING_SMOOTHING_RADIUS_MS,
+            -1,
+            1,
+        );
+        return (1 + offset + (Math.sin(Math.PI * offset) / Math.PI)) / 2;
     };
-
-    const findDistinctTrajectoryIndex = (
-        startIndex: number,
-        step: -1 | 1,
-        origin: PlottingTrajectoryPoint,
-    ): number | undefined => {
-        for (
-            let index = startIndex;
-            index >= 0 && index < stream.length;
-            index += step
-        ) {
-            if (directionBetween(origin, stream[index].trajectory)) return index;
-        }
-        return undefined;
-    };
-
-    const adjacentDistinctTrajectoryIndexes = (
-        anchorIndex: number,
-        step: -1 | 1,
-    ): number[] => {
-        const indexes: number[] = [];
-        let index = anchorIndex;
-        let point = stream[index].trajectory;
-        if (!point) return indexes;
-
-        while (indexes.length < CAMERA_HEADING_SMOOTHING_RADIUS) {
-            const adjacentIndex = findDistinctTrajectoryIndex(index + step, step, point);
-            if (adjacentIndex === undefined) break;
-            indexes.push(adjacentIndex);
-            index = adjacentIndex;
-            point = stream[index].trajectory;
-            if (!point) break;
-        }
-        return indexes;
-    };
-
-    const smoothedDirectionAt = (
-        anchorIndex: number,
-    ): PlottingTrajectoryPoint | undefined => {
-        const anchor = stream[anchorIndex].trajectory;
-        if (!anchor) return undefined;
-
-        const previousIndexes = adjacentDistinctTrajectoryIndexes(anchorIndex, -1);
-        const nextIndexes = adjacentDistinctTrajectoryIndexes(anchorIndex, 1);
-        const centeredRadius = Math.min(previousIndexes.length, nextIndexes.length);
-        if (centeredRadius > 0) {
-            return directionBetween(
-                stream[previousIndexes[centeredRadius - 1]].trajectory,
-                stream[nextIndexes[centeredRadius - 1]].trajectory,
-            );
-        }
-
-        if (nextIndexes.length > 0) {
-            return directionBetween(anchor, stream[nextIndexes[0]].trajectory);
-        }
-        if (previousIndexes.length > 0) {
-            return directionBetween(stream[previousIndexes[0]].trajectory, anchor);
-        }
-        return undefined;
-    };
-
-    let previousIndex = lower;
-    while (previousIndex >= 0 && !stream[previousIndex].trajectory) previousIndex -= 1;
-    let nextIndex = upper;
-    while (nextIndex < stream.length && !stream[nextIndex].trajectory) nextIndex += 1;
-
-    const previous = previousIndex >= 0 ? stream[previousIndex].trajectory : undefined;
-    const next = nextIndex < stream.length ? stream[nextIndex].trajectory : undefined;
-    if (previous && next) {
-        const forwardIndex = findDistinctTrajectoryIndex(nextIndex, 1, previous);
-        if (forwardIndex !== undefined) {
-            const forwardPoint = stream[forwardIndex].trajectory;
-            const forward = smoothedDirectionAt(previousIndex)
-                ?? directionBetween(previous, forwardPoint);
-            const following = smoothedDirectionAt(forwardIndex)
-                ?? directionBetween(previous, forwardPoint);
-            if (!forward || !following) return forward;
-
+    let previousIndex: number | undefined;
+    let direction: PlottingTrajectoryPoint | undefined;
+    let fallback: PlottingTrajectoryPoint | undefined;
+    let x = 0;
+    let y = 0;
+    for (let index = 0; index < stream.length; index += 1) {
+        const point = stream[index].trajectory;
+        if (!point) continue;
+        if (previousIndex !== undefined) {
+            const previous = stream[previousIndex].trajectory!;
             const startTime = normalizedSampleTime(stream, previousIndex);
-            const endTime = normalizedSampleTime(stream, forwardIndex);
-            const segmentProgress = endTime <= startTime
-                ? 1
-                : clamp((elapsedTimeMs - startTime) / (endTime - startTime), 0, 1);
-            const turnProgress = easeInOut(segmentProgress);
-            const forwardAngle = Math.atan2(forward.y, forward.x);
-            const followingAngle = Math.atan2(following.y, following.x);
-            const shortestTurn = Math.atan2(
-                Math.sin(followingAngle - forwardAngle),
-                Math.cos(followingAngle - forwardAngle),
-            );
-            const smoothedAngle = forwardAngle + (shortestTurn * turnProgress);
-            return { x: Math.cos(smoothedAngle), y: Math.sin(smoothedAngle) };
+            const endTime = normalizedSampleTime(stream, index);
+            const dx = point.x - previous.x;
+            const dy = point.y - previous.y;
+            const magnitude = Math.hypot(dx, dy);
+            // Carry the last travel direction through stationary samples so
+            // resuming motion blends into the next heading without a snap.
+            if (magnitude > POSITION_EPSILON) {
+                direction = { x: dx / magnitude, y: dy / magnitude };
+            }
+            if (direction && endTime > startTime) {
+                if (!fallback || startTime <= timeMs) {
+                    fallback = direction;
+                }
+                const weight = cumulativeWeight(endTime) - cumulativeWeight(startTime);
+                x += direction.x * weight;
+                y += direction.y * weight;
+            }
         }
+        previousIndex = index;
     }
-
-    const originIndex = previous ? previousIndex : nextIndex;
-    const origin = previous ?? next;
-    if (!origin) return undefined;
-    const smoothedDirection = smoothedDirectionAt(originIndex);
-    if (smoothedDirection) return smoothedDirection;
-    const laterIndex = findDistinctTrajectoryIndex(originIndex + 1, 1, origin);
-    if (laterIndex !== undefined) {
-        return directionBetween(origin, stream[laterIndex].trajectory);
-    }
-    const earlierIndex = findDistinctTrajectoryIndex(originIndex - 1, -1, origin);
-    return earlierIndex === undefined
-        ? undefined
-        : directionBetween(stream[earlierIndex].trajectory, origin);
+    const magnitude = Math.hypot(x, y);
+    return magnitude > POSITION_EPSILON
+        ? { x: x / magnitude, y: y / magnitude }
+        : fallback;
 };
 
 const steppedGear = (
@@ -826,9 +761,6 @@ const buildReplayFrame = (
         ),
         driverDirection: trajectoryDirection(
             replay.driver,
-            driverTrajectory,
-            driverIndexes.lower,
-            driverIndexes.upper,
             elapsedTimeMs,
         ),
     };
@@ -971,11 +903,22 @@ const createTrackGeometry = (
     };
 };
 
-const trajectoryPath = (points: readonly PositionedTrajectoryPoint[]): string => points
-    .map(({ svgX, svgY }, index) => (
-        `${index === 0 ? 'M' : 'L'} ${formatNumber(svgX)} ${formatNumber(svgY)}`
-    ))
-    .join(' ');
+const trajectoryRibbon = (points: readonly PositionedTrajectoryPoint[], width: number): PositionedTrajectoryPoint[] => {
+    if (points.length < 2) return [];
+    const sides = points.map((point, index) => {
+        const previous = points[Math.max(0, index - 1)];
+        const next = points[Math.min(points.length - 1, index + 1)];
+        const dx = next.svgX - previous.svgX;
+        const dy = next.svgY - previous.svgY;
+        const length = Math.hypot(dx, dy) || 1;
+        return [-1, 1].map((side) => ({
+            ...point,
+            svgX: point.svgX - (side * dy * width / (2 * length)),
+            svgY: point.svgY + (side * dx * width / (2 * length)),
+        }));
+    });
+    return [...sides.map(([left]) => left), ...sides.map(([, right]) => right).reverse()];
+};
 
 const getTelemetryPodSize = (viewportHeight: number): TelemetryPodSize => {
     // Leave room for both cards around the markers, even in a short panel.
@@ -1058,17 +1001,75 @@ const getFollowCamera = (
     const cameraProgress = clamp(progress, 0, 1);
     const currentScale = 1 + ((FOLLOW_CAMERA_SCALE - 1) * cameraProgress);
     const currentRotationRadians = rotationRadians * cameraProgress;
+    const tiltRadians = FOLLOW_CAMERA_TILT_RADIANS * cameraProgress;
+    const tiltScale = Math.cos(tiltRadians);
+    const perspectiveDistance = viewportHeight * 0.9;
     const currentAnchorX = target.svgX + ((anchorX - target.svgX) * cameraProgress);
     const currentAnchorY = target.svgY + ((anchorY - target.svgY) * cameraProgress);
     const cosine = Math.cos(currentRotationRadians) * currentScale;
     const sine = Math.sin(currentRotationRadians) * currentScale;
     const a = cosine;
-    const b = sine;
+    const b = sine * tiltScale;
     const c = -sine;
-    const d = cosine;
+    const d = cosine * tiltScale;
     const e = currentAnchorX - ((a * target.svgX) + (c * target.svgY));
     const f = currentAnchorY - ((b * target.svgX) + (d * target.svgY));
     const cameraNumber = (value: number): string => Number(value.toFixed(6)).toString();
+
+    // Rotate the ground into camera space, then divide by depth. Unlike an SVG
+    // affine transform, this makes distant geometry converge and shrink.
+    const toCameraSpace = (point: PositionedTrajectoryPoint): CameraSpacePoint => {
+        const x = (a * point.svgX) + (c * point.svgY) + e - currentAnchorX;
+        const y = (b * point.svgX) + (d * point.svgY) + f - currentAnchorY;
+        return { x, y, depth: 1 - (y * Math.tan(tiltRadians) / perspectiveDistance) };
+    };
+    const projectCameraPoint = ({ x, y, depth }: CameraSpacePoint) => ({
+        svgX: currentAnchorX + x / Math.max(CAMERA_NEAR_PLANE, depth),
+        svgY: currentAnchorY + y / Math.max(CAMERA_NEAR_PLANE, depth),
+    });
+    const clipIntersection = (from: CameraSpacePoint, to: CameraSpacePoint): CameraSpacePoint => {
+        const ratio = (CAMERA_NEAR_PLANE - from.depth) / (to.depth - from.depth);
+        return {
+            x: from.x + (to.x - from.x) * ratio,
+            y: from.y + (to.y - from.y) * ratio,
+            depth: CAMERA_NEAR_PLANE,
+        };
+    };
+    const pathCommand = (command: 'M' | 'L', point: CameraSpacePoint): string => {
+        const { svgX, svgY } = projectCameraPoint(point);
+        return `${command} ${formatNumber(svgX)} ${formatNumber(svgY)}`;
+    };
+    const path = (points: readonly PositionedTrajectoryPoint[], closed = false): string => {
+        const cameraPoints = points.map(toCameraSpace);
+        const commands: string[] = [];
+        if (closed) {
+            // Clip the ground ribbon before projection so it cannot fold back
+            // over the horizon when part of it passes behind the camera.
+            const clipped: CameraSpacePoint[] = [];
+            cameraPoints.forEach((point, index) => {
+                const next = cameraPoints[(index + 1) % cameraPoints.length];
+                if (point.depth >= CAMERA_NEAR_PLANE) clipped.push(point);
+                if ((point.depth >= CAMERA_NEAR_PLANE) !== (next.depth >= CAMERA_NEAR_PLANE)) {
+                    clipped.push(clipIntersection(point, next));
+                }
+            });
+            return clipped.length
+                ? `${clipped.map((point, index) => pathCommand(index ? 'L' : 'M', point)).join(' ')} Z`
+                : '';
+        }
+        cameraPoints.forEach((point, index) => {
+            const previous = cameraPoints[index - 1];
+            if (point.depth >= CAMERA_NEAR_PLANE) {
+                if (!previous || previous.depth < CAMERA_NEAR_PLANE) {
+                    commands.push(pathCommand('M', previous ? clipIntersection(previous, point) : point));
+                }
+                if (previous) commands.push(pathCommand('L', point));
+            } else if (previous && previous.depth >= CAMERA_NEAR_PLANE) {
+                commands.push(pathCommand('L', clipIntersection(previous, point)));
+            }
+        });
+        return commands.join(' ');
+    };
 
     return {
         transform: `matrix(${cameraNumber(a)} ${cameraNumber(b)} ${cameraNumber(c)} ${cameraNumber(d)} ${cameraNumber(e)} ${cameraNumber(f)})`,
@@ -1076,10 +1077,10 @@ const getFollowCamera = (
         anchorX: currentAnchorX,
         anchorY: currentAnchorY,
         rotationRadians: currentRotationRadians,
+        path,
         project: (point) => point ? {
             ...point,
-            svgX: (a * point.svgX) + (c * point.svgY) + e,
-            svgY: (b * point.svgX) + (d * point.svgY) + f,
+            ...projectCameraPoint(toCameraSpace(point)),
         } : undefined,
     };
 };
@@ -1356,8 +1357,10 @@ const TrackReplay: React.FC<{
 
     const driverWorldMarker = geometry.project(frame.driverTrajectory);
     const expertWorldMarker = geometry.project(frame.expertTrajectory);
-    const driverPath = trajectoryPath(geometry.driver);
-    const expertPath = trajectoryPath(geometry.expert);
+    const groundRibbon = React.useMemo(() => trajectoryRibbon(
+        geometry.driver.length ? geometry.driver : geometry.expert, 16,
+    ), [geometry]);
+    const driverRibbon = React.useMemo(() => trajectoryRibbon(geometry.driver, 1.2), [geometry]);
     const podSize = getTelemetryPodSize(viewportHeight);
     const camera = getFollowCamera(
         driverWorldMarker,
@@ -1369,12 +1372,30 @@ const TrackReplay: React.FC<{
     );
     const driverMarker = camera?.project(driverWorldMarker);
     const expertMarker = camera?.project(expertWorldMarker);
+    const driverPath = camera?.path(geometry.driver) ?? '';
+    const expertPath = camera?.path(geometry.expert) ?? '';
     const driverPod = driverMarker
         ? positionTelemetryPod(driverMarker, 'driver', podSize, viewportHeight) : undefined;
     const expertPod = expertMarker
         ? positionTelemetryPod(expertMarker, 'expert', podSize, viewportHeight) : undefined;
-    const hasTrajectory = Boolean(driverPath || expertPath);
+    const hasTrajectory = Boolean(geometry.driver.length || geometry.expert.length);
     const unavailableOffsetY = (viewportHeight - TRACK_VIEWBOX_HEIGHT) / 2;
+    const gridPaths: string[] = [];
+    const gridCenter = driverWorldMarker ?? expertWorldMarker;
+    if (camera && gridCenter && cameraProgress > 0) {
+        const centerX = Math.round(gridCenter.svgX / GROUND_GRID_SPACING) * GROUND_GRID_SPACING;
+        const centerY = Math.round(gridCenter.svgY / GROUND_GRID_SPACING) * GROUND_GRID_SPACING;
+        const point = (svgX: number, svgY: number): PositionedTrajectoryPoint => ({ x: 0, y: 0, svgX, svgY });
+        for (let offset = -GROUND_GRID_EXTENT; offset <= GROUND_GRID_EXTENT; offset += GROUND_GRID_SPACING) {
+            gridPaths.push(camera.path([
+                point(centerX + offset, centerY - GROUND_GRID_EXTENT),
+                point(centerX + offset, centerY + GROUND_GRID_EXTENT),
+            ]), camera.path([
+                point(centerX - GROUND_GRID_EXTENT, centerY + offset),
+                point(centerX + GROUND_GRID_EXTENT, centerY + offset),
+            ]));
+        }
+    }
 
     const renderPod = (
         identity: ComparisonIdentity,
@@ -1415,6 +1436,13 @@ const TrackReplay: React.FC<{
                     : 'comparison-trajectory-unavailable'}
             >
                 <defs>
+                    <linearGradient id={`${filterId}-ground-fade`} x1="0" y1="0" x2="0" y2="100%">
+                        <stop offset="20%" stopColor="white" stopOpacity="0" />
+                        <stop offset="55%" stopColor="white" />
+                    </linearGradient>
+                    <mask id={`${filterId}-ground-mask`} maskUnits="userSpaceOnUse" x="0" y="0" width={TRACK_VIEWBOX_WIDTH} height={viewportHeight}>
+                        <rect width={TRACK_VIEWBOX_WIDTH} height={viewportHeight} fill={`url(#${filterId}-ground-fade)`} />
+                    </mask>
                     <filter id={`${filterId}-driver-glow`} x="-40%" y="-40%" width="180%" height="180%">
                         <feGaussianBlur stdDeviation="4" result="blur" />
                         <feMerge>
@@ -1440,7 +1468,8 @@ const TrackReplay: React.FC<{
                     <>
                         <g
                             className={styles.cameraLayer}
-                            transform={camera.transform}
+                            data-camera-transform={camera.transform}
+                            data-camera-projection="perspective"
                             data-testid="comparison-camera-layer"
                             data-camera-target={camera.target}
                             data-camera-phase={presentationPhase}
@@ -1457,9 +1486,21 @@ const TrackReplay: React.FC<{
                                 ? formatNumber(frame.driverDirection.y)
                                 : undefined}
                         >
+                            <path
+                                className={styles.groundGrid}
+                                d={gridPaths.join(' ')}
+                                opacity={cameraProgress}
+                                mask={`url(#${filterId}-ground-mask)`}
+                                data-testid="comparison-ground-grid"
+                            />
+                            <path
+                                className={styles.groundRibbon}
+                                d={camera.path(groundRibbon, true)}
+                                data-testid="comparison-ground-ribbon"
+                            />
                             {driverPath && (
                                 <>
-                                    <path className={styles.trackShadow} d={driverPath} />
+                                    <path className={styles.driverRibbon} d={camera.path(driverRibbon, true)} />
                                     <path
                                         className={styles.driverPath}
                                         d={driverPath}
@@ -1468,7 +1509,7 @@ const TrackReplay: React.FC<{
                                     />
                                 </>
                             )}
-                            {expertPath && (
+                            {geometry.expert.length > 0 && (
                                 <path
                                     className={styles.expertPath}
                                     d={expertPath}

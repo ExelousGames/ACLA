@@ -232,7 +232,6 @@
     will-change: opacity;
 }
 
-.trackShadow,
 .driverPath,
 .expertPath {
     fill: none;
@@ -240,14 +239,25 @@
     stroke-linejoin: round;
 }
 
-.trackShadow {
-    stroke: rgba(197, 219, 235, 0.08);
-    stroke-width: 11;
+.groundGrid {
+    fill: none;
+    stroke: rgba(100, 160, 202, 0.18);
+    stroke-width: 0.65;
+}
+
+.groundRibbon {
+    fill: rgba(71, 99, 119, 0.24);
+    stroke: rgba(155, 190, 210, 0.25);
+    stroke-width: 0.8;
+}
+
+.driverRibbon {
+    fill: #00e676;
 }
 
 .driverPath {
     stroke: #00e676;
-    stroke-width: 3.2;
+    stroke-width: 1;
 }
 
 .expertPath {
