@@ -397,7 +397,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(nearby).toBeGreaterThan(atDriver);
     });
 
-    it('clips trajectories and the ground ribbon at the near plane without connecting across the camera', () => {
+    it('clips trajectories and the driver ribbon at the near plane without connecting across the camera', () => {
         setReducedMotion(true);
         render(<DriverExpertComparisonGraph data={{ samples: [0, -1_000, 0].map((y, index) => ({
             driverTimeMs: index * 1_000, expertTimeMs: index * 1_000,
@@ -406,9 +406,9 @@ describe('DriverExpertComparisonGraph', () => {
         })) }} />);
         const path = screen.getByTestId('expert-track-path').getAttribute('d')!;
         expect(path.match(/[ML]/g)).toEqual(['M', 'L', 'M', 'L']);
-        const ground = screen.getByTestId('comparison-ground-ribbon').getAttribute('d')!;
-        expect(ground).toMatch(/ Z$/);
-        for (const value of `${path} ${ground}`.replace(/[MLZ]/g, '').trim().split(/\s+/).map(Number)) {
+        const ribbon = screen.getByTestId('driver-track-path').previousElementSibling!.getAttribute('d')!;
+        expect(ribbon).toMatch(/ Z$/);
+        for (const value of `${path} ${ribbon}`.replace(/[MLZ]/g, '').trim().split(/\s+/).map(Number)) {
             expect(Number.isFinite(value)).toBe(true);
             expect(Math.abs(value)).toBeLessThan(20_000);
         }

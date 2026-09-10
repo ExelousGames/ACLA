@@ -1043,7 +1043,7 @@ const getFollowCamera = (
         const cameraPoints = points.map(toCameraSpace);
         const commands: string[] = [];
         if (closed) {
-            // Clip the ground ribbon before projection so it cannot fold back
+            // Clip the driver ribbon before projection so it cannot fold back
             // over the horizon when part of it passes behind the camera.
             const clipped: CameraSpacePoint[] = [];
             cameraPoints.forEach((point, index) => {
@@ -1357,9 +1357,6 @@ const TrackReplay: React.FC<{
 
     const driverWorldMarker = geometry.project(frame.driverTrajectory);
     const expertWorldMarker = geometry.project(frame.expertTrajectory);
-    const groundRibbon = React.useMemo(() => trajectoryRibbon(
-        geometry.driver.length ? geometry.driver : geometry.expert, 16,
-    ), [geometry]);
     const driverRibbon = React.useMemo(() => trajectoryRibbon(geometry.driver, 1.2), [geometry]);
     const podSize = getTelemetryPodSize(viewportHeight);
     const camera = getFollowCamera(
@@ -1492,11 +1489,6 @@ const TrackReplay: React.FC<{
                                 opacity={cameraProgress}
                                 mask={`url(#${filterId}-ground-mask)`}
                                 data-testid="comparison-ground-grid"
-                            />
-                            <path
-                                className={styles.groundRibbon}
-                                d={camera.path(groundRibbon, true)}
-                                data-testid="comparison-ground-ribbon"
                             />
                             {driverPath && (
                                 <>
