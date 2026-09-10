@@ -151,9 +151,21 @@ export const normalizeAnalysisResultElement = (
     const normalizedPositionRange = normalizePositionRange(input);
     const timeGap = normalizeTimeGap(input.timeGap ?? input.time_gap);
     const comparison = normalizeDriverExpertComparisonData(input.comparison);
-    const comparisonDiagnostics = normalizeComparisonDiagnostics(
+    let comparisonDiagnostics = normalizeComparisonDiagnostics(
         input.comparisonDiagnostics ?? input.comparison_diagnostics,
     );
+    // Preserve why supplied data was rejected before normalization removes the payload.
+    if (!comparison && input.comparison != null && !comparisonDiagnostics) {
+        const hasSamples = isRecord(input.comparison)
+            && Array.isArray(input.comparison.samples)
+            && input.comparison.samples.length > 0;
+        comparisonDiagnostics = [{
+            code: hasSamples ? 'comparison_samples_invalid' : 'comparison_samples_missing',
+            message: hasSamples
+                ? 'The supplied Driver/Expert comparison samples could not be normalized for replay.'
+                : 'The Driver/Expert comparison payload contains no samples.',
+        }];
+    }
     const metadata = isRecord(input.metadata) ? { ...input.metadata } : undefined;
 
     return {

@@ -151,7 +151,7 @@ export class AnalysisResultsQueryError extends Error {
 }
 
 export const ANALYSIS_RESULTS_QUERY_GUARDRAILS = Object.freeze({
-    timeout: 100,
+    timeout: 60_000,
     stack: 64,
     sequence: 10000,
 });

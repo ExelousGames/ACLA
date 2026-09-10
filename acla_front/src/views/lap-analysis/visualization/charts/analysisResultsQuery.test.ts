@@ -284,12 +284,20 @@ describe('analysisResultsQuery evaluator', () => {
     });
 
     it('enforces timeout, stack, and sequence guardrails', async () => {
-        await expect(evaluateAnalysisResultsQuery(
-            '($loop := function($value) { $loop($value + 1) }; $loop(0))',
-            activeInput,
-        )).rejects.toMatchObject({
-            message: expect.stringMatching(/time|timeout|duration/i),
-        });
+        // Advance the clock so the timeout check does not take a full minute.
+        let elapsedMs = 0;
+        const now = jest.spyOn(Date, 'now').mockImplementation(() => (elapsedMs += 1000));
+        try {
+            await expect(evaluateAnalysisResultsQuery(
+                '($loop := function($value) { $loop($value + 1) }; $loop(0))',
+                activeInput,
+            )).rejects.toMatchObject({
+                code: 'D1012',
+                message: expect.stringContaining('60000 milliseconds'),
+            });
+        } finally {
+            now.mockRestore();
+        }
 
         await expect(evaluateAnalysisResultsQuery(
             '($recurse := function($value) { $value = 0 ? 0 : 1 + $recurse($value - 1) }; $recurse(1000))',

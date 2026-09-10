@@ -121,6 +121,32 @@
     overflow-y: auto;
 }
 
+.replayButton {
+    padding: 5px 8px;
+    border: 1px solid rgba(128, 177, 255, 0.4);
+    border-radius: 4px;
+    color: #d4e6ff;
+    background: rgba(68, 138, 255, 0.14);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+.replayButton:hover:not(:disabled) {
+    background: rgba(68, 138, 255, 0.26);
+}
+
+.replayButton:focus-visible {
+    outline: 2px solid #80b1ff;
+    outline-offset: 2px;
+}
+
+.replayButton:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
 .labelGroup {
     flex: 1 1 190px;
     min-width: 0;

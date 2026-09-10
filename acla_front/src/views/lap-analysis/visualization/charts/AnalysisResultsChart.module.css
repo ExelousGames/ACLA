@@ -381,6 +381,8 @@
 }
 
 .element {
+    min-width: 0;
+    container-type: inline-size;
     padding: 12px;
     margin-bottom: 10px;
     border: 1px solid var(--lp-border);
@@ -393,45 +395,151 @@
     margin-bottom: 0;
 }
 
-.comparisonTrigger {
-    cursor: help;
+.elementHeader {
+    margin: -12px;
+    padding: 12px;
+    border-radius: var(--lp-radius);
+    cursor: pointer;
 }
 
-.comparisonTrigger:hover,
-.comparisonTrigger:focus-visible {
-    border-color: var(--lp-green);
-    outline: none;
+.elementHeader:hover {
+    background: rgba(255, 255, 255, 0.035);
 }
 
-.comparisonHint,
-.comparisonUnavailable {
-    margin-top: 9px;
-    padding-top: 8px;
-    border-top: 1px solid var(--lp-border);
-    font-family: var(--lp-mono);
-    font-size: 10px;
+.elementHeader:focus-visible {
+    outline: 2px solid var(--lp-green);
+    outline-offset: -2px;
 }
 
-.comparisonHint {
-    color: var(--lp-green);
-}
-
-.comparisonUnavailable {
+.elementChevron {
+    flex-shrink: 0;
+    margin-top: 4px;
     color: var(--lp-gray);
 }
 
-.comparisonContent {
+.comparisonArea {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 240px;
+    gap: 16px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--lp-border);
+}
+
+.comparisonArea[hidden] {
+    display: none;
+}
+
+.comparisonGraph {
+    min-width: 0;
+}
+
+.comparisonGraph > section > header {
+    flex-wrap: wrap;
+}
+
+.comparisonGraph > section > header > div:last-child {
     box-sizing: border-box;
-    width: min(900px, calc(100vw - 24px));
-    max-width: calc(100vw - 24px);
-    max-height: min(760px, calc(100vh - 24px));
-    padding: 0;
-    overflow: auto;
-    border: 1px solid var(--lp-border-strong);
+    max-width: 100%;
+}
+
+.comparisonGraph > section > header > div:last-child {
+    box-sizing: border-box;
+    max-width: 100%;
+}
+
+.comparisonUnavailable {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 180px;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 20px;
+    border: 1px dashed var(--lp-border-strong);
     border-radius: var(--lp-radius);
-    background: var(--lp-bg-panel, #101020);
-    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
-    z-index: 50;
+    color: var(--lp-gray);
+    font-family: var(--lp-mono);
+    font-size: 11px;
+    text-align: center;
+}
+
+.sectionDetails {
+    min-width: 0;
+    padding-left: 16px;
+    border-left: 1px solid var(--lp-border);
+}
+
+.sectionDetailsTitle {
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.timeDifference {
+    padding: 12px;
+    border: 1px solid var(--lp-border);
+    border-radius: var(--lp-radius);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.timeDifferenceValue {
+    margin: 5px 0;
+    color: var(--lp-white);
+    font-family: var(--lp-mono);
+    font-size: 24px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.timeDifference[data-direction='lost'] .timeDifferenceValue {
+    color: #ff9d9d;
+}
+
+.timeDifference[data-direction='gained'] .timeDifferenceValue {
+    color: var(--lp-green);
+}
+
+.timeDifference[data-direction='unavailable'] .timeDifferenceValue {
+    color: var(--lp-gray);
+    font-size: 18px;
+}
+
+.sectionMetrics {
+    display: grid;
+    gap: 10px;
+    margin: 14px 0 0;
+    font-size: 11px;
+}
+
+.sectionMetrics > div {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+}
+
+.sectionMetrics dt {
+    color: var(--lp-gray);
+}
+
+.sectionMetrics dd {
+    margin: 0;
+    font-family: var(--lp-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+@container (max-width: 720px) {
+    .comparisonArea {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .sectionDetails {
+        padding-top: 14px;
+        padding-left: 0;
+        border-top: 1px solid var(--lp-border);
+        border-left: 0;
+    }
 }
 
 .heading {
@@ -463,12 +571,6 @@
 .label {
     max-width: 100%;
     white-space: normal;
-}
-
-.context {
-    margin-top: 8px;
-    display: grid;
-    gap: 5px;
 }
 
 .metadata {

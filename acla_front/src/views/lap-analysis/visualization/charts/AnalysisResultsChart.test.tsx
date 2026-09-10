@@ -42,62 +42,14 @@ jest.mock('contexts/DesktopGameContext', () => ({
 }));
 
 jest.mock('@radix-ui/themes', () => {
-    const ReactModule = require('react');
     const Component = ({ as: Tag = 'div', children, ...props }: any) => (
         <Tag {...props}>{children}</Tag>
     );
-    const HoverCardContext = ReactModule.createContext({
-        open: false,
-        onOpenChange: (_open: boolean) => undefined,
-    });
-    const HoverCardRoot = ({ open, onOpenChange, children }: any) => (
-        <HoverCardContext.Provider value={{ open, onOpenChange }}>
-            {children}
-        </HoverCardContext.Provider>
-    );
-    const HoverCardTrigger = ({ children }: any) => {
-        const context = ReactModule.useContext(HoverCardContext);
-        return ReactModule.cloneElement(children, {
-            onMouseEnter: () => context.onOpenChange(true),
-            onMouseLeave: () => context.onOpenChange(false),
-            onFocus: () => context.onOpenChange(true),
-            onBlur: () => context.onOpenChange(false),
-        });
-    };
-    const HoverCardContent = ({
-        children,
-        side,
-        align,
-        avoidCollisions,
-        collisionPadding,
-        sideOffset,
-        ...props
-    }: any) => {
-        const context = ReactModule.useContext(HoverCardContext);
-        return context.open ? (
-            <div
-                {...props}
-                data-testid="comparison-hover-content"
-                data-side={side}
-                data-align={align}
-                data-avoid-collisions={String(avoidCollisions)}
-                data-collision-padding={String(collisionPadding)}
-                data-side-offset={String(sideOffset)}
-            >
-                {children}
-            </div>
-        ) : null;
-    };
     return {
         Badge: Component,
         Box: Component,
         Card: Component,
         Flex: Component,
-        HoverCard: {
-            Root: HoverCardRoot,
-            Trigger: HoverCardTrigger,
-            Content: HoverCardContent,
-        },
         ScrollArea: Component,
         Text: Component,
     };
@@ -1934,7 +1886,9 @@ describe('AnalysisResultsChart', () => {
         await waitFor(() => expect(screen.getByText('1 of 1 total')).toBeInTheDocument());
         expect(screen.getByText('Future category')).toBeInTheDocument();
         expect(screen.getByText('Recovery')).toBeInTheDocument();
-        expect(screen.getByText('Position: 20.0% – 35.0%')).toBeInTheDocument();
+        fireEvent.click(within(screen.getByTestId('analysis-result-future-1')).getByRole('button'));
+        const details = screen.getByRole('region', { name: 'Section details' });
+        expect(details).toHaveTextContent('Track position20.0% – 35.0%');
         expect(screen.getByText('nested: {"safe":true}')).toBeInTheDocument();
         expect(screen.getByText('score: 0.95')).toBeInTheDocument();
         expect(screen.queryByText(/source|hidden-source-value/)).not.toBeInTheDocument();
@@ -2255,7 +2209,7 @@ describe('AnalysisResultsChart', () => {
 
         await waitFor(() => expect(renderedResultIds()).toEqual(['unknown']));
         expect(renderedFrequencyData()).toEqual([]);
-        expect(screen.getByRole('status')).toHaveTextContent(
+        expect(within(screen.getByTestId('label-frequency-graph')).getByRole('status')).toHaveTextContent(
             'No recognized mistake labels in the current query result to graph.',
         );
         expect(screen.getByTestId('label-frequency-graph')).toHaveAttribute(
@@ -2521,7 +2475,7 @@ describe('AnalysisResultsChart', () => {
         expect(screen.queryByRole('button', { name: 'Queue filtered comparisons' })).not.toBeInTheDocument();
         expect(screen.queryByText(/Queued:|Skipped:|Live Range To-do List/)).not.toBeInTheDocument();
     });
-    it('mounts a collision-aware comparison only while a capable card is hovered or focused', async () => {
+    it('defaults to collapsed and opens the comparison and section details when clicked', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="comparison-card"
@@ -2529,6 +2483,10 @@ describe('AnalysisResultsChart', () => {
                     elements: [{
                         id: 'comparable',
                         labels: ['MSP', 'MSP1', 'EA', 'EA1', 'RM', 'RM7'],
+                        section: 'Turn 4',
+                        normalizedPositionRange: { start: 0.2, end: 0.35 },
+                        timeGap: { startMs: 250, endMs: 375, deltaMs: 125 },
+                        metadata: { note: 'Late turn-in costs exit speed' },
                         comparison: {
                             samples: [{
                                 driverTimeMs: 0,
@@ -2545,12 +2503,24 @@ describe('AnalysisResultsChart', () => {
         );
 
         const card = await screen.findByTestId('analysis-result-comparable');
-        expect(card).toHaveAttribute('tabindex', '0');
-        expect(screen.queryByTestId('driver-expert-comparison')).not.toBeInTheDocument();
-
-        fireEvent.mouseEnter(card);
-
-        expect(screen.getByTestId('driver-expert-comparison')).toBeInTheDocument();
+        expect(card).not.toHaveAttribute('tabindex');
+        const toggle = within(card).getByRole('button');
+        expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        expect(within(card).queryByTestId('driver-expert-comparison')).not.toBeInTheDocument();
+        expect(within(card).queryByRole('region', { name: 'Section details' })).not.toBeInTheDocument();
+        fireEvent.click(toggle);
+        expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        const comparison = within(card).getByTestId('driver-expert-comparison');
+        expect(comparison).toBeInTheDocument();
+        expect(within(card).queryByText(/Hover or focus/)).not.toBeInTheDocument();
+        const details = within(card).getByRole('region', { name: 'Section details' });
+        expect(details).toHaveTextContent('Lap time difference+0.125 s');
+        expect(details).toHaveTextContent('Time lost to Expert in this section');
+        expect(details).toHaveTextContent('SectionTurn 4');
+        expect(details).toHaveTextContent('Track position20.0% – 35.0%');
+        expect(details).toHaveTextContent('Gap at entry+0.250 s');
+        expect(details).toHaveTextContent('Gap at exit+0.375 s');
+        expect(details).toHaveTextContent('note: Late turn-in costs exit speed');
         expect(screen.getByRole('region', { name: 'Mistakes labels' })).toHaveTextContent('Late turn-in');
         expect(screen.getByRole('region', { name: 'Expert labels' })).toHaveTextContent('Matches expert line');
         expect(screen.getByRole('region', { name: 'Recovery labels' })).toHaveTextContent('Merge back to expert line');
@@ -2561,23 +2531,39 @@ describe('AnalysisResultsChart', () => {
             'Trajectory data unavailable',
         );
         expect(screen.queryByTestId('comparison-graph-gas')).not.toBeInTheDocument();
-        expect(screen.getByTestId('comparison-hover-content')).toHaveAttribute('data-side', 'right');
-        expect(screen.getByTestId('comparison-hover-content')).toHaveAttribute(
-            'data-avoid-collisions',
-            'true',
-        );
-
+        fireEvent.mouseEnter(card);
         fireEvent.mouseLeave(card);
-        expect(screen.queryByTestId('driver-expert-comparison')).not.toBeInTheDocument();
-
         fireEvent.focus(card);
-        expect(screen.getByTestId('driver-expert-comparison')).toBeInTheDocument();
-
         fireEvent.blur(card);
-        expect(screen.queryByTestId('driver-expert-comparison')).not.toBeInTheDocument();
+        expect(within(card).getByTestId('driver-expert-comparison')).toBe(comparison);
+        fireEvent.click(toggle);
+        expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        expect(details).not.toBeVisible();
     });
 
-    it('shows comparison unavailability without making an empty card interactive', async () => {
+    it.each([
+        [{ deltaMs: -125 }, '-0.125 s', 'Time gained on Expert in this section'],
+        [{ deltaMs: 0 }, '0.000 s', 'Gap to Expert unchanged in this section'],
+        [{ startMs: -100, endMs: 150 }, '+0.250 s', 'Time lost to Expert in this section'],
+        [undefined, 'Unavailable', 'No timing data for this section'],
+        [{ deltaMs: 'not-a-number' }, 'Unavailable', 'No timing data for this section'],
+        [{ startMs: 100 }, 'Unavailable', 'No timing data for this section'],
+    ])('distinguishes time gained, lost, unchanged, and unavailable for %j', async (timeGap, value, description) => {
+        render(
+            <AnalysisResultsChart name="visualization:analysis-results"
+                id="section-timing"
+                data={{ elements: [{ id: 'timing', labels: ['MSP'], timeGap }] }}
+            />,
+        );
+
+        const card = await screen.findByTestId('analysis-result-timing');
+        fireEvent.click(within(card).getByRole('button'));
+        const details = within(card).getByRole('region', { name: 'Section details' });
+        expect(details).toHaveTextContent(`Lap time difference${value}`);
+        expect(details).toHaveTextContent(description as string);
+    });
+
+    it('shows comparison unavailability when the card is expanded', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="unavailable-comparison-card"
@@ -2599,12 +2585,85 @@ describe('AnalysisResultsChart', () => {
 
         const card = await screen.findByTestId('analysis-result-unavailable-comparison');
         expect(card).not.toHaveAttribute('tabindex');
+        fireEvent.click(within(card).getByRole('button'));
         expect(within(card).getByText('Expert comparison unavailable')).toBeInTheDocument();
+        expect(within(card).getByRole('region', { name: 'Section details' })).toHaveTextContent(
+            'No timing data for this section',
+        );
         fireEvent.mouseEnter(card);
-        expect(screen.queryByTestId('comparison-hover-content')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('driver-expert-comparison')).not.toBeInTheDocument();
     });
 
-    it('logs one structured warning with every reason for a classifier comparison failure', async () => {
+    it.each([
+        {
+            name: 'an absent payload',
+            fields: {},
+            expectedCode: 'comparison_data_missing',
+        },
+        {
+            name: 'a null payload',
+            fields: { comparison: null },
+            expectedCode: 'comparison_data_missing',
+        },
+        {
+            name: 'an absent payload with empty diagnostics',
+            fields: { comparisonDiagnostics: [] },
+            expectedCode: 'comparison_data_missing',
+        },
+        {
+            name: 'missing Driver records',
+            fields: { comparisonDiagnostics: [{
+                code: 'driver_records_missing',
+                message: 'The recorded lap contains no Driver telemetry rows.',
+            }] },
+            expectedCode: 'driver_records_missing',
+        },
+        {
+            name: 'a payload without samples',
+            fields: { comparison: {} },
+            expectedCode: 'comparison_samples_missing',
+        },
+        {
+            name: 'an empty sample list',
+            fields: { comparison: { samples: [] } },
+            expectedCode: 'comparison_samples_missing',
+        },
+        {
+            name: 'samples with only Driver data',
+            fields: { comparison: { samples: [{ driverTimeMs: 0, driverTrackPosition: 0.2 }] } },
+            expectedCode: 'comparison_samples_invalid',
+        },
+    ])('reports the specific comparison reason for $name', async ({ fields, expectedCode }) => {
+        const consoleWarn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+            render(
+                <AnalysisResultsChart
+                    name="visualization:analysis-results"
+                    id="comparison-reason"
+                    data={{ elements: [{
+                        id: 'segment-reason',
+                        labels: ['MSP'],
+                        metadata: { source: 'ai_classifier' },
+                        ...fields,
+                    }] }}
+                />,
+            );
+
+            await waitFor(() => expect(consoleWarn).toHaveBeenCalledTimes(1));
+            expect(consoleWarn).toHaveBeenCalledWith(
+                '[driver-expert-comparison] Expert comparison unavailable.',
+                expect.objectContaining({
+                    segment_id: 'segment-reason',
+                    reason_codes: [expectedCode],
+                    reasons: [expect.objectContaining({ code: expectedCode })],
+                }),
+            );
+        } finally {
+            consoleWarn.mockRestore();
+        }
+    });
+
+    it('logs specific classifier comparison failures without adding a missing-data reason', async () => {
         const consoleWarn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
         render(
             <AnalysisResultsChart
@@ -2620,8 +2679,8 @@ describe('AnalysisResultsChart', () => {
                             code: 'expert_reference_missing',
                             message: 'The analysis segment contains no Expert reference telemetry.',
                         }, {
-                            code: 'driver_coverage_incomplete',
-                            message: 'No complete Driver lap covers the Expert segment from start to end.',
+                            code: 'driver_records_missing',
+                            message: 'The recorded lap contains no Driver telemetry rows.',
                         }],
                         metadata: { source: 'ai_classifier' },
                     }],
@@ -2638,13 +2697,11 @@ describe('AnalysisResultsChart', () => {
                 game: 'acc',
                 reason_codes: [
                     'expert_reference_missing',
-                    'driver_coverage_incomplete',
-                    'comparison_data_missing',
+                    'driver_records_missing',
                 ],
                 reasons: expect.arrayContaining([
                     expect.objectContaining({ code: 'expert_reference_missing' }),
-                    expect.objectContaining({ code: 'driver_coverage_incomplete' }),
-                    expect.objectContaining({ code: 'comparison_data_missing' }),
+                    expect.objectContaining({ code: 'driver_records_missing' }),
                 ]),
             }),
         );

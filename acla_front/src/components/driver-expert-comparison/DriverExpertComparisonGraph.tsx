@@ -26,11 +26,8 @@ const TRACK_PADDING = 28;
 const TELEMETRY_POD_BASE_HORIZONTAL_TRIM = 12;
 const TELEMETRY_POD_BASE_WIDTH = 184 - (TELEMETRY_POD_BASE_HORIZONTAL_TRIM * 2);
 const TELEMETRY_POD_BASE_HEIGHT = 102;
-const TELEMETRY_POD_SCALE = 2.25;
-const TELEMETRY_POD_WIDTH = TELEMETRY_POD_BASE_WIDTH * TELEMETRY_POD_SCALE;
-const TELEMETRY_POD_HEIGHT = TELEMETRY_POD_BASE_HEIGHT * TELEMETRY_POD_SCALE;
-const TELEMETRY_POD_HORIZONTAL_TRIM = TELEMETRY_POD_BASE_HORIZONTAL_TRIM * TELEMETRY_POD_SCALE;
 const TELEMETRY_POD_GAP = 14;
+const TELEMETRY_POD_EDGE_PADDING = 12;
 const DRIVER_MARKER_HALO_RADIUS = 11;
 const EXPERT_MARKER_HALO_RADIUS = 10;
 const FOLLOW_CAMERA_SCALE = 4;
@@ -112,6 +109,7 @@ export interface DriverExpertComparisonGraphProps {
     width?: number | string;
     layout?: DriverExpertComparisonLayout;
     game?: DesktopGame | null;
+    showReplayControl?: boolean;
     onReplayComplete?: () => void;
     voice?: TtsPack;
 }
@@ -176,6 +174,12 @@ type ComparisonIdentity = 'driver' | 'expert';
 interface TelemetryPodPosition {
     x: number;
     y: number;
+}
+
+interface TelemetryPodSize {
+    width: number;
+    height: number;
+    scale: number;
 }
 
 interface FollowCamera {
@@ -839,6 +843,7 @@ const useReplayTimeline = (
     voice: TtsPack | undefined,
     onStart: () => void,
     onStop: () => void,
+    replayRequest: number,
 ): ReplayTimeline => {
     const callbacksRef = React.useRef({ onStart, onStop });
     callbacksRef.current = { onStart, onStop };
@@ -853,9 +858,12 @@ const useReplayTimeline = (
     );
     const renderedReplayRef = React.useRef(replay);
     const renderedVoiceRef = React.useRef(voice);
-    const replayChanged = renderedReplayRef.current !== replay || renderedVoiceRef.current !== voice;
+    const renderedReplayRequestRef = React.useRef(replayRequest);
+    const replayChanged = renderedReplayRef.current !== replay || renderedVoiceRef.current !== voice
+        || renderedReplayRequestRef.current !== replayRequest;
     renderedReplayRef.current = replay;
     renderedVoiceRef.current = voice;
+    renderedReplayRequestRef.current = replayRequest;
 
     React.useEffect(() => {
         if (!replay || animationDurationMs <= 0 || prefersReducedMotion()) {
@@ -886,7 +894,7 @@ const useReplayTimeline = (
             if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
             callbacksRef.current.onStop();
         };
-    }, [animationDurationMs, replay, voice]);
+    }, [animationDurationMs, replay, voice, replayRequest]);
 
     const effectiveAnimationElapsedTimeMs = replayChanged
         ? shouldFinishImmediately ? animationDurationMs : 0
@@ -969,25 +977,51 @@ const trajectoryPath = (points: readonly PositionedTrajectoryPoint[]): string =>
     ))
     .join(' ');
 
+const getTelemetryPodSize = (viewportHeight: number): TelemetryPodSize => {
+    // Leave room for both cards around the markers, even in a short panel.
+    // SVG scaling handles width changes; its viewBox height tracks the panel aspect ratio.
+    const scale = Math.min(
+        ((TRACK_VIEWBOX_WIDTH / 2) - TELEMETRY_POD_EDGE_PADDING - TELEMETRY_POD_GAP)
+            / (TELEMETRY_POD_BASE_WIDTH + TELEMETRY_POD_BASE_HORIZONTAL_TRIM),
+        ((viewportHeight / 2) - TELEMETRY_POD_EDGE_PADDING) / TELEMETRY_POD_BASE_HEIGHT,
+    );
+    return {
+        width: TELEMETRY_POD_BASE_WIDTH * scale,
+        height: TELEMETRY_POD_BASE_HEIGHT * scale,
+        scale,
+    };
+};
+
 const positionTelemetryPod = (
     marker: PositionedTrajectoryPoint,
     identity: ComparisonIdentity,
-): TelemetryPodPosition => (identity === 'driver' ? {
-    x: marker.svgX + TELEMETRY_POD_GAP + TELEMETRY_POD_HORIZONTAL_TRIM,
-    y: marker.svgY - TELEMETRY_POD_HEIGHT - TELEMETRY_POD_GAP,
-} : {
-    x: marker.svgX
-        - TELEMETRY_POD_WIDTH
-        - TELEMETRY_POD_GAP
-        - TELEMETRY_POD_HORIZONTAL_TRIM,
-    y: marker.svgY + TELEMETRY_POD_GAP,
-});
+    size: TelemetryPodSize,
+    viewportHeight: number,
+): TelemetryPodPosition => {
+    const horizontalOffset = TELEMETRY_POD_GAP
+        + (TELEMETRY_POD_BASE_HORIZONTAL_TRIM * size.scale);
+    const x = identity === 'driver'
+        ? marker.svgX + horizontalOffset
+        : marker.svgX - size.width - horizontalOffset;
+    const y = identity === 'driver'
+        ? marker.svgY - size.height - TELEMETRY_POD_GAP
+        : marker.svgY + TELEMETRY_POD_GAP;
+
+    // Clamp each axis independently so a card slides along an edge without flipping sides.
+    return {
+        x: clamp(x, TELEMETRY_POD_EDGE_PADDING,
+            TRACK_VIEWBOX_WIDTH - TELEMETRY_POD_EDGE_PADDING - size.width),
+        y: clamp(y, TELEMETRY_POD_EDGE_PADDING,
+            viewportHeight - TELEMETRY_POD_EDGE_PADDING - size.height),
+    };
+};
 
 const getFollowCamera = (
     driverMarker: PositionedTrajectoryPoint | undefined,
     expertMarker: PositionedTrajectoryPoint | undefined,
     driverDirection: PlottingTrajectoryPoint | undefined,
     viewportHeight: number,
+    podHeight: number,
     progress = 1,
 ): FollowCamera | undefined => {
     const target = driverMarker ?? expertMarker;
@@ -1000,11 +1034,11 @@ const getFollowCamera = (
         driverMarker ? DRIVER_CAMERA_ANCHOR_Y_RATIO : EXPERT_CAMERA_ANCHOR_Y_RATIO
     );
     const minimumAnchorY = driverMarker
-        ? TRACK_PADDING + TELEMETRY_POD_HEIGHT + TELEMETRY_POD_GAP
+        ? TRACK_PADDING + podHeight + TELEMETRY_POD_GAP
         : TRACK_PADDING + haloRadius;
     const maximumAnchorY = driverMarker
         ? viewportHeight - TRACK_PADDING - haloRadius
-        : viewportHeight - TRACK_PADDING - TELEMETRY_POD_HEIGHT - TELEMETRY_POD_GAP;
+        : viewportHeight - TRACK_PADDING - podHeight - TELEMETRY_POD_GAP;
     const anchorY = minimumAnchorY <= maximumAnchorY
         ? clamp(requestedAnchorY, minimumAnchorY, maximumAnchorY)
         : viewportHeight / 2;
@@ -1053,24 +1087,24 @@ const getFollowCamera = (
 const getTelemetryLeaderEnd = (
     marker: PositionedTrajectoryPoint,
     position: TelemetryPodPosition,
+    { width, height }: TelemetryPodSize,
 ): { x: number; y: number } => {
     const markerX = marker.svgX - position.x;
     const markerY = marker.svgY - position.y;
-    let x = clamp(markerX, 0, TELEMETRY_POD_WIDTH);
-    let y = clamp(markerY, 0, TELEMETRY_POD_HEIGHT);
+    let x = clamp(markerX, 0, width);
+    let y = clamp(markerY, 0, height);
     if (
         markerX >= 0
-        && markerX <= TELEMETRY_POD_WIDTH
+        && markerX <= width
         && markerY >= 0
-        && markerY <= TELEMETRY_POD_HEIGHT
+        && markerY <= height
     ) {
-        const edgeDistances = [markerX, TELEMETRY_POD_WIDTH - markerX, markerY,
-            TELEMETRY_POD_HEIGHT - markerY];
+        const edgeDistances = [markerX, width - markerX, markerY, height - markerY];
         const nearestEdge = edgeDistances.indexOf(Math.min(...edgeDistances));
         if (nearestEdge === 0) x = 0;
-        if (nearestEdge === 1) x = TELEMETRY_POD_WIDTH;
+        if (nearestEdge === 1) x = width;
         if (nearestEdge === 2) y = 0;
-        if (nearestEdge === 3) y = TELEMETRY_POD_HEIGHT;
+        if (nearestEdge === 3) y = height;
     }
     return { x, y };
 };
@@ -1156,6 +1190,7 @@ const PedalGauge: React.FC<{
 const TelemetryPod: React.FC<{
     identity: ComparisonIdentity;
     position: TelemetryPodPosition;
+    size: TelemetryPodSize;
     marker: PositionedTrajectoryPoint;
     gasAvailable: boolean;
     brakeAvailable: boolean;
@@ -1166,6 +1201,7 @@ const TelemetryPod: React.FC<{
 }> = ({
     identity,
     position,
+    size,
     marker,
     gasAvailable,
     brakeAvailable,
@@ -1177,7 +1213,7 @@ const TelemetryPod: React.FC<{
     const isDriver = identity === 'driver';
     const label = isDriver ? 'Driver' : 'Expert';
     const color = isDriver ? DRIVER_COMPARISON_COLOR : EXPERT_COMPARISON_COLOR;
-    const leaderEnd = getTelemetryLeaderEnd(marker, position);
+    const leaderEnd = getTelemetryLeaderEnd(marker, position, size);
     const gearValue = gearAvailable && gear !== undefined ? Math.round(gear) : 'N/A';
     const transform = `translate(${formatNumber(position.x)} ${formatNumber(position.y)})`;
 
@@ -1189,8 +1225,8 @@ const TelemetryPod: React.FC<{
             aria-label={`${label} live telemetry`}
             style={{ '--identity-color': color } as React.CSSProperties}
             data-testid={`${identity}-telemetry-pod`}
-            data-card-width={formatNumber(TELEMETRY_POD_WIDTH)}
-            data-card-height={formatNumber(TELEMETRY_POD_HEIGHT)}
+            data-card-width={formatNumber(size.width)}
+            data-card-height={formatNumber(size.height)}
         >
             <line
                 className={styles.telemetryLeader}
@@ -1203,11 +1239,11 @@ const TelemetryPod: React.FC<{
             />
             <rect
                 className={styles.telemetryPodBody}
-                width={TELEMETRY_POD_WIDTH}
-                height={TELEMETRY_POD_HEIGHT}
-                rx={7 * TELEMETRY_POD_SCALE}
+                width={size.width}
+                height={size.height}
+                rx={7 * size.scale}
             />
-            <g transform={`scale(${TELEMETRY_POD_SCALE})`}>
+            <g transform={`scale(${size.scale})`}>
                 <rect width="3" height={TELEMETRY_POD_BASE_HEIGHT} rx="1.5" fill={color} />
                 <circle
                     className={styles.telemetryIdentityDot}
@@ -1322,17 +1358,21 @@ const TrackReplay: React.FC<{
     const expertWorldMarker = geometry.project(frame.expertTrajectory);
     const driverPath = trajectoryPath(geometry.driver);
     const expertPath = trajectoryPath(geometry.expert);
+    const podSize = getTelemetryPodSize(viewportHeight);
     const camera = getFollowCamera(
         driverWorldMarker,
         expertWorldMarker,
         frame.driverDirection,
         viewportHeight,
+        podSize.height,
         cameraProgress,
     );
     const driverMarker = camera?.project(driverWorldMarker);
     const expertMarker = camera?.project(expertWorldMarker);
-    const driverPod = driverMarker ? positionTelemetryPod(driverMarker, 'driver') : undefined;
-    const expertPod = expertMarker ? positionTelemetryPod(expertMarker, 'expert') : undefined;
+    const driverPod = driverMarker
+        ? positionTelemetryPod(driverMarker, 'driver', podSize, viewportHeight) : undefined;
+    const expertPod = expertMarker
+        ? positionTelemetryPod(expertMarker, 'expert', podSize, viewportHeight) : undefined;
     const hasTrajectory = Boolean(driverPath || expertPath);
     const unavailableOffsetY = (viewportHeight - TRACK_VIEWBOX_HEIGHT) / 2;
 
@@ -1344,6 +1384,7 @@ const TrackReplay: React.FC<{
         <TelemetryPod
             identity={identity}
             position={position}
+            size={podSize}
             marker={marker}
             gasAvailable={availability.gas}
             brakeAvailable={availability.brake}
@@ -1531,6 +1572,7 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     width = '100%',
     layout,
     game,
+    showReplayControl = true,
     onReplayComplete,
     voice,
 }) => {
@@ -1560,6 +1602,7 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     const replayDurationMs = replay?.durationMs ?? 0;
     const geometry = React.useMemo(() => createTrackGeometry(plottingReplay), [plottingReplay]);
     const hasTrajectory = geometry.driver.length > 0 || geometry.expert.length > 0;
+    const [replayRequest, setReplayRequest] = React.useState(0);
     const ttsRef = React.useRef<TtsHandle>(null);
     const [voiceCompletion, setVoiceCompletion] = React.useState<{
         replay: typeof plottingReplay;
@@ -1574,7 +1617,7 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
         replayCompleteFiredRef.current = false;
         setVoiceCompletion(undefined);
         if (shouldSpeak) ttsRef.current?.play();
-    }, () => ttsRef.current?.stop());
+    }, () => ttsRef.current?.stop(), replayRequest);
     const { elapsedTimeMs } = timeline;
     const frame = React.useMemo(
         () => buildReplayFrame(plottingReplay, elapsedTimeMs),
@@ -1641,6 +1684,20 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
                     >
                         {formatReplayTimeMs(elapsedTimeMs)} / {formatReplayTimeMs(replayDurationMs)}
                     </span>
+                    {showReplayControl && (
+                        <button
+                            type="button"
+                            className={styles.replayButton}
+                            aria-label="Replay comparison"
+                            disabled={replayDurationMs <= 0 || prefersReducedMotion()}
+                            onClick={() => {
+                                setVoiceCompletion(undefined);
+                                setReplayRequest((request) => request + 1);
+                            }}
+                        >
+                            Replay
+                        </button>
+                    )}
                 </div>
             </header>
 
@@ -1701,6 +1758,7 @@ const DriverExpertComparisonOverlayGraph = React.memo<{
         game={snapshot.game}
         title={snapshot.title}
         layout={{ trajectoryHeight: 280 }}
+        showReplayControl={false}
         onReplayComplete={() => context.emitRendererEvent('replay_complete')}
     />
 ), (previous, next) => (

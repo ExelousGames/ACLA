@@ -445,30 +445,26 @@ const buildComparisonSamples = (
     const driverEnd = driver[driver.length - 1].unwrappedPosition;
     const expertStart = expert[0].unwrappedPosition;
     const expertEnd = expert[expert.length - 1].unwrappedPosition;
-    const firstLapOffset = Math.ceil(driverStart - expertStart - POSITION_EPSILON);
-    const lastLapOffset = Math.floor(driverEnd - expertEnd + POSITION_EPSILON);
-    if (firstLapOffset > lastLapOffset) {
-        diagnostics.push({
-            code: 'driver_coverage_incomplete',
-            message: 'No complete Driver lap covers the Expert segment from start to end.',
-            details: {
-                driver_range: [driverStart, driverEnd],
-                expert_range: [expertStart, expertEnd],
-            },
-        });
-        return undefined;
-    }
+    const firstLapOffset = Math.ceil(driverStart - expertEnd - POSITION_EPSILON);
+    const lastLapOffset = Math.floor(driverEnd - expertStart + POSITION_EPSILON);
 
     let interpolationFailures = 0;
     let validationFailures = 0;
+    let bestSamples: DriverExpertComparisonSample[] | undefined;
     for (let lapOffset = firstLapOffset; lapOffset <= lastLapOffset; lapOffset += 1) {
-        const interpolatedDriver = interpolateDriverSequence(driver, expert, lapOffset);
+        const overlappingExpert = expert.filter((point) => (
+            point.unwrappedPosition + lapOffset >= driverStart - POSITION_EPSILON
+            && point.unwrappedPosition + lapOffset <= driverEnd + POSITION_EPSILON
+        ));
+        if (!overlappingExpert.length) continue;
+
+        const interpolatedDriver = interpolateDriverSequence(driver, overlappingExpert, lapOffset);
         if (!interpolatedDriver) {
             interpolationFailures += 1;
             continue;
         }
 
-        const samples = expert.map((expertPoint, index): DriverExpertComparisonSample => {
+        const samples = overlappingExpert.map((expertPoint, index): DriverExpertComparisonSample => {
             const driverPoint = interpolatedDriver[index];
             const expertTrajectory = trajectoryPoint(
                 expertPoint.row.expert_optimal_player_pos_x,
@@ -494,9 +490,15 @@ const buildComparisonSamples = (
                 ...(expertGear !== undefined ? { expertGear } : {}),
             };
         });
-        if (normalizeDriverExpertComparisonData({ samples })) return samples;
-        validationFailures += 1;
+        if (normalizeDriverExpertComparisonData({ samples })) {
+            if (samples.length === expert.length) return samples;
+            if (!bestSamples || samples.length > bestSamples.length) bestSamples = samples;
+        } else {
+            validationFailures += 1;
+        }
     }
+
+    if (bestSamples) return bestSamples;
 
     if (interpolationFailures > 0) diagnostics.push({
         code: 'driver_interpolation_failed',

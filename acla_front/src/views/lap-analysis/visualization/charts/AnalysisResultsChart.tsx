@@ -1,5 +1,6 @@
 import React from 'react';
-import { Badge, Box, Card, Flex, HoverCard, ScrollArea, Text } from '@radix-ui/themes';
+import { Badge, Box, Card, Flex, ScrollArea, Text } from '@radix-ui/themes';
+import { ChevronDownIcon, ChevronUpIcon } from '@radix-ui/react-icons';
 import type { VisualizationProps } from '../VisualizationRegistry';
 import {
     AnalysisResultElement,
@@ -441,9 +442,10 @@ export const getLabelFrequencyGraphHeight = (categoryCount: number): number => (
     160 + (Math.max(1, categoryCount) * 36)
 );
 
-const formatMilliseconds = (value: unknown): string | null => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? `${parsed.toFixed(0)} ms` : null;
+const formatTimeDifference = (value: unknown): string | null => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    const milliseconds = Math.round(value);
+    return `${milliseconds > 0 ? '+' : ''}${(milliseconds / 1000).toFixed(3)} s`;
 };
 
 const stringifyValue = (value: unknown): string => {
@@ -460,17 +462,6 @@ const stringifyValue = (value: unknown): string => {
     }
 };
 
-const TimeGap: React.FC<{ element: AnalysisResultElement }> = ({ element }) => {
-    if (!element.timeGap) return null;
-    const start = formatMilliseconds(element.timeGap.startMs);
-    const end = formatMilliseconds(element.timeGap.endMs);
-    const delta = formatMilliseconds(element.timeGap.deltaMs);
-    const text = start && end
-        ? `${start} – ${end}${delta ? ` (${delta})` : ''}`
-        : delta || stringifyValue(element.timeGap);
-    return <Text size="1" color="gray">Time gap: {text}</Text>;
-};
-
 const AnalysisResultCard: React.FC<{
     element: AnalysisResultElement;
     resultNumber: number;
@@ -478,13 +469,25 @@ const AnalysisResultCard: React.FC<{
     sessionGame?: DesktopGame | null;
 }> = ({ element, resultNumber, showElementId, sessionGame }) => {
     const { getCategoryLabels, getLabelName } = useAiLabels();
+    const [comparisonOpen, setComparisonOpen] = React.useState(false);
+    const comparisonId = React.useId();
     const comparisonLabelGroups = React.useMemo(() => buildAnalysisResultsComparisonLabelGroups(
         element.labels, getCategoryLabels, getLabelName,
     ), [element.labels, getCategoryLabels, getLabelName]);
-    const [comparisonOpen, setComparisonOpen] = React.useState(false);
     const comparisonWarningFingerprintRef = React.useRef<string | null>(null);
     const metadataEntries = Object.entries(element.metadata ?? {})
         .filter(([key]) => !HIDDEN_METADATA_KEYS.has(key));
+    const startGap = formatTimeDifference(element.timeGap?.startMs);
+    const endGap = formatTimeDifference(element.timeGap?.endMs);
+    const deltaMs = formatTimeDifference(element.timeGap?.deltaMs) !== null
+        ? element.timeGap!.deltaMs!
+        : startGap !== null && endGap !== null
+            ? element.timeGap!.endMs! - element.timeGap!.startMs!
+            : undefined;
+    const delta = formatTimeDifference(deltaMs);
+    const timingDirection = delta === null ? 'unavailable'
+        : Math.round(deltaMs!) > 0 ? 'lost'
+            : Math.round(deltaMs!) < 0 ? 'gained' : 'unchanged';
     const hasComparison = hasComparableDriverExpertData(element.comparison, sessionGame ?? null);
     const comparisonDiagnostics = React.useMemo(() => {
         if (hasComparison) return [];
@@ -493,7 +496,10 @@ const AnalysisResultCard: React.FC<{
             ...getDriverExpertComparisonUnavailableDiagnostics(
                 element.comparison,
                 sessionGame ?? null,
-            ),
+            ).filter((diagnostic) => (
+                diagnostic.code !== 'comparison_data_missing'
+                || !element.comparisonDiagnostics?.length
+            )),
         ];
         const diagnosticsByCode = new Map<string, typeof diagnostics[number]>();
         diagnostics.forEach((diagnostic) => diagnosticsByCode.set(diagnostic.code, diagnostic));
@@ -532,14 +538,29 @@ const AnalysisResultCard: React.FC<{
         sessionGame,
     ]);
 
-    const card = (
+    return (
         <Box
-            className={[styles.element, hasComparison ? styles.comparisonTrigger : '']
-                .filter(Boolean).join(' ')}
+            className={styles.element}
             data-testid={`analysis-result-${element.id}`}
-            tabIndex={hasComparison ? 0 : undefined}
         >
-            <Flex justify="between" align="start" gap="2" wrap="wrap">
+            <Flex
+                className={styles.elementHeader}
+                justify="between"
+                align="start"
+                gap="2"
+                wrap="wrap"
+                role="button"
+                tabIndex={0}
+                aria-expanded={comparisonOpen}
+                aria-controls={comparisonId}
+                onClick={() => setComparisonOpen((open) => !open)}
+                onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setComparisonOpen((open) => !open);
+                    }
+                }}
+            >
                 <Flex className={styles.heading} align="start" gap="2">
                     <Text
                         className={styles.number}
@@ -554,75 +575,83 @@ const AnalysisResultCard: React.FC<{
                         {showElementId && <Text size="1" className={styles.id} as="div">{element.id}</Text>}
                     </Box>
                 </Flex>
-                <Flex gap="1" wrap="wrap" justify="end">
-                    {element.labels.length > 0
-                        ? element.labels.map((label, index) => (
-                            <Badge className={styles.label} variant="soft" key={`${label}-${index}`}>{label}</Badge>
-                        ))
-                        : <Badge color="gray" variant="outline">Unlabeled</Badge>}
+                <Flex align="start" gap="2" wrap="wrap" justify="end">
+                    <Flex gap="1" wrap="wrap" justify="end">
+                        {element.labels.length > 0
+                            ? element.labels.map((label, index) => (
+                                <Badge className={styles.label} variant="soft" key={`${label}-${index}`}>{label}</Badge>
+                            ))
+                            : <Badge color="gray" variant="outline">Unlabeled</Badge>}
+                    </Flex>
+                    {comparisonOpen
+                        ? <ChevronUpIcon className={styles.elementChevron} aria-hidden="true" />
+                        : <ChevronDownIcon className={styles.elementChevron} aria-hidden="true" />}
                 </Flex>
             </Flex>
 
-            {(element.section || element.normalizedPositionRange || element.timeGap) && (
-                <Box className={styles.context}>
-                    {element.section && <Text size="1" color="gray">Section: {element.section}</Text>}
-                    {element.normalizedPositionRange && (
-                        <Text size="1" color="gray">
-                            Position: {formatPosition(element.normalizedPositionRange.start)} – {formatPosition(element.normalizedPositionRange.end)}
-                        </Text>
-                    )}
-                    <TimeGap element={element} />
-                </Box>
-            )}
-
-            {metadataEntries.length > 0 && (
-                <Box className={styles.metadata}>
-                    {metadataEntries.map(([key, value]) => (
-                        <Text size="1" color="gray" as="div" key={key}>
-                            {key}: {stringifyValue(value)}
-                        </Text>
+            <div id={comparisonId} className={styles.comparisonArea} hidden={!comparisonOpen}>
+                <div className={styles.comparisonGraph}>
+                    {comparisonOpen && (hasComparison && element.comparison ? (
+                        <DriverExpertComparisonGraph
+                            data={element.comparison}
+                            labelGroups={comparisonLabelGroups}
+                            game={sessionGame}
+                            title={element.title
+                                ? `${element.title}: Driver vs Expert`
+                                : 'Driver vs Expert'}
+                            layout={{ trajectoryHeight: 300 }}
+                        />
+                    ) : (
+                        <div className={styles.comparisonUnavailable} role="status">
+                            Expert comparison unavailable
+                        </div>
                     ))}
-                </Box>
-            )}
-            <Text
-                className={hasComparison ? styles.comparisonHint : styles.comparisonUnavailable}
-                size="1"
-                color="gray"
-                as="div"
-            >
-                {hasComparison
-                    ? 'Hover or focus for Driver and Expert comparison'
-                    : 'Expert comparison unavailable'}
-            </Text>
+                </div>
+                <section className={styles.sectionDetails} aria-label="Section details">
+                    <h3 className={styles.sectionDetailsTitle}>Section details</h3>
+                    <div className={styles.timeDifference} data-direction={timingDirection}>
+                        <Text size="1" color="gray" as="div">Lap time difference</Text>
+                        <Text className={styles.timeDifferenceValue} as="div">
+                            {delta ?? 'Unavailable'}
+                        </Text>
+                        <Text size="1" color="gray" as="div">
+                            {timingDirection === 'lost' ? 'Time lost to Expert in this section'
+                                : timingDirection === 'gained' ? 'Time gained on Expert in this section'
+                                    : timingDirection === 'unchanged' ? 'Gap to Expert unchanged in this section'
+                                        : 'No timing data for this section'}
+                        </Text>
+                    </div>
+                    <dl className={styles.sectionMetrics}>
+                        {element.section && (
+                            <div><dt>Section</dt><dd>{element.section}</dd></div>
+                        )}
+                        {element.normalizedPositionRange && (
+                            <div>
+                                <dt>Track position</dt>
+                                <dd>
+                                    {formatPosition(element.normalizedPositionRange.start)} – {formatPosition(element.normalizedPositionRange.end)}
+                                </dd>
+                            </div>
+                        )}
+                        {startGap !== null && (
+                            <div><dt>Gap at entry</dt><dd>{startGap}</dd></div>
+                        )}
+                        {endGap !== null && (
+                            <div><dt>Gap at exit</dt><dd>{endGap}</dd></div>
+                        )}
+                    </dl>
+                    {metadataEntries.length > 0 && (
+                        <Box className={styles.metadata}>
+                            {metadataEntries.map(([key, value]) => (
+                                <Text size="1" color="gray" as="div" key={key}>
+                                    {key}: {stringifyValue(value)}
+                                </Text>
+                            ))}
+                        </Box>
+                    )}
+                </section>
+            </div>
         </Box>
-    );
-
-    if (!hasComparison || !element.comparison) return card;
-
-    return (
-        <HoverCard.Root open={comparisonOpen} onOpenChange={setComparisonOpen}>
-            <HoverCard.Trigger>{card}</HoverCard.Trigger>
-            <HoverCard.Content
-                className={styles.comparisonContent}
-                side="right"
-                align="start"
-                sideOffset={10}
-                avoidCollisions
-                collisionPadding={12}
-            >
-                {comparisonOpen && (
-                    <DriverExpertComparisonGraph
-                        data={element.comparison}
-                        labelGroups={comparisonLabelGroups}
-                        game={sessionGame}
-                        title={element.title
-                            ? `${element.title}: Driver vs Expert`
-                            : 'Driver vs Expert'}
-                        layout={{ trajectoryHeight: 300 }}
-                    />
-                )}
-            </HoverCard.Content>
-        </HoverCard.Root>
     );
 };
 

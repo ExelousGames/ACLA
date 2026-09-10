@@ -250,12 +250,20 @@ describe('adaptAnalysisResultsComparison', () => {
     });
 
     it.each([
-        ['missing the start', [0.2, 0.4], [0.1, 0.3]],
-        ['missing the end', [0.1, 0.3], [0.2, 0.4]],
-    ])('rejects incomplete Driver coverage when %s of the Expert range', (
+        ['missing the start', [0.2, 0.4], [0.1, 0.3], [0.3], [150]],
+        ['missing the end', [0.1, 0.3], [0.2, 0.4], [0.2], [150]],
+        ['missing both ends', [0.2, 0.4], [0.1, 0.2, 0.3, 0.4, 0.5], [0.2, 0.3, 0.4], [100, 150, 200]],
+        ['crossing the finish line', [0.99, 0.01, 0.03], [0.98, 0, 0.02, 0.04], [0, 0.02], [150, 250]],
+        ['starting after the finish line', [0.01, 0.05], [0.99, 0.01, 0.03], [0.01, 0.03], [100, 150]],
+        ['covering a full lap', [0, 0.5, 1], [0, 0.5, 1], [0, 0.5, 1], [100, 200, 300]],
+        ['covering a later lap', [0.2, 0.4, 0.9, 0.1, 0.4], [0.1, 0.3], [0.1, 0.3], [400, 400 + (200 / 3)]],
+        ['no shared positions', [0.1, 0.2], [0.3, 0.4], [], []],
+    ])('uses available telemetry when %s', (
         _case,
         driverPositions,
         expertPositions,
+        expectedPositions,
+        expectedDriverTimes,
     ) => {
         const result = adaptAnalysisResultsComparison({
             baselineRecords: driverPositions.map((position, index) => driverRow(
@@ -269,18 +277,22 @@ describe('adaptAnalysisResultsComparison', () => {
             )),
         });
 
-        expect(result.samples).toEqual([]);
+        expect(result.samples.map((sample) => sample.driverTrackPosition)).toEqual(expectedPositions);
+        expect(result.samples.map((sample) => sample.expertTrackPosition)).toEqual(expectedPositions);
+        result.samples.forEach((sample, index) => {
+            expect(sample.driverTimeMs).toBeCloseTo(expectedDriverTimes[index]);
+        });
     });
 
     it.each([
-        ['missing Driver position', [undefined, 0.3], [0.1, 0.2]],
-        ['out-of-range Driver position', [0.1, 1.1], [0.1, 0.2]],
-        ['small Driver reversal', [0.4, 0.3], [0.35, 0.4]],
-        ['missing Expert position', [0.1, 0.3], [undefined, 0.2]],
-        ['out-of-range Expert position', [0.1, 0.3], [0.1, 1.1]],
-        ['small Expert reversal', [0.1, 0.5], [0.4, 0.3]],
-        ['half-lap backward Expert jump', [0.1, 0.9], [0.75, 0.25]],
-    ])('rejects a comparison with a %s', (_case, driverPositions, expertPositions) => {
+        ['missing Driver position', [undefined, 0.3], [0.1, 0.2], []],
+        ['out-of-range Driver position', [0.1, 1.1], [0.1, 0.2], [100]],
+        ['small Driver reversal', [0.4, 0.3], [0.35, 0.4], [100]],
+        ['missing Expert position', [0.1, 0.3], [undefined, 0.2], []],
+        ['out-of-range Expert position', [0.1, 0.3], [0.1, 1.1], []],
+        ['small Expert reversal', [0.1, 0.5], [0.4, 0.3], []],
+        ['half-lap backward Expert jump', [0.1, 0.9], [0.75, 0.25], []],
+    ])('uses only valid overlapping samples with a %s', (_case, driverPositions, expertPositions, expectedDriverTimes) => {
         const result = adaptAnalysisResultsComparison({
             baselineRecords: driverPositions.map((position, index) => driverRow(
                 position as number,
@@ -295,19 +307,19 @@ describe('adaptAnalysisResultsComparison', () => {
             )),
         });
 
-        expect(result.samples).toEqual([]);
+        expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual(expectedDriverTimes);
     });
 
     it.each([
-        ['missing Driver clock', [undefined, 200], [1_000, 1_100]],
-        ['repeated Driver clock', [100, 100], [1_000, 1_100]],
-        ['decreasing Driver clock', [200, 100], [1_000, 1_100]],
-        ['non-finite Driver clock', [100, Number.POSITIVE_INFINITY], [1_000, 1_100]],
-        ['missing Expert clock', [100, 200], [undefined, 1_100]],
-        ['repeated Expert clock', [100, 200], [1_000, 1_000]],
-        ['decreasing Expert clock', [100, 200], [1_100, 1_000]],
-        ['non-finite Expert clock', [100, 200], [1_000, Number.NaN]],
-    ])('rejects a comparison with a %s', (_case, driverTimes, expertTimes) => {
+        ['missing Driver clock', [undefined, 200], [1_000, 1_100], [200]],
+        ['repeated Driver clock', [100, 100], [1_000, 1_100], [100]],
+        ['decreasing Driver clock', [200, 100], [1_000, 1_100], [200]],
+        ['non-finite Driver clock', [100, Number.POSITIVE_INFINITY], [1_000, 1_100], [100]],
+        ['missing Expert clock', [100, 200], [undefined, 1_100], []],
+        ['repeated Expert clock', [100, 200], [1_000, 1_000], []],
+        ['decreasing Expert clock', [100, 200], [1_100, 1_000], []],
+        ['non-finite Expert clock', [100, 200], [1_000, Number.NaN], []],
+    ])('uses only valid overlapping samples with a %s', (_case, driverTimes, expertTimes, expectedDriverTimes) => {
         const driverPositions = [0.1, 0.3];
         const expertPositions = [0.1, 0.3];
         const result = adaptAnalysisResultsComparison({
@@ -324,7 +336,7 @@ describe('adaptAnalysisResultsComparison', () => {
             )),
         });
 
-        expect(result.samples).toEqual([]);
+        expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual(expectedDriverTimes);
     });
 
     it.each([
@@ -383,14 +395,25 @@ describe('resolveAnalysisResultsComparison diagnostics', () => {
         ]));
     });
 
-    it('distinguishes incomplete coverage from a position interpolation failure', () => {
-        const incomplete = resolveAnalysisResultsComparison({
+    it('returns a comparison without diagnostics for incomplete Driver coverage', () => {
+        const resolution = resolveAnalysisResultsComparison({
             baselineRecords: [
                 driverRow(0.2, 200, { x: 2, y: 2, z: 2 }),
                 driverRow(0.4, 400, { x: 4, y: 4, z: 4 }),
             ],
             expertReferenceData: [expertRow(0.1, 1_000), expertRow(0.3, 1_200)],
         });
+
+        expect(resolution.comparison?.samples).toEqual([expect.objectContaining({
+            driverTimeMs: 300,
+            expertTimeMs: 1_200,
+            driverTrackPosition: 0.3,
+            expertTrackPosition: 0.3,
+        })]);
+        expect(resolution.diagnostics).toEqual([]);
+    });
+
+    it('reports a position interpolation failure', () => {
         const interpolation = resolveAnalysisResultsComparison({
             baselineRecords: [
                 driverRow(0.1, 100, { x: 1, y: 1, z: 1 }),
@@ -399,7 +422,6 @@ describe('resolveAnalysisResultsComparison diagnostics', () => {
             expertReferenceData: [expertRow(0.2, 1_000), expertRow(0.2, 1_100)],
         });
 
-        expect(reasonCodes(incomplete)).toContain('driver_coverage_incomplete');
         expect(reasonCodes(interpolation)).toContain('driver_interpolation_failed');
     });
 

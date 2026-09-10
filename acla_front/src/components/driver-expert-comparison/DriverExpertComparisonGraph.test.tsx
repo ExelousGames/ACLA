@@ -83,6 +83,44 @@ const parseTranslate = (element: Element): { x: number; y: number } => {
     return { x, y };
 };
 
+const expectTelemetryPodWithinViewport = (identity: 'driver' | 'expert') => {
+    const pod = screen.getByTestId(`${identity}-telemetry-pod`);
+    const body = pod.querySelector('rect');
+    if (!body) throw new Error('Expected a telemetry card body');
+    const { x, y } = parseTranslate(pod);
+    const width = Number(body.getAttribute('width'));
+    const height = Number(body.getAttribute('height'));
+    const [, , viewportWidth, viewportHeight] = screen.getByTestId('comparison-track-map')
+        .getAttribute('viewBox')!.split(' ').map(Number);
+    const right = x + width;
+    const bottom = y + height;
+    expect(width).toBeGreaterThan(0);
+    expect(height).toBeGreaterThan(0);
+    expect(width / height).toBeCloseTo(160 / 102, 5);
+    expect(x).toBeGreaterThanOrEqual(12 - 0.001);
+    expect(y).toBeGreaterThanOrEqual(12 - 0.001);
+    expect(right).toBeLessThanOrEqual(viewportWidth - 12 + 0.001);
+    expect(bottom).toBeLessThanOrEqual(viewportHeight - 12 + 0.001);
+
+    const contentScale = Number(pod.querySelector('g')?.getAttribute('transform')
+        ?.match(/^scale\(([^)]+)\)$/)?.[1]);
+    expect(contentScale * 160).toBeCloseTo(width, 5);
+    expect(contentScale * 102).toBeCloseTo(height, 5);
+
+    const leader = screen.getByTestId(`${identity}-telemetry-leader`);
+    const marker = screen.getByTestId(`${identity}-position-marker`).querySelector('circle')!;
+    expect(x + Number(leader.getAttribute('x1'))).toBeCloseTo(Number(marker.getAttribute('cx')), 3);
+    expect(y + Number(leader.getAttribute('y1'))).toBeCloseTo(Number(marker.getAttribute('cy')), 3);
+    const endX = Number(leader.getAttribute('x2'));
+    const endY = Number(leader.getAttribute('y2'));
+    expect(endX).toBeGreaterThanOrEqual(0);
+    expect(endX).toBeLessThanOrEqual(width);
+    expect(endY).toBeGreaterThanOrEqual(0);
+    expect(endY).toBeLessThanOrEqual(height);
+    expect(Math.min(endX, width - endX, endY, height - endY)).toBeCloseTo(0, 5);
+    return { x, y, width, height, right, bottom };
+};
+
 const expectCameraLockedOn = (identity: 'driver' | 'expert') => {
     const camera = screen.getByTestId('comparison-camera-layer');
     const marker = screen.getByTestId(`${identity}-position-marker`).querySelector('circle');
@@ -188,6 +226,16 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Finishing narration');
         fireEvent.ended(view.container.querySelector('audio')!);
         expect(onReplayComplete).toHaveBeenCalledTimes(1);
+        fireEvent.click(screen.getByRole('button', { name: 'Replay comparison' }));
+        expect(pause).toHaveBeenCalled();
+        expect(screen.getByTestId('replay-status')).toHaveTextContent('Replaying');
+        runAnimationFrame(5_000);
+        expect(play).toHaveBeenCalledTimes(2);
+        runAnimationFrame(9_750);
+        expect(screen.getByTestId('replay-status')).toHaveTextContent('Finishing narration');
+        expect(onReplayComplete).toHaveBeenCalledTimes(1);
+        fireEvent.ended(view.container.querySelector('audio')!);
+        expect(onReplayComplete).toHaveBeenCalledTimes(2);
         view.unmount();
         expect(pause).toHaveBeenCalled();
         play.mockRestore();
@@ -241,17 +289,8 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('expert-telemetry-pod')).toHaveStyle({
             '--identity-color': EXPERT_COMPARISON_COLOR,
         });
-        expect(screen.getByTestId('driver-telemetry-pod')).toHaveAttribute(
-            'data-card-width',
-            '360',
-        );
-        expect(screen.getByTestId('driver-telemetry-pod')).toHaveAttribute(
-            'data-card-height',
-            '229.5',
-        );
-        expect(
-            screen.getByTestId('driver-telemetry-pod').querySelector('g[transform="scale(2.25)"]'),
-        ).toBeInTheDocument();
+        expectTelemetryPodWithinViewport('driver');
+        expectTelemetryPodWithinViewport('expert');
         expect(screen.getByTestId('driver-telemetry-pod').closest('svg')).toBe(
             screen.getByTestId('comparison-track-map'),
         );
@@ -888,6 +927,52 @@ describe('DriverExpertComparisonGraph', () => {
         expect(pendingFrames.size).toBe(0);
     });
 
+    it('replays the same comparison repeatedly without remounting', () => {
+        const onReplayComplete = jest.fn();
+        render(<DriverExpertComparisonGraph data={completeData} onReplayComplete={onReplayComplete} />);
+        const button = screen.getByRole('button', { name: 'Replay comparison' });
+        button.focus();
+
+        for (let cycle = 0; cycle < 3; cycle += 1) {
+            if (cycle > 0) fireEvent.click(button);
+            expect(screen.getByTestId('replay-status')).toHaveTextContent('Replaying');
+            expect(screen.getByTestId('replay-progress')).toHaveTextContent('0.00s / 3.00s');
+            expect(screen.getByTestId('comparison-camera-layer')).toHaveAttribute('data-camera-phase', 'overview');
+            expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '0');
+            expect(screen.getByTestId('driver-gear')).toHaveTextContent('2');
+            expect(onReplayComplete).toHaveBeenCalledTimes(cycle);
+            expect(button).toHaveFocus();
+
+            runAnimationFrame(cycle * 5_000);
+            runAnimationFrame(cycle * 5_000 + 4_750);
+            expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
+            expect(screen.getByTestId('replay-progress')).toHaveTextContent('3.00s / 3.00s');
+            expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '100');
+            expect(screen.getByTestId('driver-gear')).toHaveTextContent('5');
+            expect(onReplayComplete).toHaveBeenCalledTimes(cycle + 1);
+            expect(pendingFrames.size).toBe(0);
+        }
+    });
+
+    it('cancels active playback when Replay is clicked and cleans up the restarted replay', () => {
+        const view = render(<DriverExpertComparisonGraph data={completeData} />);
+        runAnimationFrame(0);
+        runAnimationFrame(2_750);
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('1.00s / 3.00s');
+        const previousFrameId = nextFrameId - 1;
+
+        fireEvent.click(screen.getByRole('button', { name: 'Replay comparison' }));
+        expect(cancelAnimationFrameMock).toHaveBeenCalledWith(previousFrameId);
+        expect(pendingFrames.size).toBe(1);
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('0.00s / 3.00s');
+        runAnimationFrame(3_000);
+        runAnimationFrame(5_750);
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('1.00s / 3.00s');
+
+        view.unmount();
+        expect(pendingFrames.size).toBe(0);
+    });
+
     it('fires replay completion exactly once after the full timeline and never after unmount', () => {
         const onReplayComplete = jest.fn();
         const first = render(
@@ -946,12 +1031,17 @@ describe('DriverExpertComparisonGraph', () => {
             .toHaveTextContent('Matches expert line');
         expect(screen.getByRole('region', { name: 'Recovery labels' }))
             .toHaveTextContent('Merge back to expert line');
+        expect(screen.queryByRole('button', { name: 'Replay comparison' })).not.toBeInTheDocument();
 
         runAnimationFrame(0);
         runAnimationFrame(4_750);
 
         expect(emitRendererEvent).toHaveBeenCalledTimes(1);
         expect(emitRendererEvent).toHaveBeenCalledWith('replay_complete');
+        runAnimationFrame(9_500);
+        expect(emitRendererEvent).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
+        expect(pendingFrames.size).toBe(0);
     });
 
     it('shows parent-only labels and removes stale groups when the segment changes', () => {
@@ -1031,7 +1121,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.queryAllByRole('meter')).toHaveLength(0);
     });
 
-    it('keeps Driver above-right and Expert below-left without flipping or clamping', () => {
+    it('keeps cards beside their markers and slides the Expert card up to the bottom edge', () => {
         setReducedMotion(true);
         render(<DriverExpertComparisonGraph data={{
             samples: [{
@@ -1051,22 +1141,52 @@ describe('DriverExpertComparisonGraph', () => {
             }],
         }} />);
 
-        const driverPod = screen.getByTestId('driver-telemetry-pod');
-        const expertPod = screen.getByTestId('expert-telemetry-pod');
         const driverMarker = screen.getByTestId('driver-position-marker').querySelector('circle');
         const expertMarker = screen.getByTestId('expert-position-marker').querySelector('circle');
         if (!driverMarker || !expertMarker) throw new Error('Expected both position markers');
-        const driverPosition = parseTranslate(driverPod);
-        const expertPosition = parseTranslate(expertPod);
+        const driver = expectTelemetryPodWithinViewport('driver');
+        const expert = expectTelemetryPodWithinViewport('expert');
 
-        expect(driverPosition.x - Number(driverMarker.getAttribute('cx'))).toBeCloseTo(41, 3);
-        expect(driverPosition.y - Number(driverMarker.getAttribute('cy'))).toBeCloseTo(-243.5, 3);
-        expect(expertPosition.x - Number(expertMarker.getAttribute('cx'))).toBeCloseTo(-401, 3);
-        expect(expertPosition.y - Number(expertMarker.getAttribute('cy'))).toBeCloseTo(14, 3);
-        expect(driverPod).not.toHaveAttribute('data-placement');
-        expect(driverPod).not.toHaveAttribute('data-clamped');
-        expect(expertPod).not.toHaveAttribute('data-placement');
-        expect(expertPod).not.toHaveAttribute('data-clamped');
+        expect(driver.x).toBeGreaterThan(Number(driverMarker.getAttribute('cx')));
+        expect(driver.bottom).toBeLessThan(Number(driverMarker.getAttribute('cy')));
+        expect(expert.right).toBeLessThan(Number(expertMarker.getAttribute('cx')));
+        expect(expert.y).toBeLessThan(Number(expertMarker.getAttribute('cy')) + 14);
+        expect(expert.bottom).toBeCloseTo(208, 3);
+    });
+
+    it.each([
+        { edge: 'left', from: { x: -1_000, y: 20 }, to: { x: -1_000, y: 25 } },
+        { edge: 'right', from: { x: 1_000, y: 20 }, to: { x: 1_000, y: 25 } },
+        { edge: 'top', from: { x: 0, y: 1_000 }, to: { x: 5, y: 1_000 } },
+        { edge: 'bottom', from: { x: 0, y: -1_000 }, to: { x: 5, y: -1_000 } },
+    ])('slides along the $edge edge while the Expert marker is offscreen', ({ edge, from, to }) => {
+        setReducedMotion(true);
+        const comparisonData = (expertTrajectory: { x: number; y: number }) => ({
+            samples: [{
+                driverTimeMs: 0,
+                expertTimeMs: 0,
+                driverTrackPosition: 0.4,
+                expertTrackPosition: 0.4,
+                driverTrajectory: { x: 0, y: 0 },
+                expertTrajectory,
+            }],
+        });
+        const view = render(<DriverExpertComparisonGraph data={comparisonData(from)} />);
+        const before = expectTelemetryPodWithinViewport('expert');
+        view.rerender(<DriverExpertComparisonGraph data={comparisonData(to)} />);
+        const after = expectTelemetryPodWithinViewport('expert');
+        expectTelemetryPodWithinViewport('driver');
+        expectCameraLockedOn('driver');
+
+        if (edge === 'left' || edge === 'right') {
+            expect(after.x).toBe(before.x);
+            expect(after.y - before.y).toBeCloseTo(-20, 3);
+            expect(edge === 'left' ? after.x : after.right).toBeCloseTo(edge === 'left' ? 12 : 748, 3);
+        } else {
+            expect(after.y).toBe(before.y);
+            expect(after.x - before.x).toBeCloseTo(20, 3);
+            expect(edge === 'top' ? after.y : after.bottom).toBeCloseTo(edge === 'top' ? 12 : 208, 3);
+        }
     });
 
     it('keeps the camera locked on the driver regardless of expert separation', () => {
@@ -1102,7 +1222,7 @@ describe('DriverExpertComparisonGraph', () => {
         expectCameraLockedOn('driver');
     });
 
-    it('updates the driver anchor for the rendered panel aspect ratio without changing zoom', () => {
+    it('resizes both cards and the driver anchor with the panel while preserving camera zoom', () => {
         setReducedMotion(true);
         let notifyResize: ((width: number, height: number) => void) | undefined;
         const originalResizeObserver = window.ResizeObserver;
@@ -1122,7 +1242,7 @@ describe('DriverExpertComparisonGraph', () => {
         });
 
         try {
-            render(<DriverExpertComparisonGraph data={{
+            const view = render(<DriverExpertComparisonGraph data={{
                 samples: [{
                     driverTimeMs: 0,
                     expertTimeMs: 0,
@@ -1142,6 +1262,25 @@ describe('DriverExpertComparisonGraph', () => {
             const initialMatrix = parseMatrix(screen.getByTestId('comparison-camera-layer'));
             const initialScale = Math.hypot(initialMatrix[0], initialMatrix[1]);
             expect(initialScale).toBeCloseTo(4, 6);
+            const cardWidths: number[] = [];
+            for (const [width, height] of [[320, 640], [1280, 640], [1280, 160], [2400, 130]]) {
+                act(() => notifyResize?.(width, height));
+                const driver = expectTelemetryPodWithinViewport('driver');
+                const expert = expectTelemetryPodWithinViewport('expert');
+                expect(driver.width).toBe(expert.width);
+                expect(driver.height).toBe(expert.height);
+                // Convert SVG units to pixels to check the visible card size after each resize.
+                const [, , svgWidth, svgHeight] = screen.getByTestId('comparison-track-map')
+                    .getAttribute('viewBox')!.split(' ').map(Number);
+                const pixelScale = Math.min(width / svgWidth, height / svgHeight);
+                cardWidths.push(driver.width * pixelScale);
+                expect(driver.width * pixelScale).toBeLessThan(width / 2);
+                expect(driver.height * pixelScale).toBeLessThan(height / 2);
+                expectCameraLockedOn('driver');
+            }
+            expect(cardWidths[1]).toBeGreaterThan(cardWidths[0]);
+            expect(cardWidths[2]).toBeLessThan(cardWidths[1]);
+            expect(cardWidths[3]).toBeLessThan(cardWidths[2]);
             act(() => notifyResize?.(400, 260));
 
             expect(screen.getByTestId('comparison-track-map')).toHaveAttribute(
@@ -1151,7 +1290,11 @@ describe('DriverExpertComparisonGraph', () => {
             const resizedMatrix = parseMatrix(screen.getByTestId('comparison-camera-layer'));
             expect(Math.hypot(resizedMatrix[0], resizedMatrix[1])).toBeCloseTo(initialScale, 6);
             expectCameraLockedOn('driver');
+            expectTelemetryPodWithinViewport('driver');
+            expectTelemetryPodWithinViewport('expert');
             expect(observe).toHaveBeenCalledWith(screen.getByTestId('comparison-track-map'));
+            view.unmount();
+            expect(disconnect).toHaveBeenCalledTimes(1);
         } finally {
             Object.defineProperty(window, 'ResizeObserver', {
                 configurable: true,
@@ -1233,6 +1376,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
         expect(screen.getByTestId('replay-progress')).toHaveTextContent('0.00s / 0.00s');
         expect(screen.queryByTestId('driver-telemetry-pod')).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Replay comparison' })).toBeDisabled();
         expect(requestAnimationFrameMock).not.toHaveBeenCalled();
         single.unmount();
 
@@ -1245,6 +1389,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByText(/^Expert comparison unavailable$/)).toBeInTheDocument();
         expect(screen.getByTestId('replay-status')).toHaveTextContent('No data');
         expect(screen.queryAllByRole('meter')).toHaveLength(0);
+        expect(screen.getByRole('button', { name: 'Replay comparison' })).toBeDisabled();
         expect(screen.queryByTestId('driver-telemetry-pod')).not.toBeInTheDocument();
 
         unavailable.unmount();
@@ -1262,6 +1407,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '100');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('5');
         expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: 'Replay comparison' })).toBeDisabled();
     });
 
     it('uses trajectoryHeight while retaining deprecated layout fields as no-ops', () => {
