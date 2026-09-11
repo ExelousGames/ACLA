@@ -3,10 +3,6 @@
 Approximate runtime: 3 minutes  
 Format: Screen walkthrough with first-person voice-over
 
-## Before recording
-
-[Prepare a live session with at least two analyzed baseline laps from the same car and track to demonstrate page navigation, and a result with an available Driver vs Expert trajectory replay. Prefer a result with section timing, throttle, brake, gear, and positioned analysis labels. Check that Replay is enabled. Open Analysis Results and select Lap Results before recording. Start with the result cards collapsed. Use the actual labels and values shown in the recording.]
-
 ## Opening: from lap time to driving behavior
 
 [Start on Lap Results with the lap controls, View menu, and result cards visible.]
