@@ -43,6 +43,6 @@ Opening a card brings the comparison and Section details into view.
 
 Here I can watch my driving alongside the expert reference. The view shows throttle, brake, and gear readouts. It also visualizes the tags that were recognized by the AI earlier. You can see where the tags appear, merge when the labels overlap, and disappear when the driver leaves the range.
 
-We can also bring up the graph while we are driving by using the built-in tool.
+We can also bring up the graph while we are driving by asking.
 
 [Ask the AI, "Show these mistakes while I am driving."]
