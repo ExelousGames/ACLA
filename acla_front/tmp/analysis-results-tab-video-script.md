@@ -39,7 +39,7 @@ Opening a card brings the comparison and Section details into view.
 
 [In the expanded card, click Replay. Move the pointer away from the header and keep the card open. Show the Driver and Expert trajectories and the moving viewpoint.]
 
-Here I can watch my driving alongside the expert reference. The view shows throttle, brake, and gear readouts. It also visualizes the tags that were recognized by the AI earlier. You can see where the tags first appear, how they merge into one card when the labels overlap, and when they disappear as the driver leaves the range.
+Here I can watch my driving alongside the expert reference. The view shows throttle, brake, and gear readouts. It also visualizes the tags that were recognized by the AI earlier. You can see where the tags appear, merge when the labels overlap, and disappear when the driver leaves the range.
 
 We can also bring up the graph while we are driving by using the built-in tool.
 
