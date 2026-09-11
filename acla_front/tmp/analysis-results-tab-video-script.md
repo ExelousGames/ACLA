@@ -11,9 +11,7 @@ Format: Screen walkthrough with first-person voice-over
 
 [Start on Lap Results with the lap controls, View menu, and result cards visible.]
 
-After two laps have been recorded, Kestrel processes my lap telemetry through a trained AI model to identify driving behaviors and assign analysis labels. Once all scheduled analyses are complete, I can view the results in Lap Results under the Analysis Results tab.
-
-A lap time tells me how fast I went. Here, I can find the sections that need attention, see where I gained or lost time, and compare my driving with an expert reference.
+After two laps have been recorded, System will processes my lap telemetry through a trained AI model to identify driving behaviors and assign analysis labels. Once all scheduled analyses are complete, I can view the results in Lap Results under the Analysis Results tab.
 
 ## Find a lap and read the results
 
@@ -29,11 +27,11 @@ The chart shows how often each label appears in the current view. Below it, the 
 
 [Change View to Mistakes, then Most common label in mistakes. Keep the reordered cards visible.]
 
-I can narrow the view to mistakes, then bring the ones with the most common mistake labels to the top. This helps me spot repeated habits and choose a practice focus.
+I can narrow the view to mistakes, then bring the ones with the most common mistake labels to the top. This helps me spot repeated habits.
 
 [Select Most time lost in mistakes. Keep the ranked cards visible. If recorded gap changes are unavailable, briefly show the option without claiming a measured loss.]
 
-The AI assistant can access the underlying system and provide much more control over how the analysis results are filtered. Ask the AI to "show me mistakes, but only in sections with actual detailed mistakes, and only those with a +0.2-second gap compared with the reference."
+The AI assistant can access the underlying system and provide much more control over how the analysis results are filtered. Ask the AI to "show me mistakes, but only in sections with actual detailed mistakes, and only those with a +0.2-second gap compared to the reference."
 
 ## Open a result and read the section timing
 
