@@ -401,9 +401,9 @@ function finalizeShell(shellId, extra = {}) {
 function createWindow() {
   mainWindow = new BrowserWindow({
     title: 'Kestrel Motorsport Analyst',
-    width: 900, height: 680,
-    minWidth: 820,
-    minHeight: 600,
+    width: 1066, height: 720,
+    minWidth: 1066,
+    minHeight: 720,
     frame: false,
     thickFrame: true,
     backgroundColor: '#0a0a0f',
