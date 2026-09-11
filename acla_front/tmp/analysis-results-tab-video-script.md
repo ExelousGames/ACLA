@@ -11,7 +11,7 @@ Format: Screen walkthrough with first-person voice-over
 
 [Start on Lap Results with the lap controls, View menu, and result cards visible.]
 
-This is Lap Results in Kestrel's Analysis Results tab. Once a lap has been analyzed, this is where I come to understand what happened and decide what to work on next.
+This is Lap Results in Kestrel's Analysis Results tab. Kestrel processes my lap telemetry through a trained AI model to identify driving behaviors and assign analysis labels. Once that processing is complete, this is where I come to understand what happened.
 
 A lap time tells me how fast I went. Here, I can find the sections that need attention, see where I gained or lost time, and compare my driving with an expert reference.
 
@@ -51,9 +51,9 @@ Here I can watch my driving alongside the expert reference. The view follows the
 
 [Show the available Mistakes, Expert, and Recovery label groups. Where positioned labels are present, let their markers appear along the replay. Leave a few seconds without narration so viewers can follow the movement.]
 
-The analysis labels help connect the driving behavior to the section. I can compare the two lines and inputs, then use Replay to watch again and decide what to try on the next lap.
-
-[Let the status reach Replay complete. Click Replay to restart, then click the card header to collapse it.]
+These AI-generated analysis labels help connect the driving behavior to the section. I can compare the two lines and inputs, then use Replay to watch again and decide what to try on the next lap.
+e next lap.
+o restart, then click the card header to collapse it.]
 
 ## Closing
 
