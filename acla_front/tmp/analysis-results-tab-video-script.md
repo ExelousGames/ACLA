@@ -27,7 +27,9 @@ I can narrow the view to mistakes, then bring the ones with the most common mist
 
 [Select Most time lost in mistakes. Keep the ranked cards visible. If recorded gap changes are unavailable, briefly show the option without claiming a measured loss.]
 
-The AI assistant can access the underlying mechanics and provide much more control over how the analysis results are filtered. Ask the AI to "show me mistakes, but only in sections with actual detailed mistakes, and only those with a +0.2-second gap compared to the reference."
+The AI assistant can access the underlying mechanics and provide much more control over how the analysis results are filtered. 
+
+[ "Show me only the sections with actual detailed mistakes, and only if they have a gap of at least 0.2 seconds compared to the reference."]
 
 ## Open a result and read the section timing
 
