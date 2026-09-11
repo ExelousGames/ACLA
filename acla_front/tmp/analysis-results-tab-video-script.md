@@ -21,7 +21,7 @@ In Lap Results, each page contains the analysis for a lap.
 
 [Select All results in the View menu. Point to the frequency chart, then scroll to a numbered result card.]
 
-The chart shows how often each label appears in the current view. Below it, the numbered cards show the individual results and their labels. Labels are the tags that the AI was able to associate with a section.
+Analysis are currently done by cutting lap into track sections, and add labels. Labels are the tags that the AI was able to associate with a section. The chart shows how often each label appears in the current view. Below it, the numbered cards show the individual results and their labels. 
 
 ## Choose what to focus on
 
