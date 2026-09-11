@@ -7,7 +7,7 @@ Format: Screen walkthrough with first-person voice-over
 
 [Start on Lap Results with the lap controls, View menu, and result cards visible.]
 
-After two laps have been recorded, System will processes my lap telemetry through a trained AI model to identify driving behaviors and assign analysis labels. Once all scheduled analyses are complete, I can view the results in Lap Results.
+After two laps have been recorded, System will processes my lap telemetry through a trained AI model to identify driving behaviors and assign analysis labels. Once all scheduled analyses are complete, I can view them in Lap Results.
 
 ## Find a lap and read the results
 
