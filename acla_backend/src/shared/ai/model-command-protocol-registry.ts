@@ -847,7 +847,6 @@ const WORKFLOW_COMMAND_NAMES = new Set<ModelCommandName>([
     'clear_procedure_plan',
     'add_event_to_live_range_todo_list',
     'get_live_range_todo_list',
-    'add_analysis_result_to_do_list',
 ]);
 
 const USER_SUMMARY_COMMAND_NAMES: ModelCommandName[] = [

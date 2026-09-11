@@ -162,7 +162,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
         });
         let operation!: ReturnType<typeof registry.add_analysis_result_to_do_list>;
         await act(async () => {
-            operation = registry.add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } });
+            operation = registry.add_analysis_result_to_do_list({});
         });
         expect(prepareComparisonVoices).toHaveBeenCalledTimes(1);
 

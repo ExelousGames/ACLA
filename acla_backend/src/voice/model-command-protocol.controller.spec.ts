@@ -110,7 +110,6 @@ describe('ModelCommandProtocolController', () => {
         });
         [
             'get_live_range_todo_list',
-            'add_analysis_result_to_do_list',
         ].forEach((name) => {
             expect(commands.find((entry) => entry.name === name))
                 .toMatchObject({ properties: { workflow: { required: ['name', 'operations'], properties: { operations: { maxItems: 0 } } } }, required: ['workflow'] });
@@ -119,6 +118,22 @@ describe('ModelCommandProtocolController', () => {
             const command = commands.find((entry) => entry.name === name) as any;
             expect(Object.keys(command.properties.workflow.properties)).toEqual(['name', 'operations', 'reason']);
             expect(command.required).toEqual(['workflow']);
+        });
+    });
+
+    it('returns a no-argument tool envelope for transferring analysis comparison graphs', () => {
+        const commands = controller.getModelCommands({
+            session_context: { session_mode: 'live', agent_mode: 'live_performance_analyst' },
+        });
+        const command = commands.find(({ name }) => name === 'add_analysis_result_to_do_list') as any;
+        expect(Object.keys(command.properties)).toEqual(['tool']);
+        expect(command.required).toEqual(['tool']);
+        expect(command.properties.tool).toMatchObject({
+            required: ['name'],
+            properties: {
+                name: { enum: ['add_analysis_result_to_do_list'] },
+                arguments: { properties: {}, required: [], additionalProperties: false },
+            },
         });
     });
 

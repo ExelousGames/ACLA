@@ -1262,14 +1262,7 @@ describe('DriverExpertComparisonGraph', () => {
             emitRendererEvent,
         }));
 
-        const mistakes = within(screen.getByRole('region', { name: 'Mistakes labels' }));
-        expect(mistakes.getByRole('heading', { name: 'Mistakes' })).toBeInTheDocument();
-        expect(mistakes.getAllByRole('listitem').map((item) => item.textContent))
-            .toEqual(['Late braking', 'Late turn-in']);
-        expect(screen.getByRole('region', { name: 'Expert labels' }))
-            .toHaveTextContent('Matches expert line');
-        expect(screen.getByRole('region', { name: 'Recovery labels' }))
-            .toHaveTextContent('Merge back to expert line');
+        expect(screen.queryByLabelText('Segment analysis labels')).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Replay comparison' })).not.toBeInTheDocument();
 
         runAnimationFrame(0);

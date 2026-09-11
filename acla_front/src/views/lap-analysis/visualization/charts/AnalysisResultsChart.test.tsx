@@ -1355,7 +1355,7 @@ describe('AnalysisResultsChart', () => {
         const registry = createAiCommandRegistry({ componentRefs: directory, sessionMode: 'live', sessionGame: 'acc' });
 
         try {
-            await expect(registry.add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } }).result)
+            await expect(registry.add_analysis_result_to_do_list({}).result)
                 .resolves.toMatchObject({
                     status: 'ready',
                     active_page_id: expectedPage.id,

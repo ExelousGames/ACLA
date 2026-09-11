@@ -1,4 +1,4 @@
-import { parseProcedurePlanInput } from 'components/ai-operations/ProcedurePlan';
+import { parseProcedurePlanInput, ProcedurePlanRunner } from 'components/ai-operations/ProcedurePlan';
 import { parseRepeatablePlanInput } from 'components/ai-operations/RepeatablePlan';
 import type { WorkflowDispatcher } from 'components/ai-operations/tool';
 import type { WorkflowPanelHandle } from 'components/ai-operations/WorkflowPanel';
@@ -147,7 +147,6 @@ describe('frontend operation registry', () => {
         'advance_plan_step',
         'clear_procedure_plan',
         'add_event_to_live_range_todo_list',
-        'add_analysis_result_to_do_list',
         'get_live_range_todo_list',
     ];
 
@@ -157,6 +156,7 @@ describe('frontend operation registry', () => {
             .map(({ name }) => name);
         expect(workflows.sort()).toEqual([...workflowNames].sort());
         expect(frontendOperationRegistry.query_analysis_result.kind).toBe('tool');
+        expect(frontendOperationRegistry.add_analysis_result_to_do_list.kind).toBe('tool');
     });
 
     it.each(workflowNames)('retains workflow classification when %s fails before execution', async (name) => {
@@ -860,7 +860,7 @@ describe('live range to-do workflow forwarding', () => {
     });
 });
 
-describe('displayed analysis result queue workflow', () => {
+describe('displayed analysis result queue tool', () => {
     afterEach(() => {
         jest.useRealTimers();
     });
@@ -882,7 +882,7 @@ describe('displayed analysis result queue workflow', () => {
                 segments: [{ id: 'corner', labels: [], normalizedPositionRange: { start: 0.5, end: 0.6 }, comparison: comparisonData(1000) }],
             }),
         } satisfies Partial<AnalysisResultsChartHandle>);
-        const operation = analystLiveRegistry(directory).add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } });
+        const operation = analystLiveRegistry(directory).add_analysis_result_to_do_list({});
         await Promise.resolve();
         expect(prepareComparisonVoices).toHaveBeenCalled();
         expect(addEvent).not.toHaveBeenCalled();
@@ -981,7 +981,7 @@ describe('displayed analysis result queue workflow', () => {
         } satisfies Partial<AiChatHandle>);
 
         const operation = analystLiveRegistry(directory)
-            .add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } });
+            .add_analysis_result_to_do_list({});
         const terminated = jest.fn();
         operation.notifyTerminated(terminated);
         const result = await operation.result;
@@ -1060,7 +1060,7 @@ describe('displayed analysis result queue workflow', () => {
         runner.dispose();
     });
 
-    it('routes eligible comparisons through the panel append command', async () => {
+    it.each(['native tool', 'procedure step'])('queues comparison graphs from a %s with no input arguments', async (caller) => {
         const directory = createOperationComponentRefDirectory();
         const appendLiveRangeTodoList = jest.fn(() => asWorkflow(resolvedOperation({ status: 'ready', event_count: 1 }, 'complete')));
         reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, { appendLiveRangeTodoList });
@@ -1080,9 +1080,35 @@ describe('displayed analysis result queue workflow', () => {
             }),
         } satisfies Partial<AnalysisResultsChartHandle>);
 
-        await expect(analystLiveRegistry(directory)
-            .add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } }).result)
-            .resolves.toMatchObject({ queued_count: 1 });
+        if (caller === 'native tool') {
+            const operation = analystLiveRegistry(directory).add_analysis_result_to_do_list({
+                tool: { name: 'add_analysis_result_to_do_list', arguments: {} },
+            });
+            expect(operation.kind).toBe('tool');
+            await expect(operation.result).resolves.toMatchObject({ queued_count: 1 });
+        } else {
+            const onError = jest.fn();
+            const runner = new ProcedurePlanRunner(
+                OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
+                createWorkflowToolDispatcher({ componentRefs: directory, sessionGame: 'acc' }),
+                undefined,
+                onError,
+            );
+            const operation = runner.createProcedurePlan({ workflow: {
+                name: 'set_procedure_plan',
+                goal: 'Show comparison graphs while driving',
+                operations: [{ operation: {
+                    name: 'add_analysis_result_to_do_list',
+                    title: 'Queue mistakes for live driving overlay',
+                    arguments: {},
+                } }],
+            } });
+            await expect(operation.result).resolves.toMatchObject({
+                status: 'complete',
+                task_results: [{ status: 'completed', output: { queued_count: 1 } }],
+            });
+            expect(onError).not.toHaveBeenCalled();
+        }
 
         expect(appendLiveRangeTodoList).toHaveBeenCalledWith({ workflow: {
             name: 'add_event_to_live_range_todo_list',
@@ -1115,7 +1141,7 @@ describe('displayed analysis result queue workflow', () => {
         } as any);
 
         await expect(registry
-            .add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } }).result)
+            .add_analysis_result_to_do_list({}).result)
             .resolves.toMatchObject({ status: 'busy' });
         expect(getFilteredSegments).toHaveBeenCalledTimes(1);
     });
@@ -1133,7 +1159,7 @@ describe('displayed analysis result queue workflow', () => {
         } satisfies Partial<AnalysisResultsChartHandle>);
         const registry = analystLiveRegistry(directory);
 
-        const operation = registry.add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } });
+        const operation = registry.add_analysis_result_to_do_list({});
         const terminated = jest.fn();
         operation.notifyTerminated(terminated);
         await expect(operation.result)
@@ -1149,7 +1175,7 @@ describe('displayed analysis result queue workflow', () => {
         });
         expect(directory.findComponentRef(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)).toBeNull();
         await expect(registry
-            .add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [], filter: 'mistakes' } } as any).result)
+            .add_analysis_result_to_do_list({ filter: 'mistakes' } as any).result)
             .rejects.toMatchObject({ name: 'InvalidOperationCallError' });
     });
 
@@ -1170,7 +1196,7 @@ describe('displayed analysis result queue workflow', () => {
         } satisfies Partial<AnalysisResultsChartHandle>);
 
         await expect(analystLiveRegistry(directory)
-            .add_analysis_result_to_do_list({ workflow: { name: 'add_analysis_result_to_do_list', operations: [],  } }).result)
+            .add_analysis_result_to_do_list({}).result)
             .rejects.toMatchObject({ name: 'OperationExecutionError' });
         expect(directory.findComponentRef(
             OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,

@@ -1093,8 +1093,8 @@ ipcMain.on('overlay-renderer-event', (event, rendererEvent) => {
   }
 });
 
-// Track the widest card and total stack height. Horizontal resizing keeps
-// the visual center; vertical resizing keeps the dragged top edge fixed.
+// Track the widest card and total stack height. Keep the dragged top-left
+// corner fixed so every card can only expand the window right and down.
 ipcMain.handle('resize-floating-chat', (event, payload) => {
   if (!isOverlayRendererSender(event) || !floatingChatWindow || floatingChatWindow.isDestroyed()) {
     return { success: false };
@@ -1102,8 +1102,7 @@ ipcMain.handle('resize-floating-chat', (event, payload) => {
   const width = Math.max(280, Math.round(Number(payload?.width) || 280));
   const height = Math.max(58, Math.round(Number(payload?.height) || 58));
   const bounds = floatingChatWindow.getBounds();
-  const newX = bounds.x - Math.round((width - bounds.width) / 2);
-  floatingChatWindow.setBounds({ x: newX, y: bounds.y, width, height });
+  floatingChatWindow.setBounds({ x: bounds.x, y: bounds.y, width, height });
   return { success: true };
 });
 

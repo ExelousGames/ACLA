@@ -134,8 +134,6 @@ export type FilteredComparisonSkipReason =
 
 export interface AddFilteredDriverExpertComparisonsResult {
     [key: string]: unknown;
-    completed_step_count: number;
-    stopped_at_step: null;
     status: 'ready' | 'empty' | 'busy';
     active_page_id: string | null;
     applied_view: string | null;
@@ -503,9 +501,6 @@ type EligibleFilteredComparison = {
 const createFilteredComparisonResult = (
     snapshot: FilteredAnalysisSegmentsSnapshot,
 ): AddFilteredDriverExpertComparisonsResult => ({
-    // This workflow queues events; their execution belongs to the live range workflow.
-    completed_step_count: 0,
-    stopped_at_step: null,
     status: snapshot.status,
     active_page_id: snapshot.activePageId,
     applied_view: snapshot.appliedView,
@@ -671,7 +666,7 @@ const definitionList = Object.freeze([
     },
     {
         name: 'add_analysis_result_to_do_list',
-        kind: 'workflow',
+        kind: 'tool',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args, dispatchNested) => {
             const controller = createControlledOperation<AddFilteredDriverExpertComparisonsResult>();
@@ -693,7 +688,7 @@ const definitionList = Object.freeze([
             }).catch((error) => {
                 controller.reject('failed', error instanceof Error ? error : new Error(String(error)));
             });
-            return asWorkflow(controller.operation, { completed_step_count: 0, stopped_at_step: null });
+            return asTool(controller.operation);
         },
     },
     {

@@ -19,7 +19,6 @@ const WORKFLOW_NAMES = [
     'advance_plan_step',
     'clear_procedure_plan',
     'add_event_to_live_range_todo_list',
-    'add_analysis_result_to_do_list',
     'get_live_range_todo_list',
 ];
 const getWorkflowSchema = (command: any) => command.properties.workflow;
@@ -211,20 +210,26 @@ describe('displayed analysis result queue command', () => {
         const tool = MODEL_COMMAND_PROTOCOL.find(({ name }) => (
             name === 'add_analysis_result_to_do_list'
         ));
-        expect(tool).toMatchObject({ properties: { workflow: { required: ['name', 'operations'], properties: { operations: { maxItems: 0 } } } }, required: ['workflow'] });
+        expect(tool).toMatchObject({ properties: { tool: { required: ['name'] } }, required: ['tool'] });
 
-        const schema = getWorkflowSchema(tool);
-        expect(Object.keys(schema.properties)).toEqual(['name', 'operations']);
+        const schema = (tool?.properties as any).tool;
+        expect(Object.keys(schema.properties)).toEqual(['name', 'arguments']);
+        expect(schema.properties.arguments).toEqual({
+            type: 'object', properties: {}, required: [], additionalProperties: false,
+        });
         expect(schema.additionalProperties).toBe(false);
         const validate = new Ajv({ allErrors: true }).compile(schema);
-        const call = { name: 'add_analysis_result_to_do_list', operations: [] };
+        const call = { name: 'add_analysis_result_to_do_list' };
         expect(validate(call)).toBe(true);
+        expect(validate({ ...call, arguments: {} })).toBe(true);
+        expect(validate({ ...call, operations: [] })).toBe(false);
         expect(validate({ ...call, filter: 'mistakes' })).toBe(false);
         expect(validate({ ...call, query: 'elements' })).toBe(false);
         expect(validate({ ...call, arguments: { filter: 'mistakes' } })).toBe(false);
         expect(tool?.description).toContain('results currently displayed on the active Analysis Results page');
         expect(tool?.description).toContain('current view and any already-applied filter');
         expect(tool?.description).toContain('takes no filter, query, or other input arguments');
+        expect(tool?.description).not.toContain('This command uses the existing workflow');
 
         expect(namesFor({ session_mode: 'live' }))
             .not.toContain('add_analysis_result_to_do_list');
@@ -242,7 +247,7 @@ describe('displayed analysis result queue command', () => {
         })).toContain('add_analysis_result_to_do_list');
     });
 
-    it('allows automatic comparison queueing as a child workflow', () => {
+    it('allows automatic comparison queueing as a child tool', () => {
         const analystTools = getModelCommandsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',

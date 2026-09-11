@@ -23,6 +23,9 @@ html, body, #root, .App {
 }
 
 .floating-overlay-stage {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
     width: 100%;
     min-height: 100%;
 }

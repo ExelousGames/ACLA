@@ -118,6 +118,7 @@ export interface DriverExpertComparisonGraphProps {
     width?: number | string;
     layout?: DriverExpertComparisonLayout;
     game?: DesktopGame | null;
+    showLabelGroups?: boolean;
     showReplayControl?: boolean;
     onReplayComplete?: () => void;
     voice?: TtsPack;
@@ -1609,6 +1610,7 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     width = '100%',
     layout,
     game,
+    showLabelGroups = true,
     showReplayControl = true,
     onReplayComplete,
     voice,
@@ -1748,7 +1750,7 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
                 </div>
             </header>
 
-            {Boolean(labelGroups?.length) && (
+            {showLabelGroups && Boolean(labelGroups?.length) && (
                 <div className={styles.labelGroups} aria-label="Segment analysis labels">
                     {labelGroups?.map(({ category, subLabels }) => (
                         <section
@@ -1807,6 +1809,7 @@ const DriverExpertComparisonOverlayGraph = React.memo<{
         game={snapshot.game}
         title={snapshot.title}
         layout={{ trajectoryHeight: 280 }}
+        showLabelGroups={false}
         showReplayControl={false}
         onReplayComplete={() => context.emitRendererEvent('replay_complete')}
     />
@@ -1854,9 +1857,9 @@ export const driverExpertComparisonOverlayRenderer: AiOverlayRenderer<DriverExpe
         );
     },
     dimensions: {
-        expanded: { width: 760, height: 500 },
+        expanded: { width: 532, height: 500 },
         folded: { width: 360, height: 58 },
-        focus: { width: 760, height: 500 },
+        focus: { width: 532, height: 500 },
     },
 };
 
