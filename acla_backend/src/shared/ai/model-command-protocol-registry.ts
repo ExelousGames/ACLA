@@ -400,10 +400,11 @@ const MODEL_COMMAND_DEFINITIONS = [
         required: ['query'],
     },
     {
-        name: 'query_analysis_result',
+        name: 'query_lap_analysis_result',
         description: [
             'Evaluate a JSONata expression against all Analysis Results without rerunning analysis. The current View and active page do not change the query input.',
-            'The expression receives exactly one root structure: { "analyses": [{ "id": "...", "createdAt": 0, "sourceIndex": 0, "baseline": { "lap": 1, "lapTimeMs": 0, "track": "...", "car": "..." }, "elements": [{ "id": "...", "labels": [{ "label_name": "...", "start_index": 0, "end_index": 1 }], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] }] }. analyses contains every retained lap analysis in displayed order. For a non-paginated recorded result it contains one analysis with null createdAt and baseline.',
+            'The expression receives exactly one root structure: { "analyses": [{ "id": "...", "createdAt": 0, "sourceIndex": 0, "baseline": { "lap_id": 1, "lapTimeMs": 0, "track": "...", "car": "..." }, "elements": [{ "id": "...", "labels": [{ "label_name": "...", "start_index": 0, "end_index": 1 }], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": { "startMs": 0, "endMs": 0, "deltaMs": 0 }, "comparison": { "samples": [{ "driverTimeMs": 0, "expertTimeMs": 0, "driverTrackPosition": 0, "expertTrackPosition": 0, "driverTrajectory": { "x": 0, "y": 0, "z": 0 }, "expertTrajectory": { "x": 0, "y": 0, "z": 0 }, "driverGas": 0, "expertGas": 0, "driverBrake": 0, "expertBrake": 0, "driverGear": 1, "expertGear": 1 }] }, "metadata": { "source": "ai_classifier", "start_index": 0, "end_index": 1 } }] }] }. analyses contains every retained lap analysis in displayed order. For a non-paginated recorded result it contains one analysis with null createdAt and baseline.',
+            'In this structure, createdAt and baseline may be null, and baseline.lapTimeMs may be null. sourceIndex is the zero-based displayed array index, and baseline.lap_id is a non-negative telemetry lap identifier. Only id and labels are required on each element; title, section, normalizedPositionRange, timeGap, comparison, and metadata are optional. timeGap fields are optional. Comparison samples require driverTimeMs, expertTimeMs, driverTrackPosition, and expertTrackPosition; the other sample fields are optional, and trajectory points require only x. timeGap, comparison, and metadata are JSON objects that may contain additional fields.',
             'The response is { "status": "ready", "data": ... }, where data is the actual JSON-safe JSONata value (scalar, object, array, or null), not a count unless the expression returns one.',
             'Each query independently enforces a maximum of 8,192 bytes of compact UTF-8 JSON for the entire { "status": "ready", "data": ... } payload, excluding the transport envelope, and a maximum of 50 items in every returned array, including nested arrays. Oversized results are rejected completely with QUERY_RESULT_LIMIT_EXCEEDED; no partial data is returned. Filter the results, select fewer fields, or aggregate to fit these limits. There are no caller-controlled overrides or pagination parameters.',
             'JSONata can calculate over all analysis data before these output limits are applied. Small complete datasets and repeated bounded queries are allowed. Normalized error details are limited to 1,024 serialized bytes; oversized diagnostics are replaced with a fixed error without the original message or cause.',
@@ -459,7 +460,7 @@ const MODEL_COMMAND_DEFINITIONS = [
     ],
     "stop_when": {
       "tool": {
-        "name": "query_analysis_result",
+        "name": "query_lap_analysis_result",
         "arguments": {
           "query": "$count(analyses)"
         }
@@ -810,7 +811,7 @@ const COMMON_COMMAND_NAMES: ModelCommandName[] = [
 const LIVE_COMMAND_NAMES: ModelCommandName[] = [
     'start_agent_session',
     'apply_query_to_analysis_result',
-    'query_analysis_result',
+    'query_lap_analysis_result',
     'analyze_telemetry',
     'get_next_corner',
     'query_telemetry_metric',
@@ -860,7 +861,7 @@ const RECORDED_COMMAND_NAMES: ModelCommandName[] = [
     'get_recorded_session_analysis',
     'get_recorded_session_context',
     'apply_query_to_analysis_result',
-    'query_analysis_result',
+    'query_lap_analysis_result',
     'analyze_telemetry',
 ];
 
@@ -887,7 +888,7 @@ const getAllowedToolNames = (
             ...USER_SUMMARY_COMMAND_NAMES,
             ...(sessionMode === 'live' ? [
                 'apply_query_to_analysis_result',
-                'query_analysis_result',
+                'query_lap_analysis_result',
             ] as const : []),
             ...(sessionMode === 'live' && agentMode === 'live_performance_analyst'
                 ? LIVE_PERFORMANCE_ANALYST_COMMAND_NAMES

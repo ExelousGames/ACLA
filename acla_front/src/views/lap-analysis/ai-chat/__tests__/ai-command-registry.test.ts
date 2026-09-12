@@ -12,7 +12,7 @@ import type {
     AiCommandRegistry,
     FrontendAiCommandContext,
     FrontendAiQueryContractCoverage,
-    QueryAnalysisResultOutput,
+    QueryLapAnalysisResultOutput,
     QueryTelemetryMetricArguments,
     QueryTelemetryMetricResult,
     FrontendWorkflowName,
@@ -60,10 +60,10 @@ const queryContractCoverage: FrontendAiQueryContractCoverage = true;
 
 const assertQueryContractTypes = (registry: AiCommandRegistry) => {
     const input: ProcedurePlanInput = { workflow: { name: 'set_procedure_plan',
-        goal: 'Count', operations: [{ operation: { name: 'query_analysis_result', title: 'Count', arguments: { query: '1' } } }],
+        goal: 'Count', operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Count', arguments: { query: '1' } } }],
     } };
     const workflow: Workflow<ProcedurePlanRunResult> = registry.set_procedure_plan(input);
-    const tool: Tool<QueryAnalysisResultOutput> = registry.query_analysis_result({ query: 'analyses' });
+    const tool: Tool<QueryLapAnalysisResultOutput> = registry.query_lap_analysis_result({ query: 'analyses' });
     // @ts-expect-error Workflow commands cannot return the distinct Tool type.
     const invalidTool: Tool<ProcedurePlanRunResult> = registry.set_procedure_plan(input);
     // @ts-expect-error Workflow creation requires its named envelope.
@@ -71,14 +71,14 @@ const assertQueryContractTypes = (registry: AiCommandRegistry) => {
     // @ts-expect-error Workflow names are excluded from tool names.
     const invalidToolName: FrontendToolName = 'create_repeatable_plan';
     // @ts-expect-error Tool names are excluded from workflow names.
-    const invalidWorkflowName: FrontendWorkflowName = 'query_analysis_result';
-    const analysisResult: Operation<QueryAnalysisResultOutput> = (
-        registry.query_analysis_result({ query: '$count(analyses)' })
+    const invalidWorkflowName: FrontendWorkflowName = 'query_lap_analysis_result';
+    const analysisResult: Operation<QueryLapAnalysisResultOutput> = (
+        registry.query_lap_analysis_result({ query: '$count(analyses)' })
     );
     // @ts-expect-error Analysis result queries require an expression.
-    registry.query_analysis_result({});
+    registry.query_lap_analysis_result({});
     // @ts-expect-error Analysis result queries accept no extra arguments.
-    registry.query_analysis_result({ query: 'analyses', extra: true });
+    registry.query_lap_analysis_result({ query: 'analyses', extra: true });
     const avg: Operation<QueryTelemetryMetricResult<'avg'>> = registry.query_telemetry_metric({
         fields: ['speed'],
         scope: { type: 'now' },
@@ -155,7 +155,7 @@ describe('frontend operation registry', () => {
             .filter(({ kind }) => kind === 'workflow')
             .map(({ name }) => name);
         expect(workflows.sort()).toEqual([...workflowNames].sort());
-        expect(frontendOperationRegistry.query_analysis_result.kind).toBe('tool');
+        expect(frontendOperationRegistry.query_lap_analysis_result.kind).toBe('tool');
         expect(frontendOperationRegistry.add_analysis_result_to_do_list.kind).toBe('tool');
     });
 
@@ -213,7 +213,7 @@ describe('frontend operation registry', () => {
         expect(Object.keys(registry).sort()).toEqual(
             Object.keys(frontendOperationRegistry).sort(),
         );
-        expect(registry).toHaveProperty('query_analysis_result');
+        expect(registry).toHaveProperty('query_lap_analysis_result');
         expect(registry).toHaveProperty('apply_query_to_analysis_result');
         expect(registry).toHaveProperty('display_specific_result_in_overlay');
         Object.entries(frontendOperationRegistry).forEach(([name, definition]) => {
@@ -281,7 +281,7 @@ describe('frontend operation registry', () => {
     });
 
     it('dispatches JSONata expressions and preserves actual JSON result types', async () => {
-        const operations = new Map<string, Operation<QueryAnalysisResultOutput>>([
+        const operations = new Map<string, Operation<QueryLapAnalysisResultOutput>>([
             ['$count(analyses)', resolvedOperation({ status: 'ready' as const, data: 4 }, 'ready')],
             ['{"count": $count(analyses.elements)}', resolvedOperation({
                 status: 'ready' as const,
@@ -298,14 +298,14 @@ describe('frontend operation registry', () => {
         ]);
         const componentName = 'visualization:analysis-results';
         const handle: Partial<AnalysisResultsChartHandle> = {
-            queryAnalysisResult: jest.fn(({ query }) => operations.get(query)!) as any,
+            queryLapAnalysisResult: jest.fn(({ query }) => operations.get(query)!) as any,
         };
         const registry = createAiCommandRegistry({
             componentRefs: register(componentName, handle),
         });
 
         const results = Array.from(operations, ([query, componentOperation]) => {
-            const returned = registry.query_analysis_result({ query });
+            const returned = registry.query_lap_analysis_result({ query });
             expect(returned).toBe(componentOperation);
             return Promise.all([returned.result, componentOperation.result]).then(([
                 returnedResult,
@@ -313,8 +313,8 @@ describe('frontend operation registry', () => {
             ]) => expect(returnedResult).toEqual(componentResult));
         });
         await Promise.all(results);
-        expect(handle.queryAnalysisResult).toHaveBeenCalledTimes(operations.size);
-        expect(handle.queryAnalysisResult).toHaveBeenNthCalledWith(1, {
+        expect(handle.queryLapAnalysisResult).toHaveBeenCalledTimes(operations.size);
+        expect(handle.queryLapAnalysisResult).toHaveBeenNthCalledWith(1, {
             query: '$count(analyses)',
         });
     });
@@ -328,18 +328,18 @@ describe('frontend operation registry', () => {
     ])('rejects an invalid analysis result query: %p', async (args) => {
         const componentName = 'visualization:analysis-results';
         const handle: Partial<AnalysisResultsChartHandle> = {
-            queryAnalysisResult: jest.fn(),
+            queryLapAnalysisResult: jest.fn(),
         };
         const registry = createAiCommandRegistry({
             componentRefs: register(componentName, handle),
         });
 
-        const operation = registry.query_analysis_result(args as any);
+        const operation = registry.query_lap_analysis_result(args as any);
 
         await expect(operation.result).rejects.toMatchObject({
             name: 'InvalidOperationCallError',
         });
-        expect(handle.queryAnalysisResult).not.toHaveBeenCalled();
+        expect(handle.queryLapAnalysisResult).not.toHaveBeenCalled();
     });
 
     it('validates and dispatches an Analysis Results query apply operation unchanged', async () => {
@@ -394,7 +394,7 @@ describe('frontend operation registry', () => {
             componentRefs: createOperationComponentRefDirectory(),
         });
 
-        const operation = registry.query_analysis_result({ query: '$count(analyses)' });
+        const operation = registry.query_lap_analysis_result({ query: '$count(analyses)' });
 
         await expect(operation.result).rejects.toMatchObject({
             name: 'ComponentRefUnavailableError',
@@ -600,17 +600,17 @@ describe('strict workflow creation and tool dispatch', () => {
     const procedure = (): ProcedurePlanInput => ({ workflow: { name: 'set_procedure_plan',
         goal: 'Review the session',
         operations: [
-            { operation: { name: 'query_analysis_result', title: 'Count analyses', arguments: { query: '$count(analyses)' } } },
-            { operation: { name: 'query_analysis_result', title: 'Read analyses', arguments: { query: 'analyses' } } },
+            { operation: { name: 'query_lap_analysis_result', title: 'Count analyses', arguments: { query: '$count(analyses)' } } },
+            { operation: { name: 'query_lap_analysis_result', title: 'Read analyses', arguments: { query: 'analyses' } } },
         ],
     } });
     const repeatable = (): RepeatablePlanInput => ({ workflow: { name: 'create_repeatable_plan',
         goal: 'Review until ready',
         operations: [
-            { operation: { name: 'query_analysis_result', id: 'one', title: 'First count', arguments: { query: '1' } } },
-            { operation: { name: 'query_analysis_result', id: 'two', title: 'Second count', arguments: { query: '2' } } },
+            { operation: { name: 'query_lap_analysis_result', id: 'one', title: 'First count', arguments: { query: '1' } } },
+            { operation: { name: 'query_lap_analysis_result', id: 'two', title: 'Second count', arguments: { query: '2' } } },
         ],
-        stop_when: { tool: { name: 'query_analysis_result', arguments: { query: '3' }  }, operator: 'gte', target: 3 },
+        stop_when: { tool: { name: 'query_lap_analysis_result', arguments: { query: '3' }  }, operator: 'gte', target: 3 },
     } });
     const setup = (context: FrontendAiCommandContext = {
         sessionMode: 'live', conversationRole: 'agent', agentMode: 'live_performance_analyst',
@@ -702,7 +702,7 @@ describe('strict workflow creation and tool dispatch', () => {
         ['mixed procedure', 'set_procedure_plan', { ...procedure(), requests: [] }],
         ...['payload', 'args', 'parameters'].map((alias): [string, string, unknown] => [
             `procedure ${alias}`, 'set_procedure_plan', { workflow: { name: 'set_procedure_plan',
-                goal: 'Invalid', operations: [{ operation: { name: 'query_analysis_result', title: 'Count', arguments: {}, [alias]: {} } }],
+                goal: 'Invalid', operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Count', arguments: {}, [alias]: {} } }],
             } },
         ]),
         ['unwrapped repeatable', 'create_repeatable_plan', repeatable().workflow],
@@ -710,7 +710,7 @@ describe('strict workflow creation and tool dispatch', () => {
         ['wrong repeatable wrapper', 'create_repeatable_plan', procedure()],
         ['mixed repeatable', 'create_repeatable_plan', { workflow: { ...repeatable().workflow, steps: [] } }],
         ['name stop descriptor', 'create_repeatable_plan', { workflow: { ...repeatable().workflow,
-            stop_when: { tool: { query_analysis_result: { arguments: { query: '3' } } }, operator: 'gte', target: 3 },
+            stop_when: { tool: { query_lap_analysis_result: { arguments: { query: '3' } } }, operator: 'gte', target: 3 },
         } }],
     ])('rejects %s without invoking creation handlers', async (_label, name, input) => {
         const test = setup();

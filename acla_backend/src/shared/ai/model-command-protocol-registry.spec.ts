@@ -281,10 +281,10 @@ describe('analysis result query tool', () => {
 
     it('requires one non-blank JSONata expression without a legacy enum', () => {
         const tool = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => (
-            name === 'query_analysis_result'
+            name === 'query_lap_analysis_result'
         ))) as any;
 
-        expect(MODEL_COMMAND_PROTOCOL.filter(({ name }) => name === 'query_analysis_result'))
+        expect(MODEL_COMMAND_PROTOCOL.filter(({ name }) => name === 'query_lap_analysis_result'))
             .toHaveLength(1);
         expect(tool).toMatchObject({
             description: expect.any(String),
@@ -307,7 +307,7 @@ describe('analysis result query tool', () => {
     it('describes one all-analysis root in every eligible context', () => {
         eligibleContexts.forEach((context) => {
             const tool = getToolArguments(getModelCommandsForSessionContext(context).find(({ name }) => (
-                name === 'query_analysis_result'
+                name === 'query_lap_analysis_result'
             )));
             const description = tool?.description ?? '';
 
@@ -335,7 +335,7 @@ describe('analysis result query tool', () => {
 
     it('does not advertise the old identifiers as aliases', () => {
         const tool = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => (
-            name === 'query_analysis_result'
+            name === 'query_lap_analysis_result'
         )));
         const serializedTool = JSON.stringify(tool);
 
@@ -345,25 +345,25 @@ describe('analysis result query tool', () => {
 
     it('is advertised in live, live-agent, and recorded contexts only', () => {
         expect(namesFor({ session_mode: 'live' }))
-            .toContain('query_analysis_result');
+            .toContain('query_lap_analysis_result');
         expect(namesFor({ session_mode: 'recorded' }))
-            .toContain('query_analysis_result');
+            .toContain('query_lap_analysis_result');
         expect(namesFor({ session_mode: 'live', agent_mode: 'track_guide' }))
-            .toContain('query_analysis_result');
+            .toContain('query_lap_analysis_result');
         expect(namesFor({ session_mode: 'live', agent_mode: 'overtake' }))
-            .toContain('query_analysis_result');
+            .toContain('query_lap_analysis_result');
         expect(namesFor({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
-        })).toContain('query_analysis_result');
+        })).toContain('query_lap_analysis_result');
         expect(namesFor({ session_mode: 'front_desk' }))
-            .not.toContain('query_analysis_result');
+            .not.toContain('query_lap_analysis_result');
         expect(namesFor({ session_mode: 'user_summary' }))
-            .not.toContain('query_analysis_result');
+            .not.toContain('query_lap_analysis_result');
         expect(namesFor({ session_mode: 'front_desk', agent_mode: 'track_guide' }))
-            .not.toContain('query_analysis_result');
+            .not.toContain('query_lap_analysis_result');
         expect(namesFor({ session_mode: 'user_summary', agent_mode: 'track_guide' }))
-            .not.toContain('query_analysis_result');
+            .not.toContain('query_lap_analysis_result');
     });
 
     it('is available to compatible live analyst repeatable plan steps and stop conditions', () => {
@@ -374,9 +374,9 @@ describe('analysis result query tool', () => {
         const repeatablePlan = tools.find(({ name }) => name === 'create_repeatable_plan') as any;
 
         expect(getCallNames(getWorkflowSchema(repeatablePlan).properties.operations.items))
-            .toContain('query_analysis_result');
+            .toContain('query_lap_analysis_result');
         expect(getCallNames(getWorkflowSchema(repeatablePlan).properties.stop_when.properties.tool))
-            .toContain('query_analysis_result');
+            .toContain('query_lap_analysis_result');
     });
 });
 
@@ -421,7 +421,7 @@ describe('analysis result query apply tool', () => {
         eligibleContexts.forEach((context) => {
             expect(namesFor(context)).toEqual(expect.arrayContaining([
                 'apply_query_to_analysis_result',
-                'query_analysis_result',
+                'query_lap_analysis_result',
             ]));
         });
         [
@@ -501,13 +501,13 @@ describe('create_repeatable_plan tool', () => {
             },
         });
         expect(Object.keys(workflow.properties)).toEqual(['name', 'goal', 'operations', 'stop_when']);
-        const step = getCallMetadata(workflow.properties.operations.items, 'query_analysis_result');
+        const step = getCallMetadata(workflow.properties.operations.items, 'query_lap_analysis_result');
         expect(Object.keys(step.properties)).toEqual(['name', 'id', 'title', 'arguments']);
         expect(step.required).toEqual(['name', 'id', 'title']);
         expect(step.additionalProperties).toBe(false);
         expect(step.properties.arguments).toMatchObject({ type: 'object', default: {} });
         const stopWhen = workflow.properties.stop_when;
-        const stopCall = getCallMetadata(stopWhen.properties.tool, 'query_analysis_result');
+        const stopCall = getCallMetadata(stopWhen.properties.tool, 'query_lap_analysis_result');
         expect(Object.keys(stopCall.properties)).toEqual(['name', 'arguments']);
         expect(stopCall.required).toEqual(['name']);
         expect(stopCall.additionalProperties).toBe(false);
@@ -616,19 +616,19 @@ describe('nested workflow schema validation', () => {
     const cases = [
         {
             name: 'append_procedure_plan',
-            body: { operations: [{ operation: { name: 'query_analysis_result', title: 'Count', arguments: { query: '1' } } }] },
+            body: { operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Count', arguments: { query: '1' } } }] },
             metadata: { title: 'Count', arguments: { query: '1' } },
             legacyKey: 'requests',
         },
         {
             name: 'append_repeatable_plan',
-            body: { operations: [{ operation: { name: 'query_analysis_result', id: 'count', title: 'Count', arguments: { query: '1' } } }] },
+            body: { operations: [{ operation: { name: 'query_lap_analysis_result', id: 'count', title: 'Count', arguments: { query: '1' } } }] },
             metadata: { id: 'count', title: 'Count', arguments: { query: '1' } },
             legacyKey: 'steps',
         },
         {
             name: 'create_live_range_todo_list',
-            body: { operations: [{ operation: { name: 'query_analysis_result', event, arguments: { query: '1' } } }] },
+            body: { operations: [{ operation: { name: 'query_lap_analysis_result', event, arguments: { query: '1' } } }] },
             metadata: { event, arguments: { query: '1' } },
             legacyKey: 'events',
         },
@@ -636,7 +636,7 @@ describe('nested workflow schema validation', () => {
             name: 'set_procedure_plan',
             body: {
                 goal: 'Review the session',
-                operations: [{ operation: { name: 'query_analysis_result', title: 'Count analyses', arguments: { query: '$count(analyses)' } } }],
+                operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Count analyses', arguments: { query: '$count(analyses)' } } }],
             },
             metadata: { title: 'Count analyses', arguments: { query: '$count(analyses)' } },
             legacyKey: 'requests',
@@ -645,8 +645,8 @@ describe('nested workflow schema validation', () => {
             name: 'create_repeatable_plan',
             body: {
                 goal: 'Practice a clean lap',
-                operations: [{ operation: { name: 'query_analysis_result', id: 'count', title: 'Count analyses', arguments: { query: '$count(analyses)' } } }],
-                stop_when: { tool: { name: 'query_analysis_result', arguments: { query: '$count(analyses)' }  }, operator: 'gte', target: 3 },
+                operations: [{ operation: { name: 'query_lap_analysis_result', id: 'count', title: 'Count analyses', arguments: { query: '$count(analyses)' } } }],
+                stop_when: { tool: { name: 'query_lap_analysis_result', arguments: { query: '$count(analyses)' }  }, operator: 'gte', target: 3 },
             },
             metadata: { id: 'count', title: 'Count analyses', arguments: { query: '$count(analyses)' } },
             legacyKey: 'steps',
@@ -654,7 +654,7 @@ describe('nested workflow schema validation', () => {
         {
             name: 'add_event_to_live_range_todo_list',
             body: {
-                operations: [{ operation: { name: 'query_analysis_result', event, arguments: { query: '$count(analyses)' } } }],
+                operations: [{ operation: { name: 'query_lap_analysis_result', event, arguments: { query: '$count(analyses)' } } }],
             },
             metadata: { event, arguments: { query: '$count(analyses)' } },
             legacyKey: 'events',
@@ -680,8 +680,8 @@ describe('nested workflow schema validation', () => {
             if ('event' in second) second.event.id = 'corner-2';
             second.arguments = { query: '$count(analyses.elements)', nested: { payload: ['kept', 2] } };
             const input = withOperations([
-                { operation: { name: 'query_analysis_result', ...metadata } },
-                { operation: { name: 'query_analysis_result', ...second } },
+                { operation: { name: 'query_lap_analysis_result', ...metadata } },
+                { operation: { name: 'query_lap_analysis_result', ...second } },
             ]);
             const before = JSON.stringify(input);
             expect(validate(input)).toBe(true);
@@ -710,29 +710,29 @@ describe('nested workflow schema validation', () => {
 
         it('rejects missing or malformed tool envelopes and metadata aliases', () => {
             const invalidEntries: unknown[] = [
-                null, [], 'query_analysis_result', {},
-                { tool: { name: 'query_analysis_result', ...metadata } },
-                { operation: { name: 'query_analysis_result', ...metadata }, show_map: metadata },
-                { name: 'query_analysis_result', ...metadata },
-                { operation: { name: 'query_analysis_result', arguments: {} } },
+                null, [], 'query_lap_analysis_result', {},
+                { tool: { name: 'query_lap_analysis_result', ...metadata } },
+                { operation: { name: 'query_lap_analysis_result', ...metadata }, show_map: metadata },
+                { name: 'query_lap_analysis_result', ...metadata },
+                { operation: { name: 'query_lap_analysis_result', arguments: {} } },
                 { operation: { ...metadata, name: '' } },
-                { query_analysis_result: null },
-                { query_analysis_result: [] },
+                { query_lap_analysis_result: null },
+                { query_lap_analysis_result: [] },
             ];
             ['payload', 'args', 'parameters'].forEach((alias) => {
                 const missingArguments: any = { ...metadata, [alias]: {} };
                 delete missingArguments.arguments;
                 invalidEntries.push(
-                    { operation: { name: 'query_analysis_result', ...missingArguments } },
-                    { operation: { name: 'query_analysis_result', ...metadata, [alias]: {} } },
+                    { operation: { name: 'query_lap_analysis_result', ...missingArguments } },
+                    { operation: { name: 'query_lap_analysis_result', ...metadata, [alias]: {} } },
                 );
             });
             [null, [], 'query'].forEach((argumentsValue) => {
-                invalidEntries.push({ operation: { name: 'query_analysis_result', ...metadata, arguments: argumentsValue } });
+                invalidEntries.push({ operation: { name: 'query_lap_analysis_result', ...metadata, arguments: argumentsValue } });
             });
             invalidEntries.forEach((entry) => {
                 // A malformed later entry invalidates the entire batch.
-                expect(validate(withOperations([{ operation: { name: 'query_analysis_result', ...metadata } }, entry]))).toBe(false);
+                expect(validate(withOperations([{ operation: { name: 'query_lap_analysis_result', ...metadata } }, entry]))).toBe(false);
             });
             [null, {}, 'operations'].forEach((operations) => expect(validate(withOperations(operations))).toBe(false));
         });
@@ -750,20 +750,20 @@ describe('nested workflow schema validation', () => {
         it('retains metadata requirements and permits omitted arguments only for repeatable calls', () => {
             const missingArguments: any = { ...metadata };
             delete missingArguments.arguments;
-            expect(validate(withOperations([{ operation: { name: 'query_analysis_result', ...missingArguments } }])))
+            expect(validate(withOperations([{ operation: { name: 'query_lap_analysis_result', ...missingArguments } }])))
                 .toBe(name === 'create_repeatable_plan' || name === 'append_repeatable_plan');
             Object.keys(metadata).filter((key) => key !== 'arguments').forEach((key) => {
                 const missing: any = { ...metadata };
                 delete missing[key];
-                expect(validate(withOperations([{ operation: { name: 'query_analysis_result', ...missing } }]))).toBe(false);
+                expect(validate(withOperations([{ operation: { name: 'query_lap_analysis_result', ...missing } }]))).toBe(false);
             });
             expect(validate(withOperations([]))).toBe(false);
             if (name === 'set_procedure_plan') {
                 ['', ' \t\n '].forEach((blank) => {
                     expect(validate(envelope({ ...body, goal: blank }))).toBe(true);
                     expect(validate(withOperations([
-                        { operation: { name: 'query_analysis_result', ...metadata } },
-                        { operation: { name: 'query_analysis_result', ...metadata, title: blank } },
+                        { operation: { name: 'query_lap_analysis_result', ...metadata } },
+                        { operation: { name: 'query_lap_analysis_result', ...metadata, title: blank } },
                     ]))).toBe(false);
                 });
             }
@@ -774,7 +774,7 @@ describe('nested workflow schema validation', () => {
         const repeatable = cases.find(({ name }) => name === 'create_repeatable_plan')!;
         const validate = compileCommand(commands.find(({ name }) => name === repeatable.name));
         const withStop = (stop_when: unknown) => ({ workflow: { name: repeatable.name, ...repeatable.body, stop_when } });
-        const stop = { tool: { name: 'query_analysis_result', }, operator: 'gte', target: 3 };
+        const stop = { tool: { name: 'query_lap_analysis_result', }, operator: 'gte', target: 3 };
         WORKFLOW_NAMES.forEach((name) => {
             expect(validate(withStop({ ...stop, tool: { name } }))).toBe(false);
         });
@@ -785,10 +785,10 @@ describe('nested workflow schema validation', () => {
             null, [], {},
             { operation: stop.tool, operator: stop.operator, target: stop.target },
             { ...stop, tool: {} },
-            { ...stop, tool: { name: 'query_analysis_result', show_map: {} } },
-            { ...stop, tool: { query_analysis_result: { arguments: {} } } },
-            { ...stop, tool: { name: 'query_analysis_result', title: 'Not stop metadata'  } },
-            { ...stop, tool: { name: 'query_analysis_result', arguments: null  } },
+            { ...stop, tool: { name: 'query_lap_analysis_result', show_map: {} } },
+            { ...stop, tool: { query_lap_analysis_result: { arguments: {} } } },
+            { ...stop, tool: { name: 'query_lap_analysis_result', title: 'Not stop metadata'  } },
+            { ...stop, tool: { name: 'query_lap_analysis_result', arguments: null  } },
             { ...stop, operator: 'equals' },
             { ...stop, target: '3' },
             { ...stop, target: Infinity },
@@ -808,7 +808,7 @@ describe('nested workflow schema validation', () => {
         const liveRange = cases.find(({ name }) => name === 'add_event_to_live_range_todo_list')!;
         const validate = compileCommand(commands.find(({ name }) => name === liveRange.name));
         const withEvent = (value: unknown) => ({
-            workflow: { name: liveRange.name, operations: [{ operation: { name: 'query_analysis_result', event: value, arguments: {} } }] },
+            workflow: { name: liveRange.name, operations: [{ operation: { name: 'query_lap_analysis_result', event: value, arguments: {} } }] },
         });
         expect(validate(withEvent({ id: 'corner', normalized_position: 0, content: { title: 'Start' } }))).toBe(true);
         expect(validate(withEvent({ ...event, normalized_position: 1 }))).toBe(true);

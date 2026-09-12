@@ -49,8 +49,8 @@ import type {
 } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
 import type {
     ApplyAnalysisResultQueryInput,
-    QueryAnalysisResultInput,
-    QueryAnalysisResultOutput,
+    QueryLapAnalysisResultInput,
+    QueryLapAnalysisResultOutput,
 } from 'views/lap-analysis/visualization/charts/analysisResultsQuery';
 import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
 import type { QueryResult, QueryScope } from 'views/lap-analysis/session-intelligence/types';
@@ -74,8 +74,8 @@ import type {
 export type {
     ApplyAnalysisResultQueryInput,
     ApplyAnalysisResultQueryOutput,
-    QueryAnalysisResultInput,
-    QueryAnalysisResultOutput,
+    QueryLapAnalysisResultInput,
+    QueryLapAnalysisResultOutput,
 } from 'views/lap-analysis/visualization/charts/analysisResultsQuery';
 
 export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
@@ -330,9 +330,9 @@ export type QueryTelemetryMetricResult<
 > = OperationQueryResult<QueryResult<TReduce>>;
 
 export type FrontendAiQueryContractMap = {
-    query_analysis_result: (
-        args: QueryAnalysisResultInput,
-    ) => Tool<QueryAnalysisResultOutput>;
+    query_lap_analysis_result: (
+        args: QueryLapAnalysisResultInput,
+    ) => Tool<QueryLapAnalysisResultOutput>;
     query_telemetry_metric: <TReduce extends TelemetryMetricReduce>(
         args: QueryTelemetryMetricArguments<TReduce>,
     ) => Tool<QueryTelemetryMetricResult<TReduce>>;
@@ -351,8 +351,8 @@ export type FrontendAiQueryContractCoverage = AssertTrue<QueryContractKeysAreExa
 
 const validateAnalysisResultQueryArguments = (
     args: unknown,
-): QueryAnalysisResultInput => {
-    const validationMessage = 'query_analysis_result requires exactly one non-empty string property named query.';
+): QueryLapAnalysisResultInput => {
+    const validationMessage = 'query_lap_analysis_result requires exactly one non-empty string property named query.';
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
         throw new InvalidOperationCallError(validationMessage);
     }
@@ -740,7 +740,7 @@ const definitionList = Object.freeze([
         },
     },
     {
-        name: 'query_analysis_result',
+        name: 'query_lap_analysis_result',
         kind: 'tool',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args) => {
@@ -748,7 +748,7 @@ const definitionList = Object.freeze([
             return getComponent<AnalysisResultsChartHandle>(
                 context,
                 getSingletonVisualizationComponentName('analysis-results'),
-            ).queryAnalysisResult(query);
+            ).queryLapAnalysisResult(query);
         },
     },
     {

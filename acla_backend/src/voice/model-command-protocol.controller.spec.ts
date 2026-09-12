@@ -78,7 +78,7 @@ describe('ModelCommandProtocolController', () => {
         expect(names).toEqual(expect.arrayContaining([
             'collect_live_baseline',
             'apply_query_to_analysis_result',
-            'query_analysis_result',
+            'query_lap_analysis_result',
             'create_repeatable_plan',
             'add_analysis_result_to_do_list',
         ]));
@@ -141,7 +141,7 @@ describe('ModelCommandProtocolController', () => {
         const tools = controller.getModelCommands({
             session_context: { session_mode: 'recorded' },
         });
-        const tool = tools.find(({ name }) => name === 'query_analysis_result') as any;
+        const tool = tools.find(({ name }) => name === 'query_lap_analysis_result') as any;
 
         expect(tool.properties.tool.properties.arguments.required).toEqual(['query']);
         expect(Object.keys(tool.properties.tool.properties.arguments.properties)).toEqual(['query']);

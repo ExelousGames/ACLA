@@ -245,7 +245,7 @@ describe('AnalysisResultsChart', () => {
         directory.registerComponentRef(chartRef);
         const registry = createAiCommandRegistry({ componentRefs: directory });
         const dispatch = createWorkflowToolDispatcher({ componentRefs: directory });
-        const operation = registry.query_analysis_result({ query });
+        const operation = registry.query_lap_analysis_result({ query });
         const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
         const error = await operation.result.catch((failure) => failure);
         expect(error).toBeInstanceOf(analysisResultsQuery.AnalysisResultsQueryError);
@@ -253,7 +253,7 @@ describe('AnalysisResultsChart', () => {
         expect(error).not.toHaveProperty('data');
         await expect(termination).resolves.toMatchObject({ result: error });
         const frame = buildFormattedToolResultFrame({
-            name: 'query_analysis_result', status: 'failed', error: serializeError(normalizeOperationError(error)),
+            name: 'query_lap_analysis_result', status: 'failed', error: serializeError(normalizeOperationError(error)),
         });
         expect(JSON.stringify(frame)).toContain(code);
         expect(JSON.stringify(frame)).not.toContain(marker);
@@ -262,7 +262,7 @@ describe('AnalysisResultsChart', () => {
         const procedure = new ProcedurePlanRunner('procedure-plan', dispatch, undefined, jest.fn());
         const procedureResult = await procedure.createProcedurePlan({ workflow: { name: 'set_procedure_plan',
             goal: 'Query analysis',
-            operations: [{ operation: { name: 'query_analysis_result', title: 'Read', arguments: { query } } }],
+            operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Read', arguments: { query } } }],
         } }).result.catch((failure) => failure);
         expect(procedureResult).toBeInstanceOf(Error);
         expect(procedureResult).toMatchObject({
@@ -272,8 +272,8 @@ describe('AnalysisResultsChart', () => {
         const repeatable = new RepeatablePlanRunner('repeatable-plan', dispatch);
         const repeatableResult = await repeatable.createRepeatablePlan({ workflow: { name: 'create_repeatable_plan',
             goal: 'Query analysis',
-            operations: [{ operation: { name: 'query_analysis_result', id: 'read', title: 'Read', arguments: { query } } }],
-            stop_when: { tool: { name: 'query_analysis_result', arguments: { query: '1' }  }, operator: 'eq', target: 1 },
+            operations: [{ operation: { name: 'query_lap_analysis_result', id: 'read', title: 'Read', arguments: { query } } }],
+            stop_when: { tool: { name: 'query_lap_analysis_result', arguments: { query: '1' }  }, operator: 'eq', target: 1 },
         } }).result.catch((failure) => failure);
         expect(repeatableResult).toBeInstanceOf(Error);
         expect(repeatableResult).toMatchObject({ name: 'GoalStepFailedError', cause: { detail: { code } } });
@@ -286,7 +286,7 @@ describe('AnalysisResultsChart', () => {
 
         // Failure does not remove local data or consume a shared query budget.
         for (let index = 0; index < 2; index += 1) {
-            await expect(registry.query_analysis_result({ query: '$count(analyses.elements)' }).result)
+            await expect(registry.query_lap_analysis_result({ query: '$count(analyses.elements)' }).result)
                 .resolves.toEqual({ status: 'ready', data: 51 });
         }
     });
@@ -305,9 +305,9 @@ describe('AnalysisResultsChart', () => {
         const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
         const result = await runner.createRepeatablePlan({ workflow: { name: 'create_repeatable_plan',
             goal: 'Bounded stop',
-            operations: [{ operation: { name: 'query_analysis_result', id: 'count', title: 'Count', arguments: { query: '$count(analyses)' } } }],
+            operations: [{ operation: { name: 'query_lap_analysis_result', id: 'count', title: 'Count', arguments: { query: '$count(analyses)' } } }],
             stop_when: {
-                tool: { name: 'query_analysis_result', arguments: { query: '$error($string(analyses))' }  },
+                tool: { name: 'query_lap_analysis_result', arguments: { query: '$error($string(analyses))' }  },
                 operator: 'eq', target: 0,
             },
         } }).result.catch((failure) => failure);
@@ -332,23 +332,23 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 0,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_ANALYSES_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_ANALYSES_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 1,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: '{"count": $count(analyses.elements)}' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: '{"count": $count(analyses.elements)}' }).result).resolves.toEqual({
             status: 'ready',
             data: { count: 0 },
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: '[analyses.elements.id]' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: '[analyses.elements.id]' }).result).resolves.toEqual({
             status: 'ready',
             data: [],
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'analyses.elements[id = "missing"]' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: 'analyses.elements[id = "missing"]' }).result).resolves.toEqual({
             status: 'ready',
             data: null,
         });
@@ -376,30 +376,30 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 9,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 7,
         });
 
         selectView('time-lost-mistakes');
 
-        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 9,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 7,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
             status: 'ready',
             data: null,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
             status: 'ready',
             data: null,
         });
@@ -440,15 +440,15 @@ describe('AnalysisResultsChart', () => {
         );
 
         expect(screen.getByRole('button', { name: 'Overall Trends' })).toHaveAttribute('aria-pressed', 'true');
-        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 5,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_ANALYSES_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_ANALYSES_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 2,
         });
-        await expect(chartRef.current!.queryAnalysisResult({
+        await expect(chartRef.current!.queryLapAnalysisResult({
             query: 'analyses.{"lap_id": baseline.lap_id, "segmentCount": $count(elements)}',
         }).result).resolves.toEqual({
             status: 'ready',
@@ -457,7 +457,7 @@ describe('AnalysisResultsChart', () => {
                 { lap_id: 2, segmentCount: 3 },
             ],
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 4,
         });
@@ -470,7 +470,7 @@ describe('AnalysisResultsChart', () => {
                 pagination={{ pages, activePageId: 'unavailable-page', onSelectPage }}
             />,
         );
-        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 5,
         });
@@ -483,7 +483,7 @@ describe('AnalysisResultsChart', () => {
                 pagination={{ pages, activePageId: 'latest-page', onSelectPage }}
             />,
         );
-        await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryLapAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 4,
         });
@@ -718,7 +718,7 @@ describe('AnalysisResultsChart', () => {
         expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent(
             'Not enough analyzed laps to determine a trend.',
         );
-        await expect(chartRef.current!.queryAnalysisResult({
+        await expect(chartRef.current!.queryLapAnalysisResult({
             query: ALL_ANALYSES_COUNT_QUERY,
         }).result).resolves.toEqual({ status: 'ready', data: 1 });
 

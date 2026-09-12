@@ -10,11 +10,11 @@ export type JsonPrimitive = null | boolean | number | string;
 export type JsonObject = { [key: string]: JsonValue };
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 
-export type QueryAnalysisResultInput = {
+export type QueryLapAnalysisResultInput = {
     query: string;
 };
 
-export type QueryAnalysisResultOutput = {
+export type QueryLapAnalysisResultOutput = {
     status: 'ready';
     data: JsonValue;
 };

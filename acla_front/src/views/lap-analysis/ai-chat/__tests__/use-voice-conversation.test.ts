@@ -152,14 +152,14 @@ describe('executeSubscribedFrontendOperation', () => {
             ? new ProcedurePlanRunner('procedure-plan', dispatch, undefined, jest.fn()).createProcedurePlan({
                 workflow: {
                     name: 'set_procedure_plan', goal: 'Review the lap',
-                    operations: [{ operation: { name: 'query_analysis_result', title: 'Read telemetry', arguments: {} } }],
+                    operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Read telemetry', arguments: {} } }],
                 },
             })
             : new RepeatablePlanRunner('repeatable-plan', dispatch).createRepeatablePlan({
                 workflow: {
                     name: 'create_repeatable_plan', goal: 'Drive a clean lap',
-                    operations: [{ operation: { name: 'query_analysis_result', id: 'read', title: 'Read telemetry', arguments: {} } }],
-                    stop_when: { tool: { name: 'query_analysis_result' }, operator: 'eq', target: 0 },
+                    operations: [{ operation: { name: 'query_lap_analysis_result', id: 'read', title: 'Read telemetry', arguments: {} } }],
+                    stop_when: { tool: { name: 'query_lap_analysis_result' }, operator: 'eq', target: 0 },
                 },
             });
         const { frames, events, result } = await execute(() => operation);

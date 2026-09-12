@@ -879,7 +879,7 @@ export const parseAppendRepeatablePlanInput = (value: unknown): GoalStepDescript
     const input = readWorkflowCall(value, 'append_repeatable_plan');
     if (!input || !hasOnlyKeys(input, ['name', 'operations'])) throw new InvalidGoalStepsError('repeatable-plan', 'Provide append_repeatable_plan with operations.');
     return parseRepeatablePlanInput({ workflow: { name: 'create_repeatable_plan', goal: 'Append', operations: input.operations,
-        stop_when: { tool: { name: 'query_analysis_result' }, operator: 'eq', target: 0 } } }).steps;
+        stop_when: { tool: { name: 'query_lap_analysis_result' }, operator: 'eq', target: 0 } } }).steps;
 };
 
 export const useRepeatablePlanWorkflow = ({

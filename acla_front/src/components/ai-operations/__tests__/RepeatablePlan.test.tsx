@@ -255,7 +255,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
             stop_when: {
                 ...request().stop_when,
                 tool: {
-                    name: 'query_analysis_result',
+                    name: 'query_lap_analysis_result',
                     arguments: { query: '$count(analyses)' },
                 },
             },
@@ -263,7 +263,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
         const order: string[] = [];
         const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => {
             order.push(args?.limit ? `${name}:${args.limit}` : name);
-            return operationWithValue(name === 'query_analysis_result'
+            return operationWithValue(name === 'query_lap_analysis_result'
                 ? { status: 'ready', data: 0 }
                 : { status: 'complete' });
         });
@@ -280,7 +280,7 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
             completed_steps: ['collect', 'analyze'],
             stop_when: {
                 tool: {
-                    name: 'query_analysis_result',
+                    name: 'query_lap_analysis_result',
                     arguments: { query: '$count(analyses)' },
                 },
                 operator: 'eq',
@@ -315,8 +315,8 @@ describe('RepeatablePlanRunner central dispatch callback', () => {
                 },
             },
         ]);
-        expect(order).toEqual(['collect', 'analyze:4', 'query_analysis_result']);
-        expect(dispatch).toHaveBeenLastCalledWith('query_analysis_result', {
+        expect(order).toEqual(['collect', 'analyze:4', 'query_lap_analysis_result']);
+        expect(dispatch).toHaveBeenLastCalledWith('query_lap_analysis_result', {
             query: '$count(analyses)',
         }, undefined, runner);
     });

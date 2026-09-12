@@ -66,8 +66,8 @@ import {
     type OverallTrendQueryLapResult,
     type OverallTrendQueryResult,
     type OverallTrendQueryTaxonomy,
-    type QueryAnalysisResultInput,
-    type QueryAnalysisResultOutput,
+    type QueryLapAnalysisResultInput,
+    type QueryLapAnalysisResultOutput,
 } from './analysisResultsQuery';
 
 const formatPosition = (value: number): string => `${(value * 100).toFixed(1)}%`;
@@ -166,9 +166,9 @@ export interface AnalysisResultsChartHandle extends NamedOperationComponentHandl
     applyAnalysisResultQuery(
         args: ApplyAnalysisResultQueryInput,
     ): Operation<ApplyAnalysisResultQueryOutput>;
-    queryAnalysisResult(
-        args: QueryAnalysisResultInput,
-    ): Operation<QueryAnalysisResultOutput>;
+    queryLapAnalysisResult(
+        args: QueryLapAnalysisResultInput,
+    ): Operation<QueryLapAnalysisResultOutput>;
     replaceAnalysisResults(data: unknown): true;
     appendAnalysisResult(element: unknown): AnalysisResultControlResult;
     updateAnalysisResult(id: unknown, changes: unknown): AnalysisResultControlResult;
@@ -1587,7 +1587,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 };
             }, 'ready');
         },
-        queryAnalysisResult: ({ query }) => createOperationFrom(async () => ({
+        queryLapAnalysisResult: ({ query }) => createOperationFrom(async () => ({
             status: 'ready' as const,
             data: await evaluateAllAnalysisResultsQuery(query, {
                 analyses: pagination ? retainedPages : [{

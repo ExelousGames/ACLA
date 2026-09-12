@@ -39,16 +39,16 @@ jest.mock('contexts/OperationComponentRefContext', () => ({
 const procedure = (): ProcedurePlanInput => ({
     workflow: { name: 'set_procedure_plan',
         goal: 'Review telemetry',
-        operations: [{ operation: { name: 'query_analysis_result', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
+        operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
     },
 });
 
 const repeatable = (): RepeatablePlanInput => ({
     workflow: { name: 'create_repeatable_plan',
         goal: 'Improve consistency',
-        operations: [{ operation: { name: 'query_analysis_result', id: 'read', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
+        operations: [{ operation: { name: 'query_lap_analysis_result', id: 'read', title: 'Read telemetry', arguments: { query: 'analyses' } } }],
         stop_when: {
-            tool: { name: 'query_analysis_result', arguments: { query: '0' }  },
+            tool: { name: 'query_lap_analysis_result', arguments: { query: '0' }  },
             operator: 'eq',
             target: 0,
         },
@@ -192,7 +192,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
         const dispatch = Object.assign(jest.fn(() => child.operation), { validate: jest.fn() });
         const { ref } = renderPanel(dispatch);
         const input = procedure();
-        input.workflow.operations.push({ operation: { name: 'query_analysis_result', title: 'Next step', arguments: { query: '0' } } });
+        input.workflow.operations.push({ operation: { name: 'query_lap_analysis_result', title: 'Next step', arguments: { query: '0' } } });
         let operation!: ReturnType<WorkflowPanelHandle['createProcedurePlan']> | ReturnType<WorkflowPanelHandle['createRepeatablePlan']>;
         act(() => {
             operation = kind === 'procedure'

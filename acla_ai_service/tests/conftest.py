@@ -82,7 +82,7 @@ def user_workflow_case(request):
         properties = {
             "goal": {"type": "string"},
             "stop_when": _object_schema({
-                "tool": {"oneOf": [_child_schema("query_analysis_result", {
+                "tool": {"oneOf": [_child_schema("query_lap_analysis_result", {
                     "arguments": _object_schema({
                         "query": {"type": "string", "minLength": 1},
                     }, ["query"]),
@@ -107,7 +107,7 @@ def user_workflow_case(request):
                 }},
             ],
             "stop_when": {
-                "tool": {"name": "query_analysis_result",
+                "tool": {"name": "query_lap_analysis_result",
                     "arguments": {"query": "$count(analyses)"},
                 },
                 "operator": "gte",
