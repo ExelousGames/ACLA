@@ -19,7 +19,7 @@ jest.mock('views/side-main-menu/side-main-menu', () => ({
         <button type="button" onClick={() => onTabChange('liveSession')}>Live Session</button>
     </main>
 ));
-jest.mock('views/lap-analysis/session-analysis', () => ({
+jest.mock('views/recorded-session/session-analysis', () => ({
     SessionAnalysisProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 jest.mock('./DashboardAssistant', () => ({ activeDashboardTab }: { activeDashboardTab: string }) => (

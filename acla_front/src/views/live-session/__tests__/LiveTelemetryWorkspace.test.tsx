@@ -1,7 +1,7 @@
 import React, { useContext } from 'react';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
+import type { VisualizationManagerHandle } from 'views/session-shared/visualization/VisualizationPanelManager';
 import {
     OPERATION_COMPONENT_NAMES,
     OperationComponentRefProvider,

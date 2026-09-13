@@ -20,6 +20,7 @@ describe('RacingSessionController', () => {
       listUserSessionsForAnalysis: jest.fn(),
       getSessionTelemetryForClassification: jest.fn(),
       createRacingSessionFromChunks: jest.fn(),
+      deleteSession: jest.fn(),
     };
     aiServiceClient = {
       classifySegments: jest.fn(),
@@ -41,6 +42,20 @@ describe('RacingSessionController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  it('deletes a session using the authenticated user id', async () => {
+    await controller.deleteSession(
+      { user: { userId: 'user-1' }, body: { userId: 'user-2' } },
+      '507f1f77bcf86cd799439011',
+    );
+    expect(racingSessionService.deleteSession).toHaveBeenCalledWith('user-1', '507f1f77bcf86cd799439011');
+  });
+
+  it('rejects deletion without an authenticated user id', async () => {
+    await expect(controller.deleteSession({}, '507f1f77bcf86cd799439011'))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect(racingSessionService.deleteSession).not.toHaveBeenCalled();
   });
 
   it.each([undefined, '', 'forza'])('rejects unsupported upload game %p before creating upload state', async (gameRecordedFrom) => {

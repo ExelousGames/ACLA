@@ -1,5 +1,5 @@
-import { CornerDefinition, SessionEvent, TelemetrySample } from 'views/lap-analysis/session-intelligence/types';
-import { getCornerAtPosition } from 'views/lap-analysis/session-intelligence/track-corners';
+import { CornerDefinition, SessionEvent, TelemetrySample } from 'views/session-shared/session-intelligence/types';
+import { getCornerAtPosition } from 'views/live-session/session-intelligence/track-corners';
 
 export class CornerSensor {
     private corners: CornerDefinition[] = [];

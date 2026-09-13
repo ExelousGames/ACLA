@@ -1,8 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { ObjectId } from 'mongodb';
 import { RacingSessionService } from './racing-session.service';
 import { getModelToken } from '@nestjs/mongoose';
 import { RacingSession } from 'src/schemas/racing-session.schema';
-import { GridFSService } from '../gridfs/gridfs.service';
+import { GridFSService, GRIDFS_BUCKETS } from '../gridfs/gridfs.service';
 
 describe('RacingSessionService', () => {
   let service: RacingSessionService;
@@ -15,12 +17,15 @@ describe('RacingSessionService', () => {
       findOne: jest.fn(),
       findById: jest.fn(),
       create: jest.fn(),
+      deleteOne: jest.fn().mockReturnValue({ exec: jest.fn().mockResolvedValue({ deletedCount: 1 }) }),
     };
     gridfsService = {
       uploadJSON: jest.fn(),
       downloadJSONStream: jest.fn(),
       getFileSize: jest.fn(),
       downloadJSON: jest.fn(),
+      getFileInfo: jest.fn().mockResolvedValue({}),
+      deleteFile: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -36,6 +41,79 @@ describe('RacingSessionService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('deleteSession', () => {
+    const sessionId = '507f1f77bcf86cd799439011';
+    const fileIds = ['507f1f77bcf86cd799439012', '507f1f77bcf86cd799439013'];
+
+    beforeEach(() => {
+      racingSessionModel.findOne.mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          exec: jest.fn().mockResolvedValue({ dataChunkFileIds: fileIds }),
+        }),
+      });
+    });
+
+    it('deletes all telemetry chunks before removing the owner-scoped session', async () => {
+      await expect(service.deleteSession('user-1', sessionId)).resolves.toBeUndefined();
+
+      expect(racingSessionModel.findOne).toHaveBeenCalledWith({ _id: sessionId, user_id: 'user-1' });
+      fileIds.forEach((fileId, index) => {
+        expect(gridfsService.deleteFile).toHaveBeenNthCalledWith(
+          index + 1, new ObjectId(fileId), GRIDFS_BUCKETS.RACING_SESSIONS,
+        );
+      });
+      expect(racingSessionModel.deleteOne).toHaveBeenCalledWith({ _id: sessionId, user_id: 'user-1' });
+      expect(gridfsService.deleteFile.mock.invocationCallOrder[1])
+        .toBeLessThan(racingSessionModel.deleteOne.mock.invocationCallOrder[0]);
+    });
+
+    it('rejects malformed ids without accessing storage', async () => {
+      await expect(service.deleteSession('user-1', 'invalid')).rejects.toBeInstanceOf(BadRequestException);
+      expect(racingSessionModel.findOne).not.toHaveBeenCalled();
+      expect(gridfsService.deleteFile).not.toHaveBeenCalled();
+      expect(racingSessionModel.deleteOne).not.toHaveBeenCalled();
+    });
+
+    it('rejects missing sessions and sessions owned by another user without deleting files', async () => {
+      racingSessionModel.findOne.mockImplementation(({ user_id }) => ({
+        select: jest.fn().mockReturnValue({
+          exec: jest.fn().mockResolvedValue(user_id === 'user-2' ? { dataChunkFileIds: fileIds } : null),
+        }),
+      }));
+
+      await expect(service.deleteSession('user-1', sessionId)).rejects.toBeInstanceOf(NotFoundException);
+      expect(racingSessionModel.findOne).toHaveBeenCalledWith({ _id: sessionId, user_id: 'user-1' });
+      expect(gridfsService.deleteFile).not.toHaveBeenCalled();
+      expect(racingSessionModel.deleteOne).not.toHaveBeenCalled();
+    });
+
+    it('retains metadata on a partial cleanup failure and skips removed chunks on retry', async () => {
+      gridfsService.deleteFile
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('Storage unavailable'));
+
+      await expect(service.deleteSession('user-1', sessionId)).rejects.toThrow('Storage unavailable');
+      expect(racingSessionModel.deleteOne).not.toHaveBeenCalled();
+
+      gridfsService.getFileInfo.mockResolvedValueOnce(null).mockResolvedValueOnce({});
+      gridfsService.deleteFile.mockClear();
+      await expect(service.deleteSession('user-1', sessionId)).resolves.toBeUndefined();
+      expect(gridfsService.deleteFile).toHaveBeenCalledTimes(1);
+      expect(gridfsService.deleteFile).toHaveBeenCalledWith(new ObjectId(fileIds[1]), GRIDFS_BUCKETS.RACING_SESSIONS);
+      expect(racingSessionModel.deleteOne).toHaveBeenCalledTimes(1);
+    });
+
+    it('deletes sessions without telemetry chunks', async () => {
+      racingSessionModel.findOne.mockReturnValue({
+        select: jest.fn().mockReturnValue({ exec: jest.fn().mockResolvedValue({}) }),
+      });
+
+      await expect(service.deleteSession('user-1', sessionId)).resolves.toBeUndefined();
+      expect(gridfsService.deleteFile).not.toHaveBeenCalled();
+      expect(racingSessionModel.deleteOne).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('persists game metadata when creating a session from telemetry data', async () => {

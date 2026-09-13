@@ -1,4 +1,4 @@
-import { parseTelemetryFrame, Vec3 } from 'views/lap-analysis/visualization/charts/mapTelemetry';
+import { parseTelemetryFrame, Vec3 } from 'views/session-shared/visualization/charts/mapTelemetry';
 import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CircuitMapAlignedRow,

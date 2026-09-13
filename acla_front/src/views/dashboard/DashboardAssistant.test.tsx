@@ -5,11 +5,11 @@ import {
     OperationComponentRefProvider,
     useRegisterOperationComponentRef,
 } from 'contexts/OperationComponentRefContext';
-import type { AnalysisContextType } from 'views/lap-analysis/analysis-context';
+import type { AnalysisContextType } from 'views/recorded-session/analysis-context';
 import { DASHBOARD_TABS } from './dashboard-navigation';
 import DashboardAssistant from './DashboardAssistant';
 
-jest.mock('views/lap-analysis/ai-chat/ai-chat', () => (props: Record<string, unknown>) => (
+jest.mock('views/ai-chat/ai-chat', () => (props: Record<string, unknown>) => (
     <div
         data-testid="dashboard-ai-chat"
         data-component-name={props.name}

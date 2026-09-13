@@ -3,7 +3,7 @@ import { Box, Grid, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { LiveTelemetry } from './live-session-types';
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
-import { runVisualizationBooleanCallback } from 'views/lap-analysis/visualization/visualization-component-callbacks';
+import { runVisualizationBooleanCallback } from 'views/session-shared/visualization/visualization-component-callbacks';
 import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
 import { useCurrentTelemetry } from './live-telemetry-store';
 

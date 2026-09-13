@@ -8,11 +8,11 @@ import {
     CircuitTrackLayout,
     EMPTY_CIRCUIT_TRACK_LAYOUT,
     getAccTelemetryTrackKey,
-} from 'views/lap-analysis/visualization/charts/circuitTrackLayout';
-import { parseTelemetryFrame, TelemetryFrame, Vec3 } from 'views/lap-analysis/visualization/charts/mapTelemetry';
+} from 'views/session-shared/visualization/charts/circuitTrackLayout';
+import { parseTelemetryFrame, TelemetryFrame, Vec3 } from 'views/session-shared/visualization/charts/mapTelemetry';
 import { LiveSessionContext } from './LiveSessionContext';
 import { liveTelemetryStore, useTelemetryStatus } from './live-telemetry-store';
-import 'views/lap-analysis/visualization/charts/MapVisualization.css';
+import 'views/session-shared/visualization/charts/MapVisualization.css';
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 
 const LIVE_TRAIL_LIMIT = 900;

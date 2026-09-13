@@ -74,8 +74,8 @@ export {
     LiveRangeTodoListRunner,
     calculateForwardCircularDistance,
     getLiveRangeNormalizedPosition,
-} from './LiveRangeTodoList';
-export type { LiveRangeTelemetrySample, LiveRangeTodoListProps } from './LiveRangeTodoList';
+} from '../../views/live-session/ai-operations/LiveRangeTodoList';
+export type { LiveRangeTelemetrySample, LiveRangeTodoListProps } from '../../views/live-session/ai-operations/LiveRangeTodoList';
 export type {
     LiveRangeTodoContent,
     LiveRangeTodoListInput,
@@ -89,7 +89,7 @@ export type {
     LiveRangeTodoListResult,
     LiveRangeTodoSnapshotEvent,
     LiveRangeTodoStatus,
-} from './live-range-todo-list-types';
+} from '../../views/live-session/ai-operations/live-range-todo-list-types';
 export {
     default as RepeatablePlan,
     GOAL_COMPARISON_OPERATORS,

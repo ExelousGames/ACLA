@@ -1,10 +1,10 @@
 import React, { createRef } from 'react';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { createOperationComponentRefDirectory, type OperationComponentRefDirectory, type OperationComponentRef } from 'contexts/OperationComponentRefContext';
-import { createAiCommandRegistry, createWorkflowDispatcher } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import { createAiCommandRegistry, createWorkflowDispatcher } from 'views/ai-chat/ai-command-registry';
 import WorkflowPanel, { type WorkflowPanelHandle } from '../WorkflowPanel';
 import { WorkflowComponentBase } from '../WorkflowComponentBase';
-import { LiveRangeTodoListRunner } from '../LiveRangeTodoList';
+import { LiveRangeTodoListRunner } from '../../../views/live-session/ai-operations/LiveRangeTodoList';
 import { createControlledOperation, createOperation } from '../operation';
 import { asTool } from '../tool';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';

@@ -1,6 +1,6 @@
 import React, { useContext } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { RecordingState } from 'views/lap-analysis/recording-state';
+import { RecordingState } from 'views/live-session/recording-state';
 import {
     getPersistedLiveSessionDraft,
     LIVE_SESSION_DRAFT_STORAGE_KEY,

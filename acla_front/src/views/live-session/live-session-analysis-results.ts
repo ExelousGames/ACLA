@@ -1,7 +1,7 @@
 import {
     AnalysisResultElement,
     normalizeAnalysisResultsData,
-} from 'views/lap-analysis/visualization/charts/analysisResultsModel';
+} from 'views/session-shared/visualization/charts/analysisResultsModel';
 
 export interface LiveSessionBaselineMetadata {
     id: string;

@@ -3,15 +3,15 @@ import { OPERATION_COMPONENT_NAMES, useRegisterOperationComponentRef } from 'con
 import { VisualizationManagerUnavailableError } from 'contexts/OperationComponentError';
 import VisualizationPanelManager, {
     VisualizationManagerHandle,
-} from 'views/lap-analysis/visualization/VisualizationPanelManager';
-import AnalysisResultsChart from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
-import { getVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
+} from 'views/session-shared/visualization/VisualizationPanelManager';
+import AnalysisResultsChart from 'views/session-shared/visualization/charts/AnalysisResultsChart';
+import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
 import { LiveSessionContext } from './LiveSessionContext';
 import { LiveVisualizationInstance } from './live-session-types';
 import LiveTrajectoryMap from './LiveTrajectoryMap';
 import LiveTelemetryOverview from './LiveTelemetryOverview';
 import LiveEventLog from './LiveEventLog';
-import BaselineCollection from './BaselineCollection';
+import BaselineCollection from './baseline-collection/BaselineCollection';
 
 const OPTIONAL_VISUALIZATIONS = {
     'live-trajectory-map': { name: 'Live 2D Telemetry Trajectory' },

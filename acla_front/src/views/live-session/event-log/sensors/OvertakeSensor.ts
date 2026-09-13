@@ -1,4 +1,4 @@
-import { SessionEvent, TelemetrySample } from 'views/lap-analysis/session-intelligence/types';
+import { SessionEvent, TelemetrySample } from 'views/session-shared/session-intelligence/types';
 
 const DEBOUNCE_TICKS = 10;
 const LOOKBACK_SAMPLES = 100;

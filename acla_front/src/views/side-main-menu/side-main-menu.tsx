@@ -11,7 +11,7 @@ import {
     LapTimerIcon,
     PersonIcon,
 } from "@radix-ui/react-icons";
-import SessionAnalysis from "views/lap-analysis/session-analysis";
+import SessionAnalysis from "views/recorded-session/session-analysis";
 import ProtectedComponent from "components/ProtectedComponent";
 import UserSummary from "views/user-summary/user-summary";
 import CircuitMaps from "views/circuit-maps/circuit-maps";

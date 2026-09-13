@@ -40,7 +40,7 @@ jest.mock('radix-ui', () => ({
     },
 }));
 
-jest.mock('views/lap-analysis/session-analysis', () => () => <div>Analysis Content</div>);
+jest.mock('views/recorded-session/session-analysis', () => () => <div>Analysis Content</div>);
 jest.mock('views/user-summary/user-summary', () => () => <div>User Summary Content</div>);
 jest.mock('views/circuit-maps/circuit-maps', () => () => <div>Circuit Maps Content</div>);
 jest.mock('views/live-session/LiveSessionView', () => () => <div>Live Session Content</div>);

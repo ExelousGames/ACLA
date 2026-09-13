@@ -6,7 +6,7 @@ import {
     type NamedOperationComponentHandle,
 } from 'contexts/OperationComponentRefContext';
 import { bindWorkflowDispatcher, type WorkflowDispatcher } from './tool';
-import type { FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import type { FrontendOperationName } from 'views/ai-chat/ai-command-registry';
 import {
     createControlledOperation,
     createOperationFrom,

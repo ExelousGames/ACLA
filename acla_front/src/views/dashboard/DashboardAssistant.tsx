@@ -4,9 +4,9 @@ import {
     OPERATION_COMPONENT_NAMES,
     useOptionalOperationComponentSnapshot,
 } from 'contexts/OperationComponentRefContext';
-import type { AnalysisContextType } from 'views/lap-analysis/analysis-context';
-import AiChat from 'views/lap-analysis/ai-chat/ai-chat';
-import type { AssistantActiveScreen } from 'views/lap-analysis/assistant-session-mode';
+import type { AnalysisContextType } from 'views/recorded-session/analysis-context';
+import AiChat from 'views/ai-chat/ai-chat';
+import type { AssistantActiveScreen } from 'views/ai-chat/assistant-session-mode';
 import { DASHBOARD_TABS } from './dashboard-navigation';
 
 interface DashboardAssistantProps {

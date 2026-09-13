@@ -16,7 +16,7 @@ import {
     NoTelemetryForScopeError,
     TelemetryAnalysisFailedError,
     InvalidOperationCallError,
-} from 'views/lap-analysis/ai-chat/operation-base';
+} from 'views/ai-chat/operation-base';
 import { BaselineCollectionNotStartedError } from 'contexts/OperationComponentError';
 import apiService from 'services/api.service';
 import type {
@@ -25,38 +25,38 @@ import type {
     BaselineCollectionPayload,
     BaselineCollectionQuery,
     BaselineTelemetryCondition,
-} from './BaselineCollection';
-import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
+} from './baseline-collection/BaselineCollection';
+import type { VisualizationManagerHandle } from 'views/session-shared/visualization/VisualizationPanelManager';
 import {
     normalizeSegmentClassificationResult,
     type SegmentClassificationResult,
-} from 'views/lap-analysis/recorded-session-analysis';
-import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
-import { openAnalysisResultsVisualization } from 'views/lap-analysis/visualization/open-analysis-results-visualization';
-import { getVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
+} from 'views/session-shared/segment-classification';
+import { getSegmentLabelIds } from 'views/session-shared/visualization/charts/segmentClassificationDisplay';
+import { openAnalysisResultsVisualization } from 'views/session-shared/visualization/open-analysis-results-visualization';
+import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
 import { LiveSessionContext, LiveSessionProvider } from './LiveSessionContext';
 import LiveSessionGameStatus, { LIVE_SESSION_GAME_LABELS } from './LiveSessionGameStatus';
 import LiveTelemetryWorkspace from './LiveTelemetryWorkspace';
-import LiveAnalysisSessionRecording from 'views/lap-analysis/liveAnalysisSessionRecording';
-import LiveSessionDetectionManager from 'views/lap-analysis/LiveSessionDetectionManager';
-import { RecordingState } from 'views/lap-analysis/recording-state';
-import { getTelemetryLap } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
+import LiveAnalysisSessionRecording from 'views/live-session/live-session-recording/liveAnalysisSessionRecording';
+import LiveSessionDetectionManager from 'views/live-session/LiveSessionDetectionManager';
+import { RecordingState } from 'views/live-session/recording-state';
+import { getTelemetryLap } from 'views/live-session/session-intelligence/live-performance-analyst';
 import {
     createTelemetryScopeCollector,
     reduceTelemetrySamples,
-} from 'views/lap-analysis/session-intelligence/telemetry-query';
+} from 'views/live-session/session-intelligence/telemetry-query';
 import type {
     CornerLookahead,
     QueryResult,
     QueryScope,
     ReduceOp,
     TelemetryQuery,
-} from 'views/lap-analysis/session-intelligence/types';
+} from 'views/session-shared/session-intelligence/types';
 import type {
     QueryTelemetryMetricArguments,
     QueryTelemetryMetricResult,
     TelemetryMetricReduce,
-} from 'views/lap-analysis/ai-chat/ai-command-registry';
+} from 'views/ai-chat/ai-command-registry';
 import type { LiveSessionAnalysisResultPage } from './live-session-analysis-results';
 import type { LiveSessionRuntime, LiveSessionSnapshot } from './live-session-types';
 import type { LiveEventLogHandle } from './LiveEventLog';

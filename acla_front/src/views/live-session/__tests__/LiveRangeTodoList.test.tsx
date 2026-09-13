@@ -5,7 +5,7 @@ import {
     calculateLiveRangeEta,
     calculateRollingForwardRate,
     crossedLiveRangeTodoPosition,
-} from 'components/ai-operations/LiveRangeTodoList';
+} from 'views/live-session/ai-operations/LiveRangeTodoList';
 import type {
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,

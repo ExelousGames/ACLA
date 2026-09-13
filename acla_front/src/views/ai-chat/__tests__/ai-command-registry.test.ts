@@ -1,0 +1,898 @@
+import { parseProcedurePlanInput, ProcedurePlanRunner } from 'components/ai-operations/ProcedurePlan';
+import { parseRepeatablePlanInput } from 'components/ai-operations/RepeatablePlan';
+import type { WorkflowDispatcher } from 'components/ai-operations/tool';
+import type { WorkflowPanelHandle } from 'components/ai-operations/WorkflowPanel';
+import {
+    createAiCommandRegistry,
+    createWorkflowToolDispatcher,
+    frontendOperationRegistry,
+    startAgentRuntime,
+} from '../ai-command-registry';
+import type {
+    AiCommandRegistry,
+    FrontendAiCommandContext,
+    FrontendAiQueryContractCoverage,
+    QueryLapAnalysisResultOutput,
+    QueryTelemetryMetricArguments,
+    QueryTelemetryMetricResult,
+    FrontendWorkflowName,
+    FrontendToolName,
+} from '../ai-command-registry';
+import {
+    OPERATION_COMPONENT_NAMES,
+    createOperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
+import {
+    asTool,
+    asWorkflow,
+    createControlledOperation,
+    LiveRangeTodoListRunner,
+    resolvedOperation,
+} from 'components/ai-operations';
+import type {
+    Operation,
+    OperationQueryResult,
+    LiveRangeTodoEventInput,
+    LiveRangeTodoListHandle,
+    Workflow,
+    Tool,
+    ProcedurePlanRunResult,
+    ProcedurePlanInput,
+    RepeatablePlanInput,
+    LiveRangeTodoListInput,
+} from 'components/ai-operations';
+import type { AiChatHandle } from '../ai-chat';
+import type { AnalysisResultsChartHandle } from '../../session-shared/visualization/charts/AnalysisResultsChart';
+import type { AddFilteredDriverExpertComparisonsResult } from '../../session-shared/visualization/charts/AnalysisResultsChart';
+import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
+import { RecordingState } from 'views/live-session/recording-state';
+
+// @ts-expect-error OperationQueryResult requires an explicit data type.
+type MissingOperationQueryResultGeneric = OperationQueryResult;
+
+// @ts-expect-error QueryTelemetryMetricArguments requires an explicit reduction.
+type MissingTelemetryArgumentsGeneric = QueryTelemetryMetricArguments;
+
+// @ts-expect-error QueryTelemetryMetricResult requires an explicit reduction.
+type MissingTelemetryResultGeneric = QueryTelemetryMetricResult;
+
+const queryContractCoverage: FrontendAiQueryContractCoverage = true;
+
+const assertQueryContractTypes = (registry: AiCommandRegistry) => {
+    const input: ProcedurePlanInput = { workflow: { name: 'set_procedure_plan',
+        goal: 'Count', operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Count', arguments: { query: '1' } } }],
+    } };
+    const workflow: Workflow<ProcedurePlanRunResult> = registry.set_procedure_plan(input);
+    const tool: Tool<QueryLapAnalysisResultOutput> = registry.query_lap_analysis_result({ query: 'analyses' });
+    // @ts-expect-error Workflow commands cannot return the distinct Tool type.
+    const invalidTool: Tool<ProcedurePlanRunResult> = registry.set_procedure_plan(input);
+    // @ts-expect-error Workflow creation requires its named envelope.
+    registry.set_procedure_plan({ goal: 'Legacy', requests: [] });
+    // @ts-expect-error Workflow names are excluded from tool names.
+    const invalidToolName: FrontendToolName = 'create_repeatable_plan';
+    // @ts-expect-error Tool names are excluded from workflow names.
+    const invalidWorkflowName: FrontendWorkflowName = 'query_lap_analysis_result';
+    const analysisResult: Operation<QueryLapAnalysisResultOutput> = (
+        registry.query_lap_analysis_result({ query: '$count(analyses)' })
+    );
+    // @ts-expect-error Analysis result queries require an expression.
+    registry.query_lap_analysis_result({});
+    // @ts-expect-error Analysis result queries accept no extra arguments.
+    registry.query_lap_analysis_result({ query: 'analyses', extra: true });
+    const avg: Operation<QueryTelemetryMetricResult<'avg'>> = registry.query_telemetry_metric({
+        fields: ['speed'],
+        scope: { type: 'now' },
+        reduce: 'avg',
+    });
+    const min: Operation<QueryTelemetryMetricResult<'min'>> = registry.query_telemetry_metric({
+        fields: ['speed'],
+        scope: { type: 'now' },
+        reduce: 'min',
+    });
+    const max: Operation<QueryTelemetryMetricResult<'max'>> = registry.query_telemetry_metric({
+        fields: ['speed'],
+        scope: { type: 'now' },
+        reduce: 'max',
+    });
+    const stats: Operation<QueryTelemetryMetricResult<'stats'>> = registry.query_telemetry_metric({
+        fields: ['speed'],
+        scope: { type: 'now' },
+        reduce: 'stats',
+    });
+    const display: Operation<'graph shown'> = registry.display_specific_result_in_overlay({
+        page_id: 'page-id',
+        result_id: 'result-id',
+    });
+    // @ts-expect-error Specific result displays require both exact ids.
+    registry.display_specific_result_in_overlay({ page_id: 'page-id' });
+    // @ts-expect-error Specific result displays accept no extra arguments.
+    registry.display_specific_result_in_overlay({ page_id: 'page-id', result_id: 'result-id', extra: true });
+
+    // @ts-expect-error The model-facing telemetry query does not expose raw values.
+    registry.query_telemetry_metric({ fields: ['speed'], scope: { type: 'now' }, reduce: 'raw' });
+    // @ts-expect-error Stats results cannot be assigned to scalar telemetry results.
+    const mismatchedReduction: Operation<QueryTelemetryMetricResult<'avg'>> = stats;
+
+    return {
+        workflow, tool, invalidTool, invalidToolName, invalidWorkflowName,
+        analysisResult,
+        avg,
+        min,
+        max,
+        stats,
+        display,
+        mismatchedReduction,
+        queryContractCoverage,
+    };
+};
+
+void assertQueryContractTypes;
+
+const register = (name: string, handle: object) => {
+    const directory = createOperationComponentRefDirectory();
+    directory.registerComponentRef({ current: {
+        getComponentName: () => name,
+        ...handle,
+    } as any });
+    return directory;
+};
+
+describe('frontend operation registry', () => {
+    const workflowNames: FrontendWorkflowName[] = [
+        'create_repeatable_plan',
+        'append_repeatable_plan',
+        'append_procedure_plan',
+        'create_live_range_todo_list',
+        'set_procedure_plan',
+        'advance_plan_step',
+        'clear_procedure_plan',
+        'add_event_to_live_range_todo_list',
+        'get_live_range_todo_list',
+    ];
+
+    it('classifies plan and live range operations as workflows and other operations as tools', () => {
+        const workflows = Object.values(frontendOperationRegistry)
+            .filter(({ kind }) => kind === 'workflow')
+            .map(({ name }) => name);
+        expect(workflows.sort()).toEqual([...workflowNames].sort());
+        expect(frontendOperationRegistry.query_lap_analysis_result.kind).toBe('tool');
+        expect(frontendOperationRegistry.add_analysis_result_to_do_list.kind).toBe('tool');
+    });
+
+    it.each(workflowNames)('retains workflow classification when %s fails before execution', async (name) => {
+        const workflow = createAiCommandRegistry({})[name]({} as any);
+        expect(workflow.kind).toBe('workflow');
+        await expect(workflow.result).rejects.toBeInstanceOf(Error);
+    });
+
+    it('publishes live analyst runtime statuses without routing them through session intelligence', async () => {
+        const publishStatus = jest.fn();
+        const livePerformanceAnalystState = {
+            enabled: false,
+        };
+
+        await expect(startAgentRuntime('live_performance_analyst', {
+            sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
+            getLiveSessionSnapshot: () => ({
+                status: 'ready',
+                track: 'brands_hatch',
+                car: '',
+                current_lap: 0,
+                completed_laps: 0,
+                normalized_position: 0,
+                sample_count: 1,
+                live_session_type: 'unknown',
+                completed_lap_count: 0,
+            }),
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            livePerformanceAnalystState,
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+        }, {}, publishStatus)).resolves.toMatchObject({
+            status: 'started',
+            agent_mode: 'live_performance_analyst',
+        });
+
+        expect(publishStatus).toHaveBeenCalledWith(expect.objectContaining({
+            source: 'live_performance_analyst',
+            agent_mode: 'live_performance_analyst',
+            event: 'live_analysis_started',
+            snapshot: expect.objectContaining({ track: 'brands_hatch' }),
+        }));
+    });
+
+    it('creates a handler for every name-keyed operation definition', () => {
+        const registry = createAiCommandRegistry({});
+        expect(Object.keys(registry).sort()).toEqual(
+            Object.keys(frontendOperationRegistry).sort(),
+        );
+        expect(registry).toHaveProperty('query_lap_analysis_result');
+        expect(registry).toHaveProperty('apply_query_to_lap_analysis_result');
+        expect(registry).not.toHaveProperty('apply_query_to_analysis_result');
+        expect(registry).toHaveProperty('display_specific_result_in_overlay');
+        Object.entries(frontendOperationRegistry).forEach(([name, definition]) => {
+            expect(definition.name).toBe(name);
+            expect(definition.componentName).toEqual(expect.any(String));
+        });
+    });
+
+    it('preserves the component operation instead of awaiting or wrapping its result', async () => {
+        const componentOperation = resolvedOperation({
+            status: 'started' as const,
+            conversation_role: 'agent' as const,
+            agent_mode: 'overtake' as const,
+        }, 'started');
+        const handle: Partial<AiChatHandle> = {
+            startAgentSession: jest.fn(() => componentOperation),
+        };
+        const registry = createAiCommandRegistry({
+            componentRefs: register(OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, handle),
+        });
+
+        const returned = registry.start_agent_session({ agent_mode: 'overtake' });
+
+        expect(returned).toBe(componentOperation);
+        expect(returned.kind).toBe('tool');
+        await expect(returned.result).resolves.toMatchObject({ status: 'started' });
+        expect(returned.statuses).toEqual([]);
+    });
+
+    it('returns a rejected operation for an unavailable component', async () => {
+        const registry = createAiCommandRegistry({
+            componentRefs: createOperationComponentRefDirectory(),
+        });
+
+        const operation = registry.show_map({});
+
+        await expect(operation.result).rejects.toMatchObject({
+            name: 'ComponentRefUnavailableError',
+        });
+    });
+
+    it('preserves a reduction-specific telemetry component operation', async () => {
+        const componentOperation = resolvedOperation({
+            status: 'ready' as const,
+            data: { Physics_speed_kmh: 123 },
+        }, 'ready');
+        const handle: Partial<LiveSessionHandle> = {
+            queryTelemetryMetricForAi: jest.fn(() => componentOperation) as any,
+        };
+        const registry = createAiCommandRegistry({
+            componentRefs: register(OPERATION_COMPONENT_NAMES.LIVE_SESSION, handle),
+        });
+
+        const returned = registry.query_telemetry_metric({
+            fields: ['speed'],
+            scope: { type: 'now' },
+            reduce: 'avg',
+        });
+
+        expect(returned).toBe(componentOperation);
+        await expect(returned.result).resolves.toEqual({
+            status: 'ready',
+            data: { Physics_speed_kmh: 123 },
+        });
+    });
+
+    it('dispatches JSONata expressions and preserves actual JSON result types', async () => {
+        const operations = new Map<string, Operation<QueryLapAnalysisResultOutput>>([
+            ['$count(analyses)', resolvedOperation({ status: 'ready' as const, data: 4 }, 'ready')],
+            ['{"count": $count(analyses.elements)}', resolvedOperation({
+                status: 'ready' as const,
+                data: { count: 4 },
+            }, 'ready')],
+            ['[analyses.elements.id]', resolvedOperation({
+                status: 'ready' as const,
+                data: ['first', 'second'],
+            }, 'ready')],
+            ['analyses.elements[id = "missing"]', resolvedOperation({
+                status: 'ready' as const,
+                data: null,
+            }, 'ready')],
+        ]);
+        const componentName = 'visualization:analysis-results';
+        const handle: Partial<AnalysisResultsChartHandle> = {
+            queryLapAnalysisResult: jest.fn(({ query }) => operations.get(query)!) as any,
+        };
+        const registry = createAiCommandRegistry({
+            componentRefs: register(componentName, handle),
+        });
+
+        const results = Array.from(operations, ([query, componentOperation]) => {
+            const returned = registry.query_lap_analysis_result({ query });
+            expect(returned).toBe(componentOperation);
+            return Promise.all([returned.result, componentOperation.result]).then(([
+                returnedResult,
+                componentResult,
+            ]) => expect(returnedResult).toEqual(componentResult));
+        });
+        await Promise.all(results);
+        expect(handle.queryLapAnalysisResult).toHaveBeenCalledTimes(operations.size);
+        expect(handle.queryLapAnalysisResult).toHaveBeenNthCalledWith(1, {
+            query: '$count(analyses)',
+        });
+    });
+
+    it.each(['all', 1, 2] as const)('dispatches analysis query scope %s unchanged', async (scope) => {
+        const operation = resolvedOperation({ status: 'ready' as const, data: 1 }, 'ready');
+        const handle: Partial<AnalysisResultsChartHandle> = {
+            queryLapAnalysisResult: jest.fn(() => operation) as any,
+        };
+        const registry = createAiCommandRegistry({
+            componentRefs: register('visualization:analysis-results', handle),
+        });
+        const args = { query: '$count(analyses)', scope };
+        await expect(registry.query_lap_analysis_result(args).result).resolves.toEqual({ status: 'ready', data: 1 });
+        expect(handle.queryLapAnalysisResult).toHaveBeenCalledWith(args);
+    });
+
+    it('dispatches an Analysis Results query apply operation unchanged', async () => {
+        const componentOperation = resolvedOperation({
+            status: 'applied' as const,
+            message: 'UI is now updated with the filtered analysis results',
+        }, 'applied');
+        const handle: Partial<AnalysisResultsChartHandle> = {
+            applyAnalysisResultQuery: jest.fn(() => componentOperation) as any,
+        };
+        const registry = createAiCommandRegistry({
+            componentRefs: register('visualization:analysis-results', handle),
+        });
+
+        const returned = registry.apply_query_to_lap_analysis_result({
+            query: 'elements',
+            page_number: -1,
+        });
+
+        expect(returned).toBe(componentOperation);
+        await expect(returned.result).resolves.toEqual(await componentOperation.result);
+        expect(handle.applyAnalysisResultQuery).toHaveBeenCalledWith({
+            query: 'elements',
+            page_number: -1,
+        });
+    });
+
+    it.each([
+        ['query_lap_analysis_result', 'queryLapAnalysisResult'],
+        ['apply_query_to_lap_analysis_result', 'applyAnalysisResultQuery'],
+    ] as const)('delegates %s argument validation to the component', async (command, method) => {
+        const error = new Error('Component rejected query arguments.');
+        const validate = jest.fn(() => { throw error; });
+        const registry = createAiCommandRegistry({
+            componentRefs: register('visualization:analysis-results', { [method]: validate }),
+        });
+        const args = { query: '' };
+
+        await expect(registry[command](args).result).rejects.toBe(error);
+        expect(validate).toHaveBeenCalledWith(args);
+    });
+
+    it('rejects an analysis result expression when its tab is not mounted', async () => {
+        const registry = createAiCommandRegistry({
+            componentRefs: createOperationComponentRefDirectory(),
+        });
+
+        const operation = registry.query_lap_analysis_result({ query: '$count(analyses)' });
+
+        await expect(operation.result).rejects.toMatchObject({
+            name: 'ComponentRefUnavailableError',
+            componentName: 'visualization:analysis-results',
+        });
+    });
+});
+
+const reserve = (
+    directory: ReturnType<typeof createOperationComponentRefDirectory>,
+    name: string,
+    handle: object,
+) => {
+    directory.registerComponentRef({ current: {
+        getComponentName: () => name,
+        ...handle,
+    } as any });
+};
+
+const createMockComparisonOperation = () => {
+    const controller = createControlledOperation<
+        'graph shown',
+        never,
+        'complete' | 'cancelled' | 'replaced' | 'failed'
+    >();
+    return {
+        operation: controller.operation,
+        complete: () => controller.resolve('complete', 'graph shown'),
+        terminate: (status: 'cancelled' | 'replaced' | 'failed') => {
+            controller.reject(status, new Error(status));
+        },
+    };
+};
+
+describe('specific Analysis Results overlay tool', () => {
+    const args = { page_id: 'retained-page', result_id: 'braking-result' };
+
+    const setup = () => {
+        const directory = createOperationComponentRefDirectory();
+        const displayController = createMockComparisonOperation();
+        const displaySpecificResultInOverlay = jest.fn(() => displayController.operation);
+        reserve(directory, 'visualization:analysis-results', {
+            displaySpecificResultInOverlay,
+        } satisfies Partial<AnalysisResultsChartHandle>);
+        return {
+            displayController,
+            displaySpecificResultInOverlay,
+            registry: createAiCommandRegistry({ componentRefs: directory, sessionGame: 'acc' }),
+        };
+    };
+
+    it('delegates exact ids and the operation lifecycle to Analysis Results', async () => {
+        const test = setup();
+        const operation = test.registry.display_specific_result_in_overlay(args);
+        const terminated = new Promise((resolve) => operation.notifyTerminated(resolve));
+        let resultSettled = false;
+        void operation.result.then(() => { resultSettled = true; });
+
+        await Promise.resolve();
+        expect(resultSettled).toBe(false);
+        expect(test.displaySpecificResultInOverlay).toHaveBeenCalledWith(
+            'retained-page',
+            'braking-result',
+            undefined,
+        );
+
+        test.displayController.complete();
+        test.displayController.complete();
+
+        await expect(operation.result).resolves.toBe('graph shown');
+        await expect(terminated).resolves.toEqual({
+            status: 'complete',
+            result: 'graph shown',
+        });
+    });
+
+    it.each([
+        {},
+        { page_id: 'retained-page' },
+        { result_id: 'braking-result' },
+        { page_id: '', result_id: 'braking-result' },
+        { page_id: 'retained-page', result_id: ' ' },
+        { page_id: 'retained-page', result_id: 'braking-result', extra: true },
+    ])('rejects invalid exact arguments without resolving or publishing: %p', async (invalidArgs) => {
+        const test = setup();
+
+        await expect(test.registry.display_specific_result_in_overlay(invalidArgs as any).result)
+            .rejects.toMatchObject({ name: 'InvalidOperationCallError' });
+        expect(test.displaySpecificResultInOverlay).not.toHaveBeenCalled();
+    });
+
+    it.each(['cancelled', 'replaced', 'failed'] as const)(
+        'preserves the Analysis Results %s termination path',
+        async (status) => {
+            const test = setup();
+            const operation = test.registry.display_specific_result_in_overlay(args);
+            const terminated = new Promise((resolve) => operation.notifyTerminated(resolve));
+
+            test.displayController.terminate(status);
+
+            await expect(operation.result).rejects.toThrow(status);
+            await expect(terminated).resolves.toMatchObject({ status });
+        },
+    );
+
+    it('forwards the task abort signal and aborts the returned operation', async () => {
+        const test = setup();
+        const abortController = new AbortController();
+        const operation = (test.registry.display_specific_result_in_overlay as any)(
+            args,
+            abortController.signal,
+        );
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
+        expect(test.displaySpecificResultInOverlay).toHaveBeenCalledWith(
+            'retained-page',
+            'braking-result',
+            abortController.signal,
+        );
+
+        abortController.abort();
+
+        await expect(operation.result).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(termination).resolves.toMatchObject({ status: 'aborted' });
+    });
+});
+
+const todoResult = (events: readonly { id: string }[] = []) => ({
+    status: events.length > 0 ? 'ready' as const : 'empty' as const,
+    todo_list: {
+        events: events.map(({ id }) => ({ id })),
+        current_position: null,
+        rolling_rate: null,
+        created_at: 1,
+        updated_at: 1,
+    },
+});
+
+const scheduledItem = (
+    id: string,
+    toolName = 'analyze_telemetry',
+    args: Record<string, unknown> = { scope: { type: 'now' } },
+) => ({
+    operation: { name: toolName,
+        event: {
+            id,
+            normalized_position: 0.5,
+            lead_time_seconds: 0,
+            content: { title: id, description: `Run ${id}` },
+        },
+        arguments: args,
+    },
+});
+
+const scheduledPayload = (operations: ReturnType<typeof scheduledItem>[]) => ({
+    workflow: { name: 'add_event_to_live_range_todo_list', operations },
+} as unknown as LiveRangeTodoListInput);
+
+const childLiveRegistry = (
+    directory: ReturnType<typeof createOperationComponentRefDirectory>,
+) => createAiCommandRegistry({
+    componentRefs: directory,
+    sessionMode: 'live',
+    conversationRole: 'agent',
+    agentMode: 'track_guide',
+});
+
+const analystLiveRegistry = (
+    directory: ReturnType<typeof createOperationComponentRefDirectory>,
+) => createAiCommandRegistry({
+    componentRefs: directory,
+    sessionMode: 'live',
+    conversationRole: 'agent',
+    agentMode: 'live_performance_analyst',
+    sessionGame: 'acc',
+});
+
+describe('strict workflow creation and tool dispatch', () => {
+    const procedure = (): ProcedurePlanInput => ({ workflow: { name: 'set_procedure_plan',
+        goal: 'Review the session',
+        operations: [
+            { operation: { name: 'query_lap_analysis_result', title: 'Count analyses', arguments: { query: '$count(analyses)' } } },
+            { operation: { name: 'query_lap_analysis_result', title: 'Read analyses', arguments: { query: 'analyses' } } },
+        ],
+    } });
+    const repeatable = (): RepeatablePlanInput => ({ workflow: { name: 'create_repeatable_plan',
+        goal: 'Review until ready',
+        operations: [
+            { operation: { name: 'query_lap_analysis_result', id: 'one', title: 'First count', arguments: { query: '1' } } },
+            { operation: { name: 'query_lap_analysis_result', id: 'two', title: 'Second count', arguments: { query: '2' } } },
+        ],
+        stop_when: { tool: { name: 'query_lap_analysis_result', arguments: { query: '3' }  }, operator: 'gte', target: 3 },
+    } });
+    const setup = (context: FrontendAiCommandContext = {
+        sessionMode: 'live', conversationRole: 'agent', agentMode: 'live_performance_analyst',
+    }) => {
+        const createProcedurePlan = jest.fn((_input: unknown, _dispatch: unknown) => asWorkflow(resolvedOperation({ status: 'complete' }, 'complete')));
+        const createRepeatablePlan = jest.fn((_input: unknown, _dispatch: unknown) => asWorkflow(resolvedOperation({ status: 'achieved' }, 'complete')));
+        const directory = register(OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, {
+            createProcedurePlan: (input: unknown, dispatch: WorkflowDispatcher) => {
+                parseProcedurePlanInput(input).requests.forEach((step) => dispatch.validate(step.name!));
+                return createProcedurePlan(input, dispatch);
+            },
+            createRepeatablePlan: (input: unknown, dispatch: WorkflowDispatcher) => {
+                const request = parseRepeatablePlanInput(input);
+                request.steps.forEach((step) => dispatch.validate(step.name));
+                dispatch.validate(request.stop_when.tool.name);
+                return createRepeatablePlan(input, dispatch);
+            },
+        });
+        return { registry: createAiCommandRegistry({ ...context, componentRefs: directory }), createProcedurePlan, createRepeatablePlan };
+    };
+
+    it.each(['live', 'recorded', 'front_desk', 'user_summary'] as const)(
+        'forwards full plan envelopes, repeated operations, and stop calls in a main %s session', async (sessionMode) => {
+            const test = setup({ sessionMode, conversationRole: 'main' });
+            const plan = procedure();
+            const goal = repeatable();
+            await expect(test.registry.set_procedure_plan(plan).result).resolves.toMatchObject({ status: 'complete' });
+            await expect(test.registry.create_repeatable_plan(goal).result).resolves.toMatchObject({ status: 'achieved' });
+            expect(test.createProcedurePlan).toHaveBeenCalledWith(plan, expect.any(Function));
+            expect(test.createRepeatablePlan).toHaveBeenCalledWith(goal, expect.any(Function));
+            expect(test.createProcedurePlan.mock.calls[0][0]).toBe(plan);
+            expect(test.createRepeatablePlan.mock.calls[0][0]).toBe(goal);
+        },
+    );
+
+    it.each(Object.values(frontendOperationRegistry)
+        .filter(({ kind }) => kind === 'workflow')
+        .map(({ name }) => name))(
+        'forwards workflow children in %s to component-owned validation and execution', async (name) => {
+            const test = setup();
+            const plan: any = procedure();
+            plan.workflow.operations.push({ operation: { name: name, title: 'Invalid later call', arguments: {} } });
+            const goal: any = repeatable();
+            goal.workflow.operations.push({ operation: { name: name, id: 'invalid', title: 'Invalid later call' } });
+            const stop: any = repeatable();
+            stop.workflow.stop_when.tool = { name };
+            await expect(test.registry.set_procedure_plan(plan).result).resolves.toBeDefined();
+            await expect(test.registry.create_repeatable_plan(goal).result).resolves.toBeDefined();
+            await expect(test.registry.create_repeatable_plan(stop).result).rejects.toThrow(/stop condition/);
+            expect(test.createProcedurePlan).toHaveBeenCalled();
+            expect(test.createRepeatablePlan).toHaveBeenCalled();
+        },
+    );
+
+    it.each([
+        'missing', 'toString',
+    ])('preflights unregistered later tool %s before either plan is created', async (name) => {
+        const test = setup();
+        const plan: any = procedure();
+        plan.workflow.operations.push({ operation: { name: name, title: 'Later', arguments: {} } });
+        const goal: any = repeatable();
+        goal.workflow.stop_when.tool = { name, arguments: {} };
+        await expect(test.registry.set_procedure_plan(plan).result).rejects.toBeInstanceOf(Error);
+        await expect(test.registry.create_repeatable_plan(goal).result).rejects.toBeInstanceOf(Error);
+        expect(test.createProcedurePlan).not.toHaveBeenCalled();
+        expect(test.createRepeatablePlan).not.toHaveBeenCalled();
+    });
+
+    it.each(['run_recorded_ai_analysis', 'start_agent_session'])(
+        'accepts registered tool %s in both plans and stop checks', async (name) => {
+            const test = setup();
+            const plan: any = procedure();
+            plan.workflow.operations.push({ operation: { name: name, title: 'Later', arguments: {} } });
+            const goal: any = repeatable();
+            goal.workflow.operations.push({ operation: { name: name, id: 'later', title: 'Later', arguments: {} } });
+            goal.workflow.stop_when.tool = { name, arguments: {} };
+
+            await expect(test.registry.set_procedure_plan(plan).result).resolves.toMatchObject({ status: 'complete' });
+            await expect(test.registry.create_repeatable_plan(goal).result).resolves.toMatchObject({ status: 'achieved' });
+            expect(test.createProcedurePlan).toHaveBeenCalledWith(plan, expect.any(Function));
+            expect(test.createRepeatablePlan).toHaveBeenCalledWith(goal, expect.any(Function));
+        },
+    );
+
+    it.each<[string, string, unknown]>([
+        ['unwrapped procedure', 'set_procedure_plan', { goal: 'Legacy', operations: [] }],
+        ['legacy procedure', 'set_procedure_plan', { goal: 'Legacy', requests: [] }],
+        ['wrong procedure wrapper', 'set_procedure_plan', repeatable()],
+        ['mixed procedure', 'set_procedure_plan', { ...procedure(), requests: [] }],
+        ...['payload', 'args', 'parameters'].map((alias): [string, string, unknown] => [
+            `procedure ${alias}`, 'set_procedure_plan', { workflow: { name: 'set_procedure_plan',
+                goal: 'Invalid', operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Count', arguments: {}, [alias]: {} } }],
+            } },
+        ]),
+        ['unwrapped repeatable', 'create_repeatable_plan', repeatable().workflow],
+        ['legacy repeatable', 'create_repeatable_plan', { name: 'Legacy', steps: [], stop_when: {} }],
+        ['wrong repeatable wrapper', 'create_repeatable_plan', procedure()],
+        ['mixed repeatable', 'create_repeatable_plan', { workflow: { ...repeatable().workflow, steps: [] } }],
+        ['name stop descriptor', 'create_repeatable_plan', { workflow: { ...repeatable().workflow,
+            stop_when: { tool: { query_lap_analysis_result: { arguments: { query: '3' } } }, operator: 'gte', target: 3 },
+        } }],
+    ])('rejects %s without invoking creation handlers', async (_label, name, input) => {
+        const test = setup();
+        await expect((test.registry as any)[name as string](input).result).rejects.toBeInstanceOf(Error);
+        expect(test.createProcedurePlan).not.toHaveBeenCalled();
+        expect(test.createRepeatablePlan).not.toHaveBeenCalled();
+    });
+
+    it('rejects every workflow before its handler through the tool dispatcher', () => {
+        const dispatcher = createWorkflowToolDispatcher({
+            sessionMode: 'live', conversationRole: 'agent', agentMode: 'live_performance_analyst',
+        });
+        Object.values(frontendOperationRegistry).filter(({ kind }) => kind === 'workflow')
+            .forEach((definition) => {
+                const handler = jest.spyOn(definition, 'execute');
+                expect(() => dispatcher.validate(definition.name)).not.toThrow();
+                handler.mockRestore();
+            });
+    });
+
+    it('lets the tool handler report its own session error', async () => {
+        const error = new Error('Live telemetry is unavailable.');
+        const getNextCornerForAi = jest.fn(() => { throw error; });
+        const dispatcher = createWorkflowToolDispatcher({
+            sessionMode: 'recorded',
+            componentRefs: register(OPERATION_COMPONENT_NAMES.LIVE_SESSION, { getNextCornerForAi }),
+        });
+
+        await expect(dispatcher('get_next_corner').result).rejects.toBe(error);
+        expect(getNextCornerForAi).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['live', 'recorded', 'front_desk', 'user_summary'] as const)(
+        'dispatches registered recorded operations in a %s agent context', async (sessionMode) => {
+            const operation = asTool(resolvedOperation({ status: 'ready' }, 'ready'));
+            const runRecordedAnalysisForAi = jest.fn(() => operation);
+            const dispatcher = createWorkflowToolDispatcher({
+                sessionMode, conversationRole: 'agent', agentMode: 'track_guide',
+                componentRefs: register(OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS, { runRecordedAnalysisForAi }),
+            });
+            const args = { session_id: 'recorded-session' };
+
+            expect(dispatcher('run_recorded_ai_analysis', args)).toBe(operation);
+            await expect(operation.result).resolves.toEqual({ status: 'ready' });
+            expect(runRecordedAnalysisForAi).toHaveBeenCalledWith(args);
+        },
+    );
+
+    it('does not reclassify a Workflow returned by a tool handler', async () => {
+        const workflow = asWorkflow(resolvedOperation({ status: 'ready' }, 'ready'));
+        const dispatcher = createWorkflowToolDispatcher({
+            sessionMode: 'live',
+            componentRefs: register(OPERATION_COMPONENT_NAMES.LIVE_SESSION, { getNextCornerForAi: () => workflow }),
+        });
+        await expect(dispatcher('get_next_corner').result).rejects.toThrow(/returned a workflow/);
+        expect(workflow.kind).toBe('workflow');
+    });
+});
+
+const mountLiveQueue = (directory: ReturnType<typeof createOperationComponentRefDirectory>, runner = new LiveRangeTodoListRunner(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)) => {
+    runner.addComponentRef(directory);
+    reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, {
+        appendLiveRangeTodoList: (input: LiveRangeTodoListInput, dispatch: WorkflowDispatcher) => runner.appendLiveRangeTodoList(input, dispatch),
+    });
+    return runner;
+};
+
+describe('live range to-do workflow forwarding', () => {
+    it('forwards the complete native envelope and immediate append operation to the component', async () => {
+        const result = asWorkflow(resolvedOperation({ status: 'ready', event_count: 2 }, 'complete'));
+        const appendLiveRangeTodoList = jest.fn(() => result);
+        const registry = childLiveRegistry(register(OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, { appendLiveRangeTodoList }));
+        const payload = scheduledPayload([scheduledItem('first'), scheduledItem('second')]);
+        const operation = registry.add_event_to_live_range_todo_list(payload);
+        expect(appendLiveRangeTodoList).toHaveBeenCalledWith(payload, expect.any(Function));
+        expect(operation).toBe(result);
+        await expect(operation.result).resolves.toMatchObject({ event_count: 2 });
+    });
+
+    it.each(['analyze_telemetry', 'run_recorded_ai_analysis'])('preserves literal %s arguments until telemetry makes the event due', async (toolName) => {
+        const directory = createOperationComponentRefDirectory();
+        const runner = mountLiveQueue(directory);
+        const toolHandler = jest.fn(() => asTool(resolvedOperation({ status: 'ready' }, 'ready')));
+        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_SESSION, { analyzeTelemetryForAi: toolHandler });
+        reserve(directory, OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS, { runRecordedAnalysisForAi: toolHandler });
+        const args = { scope: { type: 'now' }, tool: { name: 'literal data' } };
+        await expect(childLiveRegistry(directory).add_event_to_live_range_todo_list(scheduledPayload([scheduledItem('deferred', toolName, args)])).result)
+            .resolves.toMatchObject({ event_count: 1 });
+        args.scope.type = 'changed';
+        expect(toolHandler).not.toHaveBeenCalled();
+        runner.acceptTelemetry({ Graphics_normalized_car_position: 0 });
+        runner.acceptTelemetry({ Graphics_normalized_car_position: 0.6 });
+        expect(toolHandler).toHaveBeenCalledWith({ scope: { type: 'now' }, tool: { name: 'literal data' } });
+        runner.dispose();
+    });
+
+    it.each([
+        ['unwrapped', { operations: [scheduledItem('bad')] }],
+        ['legacy events', { events: [scheduledItem('bad')] }],
+        ['wrong wrapper', { workflow: { name: 'set_procedure_plan', operations: [scheduledItem('bad')] } }],
+        ['mixed envelope', { ...scheduledPayload([scheduledItem('bad')]), events: [] }],
+        ['mixed body', { workflow: { name: 'add_event_to_live_range_todo_list', operations: [scheduledItem('bad')], events: [] } }],
+        ['empty batch', scheduledPayload([])],
+        ['zero names', scheduledPayload([{} as any])],
+        ['multiple names', scheduledPayload([{
+            ...scheduledItem('first'), get_event_log: {},
+        } as any])],
+        ['malformed later event', scheduledPayload([
+            scheduledItem('first'), { operation: { name: 'analyze_telemetry', event: { id: 'bad' }, arguments: {} } } as any,
+        ])],
+        ['missing arguments', scheduledPayload([{
+            operation: { name: 'analyze_telemetry', event: scheduledItem('bad').operation.event },
+        } as any])],
+        ['name descriptor', scheduledPayload([{
+            event: scheduledItem('bad').operation.event,
+            operation: { name: 'analyze_telemetry', arguments: {} },
+        } as any])],
+        ['unknown later tool', scheduledPayload([scheduledItem('first'), scheduledItem('bad', 'missing')])],
+        ['inherited name', scheduledPayload([scheduledItem('bad', 'toString')])],
+        ['invalid arguments', scheduledPayload([scheduledItem('bad', 'analyze_telemetry', { value: undefined })])],
+        ['AI-provided ETA', scheduledPayload([{
+            operation: {
+                ...scheduledItem('bad').operation,
+                event: { ...scheduledItem('bad').operation.event, eta_seconds: 10 },
+            },
+        } as any])],
+        ['duplicate ids', scheduledPayload([scheduledItem('same'), scheduledItem('same')])],
+    ])('rejects an invalid atomic batch: %s', async (_label, payload) => {
+        const directory = createOperationComponentRefDirectory();
+        const runner = mountLiveQueue(directory);
+        const added = jest.spyOn(runner, 'addEvent');
+        await expect(childLiveRegistry(directory).add_event_to_live_range_todo_list(payload as any).result)
+            .rejects.toMatchObject({ name: 'InvalidLiveRangeTodoListError' });
+        expect(added).not.toHaveBeenCalled();
+        runner.dispose();
+    });
+
+    it('rejects existing event IDs before adding any part of a batch', async () => {
+        const directory = createOperationComponentRefDirectory();
+        const runner = mountLiveQueue(directory);
+        const registry = childLiveRegistry(directory);
+        await registry.add_event_to_live_range_todo_list(scheduledPayload([scheduledItem('existing')])).result;
+        const before = runner.getSnapshot();
+        await expect(registry.add_event_to_live_range_todo_list(scheduledPayload([scheduledItem('new'), scheduledItem('existing')])).result).rejects.toThrow(/Duplicate/);
+        expect(runner.getSnapshot()).toEqual(before);
+        runner.dispose();
+    });
+});
+
+describe('displayed analysis result queue tool', () => {
+    it.each(['native tool', 'procedure step'] as const)('delegates a %s to the analysis results component', async (caller) => {
+        const controller = createControlledOperation<AddFilteredDriverExpertComparisonsResult>();
+        const addAnalysisResultToDoList = jest.fn((_dispatch: WorkflowDispatcher) => controller.operation);
+        const directory = register('visualization:analysis-results', { addAnalysisResultToDoList });
+        const result: AddFilteredDriverExpertComparisonsResult = {
+            status: 'ready', active_page_id: 'page', applied_view: 'mistakes', committed_query: 'elements',
+            matched_count: 1, queued_count: 1, skipped_count: 0, skipped_segments: [],
+        };
+        const dispatch = createWorkflowToolDispatcher({ componentRefs: directory, sessionMode: 'live' });
+        if (caller === 'native tool') {
+            const operation = analystLiveRegistry(directory).add_analysis_result_to_do_list({
+                tool: { name: 'add_analysis_result_to_do_list', arguments: {} },
+            });
+            expect(operation).toBe(controller.operation);
+            expect(operation.kind).toBe('tool');
+            controller.resolve('ready', result);
+            await expect(operation.result).resolves.toBe(result);
+        } else {
+            const runner = new ProcedurePlanRunner(OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN, dispatch);
+            const operation = runner.createProcedurePlan({ workflow: {
+                name: 'set_procedure_plan',
+                goal: 'Queue comparison graphs',
+                operations: [{ operation: {
+                    name: 'add_analysis_result_to_do_list', title: 'Queue comparisons', arguments: {},
+                } }],
+            } });
+            controller.resolve('ready', result);
+            await expect(operation.result).resolves.toMatchObject({
+                status: 'complete', task_results: [{ status: 'completed', output: result }],
+            });
+            runner.dispose();
+        }
+        expect(addAnalysisResultToDoList).toHaveBeenCalledWith(expect.any(Function));
+        const nested = addAnalysisResultToDoList.mock.calls[0][0] as WorkflowDispatcher;
+        expect(() => nested.validate('display_specific_result_in_overlay')).not.toThrow();
+    });
+
+    it.each([
+        ['main live session', { sessionMode: 'live', conversationRole: 'main' }],
+        ['other child agent', {
+            sessionMode: 'live', conversationRole: 'agent', agentMode: 'track_guide',
+        }],
+        ['recorded analyst', {
+            sessionMode: 'recorded', conversationRole: 'agent', agentMode: 'live_performance_analyst',
+        }],
+    ])('delegates comparison scheduling in a %s', async (_label, context) => {
+        const addAnalysisResultToDoList = jest.fn(() => resolvedOperation({ status: 'busy' }, 'busy'));
+        const registry = createAiCommandRegistry({
+            ...context,
+            componentRefs: register('visualization:analysis-results', { addAnalysisResultToDoList }),
+        } as any);
+        await expect(registry.add_analysis_result_to_do_list({}).result).resolves.toMatchObject({ status: 'busy' });
+        expect(addAnalysisResultToDoList).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects arguments before asking the component to queue results', async () => {
+        const addAnalysisResultToDoList = jest.fn();
+        const registry = analystLiveRegistry(register('visualization:analysis-results', { addAnalysisResultToDoList }));
+        await expect(registry.add_analysis_result_to_do_list({ filter: 'mistakes' } as any).result)
+            .rejects.toMatchObject({ name: 'InvalidOperationCallError' });
+        expect(addAnalysisResultToDoList).not.toHaveBeenCalled();
+    });
+
+    it('forwards cancellation to the component operation', async () => {
+        const controller = createControlledOperation<AddFilteredDriverExpertComparisonsResult>();
+        const addAnalysisResultToDoList = jest.fn(() => controller.operation);
+        const dispatch = createWorkflowToolDispatcher({
+            componentRefs: register('visualization:analysis-results', { addAnalysisResultToDoList }),
+        });
+        const signal = new AbortController();
+        const operation = dispatch('add_analysis_result_to_do_list', {}, signal.signal);
+        signal.abort();
+        await expect(operation.result).rejects.toMatchObject({ name: 'AbortError' });
+        expect(controller.signal.aborted).toBe(true);
+    });
+});

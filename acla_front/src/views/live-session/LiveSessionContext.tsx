@@ -4,20 +4,20 @@ import {
     OPERATION_COMPONENT_NAMES,
     useOptionalOperationComponentRefDirectory,
 } from 'contexts/OperationComponentRefContext';
-import type { AiChatHandle } from 'views/lap-analysis/ai-chat/ai-chat';
-import { getNextRecordingState, RecordingEvent, RecordingState, StopReason } from 'views/lap-analysis/recording-state';
+import type { AiChatHandle } from 'views/ai-chat/ai-chat';
+import { getNextRecordingState, RecordingEvent, RecordingState, StopReason } from 'views/live-session/recording-state';
 import {
     detectLiveSessionType,
     getTelemetryCar,
     getTelemetryLap,
     getTelemetryPosition,
     getTelemetryTrack,
-} from 'views/lap-analysis/session-intelligence/live-performance-analyst';
+} from 'views/live-session/session-intelligence/live-performance-analyst';
 import {
     getCornersForTrack,
     getNextCorner as getNextTrackCorner,
-} from 'views/lap-analysis/session-intelligence/track-corners';
-import type { CornerLookahead } from 'views/lap-analysis/session-intelligence/types';
+} from 'views/live-session/session-intelligence/track-corners';
+import type { CornerLookahead } from 'views/session-shared/session-intelligence/types';
 import {
     LocalTelemetryFileValidation,
     LiveRecordingMetadata,
@@ -49,7 +49,7 @@ import {
     PersistedLiveSessionAnalysis,
     savePersistedLiveSessionAnalysis,
 } from './live-session-analysis-storage';
-import { normalizeAnalysisResultsData } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
+import { normalizeAnalysisResultsData } from 'views/session-shared/visualization/charts/analysisResultsModel';
 import { liveTelemetryStore } from './live-telemetry-store';
 
 const RESTORED_RECORDING_ERROR = 'The local recording file is missing or unreadable. Upload is unavailable; discard this draft to clear it.';

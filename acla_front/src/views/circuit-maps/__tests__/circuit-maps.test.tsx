@@ -10,7 +10,7 @@ import {
     useRegisterOperationComponentRef,
 } from 'contexts/OperationComponentRefContext';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
-import { RecordingState } from 'views/lap-analysis/recording-state';
+import { RecordingState } from 'views/live-session/recording-state';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 
 const mockRefreshCircuitMaps = jest.fn();

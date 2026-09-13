@@ -1,0 +1,1086 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { OPERATION_COMPONENT_NAMES } from 'contexts/OperationComponentRefContext';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
+import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
+import { InvalidLiveRangeTodoListError } from 'contexts/OperationComponentError';
+import { OperationExecutionError } from 'errors/OperationError';
+import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
+import {
+    isOverlayFiniteOrNull,
+    isOverlayNonEmptyString,
+    isOverlayRecord,
+} from 'views/floating-chat/overlay-renderer-validation';
+import { WorkflowComponentBase, type MountWorkflow } from '../../../components/ai-operations/WorkflowComponentBase';
+import { asWorkflow } from '../../../components/ai-operations/workflow';
+import { bindWorkflowDispatcher, type WorkflowDispatcher } from '../../../components/ai-operations/tool';
+import { validateLiveRangeTodoBatch } from './live-range-todo-validation';
+import type {
+    LiveRangeTodoListInput,
+    CreateLiveRangeTodoListInput,
+    LiveRangeTodoContent,
+    LiveRangeTodoEventInput,
+    LiveRangeTodoEventUpdate,
+    LiveRangeTodoListHandle,
+    LiveRangeTodoListAiResult,
+    LiveRangeTodoListProgress,
+    LiveRangeTodoListSnapshot,
+    LiveRangeTodoListResult,
+    LiveRangeTodoSnapshotEvent,
+} from './live-range-todo-list-types';
+import {
+    createOperation,
+    createOperationFrom,
+    createControlledOperation,
+    OperationAbortedError,
+    type ControlledOperation,
+} from '../../../components/ai-operations/operation';
+
+const DEFAULT_LEAD_TIME_SECONDS = 2;
+const SAMPLE_WINDOW_MS = 2000;
+const ROLLOVER_HIGH_POSITION = 0.8;
+const ROLLOVER_LOW_POSITION = 0.2;
+const CHAT_COLLAPSED_EVENT_LIMIT = 3;
+
+export interface LiveRangeTelemetrySample {
+    position: number;
+    receivedAt: number;
+    lap?: number;
+}
+
+interface RuntimeEvent extends LiveRangeTodoSnapshotEvent {
+    taskStart: LiveRangeTodoEventInput['taskStart'];
+}
+
+type RuntimeSnapshot = Omit<LiveRangeTodoListSnapshot, 'events'> & { events: RuntimeEvent[] };
+
+interface ActiveRun {
+    controller: AbortController;
+    event: RuntimeEvent;
+    operation: ReturnType<LiveRangeTodoEventInput['taskStart']> | null;
+    unsubscribeTermination: () => void;
+    token: symbol;
+}
+
+const isRecord = (value: unknown): value is Record<string, any> => (
+    Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+);
+
+const hasOwn = (value: Record<string, any>, key: string) => (
+    Object.prototype.hasOwnProperty.call(value, key)
+);
+
+const findUnsupportedKey = (
+    value: Record<string, any>,
+    supportedKeys: readonly string[],
+): string | undefined => Object.keys(value).find((key) => !supportedKeys.includes(key));
+
+export const getLiveRangeNormalizedPosition = (
+    telemetry: Record<string, any> | null | undefined,
+): number | undefined => {
+    if (!telemetry) return undefined;
+    const keys = [
+        'Graphics_normalized_car_position',
+        'graphics_normalized_car_position',
+        'normalized_car_position',
+        'car_position',
+    ];
+    for (const key of keys) {
+        if (key in telemetry) {
+            const value = Number(telemetry[key]);
+            if (Number.isFinite(value)) return Math.max(0, Math.min(1, value));
+        }
+    }
+    return undefined;
+};
+
+export const getLiveRangeTelemetryLap = (
+    telemetry: Record<string, any> | null | undefined,
+): number | undefined => {
+    if (!telemetry) return undefined;
+    const raw = telemetry.Graphics_completed_laps
+        ?? telemetry.Graphics_completed_lap
+        ?? telemetry.Graphics?.completed_laps;
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    const parsed = Math.floor(Number(raw));
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
+const getForwardDelta = (
+    previous: LiveRangeTelemetrySample,
+    current: LiveRangeTelemetrySample,
+): number => {
+    if (previous.lap !== undefined && current.lap !== undefined) {
+        const lapDelta = current.lap - previous.lap;
+        if (lapDelta < 0) return 0;
+        if (lapDelta > 0) {
+            return Math.max(0, lapDelta + current.position - previous.position);
+        }
+        return Math.max(0, current.position - previous.position);
+    }
+
+    if (current.position >= previous.position) {
+        return current.position - previous.position;
+    }
+    if (
+        previous.position >= ROLLOVER_HIGH_POSITION
+        && current.position <= ROLLOVER_LOW_POSITION
+    ) {
+        return 1 - previous.position + current.position;
+    }
+    return 0;
+};
+
+export const calculateRollingForwardRate = (
+    samples: LiveRangeTelemetrySample[],
+): number | null => {
+    if (samples.length < 2) return null;
+    const elapsedSeconds = (
+        samples[samples.length - 1].receivedAt - samples[0].receivedAt
+    ) / 1000;
+    if (elapsedSeconds <= 0) return null;
+
+    let distance = 0;
+    for (let index = 1; index < samples.length; index += 1) {
+        distance += getForwardDelta(samples[index - 1], samples[index]);
+    }
+    return distance / elapsedSeconds;
+};
+
+export const calculateForwardCircularDistance = (
+    currentPosition: number,
+    targetPosition: number,
+): number => {
+    const direct = targetPosition - currentPosition;
+    return direct >= 0 ? direct : direct + 1;
+};
+
+export const calculateLiveRangeEta = (
+    currentPosition: number,
+    targetPosition: number,
+    rollingRate: number | null,
+): number | null => {
+    if (rollingRate === null || rollingRate <= 0) return null;
+    return calculateForwardCircularDistance(currentPosition, targetPosition) / rollingRate;
+};
+
+export const crossedLiveRangeTodoPosition = (
+    previous: LiveRangeTelemetrySample,
+    current: LiveRangeTelemetrySample,
+    targetPosition: number,
+): boolean => {
+    if (previous.lap !== undefined && current.lap !== undefined) {
+        const lapDelta = current.lap - previous.lap;
+        if (lapDelta < 0) return false;
+        if (lapDelta > 1) return true;
+        if (lapDelta === 1) {
+            return targetPosition > previous.position || targetPosition <= current.position;
+        }
+        return current.position >= previous.position
+            && targetPosition > previous.position
+            && targetPosition <= current.position;
+    }
+
+    if (current.position >= previous.position) {
+        return targetPosition > previous.position && targetPosition <= current.position;
+    }
+    const inferredRollover = previous.position >= ROLLOVER_HIGH_POSITION
+        && current.position <= ROLLOVER_LOW_POSITION;
+    return inferredRollover
+        && (targetPosition > previous.position || targetPosition <= current.position);
+};
+
+const serializeEvent = (event: RuntimeEvent): LiveRangeTodoSnapshotEvent => {
+    const { taskStart: _taskStart, ...snapshotEvent } = event;
+    return {
+        ...snapshotEvent,
+        content: {
+            title: event.content.title,
+            ...(event.content.description !== undefined
+                ? { description: event.content.description }
+                : {}),
+        },
+    };
+};
+
+const serializeSnapshot = (snapshot: RuntimeSnapshot): LiveRangeTodoListSnapshot => ({
+    ...snapshot,
+    events: snapshot.events.map(serializeEvent),
+});
+
+const formatPosition = (value: number): string => (
+    value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
+);
+
+const parseContent = (
+    value: unknown,
+    partial = false,
+): { content?: Partial<LiveRangeTodoContent>; error?: string } => {
+    if (!isRecord(value)) return { error: 'Each event requires a structured content object.' };
+    const unsupportedKey = findUnsupportedKey(value, ['title', 'description']);
+    if (unsupportedKey) {
+        return { error: `Event content property '${unsupportedKey}' is not supported.` };
+    }
+    const title = value.title;
+    if (!partial && (typeof title !== 'string' || !title.trim())) {
+        return { error: 'Each event content requires a non-empty title.' };
+    }
+    if (title !== undefined && (typeof title !== 'string' || !title.trim())) {
+        return { error: 'Event content title must be a non-empty string.' };
+    }
+    if (value.description !== undefined && typeof value.description !== 'string') {
+        return { error: 'Event content description must be a string.' };
+    }
+
+    return {
+        content: {
+            ...(title !== undefined ? { title: title.trim() } : {}),
+            ...(value.description !== undefined ? { description: value.description } : {}),
+        },
+    };
+};
+
+const parsePosition = (value: unknown): number | null => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : null;
+};
+
+const parseLeadTime = (value: unknown): number | null => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+};
+
+const parseIds = (value: unknown): { ids?: string[]; error?: string } => {
+    if (!Array.isArray(value)) return { error: 'Provide an array of event ids.' };
+    const ids = value.map((id) => typeof id === 'string' ? id.trim() : '').filter(Boolean);
+    if (ids.length !== value.length) return { error: 'Every event id must be a non-empty string.' };
+    return { ids: Array.from(new Set(ids)) };
+};
+
+const orderLiveRangeTodoEventsByEta = <Event extends LiveRangeTodoSnapshotEvent>(
+    events: readonly Event[],
+): Event[] => [...events].sort((left, right) => {
+    if (left.eta_seconds === null) return right.eta_seconds === null ? 0 : 1;
+    if (right.eta_seconds === null) return -1;
+    return left.eta_seconds - right.eta_seconds;
+});
+
+const getClosestLiveRangeTodoEvent = (
+    snapshot: LiveRangeTodoListSnapshot,
+): Readonly<LiveRangeTodoSnapshotEvent> => snapshot.events.reduce((closest, event) => {
+    if (event.status === 'running') return closest.status === 'running' ? closest : event;
+    if (closest.status === 'running') return closest;
+
+    if (snapshot.current_position !== null) {
+        const closestDistance = calculateForwardCircularDistance(
+            snapshot.current_position,
+            closest.normalized_position,
+        );
+        const eventDistance = calculateForwardCircularDistance(
+            snapshot.current_position,
+            event.normalized_position,
+        );
+        return eventDistance < closestDistance ? event : closest;
+    }
+
+    if (event.eta_seconds === null) return closest;
+    if (closest.eta_seconds === null || event.eta_seconds < closest.eta_seconds) return event;
+    return closest;
+});
+
+type LiveRangeTodoListDisplayProps = {
+    snapshot: LiveRangeTodoListSnapshot | null;
+    surface?: 'panel' | 'chat' | 'pill';
+};
+
+export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> = ({
+    snapshot,
+    surface = 'chat',
+}) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+    if (!snapshot || (snapshot.events.length === 0 && surface !== 'panel')) return null;
+    const orderedEvents = orderLiveRangeTodoEventsByEta(snapshot.events);
+    const isCollapsible = surface === 'chat'
+        && orderedEvents.length > CHAT_COLLAPSED_EVENT_LIMIT;
+    const events = surface === 'pill'
+        ? [getClosestLiveRangeTodoEvent(snapshot)]
+        : isCollapsible && !isExpanded
+            ? orderedEvents.slice(0, CHAT_COLLAPSED_EVENT_LIMIT)
+            : orderedEvents;
+
+    return (
+        <div className={`ai-chat__range-todo ai-chat__range-todo--${surface}`} aria-label="Live range to-do list">
+            <div className="ai-chat__range-todo-head">
+                <div>
+                    <span className="ai-chat__range-todo-kicker">LIVE RANGE TO-DO</span>
+                    <div className="ai-chat__range-todo-title">
+                        {snapshot.events.length} planned event{snapshot.events.length === 1 ? '' : 's'}
+                    </div>
+                </div>
+                {snapshot.rolling_rate !== null && (
+                    <span className="ai-chat__range-todo-rate">
+                        {snapshot.rolling_rate.toFixed(3)}/s
+                    </span>
+                )}
+            </div>
+            {events.length === 0 ? (
+                <div className="ai-chat__range-todo-empty" data-testid="live-range-todo-list-empty">
+                    No planned events.
+                </div>
+            ) : (
+                <>
+                    <ul className="ai-chat__range-todo-list">
+                        {events.map((event) => (
+                            <li key={event.id} className={`ai-chat__range-todo-item ai-chat__range-todo-item--${event.status}`}>
+                                <div className="ai-chat__range-todo-item-main">
+                                    <span className="ai-chat__range-todo-item-name">{event.content.title}</span>
+                                    <span className="ai-chat__range-todo-item-status">{event.status}</span>
+                                </div>
+                                {event.content.description && (
+                                    <div className="ai-chat__range-todo-detail">{event.content.description}</div>
+                                )}
+                                <div className="ai-chat__range-todo-metrics">
+                                    <span>Target {formatPosition(event.normalized_position)}</span>
+                                    <span>{event.eta_seconds === null
+                                        ? snapshot.rolling_rate === 0 ? 'ETA ∞' : 'ETA --'
+                                        : `ETA ${event.eta_seconds.toFixed(1)}s`}</span>
+                                    <span>Lead {event.lead_time_seconds.toFixed(1)}s</span>
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                    {isCollapsible && (
+                        <button
+                            type="button"
+                            className="ai-chat__range-todo-toggle"
+                            aria-expanded={isExpanded}
+                            onClick={() => setIsExpanded((expanded) => !expanded)}
+                        >
+                            {isExpanded
+                                ? 'Show less'
+                                : `Show ${snapshot.events.length - CHAT_COLLAPSED_EVENT_LIMIT} more`}
+                        </button>
+                    )}
+                </>
+            )}
+        </div>
+    );
+};
+
+export const liveRangeTodoListOverlayRenderer: AiOverlayRenderer<LiveRangeTodoListSnapshot> = {
+    componentType: 'live_range_todo',
+    validateSnapshot: (snapshot): snapshot is LiveRangeTodoListSnapshot => (
+        isOverlayRecord(snapshot)
+        && Array.isArray(snapshot.events)
+        && snapshot.events.length > 0
+        && snapshot.events.every((event) => (
+            isOverlayRecord(event)
+            && isOverlayNonEmptyString(event.id)
+            && isOverlayRecord(event.content)
+            && isOverlayNonEmptyString(event.content.title)
+        ))
+        && isOverlayFiniteOrNull(snapshot.current_position)
+        && isOverlayFiniteOrNull(snapshot.rolling_rate)
+    ),
+    renderOverlay: (snapshot, status) => status === 'folded'
+        ? `${snapshot.events.length} live range event${snapshot.events.length === 1 ? '' : 's'}`
+        : <LiveRangeTodoListDisplay snapshot={snapshot} surface="pill" />,
+    dimensions: {
+        expanded: { width: 420, height: 210 },
+        folded: { width: 340, height: 58 },
+    },
+};
+
+export interface LiveRangeTodoListProps {
+    runner: LiveRangeTodoListRunner;
+    onSnapshotChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void;
+    surface?: 'panel' | 'chat' | 'pill';
+}
+
+const createLiveRangeProgress = (): LiveRangeTodoListProgress => ({
+    completed_step_count: 0,
+    stopped_at_step: null,
+});
+
+const toAiResult = (
+    result: LiveRangeTodoListResult,
+    progress: LiveRangeTodoListProgress,
+): LiveRangeTodoListAiResult => {
+    const events = result.todo_list?.events ?? [];
+    return {
+        ...progress,
+        status: result.status,
+        event_count: events.length,
+        pending_count: events.filter((event) => event.status === 'pending').length,
+        running_count: events.filter((event) => event.status === 'running').length,
+        ...(result.message ? { message: result.message } : {}),
+    };
+};
+
+export class LiveRangeTodoListRunner
+extends WorkflowComponentBase<LiveRangeTodoListSnapshot | null>
+implements LiveRangeTodoListHandle {
+    private runtime: RuntimeSnapshot;
+    private completion: ControlledOperation<LiveRangeTodoListAiResult, never, string> | null = null;
+    private executionError: Error | null = null;
+    private progress: LiveRangeTodoListProgress = createLiveRangeProgress();
+    private eventSteps = new Map<string, number>();
+    private unsubscribeTelemetry?: () => void;
+    private samples: LiveRangeTelemetrySample[] = [];
+    private previousSample: LiveRangeTelemetrySample | null = null;
+    private readonly activeRuns = new Map<string, ActiveRun>();
+    private readonly onChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void;
+
+    constructor(
+        componentName: string,
+        onChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void,
+    ) {
+        super(componentName, null);
+        const now = Date.now();
+        this.runtime = {
+            events: [],
+            current_position: null,
+            rolling_rate: null,
+            created_at: now,
+            updated_at: now,
+        };
+        this.onChange = onChange;
+    }
+
+    createLiveRangeTodoList(input: CreateLiveRangeTodoListInput, dispatch: WorkflowDispatcher) {
+        try {
+            const prepared = validateLiveRangeTodoBatch(input, dispatch, 'create_live_range_todo_list');
+            this.assertCanReplace(dispatch.workflowCaller);
+            this.cancelCompletion();
+            this.executionError = null;
+            this.progress = createLiveRangeProgress();
+            const completion = createControlledOperation<LiveRangeTodoListAiResult>([], () => this.reset());
+            const workflow = asWorkflow(completion.operation, this.progress);
+            this.completion = completion;
+            const token = this.beginExecution(dispatch.workflowCaller);
+            this.trackExecution(completion.operation, token);
+            const owned = bindWorkflowDispatcher(dispatch, this);
+            this.replaceEvents(prepared.map(({ event, operation }) => ({ ...event,
+                taskStart: (signal) => owned(operation.name, operation.arguments, signal) })));
+            return workflow;
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createLiveRangeProgress());
+        }
+    }
+
+    appendLiveRangeTodoList(input: LiveRangeTodoListInput, dispatch: WorkflowDispatcher) {
+        try {
+            const prepared = validateLiveRangeTodoBatch(input, dispatch);
+            this.assertCanAppend(dispatch.workflowCaller);
+            const ids = new Set(this.runtime.events.map((event) => event.id));
+            for (const { event } of prepared) {
+                if (ids.has(event.id)) this.invalidList(`Duplicate live range to-do event id: ${event.id}.`);
+            }
+            const owned = bindWorkflowDispatcher(dispatch, this);
+            // Validation of the complete batch precedes every mutation.
+            prepared.forEach(({ event, operation }) => this.addEvent({ ...event,
+                taskStart: (signal) => owned(operation.name, operation.arguments, signal) }));
+            return this.getForAi();
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createLiveRangeProgress());
+        }
+    }
+
+    private cancelCompletion(): void {
+        const completion = this.completion;
+        this.completion = null;
+        completion?.reject('cancelled', new OperationAbortedError());
+        // The cancelled operation retains its progress while reset clears the queue.
+        if (completion) this.progress = { ...this.progress };
+    }
+
+    getForAi() {
+        return asWorkflow(createOperation(toAiResult(this.get(), {
+            completed_step_count: this.progress.completed_step_count,
+            stopped_at_step: null,
+        }), 'complete'));
+    }
+
+    connectTelemetry(): void {
+        if (this.unsubscribeTelemetry || this.isDisposed()) return;
+        this.unsubscribeTelemetry = liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') this.reset();
+            if (event.type === 'frame') this.acceptTelemetry(event.sample);
+        });
+    }
+
+    disconnectTelemetry(): void {
+        this.unsubscribeTelemetry?.();
+        this.unsubscribeTelemetry = undefined;
+    }
+
+    getComponentType(): string {
+        return 'live_range_todo';
+    }
+
+    getOverlayBehavior(snapshot: LiveRangeTodoListSnapshot | null) {
+        return {
+            placement: 'pinned' as const,
+            requestedStatus: 'expanded' as const,
+            remove: snapshot === null || snapshot.events.length === 0,
+        };
+    }
+
+    getOverlayMetadata() {
+        return {};
+    }
+
+    handleOverlayRendererEvent(): void {
+        // The live range list has no renderer-originated events.
+    }
+
+    addEvent(eventInput: LiveRangeTodoEventInput): LiveRangeTodoListResult {
+        const now = Date.now();
+        const parsed = this.parseNewEvent(eventInput, now);
+        if (!parsed.event) return this.invalidList(parsed.error || 'Invalid live range to-do event.');
+        if (this.runtime.events.some((event) => event.id === parsed.event!.id)) {
+            return this.invalidList(`Duplicate live range to-do event id: ${parsed.event.id}.`);
+        }
+        const event = {
+            ...parsed.event,
+            eta_seconds: this.runtime.current_position === null
+                ? null
+                : calculateLiveRangeEta(
+                    this.runtime.current_position,
+                    parsed.event.normalized_position,
+                    this.runtime.rolling_rate,
+                ),
+        };
+        this.eventSteps.set(event.id, Math.max(0, ...Array.from(this.eventSteps.values())) + 1);
+        const next = this.commit({
+            ...this.runtime,
+            events: [...this.runtime.events, event],
+            updated_at: now,
+        });
+        return { status: 'ready', todo_list: next, message: `Added event '${event.id}'.` };
+    }
+
+    replaceEvents(eventInputs: readonly LiveRangeTodoEventInput[]): LiveRangeTodoListResult {
+        if (!Array.isArray(eventInputs)) return this.invalidList('Provide an events array.');
+        const now = Date.now();
+        const parsed = eventInputs.map((event) => this.parseNewEvent(event, now));
+        const invalid = parsed.find((entry) => !entry.event);
+        if (invalid) return this.invalidList(invalid.error || 'Invalid live range to-do event.');
+        const events = parsed.map((entry) => entry.event!);
+        const ids = new Set<string>();
+        for (const event of events) {
+            if (ids.has(event.id)) return this.invalidList(`Duplicate live range to-do event id: ${event.id}.`);
+            ids.add(event.id);
+        }
+
+        this.abortRunningEvents();
+        this.previousSample = null;
+        this.eventSteps = new Map(events.map((event, index) => [event.id, index + 1]));
+        const eventsWithEta = events.map((event) => ({
+            ...event,
+            eta_seconds: this.runtime.current_position === null
+                ? null
+                : calculateLiveRangeEta(
+                    this.runtime.current_position,
+                    event.normalized_position,
+                    this.runtime.rolling_rate,
+                ),
+        }));
+        const next = this.commit({
+            events: eventsWithEta,
+            current_position: this.runtime.current_position,
+            rolling_rate: this.runtime.rolling_rate,
+            lap: this.runtime.lap,
+            created_at: now,
+            updated_at: now,
+        });
+        return {
+            status: eventsWithEta.length > 0 ? 'ready' : 'empty',
+            todo_list: next,
+            message: eventsWithEta.length > 0
+                ? `Replaced the queue with ${eventsWithEta.length} event${eventsWithEta.length === 1 ? '' : 's'}.`
+                : 'The live range to-do list is empty.',
+        };
+    }
+
+    updateEvents(eventUpdates: readonly LiveRangeTodoEventUpdate[]): LiveRangeTodoListResult {
+        if (!Array.isArray(eventUpdates) || eventUpdates.length === 0) {
+            return this.invalidList('Provide at least one event update.');
+        }
+        const now = Date.now();
+        const updates = new Map<string, RuntimeEvent>();
+
+        for (const raw of eventUpdates) {
+            if (!isRecord(raw) || typeof raw.id !== 'string' || !raw.id.trim()) {
+                return this.invalidList('Each event update requires a non-empty id.');
+            }
+            const id = raw.id.trim();
+            const unsupportedKey = findUnsupportedKey(raw, [
+                'id',
+                'normalized_position',
+                'lead_time_seconds',
+                'content',
+                'taskStart',
+            ]);
+            if (unsupportedKey) {
+                return this.invalidList(`Event '${id}' property '${unsupportedKey}' is not supported.`);
+            }
+            if (updates.has(id)) return this.invalidList(`Duplicate live range to-do event id: ${id}.`);
+            const existing = this.runtime.events.find((event) => event.id === id);
+            if (!existing) return this.invalidList(`Live range to-do event '${id}' was not found.`);
+
+            let next: RuntimeEvent = {
+                ...existing,
+                status: 'pending',
+                updated_at: now,
+            };
+            if (hasOwn(raw, 'content')) {
+                const parsedContent = parseContent(raw.content, true);
+                if (!parsedContent.content) return this.invalidList(`Event '${id}': ${parsedContent.error}`);
+                next.content = { ...existing.content, ...parsedContent.content };
+            }
+            if (hasOwn(raw, 'normalized_position')) {
+                const position = parsePosition(raw.normalized_position);
+                if (position === null) return this.invalidList(`Event '${id}' normalized_position must be between 0 and 1.`);
+                next.normalized_position = position;
+            }
+            if (hasOwn(raw, 'lead_time_seconds')) {
+                const leadTime = parseLeadTime(raw.lead_time_seconds);
+                if (leadTime === null) return this.invalidList(`Event '${id}' lead_time_seconds must be zero or greater.`);
+                next.lead_time_seconds = leadTime;
+            }
+            if (hasOwn(raw, 'taskStart')) {
+                if (typeof raw.taskStart !== 'function') {
+                    return this.invalidList(`Event '${id}' taskStart must be a function.`);
+                }
+                next.taskStart = raw.taskStart as LiveRangeTodoEventInput['taskStart'];
+            }
+            next = {
+                ...next,
+                eta_seconds: this.runtime.current_position === null
+                    ? null
+                    : calculateLiveRangeEta(
+                        this.runtime.current_position,
+                        next.normalized_position,
+                        this.runtime.rolling_rate,
+                    ),
+                started_at: undefined,
+                lap: undefined,
+            };
+            updates.set(id, next);
+        }
+
+        const affectedIds = new Set(updates.keys());
+        this.abortRunningEvents(affectedIds);
+        const next = this.commit({
+            ...this.runtime,
+            events: this.runtime.events.map((event) => updates.get(event.id) ?? event),
+            updated_at: now,
+        });
+        return { status: 'ready', todo_list: next, message: `Updated ${updates.size} event${updates.size === 1 ? '' : 's'}.` };
+    }
+
+    removeEvents(idsInput: readonly string[]): LiveRangeTodoListResult {
+        const parsed = parseIds(idsInput);
+        if (!parsed.ids || parsed.ids.length === 0) return this.invalidList(parsed.error || 'Provide event ids to remove.');
+        const ids = new Set(parsed.ids);
+        this.abortRunningEvents(ids);
+        const events = this.runtime.events.filter((event) => !ids.has(event.id));
+        const removedCount = this.runtime.events.length - events.length;
+        const next = this.commit({ ...this.runtime, events, updated_at: Date.now() });
+        return {
+            status: events.length > 0 ? 'ready' : 'empty',
+            todo_list: next,
+            message: `Removed ${removedCount} event${removedCount === 1 ? '' : 's'}.`,
+        };
+    }
+
+    resetEvents(idsInput?: readonly string[]): LiveRangeTodoListResult {
+        const parsed = idsInput === undefined
+            ? { ids: this.runtime.events.map((event) => event.id) }
+            : parseIds(idsInput);
+        if (!parsed.ids) return this.invalidList(parsed.error || 'Provide valid event ids to reset.');
+        const now = Date.now();
+        const ids = new Set(parsed.ids);
+        this.abortRunningEvents(ids);
+        const events = this.runtime.events.map((event): RuntimeEvent => ids.has(event.id) ? {
+            ...event,
+            status: 'pending',
+            eta_seconds: this.runtime.current_position === null
+                ? null
+                : calculateLiveRangeEta(
+                    this.runtime.current_position,
+                    event.normalized_position,
+                    this.runtime.rolling_rate,
+                ),
+            updated_at: now,
+            started_at: undefined,
+            lap: undefined,
+        } : event);
+        const next = this.commit({ ...this.runtime, events, updated_at: now });
+        return {
+            status: events.length > 0 ? 'ready' : 'empty',
+            todo_list: next,
+            message: `Reset ${ids.size} event${ids.size === 1 ? '' : 's'}.`,
+        };
+    }
+
+    clear(): LiveRangeTodoListResult {
+        this.cancelCompletion();
+        this.abortRunningEvents();
+        const next = this.commit({ ...this.runtime, events: [], updated_at: Date.now() });
+        return { status: 'empty', todo_list: next, message: 'Cleared the live range to-do list.' };
+    }
+
+    get(): LiveRangeTodoListResult {
+        const current = serializeSnapshot(this.runtime);
+        return {
+            status: current.events.length > 0 ? 'ready' : 'empty',
+            todo_list: current,
+            ...(current.events.length === 0 ? { message: 'The live range to-do list is empty.' } : {}),
+        };
+    }
+
+    acceptTelemetry(telemetry: Record<string, any> | null | undefined): void {
+        if (this.isDisposed()) return;
+        const position = getLiveRangeNormalizedPosition(telemetry);
+        if (position === undefined) return;
+        const now = Date.now();
+        const currentSample: LiveRangeTelemetrySample = {
+            position,
+            receivedAt: now,
+            lap: getLiveRangeTelemetryLap(telemetry),
+        };
+        this.samples = [...this.samples, currentSample]
+            .filter((sample) => sample.receivedAt >= now - SAMPLE_WINDOW_MS);
+        const rate = calculateRollingForwardRate(this.samples);
+        const previousSample = this.previousSample;
+        this.previousSample = currentSample;
+        const dueEventIds = new Set<string>();
+        const events = orderLiveRangeTodoEventsByEta(this.runtime.events.map((event): RuntimeEvent => {
+            if (event.status !== 'pending') return event;
+            const eta = calculateLiveRangeEta(position, event.normalized_position, rate);
+            const crossed = previousSample
+                ? crossedLiveRangeTodoPosition(previousSample, currentSample, event.normalized_position)
+                : false;
+            const isDue = crossed || (eta !== null && eta <= event.lead_time_seconds);
+            if (isDue) dueEventIds.add(event.id);
+            return {
+                ...event,
+                eta_seconds: eta,
+                updated_at: now,
+            };
+        }));
+        this.commit({
+            ...this.runtime,
+            events,
+            current_position: position,
+            rolling_rate: rate,
+            lap: currentSample.lap,
+            updated_at: now,
+        });
+        const nextDueEvent = events.find((event) => dueEventIds.has(event.id));
+        if (nextDueEvent) this.runDueEvent(nextDueEvent.id);
+    }
+
+    reset(): void {
+        this.cancelCompletion();
+        this.abortRunningEvents();
+        this.samples = [];
+        this.previousSample = null;
+        const now = Date.now();
+        this.commit({
+            events: [],
+            current_position: null,
+            rolling_rate: null,
+            created_at: now,
+            updated_at: now,
+        });
+    }
+
+    protected onDispose(): void {
+        this.disconnectTelemetry();
+        this.cancelCompletion();
+        this.abortRunningEvents();
+        this.samples = [];
+        this.previousSample = null;
+    }
+
+    private commit(next: RuntimeSnapshot): LiveRangeTodoListSnapshot {
+        const orderedNext = {
+            ...next,
+            events: orderLiveRangeTodoEventsByEta(next.events),
+        };
+        this.runtime = orderedNext;
+        if (!this.executionError) {
+            const nextEvent = orderedNext.events.find((event) => event.status === 'running')
+                ?? orderedNext.events[0];
+            this.progress.stopped_at_step = nextEvent ? this.describeStep(nextEvent) : null;
+        }
+        const snapshot = serializeSnapshot(orderedNext);
+        const visibleSnapshot = snapshot.events.length > 0 ? snapshot : null;
+        this.publishSnapshot(visibleSnapshot);
+        this.onChange?.(visibleSnapshot);
+        if (snapshot.events.length === 0) {
+            const completion = this.completion;
+            this.completion = null;
+            if (this.executionError) completion?.reject('failed', this.executionError);
+            else completion?.resolve('complete', toAiResult(this.get(), this.progress));
+            this.dispose();
+        }
+        return snapshot;
+    }
+
+    private invalidList(message: string): never {
+        throw new InvalidLiveRangeTodoListError(
+            this.getComponentName(),
+            message,
+        );
+    }
+
+    private parseNewEvent(
+        value: unknown,
+        now: number,
+    ): { event?: RuntimeEvent; error?: string } {
+        if (!isRecord(value)) return { error: 'Each event must be an object.' };
+        const id = typeof value.id === 'string' ? value.id.trim() : '';
+        if (!id) return { error: 'Each event requires a non-empty id.' };
+        const unsupportedKey = findUnsupportedKey(value, [
+            'id',
+            'normalized_position',
+            'lead_time_seconds',
+            'content',
+            'taskStart',
+        ]);
+        if (unsupportedKey) {
+            return { error: `Event '${id}' property '${unsupportedKey}' is not supported.` };
+        }
+        const position = parsePosition(value.normalized_position);
+        if (position === null) return { error: `Event '${id}' normalized_position must be between 0 and 1.` };
+        const leadTime = value.lead_time_seconds === undefined
+            ? DEFAULT_LEAD_TIME_SECONDS
+            : parseLeadTime(value.lead_time_seconds);
+        if (leadTime === null) return { error: `Event '${id}' lead_time_seconds must be zero or greater.` };
+        const parsedContent = parseContent(value.content);
+        if (!parsedContent.content) return { error: `Event '${id}': ${parsedContent.error}` };
+        if (typeof value.taskStart !== 'function') {
+            return { error: `Event '${id}' requires a taskStart function.` };
+        }
+        return {
+            event: {
+                id,
+                normalized_position: position,
+                lead_time_seconds: leadTime,
+                content: parsedContent.content as LiveRangeTodoContent,
+                taskStart: value.taskStart as LiveRangeTodoEventInput['taskStart'],
+                status: 'pending',
+                eta_seconds: null,
+                created_at: now,
+                updated_at: now,
+            },
+        };
+    }
+
+    private abortRunningEvents(ids?: Set<string>): void {
+        Array.from(this.activeRuns.entries()).forEach(([id, run]) => {
+            if (ids && !ids.has(id)) return;
+            run.unsubscribeTermination();
+            this.activeRuns.delete(id);
+            run.operation?.abort();
+            run.controller.abort();
+        });
+    }
+
+    private runDueEvent(id: string): void {
+        if (this.isDisposed() || this.activeRuns.size > 0) return;
+        const event = this.runtime.events.find((candidate) => (
+            candidate.id === id && candidate.status === 'pending'
+        ));
+        if (!event) return;
+
+        const controller = new AbortController();
+        const token = Symbol(event.id);
+        const now = Date.now();
+        const runningEvent: RuntimeEvent = {
+            ...event,
+            status: 'running',
+            lap: this.runtime.lap,
+            started_at: now,
+            updated_at: now,
+        };
+        this.commit({
+            ...this.runtime,
+            events: this.runtime.events.map((candidate) => (
+                candidate.id === event.id ? runningEvent : candidate
+            )),
+            updated_at: now,
+        });
+
+        const activeRun: ActiveRun = {
+            controller,
+            event: runningEvent,
+            operation: null,
+            unsubscribeTermination: () => undefined,
+            token,
+        };
+        this.activeRuns.set(event.id, activeRun);
+
+        try {
+            const operation = runningEvent.taskStart(controller.signal);
+            activeRun.operation = operation;
+            const unsubscribeTermination = operation.notifyTerminated((termination) => {
+                this.finishEvent(
+                    event.id,
+                    token,
+                    termination.result instanceof Error ? termination.result : undefined,
+                );
+            });
+            const retainedRun = this.activeRuns.get(event.id);
+            if (retainedRun?.token === token) {
+                retainedRun.unsubscribeTermination = unsubscribeTermination;
+            } else {
+                unsubscribeTermination();
+            }
+        } catch (error) {
+            this.finishEvent(event.id, token, error);
+        }
+    }
+
+    private describeStep(event: RuntimeEvent): NonNullable<LiveRangeTodoListProgress['stopped_at_step']> {
+        return { step: this.eventSteps.get(event.id)!, id: event.id, ...event.content };
+    }
+
+    private finishEvent(id: string, token: symbol, error?: unknown): void {
+        if (this.isDisposed()) return;
+        const activeRun = this.activeRuns.get(id);
+        if (!activeRun || activeRun.token !== token || activeRun.controller.signal.aborted) return;
+        activeRun.unsubscribeTermination();
+        this.activeRuns.delete(id);
+        if (error !== undefined) {
+            if (!this.executionError) this.progress.stopped_at_step = this.describeStep(activeRun.event);
+            this.executionError ??= new OperationExecutionError(
+                error instanceof Error ? error.message : String(error),
+                { cause: error },
+            );
+            console.error(`Live range to-do event '${id}' task failed.`, error);
+        } else {
+            this.progress.completed_step_count += 1;
+        }
+        if (!this.runtime.events.some((event) => event.id === id)) {
+            return;
+        }
+        this.commit({
+            ...this.runtime,
+            events: this.runtime.events.filter((event) => event.id !== id),
+            updated_at: Date.now(),
+        });
+    }
+}
+
+export const useLiveRangeTodoListWorkflow = ({
+    mountWorkflow,
+    onEmpty,
+    live,
+    sessionGame,
+}: {
+    mountWorkflow: MountWorkflow;
+    onEmpty: (runner: LiveRangeTodoListRunner) => void;
+    live: boolean;
+    sessionGame: DesktopGame | null;
+}) => {
+    const runnerRef = useRef<LiveRangeTodoListRunner | null>(null);
+    const previousSessionGameRef = useRef(sessionGame);
+    const dispose = useCallback(() => {
+        const runner = runnerRef.current;
+        runnerRef.current = null;
+        runner?.dispose();
+    }, []);
+
+    useEffect(() => dispose, [dispose]);
+
+    useEffect(() => {
+        if (live) runnerRef.current?.connectTelemetry();
+        else runnerRef.current?.disconnectTelemetry();
+    }, [live]);
+
+    useEffect(() => {
+        const previous = previousSessionGameRef.current;
+        previousSessionGameRef.current = sessionGame;
+        if (previous !== sessionGame && sessionGame !== null) runnerRef.current?.reset();
+    }, [sessionGame]);
+
+    const initializeLiveRangeTodoList = useCallback((): LiveRangeTodoListHandle => {
+        let runner = runnerRef.current;
+        if (!runner) {
+            const next = new LiveRangeTodoListRunner(
+                OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+                (snapshot) => {
+                    if (snapshot !== null || runnerRef.current !== next) return;
+                    runnerRef.current = null;
+                    onEmpty(next);
+                },
+            );
+            runner = next;
+        }
+        try {
+            mountWorkflow({ runner, dispose });
+            runnerRef.current = runner;
+            if (live) runner.connectTelemetry();
+            return runner;
+        } catch (error) {
+            runner.dispose();
+            throw error;
+        }
+    }, [dispose, mountWorkflow, onEmpty, live]);
+
+    const createLiveRangeTodoList = useCallback((input: CreateLiveRangeTodoListInput, dispatch: WorkflowDispatcher) => {
+        try {
+            validateLiveRangeTodoBatch(input, dispatch, 'create_live_range_todo_list');
+            runnerRef.current?.assertCanReplace(dispatch.workflowCaller);
+            dispose();
+            return initializeLiveRangeTodoList().createLiveRangeTodoList(input, dispatch);
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createLiveRangeProgress());
+        }
+    }, [dispose, initializeLiveRangeTodoList]);
+
+    const appendLiveRangeTodoList = useCallback((input: LiveRangeTodoListInput, dispatch: WorkflowDispatcher) => {
+        try {
+            validateLiveRangeTodoBatch(input, dispatch);
+            runnerRef.current?.assertCanAppend(dispatch.workflowCaller);
+            return initializeLiveRangeTodoList().appendLiveRangeTodoList(input, dispatch);
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createLiveRangeProgress());
+        }
+    }, [initializeLiveRangeTodoList]);
+
+    return { initializeLiveRangeTodoList, createLiveRangeTodoList, appendLiveRangeTodoList, reset: dispose };
+};
+
+const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
+    runner,
+    onSnapshotChange,
+    surface = 'chat',
+}) => {
+    const [snapshot, setSnapshot] = useState<LiveRangeTodoListSnapshot | null>(
+        () => runner.getSnapshot(),
+    );
+    const snapshotChangeRef = useRef(onSnapshotChange);
+    snapshotChangeRef.current = onSnapshotChange;
+
+    useEffect(() => {
+        const publish = (next: LiveRangeTodoListSnapshot | null) => {
+            setSnapshot(next);
+            snapshotChangeRef.current?.(next);
+        };
+        publish(runner.getSnapshot());
+        const unsubscribe = runner.subscribe(publish);
+        return () => {
+            unsubscribe();
+            snapshotChangeRef.current?.(null);
+        };
+    }, [runner]);
+
+    return <LiveRangeTodoListDisplay snapshot={snapshot} surface={surface} />;
+};
+
+export default LiveRangeTodoList;

@@ -1,4 +1,4 @@
-import { EventType, SessionEvent } from 'views/lap-analysis/session-intelligence/types';
+import { EventType, SessionEvent } from 'views/session-shared/session-intelligence/types';
 
 export interface EventSearchParams {
     eventType: EventType;

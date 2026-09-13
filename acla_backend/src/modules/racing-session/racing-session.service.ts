@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { AnalysisSessionMetadataDto, RacingSessionDetailedInfoDto, SessionBasicInfoListDto, AllSessionsInitResponseDto, SessionChunkDto, MapBasicInfoListDto } from 'src/dto/racing-session.dto';
@@ -17,6 +17,29 @@ export class RacingSessionService {
         @InjectModel(RacingSession.name) private racingSession: Model<RacingSession>,
         private readonly gridfsService: GridFSService,
     ) { }
+
+    async deleteSession(userId: string, sessionId: string): Promise<void> {
+        if (!Types.ObjectId.isValid(sessionId)) {
+            throw new BadRequestException('Invalid session id');
+        }
+
+        const filter = { _id: sessionId, user_id: userId };
+        const session = await this.racingSession.findOne(filter)
+            .select('dataChunkFileIds')
+            .exec();
+        if (!session) {
+            throw new NotFoundException('Session not found');
+        }
+
+        // Keep metadata until cleanup succeeds so a failed deletion can be retried.
+        for (const fileId of session.dataChunkFileIds || []) {
+            const id = new ObjectId(fileId.toString());
+            if (await this.gridfsService.getFileInfo(id, GRIDFS_BUCKETS.RACING_SESSIONS)) {
+                await this.gridfsService.deleteFile(id, GRIDFS_BUCKETS.RACING_SESSIONS);
+            }
+        }
+        await this.racingSession.deleteOne(filter).exec();
+    }
 
     /**
      * Large telemetry datasets are stored exclusively in GridFS as chunked JSON files.

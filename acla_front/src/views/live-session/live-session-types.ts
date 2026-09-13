@@ -1,9 +1,9 @@
 import type { DesktopGame } from 'contexts/DesktopGameContext';
-import { RecordingEvent, RecordingState, StopReason } from 'views/lap-analysis/recording-state';
+import { RecordingEvent, RecordingState, StopReason } from 'views/live-session/recording-state';
 import type {
     CornerLookahead,
-} from 'views/lap-analysis/session-intelligence/types';
-import type { LiveSessionType } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
+} from 'views/session-shared/session-intelligence/types';
+import type { LiveSessionType } from 'views/live-session/session-intelligence/live-performance-analyst';
 import type {
     AppendLiveSessionAnalysisResultPageInput,
     AppendLiveSessionAnalysisResultPageResult,

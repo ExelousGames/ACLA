@@ -1,4 +1,4 @@
-import { SessionEvent, TelemetrySample } from 'views/lap-analysis/session-intelligence/types';
+import { SessionEvent, TelemetrySample } from 'views/session-shared/session-intelligence/types';
 
 const SPEED_DROP_THRESHOLD = 40;
 const GFORCE_THRESHOLD = 4.5;

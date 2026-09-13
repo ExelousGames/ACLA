@@ -1,7 +1,7 @@
 import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { DesktopGame, DesktopGameContextValue } from 'contexts/DesktopGameContext';
-import { RecordingState } from 'views/lap-analysis/recording-state';
+import { RecordingState } from 'views/live-session/recording-state';
 import { LiveSessionContext } from '../LiveSessionContext';
 import {
     OPERATION_COMPONENT_NAMES,
@@ -22,10 +22,10 @@ jest.mock('contexts/DesktopGameContext', () => ({
 }));
 
 jest.mock('../LiveTelemetryWorkspace', () => () => <div>Live workspace</div>);
-jest.mock('views/lap-analysis/LiveSessionDetectionManager', () => () => (
+jest.mock('views/live-session/LiveSessionDetectionManager', () => () => (
     <div data-testid="live-session-detection-manager" />
 ));
-jest.mock('views/lap-analysis/liveAnalysisSessionRecording', () => ({ recorderHostId }: { recorderHostId?: string }) => (
+jest.mock('views/live-session/live-session-recording/liveAnalysisSessionRecording', () => ({ recorderHostId }: { recorderHostId?: string }) => (
     <div data-testid="live-analysis-session-recording" data-host={recorderHostId} />
 ));
 

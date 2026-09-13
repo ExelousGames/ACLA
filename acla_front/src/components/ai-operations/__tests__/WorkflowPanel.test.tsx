@@ -7,14 +7,14 @@ import {
     type OperationComponentRefDirectory,
 } from 'contexts/OperationComponentRefContext';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
-import { createAiCommandRegistry } from 'views/lap-analysis/ai-chat/ai-command-registry';
-import AnalysisResultsChart, { type AnalysisResultsChartHandle } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
-import * as comparisonOverlaySource from 'components/driver-expert-comparison/DriverExpertComparisonGraph.overlay-source';
-import type { DriverExpertComparisonSnapshot } from 'components/driver-expert-comparison';
+import { createAiCommandRegistry } from 'views/ai-chat/ai-command-registry';
+import AnalysisResultsChart, { type AnalysisResultsChartHandle } from 'views/session-shared/visualization/charts/AnalysisResultsChart';
+import * as comparisonOverlaySource from 'views/session-shared/driver-expert-comparison/DriverExpertComparisonGraph.overlay-source';
+import type { DriverExpertComparisonSnapshot } from 'views/session-shared/driver-expert-comparison';
 import WorkflowPanel, { type WorkflowPanelHandle } from '../WorkflowPanel';
 import type { ProcedurePlanInput } from '../ProcedurePlan';
 import type { RepeatablePlanInput } from '../RepeatablePlan';
-import type { LiveRangeTodoListHandle } from '../live-range-todo-list-types';
+import type { LiveRangeTodoListHandle } from '../../../views/live-session/ai-operations/live-range-todo-list-types';
 import { createControlledOperation } from '../operation';
 import { asTool, type ToolDispatcher } from '../tool';
 

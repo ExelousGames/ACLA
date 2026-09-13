@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, ForbiddenException, HttpException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
+import { Controller, Get, Delete, Param, UseGuards, Request, Post, Body, Query, BadRequestException, ForbiddenException, HttpException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
 import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, TrackCornerKnowledgeRequestDto, TrackCornerKnowledgeResponseDto, MapBasicInfoListDto, SegmentClassificationRequestDto, SegmentClassificationResponseDto, LiveBaselineAnalysisRequestDto, LiveBaselineAnalysisResponseDto, UserSessionsAnalysisInitResponseDto } from 'src/dto/racing-session.dto';
@@ -56,6 +56,15 @@ export class RacingSessionController {
                 this.logger.error(`Error during download state cleanup: ${error.message}`);
             });
         }, 60 * 60 * 1000); // 1 hour
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Delete(':id')
+    async deleteSession(@Request() req, @Param('id') sessionId: string): Promise<void> {
+        if (!req.user?.userId) {
+            throw new ForbiddenException('Authenticated user id is required');
+        }
+        await this.racingSessionService.deleteSession(req.user.userId, sessionId);
     }
 
     @UseGuards(AuthGuard('jwt'))

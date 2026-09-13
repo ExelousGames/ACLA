@@ -1,5 +1,5 @@
-import { TelemetrySample } from 'views/lap-analysis/session-intelligence/types';
-import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
+import { TelemetrySample } from 'views/session-shared/session-intelligence/types';
+import { getCornersForTrack } from 'views/live-session/session-intelligence/track-corners';
 import { EventLog } from './EventLog';
 import { CornerSensor } from './sensors/CornerSensor';
 import { CrashSensor } from './sensors/CrashSensor';
