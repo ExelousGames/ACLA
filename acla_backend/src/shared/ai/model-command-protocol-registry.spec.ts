@@ -394,10 +394,10 @@ describe('analysis result query apply tool', () => {
 
     it('requires final non-blank JSONata and accepts only an optional integer page number', () => {
         const tool = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => (
-            name === 'apply_query_to_analysis_result'
+            name === 'apply_query_to_lap_analysis_result'
         ))) as any;
 
-        expect(MODEL_COMMAND_PROTOCOL.filter(({ name }) => name === 'apply_query_to_analysis_result'))
+        expect(MODEL_COMMAND_PROTOCOL.filter(({ name }) => name === 'apply_query_to_lap_analysis_result'))
             .toHaveLength(1);
         expect(Object.keys(tool.properties)).toEqual(['query', 'page_number']);
         expect(tool.required).toEqual(['query']);
@@ -407,7 +407,8 @@ describe('analysis result query apply tool', () => {
             pattern: '\\S',
         });
         expect(tool.properties.page_number).toMatchObject({ type: 'integer' });
-        expect(tool.description).toContain('returns only its status');
+        expect(tool.description).toContain('"status": "applied"');
+        expect(tool.description).toContain('"message": "UI is now updated with the filtered analysis results"');
         expect(tool.description).not.toContain('matched element count');
         expect(tool.description).toContain('receives only { "elements"');
         expect(tool.description).toContain('one element ID string');
@@ -420,7 +421,7 @@ describe('analysis result query apply tool', () => {
     it('is advertised exactly wherever the read query is available', () => {
         eligibleContexts.forEach((context) => {
             expect(namesFor(context)).toEqual(expect.arrayContaining([
-                'apply_query_to_analysis_result',
+                'apply_query_to_lap_analysis_result',
                 'query_lap_analysis_result',
             ]));
         });
@@ -430,7 +431,7 @@ describe('analysis result query apply tool', () => {
             { session_mode: 'front_desk', agent_mode: 'track_guide' },
             { session_mode: 'user_summary', agent_mode: 'track_guide' },
         ].forEach((context) => {
-            expect(namesFor(context)).not.toContain('apply_query_to_analysis_result');
+            expect(namesFor(context)).not.toContain('apply_query_to_lap_analysis_result');
         });
     });
 
@@ -445,11 +446,11 @@ describe('analysis result query apply tool', () => {
         )) as any;
 
         expect(getCallNames(getWorkflowSchema(repeatablePlan).properties.operations.items))
-            .toContain('apply_query_to_analysis_result');
+            .toContain('apply_query_to_lap_analysis_result');
         expect(getCallNames(getWorkflowSchema(repeatablePlan).properties.stop_when.properties.tool))
-            .toContain('apply_query_to_analysis_result');
+            .toContain('apply_query_to_lap_analysis_result');
         expect(getCallNames(getWorkflowSchema(addEvents).properties.operations.items))
-            .toContain('apply_query_to_analysis_result');
+            .toContain('apply_query_to_lap_analysis_result');
     });
 });
 

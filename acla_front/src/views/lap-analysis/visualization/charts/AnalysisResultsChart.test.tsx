@@ -778,6 +778,8 @@ describe('AnalysisResultsChart', () => {
             query,
             ...(requested !== undefined ? { page_number: requested } : {}),
         });
+        const terminated = jest.fn();
+        operation.notifyTerminated(terminated);
         await waitFor(() => {
             expect(screen.getByRole('button', { name: 'Lap Results' }))
                 .toHaveAttribute('aria-pressed', 'true');
@@ -789,8 +791,10 @@ describe('AnalysisResultsChart', () => {
         });
 
         expect(result).toEqual({
-            status: 'ready',
+            status: 'applied',
+            message: 'UI is now updated with the filtered analysis results',
         });
+        expect(terminated).toHaveBeenCalledWith({ status: 'applied', result });
         expect(onSelectPage).toHaveBeenCalledWith('array-page-2');
         expect(screen.getByRole('button', { name: 'Lap Results' })).toHaveAttribute('aria-pressed', 'true');
         expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
@@ -836,7 +840,8 @@ describe('AnalysisResultsChart', () => {
         });
 
         expect(result).toEqual({
-            status: 'ready',
+            status: 'applied',
+            message: 'UI is now updated with the filtered analysis results',
         });
         expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
         await waitFor(() => expect(renderedResultIds()).toEqual(['page-one-match']));
@@ -866,7 +871,8 @@ describe('AnalysisResultsChart', () => {
         });
 
         expect(result).toEqual({
-            status: 'ready',
+            status: 'applied',
+            message: 'UI is now updated with the filtered analysis results',
         });
         expect(screen.queryByRole('textbox', { name: 'Query expression' })).not.toBeInTheDocument();
         expect(renderedResultIds()).toEqual(['recorded-match']);
@@ -985,7 +991,10 @@ describe('AnalysisResultsChart', () => {
         });
         let latestResult: unknown;
         await act(async () => { latestResult = await latest.result; });
-        expect(latestResult).toEqual({ status: 'ready' });
+        expect(latestResult).toEqual({
+            status: 'applied',
+            message: 'UI is now updated with the filtered analysis results',
+        });
         expect(renderedResultIds()).toEqual(['newest-wins']);
         expect(onSelectPage).toHaveBeenNthCalledWith(1, 'stale-page-2');
         expect(onSelectPage).toHaveBeenNthCalledWith(2, 'stale-page-1');

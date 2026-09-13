@@ -3,7 +3,6 @@ import {
     DriverExpertComparisonDiagnostic,
     DriverExpertComparisonSample,
     DriverExpertTrajectoryPoint,
-    normalizeDriverExpertComparisonData,
 } from 'components/driver-expert-comparison';
 import { unwrapLapTelemetrySequence } from 'components/driver-expert-comparison/lapTelemetrySequence';
 import { parseTelemetryFrame } from './mapTelemetry';
@@ -175,19 +174,18 @@ const buildDriverPoints = (
         const position = getDriverTrackPosition(row);
         if (
             timeMs === undefined
+            || timeMs < 0
             || position === undefined
         ) {
-            if (timeMs === undefined) countReason(rejected, 'driver_time_missing_or_invalid');
+            if (timeMs === undefined || timeMs < 0) countReason(rejected, 'driver_time_missing_or_invalid');
             if (position === undefined) countReason(rejected, 'driver_position_missing_or_invalid');
             continue;
         }
         if (previousPosition !== undefined && previousTimeMs !== undefined) {
             const crossedFinishLine = previousPosition - position > FINISH_LINE_BACKWARD_JUMP;
-            const reversedAwayFromFinish = position < previousPosition && !crossedFinishLine;
             const nonIncreasingAwayFromFinish = timeMs <= previousTimeMs && !crossedFinishLine;
-            if (reversedAwayFromFinish || nonIncreasingAwayFromFinish) {
-                if (reversedAwayFromFinish) countReason(rejected, 'driver_position_reversed');
-                if (nonIncreasingAwayFromFinish) countReason(rejected, 'driver_time_non_increasing');
+            if (nonIncreasingAwayFromFinish) {
+                countReason(rejected, 'driver_time_non_increasing');
                 continue;
             }
         }
@@ -197,9 +195,8 @@ const buildDriverPoints = (
     }
     appendCountedDiagnostics(diagnostics, rejected, {
         driver_row_invalid: 'Driver telemetry contains rows that are not objects.',
-        driver_time_missing_or_invalid: 'Driver telemetry rows are missing a finite lap clock.',
+        driver_time_missing_or_invalid: 'Driver telemetry rows are missing a finite, non-negative lap clock.',
         driver_position_missing_or_invalid: 'Driver telemetry rows are missing a normalized track position between 0 and 1.',
-        driver_position_reversed: 'Driver track position moves backward without a finish-line crossing.',
         driver_time_non_increasing: 'Driver lap time repeats or decreases without a finish-line crossing.',
     }, baselineRecords.length);
     if (!rows.length) {
@@ -214,14 +211,6 @@ const buildDriverPoints = (
         rows.map((entry) => entry.timeMs),
         rows.map((entry) => entry.normalizedPosition),
     );
-    if (!sequence) {
-        diagnostics.push({
-            code: 'driver_sequence_invalid',
-            message: 'Driver telemetry cannot be converted to an increasing lap timeline.',
-            details: { retained_rows: rows.length },
-        });
-        return undefined;
-    }
 
     return rows.map(({ row, normalizedPosition: position, sourceIndex }, index) => {
         const trajectory = getDriverTrajectory(row, sourceIndex);
@@ -295,14 +284,6 @@ const buildExpertPoints = (
         rows.map((entry) => entry.timeMs),
         rows.map((entry) => entry.normalizedPosition),
     );
-    if (!sequence) {
-        diagnostics.push({
-            code: 'expert_sequence_invalid',
-            message: 'Expert reference telemetry does not have increasing time and track-position order.',
-            details: { rows: rows.length },
-        });
-        return undefined;
-    }
 
     return rows.map((entry, index) => ({
         ...entry,
@@ -423,6 +404,9 @@ const interpolateDriverSequence = (
 
     for (const expertPoint of expert) {
         const targetPosition = expertPoint.unwrappedPosition + lapOffset;
+        if (previousTargetPosition !== undefined && targetPosition < previousTargetPosition) {
+            rightIndex = 0;
+        }
         const repeatedPosition = previousTargetPosition !== undefined
             && Math.abs(targetPosition - previousTargetPosition) <= POSITION_EPSILON;
         const match = interpolateDriverAtPosition(
@@ -445,14 +429,13 @@ const buildComparisonSamples = (
     diagnostics: DriverExpertComparisonDiagnostic[],
 ): DriverExpertComparisonSample[] | undefined => {
     const driverStart = driver[0].unwrappedPosition;
-    const driverEnd = driver[driver.length - 1].unwrappedPosition;
-    const expertStart = expert[0].unwrappedPosition;
-    const expertEnd = expert[expert.length - 1].unwrappedPosition;
+    const driverEnd = driver.reduce((furthest, point) => Math.max(furthest, point.unwrappedPosition), driverStart);
+    const expertStart = expert.reduce((start, point) => Math.min(start, point.unwrappedPosition), Infinity);
+    const expertEnd = expert.reduce((end, point) => Math.max(end, point.unwrappedPosition), -Infinity);
     const firstLapOffset = Math.ceil(driverStart - expertEnd - POSITION_EPSILON);
     const lastLapOffset = Math.floor(driverEnd - expertStart + POSITION_EPSILON);
 
     let interpolationFailures = 0;
-    let validationFailures = 0;
     let bestSamples: DriverExpertComparisonSample[] | undefined;
     for (let lapOffset = firstLapOffset; lapOffset <= lastLapOffset; lapOffset += 1) {
         const overlappingExpert = expert.filter((point) => (
@@ -494,12 +477,8 @@ const buildComparisonSamples = (
                 ...(expertGear !== undefined ? { expertGear } : {}),
             };
         });
-        if (normalizeDriverExpertComparisonData({ samples })) {
-            if (samples.length === expert.length) return samples;
-            if (!bestSamples || samples.length > bestSamples.length) bestSamples = samples;
-        } else {
-            validationFailures += 1;
-        }
+        if (samples.length === expert.length) return samples;
+        if (!bestSamples || samples.length > bestSamples.length) bestSamples = samples;
     }
 
     if (bestSamples) return bestSamples;
@@ -508,11 +487,6 @@ const buildComparisonSamples = (
         code: 'driver_interpolation_failed',
         message: 'Driver telemetry cannot be interpolated at every Expert track position.',
         details: { attempted_laps: interpolationFailures },
-    });
-    if (validationFailures > 0) diagnostics.push({
-        code: 'comparison_samples_invalid',
-        message: 'Aligned Driver and Expert samples do not form valid increasing replay timelines.',
-        details: { attempted_laps: validationFailures },
     });
 
     return undefined;

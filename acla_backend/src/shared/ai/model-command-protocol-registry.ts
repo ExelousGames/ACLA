@@ -315,7 +315,7 @@ const MODEL_COMMAND_DEFINITIONS = [
         description: [
             'Visualize analysis results with Driver vs Expert comparisons in the overlay while driving. Use when the user asks to visualize analysis results while driving.',
             'Add the results currently displayed on the active Analysis Results page to the Live Range To-do List as Driver vs Expert comparison events, using the current view and any already-applied filter. Events keep the displayed result order, retain existing to-do items, and publish only when live telemetry makes each event due.',
-            'This command takes no filter, query, or other input arguments. To change which results are queued, first update the displayed Analysis Results view with apply_query_to_analysis_result, then call add_analysis_result_to_do_list. Results without a showable comparison are skipped; the command fails if none can be shown.',
+            'This command takes no filter, query, or other input arguments. To change which results are queued, first update the displayed Analysis Results view with apply_query_to_lap_analysis_result, then call add_analysis_result_to_do_list. Results without a showable comparison are skipped; the command fails if none can be shown.',
         ].join(' '),
         properties: {},
         required: [],
@@ -364,7 +364,7 @@ const MODEL_COMMAND_DEFINITIONS = [
         name: 'analyze_live_recorded_analysis',
         description: [
             'Submit the already recorded baseline to live recorded analysis and return classified sections with time gaps when available. Returns an error until baseline collection has recorded a cached baseline.',
-            'The completed analysis opens the Analysis Results panel. Use apply_query_to_analysis_result when the driver asks to filter that view, and add_analysis_result_to_do_list to add the currently displayed results to the Live Range To-do List for overlay playback while driving when available.',
+            'The completed analysis opens the Analysis Results panel. Use apply_query_to_lap_analysis_result when the driver asks to filter that view, and add_analysis_result_to_do_list to add the currently displayed results to the Live Range To-do List for overlay playback while driving when available.',
         ].join(' '),
         properties: {
             limit: {
@@ -375,9 +375,9 @@ const MODEL_COMMAND_DEFINITIONS = [
         required: [],
     },
     {
-        name: 'apply_query_to_analysis_result',
+        name: 'apply_query_to_lap_analysis_result',
         description: [
-            'Apply a final JSONata expression to the visible Analysis Results tab. The tool returns only its status and does not return the matched results.',
+            'Apply a final JSONata expression to the visible Analysis Results tab. The response is { "status": "applied", "message": "UI is now updated with the filtered analysis results" }; it does not return the matched results.',
             'The expression receives only { "elements": [{ "id": "...", "labels": [{ "label_name": "...", "start_index": 0, "end_index": 1 }], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] } for the selected page; it does not receive the current View selection or hidden page data.',
             'The JSONata expression must evaluate to null, one element ID string, one object with a string id, or a flat array of element IDs or objects with string ids. Unknown IDs and nested arrays are rejected.',
             'Examples: elements; elements[labels[label_name = "Lockup"]]; elements[labels[label_name = "Mistake (Practice)"]].id.',
@@ -810,7 +810,7 @@ const COMMON_COMMAND_NAMES: ModelCommandName[] = [
 
 const LIVE_COMMAND_NAMES: ModelCommandName[] = [
     'start_agent_session',
-    'apply_query_to_analysis_result',
+    'apply_query_to_lap_analysis_result',
     'query_lap_analysis_result',
     'analyze_telemetry',
     'get_next_corner',
@@ -860,7 +860,7 @@ const RECORDED_COMMAND_NAMES: ModelCommandName[] = [
     'run_recorded_ai_analysis',
     'get_recorded_session_analysis',
     'get_recorded_session_context',
-    'apply_query_to_analysis_result',
+    'apply_query_to_lap_analysis_result',
     'query_lap_analysis_result',
     'analyze_telemetry',
 ];
@@ -887,7 +887,7 @@ const getAllowedToolNames = (
             ...LIVE_AGENT_COMMAND_NAMES,
             ...USER_SUMMARY_COMMAND_NAMES,
             ...(sessionMode === 'live' ? [
-                'apply_query_to_analysis_result',
+                'apply_query_to_lap_analysis_result',
                 'query_lap_analysis_result',
             ] as const : []),
             ...(sessionMode === 'live' && agentMode === 'live_performance_analyst'

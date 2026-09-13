@@ -373,7 +373,7 @@ const validateAnalysisResultQueryArguments = (
 const validateApplyAnalysisResultQueryArguments = (
     args: unknown,
 ): ApplyAnalysisResultQueryInput => {
-    const validationMessage = 'apply_query_to_analysis_result requires a non-empty string property named query and accepts only an optional integer property named page_number.';
+    const validationMessage = 'apply_query_to_lap_analysis_result requires a non-empty string property named query and accepts only an optional integer property named page_number.';
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
         throw new InvalidOperationCallError(validationMessage);
     }
@@ -728,7 +728,7 @@ const definitionList = Object.freeze([
             .analyzeLiveRecordedAnalysisForAi(args),
     },
     {
-        name: 'apply_query_to_analysis_result',
+        name: 'apply_query_to_lap_analysis_result',
         kind: 'tool',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args) => {

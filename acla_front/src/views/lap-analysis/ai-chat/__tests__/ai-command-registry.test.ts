@@ -214,7 +214,8 @@ describe('frontend operation registry', () => {
             Object.keys(frontendOperationRegistry).sort(),
         );
         expect(registry).toHaveProperty('query_lap_analysis_result');
-        expect(registry).toHaveProperty('apply_query_to_analysis_result');
+        expect(registry).toHaveProperty('apply_query_to_lap_analysis_result');
+        expect(registry).not.toHaveProperty('apply_query_to_analysis_result');
         expect(registry).toHaveProperty('display_specific_result_in_overlay');
         Object.entries(frontendOperationRegistry).forEach(([name, definition]) => {
             expect(definition.name).toBe(name);
@@ -344,8 +345,9 @@ describe('frontend operation registry', () => {
 
     it('validates and dispatches an Analysis Results query apply operation unchanged', async () => {
         const componentOperation = resolvedOperation({
-            status: 'ready' as const,
-        }, 'ready');
+            status: 'applied' as const,
+            message: 'UI is now updated with the filtered analysis results',
+        }, 'applied');
         const handle: Partial<AnalysisResultsChartHandle> = {
             applyAnalysisResultQuery: jest.fn(() => componentOperation) as any,
         };
@@ -353,7 +355,7 @@ describe('frontend operation registry', () => {
             componentRefs: register('visualization:analysis-results', handle),
         });
 
-        const returned = registry.apply_query_to_analysis_result({
+        const returned = registry.apply_query_to_lap_analysis_result({
             query: 'elements',
             page_number: -1,
         });
@@ -383,7 +385,7 @@ describe('frontend operation registry', () => {
             componentRefs: register('visualization:analysis-results', handle),
         });
 
-        await expect(registry.apply_query_to_analysis_result(args).result).rejects.toMatchObject({
+        await expect(registry.apply_query_to_lap_analysis_result(args).result).rejects.toMatchObject({
             name: 'InvalidOperationCallError',
         });
         expect(handle.applyAnalysisResultQuery).not.toHaveBeenCalled();

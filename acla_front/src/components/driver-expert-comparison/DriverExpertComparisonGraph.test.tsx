@@ -767,10 +767,6 @@ describe('DriverExpertComparisonGraph', () => {
         ['out-of-range position', [
             { driverTimeMs: 0, expertTimeMs: 0, driverTrackPosition: 1.1, expertTrackPosition: 0.2 },
         ]],
-        ['unexplained backward motion', [
-            { driverTimeMs: 0, expertTimeMs: 0, driverTrackPosition: 0.4, expertTrackPosition: 0.4 },
-            { driverTimeMs: 100, expertTimeMs: 100, driverTrackPosition: 0.3, expertTrackPosition: 0.5 },
-        ]],
     ])('rejects %s', (_case, samples) => {
         expect(normalizeDriverExpertComparisonData({ samples })).toBeUndefined();
     });
@@ -788,13 +784,11 @@ describe('DriverExpertComparisonGraph', () => {
         ['non-finite expert time', [
             { driverTimeMs: 100, expertTimeMs: Number.NaN },
         ]],
-        ['repeated driver time', [
-            { driverTimeMs: 100, expertTimeMs: 1_000 },
-            { driverTimeMs: 100, expertTimeMs: 1_100 },
+        ['negative driver time', [
+            { driverTimeMs: -100, expertTimeMs: 1_000, driverTrackPosition: 0.2, expertTrackPosition: 0.2 },
         ]],
-        ['decreasing expert time', [
-            { driverTimeMs: 100, expertTimeMs: 1_000 },
-            { driverTimeMs: 200, expertTimeMs: 900 },
+        ['negative expert time', [
+            { driverTimeMs: 100, expertTimeMs: -1_000, driverTrackPosition: 0.2, expertTrackPosition: 0.2 },
         ]],
     ])('rejects the complete payload for %s', (_case, samples) => {
         expect(normalizeDriverExpertComparisonData({ samples })).toBeUndefined();
@@ -802,6 +796,45 @@ describe('DriverExpertComparisonGraph', () => {
 
     it('preserves the duration when both normalized clocks finish together', () => {
         expect(getDriverExpertReplayDurationMs(completeData)).toBe(3_000);
+    });
+
+    it.each([
+        ['backward positions', [100, 200], [1_000, 1_100], [0.4, 0.3], 100],
+        ['repeated Expert clocks', [100, 200], [1_000, 1_000], [0.3, 0.4], 0],
+        ['decreasing Expert clocks', [100, 200], [1_100, 1_000], [0.3, 0.4], 100],
+        ['decreasing aligned Driver clocks', [200, 100], [1_000, 1_100], [0.4, 0.3], 100],
+    ] as const)('accepts %s in a comparison replay', (_case, driverTimes, expertTimes, positions, durationMs) => {
+        const data = {
+            samples: positions.map((position, index) => ({
+                driverTimeMs: driverTimes[index],
+                expertTimeMs: expertTimes[index],
+                driverTrackPosition: position,
+                expertTrackPosition: position,
+            })),
+        };
+
+        expect(normalizeDriverExpertComparisonData(data)).toEqual(data);
+        expect(getDriverExpertReplayDurationMs(data)).toBe(durationMs);
+    });
+
+    it('replays each competitor chronologically when Expert positions reverse', () => {
+        setReducedMotion(true);
+        render(<DriverExpertComparisonGraph data={{ samples: [
+            {
+                driverTimeMs: 200, expertTimeMs: 1_000,
+                driverTrackPosition: 0.4, expertTrackPosition: 0.4,
+                driverTrajectory: { x: 40, y: 40 }, expertTrajectory: { x: 40, y: 40 },
+            },
+            {
+                driverTimeMs: 100, expertTimeMs: 1_100,
+                driverTrackPosition: 0.3, expertTrackPosition: 0.3,
+                driverTrajectory: { x: 30, y: 30 }, expertTrajectory: { x: 30, y: 30 },
+            },
+        ] }} />);
+
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '40');
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-x', '30');
+        expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
     });
 
     it('maps clamped pedal values to curved gauge angles and percentages', () => {

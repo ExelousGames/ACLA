@@ -290,11 +290,13 @@ describe('adaptAnalysisResultsComparison', () => {
     it.each([
         ['missing Driver position', [undefined, 0.3], [0.1, 0.2], []],
         ['out-of-range Driver position', [0.1, 1.1], [0.1, 0.2], [100]],
-        ['small Driver reversal', [0.4, 0.3], [0.35, 0.4], [100]],
+        ['Driver reversal at the end', [0.4, 0.3], [0.35, 0.4], [100]],
+        ['Driver reversal before continuing forward', [0.1, 0.3, 0.2, 0.4], [0.1, 0.35, 0.4], [100, 375, 400]],
         ['missing Expert position', [0.1, 0.3], [undefined, 0.2], []],
         ['out-of-range Expert position', [0.1, 0.3], [0.1, 1.1], []],
-        ['small Expert reversal', [0.1, 0.5], [0.4, 0.3], []],
-        ['half-lap backward Expert jump', [0.1, 0.9], [0.75, 0.25], []],
+        ['small Expert reversal', [0.1, 0.5], [0.4, 0.3], [175, 150]],
+        ['half-lap backward Expert jump', [0.1, 0.9], [0.75, 0.25], [181.25, 118.75]],
+        ['Expert reversal across Driver intervals', [0.1, 0.2, 0.3], [0.3, 0.1, 0.2], [300, 100, 200]],
     ])('uses only valid overlapping samples with a %s', (_case, driverPositions, expertPositions, expectedDriverTimes) => {
         const result = adaptAnalysisResultsComparison({
             baselineRecords: driverPositions.map((position, index) => driverRow(
@@ -310,7 +312,10 @@ describe('adaptAnalysisResultsComparison', () => {
             )),
         });
 
-        expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual(expectedDriverTimes);
+        expect(result.samples).toHaveLength(expectedDriverTimes.length);
+        result.samples.forEach((sample, index) => {
+            expect(sample.driverTimeMs).toBeCloseTo(expectedDriverTimes[index]);
+        });
     });
 
     it.each([
@@ -318,9 +323,11 @@ describe('adaptAnalysisResultsComparison', () => {
         ['repeated Driver clock', [100, 100], [1_000, 1_100], [100]],
         ['decreasing Driver clock', [200, 100], [1_000, 1_100], [200]],
         ['non-finite Driver clock', [100, Number.POSITIVE_INFINITY], [1_000, 1_100], [100]],
+        ['negative Driver clock', [100, -200], [1_000, 1_100], [100]],
         ['missing Expert clock', [100, 200], [undefined, 1_100], []],
-        ['repeated Expert clock', [100, 200], [1_000, 1_000], []],
-        ['decreasing Expert clock', [100, 200], [1_100, 1_000], []],
+        ['repeated Expert clock', [100, 200], [1_000, 1_000], [100, 200]],
+        ['decreasing Expert clock', [100, 200], [1_100, 1_000], [100, 200]],
+        ['negative Expert clock', [100, 200], [1_000, -1_100], []],
         ['non-finite Expert clock', [100, 200], [1_000, Number.NaN], []],
     ])('uses only valid overlapping samples with a %s', (_case, driverTimes, expertTimes, expectedDriverTimes) => {
         const driverPositions = [0.1, 0.3];

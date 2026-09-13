@@ -25,7 +25,8 @@ export type ApplyAnalysisResultQueryInput = {
 };
 
 export type ApplyAnalysisResultQueryOutput = {
-    status: 'ready';
+    status: 'applied';
+    message: string;
 };
 
 export type ActivePageQueryElement = {

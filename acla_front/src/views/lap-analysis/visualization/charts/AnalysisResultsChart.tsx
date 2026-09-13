@@ -1583,9 +1583,10 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 if (applied.status === 'failed') throw applied.error;
 
                 return {
-                    status: 'ready' as const,
+                    status: 'applied' as const,
+                    message: 'UI is now updated with the filtered analysis results',
                 };
-            }, 'ready');
+            }, 'applied');
         },
         queryLapAnalysisResult: ({ query }) => createOperationFrom(async () => ({
             status: 'ready' as const,

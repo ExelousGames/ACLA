@@ -20,8 +20,8 @@ import styles from './DriverExpertComparisonGraph.module.css';
 export const DRIVER_COMPARISON_COLOR = '#00e676';
 export const EXPERT_COMPARISON_COLOR = '#448aff';
 
-const THROTTLE_COLOR = '#43836f';
-const BRAKE_COLOR = '#b85f70';
+const THROTTLE_COLOR = '#00e676';
+const BRAKE_COLOR = '#ff3b30';
 const TRACK_VIEWBOX_WIDTH = 760;
 const TRACK_VIEWBOX_HEIGHT = 220;
 const TRACK_PADDING = 28;
@@ -357,6 +357,7 @@ const buildUnwrappedReplayStream = (
     samples: readonly DriverExpertComparisonSample[],
     identity: 'driver' | 'expert',
 ): ReplayStreamPoint[] | undefined => {
+    if (!samples.length) return undefined;
     const rawTimesMs: number[] = [];
     const normalizedPositions: number[] = [];
     for (const sample of samples) {
@@ -370,7 +371,10 @@ const buildUnwrappedReplayStream = (
         );
         if (
             rawTimeMs === undefined
+            || rawTimeMs < 0
             || normalizedPosition === undefined
+            || normalizedPosition < 0
+            || normalizedPosition > 1
         ) {
             return undefined;
         }
@@ -379,7 +383,6 @@ const buildUnwrappedReplayStream = (
     }
 
     const sequence = unwrapLapTelemetrySequence(rawTimesMs, normalizedPositions);
-    if (!sequence) return undefined;
 
     return samples.map((sample, index) => {
         const trajectory = normalizeSourceTrajectory(
@@ -398,7 +401,7 @@ const buildUnwrappedReplayStream = (
             ...(brake !== undefined ? { brake } : {}),
             ...(gear !== undefined ? { gear } : {}),
         };
-    });
+    }).sort((left, right) => left.timeMs - right.timeMs);
 };
 
 const getReplayStreamDurationMs = (stream: readonly ReplayStreamPoint[]): number => (

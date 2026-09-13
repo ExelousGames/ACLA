@@ -57,7 +57,7 @@ describe('ModelCommandProtocolController', () => {
         expect(names).toEqual(expect.arrayContaining([
             'run_recorded_ai_analysis',
             'get_recorded_session_analysis',
-            'apply_query_to_analysis_result',
+            'apply_query_to_lap_analysis_result',
             'stop_agent_session',
         ]));
         expect(names).not.toEqual(expect.arrayContaining([
@@ -77,7 +77,7 @@ describe('ModelCommandProtocolController', () => {
 
         expect(names).toEqual(expect.arrayContaining([
             'collect_live_baseline',
-            'apply_query_to_analysis_result',
+            'apply_query_to_lap_analysis_result',
             'query_lap_analysis_result',
             'create_repeatable_plan',
             'add_analysis_result_to_do_list',
@@ -162,7 +162,7 @@ describe('ModelCommandProtocolController', () => {
         const tools = controller.getModelCommands({
             session_context: { session_mode: 'recorded' },
         });
-        const tool = tools.find(({ name }) => name === 'apply_query_to_analysis_result') as any;
+        const tool = tools.find(({ name }) => name === 'apply_query_to_lap_analysis_result') as any;
 
         expect(tool.properties.tool.properties.arguments.required).toEqual(['query']);
         expect(Object.keys(tool.properties.tool.properties.arguments.properties)).toEqual(['query', 'page_number']);
@@ -172,7 +172,8 @@ describe('ModelCommandProtocolController', () => {
             pattern: '\\S',
         });
         expect(tool.properties.tool.properties.arguments.properties.page_number).toMatchObject({ type: 'integer' });
-        expect(tool.description).toContain('returns only its status');
+        expect(tool.description).toContain('"status": "applied"');
+        expect(tool.description).toContain('"message": "UI is now updated with the filtered analysis results"');
         expect(tool.description).not.toContain('matched element count');
         expect(tool.description).toContain('retained-page array order');
         expect(tool.description).toContain('manual Apply');
