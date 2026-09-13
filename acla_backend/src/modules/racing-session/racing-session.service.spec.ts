@@ -14,8 +14,10 @@ describe('RacingSessionService', () => {
       find: jest.fn(),
       findOne: jest.fn(),
       findById: jest.fn(),
+      create: jest.fn(),
     };
     gridfsService = {
+      uploadJSON: jest.fn(),
       downloadJSONStream: jest.fn(),
       getFileSize: jest.fn(),
       downloadJSON: jest.fn(),
@@ -36,11 +38,74 @@ describe('RacingSessionService', () => {
     expect(service).toBeDefined();
   });
 
+  it('persists game metadata when creating a session from telemetry data', async () => {
+    gridfsService.uploadJSON.mockResolvedValue('507f1f77bcf86cd799439012');
+    racingSessionModel.create.mockResolvedValue({ _id: 'session-1' });
+
+    await service.createRacingSession(
+      'Race 1',
+      'Monza',
+      'GT3',
+      'user-1',
+      'iracing',
+      [{ speed: 120 }],
+    );
+
+    expect(racingSessionModel.create).toHaveBeenCalledWith(expect.objectContaining({
+      session_name: 'Race 1',
+      map: 'Monza',
+      car_name: 'GT3',
+      user_id: 'user-1',
+      game_recorded_from: 'iracing',
+    }));
+  });
+
+  it('persists game metadata when creating a session from uploaded chunks', async () => {
+    racingSessionModel.create.mockResolvedValue({ _id: 'session-1' });
+
+    await service.createRacingSessionFromChunks(
+      'Race 1',
+      'Monza',
+      'GT3',
+      'user-1',
+      'ac',
+      ['507f1f77bcf86cd799439012'] as any,
+      50,
+      1000,
+    );
+
+    expect(racingSessionModel.create).toHaveBeenCalledWith(expect.objectContaining({
+      game_recorded_from: 'ac',
+      totalChunks: 1,
+      totalDataPoints: 50,
+    }));
+  });
+
+  it('returns game metadata in detailed session information', async () => {
+    racingSessionModel.findOne.mockReturnValue({
+      exec: jest.fn().mockResolvedValue({
+        session_name: 'Race 1',
+        game_recorded_from: 'acc',
+        map: 'Monza',
+        user_id: 'user-1',
+        points: [],
+      }),
+    });
+
+    await expect(service.retrieveSessionDetailedInfo('user-1')).resolves.toMatchObject({
+      session_name: 'Race 1',
+      game_recorded_from: 'acc',
+      map: 'Monza',
+      userId: 'user-1',
+    });
+  });
+
   it('lists only sessions for the requested user for analysis', async () => {
     const exec = jest.fn().mockResolvedValue([
       {
         _id: { toString: () => 'session-1' },
         session_name: 'Race 1',
+        game_recorded_from: 'acc',
         map: 'Brands Hatch',
         car_name: 'BMW',
         user_id: 'user-1',
@@ -61,6 +126,7 @@ describe('RacingSessionService', () => {
       {
         sessionId: 'session-1',
         session_name: 'Race 1',
+        game_recorded_from: 'acc',
         map: 'Brands Hatch',
         car_name: 'BMW',
         userId: 'user-1',
@@ -81,6 +147,7 @@ describe('RacingSessionService', () => {
           {
             _id: { toString: () => 'session-1' },
             session_name: 'Race 1',
+            game_recorded_from: 'acc',
             map: 'Brands Hatch',
             car_name: 'BMW',
             user_id: 'user-1',
@@ -101,6 +168,7 @@ describe('RacingSessionService', () => {
         {
           sessionId: 'session-1',
           session_name: 'Race 1',
+          game_recorded_from: 'acc',
           map: 'Brands Hatch',
           car_name: 'BMW',
           userId: 'user-1',
@@ -162,5 +230,25 @@ describe('RacingSessionService', () => {
       telemetryData: [{ row: 1 }, { row: 2 }, { row: 3 }],
     });
     expect(racingSessionModel.findById).toHaveBeenCalledWith(sessionId);
+  });
+
+  it('rejects segment classification telemetry owned by another user', async () => {
+    const sessionId = '507f1f77bcf86cd799439011';
+
+    racingSessionModel.findById.mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue({
+          map: 'Brands Hatch',
+          car_name: 'BMW',
+          user_id: 'user-2',
+          dataChunkFileIds: ['507f1f77bcf86cd799439012'],
+        }),
+      }),
+    });
+
+    await expect(
+      service.getSessionTelemetryForClassification('user-1', sessionId),
+    ).rejects.toThrow('Session not found or access denied');
+    expect(gridfsService.downloadJSON).not.toHaveBeenCalled();
   });
 });

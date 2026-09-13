@@ -96,6 +96,13 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/app/scripts/debug_output
 /acla_front/src/py-scripts/__pycache__
 
+# Runtime top-lap reference model installed at AI-service startup
+/acla_ai_service/top_lap_models/*
+!/acla_ai_service/top_lap_models/.gitkeep
+
+# Obsolete local artifacts are ignored but never loaded
+/acla_ai_service/imitation_models/*
+
 # Frontend Python environments
 /acla_front/.venv/
 /acla_front/dist/

@@ -1,26 +1,15 @@
-import { Card, Flex, Box, IconButton, Heading, Grid, Text, Spinner, AlertDialog, Button } from '@radix-ui/themes';
-import { useContext, useEffect, useRef, useState, useMemo, useCallback, JSX } from 'react';
-import { AnalysisContext } from './analysis-context';
+import { Card, Flex, Box, Heading, Grid, Text, Spinner, AlertDialog, Button } from '@radix-ui/themes';
+import { useContext, useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import './liveAnalysisSessionRecording.css';
-import { UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
-import { ACC_STATUS } from 'data/live-analysis/live-map-data';
+import { UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto } from 'data/live-analysis/live-analysis-type';
 import { useAuth } from 'hooks/AuthProvider';
 import apiService from 'services/api.service';
-import { PythonShellOptions } from 'services/pythonService';
-import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
+import { RecordingState, StopReason } from './recording-state';
+import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import type { LiveRecordingMetadata } from 'views/live-session/live-session-types';
+import { liveTelemetryStore, useCommittedSampleCount } from 'views/live-session/live-telemetry-store';
 
-enum RecordingState {
-    CHECKING = 'CHECKING', // checking for live session
-    READY = 'READY', // find live session, ready to record
-    RECORDING = 'RECORDING', // actively recording
-    HOLDING = 'HOLDING', // paused because game paused, awaiting resume
-    RESUME_READY = 'RESUME_READY', // live session detected again while paused
-    UPLOAD_READY = 'UPLOAD_READY' // recording stopped, ready to upload
-}
-
-type StopReason = 'manual' | 'pause' | 'error' | 'complete';
-
-const UPLOAD_CHUNK_SIZE = 1000;
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
 const POST_SUCCESS_DIALOG_CLOSE_MS = 800;
 
@@ -42,97 +31,27 @@ const UploadIcon = ({ size = 16 }: { size?: number }) => (
     </svg>
 );
 
-const PauseBadgeIcon = ({ size = 16 }: { size?: number }) => (
-    <svg width={size} height={size} viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M5 3C4.44772 3 4 3.44772 4 4V11C4 11.5523 4.44772 12 5 12C5.55228 12 6 11.5523 6 11V4C6 3.44772 5.55228 3 5 3ZM10 3C9.44772 3 9 3.44772 9 4V11C9 11.5523 9.44772 12 10 12C10.5523 12 11 11.5523 11 11V4C11 3.44772 10.5523 3 10 3Z" fill="currentColor" />
-    </svg>
-);
-
-const toAccStatus = (value: unknown): ACC_STATUS | null => {
-    const numeric = typeof value === 'string' ? Number(value) : value;
-    if (typeof numeric !== 'number' || Number.isNaN(numeric)) {
-        return null;
-    }
-
-    return ACC_STATUS[numeric as ACC_STATUS] !== undefined ? numeric as ACC_STATUS : null;
+type LiveAnalysisSessionRecordingProps = {
+    recorderHostId?: string;
 };
 
-export default function LiveAnalysisSessionRecording() {
-    const analysisContext = useContext(AnalysisContext);
+export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAnalysisSessionRecordingProps) {
+    const analysisContext = useContext(LiveSessionContext);
+    const recordedSampleCount = useCommittedSampleCount();
     const auth = useAuth();
-    const [state, setState] = useState<RecordingState>(RecordingState.CHECKING);
+    const state = analysisContext.recordingState;
+    const registerRecorderControl = analysisContext.registerRecorderControl;
     const analysisContextRef = useRef(analysisContext);
 
     useEffect(() => {
         analysisContextRef.current = analysisContext;
     }, [analysisContext]);
 
-    const TelemetryDataLiveStatus = analysisContext.TelemetryDataLiveStatus;
-    const canRecord = state === RecordingState.READY || state === RecordingState.RESUME_READY;
+    const canRecord = analysisContext.sessionGame !== null
+        && (state === RecordingState.READY || state === RecordingState.RESUME_READY);
 
-    type RecordingEvent =
-        | { type: 'sessionAvailable' }
-        | { type: 'sessionUnavailable' }
-        | { type: 'recordingStarted' }
-        | { type: 'recordingResumed' }
-        | { type: 'recordingStopped'; reason: StopReason }
-        | { type: 'reset' };
-
-    const transition = useCallback((event: RecordingEvent) => {
-
-        setState((prev) => {
-            switch (event.type) {
-                case 'sessionAvailable':
-                    if (prev === RecordingState.CHECKING) {
-                        return RecordingState.READY;
-                    }
-                    if (prev === RecordingState.HOLDING) {
-                        return RecordingState.RESUME_READY;
-                    }
-                    return prev;
-                case 'sessionUnavailable':
-                    if (prev === RecordingState.RESUME_READY) {
-                        return RecordingState.HOLDING;
-                    }
-                    if (prev === RecordingState.RECORDING || prev === RecordingState.HOLDING || prev === RecordingState.UPLOAD_READY) {
-                        return prev;
-                    }
-                    return RecordingState.CHECKING;
-                case 'recordingStarted':
-                    return RecordingState.RECORDING;
-                case 'recordingResumed':
-                    return prev === RecordingState.HOLDING || prev === RecordingState.RESUME_READY ? RecordingState.RECORDING : prev;
-                case 'recordingStopped':
-                    switch (event.reason) {
-                        case 'pause':
-                            return RecordingState.HOLDING;
-                        case 'error':
-                            return RecordingState.READY;
-                        case 'manual':
-                        case 'complete':
-                            return RecordingState.UPLOAD_READY;
-                        default:
-                            return prev;
-                    }
-                case 'reset':
-                    return RecordingState.CHECKING;
-                default:
-                    return prev;
-            }
-        });
-    }, []);
-
-    const recordingShellIdRef = useRef<number | null>(null);
-    const pythonMessageCleanupRef = useRef<(() => void) | null>(null);
-    const pythonEndCleanupRef = useRef<(() => void) | null>(null);
-    const stopReasonRef = useRef<StopReason | null>(null);
     const startInFlightRef = useRef(false);
-    const hasReceivedLiveSampleRef = useRef(false);
-    const recordingFileInfoRef = useRef<{ folder: string; filename: string } | null>(null);
-
-    const sessionCheckingStreamRef = useRef<PythonStreamSession<Record<string, unknown>> | null>(null);
-    const sessionCheckingStreamCleanupRef = useRef<(() => void) | null>(null);
-    const sessionCheckingStreamStartingRef = useRef(false);
+    const stopInFlightRef = useRef<Promise<void> | null>(null);
 
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -140,9 +59,29 @@ export default function LiveAnalysisSessionRecording() {
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [showRetryButton, setShowRetryButton] = useState(false);
     const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+    const [recordingUnavailable, setRecordingUnavailable] = useState<string | null>(null);
+    const [recorderHost, setRecorderHost] = useState<HTMLElement | null>(null);
+
+    useEffect(() => {
+        if (!recorderHostId) {
+            setRecorderHost(null);
+            return;
+        }
+        setRecorderHost(document.getElementById(recorderHostId));
+        return () => setRecorderHost(null);
+    }, [analysisContext.sessionGame, recorderHostId]);
 
     const uploadInFlightRef = useRef(false);
-    const hasRecordedData = analysisContext.recordedTelemetryDataCount > 0 && Boolean(analysisContext.recordedSessionDataFilePath);
+    const restoredFileIsUploadable = analysisContext.recordingFileValidation
+        ? analysisContext.recordingFileValidation.exists
+            && analysisContext.recordingFileValidation.readable
+            && analysisContext.recordingFileValidation.hasData
+        : null;
+    const hasRecordedData = Boolean(analysisContext.recordingFileKey)
+        && (restoredFileIsUploadable ?? (
+            recordedSampleCount > 0
+            || state === RecordingState.RECORDING
+        ));
 
     const uploadStatusLabel = isUploading
         ? 'Uploading...'
@@ -161,480 +100,172 @@ export default function LiveAnalysisSessionRecording() {
 
 
 
-    const applyStopOutcome = useCallback((reason: StopReason) => {
-        if (pythonMessageCleanupRef.current) {
-            pythonMessageCleanupRef.current();
-            pythonMessageCleanupRef.current = null;
-        }
-        if (pythonEndCleanupRef.current) {
-            pythonEndCleanupRef.current();
-            pythonEndCleanupRef.current = null;
-        }
-
-        recordingShellIdRef.current = null;
-        stopReasonRef.current = null;
-        startInFlightRef.current = false;
-        hasReceivedLiveSampleRef.current = false;
-
-        const ctx = analysisContextRef.current;
-
-        if (reason === 'manual' || reason === 'complete') {
-            void ctx.finalizeRecordingWrites().catch((error) => {
-                console.warn('Failed to finalize telemetry writer', error);
-            });
-        }
-
-        switch (reason) {
-            case 'pause': {
-                transition({ type: 'recordingStopped', reason: 'pause' });
-                break;
-            }
-            case 'error': {
-                recordingFileInfoRef.current = null;
-                ctx.clearRecordingSession();
-                transition({ type: 'recordingStopped', reason: 'error' });
-                break;
-            }
-            case 'manual': {
-                transition({ type: 'recordingStopped', reason: 'manual' });
-                break;
-            }
-            default: {
-                transition({ type: 'recordingStopped', reason: 'complete' });
-            }
-        }
-    }, [transition]);
-
-    /**
-     * Process updates from the ACC session checking stream
-     * @param event PythonStreamEvent<Record<string, unknown>>
-     * @returns void
-     */
-    const processCheckingSessionStreamUpdate = useCallback((event: PythonStreamEvent<Record<string, unknown>>) => {
-        const ctx = analysisContextRef.current;
-        if (!ctx || !event) {
-            return;
-        }
-
-        if (event.status === 'update') {
-            const data = (event.data ?? {}) as Record<string, any>;
-            const graphics = (data as any).Graphics ?? {};
-            const status = toAccStatus(graphics.status);
-
-            if (status !== null) {
-                if (status === ACC_STATUS.ACC_LIVE) {
-                    if ((data as any).Static) {
-                        ctx.setRecordedSessionStaticsData((data as any).Static);
-                    }
-                    transition({ type: 'sessionAvailable' });
-                } else if (status === ACC_STATUS.ACC_PAUSE) {
-                    // recorder will transition when the python process ends
-                } else if (status === ACC_STATUS.ACC_OFF) {
-                    transition({ type: 'sessionUnavailable' });
-                }
-            } else if (data.checking === true) {
-                transition({ type: 'sessionUnavailable' });
-            } else if (data.available === false) {
-                transition({ type: 'sessionUnavailable' });
-            }
-        } else if (event.status === 'ready') {
-            if (ctx.TelemetryDataLiveStatus == null) {
-                transition({ type: 'sessionUnavailable' });
-            }
-        } else if (event.status === 'error') {
-            console.error('ACC session checker error:', event.message ?? 'Unknown error', event.traceback ?? '');
-        } else if (event.status === 'shutdown') {
-            sessionCheckingStreamCleanupRef.current?.();
-            sessionCheckingStreamCleanupRef.current = null;
-            sessionCheckingStreamRef.current = null;
-            sessionCheckingStreamStartingRef.current = false;
-        }
-    }, [transition]);
-
-    const stopSessionCheckingStream = useCallback(async ({ force = false } = {}) => {
-        sessionCheckingStreamStartingRef.current = false;
-
-        const cleanup = sessionCheckingStreamCleanupRef.current;
-        sessionCheckingStreamCleanupRef.current = null;
-        cleanup?.();
-
-        const stream = sessionCheckingStreamRef.current;
-        sessionCheckingStreamRef.current = null;
-
-        if (!stream) {
-            return;
-        }
-
-        try {
-            await stream.dispose({ force });
-        } catch (error) {
-            console.warn('Failed to dispose ACC session checker stream', error);
-        }
-    }, []);
-
-    const startSessionCheckingStream = useCallback(async () => {
-        if (sessionCheckingStreamStartingRef.current || sessionCheckingStreamRef.current) {
-            return sessionCheckingStreamRef.current;
-        }
-
-        sessionCheckingStreamStartingRef.current = true;
-        try {
-            const stream = await createPythonStreamSession<Record<string, unknown>>({
-                scriptName: 'ACCCheckAvailableSession.py',
-                pythonOptions: { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [] },
-                readyTimeoutMs: 8000
-            });
-
-            sessionCheckingStreamRef.current = stream;
-            sessionCheckingStreamCleanupRef.current = stream.onMessage(processCheckingSessionStreamUpdate);
-
-            await stream.waitUntilReady();
-            return stream;
-        } catch (error) {
-            console.error('Failed to start ACC session checker stream', error);
-            await stopSessionCheckingStream({ force: true });
-            throw error;
-        } finally {
-            sessionCheckingStreamStartingRef.current = false;
-        }
-    }, [processCheckingSessionStreamUpdate, stopSessionCheckingStream]);
-
-    const shouldMaintainSessionCheckingStream =
-        state === RecordingState.CHECKING || state === RecordingState.HOLDING || state === RecordingState.RESUME_READY;
-
-    useEffect(() => {
-        let cancelled = false;
-
-        const ensureStream = async () => {
-            if (shouldMaintainSessionCheckingStream) {
-                try {
-                    // Start the session checking stream
-                    await startSessionCheckingStream();
-                } catch (error) {
-                    if (!cancelled) {
-                        console.error('Unable to ensure ACC session checker stream', error);
-                    }
-                }
-            } else {
-                await stopSessionCheckingStream();
-            }
-        };
-
-        void ensureStream();
-
-        return () => {
-            cancelled = true;
-            void stopSessionCheckingStream({ force: true });
-        };
-    }, [shouldMaintainSessionCheckingStream, startSessionCheckingStream, stopSessionCheckingStream]);
-
     const stopRecordingProcess = useCallback(async (reason: StopReason) => {
-        if (stopReasonRef.current && stopReasonRef.current !== 'complete') {
-            return;
-        }
-
-        stopReasonRef.current = reason;
-
-        if (state !== RecordingState.RECORDING) {
-            applyStopOutcome(reason);
-            return;
-        }
-
-        const shellId = recordingShellIdRef.current;
-        if (shellId == null || !window?.electronAPI?.stopPythonScript) {
-            applyStopOutcome(reason);
-            return;
-        }
-
-        try {
-            const result = await window.electronAPI.stopPythonScript(shellId);
-            if (!result?.success) {
-                if (recordingShellIdRef.current === null) return;
-                console.warn('Stop script reported failure, applying intended outcome', reason);
-                applyStopOutcome(reason);
+        if (stopInFlightRef.current) return stopInFlightRef.current;
+        stopInFlightRef.current = (async () => {
+            try {
+                await analysisContextRef.current.stopRecordingSession(reason);
+            } finally {
+                startInFlightRef.current = false;
+                stopInFlightRef.current = null;
             }
-        } catch (error) {
-            console.error('Failed to stop python script', error);
-            if (recordingShellIdRef.current === null) return;
-            console.warn('Stop script threw error, applying intended outcome', reason);
-            applyStopOutcome(reason);
-        }
-    }, [applyStopOutcome, state]);
-
-    const determineStopReason = useCallback((): StopReason => {
-        if (stopReasonRef.current) {
-            return stopReasonRef.current;
-        }
-
-        const ctx = analysisContextRef.current;
-        const liveStatus = ctx?.TelemetryDataLiveStatus ?? null;
-        console.log('Determining stop reason, live status:', liveStatus);
-        if (liveStatus === ACC_STATUS.ACC_PAUSE) {
-            return 'pause';
-        }
-
-        if (liveStatus !== ACC_STATUS.ACC_LIVE) {
-            return 'complete';
-        }
-
-        if (!hasReceivedLiveSampleRef.current) {
-            return 'error';
-        }
-
-        return 'complete';
+        })();
+        return stopInFlightRef.current;
     }, []);
 
 
-    const startRecording = useCallback(async ({ resumeExisting = false }: { resumeExisting?: boolean } = {}) => {
+    const startRecording = useCallback(async () => {
         if (!canRecord || startInFlightRef.current) {
             return;
         }
 
         startInFlightRef.current = true;
-        if (pythonMessageCleanupRef.current) {
-            pythonMessageCleanupRef.current();
-            pythonMessageCleanupRef.current = null;
-        }
-        if (pythonEndCleanupRef.current) {
-            pythonEndCleanupRef.current();
-            pythonEndCleanupRef.current = null;
-        }
-
         const ctx = analysisContextRef.current;
-        ctx.setMap((ctx.recordedSessioStaticsData as any)?.track || ctx.mapSelected || 'Unknown Track');
-        let folder = '../session_recording';
-        let filename: string;
-
-        if (resumeExisting && recordingFileInfoRef.current) {
-            ({ folder, filename } = recordingFileInfoRef.current);
-        } else {
-            const now = new Date();
-            filename = `acc_${now.getFullYear()}_${now.getMonth()}_${now.getDate()}_${now.getHours()}_${now.getMinutes()}_${now.getSeconds()}.csv`;
-            recordingFileInfoRef.current = { folder, filename };
+        const sessionGame = ctx.sessionGame;
+        if (!sessionGame) {
+            startInFlightRef.current = false;
+            return;
         }
-
-        const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [folder, filename] };
-        const script = 'ACCMemoryExtractor.py';
-
-        if (!resumeExisting) {
-            const newSessionName = `Racing Session ${new Date().toLocaleString()}`;
-            ctx.setSession({
-                session_name: newSessionName,
-                SessionId: '',
-                map: ctx.mapSelected || (ctx.recordedSessioStaticsData as any)?.track || 'Unknown Track',
-                user_id: '',
-                points: [],
-                data: [],
-                car: (ctx.recordedSessioStaticsData as any)?.car_model || 'Unknown Car'
-            } as RacingSessionDetailedInfoDto as any);
-        }
-
-        // Reset live data to clear stale status
-        ctx.setLiveSessionData({});
-
-        hasReceivedLiveSampleRef.current = false;
-        transition({ type: resumeExisting ? 'recordingResumed' : 'recordingStarted' });
+        const rawTrackName = ctx.staticData?.Static_track;
+        const rawCarName = ctx.staticData?.Static_car_model;
+        const trackName = typeof rawTrackName === 'string' && rawTrackName ? rawTrackName : 'Unknown Track';
+        const carName = typeof rawCarName === 'string' && rawCarName ? rawCarName : 'Unknown Car';
+        const newSessionName = `Racing Session ${new Date().toLocaleString()}`;
+        const metadata: LiveRecordingMetadata = {
+            sessionName: newSessionName,
+            mapName: trackName,
+            carName,
+            gameRecordedFrom: sessionGame,
+        };
+        setRecordingUnavailable(null);
         try {
-            const { shellId } = await window.electronAPI.runPythonScript(script, options);
-            recordingShellIdRef.current = shellId;
-            stopReasonRef.current = null;
-
-            let lastValidObj: any = null;
-            let wasUnavailable = false;
-
-            const messageCleanup = window.electronAPI.onPythonMessage((incomingId: number, message: string) => {
-                if (incomingId !== shellId) {
-                    return;
+            const result = await ctx.startRecordingSession(sessionGame);
+            if (!result.ok) {
+                if (result.error.type === 'unsupported-recording-game') {
+                    setRecordingUnavailable('Live recording for this simulator is coming soon.');
+                } else {
+                    setRecordingUnavailable(result.error.message);
                 }
-                try {
-                    const obj = JSON.parse(message);
-                    const status = obj.Graphics?.status;
-                    const latestContext = analysisContextRef.current;
-                    latestContext.setLiveSessionData(obj);
-
-                    if (obj.available === false) {
-                        wasUnavailable = true;
-                    } else if (Object.keys(obj).length > 2) {
-                        if (wasUnavailable && lastValidObj) {
-                            const condition1 = obj.Physics_packed_id > lastValidObj.Physics_packed_id;
-                            const condition2 = obj.Static_car_model === lastValidObj.Static_car_model;
-                            const condition3 = obj.Static_track === lastValidObj.Static_track;
-                            const condition4 = obj.Graphics_completed_lap >= lastValidObj.Graphics_completed_lap;
-                              const condition5 = obj.Graphics_completed_lap === lastValidObj.Graphics_completed_lap 
-                                  ? obj.Graphics_current_time >= lastValidObj.Graphics_current_time 
-                                  : true;
-
-                              if (!condition1 || !condition2 || !condition3 || !condition4 || !condition5) {
-                                  console.warn('Telemetry data validation failed after unavailability', {
-                                      cond1: condition1,
-                                      cond2: condition2,
-                                      cond3: condition3,
-                                      cond4: condition4,
-                                      cond5: condition5
-                                });
-                                void stopRecordingProcess('complete');
-                                return;
-                            }
-                        }
-                        wasUnavailable = false;
-                        lastValidObj = obj;
-                        void latestContext.writeRecordedLiveSessionData(obj).catch(() => undefined);
-                    }
-
-                    if (status !== undefined && status !== null) {
-                        hasReceivedLiveSampleRef.current = true;
-                    }
-                } catch { }
-            });
-            pythonMessageCleanupRef.current = messageCleanup;
-
-            const removeEndListener = window.electronAPI.onPythonEnd('live-analysis-session-recording', (incomingId: number) => {
-                if (incomingId !== shellId) {
-                    return;
-                }
-
-                if (pythonMessageCleanupRef.current) {
-                    pythonMessageCleanupRef.current();
-                    pythonMessageCleanupRef.current = null;
-                }
-
-                removeEndListener();
-                pythonEndCleanupRef.current = null;
-
-                const reason = determineStopReason();
-                applyStopOutcome(reason);
-            });
-            pythonEndCleanupRef.current = removeEndListener;
+            } else {
+                ctx.setRecordingMetadata(metadata);
+            }
         } catch (error) {
             console.error('Failed to start recording session', error);
-            applyStopOutcome('error');
+            setRecordingUnavailable(error instanceof Error ? error.message : String(error));
         } finally {
             startInFlightRef.current = false;
         }
-    }, [applyStopOutcome, canRecord, transition, determineStopReason, stopRecordingProcess]);
-
-    useEffect(() => {
-        if (state !== RecordingState.HOLDING) {
-            return;
-        }
-        if (TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE) {
-            return;
-        }
-        if (isUploading || uploadDialogOpen || uploadInFlightRef.current) {
-            return;
-        }
-        if (startInFlightRef.current) {
-            return;
-        }
-        if (!recordingFileInfoRef.current) {
-            return;
-        }
-
-        void startRecording({ resumeExisting: true });
-    }, [TelemetryDataLiveStatus, isUploading, startRecording, state, uploadDialogOpen]);
-
-    useEffect(() => {
-        if (state === RecordingState.RECORDING && TelemetryDataLiveStatus === ACC_STATUS.ACC_PAUSE) {
-            if (hasReceivedLiveSampleRef.current) {
-                void stopRecordingProcess('pause');
-            }
-        }
-    }, [state, TelemetryDataLiveStatus, stopRecordingProcess]);
+    }, [canRecord]);
 
     useEffect(() => {
         return () => {
-            if (pythonMessageCleanupRef.current) {
-                pythonMessageCleanupRef.current();
-                pythonMessageCleanupRef.current = null;
+            if (analysisContextRef.current.recordingActive) {
+                void stopRecordingProcess('complete').catch(() => undefined);
             }
-            if (pythonEndCleanupRef.current) {
-                pythonEndCleanupRef.current();
-                pythonEndCleanupRef.current = null;
-            }
-            const shellId = recordingShellIdRef.current;
-            recordingShellIdRef.current = null;
-            if (shellId !== null && window?.electronAPI?.stopPythonScript) {
-                void window.electronAPI.stopPythonScript(shellId).catch(() => undefined);
-            }
-            void stopSessionCheckingStream({ force: true });
         };
-    }, [stopSessionCheckingStream]);
+    }, [stopRecordingProcess]);
 
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
-        try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }
+        try {
+            if (window.electronAPI?.deleteTempFile) {
+                const result = await window.electronAPI.deleteTempFile(filePath);
+                return result.success;
+            }
+            return false;
+        } catch {
+            return false;
+        }
     }, []);
 
-    const resetToChecking = useCallback(() => {
-        analysisContext.clearRecordingSession();
-        // Clear the current session to ensure a fresh one is created for the next recording
-        analysisContext.setSession(null);
-        recordingFileInfoRef.current = null;
+    const resetRecorderUi = useCallback(() => {
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
-        transition({ type: 'reset' });
-        hasReceivedLiveSampleRef.current = false;
-        stopReasonRef.current = null;
-    }, [analysisContext, transition]);
+        startInFlightRef.current = false;
+        stopInFlightRef.current = null;
+        setRecordingUnavailable(null);
+    }, []);
+
+    const returnToDetectionGate = useCallback(() => {
+        resetRecorderUi();
+        analysisContextRef.current.endLiveSession();
+    }, [resetRecorderUi]);
+
+    useEffect(() => {
+        if (analysisContext.sessionGame === null) {
+            resetRecorderUi();
+        }
+    }, [analysisContext.sessionGame, resetRecorderUi]);
 
     const handleUpload = useCallback(async () => {
         if (uploadInFlightRef.current) return false;
-        if (!hasRecordedData) { setUploadError('No telemetry data available for upload'); setShowRetryButton(false); return false; }
-        if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
+        const initialContext = analysisContextRef.current;
+        const validationAllowsUpload = initialContext.recordingFileValidation
+            ? initialContext.recordingFileValidation.exists
+                && initialContext.recordingFileValidation.readable
+                && initialContext.recordingFileValidation.hasData
+            : (
+                liveTelemetryStore.getSnapshot().committedSampleCount > 0
+                || initialContext.recordingState === RecordingState.RECORDING
+            );
+        const canAttemptUpload = Boolean(initialContext.recordingFileKey) && validationAllowsUpload;
+        if (!canAttemptUpload) { setUploadError('No telemetry data available for upload'); setShowRetryButton(false); return false; }
+        if (!initialContext.recordingMetadata?.sessionName || !initialContext.recordingMetadata?.mapName || !initialContext.sessionGame || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
         uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Preparing telemetry data...'); setUploadError(null); setShowRetryButton(false);
         try {
-            await analysisContext.finalizeRecordingWrites();
-            setUploadStatus('Reading telemetry data...');
-            // Reserve progress ranges: 0-40% for reading, 40-90% for chunk upload, 90-100% finalize
-            let estimatedTotal: number | null = null;
-            let lastRead = 0;
-            const data = await analysisContext.readRecordedSessionData((read, total, bytesRead, totalBytes) => {
-                lastRead = read;
-                if (total && total > 0) estimatedTotal = total;
-                // If total known compute percentage otherwise logarithmic approximation
-                let pct: number;
-                if (totalBytes && totalBytes > 0 && bytesRead !== undefined) {
-                    pct = Math.min(bytesRead / totalBytes, 1) * 40;
-                } else if (estimatedTotal) {
-                    pct = Math.min(read / estimatedTotal, 1) * 40; // scale into 0-40
-                } else {
-                    // Unknown total: approach 40% asymptotically
-                    pct = 40 * (1 - Math.exp(-read / 500));
-                }
-                setUploadProgress(Math.max(0, Math.min(40, Math.floor(pct))));
-            });
-            if (!data || data.length === 0) throw new Error('No telemetry data found to upload');
-            setUploadProgress(45); setUploadStatus(`Processing ${data.length} telemetry points...`);
-            const chunks: any[] = []; for (let i = 0; i < data.length; i += UPLOAD_CHUNK_SIZE) chunks.push(data.slice(i, i + UPLOAD_CHUNK_SIZE));
-            const metadata: UploadReacingSessionInitDto = { sessionName: analysisContext.sessionSelected.session_name, mapName: analysisContext.mapSelected, carName: analysisContext.recordedSessioStaticsData.car_model || 'Unknown Car', userId: auth?.userProfile.id || 'unknown' };
-            setUploadProgress(50); setUploadStatus('Initializing upload...');
+            if (initialContext.recordingState === RecordingState.RECORDING) {
+                await stopRecordingProcess('manual');
+            }
+            const uploadContext = analysisContextRef.current;
+            const metadata: UploadReacingSessionInitDto = {
+                sessionName: uploadContext.recordingMetadata!.sessionName,
+                mapName: uploadContext.recordingMetadata!.mapName,
+                carName: uploadContext.recordingMetadata!.carName,
+                userId: auth?.userProfile.id || 'unknown',
+                game_recorded_from: uploadContext.recordingMetadata!.gameRecordedFrom,
+            };
+            setUploadProgress(5); setUploadStatus('Initializing upload...');
             const initResp = await apiService.post('/racing-session/upload/init', metadata); if (!initResp.data) throw new Error('Failed to initialize upload');
             const { uploadId } = initResp.data as UploadRacingSessionInitReturnDto;
-            setUploadProgress(55); setUploadStatus(`Uploading ${chunks.length} chunks...`);
-            for (let i = 0; i < chunks.length; i++) {
+            let chunkIndex = 0;
+            let uploadedRows = 0;
+            const uploadChunk = async (chunk: unknown[], index: number) => {
                 let retries = 3;
                 let success = false;
                 while (retries > 0 && !success) {
                     try {
                         const params = new URLSearchParams();
                         params.append('uploadId', uploadId);
-                        await apiService.post(`/racing-session/upload/chunk?${params.toString()}`, { chunk: chunks[i], chunkIndex: i });
+                        await apiService.post(`/racing-session/upload/chunk?${params.toString()}`, { chunk, chunkIndex: index });
                         success = true;
                     } catch (err) {
-                        console.warn(`Chunk ${i} upload failed, retrying... (${retries} attempts left)`, err);
+                        console.warn(`Chunk ${index} upload failed, retrying... (${retries} attempts left)`, err);
                         retries--;
                         if (retries === 0) throw err;
-                        await new Promise(resolve => setTimeout(resolve, 1000 * (4 - retries))); // Exponential backoff: 1s, 2s, 3s
+                        const retryDelayMs = 1000 * (4 - retries);
+                        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
                     }
                 }
-                const pct = Math.floor(55 + (i + 1) / chunks.length * 35);
-                setUploadProgress(pct);
-                setUploadStatus(`Uploading chunk ${i + 1} of ${chunks.length}...`);
-            }
+                uploadedRows += chunk.length;
+                setUploadStatus(`Uploaded ${uploadedRows.toLocaleString()} telemetry points...`);
+            };
+            setUploadStatus('Reading and uploading telemetry data...');
+            const summary = await uploadContext.streamRecordedTelemetry(
+                async (rows) => {
+                    const currentIndex = chunkIndex++;
+                    await uploadChunk(rows, currentIndex);
+                },
+                (_rowsRead, _totalRows, bytesRead, totalBytes) => {
+                    const pct = totalBytes > 0 ? 10 + Math.floor((bytesRead / totalBytes) * 75) : 10;
+                    setUploadProgress(Math.max(10, Math.min(85, pct)));
+                },
+            );
+            if (summary.rowCount === 0) throw new Error('No telemetry data found to upload');
             setUploadProgress(92); setUploadStatus('Finalizing upload...');
             const final = new URLSearchParams(); final.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/complete?${final.toString()}`, {});
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
-            if (analysisContext.recordedSessionDataFilePath) await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath);
-            setTimeout(() => { setIsUploading(false); setTimeout(() => resetToChecking(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
+            if (uploadContext.recordingFileKey) await cleanupTelemetryFile(uploadContext.recordingFileKey);
+            uploadContext.clearPersistedDraft?.();
+            setTimeout(() => { setIsUploading(false); setTimeout(() => returnToDetectionGate(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
             uploadInFlightRef.current = false;
             return true;
         } catch (e: any) {
@@ -645,9 +276,21 @@ export default function LiveAnalysisSessionRecording() {
             uploadInFlightRef.current = false;
             return false;
         }
-    }, [analysisContext, auth, cleanupTelemetryFile, resetToChecking, hasRecordedData]);
+    }, [auth, cleanupTelemetryFile, returnToDetectionGate, stopRecordingProcess]);
 
-    const handleCancelUpload = useCallback(async () => { if (analysisContext.recordedSessionDataFilePath) await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath); resetToChecking(); }, [analysisContext, cleanupTelemetryFile, resetToChecking]);
+    const handleDiscardSession = useCallback(async () => {
+        if (uploadInFlightRef.current) return;
+        const discardContext = analysisContextRef.current;
+        const fileKey = discardContext.recordingFileKey;
+        if (discardContext.recordingState === RecordingState.RECORDING) {
+            try {
+                await stopRecordingProcess('manual');
+            } catch { /* the main process has already torn down the failed pipeline */ }
+        }
+        if (fileKey) await cleanupTelemetryFile(fileKey);
+        discardContext.clearPersistedDraft?.();
+        returnToDetectionGate();
+    }, [cleanupTelemetryFile, returnToDetectionGate, stopRecordingProcess]);
     const handleRetryUpload = useCallback(() => { setUploadError(null); setShowRetryButton(false); setUploadProgress(0); handleUpload(); }, [handleUpload]);
 
     const openUploadDialog = useCallback(() => {
@@ -671,6 +314,66 @@ export default function LiveAnalysisSessionRecording() {
         setUploadDialogOpen(open);
     }, [isUploading]);
 
+    useEffect(() => {
+        const control = { openUploadFlow: openUploadDialog };
+        registerRecorderControl(control);
+        return () => registerRecorderControl(null);
+    }, [openUploadDialog, registerRecorderControl]);
+
+    const uploadDialog = (
+        <AlertDialog.Root open={uploadDialogOpen} onOpenChange={handleDialogOpenChange}>
+            <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
+                <AlertDialog.Title>Finish Live Session</AlertDialog.Title>
+                <AlertDialog.Description size="2">
+                    Upload the recorded data, discard it, or keep the current session open.
+                </AlertDialog.Description>
+                {(isUploading || showRetryButton || uploadError || analysisContext.restorationError) && (
+                    <Box my="4">
+                        {isUploading && (
+                            <>
+                                <Flex justify="between" mb="2"><Text size="2" weight="medium">{uploadStatus}</Text><Text size="2" color="gray">{uploadProgress}%</Text></Flex>
+                                <Box width="100%" height="8px" style={{ backgroundColor: 'var(--gray-a5)', borderRadius: 'var(--radius-2)', overflow: 'hidden' }}>
+                                    <Box height="100%" style={{ width: `${uploadProgress}%`, backgroundColor: uploadError ? 'var(--red-9)' : 'var(--blue-9)', transition: 'width 0.3s ease' }} />
+                                </Box>
+                            </>
+                        )}
+                        {uploadError && <Text size="2" color="red" mt="2">{uploadError}</Text>}
+                        {analysisContext.restorationError && <Text size="2" color="red" mt="2">{analysisContext.restorationError}</Text>}
+                        {showRetryButton && !isUploading && <Flex mt="2" gap="2"><Button size="1" variant="outline" onClick={handleRetryUpload}>Retry Upload</Button></Flex>}
+                    </Box>
+                )}
+                <Card size="4">
+                    <Heading as="h3" size="6" trim="start" mb="5">Session <Text as="div" size="3" weight="bold" color="blue">{analysisContext.recordingMetadata?.sessionName || 'Unknown Session'}</Text></Heading>
+                    <Grid columns="2" gapX="4" gapY="5">
+                        <Box>
+                            <Text as="div" size="2" mb="1" color="gray">Map</Text>
+                            <Text as="div" size="3" mb="1" weight="bold">{analysisContext.recordingMetadata?.mapName || analysisContext.staticData.Static_track || 'Unknown Map'}</Text>
+                            <Text as="div" size="2">Practice session</Text>
+                        </Box>
+                        <Box>
+                            <Text as="div" size="2" mb="1" color="gray">Car</Text>
+                            <Text as="div" size="3" weight="bold">{analysisContext.recordingMetadata?.carName || analysisContext.staticData.Static_car_model || 'Unknown Car'}</Text>
+                        </Box>
+                        <Flex direction="column" gap="1" gridColumn="1 / -1">
+                            <Flex justify="between"><Text size="3" mb="1" weight="bold">Status</Text><Text size="2" color={uploadStatusColor}>{uploadStatusLabel}</Text></Flex>
+                        </Flex>
+                    </Grid>
+                </Card>
+                <Flex gap="3" mt="4" justify="end">
+                    {!isUploading && uploadProgress < 100 && (
+                        <>
+                            <Button variant="outline" color="gray" onClick={closeUploadDialog}>Keep Session</Button>
+                            <Button variant="outline" color="red" onClick={() => { void handleDiscardSession(); }}>Discard Session</Button>
+                            <Button onClick={() => { void handleUpload(); }} disabled={isUploading || !hasRecordedData}>Upload Session</Button>
+                        </>
+                    )}
+                    {isUploading && uploadProgress < 100 && (<Button variant="outline" disabled><Spinner size="1" />Uploading...</Button>)}
+                    {!isUploading && uploadProgress === 100 && (<Button onClick={closeUploadDialog}>Close</Button>)}
+                </Flex>
+            </AlertDialog.Content>
+        </AlertDialog.Root>
+    );
+
     const controlButtons = useMemo(() => {
         switch (state) {
             case RecordingState.CHECKING:
@@ -693,7 +396,11 @@ export default function LiveAnalysisSessionRecording() {
                 );
             case RecordingState.RECORDING:
                 return (
-                    <Button radius="full" color="red" onClick={() => { void stopRecordingProcess('manual'); }}>
+                    <Button radius="full" color="red" onClick={() => {
+                        void stopRecordingProcess('manual').catch((error) => {
+                            setRecordingUnavailable(error instanceof Error ? error.message : String(error));
+                        });
+                    }}>
                         <Flex align="center" gap="2">
                             <StopIcon size={14} />
                             <span>Stop Recording</span>
@@ -704,7 +411,7 @@ export default function LiveAnalysisSessionRecording() {
             case RecordingState.RESUME_READY: {
                 return (
                     <Flex align="center" gap="2">
-                        <Button radius="full" variant="outline" color="blue" disabled={!canRecord || isUploading} onClick={() => { void startRecording({ resumeExisting: true }); }}>
+                        <Button radius="full" variant="outline" color="blue" disabled={!canRecord || isUploading} onClick={() => { void startRecording(); }}>
                             <Flex align="center" gap="2">
                                 <PlayIcon size={14} />
                                 <span>Resume</span>
@@ -728,7 +435,7 @@ export default function LiveAnalysisSessionRecording() {
                                 <span>Upload Session</span>
                             </Flex>
                         </Button>
-                        <Button radius="full" variant="outline" color="gray" onClick={() => { void handleCancelUpload(); closeUploadDialog(); }} disabled={isUploading}>
+                        <Button radius="full" variant="outline" color="gray" onClick={() => { void handleDiscardSession(); }} disabled={isUploading}>
                             <span>Discard</span>
                         </Button>
                     </Flex>
@@ -736,7 +443,7 @@ export default function LiveAnalysisSessionRecording() {
             default:
                 return null;
         }
-    }, [state, canRecord, startRecording, stopRecordingProcess, TelemetryDataLiveStatus, hasRecordedData, isUploading, openUploadDialog, handleCancelUpload, closeUploadDialog]);
+    }, [state, canRecord, startRecording, stopRecordingProcess, hasRecordedData, isUploading, openUploadDialog, handleDiscardSession]);
 
     const isRecording = state === RecordingState.RECORDING;
     const isPaused = state === RecordingState.HOLDING || state === RecordingState.RESUME_READY;
@@ -754,8 +461,9 @@ export default function LiveAnalysisSessionRecording() {
         state === RecordingState.READY ? 'live-recording-bar__channel--live' :
         state === RecordingState.UPLOAD_READY ? 'live-recording-bar__channel--stopped' :
         '';
-    return (
-        <>
+    if (!recorderHost) return null;
+
+    return createPortal(
         <Box className={`live-recording-bar ${isRecording ? 'live-recording-bar--rec' : ''}`} position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ marginLeft: 'max(24px, 10%)', marginRight: 'max(24px, 10%)' }}>
             <Flex height="100%" align="center" position="relative" overflow="hidden" className="live-recording-bar__inner">
                 <Flex gap="3" align="center" p="3" style={{ minWidth: 0, flex: 1 }}>
@@ -766,70 +474,27 @@ export default function LiveAnalysisSessionRecording() {
                     </div>
 
                     {controlButtons}
-                    <AlertDialog.Root open={uploadDialogOpen} onOpenChange={handleDialogOpenChange}>
-                        <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
-                            <AlertDialog.Title>Upload Racing Session</AlertDialog.Title>
-                            <AlertDialog.Description size="2">Upload your recorded racing session data.</AlertDialog.Description>
-                            {(isUploading || showRetryButton || uploadError) && (
-                                <Box my="4">
-                                    {isUploading && (
-                                        <>
-                                            <Flex justify="between" mb="2"><Text size="2" weight="medium">{uploadStatus}</Text><Text size="2" color="gray">{uploadProgress}%</Text></Flex>
-                                            <Box width="100%" height="8px" style={{ backgroundColor: 'var(--gray-a5)', borderRadius: 'var(--radius-2)', overflow: 'hidden' }}>
-                                                <Box height="100%" style={{ width: `${uploadProgress}%`, backgroundColor: uploadError ? 'var(--red-9)' : 'var(--blue-9)', transition: 'width 0.3s ease' }} />
-                                            </Box>
-                                        </>
-                                    )}
-                                    {uploadError && <Text size="2" color="red" mt="2">{uploadError}</Text>}
-                                    {showRetryButton && !isUploading && <Flex mt="2" gap="2"><Button size="1" variant="outline" onClick={handleRetryUpload}>Retry Upload</Button></Flex>}
-                                </Box>
-                            )}
-                            <Card size="4">
-                                <Heading as="h3" size="6" trim="start" mb="5">Session <Text as="div" size="3" weight="bold" color="blue">{analysisContext.sessionSelected?.session_name || 'Unknown Session'}</Text></Heading>
-                                <Grid columns="2" gapX="4" gapY="5">
-                                    <Box>
-                                        <Text as="div" size="2" mb="1" color="gray">Map</Text>
-                                        <Text as="div" size="3" mb="1" weight="bold">{analysisContext.mapSelected || 'Unknown Map'}</Text>
-                                        <Text as="div" size="2">Practice session</Text>
-                                    </Box>
-                                    <Box>
-                                        <Text as="div" size="2" mb="1" color="gray">Car</Text>
-                                        <Text as="div" size="3" weight="bold">{analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car'}</Text>
-                                    </Box>
-                                    <Flex direction="column" gap="1" gridColumn="1 / -1">
-                                        <Flex justify="between"><Text size="3" mb="1" weight="bold">Status</Text><Text size="2" color={uploadStatusColor}>{uploadStatusLabel}</Text></Flex>
-                                    </Flex>
-                                </Grid>
-                            </Card>
-                            <Flex gap="3" mt="4" justify="end">
-                                {!isUploading && uploadProgress < 100 && (
-                                    <>
-                                        <Button variant="outline" color="red" onClick={() => { void handleCancelUpload(); closeUploadDialog(); }}>Cancel</Button>
-                                        <Button onClick={() => { void handleUpload(); }} disabled={isUploading || !hasRecordedData}>Upload Session</Button>
-                                    </>
-                                )}
-                                {isUploading && uploadProgress < 100 && (<Button variant="outline" disabled><Spinner size="1" />Uploading...</Button>)}
-                                {!isUploading && uploadProgress === 100 && (<Button onClick={closeUploadDialog}>Close</Button>)}
-                            </Flex>
-                        </AlertDialog.Content>
-                    </AlertDialog.Root>
+                    {recordingUnavailable && (
+                        <Text size="2" color="amber">{recordingUnavailable}</Text>
+                    )}
+                    {uploadDialog}
 
                 </Flex>
                 <div className="live-recording-bar__status">
                     <div className="live-recording-bar__status-row">
                         <span className="live-recording-bar__status-label">MAP</span>
-                        <span className="live-recording-bar__status-value">{analysisContext.mapSelected || '—'}</span>
+                        <span className="live-recording-bar__status-value">{analysisContext.staticData.Static_track || '—'}</span>
                     </div>
                     <div className="live-recording-bar__status-row">
                         <span className="live-recording-bar__status-label">SAMPLES</span>
                         <span className="live-recording-bar__status-value live-recording-bar__status-value--mono">
-                            {analysisContext.recordedTelemetryDataCount.toLocaleString()}
+                            {recordedSampleCount.toLocaleString()}
                         </span>
                     </div>
                 </div>
 
             </Flex>
-        </Box>
-        </>
+        </Box>,
+        recorderHost,
     );
 }

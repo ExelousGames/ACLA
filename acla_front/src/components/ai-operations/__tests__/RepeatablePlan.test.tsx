@@ -1,0 +1,471 @@
+import { asTool, type ToolDispatcher } from 'components/ai-operations/tool';
+import React from 'react';
+import { render, screen } from '@testing-library/react';
+import {
+    RepeatablePlanDisplay,
+    RepeatablePlanRunner,
+    repeatablePlanOverlayRenderer,
+    compareGoalValues,
+    validateGoalRequest,
+    type GoalRequest,
+    type RepeatablePlanInput,
+    type NestedOperationResult,
+} from '../RepeatablePlan';
+import {
+    createOperationDeferred,
+    createOperation,
+    createOperationFrom,
+    resolvedOperation,
+} from '../operation';
+import { InvalidGoalStopWhenError } from '../../../contexts/OperationComponentError';
+import { isJsonSafe } from '../../../views/floating-chat/ai-overlay-types';
+
+const request = (): GoalRequest => ({
+    name: 'Drive a clean lap',
+    steps: [
+        { id: 'collect', title: 'Collect baseline', name: 'collect' },
+        { id: 'analyze', title: 'Analyze baseline', name: 'analyze', arguments: { limit: 4 } },
+    ],
+    stop_when: {
+        tool: { name: 'determine' },
+        operator: 'eq',
+        target: 0,
+    },
+});
+
+const operationWithValue = (value: unknown, status = 'complete') => (
+    asTool(resolvedOperation(value as NestedOperationResult, status))
+);
+
+describe('RepeatablePlanDisplay', () => {
+    it('removes an achieved goal from chat while keeping it available on pill surfaces', () => {
+        const achievedSnapshot = {
+            name: 'Drive a clean lap',
+            status: 'achieved' as const,
+            steps: [],
+            stop_when: request().stop_when,
+            stop_when_result: {
+                tool_name: 'determine',
+                attempt: 1,
+                status: 'completed' as const,
+                value: 0,
+            },
+            target: 0,
+            actual: 0,
+            completed_steps: [],
+        };
+        const { rerender } = render(
+            <RepeatablePlanDisplay snapshot={{ ...achievedSnapshot, status: 'running' }} surface="chat" />,
+        );
+
+        expect(screen.getByLabelText('Repeatable plan')).toBeInTheDocument();
+        expect(screen.getByLabelText('Stop when')).toHaveTextContent('Stop when · determine');
+
+        rerender(<RepeatablePlanDisplay snapshot={achievedSnapshot} surface="chat" />);
+        expect(screen.queryByLabelText('Repeatable plan')).not.toBeInTheDocument();
+
+        rerender(<RepeatablePlanDisplay snapshot={achievedSnapshot} surface="pill" />);
+        expect(screen.getByLabelText('Repeatable plan')).toBeInTheDocument();
+    });
+
+    it('uses a dedicated overlay card that only renders the active step', () => {
+        const snapshot = {
+            name: 'Drive a clean lap',
+            status: 'running' as const,
+            steps: [
+                {
+                    id: 'collect',
+                    title: 'Collect baseline',
+                    name: 'collect',
+                    status: 'completed' as const,
+                    attempts: 1,
+                    run_id: 'run-1',
+                    error: null,
+                },
+                {
+                    id: 'analyze',
+                    title: 'Analyze baseline',
+                    name: 'analyze',
+                    status: 'running' as const,
+                    attempts: 2,
+                    run_id: 'run-2',
+                    error: null,
+                },
+                {
+                    id: 'report',
+                    title: 'Build report',
+                    name: 'report',
+                    status: 'pending' as const,
+                    attempts: 0,
+                    run_id: null,
+                    error: null,
+                },
+            ],
+            stop_when: request().stop_when,
+            stop_when_result: {
+                tool_name: 'determine',
+                attempt: 0,
+                status: 'pending' as const,
+                value: null,
+            },
+            target: 0,
+            actual: null,
+            completed_steps: ['collect'],
+        };
+
+        const overlay = repeatablePlanOverlayRenderer.renderOverlay(snapshot, 'expanded', {
+            componentName: 'repeatable-plan',
+            revision: 1,
+            emitRendererEvent: jest.fn(),
+        });
+        render(<>{overlay}</>);
+
+        expect(screen.getByTestId('goal-overlay')).toBeInTheDocument();
+        expect(screen.getByText('Analyze baseline')).toBeInTheDocument();
+        expect(screen.getByText('Step 2 of 3 · Attempt 2')).toBeInTheDocument();
+        expect(screen.queryByText('Collect baseline')).not.toBeInTheDocument();
+        expect(screen.queryByText('Build report')).not.toBeInTheDocument();
+        expect(screen.getByTestId('goal-overlay')).not.toHaveClass('ai-chat__goal');
+    });
+});
+
+describe('Repeatable plan descriptors', () => {
+    it('validates the clean-break stop_when shape and configurable tool names', () => {
+        expect(validateGoalRequest(toInput(request()))).toEqual({ request: request() });
+        expect(validateGoalRequest(toInput({
+            ...request(),
+            stop_when: {
+                ...request().stop_when,
+                tool: { name: 'session_configured_numeric_tool' },
+            },
+        }))).toHaveProperty('request');
+        expect(validateGoalRequest(toInput({
+            ...request(),
+            steps: [{ id: 'nested', title: 'Nested', name: 'create_repeatable_plan' }],
+        }))).toHaveProperty('request');
+        expect(compareGoalValues(2, 'lte', 2)).toBe(true);
+    });
+
+    it('rejects the previous determination property', () => {
+        const { stop_when: stopWhen, ...goal } = request();
+
+        expect(validateGoalRequest({
+            ...goal,
+            determination: stopWhen,
+        })).toHaveProperty('error');
+    });
+
+    it('rejects unexpected stop_when properties', () => {
+        const input = toInput(request());
+        const validation = validateGoalRequest({
+            workflow: { ...input.workflow,
+                stop_when: {
+                    ...input.workflow.stop_when,
+                    unexpected: true,
+                },
+            },
+        });
+
+        expect(validation).toHaveProperty('error');
+        if ('error' in validation) {
+            expect(validation.error).toBeInstanceOf(InvalidGoalStopWhenError);
+        }
+    });
+});
+
+describe('RepeatablePlanRunner central dispatch callback', () => {
+    it('aborts the active nested tool when the goal operation is aborted', async () => {
+        const nested = asTool(createOperation(
+            new Promise<NestedOperationResult>(() => undefined),
+            'complete',
+        ));
+        const nestedAbort = jest.spyOn(nested, 'abort');
+        const dispatch = jest.fn(() => nested);
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+        const operation = runner.createRepeatablePlan(toInput(request()));
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
+
+        operation.abort();
+
+        expect(nestedAbort).toHaveBeenCalledTimes(1);
+        await expect(operation.result).rejects.toMatchObject({ name: 'AbortError' });
+        await expect(termination).resolves.toMatchObject({
+            status: 'aborted',
+            result: { name: 'AbortError' },
+        });
+        await Promise.resolve();
+        expect(dispatch).toHaveBeenCalledTimes(1);
+    });
+
+    it('publishes overlay-safe running steps with a stable run id and defined error', async () => {
+        const collect = createOperationDeferred<NestedOperationResult>();
+        const progress = createOperationDeferred<{ status: string }>();
+        const dispatch = jest.fn((name: string) => (
+            name === 'collect'
+                ? asTool(createOperation(collect.promise, [progress.promise], 'working'))
+                : operationWithValue(name === 'determine'
+                    ? { status: 'ready', data: 0 }
+                    : { status: 'complete' })
+        ));
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+        const operation = runner.createRepeatablePlan(toInput(request()));
+
+        expect(runner.getComponentName()).toBe('repeatable-plan');
+        expect(runner.kind).toBe('workflow');
+        expect(operation.kind).toBe('workflow');
+        expect(runner.getComponentType()).toBe('repeatable-plan');
+        expect(runner.getOverlayBehavior(null)).toEqual({
+            placement: 'flow',
+            requestedStatus: 'expanded',
+            remove: true,
+        });
+        expect(runner.getOverlayMetadata()).toEqual({});
+        expect(runner.handleOverlayRendererEvent({} as any)).toBeUndefined();
+
+        const runningSnapshot = runner.getSnapshot();
+        expect(isJsonSafe(runningSnapshot)).toBe(true);
+        expect(runningSnapshot?.steps[0]).toMatchObject({
+            status: 'running',
+            run_id: expect.stringMatching(/^goal-/),
+            error: null,
+        });
+        const runningRunId = runningSnapshot?.steps[0].run_id;
+
+        collect.resolve({ status: 'complete' } as NestedOperationResult);
+        const result = await operation.result;
+        if (result instanceof Error) throw result;
+        expect(progress.settled).toBe(false);
+
+        expect(result).toMatchObject({ goal: 'Drive a clean lap', status: 'achieved' });
+        expect(result).not.toHaveProperty('name');
+        await expect(new Promise((resolve) => operation.notifyTerminated(resolve))).resolves.toEqual({
+            status: 'achieved', result,
+        });
+
+        const completedSnapshot = runner.getSnapshot();
+        expect(isJsonSafe(completedSnapshot)).toBe(true);
+        expect(runner.getOverlayBehavior(completedSnapshot)).toMatchObject({ remove: true });
+        expect(completedSnapshot).toBeNull();
+        expect(result.task_results[0].source_result?.run_id).toBe(runningRunId);
+    });
+
+    it('executes ordered steps and achieves a goal from a numeric query envelope', async () => {
+        const input: GoalRequest = {
+            ...request(),
+            stop_when: {
+                ...request().stop_when,
+                tool: {
+                    name: 'query_lap_analysis_result',
+                    arguments: { query: '$count(analyses)' },
+                },
+            },
+        };
+        const order: string[] = [];
+        const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => {
+            order.push(args?.limit ? `${name}:${args.limit}` : name);
+            return operationWithValue(name === 'query_lap_analysis_result'
+                ? { status: 'ready', data: 0 }
+                : { status: 'complete' });
+        });
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+        const operation = runner.create(toInput(input));
+
+        const result = await operation.result;
+        if (result instanceof Error) throw result;
+
+        expect(result).toMatchObject({
+            name: 'Drive a clean lap',
+            status: 'achieved',
+            actual: 0,
+            completed_steps: ['collect', 'analyze'],
+            stop_when: {
+                tool: {
+                    name: 'query_lap_analysis_result',
+                    arguments: { query: '$count(analyses)' },
+                },
+                operator: 'eq',
+                target: 0,
+            },
+        });
+        expect(result.stop_when).toEqual(input.stop_when);
+        expect(runner.getSnapshot()).toBeNull();
+        expect(result.task_results).toEqual([
+            {
+                step_id: 'collect',
+                tool_name: 'collect',
+                attempt: 1,
+                status: 'completed',
+                source_result: {
+                    step_id: 'collect',
+                    tool_name: 'collect',
+                    run_id: expect.any(String),
+                    status: 'complete',
+                },
+            },
+            {
+                step_id: 'analyze',
+                tool_name: 'analyze',
+                attempt: 1,
+                status: 'completed',
+                source_result: {
+                    step_id: 'analyze',
+                    tool_name: 'analyze',
+                    run_id: expect.any(String),
+                    status: 'complete',
+                },
+            },
+        ]);
+        expect(order).toEqual(['collect', 'analyze:4', 'query_lap_analysis_result']);
+        expect(dispatch).toHaveBeenLastCalledWith('query_lap_analysis_result', {
+            query: '$count(analyses)',
+        }, undefined, runner);
+    });
+
+    it('records notified statuses instead of result payload statuses', async () => {
+        const dispatch = jest.fn((name: string) => {
+            if (name === 'collect') {
+                return operationWithValue({ status: 'conflicting-payload' }, 'collect-terminal');
+            }
+            if (name === 'analyze') {
+                return operationWithValue({ value: 4 }, 'analyze-terminal');
+            }
+            return operationWithValue(
+                { status: 'ready', data: 0 },
+                'stop-when-terminal',
+            );
+        });
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+
+        const result = await runner.create(toInput(request())).result;
+        if (result instanceof Error) throw result;
+
+        expect(result.task_results).toEqual([
+            expect.objectContaining({
+                step_id: 'collect',
+                source_result: expect.objectContaining({ status: 'collect-terminal' }),
+            }),
+            expect.objectContaining({
+                step_id: 'analyze',
+                source_result: expect.objectContaining({ status: 'analyze-terminal' }),
+            }),
+        ]);
+        expect(result.stop_when_result?.source_result).toMatchObject({
+            status: 'stop-when-terminal',
+        });
+    });
+
+    it('keeps rerunning a missed numeric-envelope goal until it is achieved', async () => {
+        let stopWhenChecks = 0;
+        const dispatch = jest.fn((name: string) => operationWithValue(
+            name === 'determine'
+                ? { status: 'ready', data: ++stopWhenChecks < 3 ? 1 : 0 }
+                : { status: 'complete' },
+        ));
+        const snapshots: Array<{ status: string; actual: number | null }> = [];
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch), (snapshot) => {
+            if (snapshot) snapshots.push({ status: snapshot.status, actual: snapshot.actual });
+        });
+        const operation = runner.create(toInput(request()));
+
+        const result = await operation.result;
+        if (result instanceof Error) throw result;
+
+        expect(result.status).toBe('achieved');
+        expect(stopWhenChecks).toBe(3);
+        expect(result.task_results).toHaveLength(6);
+        expect(snapshots).toEqual(expect.arrayContaining([
+            { status: 'missed', actual: 1 },
+            { status: 'achieved', actual: 0 },
+        ]));
+    });
+
+    it.each([
+        ['missing data', { status: 'ready' }],
+        ['legacy top-level count', { status: 'ready', mistake_count: 0 }],
+        ['structured telemetry data', { status: 'ready', data: { speed: { avg: 120 } } }],
+        ['invalid status', { status: 'complete', data: 0 }],
+        ['missing status', { data: 0 }],
+        ['numeric string', { status: 'ready', data: '0' }],
+        ['NaN', { status: 'ready', data: Number.NaN }],
+        ['positive infinity', { status: 'ready', data: Number.POSITIVE_INFINITY }],
+        ['negative infinity', { status: 'ready', data: Number.NEGATIVE_INFINITY }],
+        ['null', null],
+        ['ordinary non-query output', { status: 'complete' }],
+    ])('fails the stop condition for incompatible %s output', async (_description, output) => {
+        const dispatch = jest.fn((name: string) => operationWithValue(
+            name === 'determine' ? output : { status: 'complete' },
+        ));
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+
+        const operation = runner.create(toInput(request()));
+        const termination = new Promise((resolve) => operation.notifyTerminated(resolve));
+        await expect(operation.result).rejects.toMatchObject({
+            name: 'GoalStopWhenInputIncompatibleError',
+            message: 'Repeatable plan stop condition requires a ready query result with finite numeric data.',
+        });
+        await expect(termination).resolves.toMatchObject({
+            status: 'failed', result: { name: 'GoalStopWhenInputIncompatibleError' },
+        });
+        expect(runner.getSnapshot()).toBeNull();
+    });
+
+    it('reports a rejected stop-condition operation as an execution failure', async () => {
+        const dispatch = jest.fn((name: string) => asTool(createOperationFrom(() => {
+            if (name === 'determine') throw new Error('stop condition exploded');
+            return { status: 'complete' };
+        }, 'complete')));
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+
+        await expect(runner.create(toInput(request())).result).rejects.toMatchObject({
+            name: 'GoalStopWhenFailedError',
+            message: 'stop condition exploded',
+            cause: { message: 'stop condition exploded' },
+        });
+        expect(runner.getSnapshot()).toBeNull();
+    });
+
+    it('rejects a failed step and releases the plan before termination without rerunning it', async () => {
+        let attempts = 0;
+        const dispatch = jest.fn((name: string) => asTool(createOperationFrom(() => {
+            if (name === 'collect' && ++attempts === 1) throw new Error('not ready');
+            return name === 'determine'
+                ? { status: 'ready', data: 0 }
+                : { status: 'complete' };
+        }, 'complete')));
+        const runner = new RepeatablePlanRunner('repeatable-plan', toolDispatcher(dispatch));
+        const release = jest.spyOn(runner, 'deleteComponentRef');
+
+        const failedOperation = runner.create(toInput(request()));
+        const terminated = jest.fn(() => ({ snapshot: runner.getSnapshot(), releases: release.mock.calls.length }));
+        failedOperation.notifyTerminated(terminated);
+        await expect(failedOperation.result).rejects.toMatchObject({
+            name: 'GoalStepFailedError', message: 'not ready', cause: { message: 'not ready' },
+        });
+
+        expect(failedOperation.statuses).toEqual([]);
+        expect(terminated).toHaveBeenCalledTimes(1);
+        expect(terminated).toHaveBeenCalledWith({
+            status: 'failed',
+            result: expect.objectContaining({ name: 'GoalStepFailedError', message: 'not ready' }),
+        });
+        expect(terminated).toHaveReturnedWith({ snapshot: null, releases: 1 });
+
+        expect(dispatch.mock.calls.map(([name]) => name)).toEqual(['collect']);
+        expect(attempts).toBe(1);
+    });
+});
+
+const toolDispatcher = (dispatch: (...args: any[]) => ReturnType<ToolDispatcher>): ToolDispatcher => Object.assign(dispatch, { validate: jest.fn() }) as ToolDispatcher;
+
+const toInput = (request: GoalRequest): RepeatablePlanInput => ({
+    workflow: { name: 'create_repeatable_plan',
+        goal: request.name,
+        operations: request.steps.map(({ name, ...metadata }) => ({ operation: { name: name, ...metadata } })) as unknown as RepeatablePlanInput['workflow']['operations'],
+        stop_when: {
+            ...request.stop_when,
+            tool: { name: request.stop_when.tool.name,
+                    ...(request.stop_when.tool.arguments ? { arguments: request.stop_when.tool.arguments } : {}),
+                } as unknown as RepeatablePlanInput['workflow']['stop_when']['tool'],
+        },
+    },
+});

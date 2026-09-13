@@ -10,8 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
 
-PromptMode = Literal["local_pipeline", "tool_agent"]
-RunnerKind = Literal["claude_cli", "openai_compatible"]
+RunnerKind = Literal["claude_cli", "openai_compatible", "local_pipeline"]
 
 
 @dataclass(frozen=True)
@@ -41,7 +40,6 @@ class AnnotationProvider:
     id: str
     label: str
     runner: RunnerKind
-    prompt_mode: PromptMode
     models: List[ProviderModel] = field(default_factory=list)
     options: List[ProviderOption] = field(default_factory=list)
     required_settings: List[str] = field(default_factory=list)

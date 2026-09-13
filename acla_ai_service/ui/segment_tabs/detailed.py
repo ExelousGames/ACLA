@@ -10,6 +10,10 @@ from .shared import (
     load_annotations,
     load_session_segments,
 )
+from .components.detailed_annotation_manager import (
+    clear_annotation_manager_state,
+    render_annotation_manager,
+)
 
 
 def _root_segment_indices(annotations: list[AnnotatedSegment]) -> list[int]:
@@ -26,18 +30,52 @@ def _root_segment_indices(annotations: list[AnnotatedSegment]) -> list[int]:
     ]
 
 
+def _annotation_signature(annotation: AnnotatedSegment) -> tuple:
+    return (
+        getattr(annotation, "id", None),
+        getattr(annotation, "parent_id", None),
+        getattr(annotation, "start_index", None),
+        getattr(annotation, "end_index", None),
+        getattr(annotation, "segment_length", None),
+        getattr(annotation, "chunk_index", None),
+        tuple(getattr(annotation, "labels", []) or []),
+        getattr(annotation, "notes", None),
+        getattr(annotation, "opponent_interaction", None),
+        len(getattr(annotation, "telemetry_data", None) or []),
+    )
+
+
+def _annotations_signature(annotations: list[AnnotatedSegment]) -> tuple:
+    return tuple(_annotation_signature(annotation) for annotation in annotations)
+
+
+def _resolve_loaded_annotation_selection(
+    annotations: list[AnnotatedSegment],
+    requested_selection: int | None,
+) -> int | None:
+    root_indices = _root_segment_indices(annotations)
+    if not root_indices:
+        return None
+
+    if not isinstance(requested_selection, int):
+        return root_indices[0]
+
+    for root_index in root_indices:
+        if root_index >= requested_selection:
+            return root_index
+
+    return root_indices[-1]
+
+
 def _segments_to_positioned_dataframe(
     segments: Iterable[AnnotatedSegment],
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
-    max_position = 0
+    max_position = -1
 
     for segment in segments:
         rows = getattr(segment, "telemetry_data", None) or []
         start = getattr(segment, "start_index", None)
-        end = getattr(segment, "end_index", None)
-        if end is not None:
-            max_position = max(max_position, int(end))
         if not rows or start is None:
             continue
 
@@ -46,7 +84,7 @@ def _segments_to_positioned_dataframe(
             continue
         frame.index = range(int(start), int(start) + len(frame))
         frames.append(frame)
-        max_position = max(max_position, int(start) + len(frame))
+        max_position = max(max_position, int(frame.index[-1]))
 
     if not frames:
         return pd.DataFrame()
@@ -54,6 +92,11 @@ def _segments_to_positioned_dataframe(
     df = pd.concat(frames).sort_index()
     df = df[~df.index.duplicated(keep="first")]
     return df.reindex(range(max_position + 1))
+
+
+def _annotation_index_limits(row_count: int) -> tuple[int, int]:
+    """Return the start and exclusive-end limits for annotation ranges."""
+    return 0, max(0, row_count)
 
 
 def _safe_load_annotations(
@@ -64,14 +107,6 @@ def _safe_load_annotations(
         return load_annotations(session_id, selected_annotation_key)
     except Exception:
         return []
-
-
-def _set_visualization_range(start: int, end: int, max_index: int) -> None:
-    safe_start = max(0, min(int(start), max_index))
-    safe_end = max(safe_start, min(int(end), max_index))
-    st.session_state.detailed_global_viz_range = (safe_start, safe_end)
-    st.session_state.detailed_global_viz_start_input = safe_start
-    st.session_state.detailed_global_viz_end_input = safe_end
 
 
 def _segment_session_counts(
@@ -111,31 +146,22 @@ def render_detailed_labeling(
             return f"{status} {session_id} | {count} segments"
         return f"{status} {session_id}"
 
-    index = 0
-    previous_selection = st.session_state.get("detailed_session_selector")
-    if previous_selection in session_options:
-        index = session_options.index(previous_selection)
-
     st.subheader("Detailed Segment Annotation")
     st.caption(
         "Refine imported parent segments into detailed labels and child sub-segments."
     )
 
-    top_cols = st.columns([1.2, 1, 1, 1])
+    top_cols = st.columns([1.5, 1, 1, 1, 1, 1])
     with top_cols[0]:
+        if st.session_state.get("detailed_session_selector") not in session_options:
+            st.session_state.detailed_session_selector = session_options[0]
+
         session_id = st.selectbox(
             "Session / segment chunk",
             options=session_options,
             format_func=format_session_option,
-            index=index,
             key="detailed_session_selector",
         )
-    with top_cols[1]:
-        st.metric("Input segments", segment_counts.get(session_id, 0))
-    with top_cols[2]:
-        st.metric("Chunks", len(session_options))
-    with top_cols[3]:
-        st.metric("Annotated chunks", len(annotated_sessions))
 
     st.info(f"Importing session segments from `{selected_session_key}`.")
     input_segments = load_session_segments(selected_session_key, session_id)
@@ -143,36 +169,71 @@ def render_detailed_labeling(
         st.error("Selected session chunk has no segments.")
         return
 
-    saved_annotations = _safe_load_annotations(session_id, selected_annotation_key)
-
-    state_key = (
-        "detailed_loaded_source",
-        selected_session_key,
-        selected_annotation_key,
-        session_id,
-        bool(input_segments),
-        len(saved_annotations),
-    )
-    if st.session_state.get("detailed_loaded_state_key") != state_key:
-        if input_segments and not saved_annotations:
-            st.session_state.current_annotations = copy.deepcopy(input_segments)
-        else:
-            st.session_state.current_annotations = saved_annotations
-        st.session_state.detailed_loaded_state_key = state_key
-        st.session_state.last_session_id = session_id
-        st.session_state.last_annotation_key = selected_annotation_key
-        st.session_state.pop("detailed_last_focus_segment", None)
-        st.session_state.pop("detailed_focus_segment_selector", None)
-
-    current_annotations = st.session_state.get("current_annotations", [])
-
     df = _segments_to_positioned_dataframe(input_segments)
-
     if df.empty:
         st.warning("Selected chunk has no telemetry rows to display.")
         st.stop()
 
-    max_index = max(0, len(df) - 1)
+    start_limit, end_limit = _annotation_index_limits(len(df))
+
+    with top_cols[1]:
+        st.metric("Input segments", segment_counts.get(session_id, 0))
+    with top_cols[2]:
+        st.metric("Chunks", len(session_options))
+    with top_cols[3]:
+        st.metric("Annotated chunks", len(annotated_sessions))
+    with top_cols[4]:
+        st.metric("Start limit", start_limit)
+    with top_cols[5]:
+        st.metric("End limit", end_limit)
+
+    saved_annotations = _safe_load_annotations(session_id, selected_annotation_key)
+    if input_segments and not saved_annotations:
+        current_annotations = copy.deepcopy(input_segments)
+    else:
+        current_annotations = saved_annotations
+    st.session_state.current_annotations = current_annotations
+
+    loaded_signature = (
+        selected_session_key,
+        selected_annotation_key,
+        session_id,
+        _annotations_signature(current_annotations),
+    )
+    data_reloaded = st.session_state.get("detailed_loaded_signature") != loaded_signature
+    loaded_session = (selected_session_key, selected_annotation_key, session_id)
+    session_changed = (
+        st.session_state.get("detailed_loaded_session") != loaded_session
+    )
+    pending_selection = st.session_state.pop("pending_detailed_selection", None)
+    if pending_selection is not None:
+        requested_selection = pending_selection
+    elif session_changed:
+        requested_selection = None
+    else:
+        requested_selection = st.session_state.get("detailed_annotation_selector")
+    resolved_selection = _resolve_loaded_annotation_selection(
+        current_annotations,
+        requested_selection,
+    )
+    if data_reloaded:
+        clear_annotation_manager_state()
+    if resolved_selection is not None:
+        selection_changed = (
+            st.session_state.get("detailed_annotation_selector") != resolved_selection
+        )
+        st.session_state.detailed_annotation_selector = resolved_selection
+        if selection_changed and not data_reloaded:
+            clear_annotation_manager_state()
+
+    st.session_state.detailed_loaded_signature = loaded_signature
+    st.session_state.detailed_loaded_session = loaded_session
+    st.session_state.last_session_id = session_id
+    st.session_state.last_annotation_key = selected_annotation_key
+    if data_reloaded:
+        st.session_state.pop("detailed_last_focus_segment", None)
+        st.session_state.pop("detailed_focus_segment_selector", None)
+
     root_count = len(_root_segment_indices(current_annotations))
     child_count = max(0, len(current_annotations) - root_count)
     st.write(
@@ -188,89 +249,46 @@ def render_detailed_labeling(
     numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
     default_cols = ["speed_kmh", "gas", "brake", "steer_angle"]
 
-    from .components.detailed_annotation_manager import render_annotation_manager
+    viz_col, manager_col = st.columns([3, 1])
 
-    render_annotation_manager(df, session_id, selected_annotation_key, numeric_cols)
-
-    from .components.detailed_subsegment_manager import render_subsegment_manager
-
-    render_subsegment_manager(df, session_id, selected_annotation_key)
-
-    selected_annotation = st.session_state.get("detailed_annotation_selector")
-    root_indices = _root_segment_indices(current_annotations)
-    if "detailed_global_viz_range" not in st.session_state:
-        if selected_annotation in root_indices:
-            annotation = current_annotations[selected_annotation]
-            _set_visualization_range(
-                getattr(annotation, "start_index", 0) or 0,
-                getattr(annotation, "end_index", max_index) or max_index,
-                max_index,
-            )
-        else:
-            _set_visualization_range(0, min(100, max_index), max_index)
-    else:
-        start, end = st.session_state.detailed_global_viz_range
-        _set_visualization_range(start, end, max_index)
-
-    st.markdown("---")
-    st.caption("Visualization Range")
-
-    def update_global_inputs_from_slider():
-        start, end = st.session_state.detailed_global_viz_range
-        st.session_state.detailed_global_viz_start_input = start
-        st.session_state.detailed_global_viz_end_input = end
-
-    def update_global_slider_range():
-        start = st.session_state.get("detailed_global_viz_start_input", 0)
-        end = st.session_state.get("detailed_global_viz_end_input", 0)
-        if start <= end:
-            st.session_state.detailed_global_viz_range = (start, end)
-
-    col_global_slider, col_global_inputs = st.columns([3, 1])
-    with col_global_slider:
-        viz_start_idx, viz_end_idx = st.slider(
-            "Select Range",
-            min_value=0,
-            max_value=max_index,
-            key="detailed_global_viz_range",
-            on_change=update_global_inputs_from_slider,
-            label_visibility="collapsed",
+    with manager_col:
+        annotation_range = render_annotation_manager(
+            df,
+            session_id,
+            selected_annotation_key,
+            numeric_cols,
+            start_limit,
+            end_limit,
         )
 
-    with col_global_inputs:
-        c_input1, c_input2 = st.columns(2)
-        with c_input1:
-            st.number_input(
-                "Start",
-                min_value=0,
-                max_value=max_index,
-                key="detailed_global_viz_start_input",
-                on_change=update_global_slider_range,
-            )
-        with c_input2:
-            st.number_input(
-                "End",
-                min_value=0,
-                max_value=max_index,
-                key="detailed_global_viz_end_input",
-                on_change=update_global_slider_range,
-            )
+        from .components.detailed_subsegment_manager import render_subsegment_manager
 
-    from .components.detailed_feature_visualization import render_feature_visualization
+        render_subsegment_manager(df, session_id, selected_annotation_key)
 
-    render_feature_visualization(
-        df,
-        viz_start_idx,
-        viz_end_idx,
-        session_id,
-        numeric_cols,
-        default_cols,
-    )
+    if annotation_range is None:
+        viz_start_idx, viz_end_idx = start_limit, end_limit
+    else:
+        viz_start_idx, viz_end_idx = annotation_range
 
-    from .components.detailed_track_map import render_track_map
+    with viz_col:
+        viz_scroll = st.container(height=1200)
 
-    render_track_map(df, viz_start_idx, viz_end_idx, session_id)
+    with viz_scroll:
+        from .components.detailed_feature_visualization import render_feature_visualization
 
-    from .components.detailed_list_view import render_list_view
+        render_feature_visualization(
+            df,
+            viz_start_idx,
+            viz_end_idx,
+            session_id,
+            numeric_cols,
+            default_cols,
+        )
 
-    render_list_view(session_id, selected_annotation_key)
+        from .components.detailed_track_map import render_track_map
+
+        render_track_map(df, viz_start_idx, viz_end_idx, session_id)
+
+        from .components.detailed_list_view import render_list_view
+
+        render_list_view(session_id, selected_annotation_key)

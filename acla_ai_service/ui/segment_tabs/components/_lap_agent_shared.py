@@ -133,18 +133,6 @@ def run_split(
 # Live-output panel (light version of _agent_annotation_shared.LiveVlmOutput)
 # ---------------------------------------------------------------------------
 
-def _extract_preflight_output(prompt: str) -> str:
-    header = "#### Required Upfront Annotation Preflight"
-    start = prompt.find(header)
-    if start < 0:
-        return ""
-    prompt = prompt[start:]
-    task_marker = "\n\nAnnotate ONE lap range."
-    end = prompt.find(task_marker)
-    if end < 0:
-        return ""
-    return prompt[:end].rstrip()
-
 
 class LapLiveOutput:
     """Compact streaming-output renderer for the lap flow.
@@ -152,18 +140,17 @@ class LapLiveOutput:
     Lap sessions are short (one section per click — typically 3-6 VLM /
     tool calls for Claude, one VLM call for local). We don't need the
     detailed flow's per-step expander UI — a header + a single live block
-    plus a tool-event chip row is enough.
+    plus a compact status chip row is enough.
     """
 
     def __init__(self) -> None:
         self.start_time = time.time()
         self.header = st.empty()
         self.tool_chip_area = st.empty()
-        self.preflight_area = st.empty()
-        self.text_area = st.empty()
-        self.thinking_area = st.empty()
-        self.tool_events: List[str] = []
-        self.preflight_output = ""
+        self.status_events: List[str] = []
+        self.sections: List[Dict[str, Any]] = []
+        self.active_prompt = ""
+        self.active_stage: Dict[str, Any] = {}
         self.text_chunks: List[str] = []
         self.thinking_chunks: List[str] = []
         self._render()
@@ -171,21 +158,28 @@ class LapLiveOutput:
     def _render(self) -> None:
         elapsed = time.time() - self.start_time
         self.header.markdown(f"**Lap agent run** _(elapsed {elapsed:.1f}s)_")
-        if self.tool_events:
-            self.tool_chip_area.caption(" · ".join(self.tool_events[-8:]))
-        if self.preflight_output:
-            with self.preflight_area.expander("Preflight output", expanded=False):
-                st.code(self.preflight_output, language="text")
-        if self.thinking_chunks:
-            self.thinking_area.markdown(
-                f"_💭 Thinking:_\n\n{''.join(self.thinking_chunks)}"
-            )
-        if self.text_chunks:
-            self.text_area.markdown(f"_Response:_\n\n{''.join(self.text_chunks)}")
+        if self.status_events:
+            self.tool_chip_area.caption(" · ".join(self.status_events[-8:]))
+
+    def _finalize_active_section(self) -> None:
+        if not (self.active_prompt or self.text_chunks or self.thinking_chunks):
+            return
+        self.sections.append({
+            "stage": dict(self.active_stage),
+            "prompt": self.active_prompt,
+            "reasoning": "".join(self.thinking_chunks),
+            "text": "".join(self.text_chunks),
+        })
+        self.active_prompt = ""
+        self.active_stage.clear()
+        self.text_chunks.clear()
+        self.thinking_chunks.clear()
 
     def on_prompt(self, prompt: str, stage: Dict[str, Any]) -> None:  # noqa: ARG002
-        self.preflight_output = _extract_preflight_output(prompt)
-        self.tool_events.append("🟢 prompt sent")
+        self._finalize_active_section()
+        self.active_prompt = prompt
+        self.active_stage = dict(stage)
+        self.status_events.append("🟢 prompt sent")
         self._render()
 
     def on_text_chunk(self, chunk: str) -> None:
@@ -197,14 +191,64 @@ class LapLiveOutput:
         self._render()
 
     def on_step_event(self, summary: str, stage: Dict[str, Any]) -> None:
+        self._finalize_active_section()
         phase = stage.get("phase") or ""
         chip = phase.replace("tool:", "🔧 ") if phase.startswith("tool:") else f"📎 {phase}"
-        self.tool_events.append(chip)
+        self.status_events.append(chip)
+        self.sections.append({
+            "stage": dict(stage),
+            "prompt": summary,
+            "reasoning": "",
+            "text": "",
+        })
         self._render()
 
     def on_progress(self, node_name: str, detail: str) -> None:
-        self.tool_events.append(f"⏱ {detail}")
+        self.status_events.append(f"⏱ {detail}")
         self._render()
+
+    def conversation_messages(self, *, fallback_transcript: str = "") -> List[Dict[str, str]]:
+        self._finalize_active_section()
+        messages: List[Dict[str, str]] = []
+        for section in self.sections:
+            stage = section.get("stage") or {}
+            stage_name = str(stage.get("node_name") or stage.get("phase") or "Lap agent")
+            prompt = str(section.get("prompt") or "")
+            reasoning = str(section.get("reasoning") or "")
+            text = str(section.get("text") or "")
+            is_event = not reasoning and not text
+
+            if prompt:
+                messages.append({
+                    "role": "event" if is_event else "prompt",
+                    "stage": stage_name,
+                    "content": prompt,
+                })
+            if reasoning:
+                messages.append({
+                    "role": "reasoning",
+                    "stage": stage_name,
+                    "content": reasoning,
+                })
+            if text:
+                messages.append({
+                    "role": "assistant",
+                    "stage": stage_name,
+                    "content": text,
+                })
+
+        existing_content = {
+            str(message.get("content", ""))
+            for message in messages
+            if isinstance(message, dict)
+        }
+        if fallback_transcript and str(fallback_transcript) not in existing_content:
+            messages.append({
+                "role": "assistant",
+                "stage": "Provider transcript",
+                "content": str(fallback_transcript),
+            })
+        return messages
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +305,9 @@ def execute_lap_agent_run(
         return
 
     progress_bar.progress(1.0)
+    full_conversation = live.conversation_messages(
+        fallback_transcript=getattr(result, "transcript", ""),
+    )
 
     st.session_state[KEY_LAP_STAGED] = {
         "section_id": result.section_id,
@@ -272,6 +319,8 @@ def execute_lap_agent_run(
         "rejected": list(result.rejected_proposals),
         "rendered_images": list(result.rendered_images),
         "tool_calls": int(result.tool_calls),
+        "transcript": result.transcript,
+        "messages": full_conversation,
         "opponent_interaction": head_segment.get("opponent_interaction"),
     }
 
@@ -493,10 +542,16 @@ def render_lap_staged_review(
     st.markdown("---")
     st.markdown("##### Review & Edit Before Saving")
     if staged.get("rejected"):
-        st.caption(
-            f"⚠️ {len(staged['rejected'])} label_id(s) rejected by the runner: "
-            + ", ".join(str(r.get("value")) for r in staged["rejected"])
-        )
+        with st.expander(
+            f"⚠️ Why {len(staged['rejected'])} label(s) were rejected"
+        ):
+            for rejection in staged["rejected"]:
+                label_id = str(rejection.get("value", "unknown"))
+                label_name = LABEL_MAPPING.get(label_id, label_id)
+                st.markdown(
+                    f"- **{label_name} (`{label_id}`)**: "
+                    f"{rejection.get('reason', 'No rejection reason was provided.')}"
+                )
 
     with st.container(border=True):
         col_r1, col_r2 = st.columns(2)
@@ -524,9 +579,31 @@ def render_lap_staged_review(
             key="lap_staged_labels",
         )
         seg_notes = st.text_area(
-            "Reasoning / notes", value=staged.get("reasoning", "")[:1500],
+            "Reasoning / notes", value=staged.get("reasoning", ""),
             key="lap_staged_notes", height=100,
         )
+
+    conversation_messages = list(staged.get("messages") or [])
+    if conversation_messages:
+        with st.expander("Full agent conversation log"):
+            for msg in conversation_messages:
+                if not isinstance(msg, dict):
+                    continue
+                role = str(msg.get("role", "unknown")).replace("_", " ").title()
+                stage = str(msg.get("stage", ""))
+                content = msg.get("content", "")
+                verdict = msg.get("verdict", "")
+                header = f"**{role}**"
+                if stage:
+                    header += f" — {stage}"
+                if verdict:
+                    header += f" — _{str(verdict).upper()}_"
+                st.markdown(header)
+                st.text(str(content))
+                st.markdown("---")
+    elif staged.get("transcript"):
+        with st.expander("Full agent conversation log"):
+            st.text(str(staged["transcript"]))
 
     if staged.get("rendered_images"):
         with st.expander(

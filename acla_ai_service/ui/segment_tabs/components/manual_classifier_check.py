@@ -12,23 +12,19 @@ def render_classifier_probability_check(df: pd.DataFrame, form_start: float, for
                         
                         # Extract segment
                         snippet = df.iloc[int(form_start):int(form_end)]
-                        probs = segment_classifier.predict_segment_probabilities(snippet)
-                        
-                        st.write("Confidence per Label:")
-                        # Filter and display
-                        has_results = False
-                        for label, score in probs.items():
-                            if score > 0.01:
-                                has_results = True
-                                c_lab, c_prog = st.columns([1, 2])
-                                with c_lab:
-                                    label_str = LABEL_MAPPING.get(label, str(label))
-                                    st.caption(f"{label_str} ({score:.1%})")
-                                with c_prog:
-                                    st.progress(score)
-                        
-                        if not has_results:
-                            st.info("No labels detected with significant probability (>1%)")
+                        scores = segment_classifier.score_sequence(snippet)
+                        visible = [
+                            label for label in scores.columns
+                            if float(scores[label].max()) > 0.01
+                        ]
+                        if visible:
+                            display_scores = scores[visible].rename(columns={
+                                label: LABEL_MAPPING.get(label, label)
+                                for label in visible
+                            })
+                            st.line_chart(display_scores)
+                        else:
+                            st.info("No temporal label score exceeded 1%.")
                             
                     except Exception as e:
                         st.error(f"Error calling classifier: {str(e)}")

@@ -1,213 +1,276 @@
 import {
-    buildVoiceSessionMetadata,
-    executeSubscribedFrontendTool,
+    executeSubscribedFrontendOperation,
     extractInlineFunctionCalls,
-    mapBackendToolEventForUi,
+    type FrontendOperationHandler,
 } from '../use-voice-conversation';
+import {
+    createOperation,
+    createOperationFrom,
+    createControlledOperation,
+    createOperationDeferred,
+    asTool,
+    asWorkflow,
+} from '../operation-base';
+import { AnalysisResultsQueryError } from '../../visualization/charts/analysisResultsQuery';
+import { ProcedurePlanRunner } from 'components/ai-operations/ProcedurePlan';
+import { RepeatablePlanRunner } from 'components/ai-operations/RepeatablePlan';
+import type { ToolDispatcher } from 'components/ai-operations/tool';
 
-describe('buildVoiceSessionMetadata', () => {
-    it('defaults to a main conversation session', () => {
-        expect(buildVoiceSessionMetadata({
-            clientSessionId: 'main-1',
-        })).toEqual({
-            conversation_role: 'main',
-            client_session_id: 'main-1',
-            parent_client_session_id: null,
-            agent_mode: null,
+const execute = async (handler: FrontendOperationHandler) => {
+    const frames: any[] = [];
+    const events: any[] = [];
+    const result = await executeSubscribedFrontendOperation({
+        call: { id: 'call-1', name: 'test_tool', title: 'Test tool' },
+        handlers: { test_tool: handler },
+        sendText: (frame) => frames.push(frame),
+        emitEvent: (event) => events.push(event),
+    });
+    return { events, frames, result };
+};
+
+describe('executeSubscribedFrontendOperation', () => {
+    it.each([
+        { kind: 'tool', classify: asTool },
+        { kind: 'workflow', classify: asWorkflow },
+    ])('sends a $kind result only after all awaited work terminates', async ({ classify }) => {
+        const work = createOperationDeferred<{ value: number }>();
+        const cleanup = createOperationDeferred<void>();
+        const cleanupStarted = createOperationDeferred<void>();
+        const progress = createOperationDeferred<{ status: string }>();
+        const operation = classify(createOperationFrom(async () => {
+            try {
+                return await work.promise;
+            } finally {
+                cleanupStarted.resolve();
+                await cleanup.promise;
+            }
+        }, [progress.promise], 'working'));
+        const frames: any[] = [];
+        const execution = executeSubscribedFrontendOperation({
+            call: { id: 'call-1', name: 'test_tool' },
+            handlers: { test_tool: () => operation },
+            sendText: (frame) => frames.push(frame),
+        });
+
+        progress.resolve({ status: 'complete' });
+        await operation.statuses[0];
+        expect(frames).toEqual([]);
+        work.resolve({ value: 7 });
+        await cleanupStarted.promise;
+        expect(frames).toEqual([]);
+        cleanup.resolve();
+
+        await execution;
+        expect(frames).toEqual([
+            { type: 'tool_result', id: 'call-1', name: 'test_tool', result: { status: 'working', value: 7 } },
+        ]);
+    });
+
+    it.each(['resolved', 'rejected'])('ignores %s progress delivered after termination', async (outcome) => {
+        const progress = createOperationDeferred<{ progress: number }>();
+        const { frames, events } = await execute(() => createOperation(
+            { value: 7 }, [progress.promise], 'complete',
+        ));
+
+        expect(frames).toHaveLength(1);
+        expect(events).toHaveLength(2);
+        expect(events[1]).toMatchObject({ status: 'completed', ok: true });
+        if (outcome === 'resolved') progress.resolve({ progress: 100 });
+        else progress.reject(new Error('late progress failure'));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(frames).toHaveLength(1);
+        expect(events).toHaveLength(2);
+    });
+
+    it('sends only completion to AI while keeping started and progress local', async () => {
+        const { frames, events, result } = await execute(() => createOperation(
+            Promise.resolve({ status: 'complete', value: 7 }),
+            [Promise.resolve({ status: 'working', progress: 50 })],
+            'complete',
+        ));
+
+        expect(frames).toEqual([
+            { type: 'tool_result', id: 'call-1', name: 'test_tool', result: { status: 'complete', value: 7 } },
+        ]);
+        events.forEach((event) => expect(event).not.toHaveProperty('final'));
+        expect(events[0]).toMatchObject({ kind: 'tool_call', status: 'started' });
+        expect(events[1]).toMatchObject({
+            kind: 'tool_call', status: 'started', result: { status: 'working', progress: 50 }, ok: true,
+        });
+        expect(events.at(-1)).toMatchObject({ status: 'completed', ok: true });
+        expect(result).toMatchObject({ ok: true });
+    });
+
+    it('keeps rejected progress local without changing the operation result', async () => {
+        const { frames, events, result } = await execute(() => createOperation(
+            Promise.resolve({ status: 'complete' }),
+            [Promise.reject(new Error('progress unavailable'))],
+            'complete',
+        ));
+
+        expect(events[1]).toMatchObject({
+            kind: 'tool_call', status: 'started', ok: false,
+            result: { ok: false, status: 'status_failed', message: 'progress unavailable' },
+        });
+        expect(frames).toEqual([
+            { type: 'tool_result', id: 'call-1', name: 'test_tool', result: { status: 'complete' } },
+        ]);
+        expect(result).toMatchObject({ ok: true });
+    });
+
+    it('uses the notified terminal status when the result is missing or conflicts', async () => {
+        const conflicting = await execute(() => createOperation(
+            { status: 'payload-status', value: 7 },
+            'notified-status',
+        ));
+        const missing = await execute(() => createOperation(
+            { value: 8 },
+            'explicit-status',
+        ));
+
+        expect(conflicting.frames.at(-1)).toMatchObject({
+            result: { status: 'notified-status', value: 7 },
+        });
+        expect(missing.frames.at(-1)).toMatchObject({
+            result: { status: 'explicit-status', value: 8 },
+        });
+        expect(conflicting.frames).toHaveLength(1);
+        expect(missing.frames).toHaveLength(1);
+    });
+
+    it.each([
+        ['procedure', 'failed'], ['repeatable', 'failed'],
+        ['procedure', 'complete'], ['repeatable', 'achieved'],
+    ] as const)('propagates an actual %s workflow outcome %s to AI', async (kind, status) => {
+        const ok = status !== 'failed';
+        const dispatch = Object.assign(jest.fn(() => asTool(createOperationFrom(() => {
+            if (!ok) throw new Error('offline');
+            return { status: 'ready', data: 0 };
+        }, 'complete'))), { validate: jest.fn() }) as ToolDispatcher;
+        const operation = kind === 'procedure'
+            ? new ProcedurePlanRunner('procedure-plan', dispatch, undefined, jest.fn()).createProcedurePlan({
+                workflow: {
+                    name: 'set_procedure_plan', goal: 'Review the lap',
+                    operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Read telemetry', arguments: {} } }],
+                },
+            })
+            : new RepeatablePlanRunner('repeatable-plan', dispatch).createRepeatablePlan({
+                workflow: {
+                    name: 'create_repeatable_plan', goal: 'Drive a clean lap',
+                    operations: [{ operation: { name: 'query_lap_analysis_result', id: 'read', title: 'Read telemetry', arguments: {} } }],
+                    stop_when: { tool: { name: 'query_lap_analysis_result' }, operator: 'eq', target: 0 },
+                },
+            });
+        const { frames, events, result } = await execute(() => operation);
+        expect(frames).toHaveLength(1);
+        expect(events.at(-1)).toMatchObject({ status: 'completed', ok });
+        expect(dispatch).toHaveBeenCalledTimes(kind === 'repeatable' && ok ? 2 : 1);
+        if (!ok) {
+            const errorName = kind === 'procedure' ? 'ProcedurePlanStepFailedError' : 'GoalStepFailedError';
+            await expect(operation.result).rejects.toMatchObject({ name: errorName, message: 'offline' });
+            expect(frames[0].result).toEqual({
+                status: 'failed', ok: false, name: errorName, message: 'offline',
+                cause: { name: 'Error', message: 'offline' },
+                completed_step_count: 0,
+                stopped_at_step: { step: 1, title: 'Read telemetry', ...(kind === 'repeatable' ? { id: 'read' } : {}) },
+            });
+            expect(result).toMatchObject({ ok: false, errorName, message: 'offline' });
+            return;
+        }
+        const payload = await operation.result;
+
+        expect(payload).toMatchObject({ status, task_results: [expect.any(Object)] });
+        expect(frames[0].result).toEqual(payload);
+        expect(result).toMatchObject({ ok, result: payload });
+    });
+
+    it.each([
+        ['resolved Error', () => createOperation(new Error('broken'), 'failed')],
+        ['rejected promise', () => createOperationFrom(() => { throw new Error('broken'); }, 'failed')],
+    ])('normalizes a %s into the same failed status frame', async (_label, handler) => {
+        const { frames, result } = await execute(handler as any);
+
+        expect(frames.at(-1)).toMatchObject({
+            result: { status: 'failed', ok: false, name: 'OperationExecutionError', message: 'broken' },
+        });
+        expect(result).toMatchObject({ ok: false, message: 'broken' });
+    });
+
+    it.each(['cancelled', 'replaced'])('preserves the producer error status %s', async (status) => {
+        const control = createControlledOperation<Record<string, unknown>>();
+        const execution = execute(() => control.operation);
+        control.reject(status, new Error('operation stopped'));
+
+        const { frames, result } = await execution;
+        expect(frames.at(-1)).toMatchObject({
+            result: { status, ok: false, message: 'operation stopped' },
+        });
+        expect(result).toMatchObject({ ok: false });
+    });
+
+    it('reports an aborted operation with its status', async () => {
+        const control = createControlledOperation<Record<string, unknown>>();
+        const execution = execute(() => control.operation);
+        control.operation.abort();
+
+        const { frames } = await execution;
+        expect(frames.at(-1)).toMatchObject({ result: { status: 'aborted', ok: false } });
+    });
+
+    it.each([
+        [undefined, 'InvalidOperationCallError'],
+        ['missing_tool', 'OperationNotRegisteredError'],
+    ])('reports an invalid call %s with a failed status', async (name, errorName) => {
+        const frames: object[] = [];
+        await executeSubscribedFrontendOperation({
+            call: { id: 'invalid-call', name },
+            handlers: {},
+            sendText: (frame) => frames.push(frame),
+        });
+        expect(frames.at(-1)).toMatchObject({
+            result: { status: 'failed', ok: false, name: errorName },
         });
     });
 
-    it('includes child agent session identity', () => {
-        expect(buildVoiceSessionMetadata({
-            conversationRole: 'agent',
-            clientSessionId: 'agent-1',
-            parentClientSessionId: 'main-1',
-            agentMode: 'live_performance_analyst',
-        })).toEqual({
-            conversation_role: 'agent',
-            client_session_id: 'agent-1',
-            parent_client_session_id: 'main-1',
-            agent_mode: 'live_performance_analyst',
+    it('preserves normalized JSONata detail in the failed status frame', async () => {
+        const detail = {
+            code: 'S0202',
+            position: 12,
+            token: ']',
+            message: 'Expected a closing bracket.',
+        };
+        const { frames, result } = await execute(() => createOperationFrom(() => {
+            throw new AnalysisResultsQueryError(detail);
+        }, 'failed'));
+
+        expect(frames.at(-1)).toMatchObject({
+            result: {
+                status: 'failed',
+                ok: false,
+                name: 'OperationExecutionError',
+                message: detail.message,
+                cause: {
+                    name: 'AnalysisResultsQueryError',
+                    message: detail.message,
+                    detail,
+                },
+            },
         });
+        expect(result).toMatchObject({
+            ok: false,
+            message: detail.message,
+            cause: { detail },
+        });
+        expect(frames.at(-1).result.cause).not.toHaveProperty('stack');
     });
 });
 
 describe('extractInlineFunctionCalls', () => {
-    it('strips inline function tags and parses JSON arguments', () => {
-        const result = extractInlineFunctionCalls(
-            'Let me start a live performance analyst session for you.\n<function=start_agent_session>{"agent_mode":"live_performance_analyst"}</function>',
-        );
-
-        expect(result.cleanText).toBe('Let me start a live performance analyst session for you.');
-        expect(result.calls).toEqual([
-            {
-                name: 'start_agent_session',
-                arguments: { agent_mode: 'live_performance_analyst' },
-            },
-        ]);
-    });
-
-    it('handles inline function tags that are missing the closing name bracket', () => {
-        const result = extractInlineFunctionCalls(
-            '<function=start_agent_session{"agent_mode":"live_performance_analyst"}</function>',
-        );
-
-        expect(result.cleanText).toBe('');
-        expect(result.calls).toEqual([
-            {
-                name: 'start_agent_session',
-                arguments: { agent_mode: 'live_performance_analyst' },
-            },
-        ]);
-    });
-
-    it('keeps malformed arguments available for diagnostics', () => {
-        const result = extractInlineFunctionCalls(
-            '<function=start_agent_session>agent_mode=track_guide</function>',
-        );
-
-        expect(result.cleanText).toBe('');
-        expect(result.calls).toEqual([
-            {
-                name: 'start_agent_session',
-                arguments: { raw: 'agent_mode=track_guide' },
-            },
-        ]);
-    });
-});
-
-describe('executeSubscribedFrontendTool', () => {
-    it('emits lifecycle events and a single final tool_result for direct tool calls', async () => {
-        const frames: object[] = [];
-        const events: object[] = [];
-
-        const result = await executeSubscribedFrontendTool({
-            call: {
-                id: 'tool-1',
-                name: 'read_context',
-                arguments: { session_id: 's1' },
-            },
-            handlers: {
-                read_context: async (args) => ({ status: 'ready', args }),
-            },
-            baseContext: {
-                sendObservation: (data) => frames.push({ type: 'observation', data }),
-            },
-            sendText: (payload) => frames.push(payload),
-            emitEvent: (event) => events.push(event),
+    it('extracts a structured inline call without leaking the marker into chat', () => {
+        expect(extractInlineFunctionCalls('Before <function=show_map>{"id":"spa"}</function> after')).toEqual({
+            cleanText: 'Before  after',
+            calls: [{ name: 'show_map', arguments: { id: 'spa' } }],
         });
-
-        expect(result).toMatchObject({ id: 'tool-1', name: 'read_context', ok: true });
-        expect(events).toMatchObject([
-            { kind: 'tool_event', runId: 'tool-1', name: 'read_context', status: 'started' },
-            {
-                kind: 'tool_event',
-                runId: 'tool-1',
-                name: 'read_context',
-                status: 'completed',
-                ok: true,
-                result: {
-                    status: 'ready',
-                    args: { session_id: 's1' },
-                },
-            },
-        ]);
-        expect(frames).toEqual([
-            {
-                type: 'tool_result',
-                id: 'tool-1',
-                result: {
-                    status: 'ready',
-                    args: { session_id: 's1' },
-                },
-            },
-        ]);
-    });
-
-    it('emits lifecycle events and a final tool_error when the handler fails', async () => {
-        const frames: object[] = [];
-        const events: object[] = [];
-
-        const result = await executeSubscribedFrontendTool({
-            call: { id: 'tool-2', name: 'explode' },
-            handlers: {
-                explode: async () => {
-                    throw new Error('boom');
-                },
-            },
-            baseContext: {
-                sendObservation: (data) => frames.push({ type: 'observation', data }),
-            },
-            sendText: (payload) => frames.push(payload),
-            emitEvent: (event) => events.push(event),
-        });
-
-        expect(result).toEqual({ id: 'tool-2', name: 'explode', ok: false, error: 'boom' });
-        expect(events).toMatchObject([
-            { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'started' },
-            { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'completed', ok: false, error: 'boom' },
-        ]);
-        expect(frames).toContainEqual({ type: 'tool_error', id: 'tool-2', error: 'boom' });
-    });
-
-    it('does not expose a secondary tool output callback', async () => {
-        const frames: object[] = [];
-        const contextKeys: string[][] = [];
-
-        await executeSubscribedFrontendTool({
-            call: { id: 'tool-3', name: 'single_output' },
-            handlers: {
-                single_output: async (_args, ctx) => {
-                    contextKeys.push(Object.keys(ctx).sort());
-                    return { status: 'done' };
-                },
-            },
-            baseContext: {
-                sendObservation: (data) => frames.push({ type: 'observation', data }),
-            },
-            sendText: (payload) => frames.push(payload),
-        });
-
-        expect(contextKeys).toEqual([['sendObservation', 'toolName', 'toolRunId']]);
-        expect(frames).toEqual([
-            { type: 'tool_result', id: 'tool-3', result: { status: 'done' } },
-        ]);
-    });
-
-    it('supports plan-triggered calls with generated run ids', async () => {
-        const frames: object[] = [];
-
-        await executeSubscribedFrontendTool({
-            call: {
-                name: 'show_map',
-                title: 'Show the current map',
-                arguments: { map_id: 'spa' },
-            },
-            handlers: {
-                show_map: async () => ({ status: 'displayed' }),
-            },
-            baseContext: {
-                sendObservation: (data) => frames.push({ type: 'observation', data }),
-            },
-            sendText: (payload) => frames.push(payload),
-            makeRunId: () => 'plan-1',
-        });
-
-        expect(frames).toContainEqual({
-            type: 'tool_result',
-            id: 'plan-1',
-            result: { status: 'displayed' },
-        });
-    });
-});
-
-describe('mapBackendToolEventForUi', () => {
-    it('keeps backend tool status frames out of the visible transcript', () => {
-        expect(mapBackendToolEventForUi({
-            type: 'tool_event',
-            name: 'query_telemetry_metric',
-            title: 'Querying telemetry',
-            status: 'started',
-        })).toBeNull();
     });
 });

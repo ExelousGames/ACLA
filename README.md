@@ -1,5 +1,21 @@
 # ACLA
 
+## Model Command Protocol
+
+Model Command Protocol is the shared collection of tools and workflows that models
+use to communicate with the ACLA client. The backend owns the command schemas in
+`acla_backend/src/shared/ai/model-command-protocol-registry.ts`.
+
+The AI service retrieves the commands available to a session through the
+JWT-authenticated `POST /model-command-protocol` endpoint, using
+`{ "session_context": { "session_mode": "live" } }` with an optional `agent_mode`
+inside `session_context`. Each command has `name`, `description`, `properties`,
+and `required` fields. Client commands continue to use the existing `tool_call`
+and `tool_result` WebSocket messages.
+
+The backend and AI service must be updated together because this endpoint replaces
+`POST /session-tools`.
+
 
 ## Installation frontend and backend enviornments
 

@@ -5,9 +5,7 @@ hyperparameters. They live in app/shared/ because they have no
 runtime behaviour beyond data definition; anyone in the codebase
 imports them, they import nothing from outside app/shared/.
 
-Moved from app/services/imitate_expert_learning_service.py in
-refactor/hexagonal-v1, Step 2. The original service file now imports
-these symbols back.
+Shared by the top-lap reference model and downstream classifiers.
 """
 
 from dataclasses import asdict, dataclass

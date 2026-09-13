@@ -8,11 +8,13 @@ import PrivateRoute from "views/routers/PrivateRoute";
 import MainDashboard from 'views/dashboard/MainDashboard'
 import UserProfile from 'views/user-profile/user-profile'
 import EnvironmentProvider from 'contexts/EnvironmentContext'
+import DesktopGameProvider from 'contexts/DesktopGameContext'
 import AiLabelsProvider from 'contexts/AiLabelsContext'
 import UserSummaryProvider from 'contexts/UserSummaryContext'
 import CircuitMapsProvider from 'contexts/CircuitMapsContext'
 import LandingPage from 'views/landing-page/LandingPage'
 import { useAuth } from 'hooks/AuthProvider'
+import WindowFrame from 'components/window-frame/WindowFrame'
 
 const FloatingChat = React.lazy(() => import('views/floating-chat/FloatingChat'));
 
@@ -43,34 +45,46 @@ function App() {
     // Render bare — no .App wrapper, since .App paints a full-viewport
     // background that would defeat the Electron window's transparency.
     return (
-      <React.Suspense fallback={null}>
-        <FloatingChat />
-      </React.Suspense>
+      <EnvironmentProvider>
+        <DesktopGameProvider>
+          <React.Suspense fallback={null}>
+            <FloatingChat />
+          </React.Suspense>
+        </DesktopGameProvider>
+      </EnvironmentProvider>
     );
   }
 
+  const hasCustomWindowFrame = typeof window !== 'undefined'
+    && Boolean(window.electronAPI?.windowControls);
+
   return (
-    <div className="App">
-      <Router>
-        <EnvironmentProvider>
-          <AuthProvider>
-            <Routes>
-              {/* Landing page — only shown when not logged in */}
-              <Route path="/" element={<PublicRoute><LandingPage /></PublicRoute>} />
-              {/*the '/login' path is mapped to the Login component, rendering it when the URL matches*/}
-              <Route path="/login" element={<PublicRoute><LoginUser /></PublicRoute>} />
-              <Route path="/register" element={<PublicRoute><RegisterUser /></PublicRoute>} />
-              {/*The <PrivateRoute /> component serves as a guard for protecting  */}
-              <Route element={<PrivateRoute />}>
-                <Route element={<PostLoginProviders />}>
-                  <Route path="/dashboard" element={<MainDashboard />} />
-                  <Route path="/profile" element={<UserProfile />} />
-                </Route>
-              </Route>
-            </Routes>
-          </AuthProvider>
-        </EnvironmentProvider>
-      </Router>
+    <div className={`App${hasCustomWindowFrame ? ' App--desktop' : ''}`}>
+      <WindowFrame />
+      <main className="App__viewport">
+        <Router>
+          <EnvironmentProvider>
+            <DesktopGameProvider>
+              <AuthProvider>
+                <Routes>
+                  {/* Landing page — only shown when not logged in */}
+                  <Route path="/" element={<PublicRoute><LandingPage /></PublicRoute>} />
+                  {/*the '/login' path is mapped to the Login component, rendering it when the URL matches*/}
+                  <Route path="/login" element={<PublicRoute><LoginUser /></PublicRoute>} />
+                  <Route path="/register" element={<PublicRoute><RegisterUser /></PublicRoute>} />
+                  {/*The <PrivateRoute /> component serves as a guard for protecting  */}
+                  <Route element={<PrivateRoute />}>
+                    <Route element={<PostLoginProviders />}>
+                      <Route path="/dashboard" element={<MainDashboard />} />
+                      <Route path="/profile" element={<UserProfile />} />
+                    </Route>
+                  </Route>
+                </Routes>
+              </AuthProvider>
+            </DesktopGameProvider>
+          </EnvironmentProvider>
+        </Router>
+      </main>
     </div>
   );
 }

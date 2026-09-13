@@ -5,7 +5,6 @@ import { offsetBezierPoints, Point, getBezierTangent, getEndDirection, pointOnCu
 import apiService from 'services/api.service';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { AnalysisContext } from '../analysis-context';
-import LiveAnalysisSessionRecording from '../liveAnalysisSessionRecording';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { IconButton } from '@radix-ui/themes';
 import { ZoomInIcon, ZoomOutIcon } from '@radix-ui/react-icons';

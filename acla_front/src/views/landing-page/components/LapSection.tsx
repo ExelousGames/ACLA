@@ -317,7 +317,7 @@ const LapSection: React.FC = () => {
         >
           <div className="lp-lap__intro-chapter">Chapter 03</div>
           <h2 className="lp-lap__intro-title">
-            A Lap With <span className="lp-lap__intro-brand">ACLA</span>
+            A Lap With <span className="lp-lap__intro-brand">Kestrel</span>
           </h2>
           <p className="lp-lap__intro-sub">Suzuka layout · lap 14 / 53</p>
           <div className="lp-lap__intro-hint">Scroll to begin <span>↓</span></div>
@@ -480,7 +480,7 @@ const LapSection: React.FC = () => {
             <div className="lp-lap__hud-section lp-lap__hud-section--brand">
               <span className="lp-lap__hud-led" />
               <div className="lp-lap__hud-brand-text">
-                <div className="lp-lap__hud-title">ACLA</div>
+                <div className="lp-lap__hud-title">Kestrel</div>
                 <div className="lp-lap__hud-live">LIVE</div>
               </div>
             </div>

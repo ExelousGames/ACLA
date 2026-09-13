@@ -1,11 +1,20 @@
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Box, Button, Flex, Heading, Select, Spinner, Text, TextField } from '@radix-ui/themes';
 import { CheckIcon, Cross2Icon, PauseIcon, PlayIcon, PlusIcon, ReloadIcon, TrashIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
 import { fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 'services/circuitMapService';
 import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
-import { AnalysisContext } from 'views/lap-analysis/analysis-context';
+import {
+    OPERATION_COMPONENT_NAMES,
+    useOptionalOperationComponentSnapshot,
+} from 'contexts/OperationComponentRefContext';
+import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
+import {
+    liveTelemetryStore,
+    useCurrentTelemetry,
+    useTelemetryStatus,
+} from 'views/live-session/live-telemetry-store';
 import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CIRCUIT_MAP_GAMES,
@@ -45,6 +54,7 @@ const EMPTY_SAMPLES: CircuitMapSamplesByMode = {
 const getAccTrackKey = (liveData: any, staticData: any): string | null => (
     liveData?.Static_track
     || liveData?.Static?.track
+    || staticData?.Static_track
     || staticData?.track
     || null
 );
@@ -68,7 +78,11 @@ const getSamplesForMode = (samplesByMode: CircuitMapSamplesByMode, mode: Circuit
 );
 
 const CircuitMaps = () => {
-    const analysisContext = useContext(AnalysisContext);
+    const liveSession = useOptionalOperationComponentSnapshot<LiveSessionRuntime>(
+        OPERATION_COMPONENT_NAMES.LIVE_SESSION,
+    );
+    const currentTelemetry = useCurrentTelemetry();
+    const telemetryStatus = useTelemetryStatus();
     const { refreshCircuitMaps, upsertCachedCircuitMap } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
@@ -95,14 +109,15 @@ const CircuitMaps = () => {
     const [isSaving, setIsSaving] = useState(false);
 
     const isAcc = game === 'acc';
-    const isAccLive = isAcc && analysisContext.TelemetryDataLiveStatus === ACC_STATUS.ACC_LIVE;
+    const isAccLive = isAcc && telemetryStatus === ACC_STATUS.ACC_LIVE;
     const sampleCount = countCircuitMapSamples(samplesByMode);
-    const currentAccTrackKey = getAccTrackKey(analysisContext.liveData, analysisContext.recordedSessioStaticsData);
+    const currentAccTrackKey = getAccTrackKey(
+        currentTelemetry,
+        liveSession?.staticData ?? {},
+    );
     const liveCapture = useMemo(() => (
-        isAccLive && analysisContext.liveData && typeof analysisContext.liveData === 'object'
-            ? extractAccCaptureSample(analysisContext.liveData as Record<string, any>, liveSequenceRef.current)
-            : null
-    ), [analysisContext.liveData, isAccLive]);
+        isAccLive ? extractAccCaptureSample(currentTelemetry, liveSequenceRef.current) : null
+    ), [currentTelemetry, isAccLive]);
 
     const loadMapList = useCallback(async (nextGame: CircuitMapGame = game) => {
         setListState('loading');
@@ -158,19 +173,29 @@ const CircuitMaps = () => {
     }, []);
 
     useEffect(() => {
-        if (!isCapturing || !isAccLive || !liveCapture) {
-            return;
-        }
+        return liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') {
+                liveSequenceRef.current = 0;
+                lastCaptureSignatureRef.current = '';
+                return;
+            }
+            if (
+                event.type !== 'frame'
+                || !isCapturing
+                || !isAcc
+                || event.telemetryStatus !== ACC_STATUS.ACC_LIVE
+            ) return;
 
-        const signature = `${liveCapture.bin}:${liveCapture.position.x}:${liveCapture.position.y}:${liveCapture.position.z}`;
-        if (signature === lastCaptureSignatureRef.current) {
-            return;
-        }
+            const liveCapture = extractAccCaptureSample(event.sample, liveSequenceRef.current);
+            if (!liveCapture) return;
+            const signature = `${liveCapture.bin}:${liveCapture.position.x}:${liveCapture.position.y}:${liveCapture.position.z}`;
+            if (signature === lastCaptureSignatureRef.current) return;
 
-        lastCaptureSignatureRef.current = signature;
-        liveSequenceRef.current += 1;
-        setSamplesByMode((previous) => upsertCaptureModeSample(previous, captureMode, liveCapture));
-    }, [captureMode, isAccLive, isCapturing, liveCapture]);
+            lastCaptureSignatureRef.current = signature;
+            liveSequenceRef.current += 1;
+            setSamplesByMode((previous) => upsertCaptureModeSample(previous, captureMode, liveCapture));
+        }, { replayLatest: true });
+    }, [captureMode, isAcc, isCapturing]);
 
     const loadMap = useCallback(async (mapId: string) => {
         setSelectedMapId(mapId);

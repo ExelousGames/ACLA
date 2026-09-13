@@ -1,0 +1,489 @@
+import { asTool } from 'components/ai-operations/tool';
+import {
+    LiveRangeTodoListRunner,
+    calculateForwardCircularDistance,
+    calculateLiveRangeEta,
+    calculateRollingForwardRate,
+    crossedLiveRangeTodoPosition,
+} from 'components/ai-operations/LiveRangeTodoList';
+import type {
+    LiveRangeTodoEventInput,
+    LiveRangeTodoEventUpdate,
+} from 'components/ai-operations';
+import {
+    createOperationFrom,
+    createControlledOperation,
+    resolvedOperation,
+} from 'components/ai-operations';
+import {
+    OPERATION_COMPONENT_NAMES,
+    createOperationComponentRefDirectory,
+} from 'contexts/OperationComponentRefContext';
+
+const event = (
+    id: string,
+    normalizedPosition: number,
+    taskStart: LiveRangeTodoEventInput['taskStart'] = jest.fn(() => (
+        asTool(resolvedOperation({}, 'complete'))
+    )),
+): LiveRangeTodoEventInput => ({
+    id,
+    normalized_position: normalizedPosition,
+    lead_time_seconds: 0,
+    content: { title: id },
+    taskStart,
+});
+
+const makeDue = (runner: LiveRangeTodoListRunner, endPosition = 0.5) => {
+    runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_laps: 1 });
+    runner.acceptTelemetry({ Graphics_normalized_car_position: endPosition, Graphics_completed_laps: 1 });
+};
+
+const flushPromises = async () => {
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+};
+
+describe('live range helpers', () => {
+    it('calculates circular distance, ETA, and rollover crossings', () => {
+        expect(calculateForwardCircularDistance(0.9, 0.1)).toBeCloseTo(0.2);
+        expect(calculateLiveRangeEta(0.9, 0.1, 0.1)).toBeCloseTo(2);
+        expect(crossedLiveRangeTodoPosition(
+            { position: 0.95, receivedAt: 0, lap: 2 },
+            { position: 0.05, receivedAt: 1000, lap: 3 },
+            0.99,
+        )).toBe(true);
+    });
+
+    it('has no finite ETA without measured forward movement', () => {
+        expect(calculateRollingForwardRate([
+            { position: 0.1, receivedAt: 1_000 },
+            { position: 0.1, receivedAt: 2_000 },
+        ])).toBe(0);
+        expect(calculateLiveRangeEta(0.1, 0.4, 0)).toBeNull();
+        expect(calculateLiveRangeEta(0.1, 0.4, null)).toBeNull();
+    });
+});
+
+describe('LiveRangeTodoListRunner executable events', () => {
+    it('exposes the live range queue as a workflow operation', async () => {
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent(event('queued', 0.2));
+        const workflow = runner.getForAi();
+
+        expect(runner.kind).toBe('workflow');
+        expect(workflow.kind).toBe('workflow');
+        await expect(workflow.result).resolves.toMatchObject({ status: 'ready', event_count: 1 });
+        runner.dispose();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    it('removes its registration completely after the final task finishes', async () => {
+        const directory = createOperationComponentRefDirectory();
+        const runner = new LiveRangeTodoListRunner(
+            OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        );
+        runner.addComponentRef(directory);
+        runner.addEvent(event('one', 0.2));
+
+        makeDue(runner, 0.25);
+        await flushPromises();
+
+        expect(directory.findComponentRef(
+            OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        )).toBeNull();
+    });
+
+    it('waits for measured forward movement before estimating arrival', () => {
+        const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent(event('measured', 0.4));
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.1,
+            Graphics_completed_laps: 1,
+        });
+
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeNull();
+
+        now.mockReturnValue(2_000);
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.2,
+            Graphics_completed_laps: 1,
+        });
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeCloseTo(2);
+    });
+
+    it('keeps stationary events pending regardless of elapsed time', () => {
+        const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+        const taskStart = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent({
+            ...event('stationary', 0.4, taskStart),
+            lead_time_seconds: 2,
+        });
+
+        for (let time = 1_000; time <= 60_000; time += 1_000) {
+            now.mockReturnValue(time);
+            runner.acceptTelemetry({
+                Graphics_normalized_car_position: 0.1,
+                Graphics_completed_laps: 1,
+            });
+        }
+
+        expect(taskStart).not.toHaveBeenCalled();
+        expect(runner.get().todo_list?.events[0]).toMatchObject({
+            status: 'pending',
+            eta_seconds: null,
+        });
+    });
+
+    it('does not count down a previous measured ETA while stopped and resumes from movement', async () => {
+        const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+        const taskStart = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.replaceEvents([
+            { ...event('first', 0.5, taskStart), lead_time_seconds: 2 },
+            { ...event('second', 0.6, taskStart), lead_time_seconds: 2 },
+        ]);
+        const sample = (time: number, position: number) => {
+            now.mockReturnValue(time);
+            runner.acceptTelemetry({
+                Graphics_normalized_car_position: position,
+                Graphics_completed_laps: 1,
+            });
+        };
+
+        sample(1_000, 0.1);
+        sample(2_000, 0.2);
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeCloseTo(3);
+
+        for (let time = 3_000; time <= 60_000; time += 1_000) {
+            sample(time, 0.2);
+        }
+
+        expect(taskStart).not.toHaveBeenCalled();
+        expect(runner.get().todo_list?.events).toEqual([
+            expect.objectContaining({ id: 'first', status: 'pending', eta_seconds: null }),
+            expect.objectContaining({ id: 'second', status: 'pending', eta_seconds: null }),
+        ]);
+
+        sample(61_000, 0.25);
+        expect(taskStart).not.toHaveBeenCalled();
+        sample(62_000, 0.36);
+        expect(taskStart).toHaveBeenCalledTimes(1);
+        await flushPromises();
+        sample(63_000, 0.45);
+        expect(taskStart).toHaveBeenCalledTimes(2);
+    });
+
+    it('discards the previous ETA when telemetry resumes after a gap', () => {
+        const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+        const taskStart = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent({ ...event('gap', 0.5, taskStart), lead_time_seconds: 2 });
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.1,
+            Graphics_completed_laps: 1,
+        });
+        now.mockReturnValue(2_000);
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.2,
+            Graphics_completed_laps: 1,
+        });
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeCloseTo(3);
+
+        now.mockReturnValue(60_000);
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.2,
+            Graphics_completed_laps: 1,
+        });
+
+        expect(taskStart).not.toHaveBeenCalled();
+        expect(runner.get().todo_list?.events[0].eta_seconds).toBeNull();
+    });
+
+    it('sorts recalculated ETAs before starting the first due task', () => {
+        const now = jest.spyOn(Date, 'now');
+        now.mockReturnValue(1_000);
+        const orderAtStart: string[][] = [];
+        const fartherStart = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
+        const nearerStart = jest.fn(() => {
+            orderAtStart.push(
+                runner.get().todo_list?.events.map((item) => item.id) ?? [],
+            );
+            return asTool(resolvedOperation({}, 'complete'));
+        });
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.replaceEvents([
+            { ...event('farther', 0.3, fartherStart), lead_time_seconds: 2 },
+            { ...event('nearer', 0.25, nearerStart), lead_time_seconds: 2 },
+        ]);
+
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.1,
+            Graphics_completed_laps: 1,
+        });
+        now.mockReturnValue(2_000);
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.2,
+            Graphics_completed_laps: 1,
+        });
+
+        expect(nearerStart).toHaveBeenCalledTimes(1);
+        expect(fartherStart).not.toHaveBeenCalled();
+        expect(orderAtStart).toEqual([['nearer', 'farther']]);
+        now.mockRestore();
+    });
+
+    it('waits for telemetry, invokes taskStart, and omits functions from snapshots', async () => {
+        const taskStart = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
+        const runner = new LiveRangeTodoListRunner('live-range');
+
+        const result = runner.addEvent(event('one', 0.2, taskStart));
+
+        expect(result.todo_list?.events[0]).not.toHaveProperty('taskStart');
+        expect(taskStart).not.toHaveBeenCalled();
+        makeDue(runner, 0.25);
+        expect(taskStart).toHaveBeenCalledWith(expect.any(AbortSignal));
+        await flushPromises();
+        expect(runner.get()).toMatchObject({ status: 'empty' });
+    });
+
+    it('does not queue a due task behind a running task', async () => {
+        const firstController = createControlledOperation<Record<string, never>, never, 'complete'>();
+        const secondController = createControlledOperation<Record<string, never>, never, 'complete'>();
+        const first = jest.fn(() => asTool(firstController.operation));
+        const second = jest.fn(() => asTool(secondController.operation));
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.replaceEvents([event('one', 0.2, first), event('two', 0.4, second)]);
+
+        makeDue(runner);
+
+        expect(first).toHaveBeenCalledTimes(1);
+        expect(second).not.toHaveBeenCalled();
+        expect(runner.get().todo_list?.events).toEqual([
+            expect.objectContaining({ id: 'one', status: 'running' }),
+            expect.objectContaining({ id: 'two', status: 'pending' }),
+        ]);
+
+        firstController.resolve('complete', {});
+        await flushPromises();
+        expect(second).not.toHaveBeenCalled();
+        expect(runner.get().todo_list?.events).toEqual([
+            expect.objectContaining({ id: 'two', status: 'pending' }),
+        ]);
+
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.6,
+            Graphics_completed_laps: 1,
+        });
+        expect(second).not.toHaveBeenCalled();
+
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.3,
+            Graphics_completed_laps: 2,
+        });
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.45,
+            Graphics_completed_laps: 2,
+        });
+        expect(second).toHaveBeenCalledTimes(1);
+
+        secondController.resolve('complete', {});
+        await flushPromises();
+        expect(runner.get().todo_list?.events).toHaveLength(0);
+    });
+
+    it('removes a task only after notifyTerminated and waits for telemetry before starting another', async () => {
+        let notifyFirstTerminated!: (termination: {
+            status: string;
+            result: Record<string, never> | Error;
+        }) => void;
+        const firstOperation = {
+            result: Promise.resolve({}),
+            statuses: [],
+            abort: jest.fn(),
+            notifyTerminated: (listener: typeof notifyFirstTerminated) => {
+                notifyFirstTerminated = listener;
+                return () => undefined;
+            },
+        };
+        const first = jest.fn(() => asTool(firstOperation));
+        const second = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.replaceEvents([event('one', 0.2, first), event('two', 0.8, second)]);
+
+        makeDue(runner);
+        await flushPromises();
+
+        expect(second).not.toHaveBeenCalled();
+        expect(runner.get().todo_list?.events[0]).toMatchObject({
+            id: 'one',
+            status: 'running',
+        });
+
+        notifyFirstTerminated({ status: 'complete', result: {} });
+        await flushPromises();
+
+        expect(second).not.toHaveBeenCalled();
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.9,
+            Graphics_completed_laps: 1,
+        });
+        expect(second).toHaveBeenCalledTimes(1);
+    });
+
+    it('unsubscribes from termination before aborting a replaced task', () => {
+        const lifecycle: string[] = [];
+        let staleTermination!: (termination: { status: string; result: Record<string, never> }) => void;
+        const operation = {
+            result: new Promise<Record<string, never>>(() => undefined),
+            statuses: [],
+            abort: jest.fn(),
+            notifyTerminated: (listener: typeof staleTermination) => {
+                staleTermination = listener;
+                return () => lifecycle.push('unsubscribe');
+            },
+        };
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent(event('one', 0.2, (signal) => {
+            signal.addEventListener('abort', () => lifecycle.push('abort'));
+            return asTool(operation);
+        }));
+        makeDue(runner, 0.25);
+
+        runner.replaceEvents([event('replacement', 0.8)]);
+
+        expect(lifecycle).toEqual(['unsubscribe', 'abort']);
+        staleTermination({ status: 'complete', result: {} });
+        expect(runner.get().todo_list?.events).toEqual([
+            expect.objectContaining({ id: 'replacement', status: 'pending' }),
+        ]);
+    });
+
+    it('logs synchronous throws and promise rejections without stalling later telemetry', async () => {
+        const failure = new Error('task failed');
+        const finalTask = jest.fn();
+        const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.replaceEvents([
+            event('throws', 0.1, () => { throw failure; }),
+            event('rejects', 0.2, () => asTool(createOperationFrom(() => {
+                throw failure;
+            }, 'failed'))),
+            event('continues', 0.3, () => {
+                finalTask();
+                return asTool(resolvedOperation({}, 'complete'));
+            }),
+        ]);
+
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0,
+            Graphics_completed_laps: 1,
+        });
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.15,
+            Graphics_completed_laps: 1,
+        });
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.25,
+            Graphics_completed_laps: 1,
+        });
+        await flushPromises();
+        runner.acceptTelemetry({
+            Graphics_normalized_car_position: 0.35,
+            Graphics_completed_laps: 1,
+        });
+        await flushPromises();
+
+        expect(finalTask).toHaveBeenCalledTimes(1);
+        expect(consoleError).toHaveBeenCalledWith(
+            "Live range to-do event 'throws' task failed.",
+            failure,
+        );
+        expect(consoleError).toHaveBeenCalledWith(
+            "Live range to-do event 'rejects' task failed.",
+            failure,
+        );
+        expect(runner.get().todo_list?.events).toHaveLength(0);
+        consoleError.mockRestore();
+    });
+
+    it.each([
+        ['update', (runner: LiveRangeTodoListRunner) => runner.updateEvents([{ id: 'one', content: { description: 'updated' } }])],
+        ['reset', (runner: LiveRangeTodoListRunner) => runner.resetEvents(['one'])],
+        ['remove', (runner: LiveRangeTodoListRunner) => runner.removeEvents(['one'])],
+        ['replacement', (runner: LiveRangeTodoListRunner) => runner.replaceEvents([event('replacement', 0.8)])],
+        ['clear', (runner: LiveRangeTodoListRunner) => runner.clear()],
+        ['session reset', (runner: LiveRangeTodoListRunner) => runner.reset()],
+        ['disposal', (runner: LiveRangeTodoListRunner) => runner.dispose()],
+    ])('aborts running work on %s', (_name, mutate) => {
+        let receivedSignal: AbortSignal | undefined;
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent(event('one', 0.2, (signal) => {
+            receivedSignal = signal;
+            return asTool(createControlledOperation<Record<string, never>, never, 'complete'>().operation);
+        }));
+        makeDue(runner, 0.25);
+
+        mutate(runner);
+
+        expect(receivedSignal?.aborted).toBe(true);
+        runner.dispose();
+    });
+
+    it('preserves taskStart on ordinary updates and replaces it when explicitly supplied', async () => {
+        const preserved = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent(event('one', 0.2, preserved));
+        runner.updateEvents([{ id: 'one', content: { description: 'Current description' } }]);
+        makeDue(runner, 0.25);
+        expect(preserved).toHaveBeenCalledTimes(1);
+        await flushPromises();
+
+        const original = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
+        const replacement = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
+        const secondRunner = new LiveRangeTodoListRunner('live-range-two');
+        secondRunner.addEvent(event('two', 0.2, original));
+        secondRunner.updateEvents([{ id: 'two', taskStart: replacement }]);
+        makeDue(secondRunner, 0.25);
+        expect(original).not.toHaveBeenCalled();
+        expect(replacement).toHaveBeenCalledTimes(1);
+    });
+
+    it('validates functions, content, legacy fields, and duplicate ids atomically', () => {
+        const runner = new LiveRangeTodoListRunner('live-range');
+        runner.addEvent(event('existing', 0.8));
+
+        expect(() => runner.addEvent({
+            id: 'missing-function',
+            normalized_position: 0.2,
+            content: { title: 'Missing function' },
+        } as LiveRangeTodoEventInput)).toThrow(/taskStart function/);
+        expect(() => runner.addEvent({
+            ...event('legacy-data', 0.2),
+            data: {},
+        } as LiveRangeTodoEventInput)).toThrow(/property 'data' is not supported/);
+        expect(() => runner.addEvent({
+            ...event('fallback-eta', 0.2),
+            eta_seconds: 5,
+        } as LiveRangeTodoEventInput)).toThrow(/property 'eta_seconds' is not supported/);
+        expect(() => runner.addEvent({
+            ...event('legacy-detail', 0.2),
+            content: { title: 'Legacy', detail: 'No longer supported' },
+        } as LiveRangeTodoEventInput)).toThrow(/property 'detail' is not supported/);
+        expect(() => runner.replaceEvents([
+            event('duplicate', 0.2),
+            event('duplicate', 0.4),
+        ])).toThrow(/Duplicate/);
+        expect(runner.get().todo_list?.events).toEqual([
+            expect.objectContaining({ id: 'existing' }),
+        ]);
+        expect(() => runner.updateEvents([{
+            id: 'existing',
+            data: {},
+        } as LiveRangeTodoEventUpdate])).toThrow(/property 'data' is not supported/);
+    });
+});

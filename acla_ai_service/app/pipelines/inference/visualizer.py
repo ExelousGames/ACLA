@@ -102,13 +102,13 @@ def visualize_optimal_segments(
         *tire_context_features,
     ]
 
-    segment_count = min(max_segments, len(optimal_segments))
-    if segment_count <= 0:
+    selected_segment_count = min(max_segments, len(optimal_segments))
+    if selected_segment_count <= 0:
         return []
 
     rng = np.random.default_rng(random_seed)
     selected_indices = sorted(
-        rng.choice(len(optimal_segments), size=segment_count, replace=False).tolist()
+        rng.choice(len(optimal_segments), size=selected_segment_count, replace=False).tolist()
     )
 
     for segment_idx in selected_indices:

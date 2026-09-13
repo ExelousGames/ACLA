@@ -3,10 +3,9 @@ label. Owned by the domain layer; consumed by the lap splitter and the
 ``locate_circuit_section`` tool to project telemetry samples onto named
 sections.
 
-This lives outside ``app/skills/internal/annotation/sub_label_annotation.json``
-on purpose: the skill JSON is the LLM-facing surface (RAG hybrid index
-over descriptions + annotation_guideline), and geometric ranges are
-neither read by the LLM nor part of label prose.
+This lives outside ``app/internal_knowledge_base/sub_label_annotation.json``
+on purpose: the knowledge-base JSON is the LLM-facing prose surface, while
+geometric ranges are neither read by the LLM nor part of label prose.
 
 Each entry is ``(lo, hi)`` on the normalized lap position. ``hi < lo``
 means the section wraps across the start/finish line (e.g. Brands Hatch

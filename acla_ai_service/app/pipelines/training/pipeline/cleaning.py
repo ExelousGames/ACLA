@@ -286,7 +286,7 @@ async def process_lap_sessions_efficiently(
     *,
     telemetry_store,
     cache_config,
-    imitate_expert_feature_names: List[str],
+    top_lap_reference_feature_names: List[str],
     telemetry_time_gap_ms: int = 100,
     processed_sessions_cache_key: Optional[str] = None,
     protected_session_ids: Optional[Iterable[Any]] = None,
@@ -305,7 +305,7 @@ async def process_lap_sessions_efficiently(
     total_processed = 0
     chunk_idx = 0
 
-    features = imitate_expert_feature_names
+    features = top_lap_reference_feature_names
 
     def update_top_laps(candidate: Dict[str, Any]) -> None:
         records = candidate.get("records", [])

@@ -4,16 +4,9 @@ import traceback
 from pprint import pformat
 
 from .batch import _load_batch_session
-from .components.annotation_provider_controls import render_annotation_provider_config
 from .components.opponent_interaction import format_targeted_car
 from .shared import build_segment, save_annotations, LABEL_MAPPING
-from app.local_annotation_agent import ClaudeUsageExhausted
-
-
-_USAGE_EXHAUSTED_WARNING = (
-    "⚠️ Claude usage is exhausted (Max-plan quota / 5-hour window / "
-    "credit balance). Batch halted — try again later."
-)
+from app.local_annotation_agent.workflow import AnnotationPipelineConfig
 
 _BATCH_LAP_NOTE_MAX_CHARS = 4000
 _BATCH_LAP_MIN_SECTION_ILOCS = 5
@@ -88,12 +81,7 @@ def _targeted_car_suffix(opponent_interaction) -> str:
 
 
 def _render_provider_config(key_prefix: str, *, default_temperature: float, default_max_new_tokens: int):
-    return render_annotation_provider_config(
-        key_prefix=key_prefix,
-        default_temperature=default_temperature,
-        default_max_new_tokens=default_max_new_tokens,
-        default_tool_budget=3,
-    )
+    return AnnotationPipelineConfig(provider_id="deterministic")
 
 
 def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
@@ -102,12 +90,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         track_name_to_circuit_id, run_split,
     )
 
-    st.header("Batch Lap-to-Segment Excerpter (AI Provider)")
+    st.header("Batch Deterministic Lap-to-Segment Annotation")
     st.write(
         "Pick a lap range; the deterministic splitter partitions it into "
         "per-`circuit_section` sub-ranges. If opponent data is present, it "
         "emits only close racing-interaction windows. "
-        "The selected AI provider annotates every section automatically and auto-saves each "
+        "Deterministic requirements annotate every section and auto-save each "
         "result as a new segment."
     )
 
@@ -206,7 +194,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     if not run_clicked:
         return
     if config is None:
-        st.error("No annotation AI provider is available.")
+        st.error("Deterministic annotation configuration is unavailable.")
         return
 
     try:
@@ -240,7 +228,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
 
     log(f"Starting batch lap excerpter: {len(segments)} section(s), "
         f"lap=[{int(lap_start)}, {int(lap_end)}], circuit={circuit_id}, "
-        f"provider={config.provider_id}")
+        "mode=deterministic")
 
     existing_annotations = _collect_existing_lap_annotations(int(lap_start), int(lap_end))
     resume_from_index = None
@@ -292,7 +280,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
 
         status_text.markdown(
             f"**Section #{i + 1}/{len(segments)}** `{sec_id}`"
-            f"{target_suffix} — [{sec_start}, {sec_end}], running {config.provider_id}..."
+            f"{target_suffix} — [{sec_start}, {sec_end}], calculating labels..."
         )
         log(f"Section #{i} `{sec_id}`{target_suffix}: running [{sec_start}, {sec_end}]")
 
@@ -312,12 +300,6 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
                 opponent_interaction=seg.get("opponent_interaction"),
                 existing_section_annotations=existing_annotations,
             )
-        except ClaudeUsageExhausted as e:
-            log(f"Section #{i} `{sec_id}`: HALTED — Claude usage exhausted: {e}")
-            st.warning(_USAGE_EXHAUSTED_WARNING)
-            i += 1
-            progress_bar.progress(i / len(segments))
-            break
         except Exception as e:
             error_count += 1
             log(f"Section #{i} `{sec_id}`: ERROR — {e}")

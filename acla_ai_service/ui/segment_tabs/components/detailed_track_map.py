@@ -78,8 +78,8 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
         # Create windowed dataframe for trajectory plotting using Global Range
         start_idx = min(viz_start_idx, len(df) - 1)
         
-        # Ensure indices are within bounds (include end index in slice)
-        safe_end_idx = min(viz_end_idx + 1, len(df))
+        # Segment end indices are exclusive.
+        safe_end_idx = min(viz_end_idx, len(df))
         
         context_plot_df = pd.DataFrame(columns=df.columns)
 
@@ -89,7 +89,7 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
              selected_time_idx = start_idx
         else:
              map_plot_df = df.iloc[start_idx:safe_end_idx]
-             selected_time_idx = min(viz_end_idx, len(df) - 1)
+             selected_time_idx = safe_end_idx - 1
              
              # Calculate extended range for context
              segment_len = safe_end_idx - start_idx
@@ -506,7 +506,7 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                 use_3d=True,
                 has_z=has_player_pos_z,
             )
-            
+
             fig_map.update_layout(uirevision=session_id, height=800)
             st.plotly_chart(fig_map, width='stretch')
         else:

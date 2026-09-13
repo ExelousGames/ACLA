@@ -1,0 +1,918 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
+import { asWorkflow, readWorkflowCall, type Workflow, type WorkflowCall, type WorkflowProgress } from './workflow';
+import {
+    OPERATION_COMPONENT_NAMES,
+    type NamedOperationComponentHandle,
+} from 'contexts/OperationComponentRefContext';
+import { bindWorkflowDispatcher, type WorkflowDispatcher } from './tool';
+import type { FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import {
+    createControlledOperation,
+    createOperationFrom,
+    readOperationCall,
+    type OperationCall,
+    type ControlledOperation,
+    type Operation,
+} from './operation';
+import {
+    ProcedurePlanReplacedError,
+    ProcedurePlanStepFailedError,
+} from 'contexts/OperationComponentError';
+import { InvalidProcedurePlanRequestsError, serializeError, type SerializedError } from 'errors/OperationError';
+import type {
+    AiOverlayComponentHandle,
+    AiOverlayRenderer,
+    AiOverlayRendererEvent,
+} from 'views/floating-chat/ai-overlay-types';
+import {
+    isOverlayNonEmptyString,
+    isOverlayRecord,
+} from 'views/floating-chat/overlay-renderer-validation';
+
+export const PROCEDURE_PLAN_STEP_STATUSES = [
+    'pending',
+    'running',
+    'complete',
+    'blocked',
+    'failed',
+    'skipped',
+] as const;
+
+export type ProcedurePlanStepStatus = typeof PROCEDURE_PLAN_STEP_STATUSES[number];
+
+export type ProcedurePlanInput = WorkflowCall<'set_procedure_plan', {
+    goal: string;
+    operations: OperationCall<{ title: string; arguments: Record<string, unknown> }>[];
+}>;
+
+export type AppendProcedurePlanInput = WorkflowCall<'append_procedure_plan', {
+    operations: ProcedurePlanInput['workflow']['operations'];
+}>;
+
+export type ProcedurePlanRequestSnapshot = {
+    type: string;
+    title: string;
+    name?: string;
+    status: ProcedurePlanStepStatus;
+    detail?: string;
+    method?: string;
+    url?: string;
+    payload?: unknown;
+};
+
+export type ProcedurePlanRequest = ProcedurePlanRequestSnapshot;
+
+export type ProcedurePlanSnapshot = {
+    goal: string;
+    requests: ProcedurePlanRequestSnapshot[];
+    currentStep: number;
+    sourceEvent?: string;
+};
+
+export type ProcedurePlanState = {
+    goal: string;
+    requests: ProcedurePlanRequest[];
+    currentStep: number;
+    sourceEvent?: string;
+};
+
+export type ProcedurePlanTaskErrorHandler = (
+    request: ProcedurePlanRequestSnapshot,
+    error: unknown,
+) => void;
+
+type ProcedurePlanChangeHandler = (plan: ProcedurePlanState | null) => void;
+
+export type ProcedurePlanTaskResult = {
+    title: string;
+    tool_name: string;
+    status: 'completed' | 'failed';
+    run_id: string;
+    output?: unknown;
+    error?: SerializedError;
+};
+
+export type ProcedurePlanProgress = WorkflowProgress<{
+    step: number;
+    title: string;
+    detail?: string;
+}>;
+
+const createProcedurePlanProgress = (): ProcedurePlanProgress => ({
+    completed_step_count: 0,
+    stopped_at_step: null,
+});
+
+const describeProcedurePlanStep = (
+    plan: ProcedurePlanState | null,
+    index: number,
+): ProcedurePlanProgress['stopped_at_step'] => {
+    const request = plan?.requests[index];
+    return request ? {
+        step: index + 1,
+        title: request.title,
+        ...(request.detail ? { detail: request.detail } : {}),
+    } : null;
+};
+
+export type ProcedurePlanRunResult = ProcedurePlanProgress & {
+    status: 'complete' | 'advanced' | 'cleared';
+    goal: string;
+    current_request: number;
+    request?: ProcedurePlanRequestSnapshot;
+    run_id?: string;
+    task_results: ProcedurePlanTaskResult[];
+    request_count: number;
+    reason?: string;
+};
+
+export interface ProcedurePlanHandle extends NamedOperationComponentHandle, AiOverlayComponentHandle<ProcedurePlanSnapshot | null> {
+    createProcedurePlan(input: ProcedurePlanInput): Workflow<ProcedurePlanRunResult>;
+    appendProcedurePlan(input: AppendProcedurePlanInput, caller?: WorkflowComponentBase<any>): Workflow<ProcedurePlanRunResult>;
+    advancePlanStep(reason?: string): Workflow<ProcedurePlanRunResult>;
+    clearProcedurePlan(reason?: string): Workflow<ProcedurePlanRunResult>;
+    getProcedurePlan(): ProcedurePlanState | null;
+}
+
+type ActiveProcedurePlanOperation = {
+    progress: ProcedurePlanProgress;
+    controller: ControlledOperation<
+        ProcedurePlanRunResult,
+        never,
+        ProcedurePlanRunResult['status'] | 'failed' | 'cancelled' | 'replaced'
+    >;
+    nestedOperation: Operation<
+        import('./RepeatablePlan').NestedOperationResult,
+        import('./RepeatablePlan').NestedOperationStatus
+    > | null;
+};
+
+const defaultProcedurePlanErrorHandler: ProcedurePlanTaskErrorHandler = (request, error) => {
+    console.error(`Procedure plan task '${request.title}' failed.`, error);
+};
+
+export class ProcedurePlanRunner
+extends WorkflowComponentBase<ProcedurePlanSnapshot | null>
+implements ProcedurePlanHandle {
+    private plan: ProcedurePlanState | null = null;
+    private active = false;
+    private taskResults: ProcedurePlanTaskResult[] = [];
+    private lastRunId: string | undefined;
+    private generation = 0;
+    private activeOperation: ActiveProcedurePlanOperation | null = null;
+    private executionParent?: WorkflowComponentBase<any>;
+    private readonly onChange: ProcedurePlanChangeHandler;
+    private readonly onError: ProcedurePlanTaskErrorHandler;
+
+    constructor(
+        componentName: string,
+        private readonly dispatchOperation: WorkflowDispatcher,
+        onChange?: ProcedurePlanChangeHandler,
+        onError: ProcedurePlanTaskErrorHandler = defaultProcedurePlanErrorHandler,
+    ) {
+        super(componentName, null);
+        this.executionParent = dispatchOperation.workflowCaller;
+        this.dispatchOperation = bindWorkflowDispatcher(dispatchOperation, this);
+        this.onChange = onChange ?? (() => undefined);
+        this.onError = onError;
+    }
+
+    createProcedurePlan(input: ProcedurePlanInput): Workflow<ProcedurePlanRunResult> {
+        return this.replace(input);
+    }
+
+    appendProcedurePlan(input: AppendProcedurePlanInput, caller?: WorkflowComponentBase<any>): Workflow<ProcedurePlanRunResult> {
+        try {
+            const plan = parseAppendProcedurePlanInput(input);
+            plan.requests.forEach((request) => this.dispatchOperation.validate(request.name!));
+            this.assertCanAppend(caller);
+            if (!this.plan) throw new Error('The procedure plan is empty.');
+            this.publish({ ...this.plan, requests: [...this.plan.requests, ...plan.requests] });
+            return asWorkflow(createOperationFrom(() => this.result('advanced'), 'advanced'));
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createProcedurePlanProgress());
+        }
+    }
+
+    advancePlanStep(reason?: string): Workflow<ProcedurePlanRunResult> {
+        return this.advance(reason);
+    }
+
+    clearProcedurePlan(reason?: string): Workflow<ProcedurePlanRunResult> {
+        return this.clear(reason);
+    }
+
+    getProcedurePlan(): ProcedurePlanState | null {
+        return this.get();
+    }
+
+    getComponentType(): string {
+        return 'procedure_plan';
+    }
+
+    getOverlayBehavior(snapshot: ProcedurePlanSnapshot | null) {
+        return {
+            placement: 'flow' as const,
+            requestedStatus: 'expanded' as const,
+            remove: snapshot === null,
+        };
+    }
+
+    getOverlayMetadata() {
+        return {};
+    }
+
+    handleOverlayRendererEvent(_event: AiOverlayRendererEvent): void {
+        // Procedure plan overlays have no renderer-originated events.
+    }
+
+    get(): ProcedurePlanState | null {
+        return this.plan ? cloneProcedurePlanState(this.plan) : null;
+    }
+
+    replace(input: ProcedurePlanInput | null): Workflow<ProcedurePlanRunResult> {
+        try {
+            const plan = input === null ? null : parseProcedurePlanInput(input);
+            plan?.requests.forEach((request) => this.dispatchOperation.validate(request.name!));
+            return this.startOperation(() => this.runReplace(plan));
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createProcedurePlanProgress());
+        }
+    }
+
+    private async runReplace(plan: ProcedurePlanState | null): Promise<ProcedurePlanRunResult> {
+        const generation = ++this.generation;
+        this.active = false;
+        this.taskResults = [];
+        this.lastRunId = undefined;
+        this.publish(plan?.requests.length ? cloneProcedurePlanState(plan) : null);
+        if (!this.plan) return this.result('cleared');
+        return this.runNext(generation);
+    }
+
+    clear(reason?: string): Workflow<ProcedurePlanRunResult> {
+        return asWorkflow(createOperationFrom(() => this.runClear(reason), 'cleared'));
+    }
+
+    private runClear(reason?: string): ProcedurePlanRunResult {
+        this.generation += 1;
+        this.active = false;
+        this.cancelActiveOperation('cancelled', new ProcedurePlanReplacedError(
+            this.getComponentName(),
+            'The procedure plan was cleared.',
+        ));
+        const cleared = this.result('cleared');
+        this.publish(null);
+        return { ...cleared, ...(reason ? { reason } : {}) };
+    }
+
+    advance(reason?: string): Workflow<ProcedurePlanRunResult> {
+        return this.startOperation(() => this.runAdvance(reason));
+    }
+
+    private async runAdvance(reason?: string): Promise<ProcedurePlanRunResult> {
+        if (!this.plan) throw new Error('Cannot advance an empty procedure plan.');
+        if (this.active) throw new Error('Cannot advance while a procedure plan step is running.');
+        const generation = ++this.generation;
+        const result = advanceProcedurePlan(this.plan, reason);
+        if (result.status === 'complete') {
+            return this.result('complete');
+        }
+        this.publish(result.plan);
+        return this.runNext(generation);
+    }
+
+    protected onDispose(): void {
+        this.generation += 1;
+        this.active = false;
+        this.cancelActiveOperation('cancelled', new ProcedurePlanReplacedError(
+            this.getComponentName(),
+            'The procedure plan was disposed.',
+        ));
+        this.plan = null;
+    }
+
+    protected cloneSnapshot(
+        snapshot: ProcedurePlanSnapshot | null,
+    ): ProcedurePlanSnapshot | null {
+        return snapshot ? serializeProcedurePlan(snapshot) : null;
+    }
+
+    private startOperation(
+        run: () => Promise<ProcedurePlanRunResult>,
+    ): Workflow<ProcedurePlanRunResult> {
+        this.cancelActiveOperation('replaced', new ProcedurePlanReplacedError(
+            this.getComponentName(),
+            'The procedure plan operation was replaced.',
+        ));
+        let operation!: ActiveProcedurePlanOperation;
+        const controller = createControlledOperation<
+            ProcedurePlanRunResult,
+            never,
+            ProcedurePlanRunResult['status'] | 'failed' | 'cancelled' | 'replaced'
+        >([], () => this.abortOperation(operation));
+        operation = {
+            controller,
+            nestedOperation: null,
+            progress: createProcedurePlanProgress(),
+        };
+        this.activeOperation = operation;
+        const token = this.beginExecution(this.executionParent);
+        this.executionParent = undefined;
+        this.trackExecution(controller.operation, token);
+        void run().finally(() => {
+            if (this.activeOperation !== operation) return;
+            this.activeOperation = null;
+            this.active = false;
+            this.publish(null);
+        }).then(
+            (result) => operation.controller.resolve(result.status, result),
+            (error) => operation.controller.reject(
+                'failed',
+                error instanceof Error ? error : new Error(String(error)),
+            ),
+        );
+        return asWorkflow(operation.controller.operation, operation.progress);
+    }
+
+    private cancelActiveOperation(
+        status: 'cancelled' | 'replaced',
+        error: Error,
+    ): void {
+        const operation = this.activeOperation;
+        if (!operation) return;
+        this.activeOperation = null;
+        operation.nestedOperation?.abort();
+        operation.nestedOperation = null;
+        operation.controller.reject(status, error);
+    }
+
+    private abortOperation(operation: ActiveProcedurePlanOperation): void {
+        operation.nestedOperation?.abort();
+        operation.nestedOperation = null;
+        if (this.activeOperation !== operation) return;
+        this.activeOperation = null;
+        this.generation += 1;
+        this.active = false;
+        this.publish(null);
+    }
+
+    private publish(plan: ProcedurePlanState | null): void {
+        this.plan = plan;
+        this.publishSnapshot(plan ? serializeProcedurePlan(plan) : null);
+        this.onChange(plan ? cloneProcedurePlanState(plan) : null);
+        if (!plan) this.deleteComponentRef();
+    }
+
+    private async runNext(generation: number): Promise<ProcedurePlanRunResult> {
+        const progress = this.activeOperation!.progress;
+        while (this.plan) {
+            if (generation !== this.generation) {
+                throw new ProcedurePlanReplacedError(
+                    this.getComponentName(),
+                    'The procedure plan operation was replaced.',
+                );
+            }
+            const request = this.plan.requests[this.plan.currentStep];
+            if (!request) {
+                progress.stopped_at_step = null;
+                return this.result('complete');
+            }
+            if (request.status !== 'pending') {
+                this.publish({ ...this.plan, currentStep: this.plan.currentStep + 1 });
+                continue;
+            }
+            this.active = true;
+            progress.stopped_at_step = describeProcedurePlanStep(this.plan, this.plan.currentStep);
+            this.publish({
+                ...this.plan,
+                requests: this.plan.requests.map((item, index) => (
+                    index === this.plan!.currentStep ? { ...item, status: 'running' } : item
+                )),
+            });
+            const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+            let output: import('./RepeatablePlan').NestedOperationResult | null = null;
+            let executionError: unknown;
+            let nestedOperation: Operation<
+                import('./RepeatablePlan').NestedOperationResult,
+                import('./RepeatablePlan').NestedOperationStatus
+            > | null = null;
+            try {
+                const activeOperation = this.activeOperation;
+                nestedOperation = this.dispatchOperation(
+                    request.name as FrontendOperationName,
+                    getProcedurePlanOperationArguments(request),
+                );
+                if (
+                    !activeOperation
+                    || this.activeOperation !== activeOperation
+                    || activeOperation.controller.signal.aborted
+                ) {
+                    nestedOperation.abort();
+                } else {
+                    activeOperation.nestedOperation = nestedOperation;
+                }
+                const termination = await new Promise<{
+                    status: string;
+                    result: import('./RepeatablePlan').NestedOperationResult | Error;
+                }>((resolve) => nestedOperation!.notifyTerminated(resolve));
+                if (termination.result instanceof Error) throw termination.result;
+                output = termination.result;
+            } catch (error) {
+                executionError = error;
+            } finally {
+                if (this.activeOperation?.nestedOperation === nestedOperation) {
+                    this.activeOperation.nestedOperation = null;
+                }
+            }
+            if (generation !== this.generation) {
+                throw new ProcedurePlanReplacedError(
+                    this.getComponentName(),
+                    'The procedure plan operation was replaced.',
+                );
+            }
+            this.active = false;
+            if (!this.plan) return this.result('cleared');
+            const stepError = executionError === undefined
+                ? undefined
+                : new ProcedurePlanStepFailedError(
+                    this.getComponentName(),
+                    executionError instanceof Error && executionError.message
+                        ? executionError.message
+                        : 'The procedure plan step failed.',
+                    { cause: executionError },
+                );
+            const taskResult = this.toTaskResult(request, runId, output, stepError);
+            this.lastRunId = runId;
+            this.taskResults.push(taskResult);
+            if (stepError) {
+                const failedRequest: ProcedurePlanRequestSnapshot = {
+                    ...serializeProcedurePlanRequest(request),
+                    status: 'failed',
+                };
+                this.onError(failedRequest, stepError);
+                throw stepError;
+            }
+            const nextIndex = this.plan.currentStep + 1;
+            progress.completed_step_count += 1;
+            progress.stopped_at_step = describeProcedurePlanStep(this.plan, nextIndex);
+            this.publish({
+                ...this.plan,
+                currentStep: nextIndex,
+                requests: this.plan.requests.map((item, index) => (
+                    index === this.plan!.currentStep ? { ...item, status: 'complete' } : item
+                )),
+            });
+        }
+        return this.result('complete');
+    }
+
+    private toTaskResult(
+        request: ProcedurePlanRequestSnapshot,
+        runId: string,
+        output: import('./RepeatablePlan').NestedOperationResult | null,
+        error: ProcedurePlanStepFailedError | undefined,
+    ): ProcedurePlanTaskResult {
+        return {
+            title: request.title,
+            tool_name: request.name || '',
+            status: error === undefined ? 'completed' : 'failed',
+            run_id: runId,
+            ...(error === undefined
+                ? { output }
+                : { error: serializeError(error) }),
+        };
+    }
+
+    private result(
+        status: ProcedurePlanRunResult['status'],
+        request?: ProcedurePlanRequestSnapshot,
+        runId?: string,
+    ): ProcedurePlanRunResult {
+        return {
+            status,
+            completed_step_count: this.taskResults.filter((result) => result.status === 'completed').length,
+            stopped_at_step: status === 'cleared'
+                ? describeProcedurePlanStep(this.plan, this.plan?.currentStep ?? 0) : null,
+            goal: this.plan?.goal ?? '',
+            current_request: this.plan?.currentStep ?? 0,
+            ...(request ? { request: serializeProcedurePlanRequest(request) } : {}),
+            ...(runId || this.lastRunId ? { run_id: runId || this.lastRunId } : {}),
+            task_results: this.taskResults.map((result) => ({ ...result })),
+            request_count: this.plan?.requests.length ?? this.taskResults.length,
+        };
+    }
+
+}
+
+export type ProcedurePlanAdvanceResult = {
+    plan: ProcedurePlanState;
+    status: 'advanced' | 'complete';
+    current_request: number;
+    current_step: number;
+    request: ProcedurePlanRequest;
+    step: string;
+    reason?: string;
+};
+
+const PROCEDURE_PLAN_DONE_STATUSES: readonly ProcedurePlanStepStatus[] = ['complete', 'failed', 'skipped'];
+
+const serializeProcedurePlanRequest = (
+    request: ProcedurePlanRequest | ProcedurePlanRequestSnapshot,
+): ProcedurePlanRequestSnapshot => ({
+    type: request.type,
+    title: request.title,
+    ...(request.name !== undefined ? { name: request.name } : {}),
+    status: request.status,
+    ...(request.detail !== undefined ? { detail: request.detail } : {}),
+    ...(request.method !== undefined ? { method: request.method } : {}),
+    ...(request.url !== undefined ? { url: request.url } : {}),
+    ...(request.payload !== undefined ? { payload: toStablePlanValue(request.payload) } : {}),
+});
+
+const cloneProcedurePlanState = (plan: ProcedurePlanState): ProcedurePlanState => ({
+    ...plan,
+    requests: plan.requests.map((request) => serializeProcedurePlanRequest(request)),
+});
+
+export const serializeProcedurePlan = (
+    plan: ProcedurePlanState | ProcedurePlanSnapshot,
+): ProcedurePlanSnapshot => ({
+    goal: plan.goal,
+    requests: plan.requests.map(serializeProcedurePlanRequest),
+    currentStep: plan.currentStep,
+    ...(plan.sourceEvent !== undefined ? { sourceEvent: plan.sourceEvent } : {}),
+});
+
+const toStablePlanValue = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+        return value.map(toStablePlanValue);
+    }
+    if (value && typeof value === 'object') {
+        return Object.keys(value as Record<string, unknown>)
+            .sort()
+            .reduce<Record<string, unknown>>((acc, key) => {
+                acc[key] = toStablePlanValue((value as Record<string, unknown>)[key]);
+                return acc;
+            }, {});
+    }
+    return value;
+};
+
+export const getProcedurePlanUpdateKey = (
+    plan: ProcedurePlanState | ProcedurePlanSnapshot,
+): string => JSON.stringify(serializeProcedurePlan(plan));
+
+export const isProcedurePlanStartEvent = (sourceEvent?: string): boolean => (
+    typeof sourceEvent === 'string'
+    && (
+        sourceEvent === 'procedure_plan_started'
+        || sourceEvent.endsWith('_plan_started')
+    )
+);
+
+const toNonEmptyString = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed || null;
+};
+
+const toRecord = (value: unknown): Record<string, unknown> | null => (
+    value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null
+);
+
+export const getProcedurePlanOperationArguments = (
+    request: ProcedurePlanRequestSnapshot,
+): Record<string, unknown> => {
+    return toRecord(request.payload) || {};
+};
+
+export const getProcedurePlanOperationRunKey = (
+    plan: ProcedurePlanState | ProcedurePlanSnapshot,
+    request: ProcedurePlanRequestSnapshot,
+): string => `${plan.currentStep}:${request.name || ''}:${JSON.stringify(request.payload ?? null)}`;
+
+export const isProcedurePlanRequestDone = (
+    request: ProcedurePlanRequest | ProcedurePlanRequestSnapshot | undefined,
+): boolean => (
+    Boolean(request && PROCEDURE_PLAN_DONE_STATUSES.includes(request.status))
+);
+
+export const getSelfAdvancingProcedurePlan = (plan: ProcedurePlanState): ProcedurePlanState => {
+    const requests = plan.requests
+        .slice(Math.max(0, plan.currentStep))
+        .filter((request) => !isProcedurePlanRequestDone(request))
+        .map((request) => ({
+            ...request,
+            status: 'pending' as const,
+        }));
+    return { ...plan, requests, currentStep: 0 };
+};
+
+export const advanceProcedurePlan = (
+    plan: ProcedurePlanState,
+    reason?: string,
+): ProcedurePlanAdvanceResult => {
+    const completedRequest = plan.requests[plan.currentStep];
+    if (!completedRequest) throw new Error('Cannot advance an empty procedure plan.');
+    const requests = plan.requests.filter((_request, index) => index !== plan.currentStep);
+    const nextPlan = getSelfAdvancingProcedurePlan({
+        ...plan,
+        requests,
+        currentStep: Math.min(plan.currentStep, Math.max(0, requests.length - 1)),
+    });
+    const request = nextPlan.requests[nextPlan.currentStep] ?? completedRequest;
+
+    return {
+        plan: nextPlan,
+        status: nextPlan.requests.length === 0 ? 'complete' : 'advanced',
+        current_request: nextPlan.currentStep,
+        current_step: nextPlan.currentStep,
+        request,
+        step: request.title,
+        reason,
+    };
+};
+
+export const isProcedurePlanOptOutRequest = (text: unknown): boolean => {
+    if (typeof text !== 'string') return false;
+    const normalized = text
+        .toLowerCase()
+        .replace(/['\u2019]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!normalized) return false;
+
+    const planTarget = '(?:the\\s+)?(?:procedure\\s+)?plan';
+    const optOutVerb = '(?:cancel|clear|stop|end|exit|dismiss|hide|skip|drop|forget)';
+    return [
+        new RegExp(`\\b${optOutVerb}\\b.*\\b${planTarget}\\b`),
+        new RegExp(`\\b${planTarget}\\b.*\\b${optOutVerb}\\b`),
+        new RegExp(`\\bopt\\s*out\\b.*\\b${planTarget}\\b`),
+        new RegExp(`\\b(?:dont|do\\s+not|no\\s+longer)\\s+(?:follow|use|respect)\\s+${planTarget}\\b`),
+        new RegExp(`\\bignore\\s+${planTarget}\\b`),
+    ].some((pattern) => pattern.test(normalized));
+};
+
+export const isProcedurePlanClearEvent = (sourceEvent?: string): boolean => (
+    typeof sourceEvent === 'string'
+    && (
+        sourceEvent === 'procedure_plan_cleared'
+        || sourceEvent === 'procedure_plan_terminated'
+        || sourceEvent.endsWith('_plan_cleared')
+        || sourceEvent.endsWith('_plan_terminated')
+    )
+);
+
+export const buildProcedurePlan = (
+    data: unknown,
+): ProcedurePlanState | null => {
+    try {
+        return parseProcedurePlanInput(data);
+    } catch {
+        return null;
+    }
+};
+
+export const parseProcedurePlanInput = (value: unknown): ProcedurePlanState => {
+    const invalid = (): never => {
+        throw new InvalidProcedurePlanRequestsError(
+            'Provide workflow with name set_procedure_plan, a goal, and operations containing operation with name, title, and arguments each.',
+        );
+    };
+    const input = readWorkflowCall(value, 'set_procedure_plan');
+    if (!input || Reflect.ownKeys(input).some((key) => key !== 'name' && key !== 'goal' && key !== 'operations')) return invalid();
+    if (!Object.prototype.hasOwnProperty.call(input, 'goal') || typeof input.goal !== 'string'
+        || !Array.isArray(input.operations) || input.operations.length === 0) return invalid();
+    const goal = input.goal.trim();
+    const requests = input.operations.map((value): ProcedurePlanRequestSnapshot => {
+        const metadata = readOperationCall(value);
+        if (!metadata || Reflect.ownKeys(metadata).some((key) => key !== 'name' && key !== 'title' && key !== 'arguments')) return invalid();
+        const name = metadata.name as string;
+        const title = toNonEmptyString(metadata.title);
+        const args = toRecord(metadata.arguments);
+        if (!title || !args || !Object.prototype.hasOwnProperty.call(metadata, 'arguments')) return invalid();
+        return { type: 'tool_call', name, title, status: 'pending', payload: { ...args } };
+    });
+    return {
+        goal: goal || requests[0].title,
+        requests,
+        currentStep: 0,
+    };
+};
+
+export const parseAppendProcedurePlanInput = (value: unknown): ProcedurePlanState => {
+    const input = readWorkflowCall(value, 'append_procedure_plan');
+    if (!input || Reflect.ownKeys(input).some((key) => key !== 'name' && key !== 'operations')) {
+        throw new InvalidProcedurePlanRequestsError('Provide append_procedure_plan with operations.');
+    }
+    return parseProcedurePlanInput({ workflow: { name: 'set_procedure_plan', goal: '', operations: input.operations } });
+};
+
+export const useProcedurePlanWorkflow = ({
+    mountWorkflow,
+    dispatchOperation,
+}: {
+    mountWorkflow: MountWorkflow;
+    dispatchOperation: WorkflowDispatcher;
+}) => {
+    const runnerRef = useRef<ProcedurePlanRunner | null>(null);
+    const optedOutRef = useRef(false);
+    const [snapshot, setSnapshot] = useState<ProcedurePlanSnapshot | null>(null);
+
+    const dispose = useCallback(() => {
+        const runner = runnerRef.current;
+        runnerRef.current = null;
+        runner?.dispose();
+    }, []);
+
+    useEffect(() => dispose, [dispose]);
+
+    const startProcedurePlan = useCallback((
+        input: ProcedurePlanInput,
+        dispatcher: WorkflowDispatcher,
+    ): Workflow<ProcedurePlanRunResult> => {
+        const plan = parseProcedurePlanInput(input);
+        plan.requests.forEach((request) => dispatcher.validate(request.name!));
+        runnerRef.current?.assertCanReplace(dispatcher.workflowCaller);
+        dispose();
+        const runner = new ProcedurePlanRunner(
+            OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
+            dispatcher,
+            (next) => {
+                if (runnerRef.current !== runner) return;
+                setSnapshot(next ? serializeProcedurePlan(next) : null);
+            },
+        );
+        try {
+            runnerRef.current = runner;
+            mountWorkflow({ runner, dispose });
+            setSnapshot(null);
+            return runner.createProcedurePlan(input);
+        } catch (error) {
+            if (runnerRef.current === runner) runnerRef.current = null;
+            runner.dispose();
+            throw error;
+        }
+    }, [dispose, mountWorkflow]);
+
+    const createProcedurePlan = useCallback((
+        input: ProcedurePlanInput,
+        dispatcher: WorkflowDispatcher,
+    ): Workflow<ProcedurePlanRunResult> => {
+        try {
+            return startProcedurePlan(input, dispatcher);
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createProcedurePlanProgress());
+        }
+    }, [startProcedurePlan]);
+
+    const appendProcedurePlan = useCallback((input: AppendProcedurePlanInput, dispatcher: WorkflowDispatcher) => {
+        try {
+            const plan = parseAppendProcedurePlanInput(input);
+            plan.requests.forEach((request) => dispatcher.validate(request.name!));
+            const runner = runnerRef.current;
+            if (runner?.getProcedurePlan()) return runner.appendProcedurePlan(input, dispatcher.workflowCaller);
+            // Missing-target append starts independent execution and acknowledges immediately.
+            const independent = Object.assign((...args: Parameters<WorkflowDispatcher>) => dispatcher(...args), { validate: dispatcher.validate });
+            startProcedurePlan({ workflow: { name: 'set_procedure_plan', goal: plan.goal, operations: input.workflow.operations } }, independent);
+            return asWorkflow(createOperationFrom(() => ({ status: 'advanced' as const, goal: plan.goal,
+                current_request: 0, task_results: [], request_count: plan.requests.length,
+                completed_step_count: 0, stopped_at_step: null }), 'complete'));
+        } catch (error) {
+            return asWorkflow(createOperationFrom(() => { throw error; }, 'failed'), createProcedurePlanProgress());
+        }
+    }, [startProcedurePlan]);
+
+    const clearProcedurePlan = useCallback(() => {
+        const operation = runnerRef.current?.clearProcedurePlan();
+        void operation?.result.catch((error) => {
+            console.error('Background workflow failed.', error);
+        });
+        setSnapshot(null);
+    }, []);
+
+    const handleUserText = useCallback((text: string) => {
+        if (!isProcedurePlanOptOutRequest(text)) return;
+        optedOutRef.current = true;
+        clearProcedurePlan();
+    }, [clearProcedurePlan]);
+
+    const handleToolStatus = useCallback((data: Record<string, unknown>) => {
+        const sourceEvent = typeof data.event === 'string' ? data.event : undefined;
+        if (isProcedurePlanClearEvent(sourceEvent)) {
+            clearProcedurePlan();
+            return;
+        }
+        if (toRecord(data.workflow)?.name !== 'set_procedure_plan') return;
+        const startsPlan = isProcedurePlanStartEvent(sourceEvent);
+        if (optedOutRef.current && !startsPlan) return;
+        const { event: _sourceEvent, ...input } = data;
+        try {
+            const operation = startProcedurePlan(input as ProcedurePlanInput, dispatchOperation);
+            if (startsPlan) optedOutRef.current = false;
+            void operation.result.catch((error) => {
+                console.error('Background workflow failed.', error);
+            });
+        } catch (error) {
+            console.error('Invalid procedure plan status.', error);
+        }
+    }, [clearProcedurePlan, dispatchOperation, startProcedurePlan]);
+
+    const reset = useCallback(() => {
+        optedOutRef.current = false;
+        dispose();
+        setSnapshot(null);
+    }, [dispose]);
+
+    return { createProcedurePlan, appendProcedurePlan, snapshot, reset, handleUserText, handleToolStatus };
+};
+
+export type ProcedurePlanProps = {
+    plan: ProcedurePlanSnapshot;
+    surface?: 'chat' | 'pill';
+};
+
+const getProcedurePlanRequestMeta = (request: ProcedurePlanSnapshot['requests'][number]): string => {
+    const parts = [
+        request.type === 'tool_call' ? null : request.type,
+        request.status,
+    ].filter((part): part is string => Boolean(part));
+    return parts.join(' - ');
+};
+
+const ProcedurePlan: React.FC<ProcedurePlanProps> = ({
+    plan,
+    surface = 'chat',
+}) => {
+    const requests = surface === 'pill'
+        ? plan.requests.slice(Math.max(0, plan.currentStep - 1), plan.currentStep + 2)
+        : plan.requests;
+
+    return (
+        <div className={`ai-chat__plan ai-chat__plan--${surface}`} aria-label="Procedure plan">
+            <div className="ai-chat__plan-head">
+                <div>
+                    <span className="ai-chat__plan-kicker">PLAN</span>
+                    <div className="ai-chat__plan-goal">{plan.goal}</div>
+                </div>
+            </div>
+            <ul className="ai-chat__plan-list">
+                {requests.map((request) => {
+                    const index = plan.requests.indexOf(request);
+                    const isActive = index === plan.currentStep;
+                    const isDone = index < plan.currentStep;
+                    const meta = getProcedurePlanRequestMeta(request);
+                    return (
+                        <li
+                            key={`${index}-${request.type}-${request.title}`}
+                            className={[
+                                'ai-chat__plan-step',
+                                isActive ? 'ai-chat__plan-step--active' : '',
+                                isDone ? 'ai-chat__plan-step--done' : '',
+                            ].filter(Boolean).join(' ')}
+                        >
+                            <span className="ai-chat__plan-step-dot" aria-hidden="true" />
+                            <span className="ai-chat__plan-step-text">
+                                <span>{request.title}</span>
+                                {meta && (
+                                    <span className="ai-chat__plan-step-meta">{meta}</span>
+                                )}
+                                {request.detail && surface === 'chat' && (
+                                    <span className="ai-chat__plan-step-detail">{request.detail}</span>
+                                )}
+                            </span>
+                        </li>
+                    );
+                })}
+            </ul>
+        </div>
+    );
+};
+
+export const procedurePlanOverlayRenderer: AiOverlayRenderer<ProcedurePlanSnapshot> = {
+    componentType: 'procedure_plan',
+    validateSnapshot: (snapshot): snapshot is ProcedurePlanSnapshot => (
+        isOverlayRecord(snapshot)
+        && isOverlayNonEmptyString(snapshot.goal)
+        && Array.isArray(snapshot.requests)
+        && snapshot.requests.every((request) => (
+            isOverlayRecord(request) && isOverlayNonEmptyString(request.title)
+        ))
+        && typeof snapshot.currentStep === 'number'
+        && Number.isInteger(snapshot.currentStep)
+    ),
+    renderOverlay: (snapshot, status) => status === 'folded'
+        ? snapshot.requests[snapshot.currentStep]?.title || snapshot.goal
+        : <ProcedurePlan plan={snapshot} surface="pill" />,
+    dimensions: {
+        expanded: { width: 420, height: 220 },
+        folded: { width: 320, height: 58 },
+    },
+};
+
+export default ProcedurePlan;

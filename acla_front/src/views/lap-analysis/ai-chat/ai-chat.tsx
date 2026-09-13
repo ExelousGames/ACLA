@@ -1,16 +1,16 @@
-import React, { useState, useRef, useEffect, useContext, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import './ai-chat.css';
-import { AnalysisContext } from 'views/lap-analysis/analysis-context';
+import type { AnalysisContextType } from 'views/lap-analysis/analysis-context';
+import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
+import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useUserSummary } from 'contexts/UserSummaryContext';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
-import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
 import apiService from 'services/api.service';
 import {
     createAiCommandRegistry,
-    getFrontendToolSchemasForSessionMode,
-    QUERY_SCOPE_SCHEMA,
+    createWorkflowToolDispatcher,
     startAgentRuntime,
 } from './ai-command-registry';
 import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
@@ -20,54 +20,99 @@ import type {
     AgentSessionMode,
     AgentSessionStartResult,
     AgentSessionStopResult,
+    AiCommandRegistry,
     LivePerformanceAnalystState,
     OpportunityAgentState,
 } from './ai-command-registry';
-import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
+import {
+    useVoiceConversation,
+    type FrontendOperationHandler,
+    type VoiceEvent,
+} from './use-voice-conversation';
 import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
-import BaselineProgressDisplay from './BaselineProgressDisplay';
-import ProcedurePlanDisplay from './ProcedurePlanDisplay';
 import {
-    advanceProcedurePlan,
-    buildProcedurePlan,
-    getProcedurePlanUpdateKey,
-    isProcedurePlanClearEvent,
-    isProcedurePlanOptOutRequest,
-    isProcedurePlanStartEvent,
-    type ProcedurePlan,
-    type ProcedurePlanRequest,
-} from './ai-chat-plan';
+    WorkflowPanel,
+    type WorkflowPanelHandle,
+    type ToolDispatcher,
+    type Operation,
+    type OperationExecutionOutput,
+    type OperationStatusPayload,
+    createOperationFrom,
+} from 'components/ai-operations';
+import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
 import {
-    BaselineCollectionTracker,
-} from './BaselineCollectionTracker';
-import LiveRangeTracker, {
-    type LiveRangeTrackerHandle,
-    type LiveRangeTrackerState,
-} from './LiveRangeTracker';
-import { useBaselineCollectionRuntime } from './BaselineCollectionRuntime';
+    resolveAssistantRecordedSessionId,
+    resolveRegisteredAssistantIdentity,
+} from 'views/lap-analysis/assistant-session-mode';
+import type { AssistantActiveScreen } from 'views/lap-analysis/assistant-session-mode';
 import {
-    getToolEnvelopeError,
-    isToolOutputEnvelope,
-    type ToolOutputEnvelope,
-} from './ai-tool-base';
+    OPERATION_COMPONENT_NAMES,
+    NamedOperationComponentHandle,
+    useOperationComponentRefs,
+    useOptionalOperationComponentSnapshot,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
+import {
+    NonLiveContextLiveOperationsUnavailableError,
+} from 'contexts/OperationComponentError';
+import {
+    CircuitMapLookupFailedError,
+    OperationExecutionError,
+    UnsupportedAgentModeError,
+} from './operation-base';
+import { getAccTelemetryTrackKey } from 'views/lap-analysis/visualization/charts/circuitTrackLayout';
+import {
+    overlaySessionClient,
+} from 'views/floating-chat/overlay-display-client';
+import type {
+    AiOverlayPresentationSession,
+    AiOverlayShellMetadata,
+} from 'views/floating-chat/ai-overlay-types';
+import type { MutableAiOverlayComponent } from 'views/floating-chat/MutableAiOverlayComponent';
+import { createAiMessageOverlayComponent } from './AiMessageDisplay.overlay-source';
+import { createAiMapOverlayComponent } from './AiMapToolDisplay.overlay-source';
+import { createToolStatusOverlayComponent } from './ToolMessageDisplay.overlay-source';
+import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 
-type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
+const asFrontendOperationHandlers = (
+    registry: AiCommandRegistry,
+): Record<string, FrontendOperationHandler> => registry as unknown as Record<string, FrontendOperationHandler>;
+
+type AiChatSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
 const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
 type Emotion = typeof EMOTIONS[number];
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
-const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
 const MAX_OVERTAKE_AGENT_ROWS = 300;
 const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
+type ChatLlmModelOption = {
+    value: string;
+    label: string;
+};
 
-function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
-    const m = text.match(EMOTION_TAG_RE);
-    if (m && (EMOTIONS as readonly string[]).includes(m[1])) {
-        return { emotion: m[1] as Emotion, cleanText: text.slice(m[0].length) };
-    }
-    return { emotion: null, cleanText: text };
-}
+const CHAT_LLM_MODEL_OPTIONS: ChatLlmModelOption[] = [
+    {
+        value: 'openai:gpt-5.5',
+        label: 'GPT-5.5',
+    },
+    {
+        value: 'openai:gpt-4.1',
+        label: 'GPT-4.1',
+    },
+    {
+        value: 'hosted:qwen/qwen3-32b',
+        label: 'Qwen3 32B',
+    },
+    {
+        value: 'hosted:llama-3.3-70b-versatile',
+        label: 'Llama 3.3 70B',
+    },
+];
+const DEFAULT_CHAT_LLM_MODEL_OPTION = CHAT_LLM_MODEL_OPTIONS[0];
+const getChatLlmModelOption = (value: string) =>
+    CHAT_LLM_MODEL_OPTIONS.find((option) => option.value === value)
+    || DEFAULT_CHAT_LLM_MODEL_OPTION;
 
 type MessageKind = AiChatDisplayMessage['kind'];
 
@@ -77,6 +122,8 @@ interface Message {
     isUser: boolean;
     timestamp: Date;
     isLoading?: boolean;
+    transcriptSource?: 'voice' | 'typed';
+    awaitingTypedEcho?: boolean;
     /** Default 'chat' — text bubble. 'tool' renders the distinct
      *  tool-call box (different background + readable title). */
     kind?: MessageKind;
@@ -95,13 +142,44 @@ interface Message {
 
 
 interface AiChatProps {
-    sessionId?: string;
-    sessionMode?: AiChatSessionMode;
-    title?: string;
+    name: string;
+    activeScreen: AssistantActiveScreen;
 }
 
-const formatClock = (d: Date) =>
-    `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+interface AiChatConversationProps extends AiChatProps {
+    selectedChatLlmModel: string;
+    setSelectedChatLlmModel: React.Dispatch<React.SetStateAction<string>>;
+    debugMode: boolean;
+    setDebugMode: React.Dispatch<React.SetStateAction<boolean>>;
+    emotionGifs: Partial<Record<Emotion, string>>;
+    setEmotionGifs: React.Dispatch<React.SetStateAction<Partial<Record<Emotion, string>>>>;
+    floatingChatOpen: boolean;
+    toggleFloatingChat: () => Promise<void>;
+    overlayClosedGeneration: number;
+}
+
+export interface AiChatHandle extends NamedOperationComponentHandle {
+    resetSession(): void;
+    getSessionMode(): AiChatSessionMode;
+    getRecordingState(): RecordingState | null;
+    startAgentSession(agentMode: AgentSessionMode, args?: Record<string, any>): Operation<AgentSessionStartResult>;
+    stopAgentSession(agentSessionId?: string | null): Operation<AgentSessionStopResult>;
+    startTrackGuide(): void;
+    setTrackGuideEnabled(enabled: boolean): void;
+    setLivePerformanceAnalystEnabled(enabled: boolean): void;
+    setAgentTagActive(tag: string, active: boolean): void;
+    getOpportunityTelemetryRows(): Record<string, any>[];
+    getOpportunityAgentState(): OpportunityAgentState;
+    getLivePerformanceAnalystState(): LivePerformanceAnalystState;
+    getLabelName(labelId: string): string | undefined;
+    getCategoryLabels(category: string): string[];
+    getCircuitMapById(id: string): ReturnType<ReturnType<typeof useCircuitMaps>['getCircuitMapById']>;
+    getCircuitMapByTrack: ReturnType<typeof useCircuitMaps>['getCircuitMapByTrack'];
+    displayMap(display: AiMapDisplayPayload): void;
+    showMap(args: Record<string, unknown>): Operation<ShowMapAiResult>;
+}
+
+export type ShowMapAiResult = { status: string; [key: string]: unknown };
 
 const OverlayIcon = ({ size = 14 }: { size?: number }) => (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -148,61 +226,8 @@ const getTrackNameForGuide = (
         ? liveData.Static_track
         : undefined;
 
-const countSummaryTracks = (summary: Record<string, any>): number => {
-    const sessionAnalysis = summary?.sessionAnalysis;
-    const practiceTracks = sessionAnalysis?.practice?.tracks;
-    const analyzerTracks = sessionAnalysis?.tracks;
-    const rootTracks = summary?.tracks;
-    const tracks = practiceTracks || analyzerTracks || rootTracks;
-    return tracks && typeof tracks === 'object' && !Array.isArray(tracks)
-        ? Object.keys(tracks).length
-        : 0;
-};
-
-const getContextDescription = (sessionMode: AiChatSessionMode): string => {
-    if (sessionMode === 'recorded') {
-        return 'Selected recorded session with saved playback, AI analysis, and session metadata.';
-    }
-    if (sessionMode === 'user_summary') {
-        return 'User summary view with aggregate practice history.';
-    }
-    return 'Live session with streaming telemetry, event log, and live coaching context.';
-};
-
 const createClientSessionId = (prefix: string): string =>
     `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => (
-    Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-);
-
-const getBaselineToolEventResult = (envelope: ToolOutputEnvelope) => {
-    const payload = isRecord(envelope.payload) ? envelope.payload : {};
-    const rawProgress = Number(payload.progress_percent ?? envelope.progress_percent ?? 0);
-
-    return {
-        progress_percent: Number.isFinite(rawProgress) ? rawProgress : 0,
-        status: typeof payload.status === 'string' ? payload.status : envelope.status,
-        car: typeof payload.car === 'string' ? payload.car : null,
-        track: typeof payload.track === 'string' ? payload.track : null,
-        message: typeof payload.message === 'string'
-            ? payload.message
-            : envelope.message ?? 'Baseline collection updated.',
-    };
-};
-
-const getPlanToolArguments = (request: ProcedurePlanRequest): Record<string, unknown> => {
-    if (!isRecord(request.payload)) return {};
-    const nested = request.payload.arguments || request.payload.args || request.payload.parameters;
-    return isRecord(nested)
-        ? nested
-        : request.payload;
-};
-
-const getPlanToolRunKey = (
-    plan: ProcedurePlan,
-    request: ProcedurePlanRequest,
-): string => `${plan.currentStep}:${request.name || ''}:${JSON.stringify(request.payload ?? null)}`;
 
 const getAgentDisplayName = (agentMode?: AgentSessionMode | null): string => {
     if (agentMode === 'track_guide') return 'Track Guide';
@@ -237,41 +262,64 @@ const extractCornerKnowledgeMessage = (raw: any): string | null => {
     return null;
 };
 
-const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title = "AI Assistant" }) => {
+const AiChatConversation: React.FC<AiChatConversationProps> = ({
+    name,
+    activeScreen,
+    selectedChatLlmModel,
+    setSelectedChatLlmModel,
+    debugMode,
+    setDebugMode,
+    emotionGifs,
+    setEmotionGifs,
+    floatingChatOpen,
+    toggleFloatingChat,
+    overlayClosedGeneration,
+}) => {
+    const {
+        sessionId,
+        sessionMode,
+        title,
+    } = resolveRegisteredAssistantIdentity(activeScreen);
+    const { directory: componentRefs } = useOperationComponentRefs();
     const [mainMessages, setMainMessages] = useState<Message[]>([]);
     const [agentMessages, setAgentMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
     const mainClientSessionIdRef = useRef<string>(createClientSessionId('main'));
+    const mainClientSessionId = mainClientSessionIdRef.current;
+    const previousSessionRef = useRef({ sessionMode, sessionId });
     const [activeAgentSession, setActiveAgentSession] = useState<AgentSessionInfo | null>(null);
 
     // Loading and mode states
     const [isLoading] = useState(false);
-    const [debugMode, setDebugMode] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
-    const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
-    const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlan | null>(null);
-
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
-    const [floatingChatOpen, setFloatingChatOpen] = useState(false);
 
     // Emotion GIF settings — keyed by Emotion, values are data URLs.
-    const [emotionGifs, setEmotionGifs] = useState<Partial<Record<Emotion, string>>>(() => {
-        try { return JSON.parse(localStorage.getItem(EMOTION_GIFS_KEY) || '{}'); }
-        catch { return {}; }
-    });
     const [showEmoteSettings, setShowEmoteSettings] = useState(false);
-
-    // Live clock for the transcript header (matches landing page vibe).
-    const [clock, setClock] = useState(formatClock(new Date()));
-    useEffect(() => {
-        const id = setInterval(() => setClock(formatClock(new Date())), 1000);
-        return () => clearInterval(id);
-    }, []);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const messagesScrollRef = useRef<HTMLDivElement>(null);
     const shouldAutoScrollMessagesRef = useRef(true);
-    const analysisContext = useContext(AnalysisContext);
+    const recordedAnalysisContext = useOptionalOperationComponentSnapshot<AnalysisContextType>(
+        activeScreen.componentName === OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS
+            ? OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS
+            : null,
+    );
+    const liveSession = useOptionalOperationComponentSnapshot<LiveSessionRuntime>(
+        sessionMode === 'live' ? OPERATION_COMPONENT_NAMES.LIVE_SESSION : null,
+    );
+    const liveSessionEnded = sessionMode === 'live'
+        && liveSession?.recordingState === RecordingState.UPLOAD_READY;
+    const analysisContext = useMemo(() => ({
+        ...(recordedAnalysisContext ?? {}),
+        mapSelected: sessionMode === 'recorded' ? recordedAnalysisContext?.mapSelected ?? null : null,
+        sessionSelected: sessionMode === 'recorded' ? recordedAnalysisContext?.sessionSelected ?? null : null,
+        recordingState: liveSession?.recordingState ?? null,
+        recordingMetadata: liveSession?.recordingMetadata ?? null,
+        recordedSessionDataFilePath: liveSession?.recordingFileKey ?? null,
+        recordedSessioStaticsData: liveSession?.staticData ?? {},
+        getLiveSessionSnapshot: liveSession?.getLiveSessionSnapshot,
+    }), [liveSession, recordedAnalysisContext, sessionMode]);
     const {
         userSummary,
         userSummaryLoading,
@@ -293,12 +341,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         lastAlertAt: 0,
     });
     const livePerformanceAnalystStateRef = useRef<LivePerformanceAnalystState>({
-        intervalId: null,
-        inFlight: false,
         enabled: false,
-        lastObservationKey: null,
-        lastObservationAt: 0,
-        lastSpokenAt: 0,
     });
     const trackGuideLastPosRef = useRef<number | undefined>(undefined);
     const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
@@ -307,12 +350,104 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const activeAgentSessionRef = useRef<AgentSessionInfo | null>(null);
     const agentVoiceStopRef = useRef<() => void>(() => undefined);
     const mainVoiceStopRef = useRef<() => void>(() => undefined);
+    const mainVoiceResetRef = useRef<() => void>(() => undefined);
+    const agentVoiceResetRef = useRef<() => void>(() => undefined);
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
-    const procedurePlanRef = useRef<ProcedurePlan | null>(null);
-    const procedurePlanOptedOutRef = useRef(false);
-    const planToolRunsRef = useRef<Set<string>>(new Set());
-    const lastBroadcastedProcedurePlanKeyRef = useRef<string | null>(null);
-    const liveRangeTrackerRef = useRef<LiveRangeTrackerHandle | null>(null);
+    const endedAiShutdownAppliedRef = useRef(false);
+    const overlayPresentationRef = useRef<AiOverlayPresentationSession | null>(null);
+    const ownedOverlayPresentationIdsRef = useRef<Set<string>>(new Set());
+    const overlayInvalidationTokenRef = useRef(0);
+    const overlayPresentationsByAiSessionRef = useRef<Map<string, string>>(new Map());
+    const overlayAiSessionByVoiceSessionRef = useRef<Map<string, string>>(new Map());
+    const overlayStartByVoiceSessionRef = useRef<Map<string, Promise<AiOverlayPresentationSession | null>>>(new Map());
+    const overlayComponentRefsRef = useRef<Map<string, {
+        presentationId: string;
+        ref: React.MutableRefObject<MutableAiOverlayComponent<any> | null>;
+    }>>(new Map());
+    const voiceSessionSeenActiveRef = useRef(false);
+    const activeOperationHandlersRef = useRef<Record<string, FrontendOperationHandler>>({});
+    const workflowPanelRef = useRef<WorkflowPanelHandle | null>(null);
+    const conversationDisposedRef = useRef(false);
+    const pendingTimersRef = useRef<Set<number>>(new Set());
+    const lastProcessedGuidanceRef = useRef<string>('');
+    const lastGuidanceTimestampRef = useRef<number>(0);
+
+    useEffect(() => {
+        if (sessionMode !== 'live') return;
+        return liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') {
+                opportunityForecastRowsRef.current = [];
+                return;
+            }
+            if (event.type !== 'frame') return;
+            opportunityForecastRowsRef.current = [
+                ...opportunityForecastRowsRef.current,
+                event.sample,
+            ].slice(-MAX_OVERTAKE_AGENT_ROWS);
+        }, { replayLatest: true });
+    }, [sessionMode]);
+
+    const scheduleConversationTimeout = useCallback((callback: () => void, delay = 0) => {
+        const timeoutId = window.setTimeout(() => {
+            pendingTimersRef.current.delete(timeoutId);
+            if (!conversationDisposedRef.current) callback();
+        }, delay);
+        pendingTimersRef.current.add(timeoutId);
+        return timeoutId;
+    }, []);
+
+    useEffect(() => {
+        const pendingTimers = pendingTimersRef.current;
+        conversationDisposedRef.current = false;
+        return () => {
+            conversationDisposedRef.current = true;
+            trackGuideRunTokenRef.current += 1;
+            overlayInvalidationTokenRef.current += 1;
+            activeAgentSessionRef.current = null;
+            activeOperationHandlersRef.current = {};
+            pendingTimers.forEach((timeoutId) => window.clearTimeout(timeoutId));
+            pendingTimers.clear();
+        };
+    }, []);
+
+    const resolvedSessionId = resolveAssistantRecordedSessionId(
+        sessionMode,
+        sessionId
+            || (analysisContext?.sessionSelected as Record<string, any> | null)?.SessionId,
+    );
+
+    const dispatchActiveVoiceOperation = useMemo<ToolDispatcher>(() => {
+        const validate = (toolName: string): void => {
+            const agent = activeAgentSessionRef.current;
+            createWorkflowToolDispatcher({
+                componentRefs,
+                sessionId: resolvedSessionId,
+                sessionMode,
+                conversationRole: agent ? 'agent' : 'main',
+                agentMode: agent?.agentMode,
+                sessionGame: liveSession?.sessionGame ?? null,
+            }).validate(toolName);
+            if (!activeOperationHandlersRef.current[toolName]) {
+                throw new OperationExecutionError(
+                    `The active AI session could not execute '${toolName}'.`,
+                );
+            }
+        };
+        const dispatchTool: ToolDispatcher = Object.assign((
+            toolName: Parameters<ToolDispatcher>[0],
+            args: Record<string, unknown> = {},
+            signal?: AbortSignal,
+            caller?: Parameters<ToolDispatcher>[3],
+        ) => {
+            validate(toolName);
+            const handler = activeOperationHandlersRef.current[toolName] as (
+                args: Record<string, unknown>, signal?: AbortSignal, caller?: Parameters<ToolDispatcher>[3], nativeCall?: boolean,
+            ) => ReturnType<ToolDispatcher>;
+            return handler(args, signal, caller, false);
+        }, { validate });
+        return dispatchTool;
+    }, [componentRefs, liveSession?.sessionGame, resolvedSessionId, sessionMode]);
+
 
     useEffect(() => {
         activeAgentSessionRef.current = activeAgentSession;
@@ -330,43 +465,55 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     }, []);
     const setMessages = setFocusedMessages;
 
-    useEffect(() => {
-        const liveData = analysisContext?.liveData as Record<string, any> | null;
-        if (!liveData || Object.keys(liveData).length === 0) {
-            return;
-        }
-        opportunityForecastRowsRef.current = [
-            ...opportunityForecastRowsRef.current,
-            liveData,
-        ].slice(-MAX_OVERTAKE_AGENT_ROWS);
-    }, [analysisContext?.liveData]);
-
     // Utility function to generate unique message IDs
     const generateUniqueId = useCallback((prefix: string = 'msg') => {
         return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
     }, []);
 
-    const broadcastPillPayload = useCallback((
-        payload: {
-            kind: 'message' | 'tool' | 'baseline' | 'map' | 'plan' | 'range';
-            text?: string;
-            data?: unknown;
-            emotion?: Emotion | null;
-            tags?: string[];
-            name?: string;
-        },
+    const publishOverlayComponent = useCallback(<TSnapshot,>(
+        componentName: string,
+        presentationId: string | undefined,
+        createComponent: (name: string) => MutableAiOverlayComponent<TSnapshot>,
+        snapshot: TSnapshot,
+        metadata: AiOverlayShellMetadata = {},
     ) => {
-        try {
-            localStorage.setItem('acla-pill-msg', JSON.stringify({
-                ...payload,
-                ts: Date.now(),
-                emotion: payload.emotion ?? undefined,
-                tags: payload.tags ?? activeAgentTagsRef.current,
-            }));
-        } catch { /* ignore storage write failures */ }
-    }, []);
+        if (conversationDisposedRef.current || !presentationId) return;
+        let registered = overlayComponentRefsRef.current.get(componentName);
+        if (!registered) {
+            const ref: React.MutableRefObject<MutableAiOverlayComponent<any> | null> = {
+                current: createComponent(componentName),
+            };
+            registered = { presentationId, ref };
+            overlayComponentRefsRef.current.set(componentName, registered);
+            componentRefs.registerComponentRef(ref);
+        }
+        registered.ref.current?.publish(snapshot, {
+            presentationId,
+            metadata: {
+                ...metadata,
+                name: metadata.name ?? (
+                    activeAgentSessionRef.current
+                        ? getAgentDisplayName(activeAgentSessionRef.current.agentMode)
+                        : undefined
+                ),
+                agentTags: metadata.agentTags ?? activeAgentTagsRef.current,
+            },
+        });
+    }, [componentRefs]);
 
-    const broadcastPillMessage = useCallback((text: string, options: { emotion?: Emotion | null; tags?: string[]; name?: string } = {}) => {
+    const releaseOverlayComponents = useCallback((presentationId?: string) => {
+        overlayComponentRefsRef.current.forEach((registered, componentName) => {
+            if (presentationId && registered.presentationId !== presentationId) return;
+            componentRefs.unregisterComponentRef(registered.ref);
+            overlayComponentRefsRef.current.delete(componentName);
+        });
+    }, [componentRefs]);
+
+    const presentAssistantOverlayMessage = useCallback((
+        text: string,
+        options: { emotion?: Emotion | null; tags?: string[]; name?: string } = {},
+        presentationId?: string,
+    ) => {
         try {
             const pillText = text
                 .replace(/\*\*(.*?)\*\*/g, '$1')
@@ -376,26 +523,38 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 .trim()
                 .slice(0, 280);
             if (pillText || options.tags !== undefined) {
-                broadcastPillPayload({
-                    kind: 'message',
-                    text: pillText,
-                    name: options.name,
-                    emotion: options.emotion ?? undefined,
-                    tags: options.tags ?? activeAgentTagsRef.current,
-                });
+                if (pillText) {
+                    const targetPresentationId = presentationId
+                        ?? overlayPresentationRef.current?.presentationId;
+                    publishOverlayComponent(
+                        `ai-message:${targetPresentationId}`,
+                        targetPresentationId,
+                        createAiMessageOverlayComponent,
+                        { text: pillText },
+                        {
+                        name: options.name,
+                        emotion: options.emotion ?? undefined,
+                        agentTags: options.tags ?? activeAgentTagsRef.current,
+                        },
+                    );
+                }
             }
-        } catch { /* ignore storage write failures */ }
-    }, [broadcastPillPayload]);
+        } catch { /* ignore unavailable overlay failures */ }
+    }, [publishOverlayComponent]);
 
     const displayMapInChat = useCallback((display: AiMapDisplayPayload) => {
+        if (conversationDisposedRef.current) return;
+        if (mainClientSessionId !== mainClientSessionIdRef.current) return;
         const fallbackText = display.status === 'unavailable'
             ? 'Map is not available'
             : display.note || display.title || display.map?.circuit_name || 'Map';
-        broadcastPillPayload({
-            kind: 'map',
-            text: fallbackText,
-            data: display,
-        });
+        const presentationId = overlayPresentationRef.current?.presentationId;
+        publishOverlayComponent(
+            `ai-map:${presentationId}`,
+            presentationId,
+            createAiMapOverlayComponent,
+            display,
+        );
         setMessages(prev => prev
             .filter(m => !m.isLoading)
             .concat({
@@ -406,7 +565,117 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 kind: 'chat',
                 mapDisplay: display,
             }));
-    }, [broadcastPillPayload, generateUniqueId, setMessages]);
+    }, [generateUniqueId, mainClientSessionId, publishOverlayComponent, setMessages]);
+
+    const showMap = useCallback(async (
+        args: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> => {
+        const normalize = (value: unknown) => (
+            typeof value === 'string' && value.trim() ? value.trim() : undefined
+        );
+        const selectedMap = recordedAnalysisContext?.sessionSelected?.map
+            || recordedAnalysisContext?.mapSelected
+            || liveSession?.getLiveSessionSnapshot().track;
+        const candidates = [
+            args.map_id,
+            args.source_track_key,
+            args.map_name,
+            selectedMap,
+        ].map(normalize).filter((value): value is string => Boolean(value));
+        try {
+            let map = null;
+            let resolvedBy: 'id' | 'track' | null = null;
+            for (const candidate of candidates) {
+                map = await getCircuitMapById(candidate);
+                if (map) {
+                    resolvedBy = 'id';
+                    break;
+                }
+            }
+            if (!map) {
+                for (const candidate of candidates) {
+                    map = await getCircuitMapByTrack(
+                        'acc',
+                        getAccTelemetryTrackKey(candidate) || candidate,
+                    );
+                    if (map) {
+                        resolvedBy = 'track';
+                        break;
+                    }
+                }
+            }
+            if (conversationDisposedRef.current || mainClientSessionId !== mainClientSessionIdRef.current) {
+                return { status: 'cancelled' };
+            }
+            const clamp = (value: unknown) => {
+                const parsed = Number(value);
+                return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : undefined;
+            };
+            const start = clamp(args.section_start ?? args.start);
+            const end = clamp(args.section_end ?? args.end);
+            const label = normalize(args.section_label ?? args.label);
+            const section = start === undefined && end === undefined && !label
+                ? undefined
+                : { start, end, label };
+            const title = normalize(args.title) || 'Map';
+            const note = normalize(args.message ?? args.note);
+            if (!map) {
+                const requestedMap = candidates[0];
+                const reason = requestedMap
+                    ? `No circuit map is available for "${requestedMap}".`
+                    : 'No circuit map is available for the current session.';
+                displayMapInChat({
+                    status: 'unavailable',
+                    requestedMap,
+                    title,
+                    note,
+                    reason,
+                    section,
+                });
+                return {
+                    status: 'unavailable',
+                    message: 'Map is not available',
+                    requested_map: requestedMap ?? null,
+                    resolved_by: null,
+                    reason,
+                    section: section ?? null,
+                };
+            }
+            displayMapInChat({
+                status: 'ready',
+                map,
+                requestedMap: candidates[0],
+                title,
+                note,
+                section,
+            });
+            return {
+                status: 'displayed',
+                map_id: map.id,
+                circuit_name: map.circuit_name,
+                requested_map: candidates[0] ?? null,
+                source_track_key: map.source_track_key ?? null,
+                resolved_by: resolvedBy,
+                reason: null,
+                section: section ?? null,
+            };
+        } catch (error) {
+            throw new CircuitMapLookupFailedError(
+                error instanceof Error && error.message
+                    ? error.message
+                    : 'Failed to look up the requested circuit map.',
+                { cause: error },
+            );
+        }
+    }, [
+        displayMapInChat,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        liveSession?.getLiveSessionSnapshot,
+        mainClientSessionId,
+        recordedAnalysisContext?.mapSelected,
+        recordedAnalysisContext?.sessionSelected?.map,
+    ]);
 
     const setAgentTag = useCallback((tag: string, active: boolean) => {
         const current = activeAgentTagsRef.current;
@@ -417,13 +686,99 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             return;
         }
         activeAgentTagsRef.current = next;
-        broadcastPillMessage('', { tags: next });
-    }, [broadcastPillMessage]);
+    }, []);
 
     useEffect(() => {
         activeAgentTagsRef.current = [];
-        broadcastPillMessage('', { tags: [] });
-    }, [broadcastPillMessage]);
+    }, []);
+
+    const beginOverlaySession = useCallback(async (
+        aiSessionId: string,
+        target: 'main' | 'agent',
+        agentMode?: AgentSessionMode,
+    ): Promise<AiOverlayPresentationSession | null> => {
+        if (!overlaySessionClient.available()) return null;
+        const previousPresentationId = overlayPresentationRef.current?.presentationId;
+        const overlayInvalidationToken = overlayInvalidationTokenRef.current;
+        const mode = target === 'agent' ? 'agent' : sessionMode;
+        const modeTag = mode === 'front_desk'
+            ? 'Front Desk'
+            : mode === 'user_summary'
+                ? 'User Summary'
+                : mode.charAt(0).toUpperCase() + mode.slice(1);
+        const agentName = target === 'agent' ? getAgentDisplayName(agentMode) : undefined;
+        const presentation = await overlaySessionClient.create({
+            aiSessionId,
+            mode,
+            displayIdentity: {
+                name: agentName || 'Kestrel',
+                emotion: 'idle',
+                agentTags: Array.from(new Set([
+                    modeTag,
+                    ...(agentName ? [agentName] : []),
+                    ...activeAgentTagsRef.current,
+                ])),
+            },
+        });
+        if (
+            conversationDisposedRef.current
+            || overlayInvalidationToken !== overlayInvalidationTokenRef.current
+        ) {
+            void overlaySessionClient.destroy(presentation.presentationId).catch(() => undefined);
+            return null;
+        }
+        if (previousPresentationId && previousPresentationId !== presentation.presentationId) {
+            releaseOverlayComponents(previousPresentationId);
+        }
+        ownedOverlayPresentationIdsRef.current.add(presentation.presentationId);
+        overlayPresentationsByAiSessionRef.current.set(aiSessionId, presentation.presentationId);
+        if (overlaySessionClient.current()?.presentationId === presentation.presentationId) {
+            overlayPresentationRef.current = presentation;
+        }
+        return presentation;
+    }, [releaseOverlayComponents, sessionMode]);
+
+    const endOverlaySession = useCallback(async (aiSessionId?: string | null) => {
+        const presentationId = aiSessionId
+            ? overlayPresentationsByAiSessionRef.current.get(aiSessionId)
+            : overlayPresentationRef.current?.presentationId;
+        if (!presentationId) return;
+        releaseOverlayComponents(presentationId);
+        ownedOverlayPresentationIdsRef.current.delete(presentationId);
+        if (aiSessionId) overlayPresentationsByAiSessionRef.current.delete(aiSessionId);
+        await overlaySessionClient.destroy(presentationId);
+        if (conversationDisposedRef.current) return;
+        if (overlayPresentationRef.current?.presentationId === presentationId) {
+            overlayPresentationRef.current = null;
+        }
+    }, [releaseOverlayComponents]);
+
+    const clearOverlaySessions = useCallback(() => {
+        overlayInvalidationTokenRef.current += 1;
+        overlayPresentationRef.current = null;
+        releaseOverlayComponents();
+        const presentationIds = Array.from(ownedOverlayPresentationIdsRef.current);
+        ownedOverlayPresentationIdsRef.current.clear();
+        overlayPresentationsByAiSessionRef.current.clear();
+        overlayAiSessionByVoiceSessionRef.current.clear();
+        overlayStartByVoiceSessionRef.current.clear();
+        presentationIds.forEach((presentationId) => {
+            void overlaySessionClient.destroy(presentationId).catch(() => undefined);
+        });
+    }, [releaseOverlayComponents]);
+
+    useEffect(() => clearOverlaySessions, [clearOverlaySessions]);
+
+    useEffect(() => {
+        if (overlayClosedGeneration === 0) return;
+        overlayInvalidationTokenRef.current += 1;
+        overlayPresentationRef.current = null;
+        ownedOverlayPresentationIdsRef.current.clear();
+        overlayPresentationsByAiSessionRef.current.clear();
+        overlayAiSessionByVoiceSessionRef.current.clear();
+        overlayStartByVoiceSessionRef.current.clear();
+        releaseOverlayComponents();
+    }, [overlayClosedGeneration, releaseOverlayComponents]);
 
     const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
         if (!enabled) {
@@ -434,163 +789,114 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const setLivePerformanceAnalystAgentEnabled = useCallback((enabled: boolean) => {
         livePerformanceAnalystStateRef.current.enabled = enabled;
-        setLivePerformanceAnalystEnabled(enabled);
     }, []);
-
-    const setProcedurePlan = useCallback((plan: ProcedurePlan | null) => {
-        if (!plan || isProcedurePlanStartEvent(plan.sourceEvent)) {
-            planToolRunsRef.current.clear();
-        }
-        procedurePlanRef.current = plan;
-        setProcedurePlanState(plan);
-        if (!plan) {
-            lastBroadcastedProcedurePlanKeyRef.current = null;
-            return;
-        }
-
-        const planKey = getProcedurePlanUpdateKey(plan);
-        if (planKey === lastBroadcastedProcedurePlanKeyRef.current) {
-            return;
-        }
-        lastBroadcastedProcedurePlanKeyRef.current = planKey;
-
-        broadcastPillPayload({
-            kind: 'plan',
-            text: plan.requests[plan.currentStep]?.title || plan.goal,
-            data: plan,
-        });
-    }, [broadcastPillPayload]);
-
-    const advanceProcedurePlanStep = useCallback((reason?: string) => {
-        const current = procedurePlanRef.current;
-        if (!current) {
-            return { status: 'unavailable', error: 'no_procedure_plan' };
-        }
-
-        const result = advanceProcedurePlan(current, reason);
-        setProcedurePlan(result.plan);
-
-        return result;
-    }, [setProcedurePlan]);
-
-    const clearProcedurePlan = useCallback(() => {
-        setProcedurePlan(null);
-    }, [setProcedurePlan]);
-
-    const setProcedurePlanRequestStatus = useCallback((
-        index: number,
-        status: ProcedurePlanRequest['status'],
-        detail?: string,
-    ) => {
-        const current = procedurePlanRef.current;
-        if (!current || !current.requests[index]) return;
-
-        const next: ProcedurePlan = {
-            ...current,
-            requests: current.requests.map((request, requestIndex) => (
-                requestIndex === index
-                    ? {
-                        ...request,
-                        status,
-                        detail: detail ?? request.detail,
-                    }
-                    : request
-            )),
-        };
-        setProcedurePlan(next);
-    }, [setProcedurePlan]);
-
-    const optOutProcedurePlan = useCallback(() => {
-        procedurePlanOptedOutRef.current = true;
-        setProcedurePlan(null);
-    }, [setProcedurePlan]);
 
     // Racing engineer voice conversation. The hook owns mic, WS, and
     // audio playback; it ALSO multiplexes the tool-relay text channel on
     // the same WS — frontend tools listed below are reachable from the
     // backend LLM via JSON text frames.
     const handleSessionVoiceEvent = useCallback((event: VoiceEvent, target: 'main' | 'agent') => {
+        if (conversationDisposedRef.current) return;
+        if (mainClientSessionId !== mainClientSessionIdRef.current) return;
+        const voiceSessionId = target === 'agent'
+            ? activeAgentSessionRef.current?.clientSessionId
+            : mainClientSessionIdRef.current;
+        if (!voiceSessionId) return;
+        if (event.clientSessionId && event.clientSessionId !== voiceSessionId
+            && event.clientSessionId !== overlayAiSessionByVoiceSessionRef.current.get(voiceSessionId)) return;
         const setTargetMessages = target === 'agent' ? setAgentMessages : setMainMessages;
+        const eventAiSessionId = event.clientSessionId ?? (
+            target === 'agent'
+                ? activeAgentSessionRef.current?.clientSessionId
+                : mainClientSessionIdRef.current
+        );
+        const presentationId = eventAiSessionId
+            ? overlayPresentationsByAiSessionRef.current.get(eventAiSessionId)
+            : undefined;
         if (event.kind === 'user_transcript') {
-            if (isProcedurePlanOptOutRequest(event.text)) {
-                optOutProcedurePlan();
-            }
-            setTargetMessages(prev => prev
-                .filter(m => !m.isLoading)
-                .concat({
+            workflowPanelRef.current?.handleUserText(event.text);
+            setTargetMessages(prev => {
+                const messagesWithoutLoading = prev.filter(m => !m.isLoading);
+                const transcript = event.text.trim();
+                const lastMessage = messagesWithoutLoading[messagesWithoutLoading.length - 1];
+
+                if (event.source === 'typed') {
+                    const pendingEchoIndex = messagesWithoutLoading.findIndex(message => (
+                        message.isUser
+                        && message.awaitingTypedEcho
+                        && message.content === transcript
+                    ));
+                    if (pendingEchoIndex >= 0) {
+                        const next = messagesWithoutLoading.slice();
+                        next[pendingEchoIndex] = {
+                            ...next[pendingEchoIndex],
+                            awaitingTypedEcho: false,
+                        };
+                        return next;
+                    }
+                }
+
+                if (
+                    event.source !== 'typed'
+                    && lastMessage?.isUser
+                    && (lastMessage.kind ?? 'chat') === 'chat'
+                    && lastMessage.transcriptSource !== 'typed'
+                ) {
+                    return messagesWithoutLoading.slice(0, -1).concat({
+                        ...lastMessage,
+                        content: `${lastMessage.content} ${transcript}`,
+                    });
+                }
+
+                return messagesWithoutLoading.concat({
                     id: generateUniqueId('user-voice'),
-                    content: event.text,
+                    content: transcript,
                     isUser: true,
                     timestamp: new Date(),
                     kind: 'chat',
-                }));
+                    transcriptSource: event.source ?? 'voice',
+                });
+            });
             return;
         }
         if (event.kind === 'assistant_transcript') {
-            // Backend strips the [emotion] tag before sending the transcript,
-            // but fall back to frontend parsing for robustness.
-            const { emotion, cleanText } = event.emotion
-                ? { emotion: event.emotion as Emotion, cleanText: event.text }
-                : extractEmotion(event.text);
             setTargetMessages(prev => prev
                 .filter(m => !m.isLoading)
                 .concat({
                     id: generateUniqueId('ai-voice'),
-                    content: cleanText,
+                    content: event.text,
                     isUser: false,
                     timestamp: new Date(),
                     kind: 'chat',
                 }));
-            // Broadcast to the floating pill overlay (separate Electron window).
-            // 'storage' events fire in other same-origin BrowserWindows but not
-            // in the window that writes — perfect one-way fanout.
-            broadcastPillMessage(cleanText, {
-                emotion,
+            // Send a complete presentation snapshot to the Electron overlay.
+            presentAssistantOverlayMessage(event.text, {
+                emotion: event.emotion as Emotion | undefined,
                 name: target === 'agent' ? getAgentDisplayName(activeAgentSessionRef.current?.agentMode) : undefined,
-            });
+            }, presentationId);
             return;
         }
-        if (event.kind === 'observation') {
-            const sourceEvent = typeof event.data.event === 'string' ? event.data.event : undefined;
-            if (isProcedurePlanClearEvent(sourceEvent)) {
-                clearProcedurePlan();
-                return;
-            }
-            const plan = buildProcedurePlan(event.data);
-            if (plan) {
-                if (isProcedurePlanStartEvent(plan.sourceEvent)) {
-                    procedurePlanOptedOutRef.current = false;
-                }
-                if (procedurePlanOptedOutRef.current) {
-                    return;
-                }
-                setProcedurePlan(plan);
-            }
+        if (event.kind === 'tool_status') {
+            workflowPanelRef.current?.handleToolStatus(event.data);
             return;
         }
-        if (event.kind === 'tool_event') {
-            console.log(`[ai-tool] tool_event ${event.status}`, {
-                name: event.name,
-                title: event.title,
-                status: event.status,
-                arguments: event.arguments,
-                result: event.result,
-                ok: event.ok,
-                error: event.error,
-            });
-            broadcastPillPayload({
-                kind: 'tool',
-                text: event.title,
-                data: {
-                    runId: event.runId,
-                    name: event.name,
-                    title: event.title,
-                    status: event.status,
-                    ok: event.ok,
-                    error: event.error ?? null,
-                    result: event.result,
-                },
-            });
+        if (event.kind === 'tool_call') {
+            if (event.runId) {
+                publishOverlayComponent(
+                    `tool-status:${presentationId}:${encodeURIComponent(event.runId)}`,
+                    presentationId,
+                    createToolStatusOverlayComponent,
+                    {
+                        runId: event.runId,
+                        name: event.name,
+                        title: event.title,
+                        status: event.status,
+                        ok: event.ok,
+                        error: event.message ?? null,
+                        result: event.result,
+                    },
+                );
+            }
             setTargetMessages(prev => {
                 for (let i = prev.length - 1; i >= 0; i--) {
                     const m = prev[i];
@@ -607,7 +913,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                 title: event.title,
                                 status: event.status,
                                 ok: event.ok,
-                                error: event.error ?? null,
+                                error: event.message ?? null,
                                 result: event.result,
                             },
                         };
@@ -626,7 +932,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         title: event.title,
                         status: event.status,
                         ok: event.ok,
-                        error: event.error ?? null,
+                        error: event.message ?? null,
                         result: event.result,
                     },
                 });
@@ -634,12 +940,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             return;
         }
     }, [
-        broadcastPillMessage,
-        broadcastPillPayload,
-        clearProcedurePlan,
+        mainClientSessionId,
+        presentAssistantOverlayMessage,
         generateUniqueId,
-        optOutProcedurePlan,
-        setProcedurePlan,
+        publishOverlayComponent,
     ]);
 
     const handleMainVoiceEvent = useCallback((event: VoiceEvent) => {
@@ -650,234 +954,23 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         handleSessionVoiceEvent(event, 'agent');
     }, [handleSessionVoiceEvent]);
 
-    const handleBaselineToolOutput = useCallback((envelope: ToolOutputEnvelope) => {
-        const envelopeError = getToolEnvelopeError(envelope);
-        if (!envelope.final && !envelopeError) {
-            return;
-        }
-
-        handleSessionVoiceEvent({
-            kind: 'tool_event',
-            runId: envelope.run_id,
-            name: envelope.tool_name,
-            title: envelope.message || 'Collect live baseline',
-            status: envelope.final ? 'completed' : 'started',
-            result: getBaselineToolEventResult(envelope),
-            ok: !envelopeError,
-            error: envelopeError,
-        }, activeAgentSessionRef.current ? 'agent' : 'main');
-    }, [handleSessionVoiceEvent]);
-
-    const baselineCollectionRuntime = useBaselineCollectionRuntime({
-        onToolOutput: handleBaselineToolOutput,
-    });
-    const baselineCollectionEnabled = baselineCollectionRuntime.enabled;
-    const baselineCollectionTag = baselineCollectionRuntime.tag;
-    const setBaselineCollectionEnabled = baselineCollectionRuntime.setEnabled;
-    const getBaselineCollectionTag = baselineCollectionRuntime.getTag;
-    const getBaselineLapRecord = baselineCollectionRuntime.getLapRecord;
-    const getBaselineToolOutput = baselineCollectionRuntime.getToolOutput;
-    const subscribeBaselineToolOutput = baselineCollectionRuntime.subscribeToolOutput;
-    const restartBaselineCollection = baselineCollectionRuntime.restart;
-
-    useEffect(() => {
-        if (!baselineCollectionEnabled || !baselineCollectionTag) return;
-        broadcastPillPayload({
-            kind: 'baseline',
-            text: baselineCollectionTag.detail,
-            data: baselineCollectionTag,
-        });
-    }, [baselineCollectionEnabled, baselineCollectionTag, broadcastPillPayload]);
-
-    const handleLiveRangeTrackerStateChange = useCallback((tracker: LiveRangeTrackerState | null) => {
-        if (!tracker || tracker.ranges.length === 0) return;
-        broadcastPillPayload({
-            kind: 'range',
-            text: `${tracker.ranges.length} tracked range${tracker.ranges.length === 1 ? '' : 's'}`,
-            data: tracker,
-        });
-    }, [broadcastPillPayload]);
-
     const startTrackGuide = useCallback(() => {
         trackGuideRunTokenRef.current += 1;
         setTrackGuideEnabled(true);
     }, []);
 
-    const resolvedSessionId = sessionId || (analysisContext?.sessionSelected as Record<string, any> | null)?.SessionId;
+    const aiSessionContext = useMemo(() => ({
+        session_mode: sessionMode,
+    }), [sessionMode]);
 
-    const aiSessionContext = useMemo(() => {
-        const selectedSession = analysisContext?.sessionSelected as Record<string, any> | null;
-        const liveData = analysisContext?.liveData as Record<string, any> | null;
-        const liveDataKeys = liveData ? Object.keys(liveData).length : 0;
-        const summaryTrackCount = countSummaryTracks(userSummary || {});
-        const summaryLoaded = !userSummaryLoading && !userSummaryError && summaryTrackCount > 0;
-        const recordedAiAnalysis = analysisContext?.recordedAiAnalysis;
-        const recordedAnalysisResult = recordedAiAnalysis?.result;
-        const recordedPlaybackSummary = analysisContext?.recordedPlaybackSummary;
-        const liveSnapshot = sessionMode === 'live'
-            ? analysisContext?.sessionIntelligence?.getLiveSessionSnapshot?.()
-            : null;
-        const activeAgentModes = [
-            ...(TrackGuideEnabled ? ['track_guide'] : []),
-            ...(opportunityAgentStateRef.current.intervalId ? ['overtake'] : []),
-            ...(livePerformanceAnalystEnabled ? ['live_performance_analyst'] : []),
-        ];
-
-        return {
-            assistant_surface: 'lap_analysis_ai_chat',
-            conversation_role: 'main',
-            client_session_id: mainClientSessionIdRef.current,
-            active_agent_session: activeAgentSession
-                ? {
-                    client_session_id: activeAgentSession.clientSessionId,
-                    agent_mode: activeAgentSession.agentMode,
-                    status: activeAgentSession.status,
-                }
-                : null,
-            context_kind: sessionMode,
-            context_description: getContextDescription(sessionMode),
-            session_mode: sessionMode,
-            session_id: resolvedSessionId || null,
-            active_tab: analysisContext?.activeTab || null,
-            selected_map_id: analysisContext?.mapSelected || selectedSession?.map || null,
-            agent_modes: {
-                active: activeAgentModes,
-            },
-            procedure_plan: procedurePlan
-                ? {
-                    goal: procedurePlan.goal,
-                    requests: procedurePlan.requests,
-                    current_request: procedurePlan.currentStep,
-                    current_request_text: procedurePlan.requests[procedurePlan.currentStep]?.title || null,
-                }
-                : null,
-            live_session_type: liveSnapshot?.live_session_type ?? 'unknown',
-            track: liveSnapshot?.track || liveData?.Static_track || null,
-            car: liveSnapshot?.car || liveData?.Static_car_model || null,
-            current_lap: liveSnapshot?.current_lap ?? null,
-            normalized_position: liveSnapshot?.normalized_position ?? getNormalizedCarPos(liveData),
-            completed_laps: liveSnapshot?.completed_laps ?? null,
-            sample_count: liveSnapshot?.sample_count ?? 0,
-            capabilities: {
-                live_session: sessionMode === 'live',
-                recorded_session: sessionMode === 'recorded',
-                user_summary: summaryLoaded,
-            },
-            selected_session: selectedSession
-                ? {
-                    id: selectedSession.SessionId || null,
-                    name: selectedSession.session_name || null,
-                    map: selectedSession.map || null,
-                    car: selectedSession.car || null,
-                }
-                : null,
-            telemetry: {
-                live_available: sessionMode === 'live' && Boolean(analysisContext?.sessionIntelligence),
-                latest_sample_present: liveDataKeys > 0,
-                latest_sample_key_count: liveDataKeys,
-                live_status: analysisContext?.TelemetryDataLiveStatus ?? null,
-                live_snapshot: liveSnapshot,
-                recorded_file_loaded: Boolean(analysisContext?.recordedSessionDataFilePath),
-                recorded_sample_count: recordedPlaybackSummary?.sampleCount
-                    ?? analysisContext?.recordedTelemetryDataCount
-                    ?? 0,
-            },
-            recorded_session: {
-                ai_analysis: {
-                    status: recordedAiAnalysis?.status || 'idle',
-                    message: recordedAiAnalysis?.message || null,
-                    session_id: recordedAiAnalysis?.sessionId || null,
-                    segment_count: recordedAnalysisResult?.segment_count ?? 0,
-                    samples_analyzed: recordedAnalysisResult?.samples_analyzed ?? 0,
-                    result_ready: Boolean(recordedAnalysisResult),
-                },
-                playback: {
-                    session_id: recordedPlaybackSummary?.sessionId || null,
-                    sample_count: recordedPlaybackSummary?.sampleCount ?? 0,
-                    duration_seconds: recordedPlaybackSummary?.durationSeconds ?? 0,
-                    playback_index: recordedPlaybackSummary?.playbackIndex ?? 0,
-                    playback_time_seconds: recordedPlaybackSummary?.playbackTimeSeconds ?? 0,
-                    active_segment: recordedPlaybackSummary?.activeSegment ?? null,
-                },
-            },
-            user_summary: {
-                loaded: summaryLoaded,
-                loading: userSummaryLoading,
-                error: userSummaryError || null,
-                track_count: summaryTrackCount,
-            },
-        };
-    }, [
-        analysisContext?.TelemetryDataLiveStatus,
-        analysisContext?.activeTab,
-        analysisContext?.liveData,
-        analysisContext?.mapSelected,
-        analysisContext?.recordedAiAnalysis,
-        analysisContext?.recordedPlaybackSummary,
-        analysisContext?.recordedSessionDataFilePath,
-        analysisContext?.recordedTelemetryDataCount,
-        analysisContext?.sessionIntelligence,
-        analysisContext?.sessionSelected,
-        activeAgentSession,
-        livePerformanceAnalystEnabled,
-        procedurePlan,
-        resolvedSessionId,
-        sessionMode,
-        TrackGuideEnabled,
-        userSummary,
-        userSummaryError,
-        userSummaryLoading,
-    ]);
-
-    const frontendTools = useMemo(
-        () => getFrontendToolSchemasForSessionMode(sessionMode, { conversationRole: 'main' }),
-        [sessionMode],
-    );
-    const agentFrontendTools = useMemo(
-        () => getFrontendToolSchemasForSessionMode(sessionMode, {
-            conversationRole: 'agent',
-            agentMode: activeAgentSession?.agentMode,
-        }),
-        [activeAgentSession?.agentMode, sessionMode],
-    );
-    const inactiveAgentFrontendTools = useMemo(() => [], []);
-    const inactiveAgentToolHandlers = useMemo(() => ({}), []);
-    const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
+    const inactiveAgentOperationHandlers = useMemo(() => ({}), []);
     const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
-    const getMissingLiveRangeTrackerResult = useCallback(() => ({
-        status: 'error' as const,
-        tracker: null,
-        error: 'live_range_tracker_unavailable',
-        message: 'Live range tracker UI is not mounted.',
-    }), []);
-    const setLiveRangeTracker = useCallback((args: Record<string, unknown>) => (
-        liveRangeTrackerRef.current?.setTracker(args) ?? getMissingLiveRangeTrackerResult()
-    ), [getMissingLiveRangeTrackerResult]);
-    const updateLiveRangeTracker = useCallback((args: Record<string, unknown>) => (
-        liveRangeTrackerRef.current?.updateTracker(args) ?? getMissingLiveRangeTrackerResult()
-    ), [getMissingLiveRangeTrackerResult]);
-    const getLiveRangeTracker = useCallback(() => (
-        liveRangeTrackerRef.current?.getTracker() ?? getMissingLiveRangeTrackerResult()
-    ), [getMissingLiveRangeTrackerResult]);
-
     const resetLivePerformanceAnalystRuntime = useCallback(() => {
         const analystAgent = livePerformanceAnalystStateRef.current;
-        if (analystAgent.intervalId) {
-            clearInterval(analystAgent.intervalId);
-        }
-        analystAgent.intervalId = null;
-        analystAgent.inFlight = false;
         analystAgent.enabled = false;
-        analystAgent.lastObservationKey = null;
-        analystAgent.lastObservationAt = 0;
-        analystAgent.lastSpokenAt = 0;
-        analystAgent.analysisSessionId = null;
-        analysisContext?.sessionIntelligence?.clearFocusSection?.();
         setLivePerformanceAnalystAgentEnabled(false);
-        setBaselineCollectionEnabled(false);
-        procedurePlanOptedOutRef.current = false;
-        clearProcedurePlan();
-    }, [analysisContext?.sessionIntelligence, clearProcedurePlan, setBaselineCollectionEnabled, setLivePerformanceAnalystAgentEnabled]);
+        workflowPanelRef.current?.reset();
+    }, [setLivePerformanceAnalystAgentEnabled]);
 
     const resetOvertakeRuntime = useCallback(() => {
         const opportunityAgent = opportunityAgentStateRef.current;
@@ -900,24 +993,66 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setTrackGuideAgentEnabled,
     ]);
 
+    const resetSession = useCallback(() => {
+        // Invalidate callbacks before stopping resources that may still emit events.
+        mainClientSessionIdRef.current = createClientSessionId('main');
+        activeAgentSessionRef.current = null;
+        activeOperationHandlersRef.current = {};
+        clearOverlaySessions();
+        mainVoiceResetRef.current();
+        agentVoiceResetRef.current();
+        pendingTimersRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+        pendingTimersRef.current.clear();
+        resetAgentRuntimes();
+        opportunityForecastRowsRef.current = [];
+        trackGuideLastPosRef.current = undefined;
+        trackGuideTriggeredRef.current.clear();
+        activeAgentTagsRef.current = [];
+        agentAutoStartSessionIdRef.current = null;
+        endedAiShutdownAppliedRef.current = false;
+        voiceSessionSeenActiveRef.current = false;
+        lastProcessedGuidanceRef.current = '';
+        lastGuidanceTimestampRef.current = 0;
+        shouldAutoScrollMessagesRef.current = true;
+        setActiveAgentSession(null);
+        setMainMessages([]);
+        setAgentMessages([]);
+        setInputValue('');
+        setShowEmoteSettings(false);
+    }, [clearOverlaySessions, resetAgentRuntimes]);
+
+    useEffect(() => {
+        const previous = previousSessionRef.current;
+        if (previous.sessionMode === sessionMode && previous.sessionId === sessionId) return;
+        previousSessionRef.current = { sessionMode, sessionId };
+        resetSession();
+    }, [resetSession, sessionId, sessionMode]);
+
     const startAgentSession = useCallback((
         agentMode: AgentSessionMode,
         args: Record<string, any> = {},
     ): AgentSessionStartResult => {
-        if (sessionMode !== 'live') {
-            return {
-                status: 'error',
-                conversation_role: 'agent',
-                agent_mode: agentMode,
-                error: 'non_live_context_live_tools_unavailable',
-                message: 'Agent sessions are only available in live session mode.',
-            };
+        if (!['track_guide', 'overtake', 'live_performance_analyst'].includes(agentMode)) {
+            throw new UnsupportedAgentModeError(
+                'Supported agent modes are track_guide, overtake, and live_performance_analyst.',
+            );
+        }
+        if (sessionMode !== 'live' || !isLiveSessionAiAvailable(analysisContext?.recordingState)) {
+            throw new NonLiveContextLiveOperationsUnavailableError(
+                name,
+                'Agent sessions are only available in live session mode.',
+            );
         }
 
         const existing = activeAgentSessionRef.current;
         if (existing && existing.agentMode === agentMode && existing.status !== 'stopped') {
             if (existing.status === 'error') {
                 agentAutoStartSessionIdRef.current = null;
+                const overlayAiSessionId = createClientSessionId(`overlay-agent-${agentMode}`);
+                overlayAiSessionByVoiceSessionRef.current.set(existing.clientSessionId, overlayAiSessionId);
+                const overlayStart = beginOverlaySession(overlayAiSessionId, 'agent', agentMode);
+                overlayStartByVoiceSessionRef.current.set(existing.clientSessionId, overlayStart);
+                void overlayStart.catch(() => undefined);
             }
             setActiveAgentSession({ ...existing, status: existing.status === 'error' ? 'starting' : existing.status });
             return {
@@ -934,6 +1069,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         resetAgentRuntimes();
 
         const clientSessionId = createClientSessionId(`agent-${agentMode}`);
+        const overlayAiSessionId = createClientSessionId(`overlay-agent-${agentMode}`);
+        overlayAiSessionByVoiceSessionRef.current.set(clientSessionId, overlayAiSessionId);
+        const overlayStart = beginOverlaySession(overlayAiSessionId, 'agent', agentMode);
+        overlayStartByVoiceSessionRef.current.set(clientSessionId, overlayStart);
+        void overlayStart.catch(() => undefined);
         const nextSession: AgentSessionInfo = {
             sessionRole: 'agent',
             clientSessionId,
@@ -945,10 +1085,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setActiveAgentSession(nextSession);
         setAgentMessages([]);
         setAgentTag(getAgentDisplayName(agentMode), true);
-        broadcastPillMessage('', {
-            name: getAgentDisplayName(agentMode),
-            tags: [getAgentDisplayName(agentMode)],
-        });
 
         return {
             status: 'started',
@@ -958,8 +1094,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             parent_client_session_id: mainClientSessionIdRef.current,
         };
     }, [
-        broadcastPillMessage,
         resetAgentRuntimes,
+        analysisContext?.recordingState,
+        beginOverlaySession,
+        name,
         sessionMode,
         setAgentTag,
     ]);
@@ -978,13 +1116,17 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         }
 
         setActiveAgentSession({ ...current, status: 'stopping' });
-        agentVoiceStopRef.current?.();
+        const stopAgentVoice = agentVoiceStopRef.current;
+        scheduleConversationTimeout(() => stopAgentVoice?.());
         resetAgentRuntimes();
         setActiveAgentSession(null);
         activeAgentSessionRef.current = null;
         agentAutoStartSessionIdRef.current = null;
         setAgentTag(getAgentDisplayName(current.agentMode), false);
-        broadcastPillMessage('', { tags: [] });
+        const overlayAiSessionId = overlayAiSessionByVoiceSessionRef.current.get(current.clientSessionId);
+        overlayAiSessionByVoiceSessionRef.current.delete(current.clientSessionId);
+        overlayStartByVoiceSessionRef.current.delete(current.clientSessionId);
+        void endOverlaySession(overlayAiSessionId).catch(() => undefined);
 
         return {
             status: 'stopped',
@@ -992,192 +1134,122 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             agent_mode: current.agentMode,
             agent_session_id: current.clientSessionId,
         };
-    }, [broadcastPillMessage, resetAgentRuntimes, setAgentTag]);
+    }, [endOverlaySession, resetAgentRuntimes, scheduleConversationTimeout, setAgentTag]);
 
-    const toolHandlers = useMemo(() => createAiCommandRegistry({
-        sessionId: resolvedSessionId,
-        sessionMode,
-        conversationRole: 'main',
-        activeAgentSession,
-        analysisContext,
-        sessionIntelligence: analysisContext?.sessionIntelligence,
-        opportunityAgentState: opportunityAgentStateRef.current,
-        livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
+    const aiChatHandle = useMemo<AiChatHandle>(() => ({
+        resetSession,
+        getComponentName: () => name,
+        getSessionMode: () => sessionMode,
+        getRecordingState: () => analysisContext?.recordingState ?? null,
+        startAgentSession: (agentMode, args) => createOperationFrom(
+            () => startAgentSession(agentMode, args),
+            'started',
+        ),
+        stopAgentSession: (agentSessionId) => createOperationFrom(
+            () => stopAgentSession(agentSessionId),
+            'stopped',
+        ),
         startTrackGuide,
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-        setBaselineCollectionEnabled,
-        restartBaselineCollection,
-        advanceProcedurePlanStep,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
-        subscribeBaselineToolOutput,
-        getProcedurePlan,
-        clearProcedurePlan,
-        setProcedurePlan,
         setAgentTagActive: setAgentTag,
-        startAgentSession,
-        stopAgentSession,
         getOpportunityTelemetryRows,
-        userSummary,
-        userSummaryLoading,
-        userSummaryError,
+        getOpportunityAgentState: () => opportunityAgentStateRef.current,
+        getLivePerformanceAnalystState: () => livePerformanceAnalystStateRef.current,
         getLabelName,
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
-        setLiveRangeTracker,
-        updateLiveRangeTracker,
-        getLiveRangeTracker,
         displayMap: displayMapInChat,
+        showMap: (args) => createOperationFrom(
+            async () => await showMap(args) as ShowMapAiResult,
+            'complete',
+        ),
     }), [
-        activeAgentSession,
-        advanceProcedurePlanStep,
-        analysisContext,
-        clearProcedurePlan,
+        analysisContext?.recordingState,
         displayMapInChat,
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
-        getLiveRangeTracker,
         getLabelName,
         getOpportunityTelemetryRows,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
-        subscribeBaselineToolOutput,
-        getProcedurePlan,
-        restartBaselineCollection,
-        resolvedSessionId,
+        resetSession,
+        name,
         sessionMode,
         setAgentTag,
-        setBaselineCollectionEnabled,
-        setLiveRangeTracker,
         setLivePerformanceAnalystAgentEnabled,
-        setProcedurePlan,
         setTrackGuideAgentEnabled,
         startAgentSession,
         startTrackGuide,
         stopAgentSession,
-        updateLiveRangeTracker,
-        userSummary,
-        userSummaryError,
-        userSummaryLoading,
+        showMap,
     ]);
+    const aiChatRef = useRef<AiChatHandle | null>(aiChatHandle);
+    aiChatRef.current = aiChatHandle;
+    useRegisterOperationComponentRef(aiChatRef);
 
+    const operationHandlers = useMemo(() => createAiCommandRegistry({
+        componentRefs,
+        sessionId: resolvedSessionId,
+        sessionMode,
+        conversationRole: 'main',
+        sessionGame: liveSession?.sessionGame ?? null,
+    }), [componentRefs, liveSession?.sessionGame, resolvedSessionId, sessionMode]);
+
+    const selectedChatLlmModelOption = getChatLlmModelOption(selectedChatLlmModel);
     const voiceConversation = useVoiceConversation({
         sessionId: resolvedSessionId,
         conversationRole: 'main',
         clientSessionId: mainClientSessionIdRef.current,
+        chatLlmModel: selectedChatLlmModelOption.value,
         sessionContext: aiSessionContext,
         onEvent: handleMainVoiceEvent,
-        frontendTools,
-        querySchemaScope: QUERY_SCOPE_SCHEMA,
-        toolHandlers,
+        operationHandlers: asFrontendOperationHandlers(operationHandlers),
     });
     const agentSessionContext = useMemo(() => (
         activeAgentSession
             ? {
-                ...aiSessionContext,
-                assistant_surface: 'lap_analysis_ai_chat_agent',
-                conversation_role: 'agent',
-                client_session_id: activeAgentSession.clientSessionId,
-                parent_client_session_id: activeAgentSession.parentClientSessionId,
+                session_mode: sessionMode,
                 agent_mode: activeAgentSession.agentMode,
-                agent_session: {
-                    client_session_id: activeAgentSession.clientSessionId,
-                    parent_client_session_id: activeAgentSession.parentClientSessionId,
-                    agent_mode: activeAgentSession.agentMode,
-                    status: activeAgentSession.status,
-                },
             }
             : null
-    ), [activeAgentSession, aiSessionContext]);
+    ), [activeAgentSession, sessionMode]);
 
-    const agentToolHandlers = useMemo(() => createAiCommandRegistry({
+    const agentOperationHandlers = useMemo(() => createAiCommandRegistry({
+        componentRefs,
         sessionId: resolvedSessionId,
         sessionMode,
         conversationRole: 'agent',
-        activeAgentSession,
-        analysisContext,
-        sessionIntelligence: analysisContext?.sessionIntelligence,
-        opportunityAgentState: opportunityAgentStateRef.current,
-        livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
-        startTrackGuide,
-        setTrackGuideEnabled: setTrackGuideAgentEnabled,
-        setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-        setBaselineCollectionEnabled,
-        restartBaselineCollection,
-        advanceProcedurePlanStep,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
-        subscribeBaselineToolOutput,
-        getProcedurePlan,
-        clearProcedurePlan,
-        setProcedurePlan,
-        setAgentTagActive: setAgentTag,
-        stopAgentSession,
-        getOpportunityTelemetryRows,
-        userSummary,
-        userSummaryLoading,
-        userSummaryError,
-        getLabelName,
-        getCategoryLabels,
-        getCircuitMapById,
-        getCircuitMapByTrack,
-        setLiveRangeTracker,
-        updateLiveRangeTracker,
-        getLiveRangeTracker,
-        displayMap: displayMapInChat,
+        agentMode: activeAgentSession?.agentMode,
+        sessionGame: liveSession?.sessionGame ?? null,
     }), [
-        activeAgentSession,
-        advanceProcedurePlanStep,
-        analysisContext,
-        clearProcedurePlan,
-        displayMapInChat,
-        getCategoryLabels,
-        getCircuitMapById,
-        getCircuitMapByTrack,
-        getLiveRangeTracker,
-        getLabelName,
-        getOpportunityTelemetryRows,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
-        subscribeBaselineToolOutput,
-        getProcedurePlan,
-        restartBaselineCollection,
+        activeAgentSession?.agentMode,
+        componentRefs,
+        liveSession?.sessionGame,
         resolvedSessionId,
         sessionMode,
-        setAgentTag,
-        setBaselineCollectionEnabled,
-        setLiveRangeTracker,
-        setLivePerformanceAnalystAgentEnabled,
-        setProcedurePlan,
-        setTrackGuideAgentEnabled,
-        startTrackGuide,
-        stopAgentSession,
-        updateLiveRangeTracker,
-        userSummary,
-        userSummaryError,
-        userSummaryLoading,
     ]);
+    activeOperationHandlersRef.current = asFrontendOperationHandlers(
+        activeAgentSession ? agentOperationHandlers : operationHandlers,
+    );
 
     const agentVoiceConversation = useVoiceConversation({
         sessionId: resolvedSessionId,
         conversationRole: 'agent',
         clientSessionId: activeAgentSession?.clientSessionId,
         parentClientSessionId: activeAgentSession?.parentClientSessionId,
-        agentMode: activeAgentSession?.agentMode,
+        chatLlmModel: selectedChatLlmModelOption.value,
         sessionContext: agentSessionContext || undefined,
         onEvent: handleAgentVoiceEvent,
-        frontendTools: activeAgentSession ? agentFrontendTools : inactiveAgentFrontendTools,
-        querySchemaScope: QUERY_SCOPE_SCHEMA,
-        toolHandlers: activeAgentSession ? agentToolHandlers : inactiveAgentToolHandlers,
+        operationHandlers: activeAgentSession
+            ? asFrontendOperationHandlers(agentOperationHandlers)
+            : inactiveAgentOperationHandlers,
     });
-    const sendAgentVoiceObservation = agentVoiceConversation.sendObservation;
+    const sendAgentVoiceToolStatus = agentVoiceConversation.sendToolStatus;
+    const stopMainVoiceConversation = voiceConversation.stop;
+    const stopAgentVoiceConversation = agentVoiceConversation.stop;
+    mainVoiceResetRef.current = voiceConversation.reset;
+    agentVoiceResetRef.current = agentVoiceConversation.reset;
 
     useEffect(() => {
         mainVoiceStopRef.current = voiceConversation.stop;
@@ -1186,6 +1258,31 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     useEffect(() => {
         agentVoiceStopRef.current = agentVoiceConversation.stop;
     }, [agentVoiceConversation.stop]);
+
+    useEffect(() => {
+        if (!liveSessionEnded) {
+            endedAiShutdownAppliedRef.current = false;
+            return;
+        }
+        if (endedAiShutdownAppliedRef.current) return;
+        endedAiShutdownAppliedRef.current = true;
+
+        stopMainVoiceConversation();
+        stopAgentVoiceConversation();
+        const activeVoiceSessionId = activeAgentSessionRef.current?.clientSessionId ?? mainClientSessionIdRef.current;
+        const overlayAiSessionId = overlayAiSessionByVoiceSessionRef.current.get(activeVoiceSessionId);
+        overlayAiSessionByVoiceSessionRef.current.delete(activeVoiceSessionId);
+        overlayStartByVoiceSessionRef.current.delete(activeVoiceSessionId);
+        void endOverlaySession(overlayAiSessionId).catch(() => undefined);
+        resetAgentRuntimes();
+        agentAutoStartSessionIdRef.current = null;
+        setActiveAgentSession((current) => {
+            if (!current) return current;
+            const stopped = { ...current, status: 'stopped' as const };
+            activeAgentSessionRef.current = stopped;
+            return stopped;
+        });
+    }, [endOverlaySession, liveSessionEnded, resetAgentRuntimes, stopAgentVoiceConversation, stopMainVoiceConversation]);
 
     const activeAgentSessionId = activeAgentSession?.clientSessionId;
     const activeAgentSessionStatus = activeAgentSession?.status;
@@ -1197,12 +1294,23 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             agentAutoStartSessionIdRef.current = null;
             return;
         }
+        if (activeAgentSessionRef.current?.clientSessionId !== activeAgentSessionId) return;
         if (activeAgentSessionStatus !== 'starting') return;
         if (agentVoiceState !== 'idle' && agentVoiceState !== 'error') return;
         if (agentAutoStartSessionIdRef.current === activeAgentSessionId) return;
 
         agentAutoStartSessionIdRef.current = activeAgentSessionId;
-        startAgentVoiceConversation().catch((err) => {
+        const overlayStart = overlayStartByVoiceSessionRef.current.get(activeAgentSessionId)
+            ?? Promise.resolve(null);
+        overlayStart.catch(() => null).then(() => {
+            if (conversationDisposedRef.current) return;
+            if (activeAgentSessionRef.current?.clientSessionId !== activeAgentSessionId) return;
+            return startAgentVoiceConversation(
+                overlayAiSessionByVoiceSessionRef.current.get(activeAgentSessionId),
+            );
+        }).catch((err) => {
+            if (conversationDisposedRef.current) return;
+            if (activeAgentSessionRef.current?.clientSessionId !== activeAgentSessionId) return;
             console.error('Agent voice conversation failed to start:', err);
             setActiveAgentSession((current) => current
                 ? { ...current, status: 'error' }
@@ -1217,6 +1325,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     useEffect(() => {
         if (!activeAgentSession) return;
+        if (activeAgentSessionRef.current?.clientSessionId !== activeAgentSession.clientSessionId) return;
         if (agentVoiceConversation.state !== 'listening' && agentVoiceConversation.state !== 'speaking') return;
         if (activeAgentSession.status === 'starting') {
             const next = { ...activeAgentSession, status: 'active' as const };
@@ -1230,7 +1339,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         );
         if (!shouldStartRuntime) return;
 
-        window.setTimeout(() => {
+        scheduleConversationTimeout(() => {
             const current = activeAgentSessionRef.current;
             if (!current || current.clientSessionId !== activeAgentSession.clientSessionId) return;
             if (
@@ -1242,27 +1351,19 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             }
 
             void startAgentRuntime(current.agentMode, {
+                componentRefs,
                 sessionId: resolvedSessionId,
                 sessionMode,
+                recordingState: analysisContext?.recordingState,
                 conversationRole: 'agent',
                 activeAgentSession: current,
                 analysisContext,
-                sessionIntelligence: analysisContext?.sessionIntelligence,
+                getLiveSessionSnapshot: analysisContext?.getLiveSessionSnapshot,
                 opportunityAgentState: opportunityAgentStateRef.current,
                 livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
                 startTrackGuide,
                 setTrackGuideEnabled: setTrackGuideAgentEnabled,
                 setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-                setBaselineCollectionEnabled,
-                restartBaselineCollection,
-                advanceProcedurePlanStep,
-                getBaselineCollectionTag,
-                getBaselineLapRecord,
-                getBaselineToolOutput,
-                subscribeBaselineToolOutput,
-                getProcedurePlan,
-                clearProcedurePlan,
-                setProcedurePlan,
                 setAgentTagActive: setAgentTag,
                 stopAgentSession,
                 getOpportunityTelemetryRows,
@@ -1273,214 +1374,68 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 getCategoryLabels,
                 getCircuitMapById,
                 getCircuitMapByTrack,
-                setLiveRangeTracker,
-                updateLiveRangeTracker,
-                getLiveRangeTracker,
                 displayMap: displayMapInChat,
-            }, {}, {
-                sendObservation: agentVoiceConversation.sendObservation,
+            }, {}, (status) => {
+                sendAgentVoiceToolStatus(status);
+            }).catch((error) => {
+                console.error(`Failed to start ${current.agentMode} runtime.`, error);
+                if (conversationDisposedRef.current) return;
+                if (activeAgentSessionRef.current?.clientSessionId !== current.clientSessionId) return;
+                setActiveAgentSession((session) => session
+                    ? { ...session, status: 'error' }
+                    : session);
             });
         }, 0);
     }, [
         activeAgentSession,
         TrackGuideEnabled,
-        advanceProcedurePlanStep,
         analysisContext,
-        clearProcedurePlan,
+        analysisContext?.recordingState,
+        componentRefs,
         displayMapInChat,
         agentVoiceConversation.state,
-        agentVoiceConversation.sendObservation,
+        sendAgentVoiceToolStatus,
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
-        getLiveRangeTracker,
         getLabelName,
         getOpportunityTelemetryRows,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
-        subscribeBaselineToolOutput,
-        getProcedurePlan,
-        restartBaselineCollection,
         resolvedSessionId,
+        scheduleConversationTimeout,
         sessionMode,
         setAgentTag,
-        setBaselineCollectionEnabled,
-        setLiveRangeTracker,
         setLivePerformanceAnalystAgentEnabled,
-        setProcedurePlan,
         setTrackGuideAgentEnabled,
         startTrackGuide,
         stopAgentSession,
-        updateLiveRangeTracker,
         userSummary,
         userSummaryError,
         userSummaryLoading,
     ]);
 
-    useEffect(() => {
-        const sessionIntelligence = analysisContext?.sessionIntelligence;
-        if (sessionMode !== 'live' || !sessionIntelligence || !activeAgentSession) return;
-
-        return sessionIntelligence.onLiveAnalystObservation((observation) => {
-            if (!livePerformanceAnalystStateRef.current.enabled) return;
-            sendAgentVoiceObservation(observation);
-        });
-    }, [
-        activeAgentSession,
-        analysisContext?.sessionIntelligence,
-        sendAgentVoiceObservation,
-        sessionMode,
-    ]);
-
     const activeVoiceConversation = activeAgentSession ? agentVoiceConversation : voiceConversation;
     const vState = activeVoiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
+    const modelPickerDisabled = voiceActive || vState === 'connecting';
     const micDisabled = activeVoiceConversation.micDisabled;
-    const sendActiveVoiceObservation = activeVoiceConversation.sendObservation;
-    const sendLiveRangeTrackerObservation = useCallback((
-        data: Record<string, unknown>,
-    ) => sendActiveVoiceObservation(data), [sendActiveVoiceObservation]);
-    const canOpenFloatingChat = typeof window !== 'undefined'
-        && Boolean((window as any).electronAPI?.openFloatingChat);
-
     useEffect(() => {
-        if (!procedurePlan) return;
-        const request = procedurePlan.requests[procedurePlan.currentStep];
-        if (!request || request.type !== 'tool_call' || !request.name) return;
-        if (request.status === 'complete' || request.status === 'failed' || request.status === 'skipped') return;
-        if (activeVoiceConversation.state !== 'listening' && activeVoiceConversation.state !== 'speaking') return;
-
-        const runKey = getPlanToolRunKey(procedurePlan, request);
-        if (planToolRunsRef.current.has(runKey)) return;
-        planToolRunsRef.current.add(runKey);
-
-        const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-        const requestIndex = procedurePlan.currentStep;
-        setProcedurePlanRequestStatus(requestIndex, 'running');
-
-        activeVoiceConversation.executeToolCall({
-            id: runId,
-            name: request.name,
-            title: request.title,
-            arguments: getPlanToolArguments(request),
-        }).then((result) => {
-            if (!result) {
-                planToolRunsRef.current.delete(runKey);
-                setProcedurePlanRequestStatus(
-                    requestIndex,
-                    'blocked',
-                    'Start the active AI session before running this tool.',
-                );
-                return;
-            }
-            const envelope = isToolOutputEnvelope(result.result) ? result.result : null;
-            if (!envelope) {
-                setProcedurePlanRequestStatus(
-                    requestIndex,
-                    'failed',
-                    'Tool did not return a standard output envelope.',
-                );
-                return;
-            }
-            const envelopeError = getToolEnvelopeError(envelope);
-            if (!result.ok || envelopeError) {
-                setProcedurePlanRequestStatus(
-                    requestIndex,
-                    'failed',
-                    result.error || envelopeError || 'Tool failed.',
-                );
-                return;
-            }
-            if (!envelope.final) {
-                setProcedurePlanRequestStatus(
-                    requestIndex,
-                    'blocked',
-                    envelope.message || 'Tool has not produced a final output yet.',
-                );
-                return;
-            }
-            advanceProcedurePlanStep(envelope.message || `tool ${request.name} completed`);
-        }).catch((error) => {
-            setProcedurePlanRequestStatus(
-                requestIndex,
-                'failed',
-                (error as Error)?.message || 'Tool failed.',
-            );
-        });
-    }, [
-        activeVoiceConversation,
-        activeVoiceConversation.state,
-        advanceProcedurePlanStep,
-        procedurePlan,
-        setProcedurePlanRequestStatus,
-    ]);
-
-    useEffect(() => {
-        if (sessionMode === 'live') {
+        if (vState === 'connecting' || vState === 'listening' || vState === 'speaking') {
+            voiceSessionSeenActiveRef.current = true;
             return;
         }
-
-        if (activeAgentSessionRef.current) {
-            stopAgentSession(activeAgentSessionRef.current.clientSessionId);
-        }
-        setTrackGuideAgentEnabled(false);
-        const opportunityAgent = opportunityAgentStateRef.current;
-        if (opportunityAgent.intervalId) {
-            clearInterval(opportunityAgent.intervalId);
-            opportunityAgent.intervalId = null;
-        }
-        opportunityAgent.inFlight = false;
-        opportunityAgent.lastAlertKey = null;
-        opportunityAgent.lastAlertAt = 0;
-        const analystAgent = livePerformanceAnalystStateRef.current;
-        if (analystAgent.intervalId) {
-            clearInterval(analystAgent.intervalId);
-            analystAgent.intervalId = null;
-        }
-        analystAgent.inFlight = false;
-        analystAgent.enabled = false;
-        analystAgent.lastObservationKey = null;
-        analystAgent.lastObservationAt = 0;
-        analystAgent.lastSpokenAt = 0;
-        setLivePerformanceAnalystAgentEnabled(false);
-        setBaselineCollectionEnabled(false);
-        procedurePlanOptedOutRef.current = false;
-        clearProcedurePlan();
-        setAgentTag('Track Guide', false);
-        setAgentTag('Overtake', false);
-        setAgentTag('Live Analyst', false);
-    }, [clearProcedurePlan, sessionMode, setAgentTag, setBaselineCollectionEnabled, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled, stopAgentSession]);
-
-    const toggleFloatingChat = useCallback(async () => {
-        const api = (window as any).electronAPI;
-        if (!api?.openFloatingChat) return;
-        try {
-            if (floatingChatOpen) {
-                await api.closeFloatingChat();
-                setFloatingChatOpen(false);
-            } else {
-                await api.openFloatingChat();
-                setFloatingChatOpen(true);
-            }
-        } catch (err) {
-            console.warn('Failed to toggle floating chat:', err);
-        }
-    }, [floatingChatOpen]);
-
-    useEffect(() => {
-        const api = (window as any).electronAPI;
-        if (!api?.onFloatingChatClosed) return;
-        const unsubscribe = api.onFloatingChatClosed(() => setFloatingChatOpen(false));
-        if (api.isFloatingChatOpen) {
-            api.isFloatingChatOpen()
-                .then((open: boolean) => setFloatingChatOpen(Boolean(open)))
-                .catch(() => undefined);
-        }
-        return () => { try { unsubscribe?.(); } catch { /* ignore */ } };
-    }, []);
+        if (vState !== 'idle' || !voiceSessionSeenActiveRef.current) return;
+        if (activeAgentSession?.status === 'starting') return;
+        voiceSessionSeenActiveRef.current = false;
+        const activeVoiceSessionId = activeAgentSessionRef.current?.clientSessionId ?? mainClientSessionIdRef.current;
+        const overlayAiSessionId = overlayAiSessionByVoiceSessionRef.current.get(activeVoiceSessionId);
+        overlayAiSessionByVoiceSessionRef.current.delete(activeVoiceSessionId);
+        overlayStartByVoiceSessionRef.current.delete(activeVoiceSessionId);
+        void endOverlaySession(overlayAiSessionId).catch(() => undefined);
+    }, [activeAgentSession?.status, endOverlaySession, vState]);
+    const canOpenFloatingChat = overlaySessionClient.available();
 
     const addGuidanceMessage = useCallback((content: string) => {
+        if (conversationDisposedRef.current) return;
         const message: Message = {
             id: generateUniqueId('guidance'),
             content,
@@ -1506,6 +1461,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         if (!file) return;
         const reader = new FileReader();
         reader.onload = () => {
+            if (conversationDisposedRef.current) return;
             const dataUrl = reader.result as string;
             const next = { ...emotionGifs, [emotion]: dataUrl };
             setEmotionGifs(next);
@@ -1529,9 +1485,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     }, [messages, scrollToBottom]);
 
     // Listen for guidance messages from ImitationGuidanceChart
-    const lastProcessedGuidanceRef = useRef<string>('');
-    const lastGuidanceTimestampRef = useRef<number>(0);
     useEffect(() => {
+        if (mainClientSessionId !== mainClientSessionIdRef.current) return;
         if (!TrackGuideEnabled) {
             if (analysisContext?.latestGuidanceMessage) {
                 lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
@@ -1557,92 +1512,103 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
             lastGuidanceTimestampRef.current = now;
         }
-    }, [analysisContext?.latestGuidanceMessage, generateUniqueId, setMessages, TrackGuideEnabled]);
+    }, [analysisContext?.latestGuidanceMessage, generateUniqueId, mainClientSessionId, setMessages, TrackGuideEnabled]);
 
     useEffect(() => {
-        const liveData = analysisContext?.liveData as Record<string, any> | null;
         if (!TrackGuideEnabled) {
             trackGuideRunTokenRef.current += 1;
             trackGuideLastPosRef.current = undefined;
             trackGuideTriggeredRef.current.clear();
             return;
         }
-        if (!liveData || Object.keys(liveData).length === 0) return;
+        return liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset') {
+                trackGuideRunTokenRef.current += 1;
+                trackGuideLastPosRef.current = undefined;
+                trackGuideTriggeredRef.current.clear();
+                return;
+            }
+            if (event.type !== 'frame') return;
+            const liveData = event.sample;
+            const currentPos = getNormalizedCarPos(liveData);
+            const lastPos = trackGuideLastPosRef.current;
+            if (currentPos === undefined) return;
+            trackGuideLastPosRef.current = currentPos;
+            if (lastPos === undefined) return;
 
-        const currentPos = getNormalizedCarPos(liveData);
-        const lastPos = trackGuideLastPosRef.current;
-        if (currentPos === undefined) return;
-        trackGuideLastPosRef.current = currentPos;
-        if (lastPos === undefined) return;
+            const trackName = getTrackNameForGuide(liveData);
+            if (!trackName) return;
 
-        const trackName = getTrackNameForGuide(liveData);
-        if (!trackName) return;
+            const triggeredCorners = findTriggeredCorners(
+                getCornersForTrack(trackName),
+                lastPos,
+                currentPos,
+            );
+            if (triggeredCorners.length === 0) return;
 
-        const triggeredCorners = findTriggeredCorners(
-            getCornersForTrack(trackName),
-            lastPos,
-            currentPos,
-        );
-        if (triggeredCorners.length === 0) return;
+            const lap = Number(
+                liveData.Graphics_completed_laps
+                ?? liveData.Graphics_completed_lap
+                ?? 0
+            );
+            triggeredCorners.forEach((triggeredCorner) => {
+                const triggerPosition = triggeredCorner.guideFrom ?? triggeredCorner.from;
+                const triggerKey = `${lap}:${triggerPosition}:${triggeredCorner.name}`;
+                if (trackGuideTriggeredRef.current.has(triggerKey)) return;
 
-        const lap = Number(
-            liveData.Graphics_completed_laps
-            ?? liveData.Graphics_completed_lap
-            ?? 0
-        );
-        triggeredCorners.forEach((triggeredCorner) => {
-            const triggerPosition = triggeredCorner.guideFrom ?? triggeredCorner.from;
-            const triggerKey = `${lap}:${triggerPosition}:${triggeredCorner.name}`;
-            if (trackGuideTriggeredRef.current.has(triggerKey)) return;
+                trackGuideTriggeredRef.current.add(triggerKey);
+                const guideToken = trackGuideRunTokenRef.current;
 
-            trackGuideTriggeredRef.current.add(triggerKey);
-            const guideToken = trackGuideRunTokenRef.current;
-
-            apiService.post('/racing-session/track-corner-knowledge', {
-                track_name: trackName,
-                corner_name: normalizeCornerNameForKnowledge(triggeredCorner.name),
-                normalized_position: triggerPosition,
-                trigger_position: triggerPosition,
-                current_telemetry: liveData,
-            }).then((response) => {
-                if (guideToken !== trackGuideRunTokenRef.current) return;
-                const message = extractCornerKnowledgeMessage(response.data);
-                if (message) {
-                    addGuidanceMessage(message);
-                }
-            }).catch((error) => {
-                if (guideToken !== trackGuideRunTokenRef.current) return;
-                const errorDetail = error?.data?.message || error?.data?.detail;
-                if (
-                    error?.status === 404
-                    && typeof errorDetail === 'string'
-                    && (
-                        errorDetail.includes('not in corpus')
-                        || (errorDetail.includes('corner') && errorDetail.includes('not found'))
-                    )
-                ) {
-                    addGuidanceMessage("Track guide doesn't support the current track right now.");
-                    return;
-                }
-                console.warn('Track guide agent knowledge request failed:', error);
+                apiService.post('/racing-session/track-corner-knowledge', {
+                    track_name: trackName,
+                    corner_name: normalizeCornerNameForKnowledge(triggeredCorner.name),
+                    normalized_position: triggerPosition,
+                    trigger_position: triggerPosition,
+                    current_telemetry: liveData,
+                }).then((response) => {
+                    if (guideToken !== trackGuideRunTokenRef.current) return;
+                    const message = extractCornerKnowledgeMessage(response.data);
+                    if (message) {
+                        addGuidanceMessage(message);
+                    }
+                }).catch((error) => {
+                    if (guideToken !== trackGuideRunTokenRef.current) return;
+                    const errorDetail = error?.data?.message || error?.data?.detail;
+                    if (
+                        error?.status === 404
+                        && typeof errorDetail === 'string'
+                        && (
+                            errorDetail.includes('not in corpus')
+                            || (errorDetail.includes('corner') && errorDetail.includes('not found'))
+                        )
+                    ) {
+                        addGuidanceMessage("Track guide doesn't support the current track right now.");
+                        return;
+                    }
+                    console.warn('Track guide agent knowledge request failed:', error);
+                });
             });
-        });
-    }, [addGuidanceMessage, analysisContext?.liveData, TrackGuideEnabled]);
+        }, { replayLatest: true });
+    }, [addGuidanceMessage, TrackGuideEnabled]);
 
     // Auto-manage imitation guidance chart visibility
     useEffect(() => {
         if (!TrackGuideEnabled) {
-            const existingCharts = visualizationController.getCurrentInstances();
-            existingCharts.forEach(chart => {
+            const managerNames = [
+                OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+                OPERATION_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
+            ];
+            managerNames.forEach((managerName) => {
+                const manager = componentRefs.findComponentRef<VisualizationManagerHandle>(managerName)?.current;
+                const existingCharts = manager?.getCurrentVisualizations() ?? [];
+                existingCharts.forEach(chart => {
                 if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
-                    visualizationController.executeCommand({
-                        action: 'remove',
-                        id: chart.id
-                    });
-                }
+                        manager?.closeVisualization({ name: chart.name });
+                    }
+                });
             });
         }
-    }, [TrackGuideEnabled, sessionId]);
+    }, [TrackGuideEnabled, componentRefs, sessionId]);
 
     useEffect(() => {
         const opportunityAgent = opportunityAgentStateRef.current;
@@ -1652,22 +1618,22 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 clearInterval(opportunityAgent.intervalId);
                 opportunityAgent.intervalId = null;
             }
-            if (analystAgent.intervalId) {
-                clearInterval(analystAgent.intervalId);
-                analystAgent.intervalId = null;
-            }
+            opportunityAgent.inFlight = false;
+            analystAgent.enabled = false;
 
-            const existingCharts = visualizationController.getCurrentInstances();
-            existingCharts.forEach(chart => {
-                if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
-                    visualizationController.executeCommand({
-                        action: 'remove',
-                        id: chart.id
-                    });
-                }
+            [
+                OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+                OPERATION_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
+            ].forEach((managerName) => {
+                const manager = componentRefs.findComponentRef<VisualizationManagerHandle>(managerName)?.current;
+                manager?.getCurrentVisualizations().forEach((chart) => {
+                    if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
+                        manager.closeVisualization({ name: chart.name });
+                    }
+                });
             });
         };
-    }, []);
+    }, [componentRefs]);
 
     useEffect(() => {
         setEnvironment(detectEnvironment());
@@ -1675,20 +1641,20 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const handleSendMessage = async (override?: string) => {
         const text = (override ?? inputValue).trim();
-        if (!text || isLoading) return;
-        if (isProcedurePlanOptOutRequest(text)) {
-            optOutProcedurePlan();
-        }
+        if (!text || isLoading || liveSessionEnded) return;
+        workflowPanelRef.current?.handleUserText(text);
 
-        // The voice WS is the single chat surface. Backend echoes a
-        // user_transcript frame for typed input, so we don't append the
-        // user message locally — handleVoiceEvent will when the echo arrives.
+        // Add successful typed sends immediately. The backend may echo a
+        // user_transcript frame later; handleSessionVoiceEvent consumes that
+        // acknowledgement without rendering a duplicate bubble.
         const sent = activeVoiceConversation.sendUserText(text);
         if (!sent) {
             setMessages(prev => prev.concat({
                 id: generateUniqueId('ai'),
                 ...(activeAgentSession
                     ? { content: `Start the ${getAgentDisplayName(activeAgentSession.agentMode)} connection first. Agent chat runs on its own session.` }
+                    : sessionMode === 'front_desk'
+                    ? { content: 'Start the assistant connection first. Front desk context will be sent with the request.' }
                     : sessionMode === 'recorded'
                     ? { content: 'Start the assistant connection first. Recorded session context will be sent with the request.' }
                     : sessionMode === 'user_summary'
@@ -1700,6 +1666,17 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             }));
             return;
         }
+        setMessages(prev => prev
+            .filter(message => !message.isLoading)
+            .concat({
+                id: generateUniqueId('user-typed'),
+                content: text,
+                isUser: true,
+                timestamp: new Date(),
+                kind: 'chat',
+                transcriptSource: 'typed',
+                awaitingTypedEcho: true,
+            }));
         setInputValue('');
     };
 
@@ -1715,31 +1692,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     };
 
     // ── Voice state → mic panel display ─────────────────────────────
-    const sessionModeLabel = activeAgentSession
-        ? getAgentDisplayName(activeAgentSession.agentMode)
-        : sessionMode === 'recorded'
-        ? 'Recorded Session'
-        : sessionMode === 'user_summary'
-            ? 'User Summary'
-            : 'Live Session';
-    const transcriptLabel = activeAgentSession
-        ? `${getAgentDisplayName(activeAgentSession.agentMode).toUpperCase()} TRANSCRIPT`
-        : sessionMode === 'recorded'
-        ? 'RECORDED TRANSCRIPT'
-        : sessionMode === 'user_summary'
-            ? 'SUMMARY TRANSCRIPT'
-            : 'LIVE TRANSCRIPT';
-
-    const channelLabel =
-        vState === 'idle' ? 'CH-1 · OFFLINE' :
-        vState === 'connecting' ? 'CH-1 · CONNECTING' :
-        vState === 'error' ? 'CH-1 · ERROR' :
-        micDisabled ? 'CH-1 · MIC OFF' :
-        'CH-1 · OPEN';
-    const channelMod =
-        vState === 'idle' ? 'ai-chat__mic-channel--idle' :
-        vState === 'error' ? 'ai-chat__mic-channel--error' :
-        '';
     const coreMod =
         vState === 'idle' || vState === 'connecting' ? 'ai-chat__mic-core--idle' :
         vState === 'error' ? 'ai-chat__mic-core--error' :
@@ -1747,50 +1699,77 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const statusTop =
         vState === 'idle' ? 'TAP MIC' :
         vState === 'connecting' ? 'CONNECTING' :
+        vState === 'error' ? 'VOICE' :
         micDisabled ? 'MIC' :
-        vState === 'speaking' ? 'ACLA' :
+        vState === 'speaking' ? 'Kestrel' :
         vState === 'listening' ? 'DRIVER' :
         'VOICE';
     const statusBottom =
         vState === 'idle' ? 'TO START' :
         vState === 'connecting' ? '…' :
+        vState === 'error' ? 'RETRY' :
         micDisabled ? 'DISABLED' :
         vState === 'speaking' ? 'RESPONDING' :
         vState === 'listening' ? 'LISTENING' :
-        vState === 'error' ? 'RETRY' :
         'IDLE';
     const statusMod =
         vState === 'idle' || vState === 'connecting' ? 'ai-chat__mic-status--idle' :
         vState === 'error' ? 'ai-chat__mic-status--error' :
         '';
 
-    const toggleVoice = () => {
+    const handleMicClick = () => {
+        if (liveSessionEnded) return;
+        const agentSession = activeAgentSessionRef.current;
+        const voiceSessionId = agentSession?.clientSessionId ?? mainClientSessionIdRef.current;
+        const overlayTarget = agentSession ? 'agent' : 'main';
         if (vState === 'idle' || vState === 'error') {
-            activeVoiceConversation.start().catch((err) => {
-                console.error('Voice conversation failed to start:', err);
-            });
-        } else {
-            activeVoiceConversation.stop();
+            const overlayAiSessionId = createClientSessionId(`overlay-${overlayTarget}`);
+            overlayAiSessionByVoiceSessionRef.current.set(voiceSessionId, overlayAiSessionId);
+            const overlayStart = beginOverlaySession(overlayAiSessionId, overlayTarget, agentSession?.agentMode);
+            overlayStartByVoiceSessionRef.current.set(voiceSessionId, overlayStart);
+            void overlayStart
+                .catch((overlayError) => {
+                    if (conversationDisposedRef.current) return;
+                    if (mainClientSessionId !== mainClientSessionIdRef.current) return;
+                    console.warn(
+                        'AI overlay failed to initialize; continuing voice conversation without it:',
+                        overlayError,
+                    );
+                })
+                .then(() => {
+                    if (conversationDisposedRef.current) return;
+                    if (mainClientSessionId !== mainClientSessionIdRef.current) return;
+                    return activeVoiceConversation.start(overlayAiSessionId);
+                })
+                .catch((err) => {
+                    if (conversationDisposedRef.current) return;
+                    if (mainClientSessionId !== mainClientSessionIdRef.current) return;
+                    console.error('Voice conversation failed to start:', err);
+                    void endOverlaySession(overlayAiSessionId).catch(() => undefined);
+                });
+        } else if (voiceActive) {
+            activeVoiceConversation.setMicDisabled(!micDisabled);
         }
     };
 
     const toggleMicDisabled = () => {
+        if (liveSessionEnded) return;
         activeVoiceConversation.setMicDisabled(!micDisabled);
     };
 
-    // Wave bars: driver real mic level when listening so the bars visually
-    // confirm we're picking up audio; otherwise CSS-only decorative animation.
+    // Radial wave bars: driver mic level when listening; otherwise a subtle
+    // decorative pulse. Each spoke is anchored to the mic edge in CSS.
     const waveBars = useMemo(
-        () => Array.from({ length: 24 }, (_, i) => ({
-            delay: `${(i % 6) * 0.08}s`,
-            duration: `${0.7 + (i % 5) * 0.1}s`,
+        () => Array.from({ length: 48 }, (_, i) => ({
+            delay: `${(i % 8) * -0.07}s`,
+            duration: `${0.78 + (i % 7) * 0.06}s`,
         })),
         []
     );
     const liveLevels = useMemo(() => {
         // Stable per-bar response curve so adjacent bars don't all jump in sync.
-        return Array.from({ length: 24 }, (_, i) => {
-            const phase = (i / 24) * Math.PI * 2;
+        return Array.from({ length: 48 }, (_, i) => {
+            const phase = (i / 48) * Math.PI * 2;
             return 0.55 + 0.45 * Math.abs(Math.sin(phase));
         });
     }, []);
@@ -1798,87 +1777,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     return (
         <div className="ai-chat">
-            <BaselineCollectionTracker
-                {...baselineCollectionRuntime.trackerProps}
-                liveData={analysisContext?.liveData as Record<string, any> | null}
-                sessionMode={sessionMode}
-            />
             <div className="ai-chat__grid-bg" aria-hidden="true" />
-
-            {/* Header */}
-            <div className="ai-chat__header">
-                <span className="ai-chat__eyebrow">
-                    <span className="ai-chat__eyebrow-dot" />
-                    {title}
-                </span>
-                <div className="ai-chat__header-meta">
-                    <span className="ai-chat__chip ai-chat__chip--blue">{sessionModeLabel}</span>
-                    {environment === 'electron' && (
-                        <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
-                    )}
-                    {activeVoiceConversation.error && (
-                        <span className="ai-chat__chip ai-chat__chip--red" title={activeVoiceConversation.error}>
-                            Voice Error
-                        </span>
-                    )}
-                    {activeAgentSession && (
-                        <span className="ai-chat__chip ai-chat__chip--amber">
-                            Main Paused
-                        </span>
-                    )}
-                    {activeAgentSession && (
-                        <button
-                            type="button"
-                            className="ai-chat__chip-btn ai-chat__chip-btn--red"
-                            onClick={() => stopAgentSession(activeAgentSession.clientSessionId)}
-                            title="End the focused agent session"
-                        >
-                            End Agent
-                        </button>
-                    )}
-                    <button
-                        type="button"
-                        className={`ai-chat__chip-btn ${micDisabled ? 'ai-chat__chip-btn--red' : ''}`}
-                        onClick={toggleMicDisabled}
-                        disabled={isLoading}
-                        aria-pressed={micDisabled}
-                        title={micDisabled ? 'Enable microphone capture' : 'Disable microphone capture'}
-                    >
-                        {micDisabled ? 'Mic Off' : 'Mic On'}
-                    </button>
-                    {canOpenFloatingChat && (
-                        <button
-                            type="button"
-                            className={`ai-chat__chip-btn ai-chat__chip-btn--icon ${floatingChatOpen ? 'ai-chat__chip-btn--green' : ''}`}
-                            onClick={() => { void toggleFloatingChat(); }}
-                            aria-pressed={floatingChatOpen}
-                            title={floatingChatOpen
-                                ? 'Close the always-on-top AI chat overlay'
-                                : 'Open the always-on-top AI chat overlay (visible over the game in borderless windowed mode)'}
-                        >
-                            <OverlayIcon size={14} />
-                            <span>{floatingChatOpen ? 'Overlay On' : 'AI Overlay'}</span>
-                        </button>
-                    )}
-                    <button
-                        type="button"
-                        className="ai-chat__chip-btn"
-                        onClick={() => setDebugMode(!debugMode)}
-                        aria-pressed={debugMode}
-                    >
-                        Debug
-                    </button>
-                    <button
-                        type="button"
-                        className="ai-chat__chip-btn"
-                        onClick={() => setShowEmoteSettings(!showEmoteSettings)}
-                        aria-pressed={showEmoteSettings}
-                        title="Emotion GIF settings"
-                    >
-                        Emotes
-                    </button>
-                </div>
-            </div>
 
             {/* Emotion GIF settings panel */}
             {showEmoteSettings && (
@@ -1920,34 +1819,51 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             {/* Stage: mic panel + transcript */}
             <div className="ai-chat__stage">
                 <aside className="ai-chat__mic-panel">
-                    <div className="ai-chat__mic-head">
-                        <span className={`ai-chat__mic-channel ${channelMod}`}>
+                    <div className="ai-chat__mic-card-head">
+                        <span className="ai-chat__eyebrow">
                             <span className="ai-chat__eyebrow-dot" />
-                            {channelLabel}
+                            {title}
                         </span>
-                        <span>VOICE LINK</span>
                     </div>
 
                     <div className="ai-chat__mic-visual">
-                        {voiceActive && (
-                            <>
-                                <span className="ai-chat__mic-ring" />
-                                <span className="ai-chat__mic-ring" />
-                                <span className="ai-chat__mic-ring" />
-                            </>
-                        )}
+                        <div
+                            className={`ai-chat__mic-wave ${useLiveBars ? 'ai-chat__mic-wave--live' : (vState === 'idle' || micDisabled) ? 'ai-chat__mic-wave--idle' : ''}`}
+                            aria-hidden="true"
+                        >
+                            {waveBars.map((bar, index) => {
+                                const level = useLiveBars
+                                    ? Math.min(1, activeVoiceConversation.micLevel * 1.8 * liveLevels[index])
+                                    : undefined;
+                                return (
+                                    <span
+                                        key={index}
+                                        className="ai-chat__mic-wave-bar"
+                                        style={{
+                                            '--wave-angle': `${(index / waveBars.length) * 360}deg`,
+                                            '--wave-delay': bar.delay,
+                                            '--wave-duration': bar.duration,
+                                            '--wave-scale': level === undefined ? undefined : Math.max(0.18, level),
+                                        } as React.CSSProperties}
+                                    />
+                                );
+                            })}
+                        </div>
                         <button
                             type="button"
                             className={`ai-chat__mic-core ${coreMod} ${micDisabled ? 'ai-chat__mic-core--muted' : ''}`}
-                            onClick={toggleVoice}
-                            disabled={vState === 'connecting'}
+                            onClick={handleMicClick}
+                            disabled={vState === 'connecting' || liveSessionEnded}
                             title={
                                 vState === 'error' ? `Voice error: ${activeVoiceConversation.error}. Click to retry.` :
                                 vState === 'connecting' ? 'Connecting…' :
-                                voiceActive ? 'Click to end voice session' :
+                                voiceActive ? (micDisabled ? 'Enable microphone capture' : 'Disable microphone capture') :
                                 'Click to start voice session'
                             }
-                            aria-label="Toggle voice session"
+                            aria-label={voiceActive
+                                ? (micDisabled ? 'Enable microphone' : 'Disable microphone')
+                                : vState === 'error' ? 'Reconnect assistant' : 'Start assistant'}
+                            aria-pressed={voiceActive ? micDisabled : undefined}
                         >
                             <svg viewBox="0 0 48 48" width="36" height="36" fill="none">
                                 <rect x="18" y="6" width="12" height="22" rx="6"
@@ -1966,73 +1882,116 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         <b>{statusBottom}</b>
                     </div>
 
-                    <div
-                        className={`ai-chat__mic-wave ${useLiveBars ? 'ai-chat__mic-wave--live' : (vState === 'idle' || micDisabled) ? 'ai-chat__mic-wave--idle' : ''}`}
-                        aria-hidden="true"
-                    >
-                        {waveBars.map((b, i) => {
-                            if (useLiveBars) {
-                                const lvl = Math.min(1, activeVoiceConversation.micLevel * 1.8 * liveLevels[i]);
-                                return (
-                                    <span
-                                        key={i}
-                                        className="ai-chat__mic-wave-bar"
-                                        style={{ height: `${Math.max(8, lvl * 100)}%`, transition: 'height 80ms linear' }}
-                                    />
-                                );
-                            }
-                            return (
-                                <span
-                                    key={i}
-                                    className="ai-chat__mic-wave-bar"
-                                    style={{ animationDelay: b.delay, animationDuration: b.duration }}
-                                />
-                            );
-                        })}
-                    </div>
-
                     <div className="ai-chat__mic-hint">
-                        Push <kbd>PTT</kbd> or say <kbd>&ldquo;Hey ACLA&rdquo;</kbd><br />
+                        Push <kbd>PTT</kbd> or say <kbd>&ldquo;Hey Kestrel&rdquo;</kbd><br />
                         No menus. No screens. Just talk.
                     </div>
 
+                    <div className="ai-chat__header-meta ai-chat__mic-settings">
+                        <select
+                            className="ai-chat__model-select"
+                            value={selectedChatLlmModel}
+                            onChange={(event) => setSelectedChatLlmModel(event.target.value)}
+                            disabled={modelPickerDisabled}
+                            aria-label="Chat LLM model"
+                            title={modelPickerDisabled
+                                ? 'The model is fixed while the assistant is connected'
+                                : 'Choose the model for the next voice chat session'}
+                        >
+                            {CHAT_LLM_MODEL_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                    {option.label}
+                                </option>
+                            ))}
+                        </select>
+                        {environment === 'electron' && (
+                            <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
+                        )}
+                        {activeVoiceConversation.error && (
+                            <span className="ai-chat__chip ai-chat__chip--red" title={activeVoiceConversation.error}>
+                                Voice Error
+                            </span>
+                        )}
+                        {activeAgentSession && (
+                            <span className="ai-chat__chip ai-chat__chip--amber">
+                                Main Paused
+                            </span>
+                        )}
+                        {activeAgentSession && (
+                            <button
+                                type="button"
+                                className="ai-chat__chip-btn ai-chat__chip-btn--red"
+                                onClick={() => stopAgentSession(activeAgentSession.clientSessionId)}
+                                title="End the focused agent session"
+                            >
+                                End Agent
+                            </button>
+                        )}
+                        <button
+                            type="button"
+                            className={`ai-chat__chip-btn ${micDisabled ? 'ai-chat__chip-btn--red' : ''}`}
+                            onClick={toggleMicDisabled}
+                            disabled={isLoading || liveSessionEnded}
+                            aria-pressed={micDisabled}
+                            title={micDisabled ? 'Enable microphone capture' : 'Disable microphone capture'}
+                        >
+                            {micDisabled ? 'Mic Off' : 'Mic On'}
+                        </button>
+                        {canOpenFloatingChat && (
+                            <button
+                                type="button"
+                                className={`ai-chat__chip-btn ai-chat__chip-btn--icon ${floatingChatOpen ? 'ai-chat__chip-btn--green' : ''}`}
+                                onClick={() => { void toggleFloatingChat(); }}
+                                aria-pressed={floatingChatOpen}
+                                title={floatingChatOpen
+                                    ? 'Hide the always-on-top AI overlay'
+                                    : 'Show the always-on-top AI overlay'}
+                            >
+                                <OverlayIcon size={14} />
+                                <span>{floatingChatOpen ? 'Overlay On' : 'Overlay Off'}</span>
+                            </button>
+                        )}
+                        <button
+                            type="button"
+                            className="ai-chat__chip-btn"
+                            onClick={() => setDebugMode(!debugMode)}
+                            aria-pressed={debugMode}
+                        >
+                            Debug
+                        </button>
+                        <button
+                            type="button"
+                            className="ai-chat__chip-btn"
+                            onClick={() => setShowEmoteSettings(!showEmoteSettings)}
+                            aria-pressed={showEmoteSettings}
+                            title="Emotion GIF settings"
+                        >
+                            Emotes
+                        </button>
+                    </div>
                 </aside>
 
                 <section className="ai-chat__transcript">
-                    <div className="ai-chat__transcript-head">
-                        <span className="ai-chat__transcript-title">
-                            <span className="ai-chat__eyebrow-dot" />
-                            {transcriptLabel}
-                        </span>
-                        <span className="ai-chat__transcript-time">{clock}</span>
-                    </div>
-
-                    {baselineCollectionEnabled && baselineCollectionTag && (
-                        <BaselineProgressDisplay tag={baselineCollectionTag} />
-                    )}
-
-                    <LiveRangeTracker
-                        ref={liveRangeTrackerRef}
-                        liveData={analysisContext?.liveData as Record<string, any> | null}
-                        sessionMode={sessionMode}
-                        sessionIntelligence={analysisContext?.sessionIntelligence}
-                        sendObservation={sendLiveRangeTrackerObservation}
-                        resolveLabel={getLabelName}
-                        onStateChange={handleLiveRangeTrackerStateChange}
+                    <WorkflowPanel
+                        ref={workflowPanelRef}
+                        dispatchOperation={dispatchActiveVoiceOperation}
+                        live={sessionMode === 'live'}
+                        sessionGame={liveSession?.sessionGame ?? null}
                     />
 
-                    {procedurePlan && (
-                        <ProcedurePlanDisplay plan={procedurePlan} onClear={clearProcedurePlan} />
-                    )}
-
                     <div className="ai-chat__msgs" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
+                        {liveSessionEnded && (
+                            <div className="ai-chat__ended-notice" role="status">
+                                This session has already ended. AI chat is unavailable because live recording is off.
+                            </div>
+                        )}
                         {messages.map((message) => (
                             <AiMessageDisplay
                                 key={message.id}
                                 message={message}
                                 debugMode={debugMode}
                                 assistantAvatarLabel={activeAgentSession ? 'LA' : 'AI'}
-                                assistantWhoLabel={activeAgentSession ? getAgentDisplayName(activeAgentSession.agentMode).toUpperCase() : 'ACLA'}
+                                assistantWhoLabel={activeAgentSession ? getAgentDisplayName(activeAgentSession.agentMode).toUpperCase() : 'Kestrel'}
                             />
                         ))}
                         <div ref={messagesEndRef} />
@@ -2049,6 +2008,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                             ? `Talk to ${getAgentDisplayName(activeAgentSession.agentMode)}.`
                             : voiceActive
                             ? 'Type a message to the engineer…'
+                            : sessionMode === 'front_desk'
+                                ? 'Ask the front desk.'
                             : sessionMode === 'recorded'
                                 ? 'Ask about this recording.'
                                 : sessionMode === 'user_summary'
@@ -2058,19 +2019,79 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     value={inputValue}
                     onChange={handleInputChange}
                     onKeyDown={handleKeyDown}
-                    disabled={isLoading}
+                    disabled={isLoading || liveSessionEnded}
                 />
                 <button
                     type="button"
                     className="ai-chat__btn ai-chat__btn--primary"
                     onClick={() => handleSendMessage()}
-                    disabled={!inputValue.trim() || isLoading}
+                    disabled={!inputValue.trim() || isLoading || liveSessionEnded}
                     title="Send"
                 >
                     SEND
                 </button>
             </div>
         </div>
+    );
+};
+
+const AiChat: React.FC<AiChatProps> = ({ name, activeScreen }) => {
+    const [selectedChatLlmModel, setSelectedChatLlmModel] = useState(
+        DEFAULT_CHAT_LLM_MODEL_OPTION.value,
+    );
+    const [debugMode, setDebugMode] = useState(false);
+    const [emotionGifs, setEmotionGifs] = useState<Partial<Record<Emotion, string>>>(() => {
+        try { return JSON.parse(localStorage.getItem(EMOTION_GIFS_KEY) || '{}'); }
+        catch { return {}; }
+    });
+    const [floatingChatOpen, setFloatingChatOpen] = useState(false);
+    const [overlayClosedGeneration, setOverlayClosedGeneration] = useState(0);
+
+    const toggleFloatingChat = useCallback(async () => {
+        try {
+            const enabled = !floatingChatOpen;
+            await overlaySessionClient.setEnabled(enabled);
+            setFloatingChatOpen(enabled);
+        } catch (err) {
+            console.warn('Failed to toggle floating chat:', err);
+        }
+    }, [floatingChatOpen]);
+
+    useEffect(() => {
+        const api = (window as any).electronAPI;
+        if (!api) return;
+        let disposed = false;
+        const unsubscribe = api.onFloatingChatClosed?.(() => {
+            setFloatingChatOpen(false);
+            setOverlayClosedGeneration((generation) => generation + 1);
+        });
+        if (api.isOverlayEnabled) {
+            api.isOverlayEnabled()
+                .then((open: boolean) => {
+                    if (!disposed) setFloatingChatOpen(Boolean(open));
+                })
+                .catch(() => undefined);
+        }
+        return () => {
+            disposed = true;
+            try { unsubscribe?.(); } catch { /* ignore */ }
+        };
+    }, []);
+
+    return (
+        <AiChatConversation
+            name={name}
+            activeScreen={activeScreen}
+            selectedChatLlmModel={selectedChatLlmModel}
+            setSelectedChatLlmModel={setSelectedChatLlmModel}
+            debugMode={debugMode}
+            setDebugMode={setDebugMode}
+            emotionGifs={emotionGifs}
+            setEmotionGifs={setEmotionGifs}
+            floatingChatOpen={floatingChatOpen}
+            toggleFloatingChat={toggleFloatingChat}
+            overlayClosedGeneration={overlayClosedGeneration}
+        />
     );
 };
 

@@ -1,0 +1,446 @@
+.root {
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 13px;
+    overflow: hidden;
+    border: 1px solid rgba(171, 175, 181, 0.18);
+    border-radius: 14px;
+    color: #e9f4ff;
+    filter: saturate(1.56);
+    background:
+        linear-gradient(rgba(171, 175, 181, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(171, 175, 181, 0.025) 1px, transparent 1px),
+        radial-gradient(circle at 50% -25%, rgba(124, 128, 136, 0.06), transparent 52%),
+        #202124;
+    background-size: 24px 24px, 24px 24px, auto, auto;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+    font-family: var(--lp-sans, 'Geist', system-ui, sans-serif);
+}
+
+.header {
+    min-width: 0;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 18px;
+}
+
+.titleBlock {
+    min-width: 0;
+}
+
+.replayStatus,
+.progressValue {
+    font-family: var(--lp-mono, 'Geist Mono', monospace);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.title {
+    margin: 0;
+    overflow: hidden;
+    color: #f2f8ff;
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.replayReadout {
+    min-width: max-content;
+    padding: 6px 8px;
+    border: 1px solid rgba(171, 175, 181, 0.16);
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: #26272b;
+}
+
+.statusDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ffc857;
+    box-shadow: 0 0 8px rgba(255, 200, 87, 0.75);
+    animation: replayPulse 1s ease-in-out infinite;
+}
+
+.statusDotComplete {
+    background: #21e58b;
+    box-shadow: 0 0 7px rgba(33, 229, 139, 0.55);
+    animation: none;
+}
+
+.replayStatus,
+.progressValue {
+    font-size: 8px;
+    font-weight: 650;
+}
+
+.replayStatus {
+    color: #bdd0e2;
+}
+
+.progressDivider {
+    width: 1px;
+    height: 10px;
+    background: rgba(171, 175, 181, 0.2);
+}
+
+.progressValue {
+    min-width: 28px;
+    color: #e6f2ff;
+    text-align: right;
+}
+
+.overallUnavailable {
+    margin: -2px 0 9px;
+    padding: 6px 8px;
+    border-left: 2px solid #8da9c3;
+    color: #bdd0e2;
+    background: #26272b;
+    font-family: var(--lp-mono, 'Geist Mono', monospace);
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.labelGroups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-height: 132px;
+    margin-bottom: 10px;
+    overflow-y: auto;
+}
+
+.replayButton {
+    padding: 5px 8px;
+    border: 1px solid rgba(128, 177, 255, 0.4);
+    border-radius: 4px;
+    color: #d4e6ff;
+    background: rgba(68, 138, 255, 0.14);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+.replayButton:hover:not(:disabled) {
+    background: rgba(68, 138, 255, 0.26);
+}
+
+.replayButton:focus-visible {
+    outline: 2px solid #80b1ff;
+    outline-offset: 2px;
+}
+
+.replayButton:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.labelGroup {
+    flex: 1 1 190px;
+    min-width: 0;
+    padding: 8px 10px;
+    border-left: 2px solid var(--label-color);
+    border-radius: 5px;
+    background: #26272b;
+}
+
+.labelGroup[data-category='mistakes'] {
+    --label-color: #ff8797;
+}
+
+.labelGroup[data-category='expert'] {
+    --label-color: #80b1ff;
+}
+
+.labelGroup[data-category='recovery'] {
+    --label-color: #62dfb0;
+}
+
+.labelGroupTitle {
+    margin: 0 0 5px;
+    color: var(--label-color);
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.subLabels {
+    margin: 0;
+    padding-left: 15px;
+    color: #d4e2ef;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.noSubLabels {
+    color: #bdd0e2;
+    font-size: 11px;
+}
+
+.hud {
+    min-width: 0;
+    display: grid;
+    gap: 10px;
+}
+
+.trackPanel {
+    box-sizing: border-box;
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid rgba(171, 175, 181, 0.16);
+    border-radius: 9px;
+    background: #232427;
+    box-shadow: inset 0 0 20px rgba(171, 175, 181, 0.02);
+}
+
+.trackPanel {
+    min-height: 130px;
+    display: flex;
+    flex-direction: column;
+}
+
+.trackSvg {
+    width: 100%;
+    min-height: 0;
+    flex: 1 1 auto;
+    display: block;
+    overflow: hidden;
+}
+
+.trackViewport {
+    fill: #232427;
+}
+
+.cameraLayer {
+    transition: none;
+}
+
+.cameraOverlay {
+    pointer-events: none;
+    will-change: opacity;
+}
+
+.driverPath,
+.expertPath {
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.roadSign {
+    --label-color: #9b7a45;
+}
+
+.roadSign[data-state] {
+    transition: opacity 240ms ease-out;
+}
+
+.roadSign[data-state='released'] {
+    transition-duration: 40ms;
+}
+
+.roadSign[data-category='mistakes'] {
+    --label-color: #b85f70;
+}
+
+.roadSign[data-category='expert'] {
+    --label-color: #507faf;
+}
+
+.roadSign[data-category='recovery'] {
+    --label-color: #43836f;
+}
+
+.roadSignPost {
+    fill: none;
+    stroke: #a8bbbf;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1;
+    opacity: 0.55;
+}
+
+.roadSignBoard,
+.telemetryPodBody {
+    fill: rgba(40, 41, 45, 0.96);
+    stroke: rgba(171, 175, 181, 0.24);
+    stroke-width: 0.65;
+    filter: drop-shadow(0 5px 10px rgba(0, 0, 0, 0.24));
+}
+
+.roadSignDot {
+    fill: var(--label-color);
+}
+
+.roadSignLabel {
+    fill: #fff;
+    font-family: var(--lp-sans, 'Geist', system-ui, sans-serif);
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+}
+
+.groundGrid {
+    fill: none;
+    stroke: rgba(171, 175, 181, 0.12);
+    stroke-width: 0.65;
+}
+
+.driverRibbon {
+    fill: #00e676;
+}
+
+.driverPath {
+    stroke: #00e676;
+    stroke-width: 1;
+}
+
+.expertPath {
+    stroke: #448aff;
+    stroke-width: 2.4;
+    stroke-dasharray: 7 5;
+    opacity: 0.92;
+}
+
+.positionMarker {
+    transition: none;
+}
+
+.markerHalo {
+    opacity: 0.16;
+}
+
+.trackUnavailable {
+    fill: #bdd0e2;
+    font-family: var(--lp-mono, 'Geist Mono', monospace);
+    font-size: 8px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.placeholderTrack {
+    fill: none;
+    stroke: rgba(171, 175, 181, 0.34);
+    stroke-dasharray: 4 4;
+    stroke-width: 1.2;
+}
+
+.telemetryPod {
+    pointer-events: none;
+}
+
+.telemetryPodBody {
+    fill: rgba(44, 45, 49, 0.98);
+}
+
+.telemetryLeader {
+    opacity: 0.45;
+    stroke-linecap: round;
+    stroke-width: 1;
+}
+
+.telemetryIdentity {
+    fill: #fff;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+}
+
+.telemetryGearLabel {
+    fill: rgba(255, 255, 255, 0.78);
+    font-size: 8px;
+    font-weight: 400;
+}
+
+.telemetryGearValue {
+    fill: #fff;
+    font-size: 15px;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+}
+
+.telemetryGearUnavailable {
+    opacity: 0.75;
+}
+
+.gaugeTrack,
+.gaugeFill {
+    fill: none;
+    stroke-linecap: round;
+    stroke-width: 3;
+}
+
+.gaugeTrack {
+    stroke: rgba(171, 175, 181, 0.2);
+}
+
+.gaugeLabel {
+    fill: rgba(255, 255, 255, 0.78);
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.gaugeValue {
+    fill: #fff;
+    font-size: 32px;
+    font-weight: 350;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.05em;
+    line-height: 1;
+}
+
+.gaugeUnit {
+    fill: rgba(255, 255, 255, 0.78);
+    font-size: 0.58em;
+    letter-spacing: -0.02em;
+}
+
+.gaugeUnavailableValue {
+    fill: rgba(255, 255, 255, 0.78);
+    font-size: 20px;
+    font-weight: 400;
+}
+
+.gaugeUnavailable .gaugeTrack {
+    opacity: 0.5;
+}
+
+@keyframes replayPulse {
+    0%, 100% { opacity: 0.48; }
+    50% { opacity: 1; }
+}
+
+@media (max-width: 600px) {
+    .root {
+        padding: 10px;
+    }
+
+    .header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .replayReadout {
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .roadSign[data-state] {
+        transition: none;
+    }
+
+    .statusDot {
+        animation: none;
+    }
+}

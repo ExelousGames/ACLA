@@ -22,6 +22,7 @@ export type UploadReacingSessionInitDto = {
     mapName: string;
     carName: string;
     userId: string;
+    game_recorded_from: DesktopGame;
 }
 
 export type UploadRacingSessionInitReturnDto = {
@@ -38,6 +39,7 @@ export type SessionBasicInfoListDto = {
 
 export type RacingSessionDetailedInfoDto = {
     session_name: string;
+    game_recorded_from?: DesktopGame;
     SessionId: string;
     map: string;
     car: string;
@@ -52,3 +54,4 @@ export type RacingSessionDetailedInfoDto = {
     }[];
     data: any[];
 }
+import type { DesktopGame } from 'contexts/DesktopGameContext';

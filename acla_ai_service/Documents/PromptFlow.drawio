@@ -92,9 +92,6 @@
         <mxCell id="25" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="* zoom&#xa;&lt;i&gt;VLM over sub-range&lt;/i&gt;" vertex="1">
           <mxGeometry height="78" width="205" x="2611" y="618" as="geometry" />
         </mxCell>
-        <mxCell id="26" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="label_verifier&#xa;&lt;i&gt;embedding filter&#xa;(no VLM)&lt;/i&gt;" vertex="1">
-          <mxGeometry height="102" width="174" x="2627" y="746" as="geometry" />
-        </mxCell>
         <mxCell id="27" parent="1" style="whiteSpace=wrap;strokeWidth=2;fillColor=light-dark(#eeeeee,#1f2020);strokeColor=light-dark(#999999,#cccccc);fontColor=light-dark(#333333,#cccccc);" value="* synthesizer node&#xa;&lt;i&gt;synth prompt&lt;/i&gt;" vertex="1">
           <mxGeometry height="78" width="192" x="2977" y="660" as="geometry" />
         </mxCell>
@@ -138,13 +135,6 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="38" edge="1" parent="1" source="23" style="curved=1;startArrow=none;endArrow=block;exitX=0.74;exitY=1;entryX=0;entryY=0.5;" target="26" value="">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="2577" y="797" />
-            </Array>
-          </mxGeometry>
-        </mxCell>
         <mxCell id="39" edge="1" parent="1" source="24" style="curved=1;startArrow=none;endArrow=block;exitX=1;exitY=0.5;entryX=0.31;entryY=0;" target="27" value="observations">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
@@ -156,13 +146,6 @@
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="2901" y="657" />
-            </Array>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="41" edge="1" parent="1" source="26" style="curved=1;startArrow=none;endArrow=block;exitX=1;exitY=0.5;entryX=0.15;entryY=1;" target="27" value="verified_labels">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="2901" y="797" />
             </Array>
           </mxGeometry>
         </mxCell>

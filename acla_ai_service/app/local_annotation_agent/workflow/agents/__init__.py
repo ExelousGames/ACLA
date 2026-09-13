@@ -1,11 +1,6 @@
-"""Annotation-domain agents registered with the agent box.
+"""Annotation-domain agent registration placeholder.
 
-Side-effect imports trigger ``.register()`` on each Agent subclass,
-populating the box's AGENT_REGISTRY. The flow modules (detailed, lap)
-reference these by name when they build their AgentRequest.
-
-``label_verifier`` is now a peer of ``describe_graphs`` and ``zoom`` in
-``agent/sub_agents/`` — registered there on import of ``run_local``.
+The local provider now uses the explicit harness in
+``app.local_annotation_agent.runner``. There is no root graph agent to register
+here.
 """
-
-from app.local_annotation_agent.workflow.agents import annotation_root  # noqa: F401

@@ -4,7 +4,6 @@ import traceback
 import copy
 import pandas as pd
 
-from .components.annotation_provider_controls import render_annotation_provider_config
 from .shared import (
     build_segment,
     get_available_sessions,
@@ -14,34 +13,27 @@ from .shared import (
     LABEL_CATEGORIES,
     LABEL_MAPPING,
 )
-from app.local_annotation_agent import ClaudeUsageExhausted
-
-
-_USAGE_EXHAUSTED_WARNING = (
-    "⚠️ Claude usage is exhausted (Max-plan quota / 5-hour window / "
-    "credit balance). Batch halted — try again later."
-)
+from app.local_annotation_agent.workflow import AnnotationPipelineConfig
 _MIN_DISCOVERED_CHILD_LENGTH = 3
 
 
 def _render_provider_config(key_prefix: str, *, default_temperature: float, default_max_new_tokens: int):
-    return render_annotation_provider_config(
-        key_prefix=key_prefix,
-        default_temperature=default_temperature,
-        default_max_new_tokens=default_max_new_tokens,
-        default_tool_budget=3,
-    )
+    return AnnotationPipelineConfig(provider_id="deterministic")
 
 
 def _persist_children_for_parent(parent, result, session_id, selected_annotation_key, df):
-    """Auto-save AI-discovered children under ``parent``."""
+    """Auto-save deterministically discovered children under ``parent``."""
     from .components._agent_annotation_shared import (
         group_proposals_by_range,
         with_parent_label_ids,
     )
 
     grouped = group_proposals_by_range(result)
-    parent_label_ids = list(getattr(parent, "labels", []))
+    main_label_ids = set(LABEL_CATEGORIES.get("Main Labels", []))
+    parent_main_label_ids = [
+        label for label in getattr(parent, "labels", [])
+        if label in main_label_ids
+    ]
 
     new_children = []
     for (gs, ge), anns in grouped:
@@ -55,7 +47,7 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
             df,
             start=int(gs),
             end=int(ge),
-            label_ids=with_parent_label_ids(label_ids, parent_label_ids),
+            label_ids=with_parent_label_ids(label_ids, parent_main_label_ids),
             notes=notes,
             parent_id=parent.id,
         ))
@@ -70,19 +62,23 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
     return len(new_children)
 
 
-def _delete_session_subsegments(session_id, selected_annotation_key) -> int:
-    """Remove all child sub-segments from the loaded session."""
+def _delete_selected_parent_subsegments(
+    session_id,
+    selected_annotation_key,
+    selected_parent_ids: set[str],
+) -> int:
+    """Remove child sub-segments belonging to the selected parents."""
     annotations = list(st.session_state.get("current_annotations", []))
-    parent_only_annotations = [
+    remaining_annotations = [
         ann for ann in annotations
-        if not getattr(ann, "parent_id", None)
+        if getattr(ann, "parent_id", None) not in selected_parent_ids
     ]
-    deleted = len(annotations) - len(parent_only_annotations)
+    deleted = len(annotations) - len(remaining_annotations)
     if deleted:
-        st.session_state["current_annotations"] = parent_only_annotations
+        st.session_state["current_annotations"] = remaining_annotations
         save_annotations(
             session_id,
-            parent_only_annotations,
+            remaining_annotations,
             selected_annotation_key,
             silent=True,
         )
@@ -241,11 +237,11 @@ def _load_batch_segment_input(
 
 
 def render_batch_auto_annotation(df, selected_annotation_key):
-    """Batch sub-segment discovery powered by a selected AI provider."""
+    """Batch deterministic sub-segment discovery."""
     st.header("Batch Auto-Annotation (Sub-Segment Discovery)")
     st.write(
         "For each parent segment in the selected range, run the **Sub-Segment Discovery** "
-        "agent with the selected AI provider and auto-save discovered children."
+        "deterministic requirements and auto-save discovered children."
     )
 
     if not st.session_state.get("current_annotations"):
@@ -269,6 +265,12 @@ def render_batch_auto_annotation(df, selected_annotation_key):
         batch_range = (0, 0)
         st.write("1 parent segment available.")
     process_indices = list(range(batch_range[0], batch_range[1] + 1))
+    selected_parent_ids = {
+        parent_annotations[idx].id
+        for idx in process_indices
+        if 0 <= idx < len(parent_annotations)
+        and getattr(parent_annotations[idx], "id", None)
+    }
     st.write(f"Selected {len(process_indices)} parent segment(s) for analysis.")
     selected_parent_spans = _selected_parent_spans(parent_annotations, process_indices, len(df))
     coverage_slot = st.empty()
@@ -287,12 +289,13 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
     st.markdown("---")
     delete_existing_subsegments = st.checkbox(
-        "Delete all existing sub-segments in this session before running",
+        "Delete all existing sub-segments in the selected parent range before running",
         value=False,
         key="batch_agent_delete_session_subsegments",
         help=(
-            "Removes every saved child sub-segment in the selected session before "
-            "batch discovery starts. Parent segments are kept."
+            "Removes saved child sub-segments belonging to parents in the selected "
+            "range before batch discovery starts. Parent segments and children "
+            "outside the range are kept."
         ),
     )
 
@@ -330,7 +333,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     if not run_clicked:
         return
     if config is None:
-        st.error("No annotation AI provider is available.")
+        st.error("Deterministic annotation configuration is unavailable.")
         return
 
     try:
@@ -338,12 +341,9 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     except ImportError as e:
         st.error(
             f"Missing dependency: {e}\n\n"
-            "Install with: `pip install langgraph langchain-core` "
-            "(or the selected provider's SDK, e.g. `claude-agent-sdk`)."
+            "Install the AI service requirements before running calculations."
         )
         return
-
-    provider_id = config.provider_id
 
     main_label_set = set(LABEL_CATEGORIES.get("Main Labels", []))
     st.session_state["batch_agent_stop"] = False
@@ -360,10 +360,14 @@ def render_batch_auto_annotation(df, selected_annotation_key):
             del logs[: len(logs) - 1000]
         _flush_log()
 
-    log(f"Starting batch sub-segment discovery: {total} parent(s), provider={provider_id}")
+    log(f"Starting deterministic sub-segment discovery: {total} parent(s)")
     if delete_existing_subsegments:
-        deleted = _delete_session_subsegments(session_id, selected_annotation_key)
-        log(f"Deleted {deleted} existing sub-segment(s) from this session.")
+        deleted = _delete_selected_parent_subsegments(
+            session_id,
+            selected_annotation_key,
+            selected_parent_ids,
+        )
+        log(f"Deleted {deleted} existing sub-segment(s) from the selected parent range.")
         _render_subsegment_coverage_bar(
             coverage_slot,
             selected_parent_spans,
@@ -398,13 +402,13 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
         parent_main_labels = [l for l in parent.labels if l in main_label_set]
         p_start = int(parent.start_index) if parent.start_index is not None else 0
-        p_end = int(parent.end_index) if parent.end_index is not None else len(df) - 1
+        p_end = int(parent.end_index) if parent.end_index is not None else len(df)
 
         status_text.markdown(
-            f"**Parent #{idx}** _({i + 1}/{total})_ — [{p_start}, {p_end}], "
-            f"running {provider_id} pipeline..."
+            f"**Parent #{idx}** _({i + 1}/{total})_ — [{p_start}, {p_end}), "
+            "calculating labels..."
         )
-        log(f"Parent #{idx}: running [{p_start}, {p_end}] "
+        log(f"Parent #{idx}: running [{p_start}, {p_end}) "
             f"main_labels={parent_main_labels or '∅'}")
 
         try:
@@ -415,14 +419,10 @@ def render_batch_auto_annotation(df, selected_annotation_key):
                 end_index=p_end,
                 session_id=session_id,
                 parent_main_labels=parent_main_labels,
+                parent_selected_labels=list(parent.labels),
                 existing_children=children_by_parent.get(parent.id, []),
                 config=config,
             )
-        except ClaudeUsageExhausted as e:
-            log(f"Parent #{idx}: HALTED — Claude usage exhausted: {e}")
-            st.warning(_USAGE_EXHAUSTED_WARNING)
-            progress_bar.progress((i + 1) / total)
-            break
         except Exception as e:
             error_parents += 1
             log(f"Parent #{idx}: ERROR — {e}")

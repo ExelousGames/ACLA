@@ -10,18 +10,17 @@ telemetry while debugging skill text.
         df=df, start_index=..., end_index=...,
         parent_main_labels=..., existing_children=...,
         claude_model="claude-sonnet-4-6",
-        use_thinking=False, max_turns=30,
+        use_thinking=False, max_turns=5,
         prior_result=annotation_result,
         chat_history=[{"role": "user", "content": "..."}],
         user_question="why didn't EA1 fit here?",
-        on_text_chunk=on_text, on_tool_event=on_tool,
+        on_text_chunk=on_text,
     )
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -32,7 +31,7 @@ from app.annotation_providers.tool_surface import (
 )
 from app.shared.contracts import AgentRequest, NoopCallbacks, ProviderConfig
 from app.shared.labels import LABEL_MAPPING
-from app.internal_knowledge_base.label_search import get_doc
+from app.internal_knowledge_base.label_lookup import get_label
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,10 +43,6 @@ LOGGER = logging.getLogger(__name__)
 
 
 _FOLLOWUP_TOOL_NAMES = [
-    "list_graphs",
-    "get_graph_guidance",
-    "render_graph",
-    "peek_graph",
     "query_telemetry",
     "compute_expert_phases",
     "measure_segment_shape",
@@ -80,20 +75,6 @@ def _build_tool_set(surface: AnnotationToolSurface):
         if str(defn["name"]) in _FOLLOWUP_TOOL_NAME_SET
     ]
     tool_names = [f"mcp__followup__{name}" for name in _FOLLOWUP_TOOL_NAMES]
-
-    from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
-
-    @tool(
-        SEARCH_LABELS_TOOL["name"],
-        SEARCH_LABELS_TOOL["description"],
-        SEARCH_LABELS_TOOL["params_schema"],
-    )
-    async def search_labels(args):
-        _result, text, _images = surface.call_tool("search_labels", args or {})
-        return {"content": [{"type": "text", "text": text}]}
-
-    tools_list.append(search_labels)
-    tool_names.append("mcp__followup__search_labels")
 
     server = create_sdk_mcp_server(
         name="followup", version="1.0.0", tools=tools_list,
@@ -136,15 +117,13 @@ def _build_system_prompt(
 ) -> str:
     parent_label_blocks: List[str] = []
     for pid in parent_main_labels:
-        entry = get_doc(pid)
+        entry = get_label(pid)
         if entry is None:
             parent_label_blocks.append(f"  - `{pid}` ({LABEL_MAPPING.get(pid, pid)})")
             continue
         desc = entry.get("description") or "(no description)"
-        guideline_text = entry.get("annotation_guideline")
-        guideline = f"\n      guideline: {guideline_text}" if guideline_text else ""
         parent_label_blocks.append(
-            f"  - `{entry['id']}` ({entry['name']}): {desc}{guideline}"
+            f"  - `{entry['id']}` ({entry['name']}): {desc}"
         )
 
     existing_block = ""
@@ -166,9 +145,8 @@ def _build_system_prompt(
     return (
         "You are a racing telemetry analyst answering follow-up questions "
         "about a prior annotation pass. Your job is to help the user "
-        "understand the prior proposals so they can edit the skill YAMLs "
-        "(label catalog descriptions / annotation guidelines / per-graph "
-        "`how_to_analyze` blocks). You are NOT producing new proposals — "
+        "understand the prior deterministic proposals so they can edit the "
+        "label requirements or calculation thresholds. You are NOT producing new proposals — "
         "no submit tool is available.\n"
         "\n"
         "### Parent segment\n"
@@ -183,16 +161,14 @@ def _build_system_prompt(
         "\n"
         "### How to answer\n"
         "- Ground every claim in telemetry evidence. Cite ilocs and values. "
-        "Use `render_graph` / `query_telemetry` / `compute_expert_phases` "
-        "/ `measure_segment_shape` / `classify_opponent_interaction` "
+        "Use `query_telemetry` / `compute_expert_phases` / "
+        "`measure_segment_shape` / `classify_opponent_interaction` "
         "/ `find_nearest_opponent` / `query_opponent_trajectory` "
         "to re-inspect when the question demands fresh evidence.\n"
-        "- Look labels up with `search_labels` (describe the behaviour, or "
-        "pass the label's name/parent) to pull its description + guideline "
-        "from the skill — don't rely on memory.\n"
-        "- When asked 'why didn't label X fit?', `search_labels` for X, "
-        "quote the relevant text from its description / guideline, then say "
-        "which predicate failed against the data.\n"
+        "- Use the prior proposal labels and parent-label context already "
+        "shown in this prompt when explaining label fit.\n"
+        "- When asked 'why didn't label X fit?', explain which deterministic "
+        "requirement predicate failed against the telemetry evidence.\n"
         "- If the prior proposal was wrong, say so directly.\n"
         "- When the user is debugging the skill text, suggest concrete "
         "edits — the specific wording that was ambiguous or missing.\n"
@@ -218,7 +194,7 @@ def _build_initial_prompt(chat_history: List[Dict[str, str]], user_question: str
         f"{history_block}\n\n"
         f"Latest user question:\n{user_question.strip()}\n\n"
         "Answer concisely, cite ilocs / values, and use the telemetry "
-        "tools if you need fresh evidence."
+        "query tools if you need fresh evidence."
     )
 
 
@@ -264,11 +240,8 @@ async def _run_async(
     chat_history: List[Dict[str, str]],
     user_question: str,
     on_text_chunk: Optional[Callable[[str], None]],
-    on_tool_event: Optional[Callable[[str, Dict[str, Any]], None]],
 ) -> str:
     sdk = _import_sdk_types()
-
-    from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
 
     capture = ToolAgentCapture(
         node_name="followup",
@@ -288,7 +261,7 @@ async def _run_async(
         parent_start=int(parent_start),
         parent_end=int(parent_end),
         callbacks=NoopCallbacks(),
-        extra_state={"tool_agent_extra_tools": [SEARCH_LABELS_TOOL]},
+        extra_state={},
     )
     surface = AnnotationToolSurface(request, capture)
     server, tool_names = _build_tool_set(surface)
@@ -323,11 +296,6 @@ async def _run_async(
                         on_text_chunk(text)
             elif isinstance(block, sdk.ToolUseBlock):
                 capture.tool_calls += 1
-                if on_tool_event is not None:
-                    on_tool_event(
-                        getattr(block, "name", "tool"),
-                        getattr(block, "input", {}) or {},
-                    )
 
     return "".join(response_chunks).strip()
 
@@ -346,7 +314,6 @@ def run_claude_followup(
     chat_history: List[Dict[str, str]],
     user_question: str,
     on_text_chunk: Optional[Callable[[str], None]] = None,
-    on_tool_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
 ) -> str:
     """One follow-up Q&A turn against a finished annotation. Returns the reply text."""
     return asyncio.run(_run_async(
@@ -362,5 +329,4 @@ def run_claude_followup(
         chat_history=list(chat_history),
         user_question=user_question,
         on_text_chunk=on_text_chunk,
-        on_tool_event=on_tool_event,
     ))

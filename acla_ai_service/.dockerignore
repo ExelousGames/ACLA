@@ -28,8 +28,13 @@ models/
 !models/*/.gitkeep
 corner_models/*
 !corner_models/.gitkeep
+top_lap_models/*
+!top_lap_models/.gitkeep
 imitation_models/*
-!imitation_models/.gitkeep
+
+# Ignore runtime telemetry database files
+app/storage/telemetry_lance_store/
+app/storage/telemetry_lance_backups/
 
 # Ignore debug output
 scripts/debug_output/*

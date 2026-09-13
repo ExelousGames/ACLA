@@ -1,153 +1,120 @@
-"""Per-connection WS tool-relay for the voice pipeline.
+"""Per-chat-session WS tool relay for the voice pipeline.
 
-Backend ↔ frontend tool RPC over the same ``/voice/stream`` WebSocket the
-Pipecat audio path uses. The two channels are multiplexed by WebSocket
-frame type — binary frames carry PCM audio (consumed by Pipecat), text
-frames carry JSON tool-relay messages (consumed by this module).
+Backend and frontend share the same ``/voice/stream`` WebSocket. Binary
+frames carry PCM audio for Pipecat. Text frames carry JSON control messages
+for model command calls/results, typed user text, and session context.
 
-The relay does not own the WebSocket. The voice endpoint binds a
-connection by handing the relay a ``send_text`` callback plus an
-``observation_sink`` callback, and forwards every inbound text frame to
-:py:meth:`ToolRelay.handle_text_frame`. The relay resolves in-flight
-tool-call futures by uuid and pushes observation events into the sink.
-
-Frame shapes (over the WS as JSON text):
-
-* Backend → Frontend::
-
-      {"type": "tool_call", "id": "<uuid>",
-       "name": "<fn>", "arguments": {...}}
-
-* Frontend → Backend (one of, per tool_call id)::
-
-      {"type": "tool_result", "id": "<uuid>", "result": {...}}
-      {"type": "tool_error",  "id": "<uuid>", "error": "<msg>"}
-
-* Frontend → Backend (independent of any specific tool call)::
-
-      {"type": "observation", "data": {"text": "<formatted prompt>"}}
-      {"type": "session_context", "session_context": {...}}
-
-Public surface:
-
-* :func:`get_relay` — process-singleton accessor.
-* :py:meth:`ToolRelay.bind(conn, send_text, observation_sink)` — register
-  a connection so dispatch / observation routing work for it.
-* :py:meth:`ToolRelay.unbind(conn)` — drop registration and cancel any
-  in-flight calls.
-* ``await``:py:meth:`ToolRelay.dispatch(conn, name, args, timeout)` —
-  send a ``tool_call`` and await the matching ``tool_result`` /
-  ``tool_error``. Returns ``{"error": "..."}`` on dispatch failure /
-  timeout so the LLM can verbalize the failure cleanly.
-* :py:meth:`ToolRelay.handle_text_frame(conn, payload)` — feed each
-  inbound text frame in (the voice endpoint calls this from its WS
-  receive loop).
+Model command calls are fire-and-forget from the AI service perspective. The
+relay sends a ``tool_call`` frame to the frontend and does not wait for a
+matching result. Later AI-visible data should come back through
+``tool_result`` / ``user_text`` / ``session_context`` frames.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from app.voice.session_modes import normalize_chatbot_session_mode
+
 LOGGER = logging.getLogger(__name__)
+MAX_AI_VISIBLE_TOOL_PAYLOAD_CHARS = 64 * 1024
 
 SendText = Callable[[str], Awaitable[None]]
-ObservationSink = Callable[[Dict[str, Any]], Any]
 UserTextSink = Callable[[str], Any]
+ToolResultSink = Callable[[str], Any]
 SessionContextSink = Callable[[Dict[str, Any]], Any]
 
 
+def normalize_voice_session_context(value: Any) -> Dict[str, Any]:
+    """Return only the two canonical direct voice-mode fields."""
+    if not isinstance(value, dict):
+        return {}
+
+    context: Dict[str, Any] = {}
+    raw_session_mode = value.get("session_mode")
+    if raw_session_mode is not None:
+        normalized_session_mode = normalize_chatbot_session_mode(raw_session_mode)
+        if normalized_session_mode is not None:
+            context["session_mode"] = normalized_session_mode
+    raw_agent_mode = value.get("agent_mode")
+    if isinstance(raw_agent_mode, str):
+        context["agent_mode"] = raw_agent_mode
+    return context
+
+
 class _ConnectionState:
-    """Per-connection state held by the relay."""
+    """Active transport state held by the relay for one chat session."""
 
     __slots__ = (
         "send_text",
-        "observation_sink",
         "user_text_sink",
+        "tool_result_sink",
         "session_context_sink",
-        "in_flight",
     )
 
     def __init__(
         self,
         send_text: SendText,
-        observation_sink: ObservationSink,
-        user_text_sink: Optional[UserTextSink] = None,
+        user_text_sink: UserTextSink,
+        tool_result_sink: Optional[ToolResultSink] = None,
         session_context_sink: Optional[SessionContextSink] = None,
     ) -> None:
         self.send_text = send_text
-        self.observation_sink = observation_sink
         self.user_text_sink = user_text_sink
+        self.tool_result_sink = tool_result_sink or user_text_sink
         self.session_context_sink = session_context_sink
-        self.in_flight: Dict[str, asyncio.Future] = {}
 
 
 class ToolRelay:
-    """Process-wide registry for active voice connections + in-flight calls."""
+    """Process-wide registry for active voice connections."""
 
-    def __init__(self) -> None:
-        self._by_conn: Dict[int, _ConnectionState] = {}
-
-    # ------------------------------------------------------------------ binding
+    def __init__(self, max_ai_visible_tool_payload_chars: int = MAX_AI_VISIBLE_TOOL_PAYLOAD_CHARS) -> None:
+        self._by_chat_session_id: Dict[str, _ConnectionState] = {}
+        self._max_ai_visible_tool_payload_chars = max_ai_visible_tool_payload_chars
 
     def bind(
         self,
-        conn: Any,
+        chat_session_id: str,
         send_text: SendText,
-        observation_sink: ObservationSink,
-        user_text_sink: Optional[UserTextSink] = None,
+        user_text_sink: UserTextSink,
         session_context_sink: Optional[SessionContextSink] = None,
+        tool_result_sink: Optional[ToolResultSink] = None,
     ) -> None:
-        """Register a connection. ``conn`` is any hashable identifier (we use
-        ``id(websocket)``). ``send_text`` writes one text frame; the
-        ``observation_sink`` receives the formatted ``data`` payload of each
-        inbound ``observation`` frame; the optional ``user_text_sink`` receives the
-        ``text`` of each inbound ``user_text`` frame (typed chat input); the
-        optional ``session_context_sink`` receives compact frontend context
-        updates such as the active procedure plan."""
-        self._by_conn[id(conn)] = _ConnectionState(
-            send_text, observation_sink, user_text_sink, session_context_sink,
+        """Bind a chat session to its current transport and inbound sinks."""
+        self._by_chat_session_id[chat_session_id] = _ConnectionState(
+            send_text, user_text_sink, tool_result_sink, session_context_sink,
         )
 
-    def unbind(self, conn: Any) -> None:
-        """Drop the registration and cancel every in-flight call so awaiters
-        unblock with ``CancelledError`` (which ``dispatch`` maps to a clean
-        ``{"error": "cancelled"}`` payload)."""
-        state = self._by_conn.pop(id(conn), None)
-        if state is None:
-            return
-        for fut in state.in_flight.values():
-            if not fut.done():
-                fut.cancel()
-        state.in_flight.clear()
+    def unbind(self, chat_session_id: str) -> None:
+        """Drop only the active transport binding for a chat session."""
+        self._by_chat_session_id.pop(chat_session_id, None)
 
-    # ----------------------------------------------------------------- dispatch
-
-    async def dispatch(
+    async def send_tool_call(
         self,
-        conn: Any,
+        chat_session_id: str,
         name: str,
         arguments: Optional[Dict[str, Any]] = None,
-        timeout: float = 10.0,
-    ) -> Dict[str, Any]:
-        """Send a ``tool_call`` and await the response.
+    ) -> Optional[str]:
+        """Send a session ``tool_call`` frame without awaiting a result.
 
-        Returns the ``result`` payload on success. On send-failure / timeout /
-        cancellation, returns ``{"error": "<reason>"}`` — never raises — so
-        the LLM tool handler can hand the dict back to Pipecat unchanged.
+        Returns the generated call id on successful send, or ``None`` if the
+        connection is unavailable or the send fails. The return value is only
+        for backend diagnostics and UI metadata; it is not LLM-visible
+        model command data.
         """
-        state = self._by_conn.get(id(conn))
+        state = self._by_chat_session_id.get(chat_session_id)
         if state is None:
-            return {"error": "telemetry_link_down"}
+            LOGGER.warning(
+                "tool_relay: no transport bound for chat_session=%s tool=%s",
+                chat_session_id,
+                name,
+            )
+            return None
 
         call_id = uuid.uuid4().hex
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future = loop.create_future()
-        state.in_flight[call_id] = future
-
         frame = json.dumps({
             "type": "tool_call",
             "id": call_id,
@@ -158,61 +125,54 @@ class ToolRelay:
         try:
             await state.send_text(frame)
         except Exception as exc:
-            state.in_flight.pop(call_id, None)
             LOGGER.warning("tool_relay: send_text failed for %s: %s", name, exc)
-            return {"error": "telemetry_link_down"}
+            return None
+        return call_id
 
-        try:
-            return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
-            return {"error": "timeout"}
-        except asyncio.CancelledError:
-            return {"error": "cancelled"}
-        finally:
-            state.in_flight.pop(call_id, None)
-
-    # ------------------------------------------------------------------ ingress
-
-    def handle_text_frame(self, conn: Any, payload: Dict[str, Any]) -> None:
+    def handle_text_frame(
+        self,
+        chat_session_id: str,
+        payload: Dict[str, Any],
+    ) -> None:
         """Route one inbound text frame.
 
-        - ``tool_result`` / ``tool_error`` → resolve the matching in-flight
-          future. Unknown ids are dropped (likely a late response after the
-          caller already timed out / cancelled).
-        - ``observation`` → forward formatted ``payload["data"]`` to the
-          connection's ``observation_sink``. Sink exceptions are caught and
-          logged so a buggy sink never breaks the relay.
+        Tool payload frames are serialized to text and sent through the
+        tool-result sink. Typed user text uses the user-text sink.
         """
-        state = self._by_conn.get(id(conn))
+        state = self._by_chat_session_id.get(chat_session_id)
         if state is None:
             return
 
         frame_type = payload.get("type")
 
-        if frame_type in ("tool_result", "tool_error"):
-            call_id = payload.get("id")
-            future = state.in_flight.get(call_id) if isinstance(call_id, str) else None
-            if future is None or future.done():
+        def forward_session_context() -> None:
+            if "session_context" not in payload:
                 return
-            if frame_type == "tool_result":
-                result = payload.get("result")
-                future.set_result(result if isinstance(result, dict) else {"result": result})
-            else:
-                future.set_result({"error": str(payload.get("error", "unknown"))})
-            return
+            if state.session_context_sink is None:
+                LOGGER.warning("tool_relay: session_context received but no sink bound")
+                return
+            raw_session_context = payload.get("session_context")
+            if raw_session_context is None:
+                raw_session_context = {}
+            if not isinstance(raw_session_context, dict):
+                LOGGER.warning("tool_relay: dropped non-object session_context")
+                return
+            state.session_context_sink(
+                normalize_voice_session_context(raw_session_context),
+            )
 
-        if frame_type == "observation":
-            data = payload.get("data") or {}
+        if frame_type == "tool_result":
             try:
-                state.observation_sink(data)
+                state.tool_result_sink(self._serialize_ai_visible_tool_payload(payload))
             except Exception:
-                LOGGER.exception("tool_relay: observation_sink raised")
+                LOGGER.exception("tool_relay: tool_result_sink raised for %s", frame_type)
             return
 
         if frame_type == "user_text":
-            if state.user_text_sink is None:
-                LOGGER.warning("tool_relay: user_text frame received but no sink bound")
-                return
+            try:
+                forward_session_context()
+            except Exception:
+                LOGGER.exception("tool_relay: session_context_sink raised")
             text = str(payload.get("text") or "").strip()
             if not text:
                 return
@@ -223,25 +183,57 @@ class ToolRelay:
             return
 
         if frame_type == "session_context":
-            if state.session_context_sink is None:
-                LOGGER.warning("tool_relay: session_context frame received but no sink bound")
-                return
-            session_context = payload.get("session_context") or {}
-            if not isinstance(session_context, dict):
-                LOGGER.warning("tool_relay: dropped non-object session_context frame")
-                return
             try:
-                state.session_context_sink(session_context)
+                forward_session_context()
             except Exception:
                 LOGGER.exception("tool_relay: session_context_sink raised")
             return
 
         LOGGER.warning("tool_relay: unknown frame type %r", frame_type)
 
+    def _serialize_ai_visible_tool_payload(self, payload: Dict[str, Any]) -> str:
+        serialized = json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
+        if len(serialized) <= self._max_ai_visible_tool_payload_chars:
+            return serialized
 
-# ---------------------------------------------------------------------------
-# Singleton
-# ---------------------------------------------------------------------------
+        frame_type = payload.get("type")
+        name = payload.get("name")
+        compact_payload = {
+            "type": frame_type,
+            "id": payload.get("id"),
+            "name": name,
+            "ai_visible_payload_truncated": True,
+            "original_payload_chars": len(serialized),
+            "max_payload_chars": self._max_ai_visible_tool_payload_chars,
+            "message": (
+                "Tool payload omitted because it exceeded the AI-visible size cap. "
+                "Use a compact tool result or a server-side classifier path."
+            ),
+        }
+        compact_payload["result"] = {
+            "status": "omitted",
+            "message": compact_payload["message"],
+        }
+
+        LOGGER.warning(
+            "tool_relay: truncated oversized %s payload name=%r chars=%d cap=%d",
+            frame_type,
+            name,
+            len(serialized),
+            self._max_ai_visible_tool_payload_chars,
+        )
+        return json.dumps(
+            compact_payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
+
 
 _RELAY = ToolRelay()
 

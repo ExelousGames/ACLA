@@ -1,6 +1,13 @@
 import { PythonShell } from 'python-shell';
 import path from 'path';
 import { IpcRendererEvent } from 'electron';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
+import type {
+    RecordedFileReadEvent,
+    RecordingStartResult,
+    RecordingStopResult,
+    RecordingViewUpdate,
+} from 'views/live-session/live-session-types';
 
 // Function with additional property
 export interface CallbackFunction {
@@ -17,6 +24,29 @@ declare global {
     //preload.js runs in runtime. the renderer process has no Node.js or Electron module access. 
     interface Window {
         electronAPI: {
+            windowControls: {
+                minimize: () => Promise<{ success: boolean; isMaximized: boolean }>;
+                toggleMaximize: () => Promise<{ success: boolean; isMaximized: boolean }>;
+                close: () => Promise<{ success: boolean; isMaximized: boolean }>;
+                isMaximized: () => Promise<boolean>;
+                onMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void;
+            };
+            detectDesktopGame: () => Promise<{
+                supported: boolean;
+                detectedGame: DesktopGame | null;
+            }>;
+            startRecordingSession: (config: { game: DesktopGame }) => Promise<RecordingStartResult>;
+            stopRecordingSession: () => Promise<RecordingStopResult>;
+            onRecordingViewUpdate: (callback: (update: RecordingViewUpdate) => void) => () => void;
+            onRecordingSessionEnded: (callback: (result: RecordingStopResult) => void) => () => void;
+            startRecordedFileRead: (request: {
+                filePath: string;
+                game: DesktopGame;
+                purpose: 'validate' | 'consume';
+            }) => Promise<{ readId: string }>;
+            cancelRecordedFileRead: (readId: string) => Promise<void>;
+            onRecordedFileReadEvent: (callback: (event: RecordedFileReadEvent) => void | Promise<void>) => () => void;
+
             /**
              * Run python script in main process
              * @param script 
@@ -27,6 +57,13 @@ declare global {
             stopPythonScript: (shellId: number) => Promise<{ success: boolean; error?: string }>;
             writeTempFile: (options: { content: string; directory?: string; prefix?: string; extension?: string }) => Promise<{ success: boolean; path?: string; error?: string; skipped?: boolean }>;
             deleteTempFile: (filePath: string) => Promise<{ success: boolean; error?: string; skipped?: boolean }>;
+            validateTelemetryFile: (filePath: string) => Promise<{
+                exists: boolean;
+                readable: boolean;
+                hasData: boolean;
+                size: number;
+                error?: string;
+            }>;
 
             /**
              * 
@@ -55,37 +92,6 @@ declare global {
              */
             sendMessageToPython: (shellId: number, message: string) => Promise<{ success: boolean; error?: string }>;
 
-            /**
-             * Start local speech recognition (offline)
-             * @returns Promise<{success: boolean, recordingId?: string}>
-             */
-            startSpeechRecognition: () => Promise<{ success: boolean, recordingId?: string, error?: string }>;
-
-            /**
-             * Stop local speech recognition
-             * @returns Promise<{success: boolean, transcript?: string}>
-             */
-            stopSpeechRecognition: () => Promise<{ success: boolean, transcript?: string, error?: string }>;
-
-            /**
-             * Check if speech recognition is available
-             * @returns Promise<boolean>
-             */
-            isSpeechRecognitionAvailable: () => Promise<boolean>;
-
-            /**
-             * Listen for speech recognition status updates
-             * @param callback Function to handle status updates
-             * @returns Function to remove listener
-             */
-            onSpeechRecognitionStatus: (callback: (status: any) => void) => () => void;
-
-            /**
-             * Listen for speech recognition completion
-             * @param callback Function to handle completion
-             * @returns Function to remove listener  
-             */
-            onSpeechRecognitionComplete: (callback: (result: { success: boolean, transcript?: string, error?: string }) => void) => () => void;
         };
     }
 }

@@ -33,10 +33,9 @@ class AnnotationResult:
     iterations: int
     messages: List[dict]
     graph_images: List[bytes] = field(default_factory=list)  # PNG bytes
-    sub_start: Optional[int] = None
-    sub_end: Optional[int] = None
     # Per-label proposals. Each entry:
     #   {label_id, start_index, end_index, reasoning}
+    # Bounds use [start_index, end_index).
     # The UI creates one sub-segment per AI-discovered range.
     label_annotations: List[dict] = field(default_factory=list)
 
@@ -46,9 +45,10 @@ class LapAnnotationResult:
     """Result for the lap-section excerpter flow.
 
     ``label_ids`` is the flat list of parent labels the agent picked
-    (circuit + circuit_section + segment_type + optional main). The UI
-    persists this as a single annotated segment over
-    ``[start_index, end_index]``.
+    (circuit + circuit_section + optional main/whole-range sub-label). The
+    UI persists this as a single annotated segment over ``[start_index,
+    end_index)``. Segment types are added only by detailed sub-segment
+    discovery.
     """
 
     section_id: str

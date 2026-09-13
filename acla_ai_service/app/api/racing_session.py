@@ -8,14 +8,26 @@ from httpx import request
 from pydantic import BaseModel
 import asyncio
 import pandas as pd
+from app.pipelines.inference.preprocessing import (
+    preprocess_inference_telemetry,
+)
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
-from app.racing_engineer.expert_actions import predict_expert_actions
+from app.racing_engineer.top_lap_reference_guidance import (
+    generate_top_lap_reference_guidance,
+)
 from app.ml.model_hub import (
-    get_expert_imitation_learning,
     get_opportunity_forecaster,
     get_segment_classifier,
+    get_tire_grip_analysis,
+    get_top_lap_reference_model,
 )
+from app.services.runtime_segment_splitter import (
+    RuntimeSegmentSplitError,
+    split_runtime_segments,
+)
+from app.top_laps.runtime import TopLapReferenceModelError
 from app.services.user_session_analysis import analyze_user_sessions
+from app.shared.expert_features import ExpertFeatureCatalog
 from app.shared.label_hierarchy import build_track_area_segments
 from app.shared.labels import (
     LABEL_CATEGORIES,
@@ -61,7 +73,7 @@ class PredictionRequest(BaseModel):
     use_river: bool = True  # Whether to use River ML or legacy scikit-learn
     user_id: Optional[str] = None
 
-class ImitationPredictRequest(BaseModel):
+class TopLapReferenceGuidanceRequest(BaseModel):
     current_telemetry: Dict[str, Any]
     human_request: Optional[str] = None
     delay_seconds: Optional[float] = 0.0
@@ -102,44 +114,109 @@ class LiveBaselineAnalysisRequest(BaseModel):
 # Initialize telemetry service
 telemetryMLService = Full_dataset_TelemetryMLService()
 
-EXPERT_TIME_DIFFERENCE_FIELD = "expert_time_difference"
-
 
 def _classify_telemetry_segments(
     telemetry_data: List[Dict[str, Any]],
     track_name: Optional[str],
     include_empty_track_sections: bool = False,
+    splitter_result: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     dataframe = pd.DataFrame(telemetry_data)
-    predicted_segments = get_segment_classifier().scan_telemetry_data(dataframe)
+    splitter_result = splitter_result or split_runtime_segments(dataframe, track_name)
+    predicted_segments = get_segment_classifier().classify_ranges(
+        dataframe,
+        splitter_result["segments"],
+    )
     raw_segments = []
 
+    def label_ranges(segment):
+        yield {
+            "label_name": segment.label,
+            "start_index": segment.start_index,
+            "end_index": segment.end_index,
+        }
+        for child in segment.subsegments:
+            yield from label_ranges(child)
+
     for segment in predicted_segments:
-        segment_dict = segment.to_dict() if hasattr(segment, "to_dict") else dict(segment)
         raw_segments.append({
-            "id": segment_dict.get("id"),
-            "labels": segment_dict.get("labels", []),
-            "start_index": segment_dict.get("start_index"),
-            "end_index": segment_dict.get("end_index"),
+            "id": segment.id,
+            "labels": list(label_ranges(segment)),
+            "start_index": segment.start_index,
+            "end_index": segment.end_index,
         })
+
+    if splitter_result.get("opponent_session") and not raw_segments:
+        return []
 
     return build_track_area_segments(
         raw_segments,
         telemetry_data,
-        track_name,
+        splitter_result["circuit_id"],
         include_empty_sections=include_empty_track_sections,
     )
 
 
-def _extract_expert_rows(telemetry_data: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], bool]:
-    try:
-        expert_rows = get_expert_imitation_learning().extract_expert_state_for_telemetry(telemetry_data)
-        return expert_rows, any(
-            EXPERT_TIME_DIFFERENCE_FIELD in row
-            for row in expert_rows
-        )
-    except Exception:
-        return [], False
+def _project_expert_reference_data(
+    enriched_rows: List[Dict[str, Any]],
+    raw_indices: List[int],
+) -> List[Dict[str, Any]]:
+    expert_features = ExpertFeatureCatalog.ExpertFeatures
+    reference_features = (
+        expert_features.EXPERT_TIME_DIFFERENCE,
+        expert_features.EXPERT_OPTIMAL_TIME,
+        expert_features.EXPERT_OPTIMAL_PLAYER_POS_X,
+        expert_features.EXPERT_OPTIMAL_PLAYER_POS_Y,
+        expert_features.EXPERT_OPTIMAL_PLAYER_POS_Z,
+        expert_features.EXPERT_OPTIMAL_THROTTLE,
+        expert_features.EXPERT_OPTIMAL_BRAKE,
+        expert_features.EXPERT_OPTIMAL_GEAR,
+    )
+
+    return [
+        {
+            "raw_index": raw_index,
+            **{
+                feature.value: row[feature.value]
+                for feature in reference_features
+            },
+            "Graphics_normalized_car_position": row[
+                "Graphics_normalized_car_position"
+            ],
+        }
+        for row, raw_index in zip(enriched_rows, raw_indices)
+    ]
+
+
+def _attach_expert_reference_data_to_segments(
+    segments: List[Dict[str, Any]],
+    enriched_rows: List[Dict[str, Any]],
+    raw_indices: List[int],
+) -> List[Dict[str, Any]]:
+    segments_with_references: List[Dict[str, Any]] = []
+
+    for segment in segments:
+        segment_with_references = dict(segment)
+        expert_reference_data: List[Dict[str, Any]] = []
+        try:
+            start = max(0, int(segment["start_index"]))
+            end_exclusive = min(
+                len(enriched_rows),
+                len(raw_indices),
+                int(segment["end_index"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            end_exclusive = start = 0
+
+        if end_exclusive > start:
+            expert_reference_data = _project_expert_reference_data(
+                enriched_rows[start:end_exclusive],
+                raw_indices[start:end_exclusive],
+            )
+        segment_with_references["expert_reference_data"] = expert_reference_data
+        segments_with_references.append(segment_with_references)
+
+    return segments_with_references
 
 
 def _build_time_gap(
@@ -159,8 +236,11 @@ def _build_time_gap(
     if start >= len(expert_rows) or end_exclusive <= start:
         return None
 
-    start_diff = expert_rows[start].get(EXPERT_TIME_DIFFERENCE_FIELD)
-    end_diff = expert_rows[end_exclusive - 1].get(EXPERT_TIME_DIFFERENCE_FIELD)
+    time_difference = (
+        ExpertFeatureCatalog.ExpertFeatures.EXPERT_TIME_DIFFERENCE.value
+    )
+    start_diff = expert_rows[start].get(time_difference)
+    end_diff = expert_rows[end_exclusive - 1].get(time_difference)
     try:
         start_ms = float(start_diff)
         end_ms = float(end_diff)
@@ -195,6 +275,46 @@ def _annotate_segments_with_time_gaps(
     return annotated_segments
 
 
+def _translate_segment_ranges_to_raw_indices(
+    segments: List[Dict[str, Any]],
+    raw_indices: List[int],
+) -> List[Dict[str, Any]]:
+    translated_segments: List[Dict[str, Any]] = []
+
+    for segment in segments:
+        translated_segment = dict(segment)
+        try:
+            start = int(segment["start_index"])
+            end_exclusive = int(segment["end_index"])
+        except (KeyError, TypeError, ValueError):
+            translated_segments.append(translated_segment)
+            continue
+
+        if (
+            start < 0
+            or end_exclusive <= start
+            or start >= len(raw_indices)
+        ):
+            translated_segments.append(translated_segment)
+            continue
+
+        end_exclusive = min(end_exclusive, len(raw_indices))
+        translated_segment["start_index"] = raw_indices[start]
+        translated_segment["end_index"] = raw_indices[end_exclusive - 1] + 1
+        if "labels" in segment:
+            translated_segment["labels"] = _translate_segment_ranges_to_raw_indices(
+                segment["labels"], raw_indices,
+            )
+        if segment.get("track_section"):
+            translated_segment["id"] = (
+                f"{segment['track_section']}:"
+                f"{translated_segment['start_index']}-{translated_segment['end_index']}"
+            )
+        translated_segments.append(translated_segment)
+
+    return translated_segments
+
+
 @router.get("/labels")
 async def get_labels() -> Dict[str, Any]:
     return {
@@ -205,28 +325,35 @@ async def get_labels() -> Dict[str, Any]:
     }
 
 
-@router.post("/imitation-learning-guidance")
-async def get_imitation_learning_expert_guidance(request: ImitationPredictRequest) -> Dict[str, Any]:
+@router.post("/top-lap-reference-guidance")
+async def get_top_lap_reference_guidance(
+    request: TopLapReferenceGuidanceRequest,
+) -> Dict[str, Any]:
     """
-    Get expert driving guidance using imitation learning model
-    Provides recommendations based on expert driving behavior analysis
+    Get driving guidance using the top-lap reference model.
     """
     try:
-        # Validate guidance_type parameter
         try:
-            # Call the telemetryMLService to get expert guidance
-            result = await predict_expert_actions(
+            result = await generate_top_lap_reference_guidance(
                 telemetryMLService,
                 telemetry_dict=request.current_telemetry,
                 user_request=request.human_request,
+                track_name=request.track_name,
+                car_name=request.car_name,
             )
 
         except Exception as e:
-            print(f"[ERROR] Exception in expert guidance service: \n {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error in expert guidance service: {str(e)}")
+            print(
+                f"[ERROR] Exception in top-lap reference guidance service: "
+                f"\n {str(e)}"
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error in top-lap reference guidance service: {str(e)}",
+            )
         
         return {
-            "message": "Expert guidance generated successfully",
+            "message": "Top-lap reference guidance generated successfully",
             "guidance_result": result,
             "timestamp": result.get("timestamp"),
         }
@@ -234,7 +361,10 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Expert guidance failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Top-lap reference guidance failed: {str(e)}",
+        )
 
 
 @router.post("/opportunity-forecast")
@@ -306,17 +436,46 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
         if not request.telemetry_data:
             raise HTTPException(status_code=400, detail="telemetry_data is required")
 
-        segments = _classify_telemetry_segments(request.telemetry_data, request.track_name)
+        preprocessed = preprocess_inference_telemetry(request.telemetry_data)
+        splitter_result = split_runtime_segments(
+            pd.DataFrame(preprocessed.records),
+            request.track_name,
+        )
+        enriched_rows = get_top_lap_reference_model().enrich(
+            preprocessed.records,
+            track=request.track_name or splitter_result["circuit_id"],
+            car=request.car_name,
+        )
+        enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
+        segments = _classify_telemetry_segments(
+            enriched_rows,
+            splitter_result["circuit_id"],
+            splitter_result=splitter_result,
+        )
+        segments = _annotate_segments_with_time_gaps(segments, enriched_rows)
+        segments = _attach_expert_reference_data_to_segments(
+            segments,
+            enriched_rows,
+            preprocessed.raw_indices,
+        )
+        segments = _translate_segment_ranges_to_raw_indices(
+            segments,
+            preprocessed.raw_indices,
+        )
 
         return {
             "status": "success",
             "session_id": request.session_id,
             "samples_analyzed": len(request.telemetry_data),
-            "segment_count": len(segments),
+            "parent_segment_count": len(segments),
             "segments": segments,
         }
     except HTTPException:
         raise
+    except TopLapReferenceModelError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except RuntimeSegmentSplitError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
@@ -329,14 +488,33 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
         if not request.records:
             raise HTTPException(status_code=400, detail="records is required")
 
-        segments = _classify_telemetry_segments(
-            request.records,
+        preprocessed = preprocess_inference_telemetry(request.records)
+        splitter_result = split_runtime_segments(
+            pd.DataFrame(preprocessed.records),
             request.track,
-            include_empty_track_sections=True,
         )
-        expert_rows, expert_time_available = _extract_expert_rows(request.records)
-        if expert_time_available:
-            segments = _annotate_segments_with_time_gaps(segments, expert_rows)
+        enriched_rows = get_top_lap_reference_model().enrich(
+            preprocessed.records,
+            track=request.track or splitter_result["circuit_id"],
+            car=request.car,
+        )
+        enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
+        segments = _classify_telemetry_segments(
+            enriched_rows,
+            splitter_result["circuit_id"],
+            include_empty_track_sections=True,
+            splitter_result=splitter_result,
+        )
+        segments = _annotate_segments_with_time_gaps(segments, enriched_rows)
+        segments = _attach_expert_reference_data_to_segments(
+            segments,
+            enriched_rows,
+            preprocessed.raw_indices,
+        )
+        segments = _translate_segment_ranges_to_raw_indices(
+            segments,
+            preprocessed.raw_indices,
+        )
 
         return {
             "status": "success",
@@ -344,12 +522,16 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
                 if request.baseline_lap is not None
                 else "live-baseline",
             "samples_analyzed": len(request.records),
-            "segment_count": len(segments),
+            "parent_segment_count": len(segments),
             "segments": segments,
-            "expert_time_available": expert_time_available,
+            "expert_time_available": True,
         }
     except HTTPException:
         raise
+    except TopLapReferenceModelError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except RuntimeSegmentSplitError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
@@ -369,5 +551,7 @@ async def analyze_all_user_sessions(request: AnalyzeUserSessionsRequest) -> Dict
         }
     except HTTPException:
         raise
+    except TopLapReferenceModelError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"User session analysis failed: {str(e)}")

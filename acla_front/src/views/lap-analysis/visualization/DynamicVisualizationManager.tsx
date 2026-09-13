@@ -1,354 +1,173 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Box, Button, DropdownMenu, IconButton, Flex, Text } from '@radix-ui/themes';
-import { PlusIcon, Cross2Icon, DragHandleDots2Icon } from '@radix-ui/react-icons';
+import React, { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
+import { useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import { VisualizationManagerUnavailableError } from 'contexts/OperationComponentError';
 import { visualizationRegistry, VisualizationInstance } from './VisualizationRegistry';
-import { visualizationController } from './VisualizationController';
 import MapVisualization from './charts/MapVisualization';
-import './DynamicVisualizationManager.css';
+import VisualizationPanelManager, {
+    VisualizationManagerHandle,
+} from './VisualizationPanelManager';
+import type { MapVisualizationHandle } from './charts/MapVisualization';
+import { getVisualizationComponentName } from './visualization-component-names';
 
-interface DynamicVisualizationManagerProps {
+export interface DynamicVisualizationManagerProps {
+    name: string;
     onLayoutChange?: (instances: VisualizationInstance[]) => void;
+}
+
+interface DynamicVisualizationManagerImplProps extends DynamicVisualizationManagerProps {
+    staticMapRef: React.RefObject<MapVisualizationHandle | null>;
 }
 
 const STATIC_MAP_TYPE = 'map-visualization';
 const STATIC_MAP_ID = 'static-map-visualization';
 
-const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = ({
-    onLayoutChange
-}) => {
-    const MIN_CHART_HEIGHT = 180;
-    const MAX_CHART_HEIGHT = 900;
+class DynamicVisualizationManagerImpl extends VisualizationPanelManager<
+    DynamicVisualizationManagerImplProps,
+    VisualizationInstance
+> {
+    protected getManagerTitle() {
+        return 'Data Visualizations';
+    }
 
-    const [visualizations, setVisualizations] = useState<VisualizationInstance[]>([]);
-    const [draggingId, setDraggingId] = useState<string | null>(null);
-    const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-    const [resizingId, setResizingId] = useState<string | null>(null);
-    const visualizationsRef = useRef<VisualizationInstance[]>([]);
-    const resizeStateRef = useRef<{
-        id: string;
-        pointerId: number;
-        startY: number;
-        startHeight: number;
-        currentHeight: number;
-    } | null>(null);
+    protected getStaticMapTitle() {
+        return '2D Telemetry Trajectory';
+    }
 
-    useEffect(() => {
-        visualizationsRef.current = visualizations;
-    }, [visualizations]);
+    protected getPanelTypes() {
+        return visualizationRegistry.getRecordedWorkspaceTypes().filter((type) => type !== STATIC_MAP_TYPE);
+    }
 
-    // Setup controller callback on mount
-    useEffect(() => {
-        const handleControllerUpdate = (instances: VisualizationInstance[]) => {
-            const next = instances.filter((instance) => instance.type !== STATIC_MAP_TYPE);
-            setVisualizations(next);
-            onLayoutChange?.(next);
-        };
+    protected getPanelName(type: string) {
+        return visualizationRegistry.getComponent(type)?.name;
+    }
 
-        visualizationController.setUpdateCallback(handleControllerUpdate);
-
-        return () => {
-            visualizationController.setUpdateCallback(() => { });
-        };
-    }, [onLayoutChange]);
-
-    useEffect(() => {
-        visualizationController.setCurrentInstances([
-            {
-                id: STATIC_MAP_ID,
-                type: STATIC_MAP_TYPE,
-                config: {},
-                position: { x: 0, y: 0, width: '100%', height: '100%' }
-            },
-            ...visualizations
-        ]);
-    }, [visualizations]);
-
-    const applyVisualizations = useCallback((next: VisualizationInstance[]) => {
-        const rightRailVisualizations = next.filter((instance) => instance.type !== STATIC_MAP_TYPE);
-        setVisualizations(rightRailVisualizations);
-        onLayoutChange?.(rightRailVisualizations);
-    }, [onLayoutChange]);
-
-    const getInstanceHeight = useCallback((instance: VisualizationInstance): number => {
-        if (!instance.position) {
-            return 280;
-        }
-
-        const { height } = instance.position;
-        return typeof height === 'number' ? height : 280;
-    }, []);
-
-    const updateVisualizationHeight = useCallback((id: string, height: number) => {
-        const nextHeight = Math.max(MIN_CHART_HEIGHT, Math.min(MAX_CHART_HEIGHT, height));
-        const updated = visualizationsRef.current.map(item => {
-            if (item.id !== id) {
-                return item;
-            }
-
-            return {
-                ...item,
-                position: {
-                    ...(item.position || { x: 0, y: 0, width: '100%', height: nextHeight }),
-                    height: nextHeight
-                }
-            };
-        });
-
-        applyVisualizations(updated);
-    }, [applyVisualizations]);
-
-    const reorderVisualizations = useCallback((sourceId: string, targetId: string) => {
-        if (!sourceId || !targetId || sourceId === targetId) {
-            return;
-        }
-
-        const current = visualizationsRef.current;
-        const sourceIndex = current.findIndex(item => item.id === sourceId);
-        const targetIndex = current.findIndex(item => item.id === targetId);
-
-        if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
-            return;
-        }
-
-        const reordered = [...current];
-        const [moved] = reordered.splice(sourceIndex, 1);
-        reordered.splice(targetIndex, 0, moved);
-        applyVisualizations(reordered);
-    }, [applyVisualizations]);
-
-    // Add a new visualization
-    const addVisualization = useCallback((type: string) => {
+    protected createPanelInstance(
+        type: string,
+        name: string,
+        data?: any,
+        config?: any,
+    ): VisualizationInstance | undefined {
         const component = visualizationRegistry.getComponent(type);
-        if (!component) return;
+        if (!component) {
+            return undefined;
+        }
 
-        const newVisualization: VisualizationInstance = {
+        return {
+            name,
             id: `${type}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
             type,
-            config: component.defaultConfig || {},
-            position: { x: 0, y: 0, width: '100%', height: 280 }
+            data: component.normalizeData?.(data) ?? data,
+            config: { ...(component.defaultConfig || {}), ...(config || {}) },
+            position: { x: 0, y: 0, width: '100%', height: 280 },
         };
+    }
 
-        const current = visualizationsRef.current;
-        if (current.some(visualization => visualization.type === type)) {
-            return;
-        }
+    protected getDefaultComponentName(type: string) {
+        return getVisualizationComponentName(type);
+    }
 
-        applyVisualizations([...current, newVisualization]);
-    }, [applyVisualizations]);
+    protected getPanelHeight(instance: VisualizationInstance) {
+        const height = instance.position?.height;
+        return typeof height === 'number' ? height : 280;
+    }
 
-    // Remove a visualization
-    const removeVisualization = useCallback((id: string) => {
-        const updated = visualizationsRef.current.filter(v => v.id !== id);
-        applyVisualizations(updated);
-    }, [applyVisualizations]);
-
-    const handleDragStart = useCallback((event: React.DragEvent, id: string) => {
-        event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', id);
-        setDraggingId(id);
-    }, []);
-
-    const handleDragOver = useCallback((event: React.DragEvent, id: string) => {
-        event.preventDefault();
-        if (id !== dropTargetId) {
-            setDropTargetId(id);
-        }
-    }, [dropTargetId]);
-
-    const handleDrop = useCallback((event: React.DragEvent, targetId: string) => {
-        event.preventDefault();
-        const sourceId = event.dataTransfer.getData('text/plain') || draggingId;
-        if (sourceId) {
-            reorderVisualizations(sourceId, targetId);
-        }
-        setDropTargetId(null);
-        setDraggingId(null);
-    }, [draggingId, reorderVisualizations]);
-
-    const handleDragEnd = useCallback(() => {
-        setDropTargetId(null);
-        setDraggingId(null);
-    }, []);
-
-    const handleResizeStart = useCallback((event: React.PointerEvent, instance: VisualizationInstance) => {
-        if (event.button !== 0) {
-            return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-
-        const startHeight = getInstanceHeight(instance);
-        resizeStateRef.current = {
-            id: instance.id,
-            pointerId: event.pointerId,
-            startY: event.clientY,
-            startHeight,
-            currentHeight: startHeight
+    protected setPanelHeight(instance: VisualizationInstance, height: number): VisualizationInstance {
+        return {
+            ...instance,
+            position: {
+                ...(instance.position || { x: 0, y: 0, width: '100%', height }),
+                height,
+            },
         };
+    }
 
-        event.currentTarget.setPointerCapture(event.pointerId);
-        setResizingId(instance.id);
-    }, [getInstanceHeight]);
-
-    const handleResizeMove = useCallback((event: React.PointerEvent) => {
-        const resizeState = resizeStateRef.current;
-        if (!resizeState || resizeState.pointerId !== event.pointerId) {
-            return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-
-        const deltaY = event.clientY - resizeState.startY;
-        const nextHeight = Math.max(
-            MIN_CHART_HEIGHT,
-            Math.min(MAX_CHART_HEIGHT, resizeState.startHeight + deltaY)
+    protected renderStaticMap() {
+        return (
+            <MapVisualization
+                ref={this.props.staticMapRef}
+                key={getVisualizationComponentName(STATIC_MAP_TYPE)}
+                name={getVisualizationComponentName(STATIC_MAP_TYPE)}
+                id={STATIC_MAP_ID}
+                width="100%"
+                height="100%"
+            />
         );
+    }
 
-        resizeState.currentHeight = nextHeight;
-
-        const container = (event.currentTarget as HTMLElement).closest('.visualization-container') as HTMLElement | null;
-        if (container) {
-            container.style.height = `${nextHeight}px`;
-        }
-    }, []);
-
-    const handleResizeEnd = useCallback((event: React.PointerEvent) => {
-        const resizeState = resizeStateRef.current;
-        if (!resizeState || resizeState.pointerId !== event.pointerId) {
-            return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-        }
-
-        const container = (event.currentTarget as HTMLElement).closest('.visualization-container') as HTMLElement | null;
-        if (container) {
-            container.style.height = '';
-        }
-
-        updateVisualizationHeight(resizeState.id, resizeState.currentHeight);
-        resizeStateRef.current = null;
-        setResizingId(null);
-    }, [updateVisualizationHeight]);
-
-    // Render a single visualization
-    const renderVisualization = (instance: VisualizationInstance) => {
+    protected renderPanelContent(instance: VisualizationInstance) {
         const component = visualizationRegistry.getComponent(instance.type);
-        if (!component) return null;
+        if (!component) {
+            return null;
+        }
 
         const Component = component.component;
-
         return (
-            <Box
-                key={instance.id}
-                className={`visualization-container${draggingId === instance.id ? ' is-dragging' : ''}${dropTargetId === instance.id ? ' is-drop-target' : ''}${resizingId === instance.id ? ' is-resizing' : ''}`}
-                style={{
-                    height: `${getInstanceHeight(instance)}px`
-                }}
-                onDragOver={(event) => handleDragOver(event, instance.id)}
-                onDrop={(event) => handleDrop(event, instance.id)}
-            >
-                <Box
-                    className="visualization-header"
-                    draggable
-                    onDragStart={(event) => handleDragStart(event, instance.id)}
-                    onDragEnd={handleDragEnd}
-                >
-                    <Flex align="center" gap="2">
-                        <DragHandleDots2Icon className="drag-handle" />
-                        <Text size="2" weight="medium">{component.name}</Text>
-                    </Flex>
-                    <IconButton
-                        size="1"
-                        variant="ghost"
-                        onClick={() => removeVisualization(instance.id)}
-                    >
-                        <Cross2Icon />
-                    </IconButton>
-                </Box>
-                <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
-                    <Component
-                        id={instance.id}
-                        data={instance.data}
-                        config={instance.config}
-                        width="100%"
-                        height="100%"
-                    />
-                </Box>
-                <Box
-                    className="visualization-resize-handle"
-                    onPointerDown={(event) => handleResizeStart(event, instance)}
-                    onPointerMove={handleResizeMove}
-                    onPointerUp={handleResizeEnd}
-                    onPointerCancel={handleResizeEnd}
-                />
-            </Box>
+            <Component
+                key={instance.name}
+                name={instance.name}
+                id={instance.id}
+                data={instance.data}
+                config={instance.config}
+                width="100%"
+                height="100%"
+                onUpdate={(data, config) => this.updateVisualization(instance.name, data, config).success}
+                onDisable={() => this.closeVisualization({ name: instance.name }).success}
+            />
         );
-    };
+    }
 
-    const availableTypes = useMemo(() => (
-        visualizationRegistry.getAllTypes().filter(type =>
-            type !== STATIC_MAP_TYPE &&
-            !visualizations.some(visualization => visualization.type === type)
-        )
-    ), [visualizations]);
+    protected notifyLayoutChange(instances: VisualizationInstance[]) {
+        this.props.onLayoutChange?.(instances);
+    }
+}
 
-    return (
-        <Box className="dynamic-visualization-manager">
-            <Flex justify="between" align="center" className="manager-header">
-                <Text size="3" weight="bold">Data Visualizations</Text>
-                <DropdownMenu.Root>
-                    <DropdownMenu.Trigger>
-                        <Button size="2" variant="soft" disabled={availableTypes.length === 0}>
-                            <PlusIcon />
-                            Add Visualization
-                        </Button>
-                    </DropdownMenu.Trigger>
-                    <DropdownMenu.Content>
-                        {availableTypes.map(type => {
-                            const component = visualizationRegistry.getComponent(type);
-                            return (
-                                <DropdownMenu.Item
-                                    key={type}
-                                    onClick={() => addVisualization(type)}
-                                >
-                                    {component?.name || type}
-                                </DropdownMenu.Item>
-                            );
-                        })}
-                        {availableTypes.length === 0 && (
-                            <DropdownMenu.Item disabled>
-                                All visualizations already added
-                            </DropdownMenu.Item>
-                        )}
-                    </DropdownMenu.Content>
-                </DropdownMenu.Root>
-            </Flex>
-
-            <Box className={`visualization-workspace${visualizations.length === 0 ? ' visualization-workspace--map-only' : ''}`}>
-                <Box className="static-map-container">
-                    <Box className="static-map-header">
-                        <Text size="2" weight="medium">2D Telemetry Trajectory</Text>
-                    </Box>
-                    <Box className="static-map-body">
-                        <MapVisualization id={STATIC_MAP_ID} width="100%" height="100%" />
-                    </Box>
-                </Box>
-
-                {visualizations.length > 0 && (
-                    <Box className="visualizations-container">
-                        {visualizations.map(renderVisualization)}
-                    </Box>
-                )}
-            </Box>
-        </Box>
+const unavailable = (name: string): never => {
+    throw new VisualizationManagerUnavailableError(
+        name,
+        `Visualization manager '${name}' is not mounted.`,
     );
 };
+
+const DynamicVisualizationManager = forwardRef<VisualizationManagerHandle, DynamicVisualizationManagerProps>((
+    { name, ...props },
+    forwardedRef,
+) => {
+    const managerRef = useRef<DynamicVisualizationManagerImpl | null>(null);
+    const staticMapRef = useRef<MapVisualizationHandle | null>(null);
+    const staticMapName = getVisualizationComponentName(STATIC_MAP_TYPE);
+    const handle = useMemo<VisualizationManagerHandle>(() => ({
+        getComponentName: () => name,
+        getVisualizationCapabilities: () => managerRef.current?.getVisualizationCapabilities() ?? unavailable(name),
+        getCurrentVisualizations: () => managerRef.current?.getCurrentVisualizations() ?? unavailable(name),
+        requestVisualization: (options) => managerRef.current?.requestVisualization(options) ?? unavailable(name),
+        updateVisualization: (componentName, data, config) => (
+            managerRef.current?.updateVisualization(componentName, data, config) ?? unavailable(name)
+        ),
+        closeVisualization: (options) => managerRef.current?.closeVisualization(options) ?? unavailable(name),
+    }), [name]);
+    const staticMapHandle = useMemo<MapVisualizationHandle>(() => ({
+        getComponentName: () => staticMapName,
+        updateMap: (data, config) => staticMapRef.current?.updateMap(data, config) ?? unavailable(staticMapName),
+        disableMap: () => staticMapRef.current?.disableMap() ?? unavailable(staticMapName),
+    }), [staticMapName]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    const registeredHandleRef = useRef(handle);
+    registeredHandleRef.current = handle;
+    const registeredStaticMapRef = useRef(staticMapHandle);
+    registeredStaticMapRef.current = staticMapHandle;
+    useRegisterOperationComponentRef(registeredHandleRef);
+    useRegisterOperationComponentRef(registeredStaticMapRef);
+
+    return (
+        <DynamicVisualizationManagerImpl
+            ref={managerRef}
+            name={name}
+            staticMapRef={staticMapRef}
+            {...props}
+        />
+    );
+});
+
+DynamicVisualizationManager.displayName = 'DynamicVisualizationManager';
 
 export default DynamicVisualizationManager;

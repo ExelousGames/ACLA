@@ -16,7 +16,7 @@ from app.annotation_providers.tool_surface import (
     tool_agent_response,
     tool_agent_stage,
 )
-from app.shared.contracts import AgentRequest, AgentResponse
+from app.shared.contracts import DEFAULT_AGENT_MAX_TURNS, AgentRequest, AgentResponse
 
 _NODE = "openai_tool_agent"
 
@@ -132,7 +132,9 @@ def run_openai_compatible(request: AgentRequest) -> AgentResponse:
         {"role": "system", "content": build_tool_agent_system_prompt(request)},
         {"role": "user", "content": request.planner_prompt},
     ]
-    max_turns = int(request.config.provider_options.get("max_turns") or 30)
+    max_turns = int(
+        request.config.provider_options.get("max_turns") or DEFAULT_AGENT_MAX_TURNS
+    )
 
     for _ in range(max_turns):
         response = client.chat.completions.create(

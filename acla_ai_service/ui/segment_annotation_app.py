@@ -56,7 +56,11 @@ from segment_tabs.batch import (
 from segment_tabs.batch_subsegment import render_batch_subseg
 from segment_tabs.batch_lap import render_batch_lap
 from segment_tabs.parent_labels import render_parent_label_propagation
-from segment_tabs.training import TRAINING_ROUTES, render_training
+from segment_tabs.training_components import (
+    TRAINING_ROUTES,
+    TrainingComponentContext,
+    get_training_component,
+)
 from segment_tabs.pipeline_view import render_pipeline_view
 from segment_tabs.pipeline_sidebar import render_pipeline_sidebar
 from segment_tabs.output_picker import needs_output_setup, render_output_picker
@@ -82,7 +86,6 @@ _SESSION_GATED_ROUTES = {
     "batch_lap":          render_batch_lap,
     "parent_labels":      render_parent_label_propagation,
 }
-# Training routes share the single training tab.
 _TRAINING_ROUTES = set(TRAINING_ROUTES)
 
 _ALL_ROUTES = set(_SESSION_GATED_ROUTES) | _TRAINING_ROUTES
@@ -122,6 +125,8 @@ def _restore_route_from_query(pipeline) -> None:
     st.session_state["active_view"] = view
 
     if not node_id:
+        if view in _TRAINING_ROUTES:
+            st.session_state.pop("pipeline_training_node", None)
         return
 
     if view in _TRAINING_ROUTES:
@@ -152,6 +157,22 @@ def _restore_route_from_query(pipeline) -> None:
     st.session_state["pipeline_session_key"] = (
         pipeline.effective_input_key(node) or ""
     )
+
+
+def _open_training_component(pipeline, route: str) -> None:
+    node_id = st.session_state.pop("pipeline_training_node", None)
+    node = None
+    input_key = None
+    if node_id:
+        try:
+            node = pipeline.training(node_id)
+        except KeyError:
+            st.warning("The selected training component no longer exists.")
+        else:
+            input_key = pipeline.resolve_source_key(node.input_ref) or None
+
+    component = get_training_component(route)
+    component.open(TrainingComponentContext(node=node, input_key=input_key))
 
 
 def _sync_pipeline_dir_map(pipeline) -> None:
@@ -354,9 +375,9 @@ def main() -> None:
         render_output_picker(pipeline, active_node)
         return
 
-    # ── Training tabs — one page per training kind ──────────────────────
+    # ── Training components ─────────────────────────────────────────────
     if active_view in _TRAINING_ROUTES:
-        render_training(active_view, annotation_key)
+        _open_training_component(pipeline, active_view)
         return
 
     # Reconcile keys from the active node after route changes or output setup.

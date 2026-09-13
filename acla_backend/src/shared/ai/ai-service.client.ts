@@ -140,32 +140,40 @@ export interface LiveBaselineTimeGap {
     delta_ms: number;
 }
 
-export interface SegmentClassificationSubSegment {
+export interface ExpertReferenceRow {
+    raw_index: number;
+    expert_time_difference: number;
+    expert_optimal_time: number;
+    expert_optimal_player_pos_x: number;
+    expert_optimal_player_pos_y: number;
+    expert_optimal_player_pos_z: number;
+    Graphics_normalized_car_position: number;
+    expert_optimal_throttle: number;
+    expert_optimal_brake: number;
+    expert_optimal_gear: number;
+}
+
+export interface SegmentClassificationLabel {
+    label_name: string;
     start_index: number;
     end_index: number;
-    labels: string[];
-    time_gap?: LiveBaselineTimeGap;
 }
 
 export interface SegmentClassificationSegment {
     id?: string;
-    labels: string[];
-    main_label_id: string;
-    parent_segment_id?: string;
-    parent_label_id?: string;
+    labels: SegmentClassificationLabel[];
+    track_section?: string;
     start_index: number;
     end_index: number;
-    sub_labels: string[];
-    sub_segments: SegmentClassificationSubSegment[];
-    child_segments?: SegmentClassificationSubSegment[];
     time_gap?: LiveBaselineTimeGap;
+    expert_reference_data: ExpertReferenceRow[];
 }
 
 export interface SegmentClassificationResponse {
     status: string;
     session_id: string;
     samples_analyzed: number;
-    segment_count: number;
+    parent_segment_count: number;
     segments: SegmentClassificationSegment[];
 }
 

@@ -1,13 +1,28 @@
-import { SegmentClassificationSegment } from './visualization/charts/segmentClassificationDisplay';
+import { normalizeSegmentLabels, SegmentClassificationSegment } from './visualization/charts/segmentClassificationDisplay';
 
 export type RecordedAiAnalysisStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
+
+export type ExpertReferenceRow = {
+    raw_index: number;
+    expert_optimal_time: number;
+    expert_time_difference: number;
+    expert_optimal_player_pos_x: number;
+    expert_optimal_player_pos_y: number;
+    expert_optimal_player_pos_z: number;
+    Graphics_normalized_car_position: number;
+    expert_optimal_throttle: number;
+    expert_optimal_brake: number;
+    expert_optimal_gear: number;
+};
 
 export type SegmentClassificationResult = {
     status: string;
     session_id: string;
     samples_analyzed: number;
-    segment_count: number;
-    segments: SegmentClassificationSegment[];
+    parent_segment_count: number;
+    segments: Array<SegmentClassificationSegment & {
+        expert_reference_data: ExpertReferenceRow[];
+    }>;
     expert_time_available?: boolean;
 };
 
@@ -15,8 +30,8 @@ export type RecordedActiveSegmentSummary = {
     segmentId?: string;
     startIndex: number;
     endIndex: number;
-    parentLabel: string;
-    childLabels: string[];
+    trackSection: string;
+    labels: string[];
 };
 
 export type RecordedPlaybackSummary = {
@@ -55,22 +70,34 @@ export const createEmptyRecordedPlaybackSummary = (
 export const normalizeSegmentClassificationResult = (
     result: Partial<SegmentClassificationResult> | null | undefined,
     sessionId: string,
-): SegmentClassificationResult => ({
-    ...(result || {}),
-    segments: result && Array.isArray(result.segments) ? result.segments : [],
-    segment_count: Number(result?.segment_count) || 0,
-    samples_analyzed: Number(result?.samples_analyzed) || 0,
-    session_id: result?.session_id || sessionId,
-    status: result?.status || 'success',
-    ...(typeof result?.expert_time_available === 'boolean'
-        ? { expert_time_available: result.expert_time_available }
-        : {}),
-});
+): SegmentClassificationResult => {
+    const segments = result && Array.isArray(result.segments)
+        ? result.segments.map((segment) => ({
+            ...segment,
+            labels: normalizeSegmentLabels(segment.labels),
+            track_section: typeof segment.track_section === 'string' ? segment.track_section : undefined,
+            expert_reference_data: Array.isArray(segment.expert_reference_data)
+                ? segment.expert_reference_data
+                : [],
+        }))
+        : [];
+
+    return {
+        status: result?.status || 'success',
+        session_id: result?.session_id || sessionId,
+        samples_analyzed: Number(result?.samples_analyzed) || 0,
+        parent_segment_count: segments.length,
+        segments,
+        ...(typeof result?.expert_time_available === 'boolean'
+            ? { expert_time_available: result.expert_time_available }
+            : {}),
+    };
+};
 
 export const getRecordedAnalysisStateForResult = (
     result: SegmentClassificationResult,
 ): Pick<RecordedAiAnalysisState, 'status' | 'message'> => (
-    result.segment_count > 0
+    result.parent_segment_count > 0
         ? { status: 'ready' }
         : { status: 'empty', message: 'AI analysis found no classified segments.' }
 );

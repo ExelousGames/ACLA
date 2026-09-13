@@ -37,7 +37,6 @@ def _claude_provider() -> AnnotationProvider:
         id="claude_cli",
         label="Claude CLI",
         runner="claude_cli",
-        prompt_mode="tool_agent",
         models=models,
         default_model=models[0].id if models else "",
         description="Claude Code / claude-agent-sdk session using local CLI auth.",
@@ -56,7 +55,6 @@ def _openai_provider() -> AnnotationProvider:
         id="openai",
         label="OpenAI / ChatGPT",
         runner="openai_compatible",
-        prompt_mode="tool_agent",
         models=models,
         default_model=settings.annotation_openai_default_model or (models[0].id if models else ""),
         description="OpenAI ChatGPT models using the annotation tool-agent contract.",
@@ -83,7 +81,6 @@ def _openai_compatible_provider() -> AnnotationProvider:
         id="openai_compatible",
         label="OpenAI-Compatible",
         runner="openai_compatible",
-        prompt_mode="tool_agent",
         models=models,
         default_model=default_model,
         description="Any OpenAI-compatible annotation endpoint.",
@@ -106,8 +103,38 @@ def _openai_compatible_provider() -> AnnotationProvider:
     )
 
 
+def _local_vlm_provider() -> AnnotationProvider:
+    from app.local_annotation_agent.backend import QWEN25_VL_MODELS
+
+    models = [
+        ProviderModel(
+            id=model_id,
+            label=str(spec.get("label") or model_id),
+            max_context=spec.get("max_context"),
+            max_new_tokens=spec.get("max_new_tokens"),
+        )
+        for model_id, spec in QWEN25_VL_MODELS.items()
+    ]
+    return AnnotationProvider(
+        id="local_vlm",
+        label="Local VLM",
+        runner="local_pipeline",
+        models=models,
+        default_model=models[0].id if models else "",
+        description="Local llama.cpp-backed VLM using the annotation tool-agent contract.",
+        options=[
+            ProviderOption("gguf_path", "GGUF path", "text", default="", advanced=True),
+            ProviderOption("mmproj_path", "MMProj path", "text", default="", advanced=True),
+            ProviderOption("context_size", "Context size", "number", default=32768, advanced=True),
+            ProviderOption("n_gpu_layers", "GPU layers", "number", default=-1, advanced=True),
+            ProviderOption("quantization_type", "Quantization", "text", default="Q4_K_M", advanced=True),
+        ],
+    )
+
+
 def _all_providers() -> List[AnnotationProvider]:
     return [
+        _local_vlm_provider(),
         _claude_provider(),
         _openai_provider(),
         _openai_compatible_provider(),
@@ -119,7 +146,7 @@ def _enabled_ids(all_ids: Iterable[str]) -> List[str]:
     explicit = _csv(settings.annotation_enabled_providers)
     if explicit:
         return [provider_id for provider_id in explicit if provider_id in all_id_set]
-    ids = ["claude_cli", "openai"]
+    ids = ["local_vlm", "claude_cli", "openai"]
     for provider in _all_providers():
         if provider.id in ids:
             continue

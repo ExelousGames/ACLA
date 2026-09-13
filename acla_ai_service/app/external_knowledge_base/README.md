@@ -1,9 +1,10 @@
 # Racing Engineer Corpus - format spec
 
 This folder is the knowledge layer the racing-engineer LLM reaches into via
-the `explain_label`, `analyze_telemetry`, `get_track_knowledge`, and
-`search_racing_knowledge` tools. The corpus is plain Markdown plus optional
-YAML frontmatter, designed to be hand-edited by a domain expert.
+the server-side `explain_label`, `get_track_knowledge`, and
+`search_racing_knowledge` tools. Frontend telemetry tools can also use this
+corpus through their own application-side flows. The corpus is plain Markdown
+plus optional YAML frontmatter, designed to be hand-edited by a domain expert.
 
 The loader lives in [__init__.py](__init__.py). Label lookups are addressed by
 human-readable name, not internal label id.

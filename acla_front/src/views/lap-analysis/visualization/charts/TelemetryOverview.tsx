@@ -1,16 +1,49 @@
-import React, { useContext, useState, useMemo, useEffect } from 'react';
+import React, { forwardRef, useState, useMemo, useEffect, useImperativeHandle } from 'react';
 import { Card, Text, Box, Grid, TextField, Button } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
-import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
+import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
 
-const TelemetryOverview: React.FC<VisualizationProps> = ({ id, data, config, width = '100%', height = 200 }) => {
-    const analysisContext = useContext(AnalysisContext);
+export interface TelemetryOverviewHandle extends NamedOperationComponentHandle {
+    updateTelemetry(data: any, config?: any): true;
+    disableTelemetry(): true;
+}
+
+const TelemetryOverview = forwardRef<TelemetryOverviewHandle, VisualizationProps>(({
+    name,
+    data,
+    width = '100%',
+    height = 200,
+    onUpdate,
+    onDisable,
+}, forwardedRef) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [history, setHistory] = useState<any[]>([]);
     const [historyIndex, setHistoryIndex] = useState(0);
 
-    const telemetryData = data || analysisContext.liveData;
+    const handle = useMemo<TelemetryOverviewHandle>(() => ({
+        getComponentName: () => name,
+        updateTelemetry: (nextData, nextConfig) => runVisualizationBooleanCallback(
+            name,
+            VisualizationUpdateFailedError,
+            `Failed to update chart '${name}'.`,
+            onUpdate ? () => onUpdate(nextData, nextConfig) : undefined,
+        ),
+        disableTelemetry: () => runVisualizationBooleanCallback(
+            name,
+            ComponentDisableFailedError,
+            `Component '${name}' could not be disabled.`,
+            onDisable,
+        ),
+    }), [name, onDisable, onUpdate]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    const registeredHandleRef = React.useRef(handle);
+    registeredHandleRef.current = handle;
+    useRegisterOperationComponentRef(registeredHandleRef);
+
+    const telemetryData = data;
 
     useEffect(() => {
         if (telemetryData) {
@@ -120,6 +153,8 @@ const TelemetryOverview: React.FC<VisualizationProps> = ({ id, data, config, wid
             )}
         </Card>
     );
-};
+});
+
+TelemetryOverview.displayName = 'TelemetryOverview';
 
 export default TelemetryOverview;

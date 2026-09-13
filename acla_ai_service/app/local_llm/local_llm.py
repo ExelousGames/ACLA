@@ -1,26 +1,16 @@
-"""Local LLM training and inference utilities for telemetry forecasting.
-
-This module replaces the legacy transformer-only pipeline with a HuggingFace-
-compatible workflow that can be fine-tuned locally (via LoRA adapters) and
-used for inference to generate both future telemetry and human-readable
-explanations.
-"""
+"""Local LLM inference utilities for telemetry guidance."""
 
 from __future__ import annotations
 
-import json
 import logging
-import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
-from collections.abc import Mapping
+from typing import Any, Dict, List, Optional, Union
 
 from app.infra.config.settings import settings
 
 import torch
-from torch.utils.data import Dataset
 
 try:
     from transformers import (
@@ -29,9 +19,6 @@ try:
         AutoProcessor,
         AutoTokenizer,
         BitsAndBytesConfig,
-        DataCollatorForLanguageModeling,
-        Trainer,
-        TrainingArguments,
     )
 except ImportError as exc:  # pragma: no cover - guarding runtime deps
     raise ImportError(
@@ -39,15 +26,9 @@ except ImportError as exc:  # pragma: no cover - guarding runtime deps
     ) from exc
 
 try:
-    from peft import (
-        LoraConfig as PeftLoraConfig,
-        PeftConfig,
-        PeftModel,
-        get_peft_model,
-        prepare_model_for_kbit_training,
-    )
+    from peft import PeftModel
 except ImportError as exc:  # pragma: no cover - guarding runtime deps
-    raise ImportError("peft is required for LoRA fine-tuning. Install `peft`.") from exc
+    raise ImportError("peft is required to load LoRA adapters. Install `peft`.") from exc
 
 LOGGER = logging.getLogger(__name__)
 
@@ -74,8 +55,8 @@ class ModelConfig:
     #specify the name or directory path of a specific fine-tuned LoRA
     adapter: Optional[str] = None
 
-    # transformers: The default provider. required for fine-tuning the model with LoRA
-    # llama_cpp:  This provider is strictly for inference and is heavily optimized to run fast and use less memory, making it ideal for CPU-only inference or limited hardware.
+    # transformers: The default local inference provider.
+    # llama_cpp: Optimized inference for CPU-only or limited hardware.
     provider: str = "transformers"  
 
     load_in_8bit: bool = False
@@ -90,47 +71,8 @@ class ModelConfig:
     fp16: bool = False
 
 @dataclass
-class LoraConfig:
-    use_lora: bool = True
-    lora_r: int = 16
-    lora_alpha: int = 32
-    lora_dropout: float = 0.05
-    lora_target_modules: Optional[List[str]] = field(
-        default_factory=lambda: [
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ]
-    )
-
-@dataclass
-class TrainingConfig:
-    use_gradient_checkpointing: bool = True
-    gradient_checkpointing_kwargs: Optional[Dict[str, Any]] = field(default_factory=dict)
-    max_seq_length: int = 2353642
-    train_batch_size: int = 1
-    eval_batch_size: int = 1
-    gradient_accumulation_steps: int = 16
-    learning_rate: float = 2e-4
-    warmup_steps: int = 50
-    weight_decay: float = 0.01
-    num_train_epochs: int = 3
-    max_steps: Optional[int] = None
-    logging_steps: int = 20
-    save_steps: int = 200
-    eval_steps: Optional[int] = None
-    save_total_limit: int = 3
-    dataloader_num_workers: int = 2
-    use_hf_datasets: bool = True
-    hf_streaming: bool = False
-    hf_num_proc: Optional[int] = None
-
-@dataclass
 class GenerationConfig:
+    max_input_tokens: int = 2353642
     max_new_tokens: int = 256
     temperature: float = 0.9
     top_p: float = 0.95
@@ -138,10 +80,8 @@ class GenerationConfig:
 
 @dataclass
 class LocalLLMConfig:
-    """Configuration options for loading and training the local LLM."""
+    """Configuration options for local LLM inference."""
     model: ModelConfig = field(default_factory=ModelConfig)
-    lora: LoraConfig = field(default_factory=LoraConfig)
-    training: TrainingConfig = field(default_factory=TrainingConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
 
 
@@ -159,173 +99,12 @@ class GenerationRequest:
 
 
 # ---------------------------------------------------------------------------
-# Dataset helpers
-# ---------------------------------------------------------------------------
-
-
-def _extract_messages(record: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
-    """Extract system/user/assistant text from a normalized prompt/response record."""
-    if isinstance(record, Mapping):
-        record = dict(record)
-    if not isinstance(record, dict):
-        return None
-
-    prompt_text = record.get("prompt")
-    response_text = record.get("response") or record.get("completion")
-    if not isinstance(prompt_text, str):
-        return None
-    if not isinstance(response_text, str):
-        return None
-
-    system_text = record.get("system_prompt")
-    if not isinstance(system_text, str):
-        system_text = ""
-
-    metadata = record.get("metadata")
-    if isinstance(metadata, dict):
-        meta_system = metadata.get("system_prompt")
-        if isinstance(meta_system, str) and not system_text:
-            system_text = meta_system
-
-    return system_text, prompt_text, response_text
-
-
-def _format_prompt_and_response(
-    tokenizer: "AutoTokenizer",
-    parsed: Tuple[str, str, str],
-) -> Tuple[str, str]:
-    """Create prompt/response text blocks for a parsed example."""
-
-    system_text, user_text, assistant_text = parsed
-
-    system_block = f"[SYSTEM]\n{system_text}\n[/SYSTEM]\n\n" if system_text else ""
-    user_block = f"[USER]\n{user_text}\n[/USER]\n\n"
-    assistant_prefix = "[ASSISTANT]\n"
-
-    prompt = f"{system_block}{user_block}{assistant_prefix}"
-    response = f"{assistant_text}{tokenizer.eos_token}"
-    return prompt, response
-
-
-def _build_tokenized_sample(
-    tokenizer: "AutoTokenizer",
-    prompt_text: str,
-    response_text: str,
-    max_seq_length: int,
-) -> Optional[Tuple[List[int], List[int], List[int]]]:
-    """Tokenize prompt/response blocks into training arrays."""
-
-    prompt_ids = tokenizer(
-        prompt_text,
-        add_special_tokens=False,
-    )["input_ids"]
-    response_ids = tokenizer(
-        response_text,
-        add_special_tokens=False,
-    )["input_ids"]
-
-    input_ids = prompt_ids + response_ids
-    if len(input_ids) > max_seq_length:
-        total_len = len(input_ids)
-        prompt_len = len(prompt_ids)
-        response_len = len(response_ids)
-        print(
-            "Skipping sample exceeding max_seq_length=%s (total_tokens=%s, prompt_tokens=%s, response_tokens=%s)",
-            max_seq_length,
-            total_len,
-            prompt_len,
-            response_len,
-        )
-        raise ValueError(
-            "Skipping sample exceeding max_seq_length="
-            f"{max_seq_length} (total_tokens={total_len}, prompt_tokens={prompt_len}, response_tokens={response_len})"
-        )
-
-    labels = [-100] * len(prompt_ids) + response_ids
-    attention_mask = [1] * len(input_ids)
-    return input_ids, labels, attention_mask
-
-
-class TelemetryPromptDataset(Dataset):
-    """PyTorch dataset for instruction tuning using prompt/completion pairs."""
-
-    def __init__(
-        self,
-        jsonl_path: Path,
-        tokenizer: "AutoTokenizer",
-        max_seq_length: int,
-    ) -> None:
-        self.tokenizer = tokenizer
-        self.max_seq_length = max_seq_length
-        self.samples: List[Tuple[List[int], List[int], List[int]]] = []
-        self.metadata: List[Dict[str, Any]] = []
-
-        jsonl_path = Path(jsonl_path)
-        if not jsonl_path.exists():
-            raise FileNotFoundError(f"Dataset file not found: {jsonl_path}")
-
-        with jsonl_path.open("r", encoding="utf-8") as file:
-            for line_number, line in enumerate(file, start=1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    LOGGER.warning("Skipping malformed JSON at line %s", line_number)
-                    continue
-
-                parsed = _extract_messages(record)
-                if not parsed:
-                    continue
-
-                prompt_text, response_text = _format_prompt_and_response(self.tokenizer, parsed)
-                sample = _build_tokenized_sample(
-                    self.tokenizer,
-                    prompt_text,
-                    response_text,
-                    self.max_seq_length,
-                )
-                if sample is None:
-                    continue
-
-                input_ids, labels, attention_mask = sample
-                self.samples.append((input_ids, labels, attention_mask))
-                response_tokens = sum(1 for value in labels if value != -100)
-                prompt_length = len(input_ids) - response_tokens
-                self.metadata.append({
-                    "line_number": line_number,
-                    "prompt_tokens": prompt_length,
-                    "total_tokens": len(input_ids),
-                })
-
-        if not self.samples:
-            raise ValueError("No valid samples were parsed from the dataset")
-
-        LOGGER.info("Loaded %d samples for fine-tuning", len(self.samples))
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        input_ids, labels, attention_mask = self.samples[idx]
-        input_tensor = torch.tensor(input_ids, dtype=torch.long)
-        labels_tensor = torch.tensor(labels, dtype=torch.long)
-        attention_tensor = torch.tensor(attention_mask, dtype=torch.long)
-        return {
-            "input_ids": input_tensor,
-            "attention_mask": attention_tensor,
-            "labels": labels_tensor,
-        }
-
-
-# ---------------------------------------------------------------------------
 # Core pipeline
 # ---------------------------------------------------------------------------
 
 
 class LocalTelemetryLLM:
-    """High-level wrapper for local LLM fine-tuning and inference."""
+    """High-level wrapper for local LLM inference."""
 
     _instance = None
     _lock = threading.Lock()
@@ -483,10 +262,8 @@ class LocalTelemetryLLM:
         if self.tokenizer.padding_side != "right":
             self.tokenizer.padding_side = "right"
 
-    def _load_model(self, for_training: bool, adapter_path: Optional[Path] = None) -> Union[torch.nn.Module, Any]:
+    def _load_model(self, adapter_path: Optional[Path] = None) -> Union[torch.nn.Module, Any]:
         if self.config.model.provider == "llama_cpp":
-            if for_training:
-                raise ValueError("The 'llama_cpp' provider cannot be used for training. Use 'transformers'.")
             gguf_path = self._resolve_llama_cpp_model_path(adapter_path)
 
             from app.llama.process import LlamaServerConfig, LlamaServerProcess
@@ -495,7 +272,7 @@ class LocalTelemetryLLM:
             proc = LlamaServerProcess(
                 LlamaServerConfig(
                     model_path=gguf_path,
-                    n_ctx=self.config.training.max_seq_length,
+                    n_ctx=self.config.generation.max_input_tokens,
                     n_gpu_layers=n_gpu_layers,
                     startup_timeout_seconds=60,
                 )
@@ -564,501 +341,13 @@ class LocalTelemetryLLM:
             except OSError as load_error:
                 self._raise_missing_local_resource(self.config.model.base_model, load_error)
 
-        if self.config.training.use_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable(**(self.config.training.gradient_checkpointing_kwargs or {}))
-
         if adapter_path:
             adapter_path = Path(adapter_path)
             LOGGER.info("Loading LoRA adapter from %s", adapter_path)
             model = PeftModel.from_pretrained(model, adapter_path)
             return model
 
-        if for_training and self.config.lora.use_lora:
-            LOGGER.info("Wrapping model with LoRA (r=%s, alpha=%s)", self.config.lora.lora_r, self.config.lora.lora_alpha)
-            if self.config.model.load_in_8bit or self.config.model.load_in_4bit:
-                model = prepare_model_for_kbit_training(model)
-
-            target_modules = self.config.lora.lora_target_modules
-            lora_config = PeftLoraConfig(
-                r=self.config.lora.lora_r,
-                lora_alpha=self.config.lora.lora_alpha,
-                lora_dropout=self.config.lora.lora_dropout,
-                bias="none",
-                task_type="CAUSAL_LM",
-                target_modules=target_modules,
-            )
-            model = get_peft_model(model, lora_config)
-            model.print_trainable_parameters()
-
         return model
-
-    # ------------------------------------------------------------------
-    # Training
-    # ------------------------------------------------------------------
-
-    def train(
-        self,
-        dataset_path: Path,
-        output_dir: Path,
-        eval_dataset_path: Optional[Path] = None,
-    ) -> Dict[str, Any]:
-        """Fine-tune the local LLM on the provided dataset."""
-
-        self.model = self._load_model(for_training=True)
-        self.model.train()
-
-        use_hf_datasets = self.config.training.use_hf_datasets
-        streaming_mode = use_hf_datasets and self.config.training.hf_streaming
-
-        if streaming_mode and not self.config.training.max_steps:
-            raise ValueError(
-                "Streaming Hugging Face datasets require 'max_steps' to be set in LocalLLMConfig."
-            )
-
-        if use_hf_datasets:
-            dataset = self._prepare_hf_prompt_dataset(
-                dataset_path=dataset_path,
-                streaming=self.config.training.hf_streaming,
-            )
-        else:
-            dataset = TelemetryPromptDataset(
-                jsonl_path=dataset_path,
-                tokenizer=self.tokenizer,
-                max_seq_length=self.config.training.max_seq_length,
-            )
-
-        eval_dataset: Optional[Any] = None
-        if eval_dataset_path:
-            if use_hf_datasets:
-                eval_dataset = self._prepare_hf_prompt_dataset(
-                    dataset_path=eval_dataset_path,
-                    streaming=False,
-                )
-            else:
-                eval_dataset = TelemetryPromptDataset(
-                    jsonl_path=eval_dataset_path,
-                    tokenizer=self.tokenizer,
-                    max_seq_length=self.config.training.max_seq_length,
-                )
-
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        training_args = TrainingArguments(
-            output_dir=str(output_dir),
-            per_device_train_batch_size=self.config.training.train_batch_size,
-            per_device_eval_batch_size=self.config.training.eval_batch_size,
-            gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
-            learning_rate=self.config.training.learning_rate,
-            warmup_steps=self.config.training.warmup_steps,
-            weight_decay=self.config.training.weight_decay,
-            num_train_epochs=self.config.training.num_train_epochs,
-            max_steps=self.config.training.max_steps or -1,
-            logging_steps=self.config.training.logging_steps,
-            save_steps=self.config.training.save_steps,
-            eval_strategy="steps" if eval_dataset is not None else "no",
-            eval_steps=self.config.training.eval_steps,
-            save_total_limit=self.config.training.save_total_limit,
-            fp16=self.config.model.fp16,
-            bf16=self.config.model.bf16,
-            dataloader_num_workers=self.config.training.dataloader_num_workers,
-            remove_unused_columns=False,
-            report_to=["tensorboard"],
-        )
-
-        data_collator = DataCollatorForLanguageModeling(
-            tokenizer=self.tokenizer,
-            mlm=False,
-        )
-
-        class DeviceAwareTrainer(Trainer):
-            """Trainer that respects pre-sharded device maps during model move."""
-
-            def _should_skip_device_move(
-                self,
-                model: torch.nn.Module,
-                *,
-                _visited: Optional[set[int]] = None,
-            ) -> bool:
-                if _visited is None:
-                    _visited = set()
-
-                model_id = id(model)
-                if model_id in _visited:
-                    return False
-                _visited.add(model_id)
-
-                # HuggingFace populates `hf_device_map` when dispatching with accelerate.
-                device_map = getattr(model, "hf_device_map", None)
-                if device_map:
-                    return True
-
-                # LoRA models wrap the base model; check nested structures to avoid recursion.
-                base_model = getattr(model, "base_model", None)
-                if base_model and self._should_skip_device_move(base_model, _visited=_visited):  # type: ignore[arg-type]
-                    return True
-
-                inner_model = getattr(base_model, "model", None) if base_model else None
-                if inner_model and self._should_skip_device_move(inner_model, _visited=_visited):  # type: ignore[arg-type]
-                    return True
-
-                return False
-
-            def _move_model_to_device(self, model, device):  # type: ignore[override]
-                if self._should_skip_device_move(model):
-                    LOGGER.info("Skipping automatic model.to(%s); model already dispatched via device map", device)
-                    return model
-                return super()._move_model_to_device(model, device)
-
-        trainer = DeviceAwareTrainer(
-            model=self.model,
-            args=training_args,
-            train_dataset=dataset,
-            eval_dataset=eval_dataset,
-            data_collator=data_collator,
-        )
-
-        # Log dataset size before training
-        dataset_size = getattr(dataset, "num_rows", None)
-        if dataset_size is None and hasattr(dataset, "__len__"):
-            try:
-                dataset_size = len(dataset)
-            except TypeError:
-                dataset_size = "unknown"
-        
-        LOGGER.info("="*60)
-        LOGGER.info("Starting LLM fine-tuning")
-        LOGGER.info(f"Training samples: {dataset_size}")
-        LOGGER.info(f"Epochs: {self.config.training.num_train_epochs}")
-        LOGGER.info(f"Max steps: {self.config.training.max_steps or 'auto'}")
-        LOGGER.info("="*60)
-
-        try:
-            train_result = trainer.train()
-            trainer.save_state()
-            LOGGER.info("="*60)
-            LOGGER.info("Training completed successfully")
-            LOGGER.info("="*60)
-        except Exception as e:
-            LOGGER.error("="*60)
-            LOGGER.error(f"TRAINING FAILED: {type(e).__name__}: {str(e)}")
-            LOGGER.error("="*60)
-            raise RuntimeError(f"Training execution failed: {e}") from e
-
-        try:
-            self._save_model(output_dir)
-            LOGGER.info(f"Model saved successfully to {output_dir}")
-        except Exception as e:
-            LOGGER.error(f"Failed to save model: {e}")
-            raise RuntimeError(f"Model save failed: {e}") from e
-
-        metrics = train_result.metrics
-
-        train_samples = getattr(dataset, "num_rows", None)
-        if train_samples is None and hasattr(dataset, "__len__"):
-            try:
-                train_samples = len(dataset)
-            except TypeError:
-                train_samples = None
-        if train_samples is not None:
-            metrics["train_samples"] = int(train_samples)
-
-        if eval_dataset is not None:
-            eval_samples = getattr(eval_dataset, "num_rows", None)
-            if eval_samples is None and hasattr(eval_dataset, "__len__"):
-                try:
-                    eval_samples = len(eval_dataset)
-                except TypeError:
-                    eval_samples = None
-            if eval_samples is not None:
-                metrics["eval_samples"] = int(eval_samples)
-        trainer.log_metrics("train", metrics)
-        trainer.save_metrics("train", metrics)
-
-        return metrics
-
-    def _prepare_hf_prompt_dataset(self, *, dataset_path: Path, streaming: bool):
-        """Load and preprocess a prompt dataset using Hugging Face datasets."""
-
-        try:
-            from datasets import load_dataset  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise ImportError(
-                "The 'datasets' package is required when use_hf_datasets=True. Install `datasets`."
-            ) from exc
-
-        # Early validation: check if dataset file exists and has content
-        if not dataset_path.exists():
-            raise FileNotFoundError(f"Dataset file not found: {dataset_path}")
-        
-        # Count lines in JSONL file for early validation
-        line_count = 0
-        with open(dataset_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    line_count += 1
-        
-        LOGGER.info(f"Dataset file has {line_count} raw lines")
-        if line_count == 0:
-            raise ValueError(f"Dataset file is empty: {dataset_path}")
-        if line_count < 10:
-            LOGGER.warning(
-                f"Dataset file has only {line_count} lines. "
-                f"This may result in insufficient training data after filtering."
-            )
-
-        data_files = {"train": str(dataset_path)}
-        dataset = load_dataset(
-            "json",
-            data_files=data_files,
-            split="train",
-            streaming=streaming,
-        )
-
-        def has_valid_messages(example: Dict[str, Any]) -> bool:
-            return _extract_messages(example) is not None
-
-        dataset = dataset.filter(
-            has_valid_messages,
-            batched=False,
-            load_from_cache_file=not streaming,
-        )
-
-        def tokenize_example(example: Dict[str, Any]) -> Dict[str, Any]:
-            try:
-                parsed = _extract_messages(example)
-                if not parsed:
-                    print("[DEBUG] Failed to extract messages from example")
-                    return {
-                        "skip": True,
-                        "input_ids": [],
-                        "labels": [],
-                        "attention_mask": [],
-                    }
-
-                prompt_text, response_text = _format_prompt_and_response(self.tokenizer, parsed)
-                if not prompt_text or not response_text:
-                    print(f"[DEBUG] Empty prompt or response: prompt={bool(prompt_text)}, response={bool(response_text)}")
-                    return {
-                        "skip": True,
-                        "input_ids": [],
-                        "labels": [],
-                        "attention_mask": [],
-                    }
-                      
-                sample = _build_tokenized_sample(
-                    self.tokenizer,
-                    prompt_text,
-                    response_text,
-                    self.config.training.max_seq_length,
-                )
-
-                if sample is None:
-                    print("[DEBUG] Tokenization returned None")
-                    return {
-                        "skip": True,
-                        "input_ids": [],
-                        "labels": [],
-                        "attention_mask": [],
-                    }
-
-                input_ids, labels, attention_mask = sample
-                return {
-                    "skip": False,
-                    "input_ids": input_ids,
-                    "labels": labels,
-                    "attention_mask": attention_mask,
-                }
-            except Exception as tokenize_error:
-                print(f"[ERROR] Tokenization failed: {type(tokenize_error).__name__}: {tokenize_error}")
-                import traceback
-                traceback.print_exc()
-                return {
-                    "skip": True,
-                    "input_ids": [],
-                    "labels": [],
-                    "attention_mask": [],
-                }
-
-        columns_to_remove = list(getattr(dataset, "column_names", [])) or None
-
-        print(f"[DEBUG] Starting tokenization map operation...")
-        print(f"[DEBUG] Columns to remove: {columns_to_remove}")
-        print(f"[DEBUG] Streaming mode: {streaming}")
-        print(f"[DEBUG] Num proc: {None if (streaming or self.config.training.hf_num_proc is None) else self.config.training.hf_num_proc}")
-        print(f"[DEBUG] Dataset type: {type(dataset)}")
-        sys.stdout.flush()
-        
-        # Test tokenize on first example before running full map
-        print("[DEBUG] Testing tokenize_example on first row...")
-        sys.stdout.flush()
-        try:
-            first_example = next(iter(dataset))
-            print(f"[DEBUG] First example keys: {first_example.keys() if hasattr(first_example, 'keys') else type(first_example)}")
-            sys.stdout.flush()
-            
-            test_result = tokenize_example(first_example)
-            print(f"[DEBUG] Test tokenization result: skip={test_result.get('skip')}, has_input_ids={len(test_result.get('input_ids', [])) > 0}")
-            sys.stdout.flush()
-        except Exception as test_error:
-            print(f"[ERROR] Test tokenization failed: {test_error}")
-            import traceback
-            traceback.print_exc()
-            sys.stdout.flush()
-        
-        print("[DEBUG] About to call dataset.map()...")
-        sys.stdout.flush()
-        
-        # Performance target: Process 1000+ examples in <30 seconds with multiprocessing
-        print("[DEBUG] Using manual iteration instead of dataset.map() to avoid hanging...")
-        sys.stdout.flush()
-        
-        try:
-            tokenized_examples = []
-            for idx, example in enumerate(dataset):
-                sys.stdout.flush()
-                result = tokenize_example(example)
-                if not result.get("skip", False):
-                    tokenized_examples.append(result)
-                sys.stdout.flush()
-            
-            print(f"[DEBUG] Manual tokenization complete: {len(tokenized_examples)} examples kept")
-            sys.stdout.flush()
-            
-            if len(tokenized_examples) == 0:
-                raise ValueError("All examples were skipped during tokenization")
-            
-            # Convert to HF Dataset
-            from datasets import Dataset as HFDataset
-            dataset = HFDataset.from_dict({
-                "input_ids": [ex["input_ids"] for ex in tokenized_examples],
-                "labels": [ex["labels"] for ex in tokenized_examples],
-                "attention_mask": [ex["attention_mask"] for ex in tokenized_examples],
-            })
-            print(f"[DEBUG] Created new dataset with {len(dataset)} examples")
-            sys.stdout.flush()
-            
-        except KeyboardInterrupt:
-            print(f"[ERROR] Tokenization interrupted by user")
-            raise
-        except Exception as manual_error:
-            print(f"[ERROR] Manual tokenization failed: {type(manual_error).__name__}: {manual_error}")
-            import traceback
-            traceback.print_exc()
-            raise RuntimeError(f"Failed to tokenize dataset: {manual_error}") from manual_error
-        
-        print(f"[DEBUG] Skipping skip filter (already done in manual iteration)...")
-        sys.stdout.flush()
-
-        print(f"[DEBUG] Converting dataset to torch format...")
-        sys.stdout.flush()
-        dataset = dataset.with_format(type="torch")
-        print(f"[DEBUG] Dataset converted to torch format successfully")
-        sys.stdout.flush()
-
-        print(f"[DEBUG] Streaming mode: {streaming}")
-        print(f"[DEBUG] About to validate dataset size...")
-        
-        if streaming:
-            iterator = dataset.take(1)
-            try:
-                next(iter(iterator))
-            except StopIteration as stop_error:
-                raise ValueError("No valid samples were parsed from the dataset") from stop_error
-        else:
-            num_rows = getattr(dataset, "num_rows", 0)
-            print(f"[DEBUG] Dataset has num_rows attribute: {num_rows}")
-            LOGGER.info(f"Dataset preparation complete: {num_rows} samples after filtering and tokenization")
-            
-            if num_rows == 0:
-                print(f"[ERROR] Dataset is empty!")
-                raise ValueError("No valid samples were parsed from the dataset")
-            if num_rows < 10:
-                print(f"[ERROR] Dataset has insufficient samples: {num_rows}")
-                LOGGER.error(
-                    f"INSUFFICIENT TRAINING DATA: Only {num_rows} samples found. "
-                    f"Minimum required is 10 samples, recommended 100+ for meaningful fine-tuning."
-                )
-                raise ValueError(
-                    f"Insufficient training data: {num_rows} samples. "
-                    f"Need at least 10 samples, recommended 100+ for effective fine-tuning. "
-                    f"Please annotate more examples in the Streamlit UI before attempting to train."
-                )
-
-        return dataset
-
-    def _save_model(self, output_dir: Path) -> None:
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        if self.config.lora.use_lora:
-            LOGGER.info("Saving LoRA adapter to %s", output_dir)
-            if isinstance(self.model, PeftModel):
-                self.model.save_pretrained(output_dir)
-                
-                if self.config.model.load_in_4bit or self.config.model.load_in_8bit:
-                    LOGGER.warning("Skipping LoRA merge and GGUF export for quantized models (4-bit/8-bit). Only adapter saved.")
-                else:
-                    # Merge LoRA adapter into base model for GGUF export
-                    LOGGER.info("Merging LoRA weights with base model for GGUF export...")
-                    merged_model = self.model.merge_and_unload()
-                    # Save the merged model to a temporary path inside output_dir
-                    merged_path = output_dir / "merged"
-                    merged_path.mkdir(parents=True, exist_ok=True)
-                    merged_model.save_pretrained(merged_path)
-                    self.tokenizer.save_pretrained(merged_path)
-                    
-                    # Call conversion script
-                    gguf_output = output_dir / f"{output_dir.name}.gguf"
-                    LOGGER.info("Converting merged model to GGUF format at %s...", gguf_output)
-                    try:
-                        import subprocess
-                        import os
-                        
-                        convert_script = "/opt/llama.cpp/convert_hf_to_gguf.py"
-                        if not os.path.exists(convert_script):
-                            # Fallback if standard pip install of llama-cpp package provides it
-                            convert_script = "convert_hf_to_gguf.py"
-                            
-                        subprocess.run(
-                            ["python3", convert_script, str(merged_path), "--outfile", str(gguf_output), "--outtype", "q8_0"],
-                            check=True
-                        )
-                        LOGGER.info("Successfully exported GGUF file to %s", gguf_output)
-                    except Exception as e:
-                        LOGGER.error("Failed to convert to GGUF using llama.cpp script: %s", e)
-                    finally:
-                        # Clean up merged directory to save space
-                        import shutil
-                        if merged_path.exists():
-                            shutil.rmtree(merged_path)
-
-
-            else:
-                raise RuntimeError("Model is expected to be a PeftModel when use_lora=True")
-        else:
-            LOGGER.info("Saving full model to %s", output_dir)
-            self.model.save_pretrained(output_dir)
-            self.tokenizer.save_pretrained(output_dir)
-            
-            # Call conversion script directly on the saved full model
-            gguf_output = output_dir / f"{output_dir.name}.gguf"
-            LOGGER.info("Converting model to GGUF format at %s...", gguf_output)
-            try:
-                import subprocess
-                import os
-                
-                convert_script = "/opt/llama.cpp/convert_hf_to_gguf.py"
-                if not os.path.exists(convert_script):
-                    convert_script = "convert_hf_to_gguf.py"
-                    
-                subprocess.run(
-                    ["python3", convert_script, str(output_dir), "--outfile", str(gguf_output), "--outtype", "q8_0"],
-                    check=True
-                )
-                LOGGER.info("Successfully exported GGUF file to %s", gguf_output)
-            except Exception as e:
-                LOGGER.error("Failed to convert to GGUF using llama.cpp script: %s", e)
 
     # ------------------------------------------------------------------
     # Inference
@@ -1076,12 +365,12 @@ class LocalTelemetryLLM:
                 self.model.eval()
             return
 
-        self.model = self._load_model(for_training=False, adapter_path=adapter_path)
+        self.model = self._load_model(adapter_path=adapter_path)
         if hasattr(self.model, "eval") and self.config.model.provider != "llama_cpp":
             self.model.eval()
 
     def generate(self, request: GenerationRequest) -> str:
-        """Generate telemetry narrative using the fine-tuned model."""
+        """Generate telemetry narrative using the loaded model."""
 
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_for_inference() first.")
@@ -1117,7 +406,7 @@ class LocalTelemetryLLM:
             prompt,
             return_tensors="pt",
             truncation=True,
-            max_length=self.config.training.max_seq_length,
+            max_length=self.config.generation.max_input_tokens,
         )
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
@@ -1151,10 +440,7 @@ class LocalTelemetryLLM:
 __all__ = [
     "LocalLLMConfig",
     "ModelConfig",
-    "LoraConfig",
-    "TrainingConfig",
     "GenerationConfig",
     "GenerationRequest",
-    "TelemetryPromptDataset",
     "LocalTelemetryLLM",
 ]

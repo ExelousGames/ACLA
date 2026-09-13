@@ -1,30 +1,31 @@
-"""Helpers for preserving parent/sub-label grouping."""
+"""Helpers for shaping classifier labels into display segments."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
-from app.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING, LABEL_NAME_TO_ID
-
-
-BEHAVIOR_MAIN_LABEL_IDS = tuple(
-    label_id for label_id in LABEL_CATEGORIES["Main Labels"]
-    if label_id in {"O", "OD", "EA", "PS", "RM", "MSP", "MSR"}
+from app.shared.labels import (
+    LABEL_CATEGORIES,
+    LABEL_MAPPING,
+    LABEL_NAME_TO_ID,
+    TRACK_LABELS,
 )
+
+
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
-NON_TRACK_CATEGORY_IDS = {"Main Labels", "Segment Type", *BEHAVIOR_MAIN_LABEL_IDS}
-TRACK_PARENT_LABEL_IDS = tuple(
-    label_id for label_id in LABEL_CATEGORIES
-    if label_id not in NON_TRACK_CATEGORY_IDS
+TRACK_LABEL_IDS = tuple(label_id for label_id in TRACK_LABELS if label_id in LABEL_MAPPING)
+TRACK_SECTION_LABEL_IDS = tuple(
+    section_id
+    for track_id in TRACK_LABEL_IDS
+    for section_id in LABEL_CATEGORIES.get(track_id, [])
+    if section_id in LABEL_MAPPING
 )
 
 
 def _parent_lookup() -> Dict[str, str]:
     lookup: Dict[str, str] = {}
     for parent_id, child_ids in LABEL_CATEGORIES.items():
-        if parent_id in {"Main Labels", "Segment Type"}:
-            continue
         if parent_id not in LABEL_MAPPING:
             continue
         for child_id in child_ids:
@@ -77,26 +78,30 @@ def normalize_grouped_label_ids(
     return cleaned, rejected, added_parents
 
 
-def _dedupe_label_ids(label_ids: List[str]) -> List[str]:
-    seen = set()
-    deduped = []
-    for label_id in label_ids:
-        if label_id in seen:
+def _clip_label_ranges(
+    raw_labels: List[Dict[str, Any]],
+    start_index: int,
+    end_index: int,
+) -> List[Dict[str, Any]]:
+    """Keep each detected label's own interval, without adding related labels."""
+    labels: List[Dict[str, Any]] = []
+    for raw_label in raw_labels:
+        label_start = raw_label.get("start_index")
+        label_end = raw_label.get("end_index")
+        if label_start is None or label_end is None:
             continue
-        seen.add(label_id)
-        deduped.append(label_id)
-    return deduped
-
-
-def _main_label_id(label_ids: List[str]) -> Optional[str]:
-    for main_label_id in BEHAVIOR_MAIN_LABEL_IDS:
-        if main_label_id in label_ids:
-            return main_label_id
-    return None
-
-
-def _sub_label_ids(label_ids: List[str], main_label_id: str) -> List[str]:
-    return [label_id for label_id in label_ids if label_id != main_label_id]
+        start = max(start_index, int(label_start))
+        end = min(end_index, int(label_end))
+        if end <= start:
+            continue
+        label = {
+            "label_name": raw_label["label_name"],
+            "start_index": start,
+            "end_index": end,
+        }
+        if label not in labels:
+            labels.append(label)
+    return labels
 
 
 def _track_id(raw: Any) -> str:
@@ -135,14 +140,6 @@ def _section_for_position(position: Any, track_id: str) -> Optional[str]:
         if _position_in_range(normalized_position, section_range):
             return section_id
     return None
-
-
-def _analysis_label_ids(label_ids: List[str]) -> List[str]:
-    return [
-        label_id for label_id in label_ids
-        if label_id not in TRACK_PARENT_LABEL_IDS
-        and label_id not in CIRCUIT_SECTION_RANGES
-    ]
 
 
 def _track_area_windows(
@@ -184,23 +181,22 @@ def build_track_area_segments(
     track_name: Optional[str],
     include_empty_sections: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Build parent track-area segments with child analysis segments."""
+    """Build one segment per track-section window with all detected labels."""
     track_id = _track_id(track_name)
     if not track_id or not telemetry_data or not _section_candidates(track_id):
-        return build_main_label_segments(raw_segments)
+        return build_classifier_segments(raw_segments)
 
-    parent_windows = _track_area_windows(telemetry_data, track_id)
-    if not parent_windows:
-        return build_main_label_segments(raw_segments)
+    section_windows = _track_area_windows(telemetry_data, track_id)
+    if not section_windows:
+        return build_classifier_segments(raw_segments)
 
     segments: List[Dict[str, Any]] = []
 
-    for parent_window in parent_windows:
-        parent_start = parent_window["start_index"]
-        parent_end = parent_window["end_index"]
-        parent_label_id = parent_window["section_id"]
-        child_segments: List[Dict[str, Any]] = []
-        child_label_ids: List[str] = []
+    for section_window in section_windows:
+        section_start = section_window["start_index"]
+        section_end = section_window["end_index"]
+        section_id = section_window["section_id"]
+        labels: List[Dict[str, Any]] = []
 
         for raw_segment in raw_segments:
             raw_start = raw_segment.get("start_index")
@@ -208,86 +204,53 @@ def build_track_area_segments(
             if raw_start is None or raw_end is None:
                 continue
 
-            child_start = max(parent_start, int(raw_start))
-            child_end = min(parent_end, int(raw_end))
-            if child_end <= child_start:
+            if min(section_end, int(raw_end)) <= max(section_start, int(raw_start)):
                 continue
 
-            cleaned_labels, _, _ = normalize_grouped_label_ids(raw_segment.get("labels", []))
-            analysis_labels = _analysis_label_ids(cleaned_labels)
-            if not analysis_labels:
-                continue
+            for label in _clip_label_ranges(
+                raw_segment.get("labels", []), section_start, section_end,
+            ):
+                if label not in labels:
+                    labels.append(label)
 
-            child_label_ids.extend(analysis_labels)
-            child_segments.append({
-                "start_index": int(raw_start),
-                "end_index": int(raw_end),
-                "labels": _dedupe_label_ids(analysis_labels),
+        if labels or include_empty_sections:
+            segments.append({
+                "id": f"{section_id}:{section_start}-{section_end}",
+                "labels": labels,
+                "track_section": section_id,
+                "start_index": section_start,
+                "end_index": section_end,
             })
-
-        if not child_segments and not include_empty_sections:
-            continue
-
-        segment_labels = _dedupe_label_ids([parent_label_id] + child_label_ids)
-        segments.append({
-            "id": f"{parent_label_id}:{parent_start}-{parent_end}",
-            "labels": segment_labels,
-            "parent_segment_id": parent_label_id,
-            "parent_label_id": parent_label_id,
-            "main_label_id": parent_label_id,
-            "start_index": parent_start,
-            "end_index": parent_end,
-            "sub_labels": _dedupe_label_ids(child_label_ids),
-            "sub_segments": child_segments,
-            "child_segments": child_segments,
-        })
 
     return segments
 
 
-def build_main_label_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Merge classifier windows into main-label-first display segments."""
+def build_classifier_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return classifier windows when track-section geometry is unavailable."""
     segments: List[Dict[str, Any]] = []
 
     for raw_segment in raw_segments:
-        cleaned_labels, _, _ = normalize_grouped_label_ids(raw_segment.get("labels", []))
-        main_label_id = _main_label_id(cleaned_labels)
-        if not main_label_id:
-            continue
-
         start_index = raw_segment.get("start_index")
         end_index = raw_segment.get("end_index")
         if start_index is None or end_index is None:
             continue
 
-        sub_label_ids = _sub_label_ids(cleaned_labels, main_label_id)
-        sub_segment = {
-            "start_index": start_index,
-            "end_index": end_index,
-            "labels": _dedupe_label_ids(sub_label_ids),
-        }
-
-        previous = segments[-1] if segments else None
-        if (
-            previous
-            and previous["main_label_id"] == main_label_id
-            and previous["end_index"] == start_index
-        ):
-            previous["end_index"] = end_index
-            previous["labels"] = _dedupe_label_ids(previous["labels"] + cleaned_labels)
-            previous["sub_labels"] = _dedupe_label_ids(_sub_label_ids(previous["labels"], main_label_id))
-            previous["sub_segments"].append(sub_segment)
+        labels = _clip_label_ranges(
+            raw_segment.get("labels", []), int(start_index), int(end_index),
+        )
+        if not labels:
             continue
 
-        segment_labels = _dedupe_label_ids(cleaned_labels)
-        segments.append({
+        segment = {
             "id": raw_segment.get("id"),
-            "labels": segment_labels,
-            "main_label_id": main_label_id,
+            "labels": labels,
+            "track_section": next((
+                label["label_name"] for label in labels
+                if label["label_name"] in TRACK_SECTION_LABEL_IDS
+            ), None),
             "start_index": start_index,
             "end_index": end_index,
-            "sub_labels": _dedupe_label_ids(sub_label_ids),
-            "sub_segments": [sub_segment],
-        })
+        }
+        segments.append(segment)
 
     return segments

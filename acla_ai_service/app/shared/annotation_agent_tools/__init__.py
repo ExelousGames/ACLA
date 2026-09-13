@@ -32,10 +32,9 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from app.internal_knowledge_base import skills
-
 LOGGER = logging.getLogger(__name__)
 
+TRAJECTORY_ALIGNMENT_TOLERANCE_METERS = 1.0
 _HAIRPIN_NEAR_U_TURN_MIN_DEGREES = 130.0
 
 
@@ -378,24 +377,6 @@ def _detect_expert_phases(
         i = j
 
     return phases, window
-
-
-def _segment_type_label(**filters: Any) -> Dict[str, Any]:
-    from app.internal_knowledge_base.label_lookup import find_labels
-
-    matches = find_labels(type="segment_type", **filters)
-    if len(matches) != 1:
-        raise RuntimeError(
-            "segment_type knowledge lookup expected exactly one label for "
-            f"{filters!r}, found {len(matches)}"
-        )
-    doc = matches[0]
-    if not doc.get("id") or not doc.get("name"):
-        raise RuntimeError(
-            "segment_type knowledge lookup returned a label without id/name "
-            f"for {filters!r}"
-        )
-    return doc
 
 
 def _segment_shape_result(
@@ -749,16 +730,14 @@ def _altitude_phase_summary(
 
 def measure_segment_shape(
     df: pd.DataFrame, start_index: int, end_index: int,
-):
+) -> Dict[str, Any]:
     """Tool — deterministic shape and altitude summary for a segment.
 
     Uses expert-anchored curvature phases for base shape and corner-shape
     refinements, then reads z-position angle over entry / apex / exit windows.
-    It reports shape keys and measurements only; preflight performs any
-    label-catalog wording or retrieval.
+    It reports shape keys and measurements only; deterministic catalog
+    requirements map those facts to labels.
     """
-    from app.local_annotation_agent.evaluators import PipelineAttachment
-
     start = int(start_index)
     end = int(end_index)
     segment = _absolute_iloc_slice(df, start, end)
@@ -799,12 +778,7 @@ def measure_segment_shape(
         alt_col = alt_cols[0]
         xy_cols = _position_columns_for_altitude(alt_col)
         if xy_cols is None or any(col not in segment.columns for col in xy_cols):
-            return PipelineAttachment(
-                name="segment_shape_measurement",
-                kind="structured",
-                label="Segment Shape Measurement",
-                content=_round_floats(shape),
-            )
+            return _round_floats(shape)
         alt = segment[alt_col].to_numpy(dtype=float)
         x_values = segment[xy_cols[0]].to_numpy(dtype=float)
         y_values = segment[xy_cols[1]].to_numpy(dtype=float)
@@ -827,12 +801,7 @@ def measure_segment_shape(
             summary["end_iloc"] = int(summary.pop("end_offset")) + start
             shape["altitude"][phase_name] = summary
 
-    return PipelineAttachment(
-        name="segment_shape_measurement",
-        kind="structured",
-        label="Segment Shape Measurement",
-        content=_round_floats(shape),
-    )
+    return _round_floats(shape)
 
 
 def _player_heading(seg_player_x: np.ndarray, seg_player_y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -1364,7 +1333,7 @@ def query_opponent_trajectory(
     df: pd.DataFrame, start_index: int, end_index: int,
     slot: int,
     n_samples: int = 5,
-):
+) -> Dict[str, Any]:
     """Tool — sample one opponent's relative trajectory at N evenly-spaced ilocs.
 
     For opponent ``slot`` (``1..MAX_CARS``), reads
@@ -1389,7 +1358,7 @@ def query_opponent_trajectory(
     (switchback rotation), or lateral offset crossing zero
     (line-cross during a pass).
 
-    Produces an ``opponent_trajectory`` attachment::
+    Returns a telemetry-derived dictionary::
 
         {
             "range": [start_index, end_index],
@@ -1407,17 +1376,7 @@ def query_opponent_trajectory(
             ],
         }
     """
-    from app.local_annotation_agent.evaluators import PipelineAttachment
-
     slot_int = int(slot)
-
-    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
-        return PipelineAttachment(
-            name="opponent_trajectory",
-            kind="structured",
-            label=f"Opponent Trajectory (slot {slot_int})",
-            content=_round_floats(content),
-        )
 
     s, e = int(start_index), int(end_index)
     n_samples = max(2, int(n_samples))
@@ -1434,13 +1393,13 @@ def query_opponent_trajectory(
     missing = [c for c in required if c not in df.columns]
     if missing:
         base["message"] = f"required columns missing: {missing}"
-        return _attach(base)
+        return _round_floats(base)
 
     seg = _absolute_iloc_slice(df, s, e)
     n_rows = len(seg)
     if n_rows < 2:
         base["message"] = "range too short (need ≥ 2 rows)"
-        return _attach(base)
+        return _round_floats(base)
 
     player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
     player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
@@ -1486,7 +1445,7 @@ def query_opponent_trajectory(
             ),
         })
 
-    return _attach({
+    return _round_floats({
         "range": [s, e],
         "slot": slot_int,
         "data_available": True,
@@ -1513,13 +1472,13 @@ def classify_opponent_interaction(
     min_threat_overlap_ilocs: int = 3,
     min_active_fraction: float = 0.3,
     max_candidates: int = 5,
-):
+) -> Dict[str, Any]:
     """Tool — deterministic O / OD / MSR interaction classifier.
 
     Computes opponent-relative position math over ``[start_index, end_index)``
     and returns the opponent interaction outcome and evidence. Mapping that
-    outcome to annotation labels is handled by the annotation preflight / label
-    search layer, not by this tool.
+    outcome to annotation labels is handled by deterministic catalog
+    requirements, not by this tool.
 
     Signed longitudinal and lateral gaps are computed from the driver's local
     path / heading. The classifier intentionally reads only positional
@@ -1537,16 +1496,7 @@ def classify_opponent_interaction(
     inline following is target-car context, not by itself an attack/defense
     outcome.
     """
-    from app.local_annotation_agent.evaluators import PipelineAttachment
     from app.shared.telemetry import MAX_CARS
-
-    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
-        return PipelineAttachment(
-            name="opponent_interaction_classification",
-            kind="structured",
-            label="Opponent Interaction Classification",
-            content=_round_floats(content),
-        )
 
     def _clamp01(v: float) -> float:
         return max(0.0, min(1.0, float(v)))
@@ -1610,19 +1560,19 @@ def classify_opponent_interaction(
             "Player position columns (Graphics_player_pos_x/y) missing — "
             "cannot classify opponent interaction."
         )
-        return _attach(base_payload)
+        return _round_floats(base_payload)
 
     seg = _absolute_iloc_slice(df, s, e)
     n_rows = len(seg)
     if n_rows < 2:
         base_payload["message"] = "Range too short for opponent classification (need >= 2 rows)."
-        return _attach(base_payload)
+        return _round_floats(base_payload)
 
     player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
     player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
     if not (np.isfinite(player_x).any() and np.isfinite(player_y).any()):
         base_payload["message"] = "Player position trace is all NaN/inf."
-        return _attach(base_payload)
+        return _round_floats(base_payload)
 
     candidates: List[Dict[str, Any]] = []
     n_active_slots = 0
@@ -1892,7 +1842,7 @@ def classify_opponent_interaction(
     top = candidates[0] if candidates else None
 
     if top is None:
-        return _attach({
+        return _round_floats({
             **base_payload,
             "data_available": True,
             "n_active_slots": n_active_slots,
@@ -1900,7 +1850,7 @@ def classify_opponent_interaction(
             "message": "No active opponent slot met the active-fraction threshold.",
         })
 
-    return _attach({
+    return _round_floats({
         "range": [s, e],
         "data_available": True,
         "n_active_slots": n_active_slots,
@@ -2419,12 +2369,11 @@ def _align_interaction_windows_with_classifier(
     for window in windows:
         out = dict(window)
         try:
-            att = classify_opponent_interaction(
+            content = classify_opponent_interaction(
                 df,
                 int(out["start_index"]),
                 int(out["end_index"]),
             )
-            content = getattr(att, "content", None)
         except Exception:
             content = None
 
@@ -2983,7 +2932,7 @@ def locate_circuit_section(
     circuit_id: Optional[str],
     start_index: Optional[int] = None,
     end_index: Optional[int] = None,
-):
+) -> Dict[str, Any]:
     """Tool — identify which named ``circuit_section`` the segment overlaps.
 
     Reads ``Graphics_normalized_car_position`` over ``[start_index, end_index)``
@@ -2993,7 +2942,7 @@ def locate_circuit_section(
     span). Handles wrap-around sections where ``range_end < range_start``
     (e.g. the pit straight that crosses the start/finish line).
 
-    Returns a ``circuit_section_match`` attachment with shape::
+    Returns a telemetry-derived dictionary with shape::
 
         {
             "circuit_id": <str>,
@@ -3015,7 +2964,6 @@ def locate_circuit_section(
     otherwise ``is_ambiguous`` is true and callers should resolve the
     competing ``top_matches`` against splitter context and pit-lane evidence.
     """
-    from app.local_annotation_agent.evaluators import PipelineAttachment
     from app.internal_knowledge_base.label_lookup import find_labels
 
     # Backwards-compatible path for direct Python callers that still pass
@@ -3031,43 +2979,35 @@ def locate_circuit_section(
 
     s, e = int(start_index), int(end_index)
 
-    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
-        return PipelineAttachment(
-            name="circuit_section_match",
-            kind="structured",
-            label="Circuit Section Match",
-            content=_round_floats(content, ndigits=4),
-        )
-
     if NORMALIZED_POSITION_COLUMN not in df.columns:
-        return _attach({
+        return _round_floats({
             "circuit_id": circuit,
             "error": f"column '{NORMALIZED_POSITION_COLUMN}' missing from telemetry",
             "top_matches": [],
             "is_ambiguous": False,
             "best_match": None,
-        })
+        }, ndigits=4)
 
     if circuit is None:
-        return _attach({
+        return _round_floats({
             "circuit_id": None,
             "error": "circuit_id is required before locating a circuit section",
             "top_matches": [],
             "is_ambiguous": False,
             "best_match": None,
-        })
+        }, ndigits=4)
 
     segment = _absolute_iloc_slice(df, s, e)
     pos = segment[NORMALIZED_POSITION_COLUMN].to_numpy(dtype=float)
     pos = pos[np.isfinite(pos)]
     if pos.size == 0:
-        return _attach({
+        return _round_floats({
             "circuit_id": circuit,
             "error": "no finite values in normalized position over the segment",
             "top_matches": [],
             "is_ambiguous": False,
             "best_match": None,
-        })
+        }, ndigits=4)
 
     seg_lo, seg_hi = float(pos.min()), float(pos.max())
     seg_span = max(seg_hi - seg_lo, 1e-6)
@@ -3109,13 +3049,13 @@ def locate_circuit_section(
         and (top[0]["overlap_fraction"] - top[1]["overlap_fraction"]) < AMBIGUOUS_MARGIN
     )
     best = None if is_ambiguous or not top else top[0]
-    return _attach({
+    return _round_floats({
         "circuit_id": circuit,
         "segment_position_range": [seg_lo, seg_hi],
         "top_matches": top,
         "is_ambiguous": is_ambiguous,
         "best_match": best,
-    })
+    }, ndigits=4)
 
 
 STATIC_TRACK_COLUMN = "Static_track"
@@ -3202,12 +3142,11 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Segment shape + altitude angle measurement",
         "description": (
             "Measures expert-anchored curvature and z-position over the "
-            "segment. Produces a "
-            "'segment_shape_measurement' attachment with `base_segment_shape` "
+            "segment. Returns a dictionary with `base_segment_shape` "
             "and optional `corner_shape_refinement` shape keys, plus entry / "
             "apex / exit altitude slope-angle summaries. It does not output "
             "labels; "
-            "preflight or label search maps shape keys to annotation wording. "
+            "deterministic requirements map shape keys to annotation labels. "
             "Use this whenever deciding segment shape or reading corner "
             "altitude trends; uphill, level, and downhill are classified from "
             "slope angle, not raw height difference."
@@ -3221,8 +3160,7 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "Takes a circuit id first, reads "
             "`Graphics_normalized_car_position` over the segment, and "
             "matches it against that circuit's `circuit_section` labels' "
-            "`normalized_position_range`. Produces a "
-            "'circuit_section_match' attachment with 'top_matches' "
+            "`normalized_position_range`. Returns 'top_matches' "
             "(ranked by overlap fraction), an 'is_ambiguous' flag, and "
             "a 'best_match' that is non-null ONLY when the leader clears "
             "the runner-up by a clear margin. When 'is_ambiguous' is true "
@@ -3282,8 +3220,7 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "description": (
             "Deterministically classifies the opponent-relative position "
             "pattern over the iloc range using the driver's local path / "
-            "heading for signed longitudinal/lateral gaps. Returns a structured "
-            "'opponent_interaction_classification' attachment with "
+            "heading for signed longitudinal/lateral gaps. Returns a dictionary with "
             "`role` (attack / defense / following / side_by_side / incidental), "
             "`outcome` (pass_completed, held_defense, failed_attack, "
             "broken_defense, close_following, etc.), numeric `confidence`, "
@@ -3292,7 +3229,7 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "cars can be relevant even when they never become side-by-side, "
             "but `close_following` does not imply an overtake or defense "
             "outcome by itself. Use this as deterministic interaction "
-            "evidence; annotation preflight/search maps outcomes to label "
+            "evidence; deterministic requirements map outcomes to label "
             "vocabulary."
         ),
         "callable": classify_opponent_interaction,
@@ -3358,7 +3295,7 @@ _COLUMN_SEMANTICS: Dict[str, Dict[str, Any]] = {
         "flat_delta_abs": 0.10,
         "label_significant_delta_abs": 0.50,
         "strong_delta_abs": 1.00,
-        "near_zero_abs": 0.50,
+        "near_zero_abs": TRAJECTORY_ALIGNMENT_TOLERANCE_METERS,
         "positive_label": "moving_wider",
         "negative_label": "moving_tighter",
     },
@@ -3494,6 +3431,9 @@ def _slope_shape(arr: np.ndarray, overall_slope: float, column: str) -> str:
 def _empty_point_trend() -> Dict[str, Any]:
     return {
         "slope": None,
+        "start_slope": None,
+        "end_slope": None,
+        "previous_end_slope": None,
         "delta_value": None,
         "delta_iloc": None,
         "overall": {"direction": "flat", "domain_direction": "stable"},
@@ -3535,6 +3475,7 @@ def _point_trend_runs(
     meta = _column_semantics(column)
     eps = 1e-9
     step_slopes = value_deltas[valid] / iloc_deltas[valid]
+    slope_window = _slope_shape_window(len(step_slopes))
     delta_value = float(np.sum(value_deltas[valid]))
     delta_iloc = float(ilocs[-1] - ilocs[0])
     signs = np.where(value_deltas > eps, 1, np.where(value_deltas < -eps, -1, 0))
@@ -3582,6 +3523,12 @@ def _point_trend_runs(
     overall_direction, overall_domain_direction = _signed_trend(delta_value, meta, eps)
     return {
         "slope": float(np.nanmean(step_slopes)),
+        "start_slope": float(np.nanmedian(step_slopes[:slope_window])),
+        "end_slope": float(np.nanmedian(step_slopes[-slope_window:])),
+        "previous_end_slope": (
+            float(np.nanmedian(step_slopes[-2 * slope_window:-slope_window]))
+            if len(step_slopes) >= 2 * slope_window else None
+        ),
         "delta_value": delta_value,
         "delta_iloc": delta_iloc,
         "overall": {
@@ -3906,6 +3853,9 @@ def _query_compute_slope(
         "unit": meta["unit"],
         "slope_unit": f"{meta['unit']}/iloc",
         "slope": slope,
+        "start_slope": point_trend["start_slope"],
+        "end_slope": point_trend["end_slope"],
+        "previous_end_slope": point_trend["previous_end_slope"],
         "delta_value": delta_v,
         "delta_iloc": delta_i,
         "total_change_direction": overall_class["direction"],
@@ -4031,6 +3981,79 @@ def _query_find_dips_on_main_slope(
     }
 
 
+def _control_similarity_scale(player: np.ndarray, expert: np.ndarray) -> float:
+    finite = np.concatenate([
+        player[np.isfinite(player)],
+        expert[np.isfinite(expert)],
+    ])
+    if len(finite) == 0:
+        return 1.0
+    max_abs = float(np.nanmax(np.abs(finite)))
+    if max_abs <= 1.5:
+        return 1.0
+    if max_abs <= 100.0:
+        return 100.0
+    return max(1.0, max_abs)
+
+
+def _query_measure_point_similarity(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    player_column: str, expert_column: str, smoothing_window: int,
+) -> Optional[Dict[str, Any]]:
+    """Compare aligned driver/expert control traces as one similarity score."""
+    try:
+        window = int(smoothing_window)
+    except (TypeError, ValueError):
+        return None
+    if window < 1:
+        return None
+
+    segment = df.loc[int(start_index): int(end_index)]
+    player_raw = _resolve_column(player_column, segment)
+    expert_raw = _resolve_column(expert_column, segment)
+    if player_raw is None or expert_raw is None:
+        return None
+    if len(player_raw) == 0 or len(player_raw) != len(expert_raw):
+        return None
+
+    if window > 1:
+        player = (
+            pd.Series(player_raw)
+            .rolling(window=window, center=True, min_periods=1)
+            .median()
+            .to_numpy()
+        )
+        expert = (
+            pd.Series(expert_raw)
+            .rolling(window=window, center=True, min_periods=1)
+            .median()
+            .to_numpy()
+        )
+    else:
+        player = player_raw
+        expert = expert_raw
+
+    finite_mask = np.isfinite(player) & np.isfinite(expert)
+    if int(finite_mask.sum()) == 0:
+        return None
+
+    player_valid = player[finite_mask]
+    expert_valid = expert[finite_mask]
+    abs_delta = np.abs(player_valid - expert_valid)
+    scale = _control_similarity_scale(player_valid, expert_valid)
+    point_similarity = np.maximum(0.0, 1.0 - (abs_delta / scale))
+    mean_similarity = float(np.nanmean(point_similarity))
+    return {
+        "iloc": int(end_index),
+        "value": mean_similarity,
+        "extra": {
+            "smoothing_window": window,
+            "sample_count": int(len(point_similarity)),
+            "mean_similarity": mean_similarity,
+        },
+    }
+
+
 def _merge_trend_runs(runs: List[Dict[str, int]]) -> List[Dict[str, int]]:
     if not runs:
         return []
@@ -4064,11 +4087,11 @@ def _query_find_trend_runs(
     """Find rising, falling, and flat runs in <column> over the range.
 
     This is the deterministic shape reader for time-delta style graphs.
-    For ``expert_time_difference``, rising runs show the gap increasing
-    and falling runs show the gap decreasing. Parent-label prompts decide
-    whether that rate change is a new mistake or recovery from a carried
-    prior issue. Flat runs explicitly mean the existing gap is being
-    carried forward, not that a new mistake/recovery occurred.
+    For ``expert_time_difference``, rising runs show local gap increases
+    and falling runs show local gap decreases. These runs describe the
+    shape within a section; the section's signed start-to-end change
+    determines its parent mistake label. Flat runs mean the existing gap
+    is being carried forward.
     """
     try:
         window = int(smoothing_window)
@@ -4490,10 +4513,10 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Up/down/flat trend runs",
         "description": (
             "Piecewise rising, falling, and flat runs in <column> over "
-            "<range>. Use this for `expert_time_difference` mistake/recovery "
-            "localization: rising runs are where the player loses "
-            "time, falling runs are where the player recovers, and "
-            "flat positive/negative runs are constant carried gap only."
+            "<range>. For `expert_time_difference`, rising runs show local "
+            "time loss, falling runs show local gains, and flat "
+            "positive/negative runs show a constant carried gap. Parent "
+            "mistake selection uses the signed start-to-end change."
         ),
         "params_schema": {
             "range": _RANGE_PARAM_DESC,
@@ -4534,6 +4557,24 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
             ),
         },
         "callable": _query_measure_trajectory_similarity,
+    },
+    {
+        "id": "measure_point_similarity",
+        "label": "Driver/expert point similarity",
+        "description": (
+            "Compare aligned driver and expert telemetry columns point by "
+            "point over <range>. Returns one aggregate similarity score."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "player_column": "Driver/player DataFrame column name",
+            "expert_column": "Expert DataFrame column name",
+            "smoothing_window": (
+                "int >= 1 - rolling-median width "
+                "(1=off, 3=light, 5=moderate)"
+            ),
+        },
+        "callable": _query_measure_point_similarity,
     },
     {
         "id": "find_threshold_crossing",
@@ -4585,118 +4626,6 @@ def render_query_catalog_for_prompt(columns: List[str]) -> str:
         "**Available columns:** "
         + (", ".join(f"`{c}`" for c in columns) if columns else "(none)")
     )
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# graph_analysis skill — prompt rendering
-# ---------------------------------------------------------------------------
-
-_GRAPH_GUIDELINE_TRIGGERS: Dict[str, Dict[str, Any]] = {
-    "brake_and_speed":            {"required": {"brake", "speed"},                     "any_of": []},
-    "throttle_and_speed":         {"required": {"throttle", "speed"},                  "any_of": []},
-    "time_delta_and_features":    {"required": {"time_delta"},                         "any_of": [
-        {"brake", "throttle", "speed", "speed_delta", "push_limit", "trajectory_balance"},
-    ]},
-    "trajectory_and_features":    {"required": set(),                                  "any_of": [
-        {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset", "altitude_profile"},
-        {"throttle", "brake", "speed", "speed_delta", "push_limit", "trajectory_balance"},
-    ]},
-    "balance_and_push_limit":     {"required": {"trajectory_balance", "push_limit"},   "any_of": []},
-    "brake_and_throttle_overlap": {"required": {"brake", "throttle"},                  "any_of": []},
-}
-
-_TRAJECTORY_IDS = {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset"}
-_GRAPH_ANALYSIS_SKILL_ALIASES = {
-    "trajectory_offset": "trajectory_lateral_deviation",
-}
-
-
-def _render_graph_section(key: str, value: Any, indent: str = "  ") -> List[str]:
-    if not value:
-        return []
-    out: List[str] = [key.replace("_", " ") + ":"]
-
-    if isinstance(value, str):
-        for ln in value.rstrip("\n").split("\n"):
-            out.append(f"{indent}{ln}" if ln else "")
-    elif isinstance(value, list):
-        for item in value:
-            out.append(f"{indent}- {item}")
-    elif isinstance(value, dict):
-        for k, v in value.items():
-            v_str = "" if v is None else str(v).rstrip("\n")
-            v_lines = v_str.split("\n")
-            first = v_lines[0]
-            out.append(f"{indent}- {k}: {first}" if first else f"{indent}- {k}:")
-            cont_indent = indent + "    "
-            for cont in v_lines[1:]:
-                out.append(f"{cont_indent}{cont}" if cont else "")
-    else:
-        out.append(f"{indent}{value}")
-
-    return out
-
-
-def graph_analysis_prompt(graph_ids: List[str]) -> str:
-    """Per-graph description block for VLM prompts that read graph images.
-
-    Walks each graph's yaml record with a uniform formatter, appends the
-    cross-graph guidelines whose triggers match this graph combination,
-    and (when trajectory graphs are present) appends the trajectory shape
-    vocabulary.
-    """
-    requested = list(graph_ids)
-    paired: List[tuple] = []
-    for gid in requested:
-        skill_gid = _GRAPH_ANALYSIS_SKILL_ALIASES.get(gid, gid)
-        entry = skills.get(f"graph_analysis.graphs.{skill_gid}")
-        if entry:
-            paired.append((gid, entry))
-    if not paired:
-        return ""
-
-    lines: List[str] = [
-        "#### Graph Description Skill — How to Describe These Graphs",
-        "",
-    ]
-
-    for gid, entry in paired:
-        title = entry.get("title", gid)
-        lines.append(f"##### {title} (id: {gid})")
-        lines.append("")
-        for key, value in entry.items():
-            if key in ("title", "id"):
-                continue
-            section = _render_graph_section(key, value)
-            if section:
-                lines.extend(section)
-                lines.append("")
-
-    graph_id_set = set(requested)
-    relevant: List[str] = []
-    for gid, spec in _GRAPH_GUIDELINE_TRIGGERS.items():
-        if not spec["required"].issubset(graph_id_set):
-            continue
-        if not all(any_set & graph_id_set for any_set in spec["any_of"]):
-            continue
-        text = skills.get(f"graph_analysis.cross_graph_guidelines.{gid}", "")
-        if text:
-            relevant.append(f"[{gid}] {str(text).strip()}")
-
-    if relevant:
-        lines.append("#### Cross-Graph Description Guidelines")
-        for g in relevant:
-            lines.append(g)
-        lines.append("")
-
-    if graph_id_set & _TRAJECTORY_IDS:
-        traj_vocab = skills.get("graph_analysis.trajectory_shape_vocabulary", "")
-        if traj_vocab:
-            lines.append("#### Trajectory Shape Vocabulary")
-            lines.append(str(traj_vocab).strip())
-            lines.append("")
-
     return "\n".join(lines)
 
 
@@ -5217,8 +5146,8 @@ def _build_trajectory_gas_brake(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     return out
 
 
-def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """The signed offset line + expert positions (for phase marker placement)."""
+def calculate_trajectory_offset(df: pd.DataFrame) -> Optional[np.ndarray]:
+    """Calculate signed player-to-expert offset from raw position telemetry."""
     track = _resolve_track_config(df)
     if not all(track.get(k) for k in ("player_x", "player_y", "expert_x", "expert_y")):
         return None
@@ -5252,12 +5181,28 @@ def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 
     sign_flip = -np.sign(kappa[kappa_idx])
     sign_flip = np.where(sign_flip == 0, 1.0, sign_flip)
-    offset = lateral_offset * sign_flip
+    return (lateral_offset * sign_flip).astype(float)
+
+
+def calculate_corresponding_trajectory_offset(
+    df: pd.DataFrame,
+) -> Optional[np.ndarray]:
+    """Calculate one curvature-relative expert-curve offset per player iloc."""
+    return calculate_trajectory_offset(df)
+
+
+def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """The signed offset line + expert positions (for phase marker placement)."""
+    offset = calculate_trajectory_offset(df)
+    if offset is None:
+        return None
+    track = _resolve_track_config(df)
+    ex_col, ey_col = track["expert_x"], track["expert_y"]
 
     # Expert positions stay in the table so the renderer's phase detection
     # has the kinematic inputs it needs after the parent's projection.
     out = df.loc[:, [ex_col, ey_col]].copy()
-    out["trajectory_offset"] = offset.astype(float)
+    out["trajectory_offset"] = offset
     return out
 
 

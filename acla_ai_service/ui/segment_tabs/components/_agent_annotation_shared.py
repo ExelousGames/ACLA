@@ -52,7 +52,6 @@ _NODE_ICONS = {
     "step_solver": "🛠️",
     "describe_graphs": "🔍",
     "zoom": "🔬",
-    "label_verifier": "✅",
     "proposal_synthesizer": "📝",
 }
 
@@ -162,22 +161,11 @@ class LiveVlmOutput:
 
     def _render_completed(self) -> None:
         with self.completed_area.container():
-            for s in self.completed_sections:
-                header = self._format_header(s["meta"], s.get("duration", 0))
-                with st.expander(header, expanded=False):
-                    self._render_attachments(s["meta"])
-                    has_response = bool(s.get("text"))
-                    st.markdown(
-                        "**Prompt:**" if has_response else "**Summary:**"
-                    )
-                    with st.container(border=True):
-                        st.markdown(s["prompt"])
-                    if s.get("reasoning"):
-                        st.markdown(
-                            f"**💭 Thinking:**\n\n{s['reasoning']}"
-                        )
-                    if has_response:
-                        st.markdown(f"**Response:**\n\n{s['text']}")
+            if self.completed_sections:
+                st.caption(
+                    f"Captured {len(self.conversation_messages(finalize=False))} "
+                    "conversation item(s)."
+                )
 
     def _render_active(self) -> None:
         if not (self.active_prompt or self.vlm_buffer or self.reasoning_buffer):
@@ -193,18 +181,7 @@ class LiveVlmOutput:
                 f"_{elapsed:.0f}s …_"
             )
             self._render_attachments(self.active_meta)
-            st.markdown("*Prompt:*")
-            with st.container(border=True):
-                st.markdown(self.active_prompt)
-            if self.reasoning_buffer:
-                st.markdown(
-                    f"*💭 Thinking (streaming…)*\n\n"
-                    f"{''.join(self.reasoning_buffer)}"
-                )
-            st.markdown(
-                f"*Response (streaming…)*\n\n"
-                f"{''.join(self.vlm_buffer)}"
-            )
+            st.caption("Capturing full conversation for the result log.")
 
     def _render_header(self) -> None:
         total_elapsed = time.time() - self.analysis_start_time
@@ -263,6 +240,39 @@ class LiveVlmOutput:
         """Flush any in-flight section and re-render once at end-of-run."""
         self._finalize_active_section()
         self.render()
+
+    def conversation_messages(self, *, finalize: bool = True) -> list[dict]:
+        if finalize:
+            self._finalize_active_section()
+
+        messages: list[dict] = []
+        for section in self.completed_sections:
+            meta = dict(section.get("meta") or {})
+            stage = self._format_header(meta, section.get("duration", 0))
+            prompt = str(section.get("prompt") or "")
+            reasoning = str(section.get("reasoning") or "")
+            text = str(section.get("text") or "")
+            is_event = not reasoning and not text
+
+            if prompt:
+                messages.append({
+                    "role": "event" if is_event else "prompt",
+                    "stage": stage,
+                    "content": prompt,
+                })
+            if reasoning:
+                messages.append({
+                    "role": "reasoning",
+                    "stage": stage,
+                    "content": reasoning,
+                })
+            if text:
+                messages.append({
+                    "role": "assistant",
+                    "stage": stage,
+                    "content": text,
+                })
+        return messages
 
 
 def collect_parent_info(form_labels):
@@ -332,7 +342,7 @@ def execute_pipeline_run(
     live = LiveVlmOutput()
     live.attach_progress(progress_bar, status_text)
 
-    spinner_msg = f"Running sub-segment discovery with {provider_id}..."
+    spinner_msg = "Calculating deterministic sub-segment labels..."
     try:
         with st.spinner(spinner_msg):
             result = run_annotation(
@@ -359,6 +369,26 @@ def execute_pipeline_run(
     # Finalise any still-active call and force a clean re-render so the
     # streaming placeholder is emptied even if no chunks were buffered.
     live.finalize()
+    provider_messages = list(getattr(result, "messages", []) or [])
+    full_conversation = live.conversation_messages(finalize=False)
+    seen_content = {
+        str(msg.get("content", ""))
+        for msg in full_conversation
+        if isinstance(msg, dict)
+    }
+    for msg in provider_messages:
+        if not isinstance(msg, dict):
+            continue
+        content = str(msg.get("content", ""))
+        if content in seen_content:
+            continue
+        full_conversation.append({
+            **msg,
+            "stage": msg.get("stage") or "Provider transcript",
+        })
+        seen_content.add(content)
+    if full_conversation:
+        result.messages = full_conversation
     progress_bar.progress(1.0)
 
     render_pipeline_result(result, form_start, form_end)
@@ -435,14 +465,16 @@ def render_pipeline_result(result, form_start, form_end) -> None:
     with st.expander("Full agent conversation log"):
         for msg in result.messages:
             role = msg.get("role", "unknown").replace("_", " ").title()
-            iteration = msg.get("iteration", "?")
+            stage = msg.get("stage", "")
             content = msg.get("content", "")
             verdict = msg.get("verdict", "")
-            header = f"**[Iter {iteration}] {role}**"
+            header = f"**{role}**"
+            if stage:
+                header += f" — {stage}"
             if verdict:
                 header += f" — _{verdict.upper()}_"
             st.markdown(header)
-            st.text(content[:2000])
+            st.text(str(content))
             st.markdown("---")
 
 
@@ -489,7 +521,7 @@ def render_staged_review(
 
     st.markdown("##### Review & Edit Before Saving")
     st.caption(
-        "Each row is one AI-discovered sub-segment. Labels sharing the "
+        "Each row is one calculated sub-segment. Labels sharing the "
         "same range are grouped. Edit ranges/labels per row, or remove "
         "a row by clearing its labels."
     )
@@ -546,7 +578,7 @@ def render_staged_review(
                 key=f"agent_staged_labels_{i}",
             )
 
-            default_notes = "; ".join(
+            default_notes = "\n\n".join(
                 a.get("reasoning", "") for a in anns if a.get("reasoning")
             )
             seg_notes = st.text_area(
@@ -610,8 +642,8 @@ def render_followup_chat() -> None:
     st.caption(
         "Use this to interrogate the just-finished annotation so you can "
         "refine the skill text (label catalog / graph `how_to_analyze` "
-        "blocks). Claude can still call `render_graph`, `query_telemetry`, "
-        "and `compute_expert_phases` to look at the data while answering."
+        "blocks). Claude can still call `query_telemetry` and "
+        "`compute_expert_phases` to inspect deterministic data while answering."
     )
 
     for turn in chat:
@@ -633,20 +665,11 @@ def render_followup_chat() -> None:
 
     with st.chat_message("assistant"):
         text_placeholder = st.empty()
-        tool_placeholder = st.empty()
         buffer: list[str] = []
-        tool_events: list[str] = []
 
         def on_text_chunk(chunk: str) -> None:
             buffer.append(chunk)
             text_placeholder.markdown("".join(buffer) + "▌")
-
-        def on_tool_event(name: str, inp: dict) -> None:
-            short = str(inp)
-            if len(short) > 160:
-                short = short[:160] + "…"
-            tool_events.append(f"🔧 `{name}` {short}")
-            tool_placeholder.caption("\n\n".join(tool_events))
 
         try:
             response = run_claude_followup(
@@ -662,7 +685,6 @@ def render_followup_chat() -> None:
                 chat_history=chat[:-1],  # prior turns; current user turn passes via user_question
                 user_question=user_question,
                 on_text_chunk=on_text_chunk,
-                on_tool_event=on_tool_event,
             )
         except Exception as e:
             text_placeholder.error(f"Follow-up chat error: {e}")
@@ -675,26 +697,8 @@ def render_followup_chat() -> None:
 
 
 def group_proposals_by_range(result) -> list[tuple[tuple[int, int], list[dict]]]:
-    """Group per-label proposals into one entry per unique (start, end).
-
-    Falls back to a single entry covering ``[sub_start, sub_end]`` with
-    all final_labels if the pipeline didn't expose per-label annotations
-    (e.g. older result objects).
-    """
+    """Group per-label proposals into one entry per unique (start, end)."""
     label_annotations = list(getattr(result, "label_annotations", None) or [])
-
-    if not label_annotations and result.final_labels:
-        s = result.sub_start if result.sub_start is not None else 0
-        e = result.sub_end if result.sub_end is not None else 0
-        label_annotations = [
-            {
-                "label_id": l,
-                "start_index": s,
-                "end_index": e,
-                "reasoning": result.final_reasoning,
-            }
-            for l in result.final_labels
-        ]
 
     grouped: dict[tuple[int, int], list[dict]] = {}
     order: list[tuple[int, int]] = []

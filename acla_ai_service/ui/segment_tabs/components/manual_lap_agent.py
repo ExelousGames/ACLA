@@ -10,8 +10,7 @@ from ._lap_agent_shared import (
     render_lap_panel, render_lap_staged_review,
     reset_lap_agent_state_for_context, track_name_to_circuit_id,
 )
-from .annotation_provider_controls import render_annotation_provider_config
-from app.local_annotation_agent.workflow import run_annotation
+from app.local_annotation_agent.workflow import AnnotationPipelineConfig, run_annotation
 
 
 def render_manual_lap_agent(
@@ -22,13 +21,12 @@ def render_manual_lap_agent(
     reset_lap_agent_state_for_context(session_context)
 
     st.markdown("---")
-    st.subheader("Lap-to-Segment Excerpter (AI Agent)")
+    st.subheader("Lap-to-Segment Deterministic Annotation")
     st.caption(
         "Pick a lap range; the deterministic `split_lap_by_circuit_sections` "
         "tool rough-splits solo laps into per-`circuit_section` sub-ranges. "
         "When opponent data is present, it emits only close racing-interaction "
-        "windows. The agent then annotates **one section "
-        "per click**, shrinking / extending the boundary when a rule fires."
+        "windows. Requirements then annotate **one section per click**."
     )
 
     track_name = (
@@ -41,13 +39,8 @@ def render_manual_lap_agent(
     # so the provider panel uses one widget key namespace.
     head = render_lap_panel(df, circuit_id, session_context=session_context)
 
-    with st.expander("AI Lap-to-Segment Excerpter"):
-        config = render_annotation_provider_config(
-            key_prefix="lap_provider",
-            default_temperature=0.3,
-            default_max_new_tokens=1500,
-            default_tool_budget=3,
-        )
+    with st.expander("Deterministic Lap-to-Segment Annotation"):
+        config = AnnotationPipelineConfig(provider_id="deterministic")
 
         if head is None:
             st.caption(
@@ -56,11 +49,10 @@ def render_manual_lap_agent(
         else:
             existing = _collect_existing_lap_annotations()
             if st.button(
-                "Run AI on current section",
+                "Calculate current section labels",
                 key="lap_provider_run",
                 type="primary",
-                disabled=config is None,
-            ) and config is not None:
+            ):
                 def _run_lap(**kw):
                     return run_annotation(flow="lap", config=config, **kw)
 

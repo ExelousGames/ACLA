@@ -1,9 +1,11 @@
-import React, { useContext, useMemo, useState } from 'react';
+import React, { forwardRef, useImperativeHandle, useMemo, useState } from 'react';
 import { Badge, Box, Card, Flex, ScrollArea, Table, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
-import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
 import { EventType, SessionEvent } from '../../session-intelligence/types';
+import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
 
 const TYPE_COLOR: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
     CORNER: 'blue',
@@ -35,16 +37,44 @@ const formatMetadata = (metadata?: Record<string, any>): string => {
         .join(', ');
 };
 
-const EventLogChart: React.FC<VisualizationProps> = ({ width = '100%', height = 320 }) => {
-    const analysisContext = useContext(AnalysisContext);
+export interface EventLogChartHandle extends NamedOperationComponentHandle {
+    updateEvents(events: SessionEvent[]): true;
+    disableEventLog(): true;
+}
+
+const EventLogChart = forwardRef<EventLogChartHandle, VisualizationProps>(({
+    name,
+    data,
+    width = '100%',
+    height = 320,
+    onUpdate,
+    onDisable,
+}, forwardedRef) => {
     const [filter, setFilter] = useState<EventType | 'ALL'>('ALL');
     const [search, setSearch] = useState('');
+    const handle = useMemo<EventLogChartHandle>(() => ({
+        getComponentName: () => name,
+        updateEvents: (events) => runVisualizationBooleanCallback(
+            name,
+            VisualizationUpdateFailedError,
+            `Failed to update chart '${name}'.`,
+            onUpdate ? () => onUpdate(events) : undefined,
+        ),
+        disableEventLog: () => runVisualizationBooleanCallback(
+            name,
+            ComponentDisableFailedError,
+            `Component '${name}' could not be disabled.`,
+            onDisable,
+        ),
+    }), [name, onDisable, onUpdate]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    const registeredHandleRef = React.useRef(handle);
+    registeredHandleRef.current = handle;
+    useRegisterOperationComponentRef(registeredHandleRef);
 
-    // Re-read on every liveData tick so newly emitted events appear in the table.
     const events: SessionEvent[] = useMemo(() => {
-        return analysisContext.sessionIntelligence?.getAllEvents() ?? [];
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [analysisContext.sessionIntelligence, analysisContext.liveData]);
+        return Array.isArray(data) ? data : [];
+    }, [data]);
 
     const counts = useMemo(() => {
         const c: Record<EventType, number> = { CORNER: 0, STRAIGHT: 0, CRASHED: 0, OVERTAKE: 0 };
@@ -142,6 +172,8 @@ const EventLogChart: React.FC<VisualizationProps> = ({ width = '100%', height = 
             )}
         </Card>
     );
-};
+});
+
+EventLogChart.displayName = 'EventLogChart';
 
 export default EventLogChart;

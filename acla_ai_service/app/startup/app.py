@@ -5,24 +5,23 @@ The llama-server boot lives in ``app.startup.llama``; this module owns the
 FastAPI app, its lifespan, CORS, and router wiring. ASGI target: ``app.startup.app:app``.
 """
 
-import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+from app.chat_llm import resolve_chat_llm_config
 from app.infra.config import settings
 from app.integrations.backend.client import backend_service
 from app.llama.health import check_llama_server
-from app.llama.process import LlamaServerProcess
 from app.ml.model_hub import hydrate_chatbot_models
-from app.startup.llama import start_chat_sidecar
 from app.api import (
     annotation_router,
     health_router,
     racing_session_router,
 )
 from app.api.voice import router as voice_router
+from app.voice.speech_core import close_speech_core
 
 
 # Load environment variables
@@ -36,23 +35,16 @@ async def lifespan(app: FastAPI):
     print("✅ Using new structured application")
     print(f"🏁 {settings.app_name} v{settings.app_version}")
     print(f"🔧 Backend URL: {settings.backend_server_ip}")
-    if settings.hosted_llm_base_url:
-        print(f"🤖 LLM: hosted ({settings.hosted_llm_base_url} / {settings.hosted_llm_model})")
-    else:
-        print(f"🤖 LLM: local llama-server ({settings.llama_model_name})")
+    chat_llm = resolve_chat_llm_config()
+    provider_label = (
+        f"{chat_llm.provider} ({chat_llm.base_url} / {chat_llm.model})"
+        if chat_llm.base_url else f"{chat_llm.provider} ({chat_llm.model})"
+    )
+    print(f"🤖 LLM: {provider_label}")
 
-    # Bring up the chat sidecar (downloads model on first boot — may take minutes).
-    # Run in an executor so the event loop isn't blocked during the wait.
-    chat_sidecar: LlamaServerProcess | None = None
-    try:
-        chat_sidecar = await asyncio.get_running_loop().run_in_executor(
-            None, start_chat_sidecar,
-        )
-    except Exception as exc:  # noqa: BLE001 — we want uvicorn to keep starting
-        print(
-            f"⚠️  llama-server failed to start: {exc} — continuing without it. "
-            f"/query/health will report degraded status."
-        )
+    # Chat uses remote providers only. Keep llama health reporting for other
+    # features that may depend on a separately managed llama-server.
+    print("🦙 chat llama-server sidecar: skipped for remote chat LLM")
 
     llama_health = await check_llama_server()
     if llama_health.reachable:
@@ -77,22 +69,21 @@ async def lifespan(app: FastAPI):
         print("   - AI_SERVICE_USERNAME")
         print("   - AI_SERVICE_PASSWORD")
 
-    # Hydrate chatbot-facing models from the backend active model store.
-    # Skipped when backend is down; each model reports degraded readiness.
-    if backend_ok:
-        model_status = await hydrate_chatbot_models()
-        for model_name, is_ready in model_status.items():
-            if is_ready:
-                print(f"{model_name}: ready")
-            else:
-                print(f"{model_name}: NOT ready (backend active model payload unavailable or invalid)")
+    # Hydrate chatbot-facing models from the backend active model store. This
+    # runs even after the connection probe fails so runtime readiness is reset
+    # and no previous local top-lap artifact can become an implicit fallback.
+    model_status = await hydrate_chatbot_models()
+    for model_name, is_ready in model_status.items():
+        if is_ready:
+            print(f"{model_name}: ready")
+        else:
+            print(f"{model_name}: NOT ready (backend active model payload unavailable or invalid)")
 
-    yield
-
-    # Shutdown
-    print(f"🏁 {settings.app_name} shutting down...")
-    if chat_sidecar is not None:
-        chat_sidecar.stop()
+    try:
+        yield
+    finally:
+        await close_speech_core()
+        print(f"🏁 {settings.app_name} shutting down...")
 
 
 # Create FastAPI application with lifespan manager

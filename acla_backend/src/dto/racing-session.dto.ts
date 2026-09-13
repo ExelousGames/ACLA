@@ -1,3 +1,5 @@
+import { GameRecordedFrom } from 'src/racing-session-game';
+
 export class SessionBasicInfoListDto {
     list: {
         name: string,
@@ -16,6 +18,7 @@ export class UploadReacingSessionInitDto {
     mapName: string;
     carName: string;
     userId: string;
+    game_recorded_from: GameRecordedFrom;
 }
 
 export class UploadReacingSessionProgressDto {
@@ -27,6 +30,7 @@ export class UploadReacingSessionProgressDto {
 
 export class RacingSessionDetailedInfoDto {
     session_name: string;
+    game_recorded_from: GameRecordedFrom;
     userId: string;
     map: string;
     user_email: string;
@@ -51,6 +55,7 @@ export class AllSessionsInitResponseDto {
     sessionMetadata: {
         sessionId: string;
         session_name: string;
+        game_recorded_from: GameRecordedFrom;
         map: string;
         car_name: string;
         userId: string;
@@ -59,6 +64,24 @@ export class AllSessionsInitResponseDto {
         fileSize?: number; // New field for streaming
         dataPoints?: number; // New field for streaming
     }[];
+}
+
+export class AnalysisSessionMetadataDto {
+    sessionId: string;
+    session_name: string;
+    game_recorded_from: GameRecordedFrom;
+    map: string;
+    car_name: string;
+    userId: string;
+    totalDataPoints: number;
+    totalChunks: number;
+    chunkSize: number;
+}
+
+export class UserSessionsAnalysisInitResponseDto {
+    userId: string;
+    totalSessions: number;
+    sessions: AnalysisSessionMetadataDto[];
 }
 
 export class SessionChunkDto {
@@ -150,30 +173,40 @@ export class LiveBaselineTimeGapDto {
     delta_ms: number;
 }
 
-export class SegmentClassificationSubSegmentDto {
+export class ExpertReferenceRowDto {
+    raw_index: number;
+    expert_time_difference: number;
+    expert_optimal_time: number;
+    expert_optimal_player_pos_x: number;
+    expert_optimal_player_pos_y: number;
+    expert_optimal_player_pos_z: number;
+    Graphics_normalized_car_position: number;
+    expert_optimal_throttle: number;
+    expert_optimal_brake: number;
+    expert_optimal_gear: number;
+}
+
+export class SegmentClassificationLabelDto {
+    label_name: string;
     start_index: number;
     end_index: number;
-    labels: string[];
-    time_gap?: LiveBaselineTimeGapDto;
 }
 
 export class SegmentClassificationSegmentDto {
     id?: string;
-    labels: string[];
-    main_label_id: string;
+    labels: SegmentClassificationLabelDto[];
+    track_section?: string;
     start_index: number;
     end_index: number;
-    sub_labels: string[];
-    sub_segments: SegmentClassificationSubSegmentDto[];
-    child_segments?: SegmentClassificationSubSegmentDto[];
     time_gap?: LiveBaselineTimeGapDto;
+    expert_reference_data: ExpertReferenceRowDto[];
 }
 
 export class SegmentClassificationResponseDto {
     status: string;
     session_id: string;
     samples_analyzed: number;
-    segment_count: number;
+    parent_segment_count: number;
     segments: SegmentClassificationSegmentDto[];
 }
 

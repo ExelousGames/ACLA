@@ -2,7 +2,7 @@
 Training pipeline split into three stages:
 
 - ``cleaning``: stream raw sessions, filter laps, select top laps per track.
-- ``enrich``: train enrichment models (imitation, tire grip) and enrich sessions
+- ``enrich``: build enrichment models (top-lap reference, tire grip) and enrich sessions
   with contextual features; segment enriched data.
 - ``training``: filter annotated segments and train the coach transformer.
 
@@ -49,9 +49,9 @@ async def prepare_training_data(
     config: Optional[TrainingPipelineConfig] = None,
     cache_config: Optional[TrainingPipelineConfig] = None,
     backend_service=None,
-    imitate_expert_feature_names: List[str],
+    top_lap_reference_feature_names: List[str],
 ) -> Dict[str, Any]:
-    """Stream telemetry, build a segment-purpose dataset, and fine-tune the LLM."""
+    """Stream telemetry and build a segment-purpose training dataset."""
 
     pipeline_config = config or cache_config
     if pipeline_config is None:
@@ -99,7 +99,7 @@ async def prepare_training_data(
             session_data_cache_key=dataset_cache_key,
             telemetry_store=telemetry_store,
             cache_config=pipeline_config,
-            imitate_expert_feature_names=imitate_expert_feature_names,
+            top_lap_reference_feature_names=top_lap_reference_feature_names,
             telemetry_time_gap_ms=500,
             processed_sessions_cache_key=processed_sessions_cache_key,
         )

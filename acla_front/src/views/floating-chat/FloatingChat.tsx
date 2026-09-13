@@ -1,381 +1,299 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React from 'react';
 import '../lap-analysis/ai-chat/ai-chat.css';
 import './floating-chat.css';
-import AiMapToolDisplay, { type AiMapDisplayPayload } from 'views/lap-analysis/ai-chat/AiMapToolDisplay';
-import BaselineProgressDisplay from 'views/lap-analysis/ai-chat/BaselineProgressDisplay';
-import ProcedurePlanDisplay from 'views/lap-analysis/ai-chat/ProcedurePlanDisplay';
-import ToolMessageDisplay, { type ToolMessageDisplayData } from 'views/lap-analysis/ai-chat/ToolMessageDisplay';
-import { LiveRangeTrackerDisplay, type LiveRangeTrackerState } from 'views/lap-analysis/ai-chat/LiveRangeTracker';
-import type { BaselineCollectionTag } from 'views/lap-analysis/ai-chat/BaselineCollectionTracker';
-import type { ProcedurePlan } from 'views/lap-analysis/ai-chat/ai-chat-plan';
+import type {
+    AiOverlayPresentationAcknowledgement,
+    AiOverlayPresentationCard,
+    AiOverlayPresentationSnapshot,
+    AiOverlayRendererEvent,
+    AiOverlayShellMetadata,
+} from './ai-overlay-types';
+import { isJsonSafe } from './ai-overlay-types';
+import {
+    getAiOverlayRenderer,
+    registerBuiltInAiOverlayRenderers,
+} from './overlay-renderer-modules';
 
-/**
- * AI Chat Pill — ambient overlay for the always-on-top Electron window.
- *
- * Idle: a small pulsing circle showing the "AI" avatar.
- * Active: expands horizontally and types out ACLA's latest reply, then
- *         auto-collapses back to the circle.
- *
- * Voice is started from the main application — this window is read-only.
- * The pill subscribes to assistant transcripts via a shared localStorage key
- * (`storage` events fire across all same-origin BrowserWindows).
- */
-
-const SHARED_KEY = 'acla-pill-msg';
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
-const TYPE_INTERVAL_MS = 28;
-const POST_TYPE_HOLD_MS = 3800;
-const EMOTE_HOLD_MS = 3000;
-const MIN_W = 220;
-const MAX_W = 620;
-const RICH_W = 420;
-const MIN_H = 72;
-// Match the source prototype's measurement: pill-height (72 = left-pad +
-// avatar + right-pad at idle) + body left margin (16) + open right padding
-// (26) + a little buffer (8) = 122.
-const CHROME = 72 + 16 + 26 + 8;
+const IDLE_WIDTH = 300;
+const SPEAKING_WIDTH = 420;
 
-interface PillPayload {
-    kind: 'message' | 'tool' | 'baseline' | 'map' | 'plan' | 'range';
-    text: string;
-    ts: number;
-    /** Optional override label for the name line; defaults to "ACLA". */
-    name?: string;
-    /** Emotion tag emitted by the AI (e.g. "vibing", "sad"). */
-    emotion?: string;
-    /** Active agent tags to display beside the assistant label. */
-    tags?: string[];
-    data?: unknown;
+interface ElectronOverlayRendererApi {
+    onOverlayPresentation?: (
+        listener: (presentation: AiOverlayPresentationSnapshot) => void,
+    ) => (() => void);
+    acknowledgeOverlayPresentation?: (
+        acknowledgement: AiOverlayPresentationAcknowledgement,
+    ) => void;
+    emitOverlayRendererEvent?: (event: AiOverlayRendererEvent) => void;
+    reportOverlayReady?: () => void;
+    resizeFloatingChat?: (width: number, height: number) => void;
 }
 
-const parsePayload = (raw: string | null): PillPayload | null => {
-    if (!raw) return null;
+const getElectronApi = (): ElectronOverlayRendererApi | undefined => (
+    (window as unknown as { electronAPI?: ElectronOverlayRendererApi }).electronAPI
+);
+
+let rendererRegistrationError: Error | null = null;
+try {
+    registerBuiltInAiOverlayRenderers();
+} catch (error) {
+    rendererRegistrationError = error instanceof Error ? error : new Error(String(error));
+}
+
+const readEmotionGifs = (): Record<string, string> => {
     try {
-        const obj = JSON.parse(raw);
-        const text = typeof obj?.text === 'string' ? obj.text.trim() : '';
-        const kind = typeof obj?.kind === 'string' ? obj.kind : 'message';
-        const tags = Array.isArray(obj.tags)
-            ? obj.tags.filter((tag: unknown): tag is string => typeof tag === 'string' && !!tag.trim())
-            : typeof obj.tag === 'string' && obj.tag.trim()
-                ? [obj.tag]
-                : undefined;
-        if (text || tags || obj?.data) {
-            return {
-                kind: ['tool', 'baseline', 'map', 'plan', 'range'].includes(kind) ? kind as PillPayload['kind'] : 'message',
-                text,
-                ts: Number(obj.ts) || Date.now(),
-                name: typeof obj.name === 'string' ? obj.name : undefined,
-                emotion: typeof obj.emotion === 'string' ? obj.emotion : undefined,
-                tags,
-                data: obj.data,
-            };
-        }
+        const value = JSON.parse(localStorage.getItem(EMOTION_GIFS_KEY) || '{}');
+        return value && typeof value === 'object' ? value : {};
     } catch {
-        /* ignore — stale or malformed payload */
+        return {};
+    }
+};
+
+const validatePresentation = (presentation: AiOverlayPresentationSnapshot): string | null => {
+    if (rendererRegistrationError) return rendererRegistrationError.message;
+    if (!presentation || typeof presentation !== 'object' || !isJsonSafe(presentation)) {
+        return 'Malformed overlay presentation.';
+    }
+    if (!presentation.presentationId?.trim()
+        || !Number.isInteger(presentation.presentationRevision)
+        || presentation.presentationRevision < 1
+        || presentation.session?.presentationId !== presentation.presentationId
+        || !Array.isArray(presentation.cards)) {
+        return 'Malformed overlay presentation identity.';
+    }
+    const componentNames = new Set<string>();
+    for (const card of presentation.cards) {
+        if (!card.componentName?.trim() || !card.componentType?.trim()) {
+            return 'Overlay cards require componentName and componentType.';
+        }
+        if (componentNames.has(card.componentName)) {
+            return `Duplicate live overlay componentName '${card.componentName}'.`;
+        }
+        componentNames.add(card.componentName);
+        try {
+            const renderer = getAiOverlayRenderer(card.componentType);
+            if (!renderer.validateSnapshot(card.snapshot)) {
+                return `Invalid snapshot for overlay componentType '${card.componentType}'.`;
+            }
+            if (!renderer.dimensions[card.status]) {
+                return `Overlay componentType '${card.componentType}' does not support '${card.status}'.`;
+            }
+        } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+        }
     }
     return null;
 };
 
-const readEmotionGifs = (): Record<string, string> => {
-    try { return JSON.parse(localStorage.getItem(EMOTION_GIFS_KEY) || '{}'); }
-    catch { return {}; }
+const resolveIdentity = (
+    base: AiOverlayShellMetadata | undefined,
+    speaking: AiOverlayPresentationCard | undefined,
+): AiOverlayShellMetadata => ({
+    name: speaking?.metadata.name ?? base?.name ?? 'Kestrel',
+    emotion: speaking?.metadata.emotion ?? base?.emotion ?? 'idle',
+    agentTags: speaking?.metadata.agentTags ?? base?.agentTags ?? [],
+});
+
+const OverlayIdentity: React.FC<{
+    identity: AiOverlayShellMetadata;
+    emotionGifs: Record<string, string>;
+}> = ({ identity, emotionGifs }) => {
+    const avatar = emotionGifs[identity.emotion || 'idle'] || emotionGifs.idle;
+    return (
+        <div className="overlay-shell__drag" title="Drag overlay">
+            <div className="overlay-shell__avatar" aria-hidden="true">
+                {avatar ? <img src={avatar} alt="" /> : 'AI'}
+            </div>
+            <div className="overlay-shell__identity">
+                <span className="overlay-shell__name">{identity.name || 'Kestrel'}</span>
+            </div>
+        </div>
+    );
 };
 
-const getRichPayloadHeight = (payload: PillPayload): number => {
-    if (payload.kind === 'map') return 260;
-    if (payload.kind === 'plan') return 220;
-    if (payload.kind === 'range') return 210;
-    if (payload.kind === 'baseline') return 136;
-    if (payload.kind === 'tool') return 118;
-    return MIN_H;
+const useRenderContext = (
+    presentationId: string,
+    card: AiOverlayPresentationCard,
+) => React.useMemo(() => ({
+    componentName: card.componentName,
+    revision: card.revision,
+    emitRendererEvent: (event: string) => getElectronApi()?.emitOverlayRendererEvent?.({
+        presentationId,
+        componentName: card.componentName,
+        revision: card.revision,
+        event,
+    }),
+}), [card.componentName, card.revision, presentationId]);
+
+const SpeakingContext: React.FC<{
+    presentationId: string;
+    card: AiOverlayPresentationCard;
+}> = ({ presentationId, card }) => {
+    const renderer = getAiOverlayRenderer(card.componentType);
+    const context = useRenderContext(presentationId, card);
+    return (
+        <section
+            className="overlay-shell__speaking"
+            data-component-name={card.componentName}
+            data-display-type={card.componentType}
+        >
+            <div className="overlay-shell__response">
+                {renderer.renderOverlay(card.snapshot, card.status, context)}
+            </div>
+        </section>
+    );
+};
+
+const GeneratedDisplayItem: React.FC<{
+    presentationId: string;
+    card: AiOverlayPresentationCard;
+    deckIndex: number;
+    stacked: boolean;
+}> = ({ presentationId, card, deckIndex, stacked }) => {
+    const renderer = getAiOverlayRenderer(card.componentType);
+    const context = useRenderContext(presentationId, card);
+    const focusActive = card.status === 'focus';
+    const dimensions = renderer.dimensions[card.status]!;
+    return (
+        <article
+            className={[
+                'overlay-list-item',
+                'overlay-list-item--deck',
+                stacked ? 'overlay-list-item--stacked' : '',
+                card.status === 'folded' ? 'overlay-list-item--folded' : '',
+                focusActive ? 'overlay-list-item--focus-active' : '',
+            ].filter(Boolean).join(' ')}
+            style={{
+                zIndex: deckIndex + 1,
+                '--overlay-stack-position': deckIndex,
+            } as React.CSSProperties}
+            data-component-name={card.componentName}
+            data-display-type={card.componentType}
+            data-placement={card.placement}
+            data-focus-active={focusActive ? 'true' : undefined}
+            data-renderer-width={dimensions.width}
+            data-renderer-height={dimensions.height}
+        >
+            {card.status === 'folded' ? (
+                <header className="overlay-list-item__header">
+                    <div className="overlay-list-item__summary">
+                        {renderer.renderOverlay(card.snapshot, card.status, context)}
+                    </div>
+                </header>
+            ) : (
+                <div className="overlay-list-item__body">
+                    {renderer.renderOverlay(card.snapshot, card.status, context)}
+                </div>
+            )}
+        </article>
+    );
 };
 
 const FloatingChat: React.FC = () => {
-    const [open, setOpen] = useState(false);
-    const [displayText, setDisplayText] = useState('');
-    const [richPayload, setRichPayload] = useState<PillPayload | null>(null);
-    const [showCaret, setShowCaret] = useState(false);
-    const [name, setName] = useState('ACLA');
-    const [targetWidth, setTargetWidth] = useState<number>(MIN_W);
-    const [targetHeight, setTargetHeight] = useState<number>(MIN_H);
-    const [currentEmotion, setCurrentEmotion] = useState<string | null>(null);
-    const [agentTags, setAgentTags] = useState<string[]>([]);
-    const [emotionGifs, setEmotionGifs] = useState<Record<string, string>>(readEmotionGifs);
+    const [presentation, setPresentation] = React.useState<AiOverlayPresentationSnapshot | null>(null);
+    const presentationRef = React.useRef(presentation);
+    const shellRef = React.useRef<HTMLElement>(null);
+    const emotionGifs = React.useMemo(readEmotionGifs, []);
 
-    const sizerRef = useRef<HTMLSpanElement>(null);
-    const msgRef = useRef<HTMLDivElement>(null);
-    const msgInnerRef = useRef<HTMLSpanElement>(null);
-    const hideTimerRef = useRef<number | null>(null);
-    const typeTimerRef = useRef<number | null>(null);
-    const caretTimerRef = useRef<number | null>(null);
-    const emoteRevertTimerRef = useRef<number | null>(null);
-    const lastTsRef = useRef<number>(0);
-    const latestAgentTagsRef = useRef<string[]>([]);
+    React.useEffect(() => {
+        presentationRef.current = presentation;
+    }, [presentation]);
 
-    const clearTimers = useCallback(() => {
-        if (hideTimerRef.current !== null) {
-            window.clearTimeout(hideTimerRef.current);
-            hideTimerRef.current = null;
-        }
-        if (typeTimerRef.current !== null) {
-            window.clearInterval(typeTimerRef.current);
-            typeTimerRef.current = null;
-        }
-        if (caretTimerRef.current !== null) {
-            window.clearTimeout(caretTimerRef.current);
-            caretTimerRef.current = null;
-        }
-        if (emoteRevertTimerRef.current !== null) {
-            window.clearTimeout(emoteRevertTimerRef.current);
-            emoteRevertTimerRef.current = null;
-        }
-    }, []);
-
-    const measure = useCallback((text: string, tags: string[] = []): number => {
-        const sizer = sizerRef.current;
-        if (!sizer) return MIN_W;
-        sizer.textContent = `${tags.join(' ')} ${text}`.trim();
-        const textW = sizer.getBoundingClientRect().width;
-        return Math.max(MIN_W, Math.min(MAX_W, Math.ceil(textW + CHROME)));
-    }, []);
-
-    const resetScroll = useCallback(() => {
-        const inner = msgInnerRef.current;
-        if (inner) inner.style.transform = 'translateX(0)';
-    }, []);
-
-    /** Scroll the text so the newest character is always visible. Called
-     *  after each typed-text update; the CSS transition smooths the shift
-     *  so the roll matches the typing cadence. */
-    const updateScroll = () => {
-        const outer = msgRef.current;
-        const inner = msgInnerRef.current;
-        if (!outer || !inner) return;
-        const overflow = inner.scrollWidth - outer.clientWidth;
-        inner.style.transform = `translateX(${overflow > 0 ? -overflow : 0}px)`;
-    };
-
-    const shrink = useCallback(() => {
-        clearTimers();
-        const tags = latestAgentTagsRef.current;
-        setTargetWidth(tags.length ? measure('', tags) : MIN_W);
-        setTargetHeight(MIN_H);
-        setOpen(false);
-        setShowCaret(false);
-        // Wait for the collapse transition to finish before clearing text so
-        // it doesn't peek through the avatar.
-        window.setTimeout(() => {
-            setDisplayText('');
-            setRichPayload(null);
-            setCurrentEmotion(null);
-            resetScroll();
-        }, 400);
-    }, [clearTimers, measure, resetScroll]);
-
-    const setPersistentTags = useCallback((tags: string[] = []) => {
-        latestAgentTagsRef.current = tags;
-        setAgentTags(tags);
-        setTargetWidth(tags.length ? measure('', tags) : MIN_W);
-    }, [measure]);
-
-    const speak = useCallback((text: string, displayName?: string, emotion?: string, tags: string[] = []) => {
-        clearTimers();
-        setRichPayload(null);
-        setTargetHeight(MIN_H);
-        setName(displayName || 'ACLA');
-        setCurrentEmotion(emotion ?? null);
-        setPersistentTags(tags);
-        const cleanText = text.trim();
-        if (!cleanText) {
-            setShowCaret(false);
-            setDisplayText('');
-            setOpen(false);
-            return;
-        }
-        if (emotion && emotion !== 'idle') {
-            emoteRevertTimerRef.current = window.setTimeout(() => {
-                setCurrentEmotion(null);
-                emoteRevertTimerRef.current = null;
-            }, EMOTE_HOLD_MS);
-        }
-        setTargetWidth(measure(text, tags));
-        setOpen(true);
-        setDisplayText('');
-        setShowCaret(true);
-
-        let i = 0;
-        typeTimerRef.current = window.setInterval(() => {
-            i++;
-            setDisplayText(text.slice(0, i));
-            if (i >= text.length) {
-                if (typeTimerRef.current !== null) {
-                    window.clearInterval(typeTimerRef.current);
-                    typeTimerRef.current = null;
-                }
-                // Caret disappears, then the shrink countdown starts from
-                // *here* — not from speak() start — so the hold duration is
-                // independent of typing length and never gets cut short.
-                caretTimerRef.current = window.setTimeout(() => setShowCaret(false), 600);
-                hideTimerRef.current = window.setTimeout(shrink, POST_TYPE_HOLD_MS);
+    React.useEffect(() => {
+        const api = getElectronApi();
+        const removePresentation = api?.onOverlayPresentation?.((next) => {
+            const validationError = validatePresentation(next);
+            const current = presentationRef.current;
+            const stale = current?.presentationId === next.presentationId
+                && next.presentationRevision <= current.presentationRevision;
+            const error = stale ? 'Stale overlay presentation revision.' : validationError;
+            api.acknowledgeOverlayPresentation?.({
+                presentationId: next?.presentationId || 'unknown',
+                presentationRevision: next?.presentationRevision || 0,
+                accepted: !error,
+                ...(error ? { error } : {}),
+            });
+            if (!error) {
+                presentationRef.current = next;
+                setPresentation(next);
             }
-        }, TYPE_INTERVAL_MS);
-    }, [clearTimers, measure, setPersistentTags, shrink]);
+        });
+        api?.reportOverlayReady?.();
+        return () => removePresentation?.();
+    }, []);
 
-    const showPayload = useCallback((payload: PillPayload) => {
-        if (payload.kind === 'message') {
-            speak(payload.text, payload.name, payload.emotion, payload.tags);
-            return;
-        }
+    const cards = React.useMemo(() => presentation?.cards ?? [], [presentation]);
+    const speaking = cards.find((card) => card.shellSlot === 'speech');
+    const generatedDisplays = cards.filter((card) => card.shellSlot !== 'speech');
+    const focusedDisplay = generatedDisplays.find((card) => card.status === 'focus');
+    const displayedCards = focusedDisplay
+        ? [
+            ...generatedDisplays.filter((card) => card.componentName !== focusedDisplay.componentName),
+            focusedDisplay,
+        ]
+        : generatedDisplays;
+    const idle = !speaking && generatedDisplays.length === 0;
+    const identity = resolveIdentity(presentation?.session.displayIdentity, speaking);
+    const widths = generatedDisplays.map((card) => (
+        getAiOverlayRenderer(card.componentType).dimensions[card.status]?.width ?? SPEAKING_WIDTH
+    ));
+    const shellWidth = Math.max(idle ? IDLE_WIDTH : SPEAKING_WIDTH, ...widths);
 
-        clearTimers();
-        setName(payload.name || 'ACLA');
-        setCurrentEmotion(payload.emotion ?? null);
-        setPersistentTags(payload.tags);
-        setDisplayText(payload.text.trim());
-        setShowCaret(false);
-        setRichPayload(payload);
-        setTargetWidth(RICH_W);
-        setTargetHeight(getRichPayloadHeight(payload));
-        setOpen(true);
-        hideTimerRef.current = window.setTimeout(shrink, POST_TYPE_HOLD_MS);
-    }, [clearTimers, setPersistentTags, shrink, speak]);
-
-    // Subscribe to cross-window messages. The 'storage' event only fires in
-    // OTHER windows that share the same origin/partition — perfect for the
-    // main app → pill broadcast.
-    //
-    // We deliberately do NOT replay a payload that was already in
-    // localStorage at mount time. The pill is for live messages; replaying
-    // a stale message on overlay open also conflicts with StrictMode's
-    // double-mount (the cleanup would clear the typing/shrink timers from
-    // the first run, leaving the pill stuck open with no timer to close it).
-    useEffect(() => {
-        // Seed only lastTsRef from storage so the FIRST genuine new event is
-        // always strictly greater. Do not seed tags here: localStorage is
-        // stale across app/overlay restarts, while agent activation is live
-        // in-memory state owned by the main chat window.
-        const seed = parsePayload(localStorage.getItem(SHARED_KEY));
-        if (seed) {
-            lastTsRef.current = seed.ts;
-        }
-
-        const onStorage = (event: StorageEvent) => {
-            if (event.key === EMOTION_GIFS_KEY) {
-                setEmotionGifs(readEmotionGifs());
-                return;
-            }
-            if (event.key !== SHARED_KEY) return;
-            const payload = parsePayload(event.newValue);
-            if (!payload) return;
-            if (payload.ts <= lastTsRef.current) return;
-            lastTsRef.current = payload.ts;
-            showPayload(payload);
+    React.useLayoutEffect(() => {
+        const shell = shellRef.current;
+        if (!shell) return undefined;
+        const resize = () => {
+            const bounds = shell.getBoundingClientRect();
+            getElectronApi()?.resizeFloatingChat?.(
+                Math.ceil(bounds.width),
+                Math.ceil(bounds.height),
+            );
         };
-        window.addEventListener('storage', onStorage);
-        return () => {
-            window.removeEventListener('storage', onStorage);
-            clearTimers();
-        };
-    }, [clearTimers, measure, showPayload]);
-
-    // Roll the typed text after every paint so the caret stays visible.
-    // useLayoutEffect runs synchronously post-DOM mutation, so we measure
-    // and translate before the browser commits the next frame — no flicker.
-    useLayoutEffect(() => {
-        updateScroll();
-    }, [displayText, open]);
-
-    const renderRichPayload = () => {
-        if (!richPayload || richPayload.kind === 'message') return null;
-        if (!richPayload.data) return null;
-
-        if (richPayload.kind === 'baseline') {
-            return <BaselineProgressDisplay tag={richPayload.data as BaselineCollectionTag} surface="pill" />;
-        }
-        if (richPayload.kind === 'map') {
-            return <AiMapToolDisplay display={richPayload.data as AiMapDisplayPayload} surface="pill" />;
-        }
-        if (richPayload.kind === 'plan') {
-            return <ProcedurePlanDisplay plan={richPayload.data as ProcedurePlan} surface="pill" />;
-        }
-        if (richPayload.kind === 'range') {
-            return <LiveRangeTrackerDisplay tracker={richPayload.data as LiveRangeTrackerState} surface="pill" />;
-        }
-        if (richPayload.kind === 'tool') {
-            return <ToolMessageDisplay tool={richPayload.data as ToolMessageDisplayData} surface="pill" />;
-        }
-
-        return null;
-    };
-
-    const tagged = agentTags.length > 0;
-    const rich = Boolean(richPayload && richPayload.kind !== 'message');
-
-    // Track the OS window size to the pill so there's no transparent area
-    // outside the pill (which would show the title bar of whatever sits
-    // underneath as a white frame). When opening, grow immediately so the
-    // pill has room to expand into; when closing, wait for the CSS shrink
-    // transition (700ms) before snapping the window back, so the pill
-    // isn't clipped mid-animation.
-    useEffect(() => {
-        const api = (window as unknown as { electronAPI?: { resizeFloatingChat?: (w: number, h: number) => void } }).electronAPI;
-        const resize = api?.resizeFloatingChat;
-        if (!resize) return;
-        if (open || tagged) {
-            resize(targetWidth, targetHeight);
-            return;
-        }
-        const t = window.setTimeout(() => resize(72, MIN_H), 720);
-        return () => window.clearTimeout(t);
-    }, [open, tagged, targetHeight, targetWidth]);
-
-    // Click the pill itself to dismiss when it's open.
-    const handlePillClick = () => {
-        if (open) shrink();
-    };
-
-    const pillStyle: React.CSSProperties = {
-        ['--target-w' as any]: `${targetWidth}px`,
-        ['--target-h' as any]: `${targetHeight}px`,
-    };
+        resize();
+        const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize);
+        observer?.observe(shell);
+        return () => observer?.disconnect();
+    }, [cards, shellWidth]);
 
     return (
-        <div className="floating-pill-stage">
-            <div
-                className={`pill${open ? ' open' : ''}${tagged ? ' tagged' : ''}${rich ? ' rich' : ''}`}
-                style={pillStyle}
-                onClick={handlePillClick}
-                aria-live="polite"
+        <main className="floating-overlay-stage" aria-live="polite">
+            <section
+                className={[
+                    'overlay-shell',
+                    idle ? 'overlay-shell--idle' : '',
+                ].filter(Boolean).join(' ')}
+                ref={shellRef}
+                style={{ width: shellWidth }}
+                data-presentation-id={presentation?.presentationId || ''}
             >
-                <div className="avatar" aria-hidden="true">
-                    {(() => {
-                        const key = currentEmotion ?? 'idle';
-                        const gif = emotionGifs[key] ?? emotionGifs['idle'];
-                        return gif ? <img src={gif} alt={key} /> : 'AI';
-                    })()}
-                </div>
-                <div className="body">
-                    <div className="name-row">
-                        <span className="name">{name}</span>
-                        {agentTags.map((tag) => (
-                            <span key={tag} className="agent-tag">{tag}</span>
+                <header className="overlay-shell__header">
+                    <OverlayIdentity identity={identity} emotionGifs={emotionGifs} />
+                </header>
+                {speaking && presentation && (
+                    <SpeakingContext presentationId={presentation.presentationId} card={speaking} />
+                )}
+                {generatedDisplays.length > 0 && presentation && (
+                    <div
+                        className={[
+                            'overlay-display-list',
+                            focusedDisplay ? 'overlay-card-stack' : '',
+                        ].filter(Boolean).join(' ')}
+                        aria-label={focusedDisplay ? 'Overlay card stack' : undefined}
+                    >
+                        {displayedCards.map((card, deckIndex) => (
+                            <GeneratedDisplayItem
+                                key={card.componentName}
+                                presentationId={presentation.presentationId}
+                                card={card}
+                                deckIndex={deckIndex}
+                                stacked={Boolean(focusedDisplay)}
+                            />
                         ))}
                     </div>
-                    <div className="msg" ref={msgRef}>
-                        <span className="msg-inner" ref={msgInnerRef}>
-                            {displayText}
-                            {showCaret && <span className="caret" />}
-                        </span>
-                    </div>
-                    {rich && (
-                        <div className="rich-body">
-                            {renderRichPayload()}
-                        </div>
-                    )}
-                </div>
-            </div>
-            <span className="sizer" ref={sizerRef} aria-hidden="true" />
-        </div>
+                )}
+            </section>
+        </main>
     );
 };
 

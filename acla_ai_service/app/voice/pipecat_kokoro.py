@@ -30,13 +30,13 @@ from typing import AsyncGenerator
 # still boot even when pipecat-ai isn't fully installed (e.g. AMD env where
 # pip resolution is tricky).
 
-from app.voice import get_kokoro_service
 from app.voice.sentence_streamer import SentenceStreamer
+from app.voice.speech_core import SpeechCore
 
 LOGGER = logging.getLogger(__name__)
 
 
-def build_kokoro_processor():
+def build_kokoro_processor(speech_core: SpeechCore):
     """Construct a Pipecat FrameProcessor that synthesizes incoming text.
 
     Imported lazily so module import doesn't require pipecat to be installed.
@@ -152,11 +152,10 @@ def build_kokoro_processor():
             t0 = time.monotonic()
             LOGGER.info("[STREAM-DIAG] synth START: %r", sentence[:80])
             try:
-                kokoro = await get_kokoro_service()
                 # KokoroService.synthesize returns WAV bytes. For Pipecat we
                 # need raw PCM16 samples. Strip the WAV header by re-reading
                 # via soundfile.
-                wav_bytes = await kokoro.synthesize(sentence)
+                wav_bytes = await speech_core.synthesize(sentence)
                 pcm16 = _wav_bytes_to_pcm16(wav_bytes, target_sample_rate=self._sample_rate)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Pipecat Kokoro synth failed: %s", exc)

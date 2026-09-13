@@ -728,7 +728,7 @@ class BackendService:
         """Save AI model results to backend using chunked transfer.
 
         Args:
-            model_type: Type of the AI model (e.g., "tire_grip_analysis", "imitation_learning")
+            model_type: Type of the AI model (e.g., "tire_grip_analysis", "top_lap_reference")
             model_data: The serialized model data payload
             metadata: Optional metadata containing model info and timestamps
             is_active: Whether this model should be set as active

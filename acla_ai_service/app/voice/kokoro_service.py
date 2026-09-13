@@ -10,14 +10,13 @@ on first use (per upstream's documented workflow) and cached at
 doesn't redownload on every container restart.
 
 Usage:
-    service = await get_kokoro_service()
-    wav_bytes = await service.synthesize("Hello, racer.", voice="af_bella")
+    from app.voice import get_speech_core
+    wav_bytes = await get_speech_core().synthesize("Hello, racer.", voice="af_bella")
 
 Notes:
     - Inference is CPU-friendly (~300ms for a short sentence) and faster on GPU
       via onnxruntime-gpu. The runtime picks the available provider automatically.
-    - Model load happens lazily on the first call. Startup stays fast; the
-      first request pays a one-time ~5s warmup.
+    - The speech core owns a pool of these engines, loaded on first use.
     - This service intentionally does not stream — Phase 2 ships a simple
       "fetch full WAV, play it" UX. Streaming is Phase 2.5.
 """
@@ -138,10 +137,6 @@ class KokoroService:
             # Older kokoro-onnx versions expose voices via .voices mapping
             return sorted(getattr(self._kokoro, "voices", {}).keys())
 
-    async def is_ready(self) -> bool:
-        """Cheap check used by the health endpoint — does not force a load."""
-        return self._kokoro is not None
-
 
 # ----------------------------------------------------------------------
 # Helpers
@@ -166,26 +161,3 @@ def _download_if_missing(url: str, dest: Path) -> None:
     with urllib.request.urlopen(url) as resp, open(tmp, "wb") as f:
         shutil.copyfileobj(resp, f)
     tmp.replace(dest)
-
-
-# ----------------------------------------------------------------------
-# Module-level singleton accessor
-# ----------------------------------------------------------------------
-
-_service_singleton: Optional[KokoroService] = None
-_singleton_lock = asyncio.Lock()
-
-
-async def get_kokoro_service() -> KokoroService:
-    """Return the process-wide KokoroService instance.
-
-    Creates it on first call. The underlying model load is deferred until
-    the first synthesize() invocation.
-    """
-    global _service_singleton
-    if _service_singleton is not None:
-        return _service_singleton
-    async with _singleton_lock:
-        if _service_singleton is None:
-            _service_singleton = KokoroService()
-        return _service_singleton

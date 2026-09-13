@@ -61,15 +61,17 @@ class Settings(BaseSettings):
     llama_draft_max: int = 16
     llama_draft_min: int = 0
 
-    # Hosted LLM (OpenAI-compatible third-party endpoint). When
-    # HOSTED_LLM_BASE_URL is set, the chat + voice pipelines use it instead
-    # of the local llama-server sidecar. Works with Groq, Cerebras, Together,
-    # Fireworks, OpenRouter, etc., by just changing the base_url. If
-    # HOSTED_LLM_BASE_URL is set, HOSTED_LLM_API_KEY and HOSTED_LLM_MODEL
-    # are required — missing values fail loudly at startup.
+    # Chat LLM selector. Format: '<provider>:<model>', where provider is
+    # 'openai' or 'hosted'. Chat uses remote providers only.
+    chat_llm_model: str = "openai:gpt-5.5"
+    chat_openai_api_key_env: str = "OPENAI_API_KEY"
+
+    # Hosted LLM (OpenAI-compatible third-party endpoint). When CHAT_LLM_MODEL
+    # starts with 'hosted:', the chat + voice pipelines use this endpoint.
+    # Works with Groq, Cerebras, Together, Fireworks, OpenRouter, etc., by just
+    # changing the base_url. HOSTED_LLM_API_KEY is then required.
     hosted_llm_base_url: Optional[str] = None   # e.g. https://api.groq.com/openai/v1
     hosted_llm_api_key: Optional[str] = None
-    hosted_llm_model: Optional[str] = None      # e.g. qwen/qwen3-32b
 
     # Kokoro TTS Configuration (Phase 2)
     # Neural TTS that replaces window.speechSynthesis in the frontend.
@@ -104,26 +106,11 @@ class Settings(BaseSettings):
     # 512-token max.
     racing_kb_max_chunk_chars: int = 2000
 
-    # Annotation skill registry (hybrid index over discovery headers).
-    # Same bge-large default as the racing KB — the index is tiny (one
-    # vector per skill) so the heavier model is paid for once at startup.
-    annotation_skill_embedding_model: str = "BAAI/bge-large-en-v1.5"
-    annotation_skill_query_prefix: str = "Represent this sentence for searching relevant passages: "
-    # Hybrid retrieval — vector and BM25 sub-retrievers per registry,
-    # combined by QueryFusionRetriever in `relative_score` mode (the
-    # user-selected fusion strategy).
+    # Hybrid retrieval settings used by the external racing knowledge base.
     hybrid_fusion_mode: str = "relative_score"
     # How many candidates each sub-retriever pulls before fusion. Wider
     # than the final top_k so the fusion has overlap to work with.
     hybrid_candidate_pool: int = 20
-    # Optional semantic reranking for annotation label candidates. Embedding
-    # search keeps recall broad; the cross-encoder reads each evidence/label
-    # pair together before the annotation agent sees the final shortlist.
-    annotation_label_reranker_enabled: bool = True
-    annotation_label_reranker_model: str = "BAAI/bge-reranker-large"
-    annotation_label_reranker_top_k: int = 16
-    annotation_label_reranker_min_score: Optional[float] = None
-
     # AI annotation providers. This is intentionally separate from the
     # hosted Groq/chatbot settings above; annotation provider selection is
     # per-run in the Streamlit annotation UI.
@@ -148,6 +135,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
 
 # Global settings instance

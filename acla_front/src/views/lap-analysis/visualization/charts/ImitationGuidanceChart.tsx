@@ -1,10 +1,18 @@
-import React, { useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { forwardRef, useContext, useState, useEffect, useCallback, useImperativeHandle, useMemo, useRef } from 'react';
 import { Card, Text, Box, Flex, Button, TextField, Table, IconButton } from '@radix-ui/themes';
 import { Cross2Icon } from '@radix-ui/react-icons';
 import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
 import apiService from 'services/api.service';
 import styles from './ImitationGuidanceChart.module.css';
+import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import {
+    ComponentDisableFailedError,
+    VisualizationComponentError,
+    VisualizationControlFailedError,
+    VisualizationUpdateFailedError,
+} from 'contexts/OperationComponentError';
+import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
 
 const getNormalizedCarPos = (telemetry: Record<string, any> | null): number | undefined => {
     if (!telemetry) return undefined;
@@ -30,17 +38,24 @@ const extractGuidanceText = (raw: any, guidanceResult: any): string | null => {
     return null;
 };
 
-const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
+export interface ImitationGuidanceChartHandle extends NamedOperationComponentHandle {
+    updateGuidanceData(data: any, config?: any): true;
+    refreshGuidanceOnce(): Promise<{ success: true; message: string }>;
+    disableGuidance(): true;
+}
+
+const ImitationGuidanceChart = forwardRef<ImitationGuidanceChartHandle, VisualizationProps>((props, forwardedRef) => {
     const analysisContext = useContext(AnalysisContext);
+    const { name, data, config, onUpdate, onDisable } = props;
 
     const [pacebook, setPacebook] = useState<number[]>([0.1, 0.5, 0.8]);
     const [newValue, setNewValue] = useState<string>('');
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
 
-    const liveData = analysisContext.liveData as Record<string, any> | null;
-    const trackName = analysisContext.recordedSessioStaticsData?.track || 'Unknown Track';
-    const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
+    const liveData = (data?.telemetry ?? data ?? null) as Record<string, any> | null;
+    const trackName = config?.trackName || data?.trackName || 'Unknown Track';
+    const carName = config?.carName || data?.carName || 'Unknown Car';
 
     const liveDataRef = useRef(liveData);
     const trackNameRef = useRef(trackName);
@@ -63,11 +78,19 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const fetchGuidance = useCallback(async () => {
         const currentLiveData = liveDataRef.current;
         if (!currentLiveData || Object.keys(currentLiveData).length === 0) {
-            return;
+            const message = 'Guidance refresh requires telemetry data.';
+            setError(message);
+            throw new VisualizationControlFailedError(
+                name,
+                message,
+            );
         }
 
         if (requestInFlightRef.current) {
-            return;
+            throw new VisualizationControlFailedError(
+                name,
+                'A guidance refresh is already running.',
+            );
         }
 
         requestInFlightRef.current = true;
@@ -85,20 +108,59 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             const result = raw?.guidance_result;
             if (result?.status === 'success') {
                 const guidanceText = extractGuidanceText(raw, result);
-                if (guidanceText && analysisContext.sendGuidanceToChat) {
-                    analysisContext.sendGuidanceToChat(guidanceText);
+                if (!guidanceText) {
+                    throw new Error('Guidance response did not include guidance text.');
                 }
+                analysisContext.sendGuidanceToChat?.(guidanceText);
             } else {
-                setError('Failed to get guidance: API returned error status');
+                throw new Error(
+                    result?.message
+                    || raw?.message
+                    || 'Failed to get guidance: API returned error status',
+                );
             }
         } catch (err: any) {
             console.error('Imitation learning guidance error:', err);
-            setError('API call failed: ' + (err.response?.data?.message || err.message));
+            const message = err?.response?.data?.message
+                || err?.data?.message
+                || err?.message
+                || 'Failed to refresh guidance.';
+            setError(message);
+            if (err instanceof VisualizationComponentError) throw err;
+            throw new VisualizationControlFailedError(
+                name,
+                message,
+                { cause: err },
+            );
         } finally {
             setLoading(false);
             requestInFlightRef.current = false;
         }
-    }, [analysisContext]);
+    }, [analysisContext, name]);
+
+    const handle = useMemo<ImitationGuidanceChartHandle>(() => ({
+        getComponentName: () => name,
+        updateGuidanceData: (nextData, nextConfig) => runVisualizationBooleanCallback(
+            name,
+            VisualizationUpdateFailedError,
+            `Failed to update chart '${name}'.`,
+            onUpdate ? () => onUpdate(nextData, nextConfig) : undefined,
+        ),
+        refreshGuidanceOnce: async () => {
+            await fetchGuidance();
+            return { success: true as const, message: `Refreshed guidance chart '${name}'.` };
+        },
+        disableGuidance: () => runVisualizationBooleanCallback(
+            name,
+            ComponentDisableFailedError,
+            `Component '${name}' could not be disabled.`,
+            onDisable,
+        ),
+    }), [fetchGuidance, name, onDisable, onUpdate]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    const registeredHandleRef = React.useRef(handle);
+    registeredHandleRef.current = handle;
+    useRegisterOperationComponentRef(registeredHandleRef);
 
     // Check crossing pacebook points
     useEffect(() => {
@@ -118,7 +180,7 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             }
 
             if (crossed) {
-                fetchGuidance();
+                void fetchGuidance().catch(() => undefined);
             }
         }
 
@@ -221,6 +283,8 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             </Flex>
         </Card>
     );
-};
+});
+
+ImitationGuidanceChart.displayName = 'ImitationGuidanceChart';
 
 export default ImitationGuidanceChart;

@@ -1,13 +1,6 @@
 """Domain helper: enriched label docs for annotation / agent code.
 
-Two sources, each owning its own classification — nothing is re-derived
-in Python:
-
-* Prose labels (``main`` / ``sub`` / ``segment_type``) live in
-  ``sub_label_annotation.json``. They already declare ``type`` and
-  ``parent`` alongside their prose, so we read them straight through the
-  skill query engine — the same data the hybrid ``search`` retriever
-  indexes.
+* Main-label taxonomy lives in ``lap_annotation.json``.
 * Circuit sections are deterministic geometry, owned by
   ``app.shared.circuit_sections``. We synthesize their docs from the
   section ranges (``type="circuit_section"``, ``parent=<circuit>``,
@@ -24,6 +17,7 @@ plain values for equality, ``{"$in": [...]}`` etc. for operators.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
@@ -47,15 +41,39 @@ def _circuit_section_docs() -> List[Dict[str, Any]]:
     return docs
 
 
+def _label_docs() -> List[Dict[str, Any]]:
+    lap_requirements = skills.get("lap_annotation.selection_requirements", {})
+    docs: List[Dict[str, Any]] = []
+
+    for doc in skills.iter("lap_annotation.labels"):
+        next_doc = dict(doc)
+        label_id = str(next_doc.get("id") or "")
+        requirements = (
+            lap_requirements.get(label_id)
+            if isinstance(lap_requirements, dict)
+            else None
+        )
+        if isinstance(requirements, dict):
+            next_doc["selection_requirements"] = dict(requirements)
+        docs.append(next_doc)
+    return docs
+
+
+@lru_cache(maxsize=1)
+def _label_index() -> Dict[str, Dict[str, Any]]:
+    return {
+        str(doc["id"]): doc
+        for doc in [*_label_docs(), *_circuit_section_docs()]
+    }
+
+
 def _all_docs() -> List[Dict[str, Any]]:
-    return skills.iter("sub_label_annotation.labels") + _circuit_section_docs()
+    return [dict(doc) for doc in _label_index().values()]
 
 
 def get_label(label_id: str) -> Optional[Dict[str, Any]]:
-    for doc in _all_docs():
-        if doc.get("id") == label_id:
-            return doc
-    return None
+    doc = _label_index().get(label_id)
+    return dict(doc) if doc is not None else None
 
 
 def find_labels(**filters: Any) -> List[Dict[str, Any]]:

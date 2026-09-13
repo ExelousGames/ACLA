@@ -37,7 +37,7 @@ const LandingPage: React.FC = () => {
     <div className="landing-page">
       {/* Fixed nav — appears on scroll */}
       <nav className={`lp-nav ${showNav ? 'lp-nav--visible' : ''}`}>
-        <span className="lp-nav__logo">ACLA</span>
+        <span className="lp-nav__logo">Kestrel</span>
         <button className="lp-nav__login" onClick={() => setLoginModalOpen(true)} type="button">
           Login
         </button>

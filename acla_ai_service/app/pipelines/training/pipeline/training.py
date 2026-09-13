@@ -33,7 +33,6 @@ async def run_transformer_guidance_training(
     backend = backend_service or default_backend_service
 
     transformer_training: Optional[Dict[str, Any]] = None
-    llm_training: Optional[Dict[str, Any]] = None
     generated_datasets: List[Any] = []
 
     try:
@@ -98,15 +97,14 @@ async def run_transformer_guidance_training(
         traceback.print_exc()
         return {
             "success": False,
-            "error": f"Transformer training / LLM dataset generation failed: {training_error}",
+            "error": f"Transformer training failed: {training_error}",
         }
 
     result_payload = {
         "success": True,
         "datasets": generated_datasets,
         "transformer_training": transformer_training,
-        "llm_dataset_generation": llm_training,
     }
 
-    print_section_divider("DATASET GENERATION COMPLETED")
+    print_section_divider("TRANSFORMER TRAINING COMPLETED")
     return result_payload

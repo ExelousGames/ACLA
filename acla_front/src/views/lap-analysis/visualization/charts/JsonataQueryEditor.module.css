@@ -1,0 +1,128 @@
+.panel {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--lp-border);
+    flex-shrink: 0;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.heading,
+.label,
+.status,
+.button,
+.error {
+    font-family: var(--lp-mono);
+}
+
+.heading {
+    color: var(--lp-white);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.label,
+.status {
+    color: var(--lp-gray);
+    font-size: 10px;
+}
+
+.label {
+    display: inline-block;
+    margin-bottom: 5px;
+}
+
+.editor {
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius);
+    overflow: hidden;
+}
+
+.editorPlaceholder {
+    box-sizing: border-box;
+    min-height: 86px;
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius);
+    background: rgba(22, 22, 40, 0.88);
+}
+
+.editor:focus-within {
+    border-color: var(--lp-green);
+}
+
+.editor :global(.cm-editor),
+.editor :global(.cm-gutters) {
+    background: rgba(22, 22, 40, 0.88);
+}
+
+.editor :global(.cm-editor) {
+    color: var(--lp-white);
+    font-family: var(--lp-mono);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.editor :global(.cm-gutters) {
+    border-right-color: var(--lp-border);
+    color: var(--lp-gray);
+}
+
+.editor :global(.cm-focused) {
+    outline: none;
+}
+
+.editor :global(.cm-diagnostic-error) {
+    border-left-color: #ff6b6b;
+}
+
+.actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 7px;
+}
+
+.button {
+    min-height: 26px;
+    padding: 3px 10px;
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius-pill);
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--lp-white);
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.button:hover:not(:disabled),
+.button:focus-visible:not(:disabled) {
+    border-color: var(--lp-green);
+    color: var(--lp-green);
+    outline: none;
+}
+
+.button:disabled {
+    color: var(--lp-gray);
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.error {
+    margin-top: 7px;
+    padding: 7px 9px;
+    border: 1px solid rgba(255, 92, 92, 0.55);
+    border-radius: var(--lp-radius);
+    color: #ff9d9d;
+    font-size: 10px;
+    overflow-wrap: anywhere;
+}
+
+.error:focus-visible {
+    outline: 1px solid #ff9d9d;
+    outline-offset: 2px;
+}

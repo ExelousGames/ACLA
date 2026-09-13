@@ -139,7 +139,7 @@ register(annotation_spec(
 register(annotation_spec(
     kind="batch_classifier",
     display="Batch — Classifier Auto",
-    description="Identify segments using the trained LSTM classifier.",
+    description="Identify behavior and sub-label ranges using the temporal detector.",
     ui_route="batch_classifier",
 ))
 register(annotation_spec(
@@ -167,8 +167,15 @@ register(NodeKindSpec(
     kind="classifier",
     category="training",
     display="Classifier Training",
-    description="LSTM segment classifier.",
+    description="Temporal behavior segment detector.",
     ui_route="classifier",
+))
+register(NodeKindSpec(
+    kind="segment_cropper",
+    category="training",
+    display="Segment Cropper Training",
+    description="Class-agnostic complete-session boundary detector.",
+    ui_route="segment_cropper",
 ))
 register(NodeKindSpec(
     kind="transformer",
@@ -183,13 +190,6 @@ register(NodeKindSpec(
     display="Opportunity Forecaster Training",
     description="Future successful overtake / defense probability model.",
     ui_route="opportunity_forecaster",
-))
-register(NodeKindSpec(
-    kind="llm_training",
-    category="training",
-    display="LLM Training",
-    description="LLM fine-tune on chat-format JSONL.",
-    ui_route="llm_training",
 ))
 
 

@@ -15,6 +15,15 @@ export interface TelemetrySample {
     [key: string]: any;
 }
 
+export interface TelemetrySource {
+    readonly length: number;
+    readonly size: number;
+    get(globalIdx: number): TelemetrySample | null;
+    slice(from: number, to: number): TelemetrySample[];
+    last(count: number): TelemetrySample[];
+    sliceByTime(ms: number): TelemetrySample[];
+}
+
 export type ReduceOp = 'raw' | 'avg' | 'min' | 'max' | 'stats';
 
 export type QueryScope =
@@ -24,10 +33,10 @@ export type QueryScope =
     | { type: 'lap'; lap: 'current' | 'last' | number }
     | { type: 'range'; start: number; end: number };
 
-export interface TelemetryQuery {
+export interface TelemetryQuery<TReduce extends ReduceOp> {
     fields: string[];
     scope: QueryScope;
-    reduce: ReduceOp;
+    reduce: TReduce;
 }
 
 export interface FieldStats {
@@ -37,7 +46,16 @@ export interface FieldStats {
     stddev: number;
 }
 
-export type QueryResult = Record<string, number | number[] | FieldStats>;
+export type TelemetryValueByReduce = {
+    raw: number[];
+    avg: number;
+    min: number;
+    max: number;
+    stats: FieldStats;
+};
+
+export type QueryResult<TReduce extends ReduceOp> =
+    Record<string, TelemetryValueByReduce[TReduce]>;
 
 export interface CornerDefinition {
     name: string;

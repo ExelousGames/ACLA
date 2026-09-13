@@ -1,8 +1,7 @@
 """
 Claude runner — one agentic Claude session per AgentRequest.
 
-Different paradigm from the local runner: instead of a LangGraph
-planner/executor/synth/eval cycle, this hands control to a single Claude
+Different paradigm from the local harness: this hands control to a single Claude
 session that calls MCP tools to inspect telemetry and submit a result.
 One subprocess start, multi-turn reasoning in one context.
 
@@ -37,7 +36,12 @@ from app.annotation_providers.tool_surface import (
     tool_agent_response,
     tool_agent_stage,
 )
-from app.shared.contracts import AgentRequest, AgentResponse, Attachment
+from app.shared.contracts import (
+    AgentRequest,
+    AgentResponse,
+    Attachment,
+    DEFAULT_AGENT_MAX_TURNS,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -156,7 +160,9 @@ async def _run_session_async(
         system_prompt=system_prompt,
         # Bound the session — generous enough for multi-step exploration,
         # tight enough to stop runaway. Caller can override via extra_state.
-        max_turns=int(request.config.provider_options.get("max_turns") or 30),
+        max_turns=int(
+            request.config.provider_options.get("max_turns") or DEFAULT_AGENT_MAX_TURNS
+        ),
     )
 
     cb = request.callbacks

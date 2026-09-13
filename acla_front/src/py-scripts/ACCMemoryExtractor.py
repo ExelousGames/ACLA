@@ -185,10 +185,16 @@ class ACCRecording:
     
 if __name__ == "__main__":
     recorder = ACCRecording()
-    folder = sys.argv[1]
-    filename = sys.argv[2]
-
-    full_path = os.path.join(folder,filename)
-    os.makedirs(folder,exist_ok=True)
-    
-    recorder.startRecording(full_path)
+    # The Electron recording reader uses this script as a stream-only telemetry
+    # source. Legacy positional output arguments remain accepted for unrelated
+    # callers, but this process never owns persistence.
+    if "--stream" in sys.argv[1:]:
+        recorder.startRecording(None)
+    elif len(sys.argv) >= 3:
+        folder = sys.argv[1]
+        filename = sys.argv[2]
+        full_path = os.path.join(folder, filename)
+        os.makedirs(folder, exist_ok=True)
+        recorder.startRecording(full_path)
+    else:
+        raise SystemExit("Use --stream or provide an output folder and filename")

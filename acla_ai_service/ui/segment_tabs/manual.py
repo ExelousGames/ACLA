@@ -23,6 +23,7 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
     """
     Renders the Telemetry Segment Annotation tab.
     """
+    st.subheader("Lap Annotation")
     
     # Shared helper for formatting session options - local to this view or passed in? 
     # We can re-fetch this here to ensure it's up to date

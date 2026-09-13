@@ -39,16 +39,22 @@ def get_segment_classifier():
     return segment_classifier
 
 
+def get_segment_cropper():
+    from app.ml.segment_cropper.service import segment_cropper
+
+    return segment_cropper
+
+
 def get_opportunity_forecaster():
     from app.ml.opportunity_forecaster.service import opportunity_forecaster
 
     return opportunity_forecaster
 
 
-def get_expert_imitation_learning():
-    from app.ml.imitation.service import expert_imitation_learning
+def get_top_lap_reference_model():
+    from app.top_laps.runtime import top_lap_reference_model
 
-    return expert_imitation_learning
+    return top_lap_reference_model
 
 
 def get_tire_grip_analysis():
@@ -61,9 +67,13 @@ def _segment_classifier_ready() -> bool:
     segment_classifier = get_segment_classifier()
     return (
         segment_classifier.model is not None
-        and segment_classifier.mlb is not None
         and segment_classifier.scaler is not None
+        and bool(segment_classifier.label_ids)
     )
+
+
+def _segment_cropper_ready() -> bool:
+    return get_segment_cropper().is_ready()
 
 
 def _opportunity_forecaster_ready() -> bool:
@@ -71,9 +81,8 @@ def _opportunity_forecaster_ready() -> bool:
     return opportunity_forecaster.model is not None and opportunity_forecaster.scaler is not None
 
 
-def _imitation_learning_ready() -> bool:
-    expert_imitation_learning = get_expert_imitation_learning()
-    return bool(expert_imitation_learning.fastest_lap_store.entries)
+def _top_lap_reference_ready() -> bool:
+    return get_top_lap_reference_model().is_ready()
 
 
 def _tire_grip_ready() -> bool:
@@ -86,16 +95,21 @@ def _hydrate_segment_classifier(payload: ModelPayload) -> bool:
     return bool(segment_classifier.load_model())
 
 
+def _hydrate_segment_cropper(payload: ModelPayload) -> bool:
+    segment_cropper = get_segment_cropper()
+    segment_cropper.deserialize_artifacts(payload)
+    return bool(segment_cropper.load_model())
+
+
 def _hydrate_opportunity_forecaster(payload: ModelPayload) -> bool:
     opportunity_forecaster = get_opportunity_forecaster()
     opportunity_forecaster.deserialize_artifacts(payload)
     return bool(opportunity_forecaster.load_model())
 
 
-def _hydrate_imitation_learning(payload: ModelPayload) -> bool:
-    expert_imitation_learning = get_expert_imitation_learning()
-    expert_imitation_learning.deserialize_imitation_model(payload)
-    return _imitation_learning_ready()
+def _hydrate_top_lap_reference(payload: ModelPayload) -> bool:
+    get_top_lap_reference_model().install_backend_payload(payload)
+    return _top_lap_reference_ready()
 
 
 def _hydrate_tire_grip(payload: ModelPayload) -> bool:
@@ -105,6 +119,12 @@ def _hydrate_tire_grip(payload: ModelPayload) -> bool:
 
 
 _MODEL_SPECS = (
+    ChatbotModelSpec(
+        name="segment_cropper",
+        backend_model_type="segment_cropper",
+        hydrate=_hydrate_segment_cropper,
+        is_ready=_segment_cropper_ready,
+    ),
     ChatbotModelSpec(
         name="segment_classifier",
         backend_model_type="segment_classifier",
@@ -118,10 +138,10 @@ _MODEL_SPECS = (
         is_ready=_opportunity_forecaster_ready,
     ),
     ChatbotModelSpec(
-        name="imitation_learning",
-        backend_model_type="imitation_learning",
-        hydrate=_hydrate_imitation_learning,
-        is_ready=_imitation_learning_ready,
+        name="top_lap_reference",
+        backend_model_type="top_lap_reference",
+        hydrate=_hydrate_top_lap_reference,
+        is_ready=_top_lap_reference_ready,
     ),
     ChatbotModelSpec(
         name="tire_grip_analysis",
@@ -170,6 +190,10 @@ async def hydrate_chatbot_models(backend: Optional[Any] = None) -> Dict[str, boo
     """Download and hydrate all chatbot-facing models from backend storage."""
 
     backend_client = backend or backend_service
+    # Runtime top-lap reference data is backend-owned. Clear readiness before
+    # every startup hydration and never reconstruct it from a local artifact.
+    get_top_lap_reference_model().reset()
+    _hydration_status["top_lap_reference"] = False
     results: Dict[str, bool] = {}
     for spec in _MODEL_SPECS:
         results[spec.name] = await _hydrate_model(spec, backend_client)
@@ -190,8 +214,9 @@ def get_chatbot_model_status() -> Dict[str, bool]:
 
 __all__ = [
     "get_chatbot_model_status",
-    "get_expert_imitation_learning",
     "get_opportunity_forecaster",
+    "get_top_lap_reference_model",
+    "get_segment_cropper",
     "get_segment_classifier",
     "get_tire_grip_analysis",
     "hydrate_chatbot_models",

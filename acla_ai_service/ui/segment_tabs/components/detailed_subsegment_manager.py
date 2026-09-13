@@ -5,6 +5,23 @@ from ..shared import (
     get_display_labels, LABEL_MAPPING,
 )
 
+_FULL_NAME_LABEL_CSS = """
+<style>
+.st-key-full_name_subsegment_labels span[data-baseweb="tag"] {
+    height: auto;
+    max-width: 100%;
+}
+
+.st-key-full_name_subsegment_labels span[data-baseweb="tag"] > span:first-child {
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+}
+</style>
+"""
+
+
 def render_subsegment_manager(df, session_id, selected_annotation_key):
     """
     Renders UI for managing sub-segments under an existing parent segment.
@@ -34,7 +51,7 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
     # Find existing sub-segments for this parent
     sub_segments = [seg for seg in st.session_state.current_annotations if getattr(seg, 'parent_id', None) == parent_id]
     
-    subsegment_options = ["Create New Sub-Segment"] + [f"{i}: {', '.join(get_display_labels(seg.labels))} ({seg.start_index}-{seg.end_index})" for i, seg in enumerate(sub_segments)]
+    subsegment_options = ["Create New Sub-Segment"] + [f"{i}: ({seg.start_index}-{seg.end_index}) {', '.join(get_display_labels(seg.labels))}" for i, seg in enumerate(sub_segments)]
     
     selected_subsegment_str = st.selectbox("Select Sub-Segment", options=subsegment_options, key="manage_subsegment_selector")
     
@@ -48,7 +65,6 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.markdown(f"**Parent Segment:** {', '.join(get_display_labels(parent_seg.labels))}")
         st.caption(f"Parent Range: {p_start} to {p_end}")
         
         default_start = p_start if is_new else (selected_sub_seg.start_index if getattr(selected_sub_seg, 'start_index', None) is not None else p_start)
@@ -61,13 +77,15 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
         
     with col2:
         default_labels = [] if is_new else selected_sub_seg.labels
-        sub_labels = st.multiselect(
-            "Sub-Segment Labels",
-            options=list(LABEL_MAPPING.keys()),
-            default=default_labels,
-            format_func=lambda x: LABEL_MAPPING.get(str(x), str(x)),
-            key=f"sub_labels_{input_key_suffix}"
-        )
+        st.markdown(_FULL_NAME_LABEL_CSS, unsafe_allow_html=True)
+        with st.container(key="full_name_subsegment_labels"):
+            sub_labels = st.multiselect(
+                "Sub-Segment Labels",
+                options=list(LABEL_MAPPING.keys()),
+                default=default_labels,
+                format_func=lambda x: LABEL_MAPPING.get(str(x), str(x)),
+                key=f"sub_labels_{input_key_suffix}"
+            )
         
         default_notes = "" if is_new else getattr(selected_sub_seg, 'notes', "")
         sub_notes = st.text_area("Sub-Segment Notes (Optional)", value=default_notes, key=f"sub_notes_{input_key_suffix}")
@@ -102,11 +120,6 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
             
             st.session_state.has_unsaved_changes = True
             save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
-
-            # Update visualization range to match parent segment
-            st.session_state.detailed_global_viz_range = (p_start, p_end)
-            st.session_state.detailed_global_viz_start_input = p_start
-            st.session_state.detailed_global_viz_end_input = p_end
             st.rerun()
 
         def delete_sub_segment_callback():

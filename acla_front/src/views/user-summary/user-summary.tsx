@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Box,
     Card,
@@ -10,6 +10,10 @@ import {
 } from '@radix-ui/themes';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useUserSummary } from 'contexts/UserSummaryContext';
+import {
+    NamedOperationComponentHandle,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
 import AnalyzeAllSessionsControl from './AnalyzeAllSessionsControl';
 import {
     asRecord,
@@ -20,6 +24,85 @@ import {
     PracticeParentSegmentView
 } from './user-summary-model';
 import './user-summary.css';
+import {
+    getAvailableUserSummaryMaps,
+    getUserSummaryMapLevel,
+    searchUserSummaryMapLevel,
+} from './user-summary-ai-tools';
+import {
+    createOperationFrom,
+    type Operation,
+} from 'components/ai-operations';
+
+export type UserSummaryMapLevelResult = {
+    status: unknown;
+    message?: unknown;
+    map_count: unknown;
+    maps: Array<{
+        id: unknown;
+        name: unknown;
+        section_count: unknown;
+        mistake_percent: unknown;
+        expert_adherence_percent: unknown;
+    }>;
+};
+
+export type AvailableUserSummaryMapsResult = {
+    status: unknown;
+    message?: unknown;
+    map_count: unknown;
+    map_options: unknown[];
+};
+
+export type UserSummaryMapSearchResult = {
+    status: unknown;
+    message?: unknown;
+    query: unknown;
+    match_count: unknown;
+    maps: Array<{ id: unknown; name: unknown; matched_fields: unknown }>;
+};
+
+export interface UserSummaryHandle extends NamedOperationComponentHandle {
+    getUserSummaryMapLevel(args: Record<string, any>): Operation<UserSummaryMapLevelResult>;
+    getAvailableUserSummaryMaps(): Operation<AvailableUserSummaryMapsResult>;
+    searchUserSummaryMapLevel(args: Record<string, any>): Operation<UserSummaryMapSearchResult>;
+}
+
+const compactMapLevelForAi = (result: Record<string, any>) => ({
+    status: result.status,
+    ...(result.message ? { message: result.message } : {}),
+    map_count: result.map_count ?? 0,
+    maps: Array.isArray(result.maps)
+        ? result.maps.map((map: Record<string, any>) => ({
+            id: map.id,
+            name: map.name,
+            section_count: map.section_count,
+            mistake_percent: map.mistake_percent,
+            expert_adherence_percent: map.expert_adherence_percent,
+        }))
+        : [],
+});
+
+const compactAvailableMapsForAi = (result: Record<string, any>) => ({
+    status: result.status,
+    ...(result.message ? { message: result.message } : {}),
+    map_count: result.map_count ?? 0,
+    map_options: Array.isArray(result.map_options) ? result.map_options : [],
+});
+
+const compactMapSearchForAi = (result: Record<string, any>) => ({
+    status: result.status,
+    ...(result.message ? { message: result.message } : {}),
+    query: result.query ?? null,
+    match_count: result.match_count ?? 0,
+    maps: Array.isArray(result.maps)
+        ? result.maps.map((map: Record<string, any>) => ({
+            id: map.id,
+            name: map.name,
+            matched_fields: map.matched_fields,
+        }))
+        : [],
+});
 
 type SegmentGroupProps = {
     title: string;
@@ -64,7 +147,7 @@ const SegmentGroup = ({ title, emptyText, segments, variant }: SegmentGroupProps
     </section>
 );
 
-const UserSummary = () => {
+const UserSummary = ({ name }: { name: string }) => {
     const {
         userSummary,
         userSummaryLoading,
@@ -95,6 +178,54 @@ const UserSummary = () => {
         () => buildPracticeTrackSummaryViews(asRecord(parsedSummary), getLabelName, getCategoryLabels),
         [getCategoryLabels, getLabelName, parsedSummary],
     );
+    const screenStateRef = useRef({
+        userSummary,
+        userSummaryLoading,
+        userSummaryError,
+        labelsLoading,
+        labelsError,
+        getLabelName,
+        getCategoryLabels,
+    });
+    screenStateRef.current = {
+        userSummary,
+        userSummaryLoading,
+        userSummaryError,
+        labelsLoading,
+        labelsError,
+        getLabelName,
+        getCategoryLabels,
+    };
+    const componentRef = useRef<UserSummaryHandle | null>(null);
+
+    if (componentRef.current === null) {
+        componentRef.current = {
+            getComponentName: () => name,
+            getUserSummaryMapLevel: (args) => createOperationFrom(() => compactMapLevelForAi(getUserSummaryMapLevel({
+                userSummary: screenStateRef.current.userSummary || undefined,
+                loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
+                error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
+                getLabelName: screenStateRef.current.getLabelName,
+                getCategoryLabels: screenStateRef.current.getCategoryLabels,
+            }, args)), 'complete'),
+            getAvailableUserSummaryMaps: () => createOperationFrom(() => compactAvailableMapsForAi(getAvailableUserSummaryMaps({
+                userSummary: screenStateRef.current.userSummary || undefined,
+                loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
+                error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
+                getLabelName: screenStateRef.current.getLabelName,
+                getCategoryLabels: screenStateRef.current.getCategoryLabels,
+            })), 'complete'),
+            searchUserSummaryMapLevel: (args) => createOperationFrom(() => compactMapSearchForAi(searchUserSummaryMapLevel({
+                userSummary: screenStateRef.current.userSummary || undefined,
+                loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
+                error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
+                getLabelName: screenStateRef.current.getLabelName,
+                getCategoryLabels: screenStateRef.current.getCategoryLabels,
+            }, args)), 'complete'),
+        };
+    }
+    useRegisterOperationComponentRef(componentRef);
+
 
     return (
         <Box className="user-summary-container">

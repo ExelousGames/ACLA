@@ -1,10 +1,17 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CircuitMaps from '../circuit-maps';
 import apiService from 'services/api.service';
-import { AnalysisContext, AnalysisContextType } from 'views/lap-analysis/analysis-context';
+import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
+import {
+    OPERATION_COMPONENT_NAMES,
+    OperationComponentRefProvider,
+    useRegisterOperationComponentRef,
+} from 'contexts/OperationComponentRefContext';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
+import { RecordingState } from 'views/lap-analysis/recording-state';
+import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 
 const mockRefreshCircuitMaps = jest.fn();
 const mockUpsertCachedCircuitMap = jest.fn();
@@ -62,42 +69,74 @@ jest.mock('contexts/CircuitMapsContext', () => ({
 
 const mockedApi = apiService as jest.Mocked<typeof apiService>;
 
-const baseContext: AnalysisContextType = {
-    activeTab: 'mapLists',
-    mapSelected: null,
-    sessionSelected: null,
-    liveData: {},
-    TelemetryDataLiveStatus: null,
-    recordedSessionDataFilePath: null,
-    recordedTelemetryDataCount: 0,
-    recordedSessioStaticsData: {},
-    activeVisualizations: [],
-    latestGuidanceMessage: null,
-    sessionIntelligence: null,
-    setMap: jest.fn(),
-    setSession: jest.fn(),
-    setLiveSessionData: jest.fn(),
-    setRecordedSessionStaticsData: jest.fn(),
-    setRecordedSessionDataFilePath: jest.fn(),
-    setActiveTab: jest.fn(),
-    writeRecordedLiveSessionData: jest.fn(),
-    readRecordedSessionData: jest.fn(),
-    finalizeRecordingWrites: jest.fn(),
+const baseContext: LiveSessionRuntime = {
+    sessionGame: null,
+    staticData: {},
+    recordingState: RecordingState.CHECKING,
+    recordingMetadata: null,
+    recordingFileKey: null,
+    recordingActive: false,
+    recordingGame: null,
+    restorationStatus: 'idle',
+    restorationError: null,
+    recordingFileValidation: null,
+    recorderControl: null,
+    analysisResultPages: [],
+    activeAnalysisResultPageId: null,
+    getNextCorner: jest.fn(() => null),
+    getLiveSessionSnapshot: jest.fn(() => ({
+        status: 'empty',
+        track: '',
+        car: '',
+        current_lap: 0,
+        completed_laps: 0,
+        normalized_position: 0,
+        sample_count: 0,
+        live_session_type: 'unknown',
+        completed_lap_count: 0,
+    })),
+    startLiveSession: jest.fn(),
+    endLiveSession: jest.fn(),
+    setRecordingMetadata: jest.fn(),
+    transitionRecordingState: jest.fn(),
+    startRecordingSession: jest.fn(),
+    stopRecordingSession: jest.fn(),
+    streamRecordedTelemetry: jest.fn(),
     clearRecordingSession: jest.fn(),
-    setActiveVisualizations: jest.fn(),
-    sendGuidanceToChat: jest.fn(),
+    clearPersistedDraft: jest.fn(),
+    registerRecorderControl: jest.fn(),
+    appendAnalysisResultPage: jest.fn(),
+    selectAnalysisResultPage: jest.fn(),
+    updateActiveAnalysisResultPage: jest.fn(),
 };
 
-const renderCircuitMaps = (context: Partial<AnalysisContextType> = {}) => (
+const LiveSessionReference = ({ snapshot }: { snapshot: LiveSessionRuntime }) => {
+    const snapshotRef = React.useRef(snapshot);
+    snapshotRef.current = snapshot;
+    const componentRef = React.useRef<any>(null);
+    if (componentRef.current === null) {
+        componentRef.current = {
+            getComponentName: () => OPERATION_COMPONENT_NAMES.LIVE_SESSION,
+            getAssistantSnapshot: () => snapshotRef.current,
+            subscribeAssistantSnapshot: () => () => undefined,
+        };
+    }
+    useRegisterOperationComponentRef(componentRef);
+    return null;
+};
+
+const renderCircuitMaps = (context: Partial<LiveSessionRuntime> = {}) => (
     render(
-        <AnalysisContext.Provider value={{ ...baseContext, ...context }}>
+        <OperationComponentRefProvider>
+            <LiveSessionReference snapshot={{ ...baseContext, ...context }} />
             <CircuitMaps />
-        </AnalysisContext.Provider>
+        </OperationComponentRefProvider>
     )
 );
 
 describe('CircuitMaps', () => {
     beforeEach(() => {
+        liveTelemetryStore.resetSession();
         jest.clearAllMocks();
         mockedApi.get.mockResolvedValue({ data: { list: [] }, status: 200 } as any);
         mockedApi.post.mockResolvedValue({ data: { id: 'map-1' }, status: 201 } as any);
@@ -134,13 +173,20 @@ describe('CircuitMaps', () => {
     });
 
     it('saves a new global map payload without user ownership', async () => {
-        renderCircuitMaps({
-            TelemetryDataLiveStatus: ACC_STATUS.ACC_LIVE,
-            liveData: {
+        renderCircuitMaps();
+        act(() => {
+            liveTelemetryStore.publishFrame({
+                type: 'frame',
+                game: 'acc',
+                sequence: 1,
+                committedSequence: 1,
+                committedCount: 1,
+                sample: {
                 Graphics_status: ACC_STATUS.ACC_LIVE,
                 Graphics_normalized_car_position: 0.1,
                 Graphics_car_coordinates: JSON.stringify([{ x: 1, y: 0, z: 2 }]),
-            },
+                },
+            });
         });
 
         await userEvent.type(screen.getByLabelText('Circuit name'), 'Global Test Circuit');
@@ -193,12 +239,58 @@ describe('CircuitMaps', () => {
         });
     });
 
+    it('processes all 120 live capture frames published in one React batch', async () => {
+        renderCircuitMaps();
+        await waitFor(() => expect(mockedApi.get).toHaveBeenCalledWith('/circuit-map/list', { game: 'acc' }));
+        act(() => {
+            liveTelemetryStore.publishFrame({
+                type: 'frame',
+                game: 'acc',
+                sample: {
+                    Graphics_status: ACC_STATUS.ACC_LIVE,
+                    Graphics_normalized_car_position: 0,
+                    Graphics_car_coordinates: JSON.stringify([{ x: 1, y: 1, z: 2 }]),
+                },
+                sequence: 1,
+                committedSequence: 1,
+                committedCount: 1,
+            });
+        });
+        await userEvent.click(screen.getByRole('button', { name: /start capture/i }));
+        act(() => liveTelemetryStore.beginStream());
+
+        act(() => {
+            for (let sequence = 1; sequence <= 120; sequence += 1) {
+                liveTelemetryStore.publishFrame({
+                    type: 'frame',
+                    game: 'acc',
+                    sample: {
+                        Graphics_status: ACC_STATUS.ACC_LIVE,
+                        Graphics_normalized_car_position: (sequence - 1) / 1000,
+                        Graphics_car_coordinates: JSON.stringify([{
+                            x: sequence + 1,
+                            y: 1,
+                            z: sequence + 2,
+                        }]),
+                    },
+                    sequence,
+                    committedSequence: sequence,
+                    committedCount: sequence,
+                });
+            }
+        });
+
+        expect(screen.getByText('120 samples')).toBeInTheDocument();
+    });
+
     it('switches Other games into manual edit mode', async () => {
         renderCircuitMaps();
+        await screen.findByText('No global maps found.');
 
         await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'other');
 
         expect(await screen.findByText('Manual Edit')).toBeInTheDocument();
+        await waitFor(() => expect(screen.queryByText('Loading maps')).not.toBeInTheDocument());
         expect(screen.queryByText('ACC Offline')).not.toBeInTheDocument();
     });
 });

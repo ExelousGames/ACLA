@@ -1,7 +1,8 @@
 """Racing-engineer knowledge corpus loader.
 
 The racing engineer's brain (Qwen2.5-32B) reaches into this corpus via the
-``explain_label`` / ``analyze_telemetry`` server-side tools. The corpus
+``explain_label`` / ``get_track_knowledge`` / ``search_racing_knowledge``
+server-side tools. The corpus
 itself is plain Markdown files with YAML frontmatter — one file per label,
 per main-label family, or per telemetry feature.
 
@@ -30,14 +31,9 @@ Two newer surfaces sit alongside that:
     ``track_guides/<id>.md``. This is for driver coaching guidance, while
     ``tracks/`` stays available for factual track notes.
 
-  * ``tool(name)`` — keyed lookup over ``tools/<name>.md``. These entries
-    contain LLM-facing voice tool titles, descriptions, and parameter
-    descriptions. Executable handlers still live in code; tool-use
-    instructions live in the corpus.
-
   * ``search(query, top_k)`` — RAG retrieval over every ``.md`` in the
     racing-engineer corpus (``labels/``, ``main_labels/``, ``features/``,
-    ``behaviors/``, ``tracks/``, ``tools/``, ``knowledge/``) via the
+    ``behaviors/``, ``tracks/``, ``knowledge/``) via the
     embedding index in :mod:`._registry`. Use when the right doc isn't obvious — works
     for prose (``knowledge/``) and for structured per-label / per-track
     docs alike.
@@ -261,18 +257,6 @@ def agent_behavior(name: str) -> Optional[dict]:
     return _load_category("agent_behaviors").get(_slug(name))
 
 
-def tool(name: str) -> Optional[dict]:
-    """Return the LLM-facing usage doc for one voice tool by function name.
-
-    Tool docs live in ``tools/<function_name>.md``. They are intentionally
-    data-only: descriptions, parameter wording, and UI titles belong here,
-    while executable dispatch remains in the frontend or server service code.
-    """
-    if not name:
-        return None
-    return _load_category("tools").get(_slug(name))
-
-
 def _track_like(category: str, track_id: str, corner: Optional[str] = None) -> Optional[dict]:
     """Return a keyed track-shaped entry, optionally filtered to one corner.
 
@@ -357,7 +341,7 @@ def search(query: str, top_k: Optional[int] = None) -> List[dict]:
     """RAG search over every ``.md`` in the racing-engineer corpus.
 
     Walks ``labels/``, ``main_labels/``, ``features/``, ``behaviors/``,
-    ``tracks/``, ``tools/``, and ``knowledge/`` — so a free-text question can find
+    ``tracks/``, and ``knowledge/`` — so a free-text question can find
     any doc the engineer might want, not just the prose in ``knowledge/``.
 
     Returns JSON-friendly dicts with only LLM-safe fields: ``kind``,
@@ -402,7 +386,6 @@ __all__ = [
     "feature",
     "behavior",
     "agent_behavior",
-    "tool",
     "track",
     "track_guide",
     "search",

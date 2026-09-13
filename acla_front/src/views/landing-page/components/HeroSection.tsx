@@ -58,8 +58,8 @@ const HeroSection: React.FC<HeroSectionProps> = ({ onLoginClick }) => {
 
       {/* Content */}
       <div className="lp-hero__content">
-        <span className="lp-hero__logo-btn" aria-label="ACLA Home">
-          ACLA
+        <span className="lp-hero__logo-btn" aria-label="Kestrel Home">
+          Kestrel
         </span>
         <h1 className="lp-hero__headline">
           Your AI Race Engineer.

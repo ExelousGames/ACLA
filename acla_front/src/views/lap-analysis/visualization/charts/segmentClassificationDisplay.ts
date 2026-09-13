@@ -6,61 +6,41 @@ export type SegmentTimeGap = {
     delta_ms: number;
 };
 
-export type SegmentClassificationSubSegment = {
+/** A flat label interval in original telemetry indices; end_index is exclusive. */
+export type SegmentClassificationLabel = {
+    label_name: string;
     start_index: number;
     end_index: number;
-    labels: string[];
-    time_gap?: SegmentTimeGap;
 };
 
 export type SegmentClassificationSegment = {
     id?: string;
-    labels?: string[];
-    parent_segment_id?: string;
-    parent_label_id?: string;
-    main_label_id?: string;
+    labels: SegmentClassificationLabel[];
+    track_section?: string;
     start_index: number;
     end_index: number;
-    sub_labels?: string[];
-    sub_segments?: SegmentClassificationSubSegment[];
-    child_segments?: SegmentClassificationSubSegment[];
     time_gap?: SegmentTimeGap;
+};
+
+export const normalizeSegmentLabels = (value: unknown): SegmentClassificationLabel[] => {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((label): SegmentClassificationLabel[] => {
+        if (!label || typeof label !== 'object'
+            || typeof label.label_name !== 'string' || !label.label_name.trim()
+            || !Number.isInteger(label.start_index) || label.start_index < 0
+            || !Number.isInteger(label.end_index) || label.end_index <= label.start_index) {
+            return [];
+        }
+        return [{
+            label_name: label.label_name.trim(),
+            start_index: label.start_index,
+            end_index: label.end_index,
+        }];
+    });
 };
 
 export const getSegmentLabelText = (labelId: string, resolveLabel?: SegmentLabelResolver): string => (
     resolveLabel?.(labelId) || labelId
-);
-
-export const getSegmentParentLabelText = (
-    segment: SegmentClassificationSegment,
-    resolveLabel?: SegmentLabelResolver,
-): string => {
-    const labelId = segment.parent_segment_id || segment.parent_label_id || segment.main_label_id;
-    if (labelId) {
-        return getSegmentLabelText(labelId, resolveLabel);
-    }
-
-    if (Array.isArray(segment.labels) && segment.labels.length > 0) {
-        return segment.labels.map((label) => getSegmentLabelText(label, resolveLabel)).join(', ');
-    }
-
-    return 'Unlabeled';
-};
-
-export const getSegmentMainLabelText = getSegmentParentLabelText;
-
-export const getSegmentChildSegments = (segment: SegmentClassificationSegment): SegmentClassificationSubSegment[] => (
-    Array.isArray(segment.child_segments) && segment.child_segments.length > 0
-        ? segment.child_segments
-        : segment.sub_segments || []
-);
-
-const getSegmentParentLabelIds = (segment: SegmentClassificationSegment): string[] => (
-    [
-        segment.parent_segment_id,
-        segment.parent_label_id,
-        segment.main_label_id
-    ].filter((label): label is string => Boolean(label))
 );
 
 const dedupeTexts = (texts: string[]): string[] => {
@@ -72,51 +52,35 @@ const dedupeTexts = (texts: string[]): string[] => {
     });
 };
 
-export const getSegmentChildLabelTexts = (segment: SegmentClassificationSegment): string[] => {
-    if (Array.isArray(segment.sub_labels) && segment.sub_labels.length > 0) {
-        return dedupeTexts(segment.sub_labels);
-    }
-
-    const childSegmentLabels = getSegmentChildSegments(segment)
-        .flatMap((childSegment) => childSegment.labels);
-
-    if (childSegmentLabels.length > 0) {
-        return dedupeTexts(childSegmentLabels);
-    }
-
-    const parentLabelIds = getSegmentParentLabelIds(segment);
-    if (parentLabelIds.length > 0 && Array.isArray(segment.labels)) {
-        return segment.labels.filter((label) => !parentLabelIds.includes(label));
-    }
-
-    return [];
-};
-
-export const getSegmentSubLabelTexts = getSegmentChildLabelTexts;
-
-export const resolveSegmentChildLabelTexts = (
+export const getSegmentTrackSectionText = (
     segment: SegmentClassificationSegment,
     resolveLabel?: SegmentLabelResolver,
-): string[] => getSegmentChildLabelTexts(segment).map((labelId) => getSegmentLabelText(labelId, resolveLabel));
-
-export const getActiveChildLabelTexts = (segment: SegmentClassificationSegment, sourceIndex: number): string[] => {
-    const activeChildSegment = getSegmentChildSegments(segment).find((childSegment) => (
-        sourceIndex >= childSegment.start_index && sourceIndex < childSegment.end_index
-    ));
-
-    if (activeChildSegment) {
-        return dedupeTexts(activeChildSegment.labels);
+): string => {
+    if (segment.track_section) {
+        return getSegmentLabelText(segment.track_section, resolveLabel);
     }
 
-    return getSegmentChildLabelTexts(segment);
+    return 'Unknown section';
 };
 
-export const getActiveSubLabelTexts = getActiveChildLabelTexts;
+export const getSegmentLabelIds = (segment: SegmentClassificationSegment): string[] => (
+    Array.isArray(segment.labels) ? dedupeTexts(segment.labels.map((label) => label.label_name)) : []
+);
 
-export const resolveActiveChildLabelTexts = (
+export const resolveSegmentLabelTexts = (
+    segment: SegmentClassificationSegment,
+    resolveLabel?: SegmentLabelResolver,
+): string[] => (
+    getSegmentLabelIds(segment).map((labelId) => getSegmentLabelText(labelId, resolveLabel))
+);
+
+export const resolveActiveSegmentLabelTexts = (
     segment: SegmentClassificationSegment,
     sourceIndex: number,
     resolveLabel?: SegmentLabelResolver,
-): string[] => getActiveChildLabelTexts(segment, sourceIndex).map((labelId) => getSegmentLabelText(labelId, resolveLabel));
-
-export const resolveActiveSubLabelTexts = resolveActiveChildLabelTexts;
+): string[] => resolveSegmentLabelTexts({
+    ...segment,
+    labels: segment.labels.filter((label) => (
+        sourceIndex >= label.start_index && sourceIndex < label.end_index
+    )),
+}, resolveLabel);

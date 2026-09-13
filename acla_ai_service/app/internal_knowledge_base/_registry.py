@@ -3,7 +3,7 @@
 Layout::
 
     app/skills/internal/annotation/             (this package — code + json data)
-      __init__.py, _registry.py, _query.py, _embedder.py
+      __init__.py, _registry.py, _query.py
       <name>.json                      (skill definitions — drop a json in, restart)
 
 The registry is a read-only document store. It exposes three verbs,
@@ -13,8 +13,7 @@ uniform across every skill:
   * ``find(path, **filters)``   — Mongo-style filter over a collection at *path*
   * ``iter(path)``              — yield every document in a collection
 
-Semantic retrieval over the label catalog is a separate concern — see
-:mod:`app.internal_knowledge_base.label_search`.
+Label selection is handled by deterministic requirements in the catalog.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -46,9 +45,6 @@ _SKILLS_ROOT = _PACKAGE_ROOT
 @dataclass
 class SkillSpec:
     name: str
-    description: str
-    when_to_use: List[str] = field(default_factory=list)
-    tags: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -92,9 +88,6 @@ class SkillRegistry:
                 continue
             spec = SkillSpec(
                 name=str(header.get("name", json_path.stem)),
-                description=str(header.get("description", "")).strip(),
-                when_to_use=list(header.get("when_to_use") or []),
-                tags=list(header.get("tags") or []),
             )
 
             self._skills[spec.name] = Skill(
@@ -149,7 +142,7 @@ class SkillRegistry:
     # ------------------------------------------------------------------
 
     def get(self, path: str, default: Any = None) -> Any:
-        """Path lookup. ``skills.get("sub_label_annotation.labels.MS1.description")``."""
+        """Path lookup. ``skills.get("lap_annotation.labels.MSP.description")``."""
         return self._resolve(path, default)
 
     def find(self, collection_path: str, **filters: Any) -> List[Dict[str, Any]]:

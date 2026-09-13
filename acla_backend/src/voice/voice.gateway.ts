@@ -18,9 +18,8 @@ import { WebSocket as WsClient, RawData } from 'ws';
  * AI service stays auth-free on its private port.
  *
  * The gateway does NOT use `@SubscribeMessage` — this is a frame-level
- * passthrough proxy (binary PCM audio + JSON tool relay frames). We
- * subscribe to raw `message` events on the client and pipe them to
- * upstream unchanged, in both directions.
+ * proxy (binary PCM audio + JSON tool relay frames). It sanitizes compact
+ * session context on control frames, then pipes frames in both directions.
  */
 @WebSocketGateway({ path: '/voice/stream' })
 export class VoiceGateway implements OnGatewayConnection {
@@ -57,8 +56,20 @@ export class VoiceGateway implements OnGatewayConnection {
         // Client-supplied — forwarded as-is to the AI service, same as
         // the text path forwards `context`. Not used for authorization.
         const sessionId = parsed.searchParams.get('session_id') || '';
+        const chatLlmModel = this.normalizeChatLlmModel(
+            parsed.searchParams.get('chat_llm_model'),
+        );
+        const chatSessionAction = parsed.searchParams.get('chat_session_action');
+        const chatSessionId = parsed.searchParams.get('chat_session_id');
 
-        this.bridge(client, userId, sessionId);
+        this.bridge(
+            client,
+            userId,
+            sessionId,
+            chatLlmModel,
+            chatSessionAction,
+            chatSessionId,
+        );
     }
 
     private aiServiceWsBase(): string {
@@ -67,17 +78,114 @@ export class VoiceGateway implements OnGatewayConnection {
         return `${proto}//${httpUrl.host}`;
     }
 
-    private bridge(client: WsClient, userId: string, sessionId: string): void {
+    private normalizeChatLlmModel(model: string | null): string | null {
+        const normalized = (model || '').trim();
+        return normalized || null;
+    }
+
+    private buildUpstreamUrl(
+        userId: string,
+        sessionId: string,
+        chatLlmModel: string | null = null,
+        chatSessionAction: string | null = null,
+        chatSessionId: string | null = null,
+    ): string {
         const params = new URLSearchParams();
         params.set('user_id', userId);
         if (sessionId) params.set('session_id', sessionId);
-        const upstreamUrl = `${this.aiServiceWsBase()}/voice/stream?${params.toString()}`;
+        if (chatLlmModel) params.set('chat_llm_model', chatLlmModel);
+        if (chatSessionAction) params.set('chat_session_action', chatSessionAction);
+        if (chatSessionId) params.set('chat_session_id', chatSessionId);
+        return `${this.aiServiceWsBase()}/voice/stream?${params.toString()}`;
+    }
+
+    private sanitizeSessionContext(value: unknown): Record<string, unknown> {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            return {};
+        }
+
+        const sessionContext = value as Record<string, unknown>;
+        return {
+            ...(typeof sessionContext.session_mode === 'string'
+                ? { session_mode: sessionContext.session_mode }
+                : {}),
+            ...(typeof sessionContext.agent_mode === 'string'
+                ? { agent_mode: sessionContext.agent_mode }
+                : {}),
+        };
+    }
+
+    private sanitizeContextFrame(data: RawData, isBinary: boolean): { data: RawData | string; isBinary: boolean } {
+        if (isBinary) {
+            return { data, isBinary };
+        }
+
+        const text = typeof data === 'string' ? data : data.toString();
+        let payload: any;
+        try {
+            payload = JSON.parse(text);
+        } catch {
+            return { data, isBinary };
+        }
+
+        if (!payload || typeof payload !== 'object') {
+            return { data, isBinary };
+        }
+
+        const isContextFrame = (
+            payload.type === 'session_info'
+            || payload.type === 'session_context'
+            || payload.type === 'user_text'
+        );
+        if (!isContextFrame) {
+            return { data, isBinary };
+        }
+
+        const {
+            session_mode: _sessionMode,
+            agent_mode: _agentMode,
+            context_kind: _contextKind,
+            active_agent_session: _activeAgentSession,
+            agent_session: _agentSession,
+            agent_modes: _agentModes,
+            tools: _tools,
+            tool_metadata: _toolMetadata,
+            query_scope_schema: _queryScopeSchema,
+            tool_result_handling: _toolResultHandling,
+            ...contextFrame
+        } = payload;
+        const sanitizedPayload = {
+            ...contextFrame,
+            session_context: this.sanitizeSessionContext(payload.session_context),
+        };
+
+        return {
+            data: JSON.stringify(sanitizedPayload),
+            isBinary: false,
+        };
+    }
+
+    private bridge(
+        client: WsClient,
+        userId: string,
+        sessionId: string,
+        chatLlmModel: string | null,
+        chatSessionAction: string | null,
+        chatSessionId: string | null,
+    ): void {
+        const upstreamUrl = this.buildUpstreamUrl(
+            userId,
+            sessionId,
+            chatLlmModel,
+            chatSessionAction,
+            chatSessionId,
+        );
 
         const upstream = new WsClient(upstreamUrl);
 
         // Hold client → upstream messages until upstream finishes opening —
         // the browser audio worklet starts pushing PCM frames immediately.
-        const queue: Array<{ data: RawData; isBinary: boolean }> = [];
+        const queue: Array<{ data: RawData | string; isBinary: boolean }> = [];
         let upstreamOpen = false;
 
         const closeBoth = (code?: number, reason?: string): void => {
@@ -108,12 +216,13 @@ export class VoiceGateway implements OnGatewayConnection {
         });
 
         client.on('message', (data, isBinary) => {
+            const next = this.sanitizeContextFrame(data, isBinary);
             if (!upstreamOpen) {
-                queue.push({ data, isBinary });
+                queue.push(next);
                 return;
             }
             if (upstream.readyState === WsClient.OPEN) {
-                upstream.send(data, { binary: isBinary });
+                upstream.send(next.data, { binary: next.isBinary });
             }
         });
 
