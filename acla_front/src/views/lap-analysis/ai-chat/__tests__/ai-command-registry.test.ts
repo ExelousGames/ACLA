@@ -333,33 +333,7 @@ describe('frontend operation registry', () => {
         expect(handle.queryLapAnalysisResult).toHaveBeenCalledWith(args);
     });
 
-    it.each([
-        {},
-        { query: '' },
-        { query: '   ' },
-        { query: 4 },
-        { query: '$count(analyses)', extra: true },
-        ...[0, -1, 1.5, NaN, Infinity, '1', 'current', null, {}, undefined].map((scope) => ({ query: 'analyses', scope })),
-        Object.create({ query: 'analyses', scope: 1 }),
-        Object.defineProperty({ query: 'analyses' }, 'scope', { get: () => 1 }),
-    ])('rejects an invalid analysis result query: %p', async (args) => {
-        const componentName = 'visualization:analysis-results';
-        const handle: Partial<AnalysisResultsChartHandle> = {
-            queryLapAnalysisResult: jest.fn(),
-        };
-        const registry = createAiCommandRegistry({
-            componentRefs: register(componentName, handle),
-        });
-
-        const operation = registry.query_lap_analysis_result(args as any);
-
-        await expect(operation.result).rejects.toMatchObject({
-            name: 'InvalidOperationCallError',
-        });
-        expect(handle.queryLapAnalysisResult).not.toHaveBeenCalled();
-    });
-
-    it('validates and dispatches an Analysis Results query apply operation unchanged', async () => {
+    it('dispatches an Analysis Results query apply operation unchanged', async () => {
         const componentOperation = resolvedOperation({
             status: 'applied' as const,
             message: 'UI is now updated with the filtered analysis results',
@@ -385,26 +359,18 @@ describe('frontend operation registry', () => {
     });
 
     it.each([
-        {},
-        { query: '' },
-        { query: '   ' },
-        { query: 4 },
-        { query: 'elements', page_number: 1.5 },
-        { query: 'elements', page_number: '1' },
-        { query: 'elements', page_number: undefined },
-        { query: 'elements', extra: true },
-    ])('rejects invalid Analysis Results apply arguments: %p', async (args) => {
-        const handle: Partial<AnalysisResultsChartHandle> = {
-            applyAnalysisResultQuery: jest.fn(),
-        };
+        ['query_lap_analysis_result', 'queryLapAnalysisResult'],
+        ['apply_query_to_lap_analysis_result', 'applyAnalysisResultQuery'],
+    ] as const)('delegates %s argument validation to the component', async (command, method) => {
+        const error = new Error('Component rejected query arguments.');
+        const validate = jest.fn(() => { throw error; });
         const registry = createAiCommandRegistry({
-            componentRefs: register('visualization:analysis-results', handle),
+            componentRefs: register('visualization:analysis-results', { [method]: validate }),
         });
+        const args = { query: '' };
 
-        await expect(registry.apply_query_to_lap_analysis_result(args).result).rejects.toMatchObject({
-            name: 'InvalidOperationCallError',
-        });
-        expect(handle.applyAnalysisResultQuery).not.toHaveBeenCalled();
+        await expect(registry[command](args).result).rejects.toBe(error);
+        expect(validate).toHaveBeenCalledWith(args);
     });
 
     it('rejects an analysis result expression when its tab is not mounted', async () => {

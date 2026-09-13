@@ -138,7 +138,7 @@ import { ProcedurePlanRunner } from 'components/ai-operations/ProcedurePlan';
 import { RepeatablePlanRunner } from 'components/ai-operations/RepeatablePlan';
 import { LiveRangeTodoListRunner } from 'components/ai-operations/LiveRangeTodoList';
 import { createAiCommandRegistry, createWorkflowToolDispatcher } from '../../ai-chat/ai-command-registry';
-import { normalizeOperationError, serializeError } from 'errors/OperationError';
+import { InvalidOperationCallError, normalizeOperationError, serializeError } from 'errors/OperationError';
 import { buildFormattedToolResultFrame } from '../../ai-chat/voice-tool-result-formatter';
 
 const ALL_ANALYSES_COUNT_QUERY = '$count(analyses)';
@@ -224,6 +224,58 @@ describe('AnalysisResultsChart', () => {
         mockOverlayPresentation = null;
         mockFloatingChatClosedListener = null;
         mockOverlaySessionListeners.clear();
+    });
+
+    it.each([
+        null,
+        [],
+        {},
+        { query: '' },
+        { query: '   ' },
+        { query: 4 },
+        { query: '$count(analyses)', extra: true },
+        ...[0, -1, 1.5, NaN, Infinity, '1', 'current', null, {}, undefined].map((scope) => ({ query: 'analyses', scope })),
+        Object.create({ query: 'analyses', scope: 1 }),
+        Object.defineProperty({ query: 'analyses' }, 'scope', { get: () => 1 }),
+    ])('rejects an invalid analysis result query: %p', async (args) => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        await act(async () => {
+            render(<AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="invalid-analysis-arguments"
+                data={{ elements: [] }}
+            />);
+        });
+
+        expect(() => chartRef.current!.queryLapAnalysisResult(args as any))
+            .toThrow(InvalidOperationCallError);
+    });
+
+    it.each([
+        null,
+        [],
+        {},
+        { query: '' },
+        { query: '   ' },
+        { query: 4 },
+        { query: 'elements', page_number: 1.5 },
+        { query: 'elements', page_number: '1' },
+        { query: 'elements', page_number: undefined },
+        { query: 'elements', extra: true },
+    ])('rejects invalid Analysis Results apply arguments: %p', async (args) => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        await act(async () => {
+            render(<AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="invalid-analysis-arguments"
+                data={{ elements: [] }}
+            />);
+        });
+
+        expect(() => chartRef.current!.applyAnalysisResultQuery(args as any))
+            .toThrow(InvalidOperationCallError);
     });
 
     it.each([

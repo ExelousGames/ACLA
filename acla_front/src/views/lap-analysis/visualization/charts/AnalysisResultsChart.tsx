@@ -52,7 +52,7 @@ import {
     type LiveRangeTodoListHandle,
     type LiveRangeTodoListInput,
 } from 'components/ai-operations';
-import { OperationExecutionError } from 'errors/OperationError';
+import { InvalidOperationCallError, OperationExecutionError } from 'errors/OperationError';
 import { overlaySessionClient } from 'views/floating-chat/overlay-display-client';
 import type { MutableAiOverlayComponent } from 'views/floating-chat/MutableAiOverlayComponent';
 import {
@@ -77,6 +77,69 @@ import {
     type QueryLapAnalysisResultInput,
     type QueryLapAnalysisResultOutput,
 } from './analysisResultsQuery';
+
+const validateAnalysisResultQueryArguments = (
+    args: unknown,
+): QueryLapAnalysisResultInput => {
+    const validationMessage = 'query_lap_analysis_result requires a non-empty string property named query and accepts only an optional scope of "all" or a positive integer page number.';
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        throw new InvalidOperationCallError(validationMessage);
+    }
+    const value = args as Record<string, unknown>;
+    const keys = Reflect.ownKeys(value);
+    const queryProperty = Object.getOwnPropertyDescriptor(value, 'query');
+    const scopeProperty = Object.getOwnPropertyDescriptor(value, 'scope');
+    if (keys.some((key) => key !== 'query' && key !== 'scope')
+        || !queryProperty
+        || !('value' in queryProperty)
+        || typeof queryProperty.value !== 'string'
+        || !queryProperty.value.trim()
+        || (scopeProperty && (
+            !('value' in scopeProperty)
+            || (scopeProperty.value !== 'all' && (
+                typeof scopeProperty.value !== 'number'
+                || !Number.isInteger(scopeProperty.value)
+                || scopeProperty.value < 1
+            ))
+        ))) {
+        throw new InvalidOperationCallError(validationMessage);
+    }
+    return {
+        query: queryProperty.value,
+        ...(scopeProperty ? { scope: scopeProperty.value as 'all' | number } : {}),
+    };
+};
+
+const validateApplyAnalysisResultQueryArguments = (
+    args: unknown,
+): ApplyAnalysisResultQueryInput => {
+    const validationMessage = 'apply_query_to_lap_analysis_result requires a non-empty string property named query and accepts only an optional integer property named page_number.';
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        throw new InvalidOperationCallError(validationMessage);
+    }
+    const value = args as Record<string, unknown>;
+    const keys = Reflect.ownKeys(value);
+    const queryProperty = Object.getOwnPropertyDescriptor(value, 'query');
+    const pageNumberProperty = Object.getOwnPropertyDescriptor(value, 'page_number');
+    if (
+        keys.some((key) => key !== 'query' && key !== 'page_number')
+        || !queryProperty
+        || !('value' in queryProperty)
+        || typeof queryProperty.value !== 'string'
+        || !queryProperty.value.trim()
+        || (pageNumberProperty && (
+            !('value' in pageNumberProperty)
+            || typeof pageNumberProperty.value !== 'number'
+            || !Number.isInteger(pageNumberProperty.value)
+        ))
+    ) {
+        throw new InvalidOperationCallError(validationMessage);
+    }
+    return {
+        query: queryProperty.value,
+        ...(pageNumberProperty ? { page_number: pageNumberProperty.value as number } : {}),
+    };
+};
 
 const formatPosition = (value: number): string => `${(value * 100).toFixed(1)}%`;
 
@@ -1813,6 +1876,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         displaySpecificResultInOverlay,
         prepareComparisonVoices,
         applyAnalysisResultQuery: (args) => {
+            const request = validateApplyAnalysisResultQueryArguments(args);
             const operationGeneration = applyOperationGenerationRef.current + 1;
             applyOperationGenerationRef.current = operationGeneration;
             pendingSelectionWaitersRef.current.forEach((waiter) => {
@@ -1825,7 +1889,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             pendingSelectionWaitersRef.current.clear();
 
             return createOperationFrom(async () => {
-                const requestedPageNumber = args.page_number ?? null;
+                const requestedPageNumber = request.page_number ?? null;
                 const pageCount = pagination ? retainedPages.length : 1;
                 if (pagination && pageCount === 0) {
                     throw createAnalysisResultsApplyError(
@@ -1854,7 +1918,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 }
 
                 const applied = await activeQueryRef.current.applyExpression(
-                    args.query,
+                    request.query,
                     () => operationGeneration === applyOperationGenerationRef.current,
                 );
                 if (
@@ -1874,27 +1938,30 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 };
             }, 'applied');
         },
-        queryLapAnalysisResult: ({ query, scope = 'all' }) => createOperationFrom(async () => {
-            let pages: typeof resultPages;
-            let scopedPages: typeof resultPages;
-            do {
-                pages = resultPagesRef.current;
-                scopedPages = pages.filter((_page, index) => scope === 'all' || index === scope - 1);
-                await Promise.all(scopedPages.map((page) => page.queryRef.current?.query.waitForEvaluation()));
-            } while (pages !== resultPagesRef.current || scopedPages.some((page) => (
-                page.queryRef.current?.query.getCommittedSnapshot().isEvaluating
-            )));
-            return {
-                status: 'ready' as const,
-                data: await evaluateAllAnalysisResultsQuery(query, {
-                    analyses: pages.map(({ queryRef, ...page }) => ({
-                        ...page,
-                        elements: queryRef.current?.query.getCommittedSnapshot().matchedElements
-                            ?? EMPTY_ANALYSIS_RESULT_ELEMENTS,
-                    })),
-                }, scope),
-            };
-        }, 'ready'),
+        queryLapAnalysisResult: (args) => {
+            const { query, scope = 'all' } = validateAnalysisResultQueryArguments(args);
+            return createOperationFrom(async () => {
+                let pages: typeof resultPages;
+                let scopedPages: typeof resultPages;
+                do {
+                    pages = resultPagesRef.current;
+                    scopedPages = pages.filter((_page, index) => scope === 'all' || index === scope - 1);
+                    await Promise.all(scopedPages.map((page) => page.queryRef.current?.query.waitForEvaluation()));
+                } while (pages !== resultPagesRef.current || scopedPages.some((page) => (
+                    page.queryRef.current?.query.getCommittedSnapshot().isEvaluating
+                )));
+                return {
+                    status: 'ready' as const,
+                    data: await evaluateAllAnalysisResultsQuery(query, {
+                        analyses: pages.map(({ queryRef, ...page }) => ({
+                            ...page,
+                            elements: queryRef.current?.query.getCommittedSnapshot().matchedElements
+                                ?? EMPTY_ANALYSIS_RESULT_ELEMENTS,
+                        })),
+                    }, scope),
+                };
+            }, 'ready');
+        },
         replaceAnalysisResults: (nextData) => runVisualizationBooleanCallback(
             name,
             VisualizationUpdateFailedError,

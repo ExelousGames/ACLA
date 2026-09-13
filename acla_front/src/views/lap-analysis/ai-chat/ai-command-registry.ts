@@ -321,69 +321,6 @@ type QueryContractKeysAreExact = (
 
 export type FrontendAiQueryContractCoverage = AssertTrue<QueryContractKeysAreExact>;
 
-const validateAnalysisResultQueryArguments = (
-    args: unknown,
-): QueryLapAnalysisResultInput => {
-    const validationMessage = 'query_lap_analysis_result requires a non-empty string property named query and accepts only an optional scope of "all" or a positive integer page number.';
-    if (!args || typeof args !== 'object' || Array.isArray(args)) {
-        throw new InvalidOperationCallError(validationMessage);
-    }
-    const value = args as Record<string, unknown>;
-    const keys = Reflect.ownKeys(value);
-    const queryProperty = Object.getOwnPropertyDescriptor(value, 'query');
-    const scopeProperty = Object.getOwnPropertyDescriptor(value, 'scope');
-    if (keys.some((key) => key !== 'query' && key !== 'scope')
-        || !queryProperty
-        || !('value' in queryProperty)
-        || typeof queryProperty.value !== 'string'
-        || !queryProperty.value.trim()
-        || (scopeProperty && (
-            !('value' in scopeProperty)
-            || (scopeProperty.value !== 'all' && (
-                typeof scopeProperty.value !== 'number'
-                || !Number.isInteger(scopeProperty.value)
-                || scopeProperty.value < 1
-            ))
-        ))) {
-        throw new InvalidOperationCallError(validationMessage);
-    }
-    return {
-        query: queryProperty.value,
-        ...(scopeProperty ? { scope: scopeProperty.value as 'all' | number } : {}),
-    };
-};
-
-const validateApplyAnalysisResultQueryArguments = (
-    args: unknown,
-): ApplyAnalysisResultQueryInput => {
-    const validationMessage = 'apply_query_to_lap_analysis_result requires a non-empty string property named query and accepts only an optional integer property named page_number.';
-    if (!args || typeof args !== 'object' || Array.isArray(args)) {
-        throw new InvalidOperationCallError(validationMessage);
-    }
-    const value = args as Record<string, unknown>;
-    const keys = Reflect.ownKeys(value);
-    const queryProperty = Object.getOwnPropertyDescriptor(value, 'query');
-    const pageNumberProperty = Object.getOwnPropertyDescriptor(value, 'page_number');
-    if (
-        keys.some((key) => key !== 'query' && key !== 'page_number')
-        || !queryProperty
-        || !('value' in queryProperty)
-        || typeof queryProperty.value !== 'string'
-        || !queryProperty.value.trim()
-        || (pageNumberProperty && (
-            !('value' in pageNumberProperty)
-            || typeof pageNumberProperty.value !== 'number'
-            || !Number.isInteger(pageNumberProperty.value)
-        ))
-    ) {
-        throw new InvalidOperationCallError(validationMessage);
-    }
-    return {
-        query: queryProperty.value,
-        ...(pageNumberProperty ? { page_number: pageNumberProperty.value as number } : {}),
-    };
-};
-
 const validateDisplaySpecificResultArguments = (
     args: unknown,
 ): DisplaySpecificResultInOverlayArguments => {
@@ -553,11 +490,10 @@ const definitionList = Object.freeze([
         kind: 'tool',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args) => {
-            const request = validateApplyAnalysisResultQueryArguments(args);
             return getComponent<AnalysisResultsChartHandle>(
                 context,
                 getSingletonVisualizationComponentName('analysis-results'),
-            ).applyAnalysisResultQuery(request);
+            ).applyAnalysisResultQuery(args as ApplyAnalysisResultQueryInput);
         },
     },
     {
@@ -565,11 +501,10 @@ const definitionList = Object.freeze([
         kind: 'tool',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args) => {
-            const query = validateAnalysisResultQueryArguments(args);
             return getComponent<AnalysisResultsChartHandle>(
                 context,
                 getSingletonVisualizationComponentName('analysis-results'),
-            ).queryLapAnalysisResult(query);
+            ).queryLapAnalysisResult(args as QueryLapAnalysisResultInput);
         },
     },
     {
