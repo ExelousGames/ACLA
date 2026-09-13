@@ -1,5 +1,8 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import * as comparisonOverlaySource from 'components/driver-expert-comparison/DriverExpertComparisonGraph.overlay-source';
+import { createControlledOperation, resolvedOperation, asTool } from 'components/ai-operations';
+import type { DriverExpertComparisonSnapshot } from 'components/driver-expert-comparison';
 import { synthesizeTtsPack } from 'components/tts';
 
 jest.mock('components/tts/tts-service', () => ({
@@ -124,6 +127,7 @@ import {
     VisualizationControlFailedError,
 } from 'contexts/OperationComponentError';
 import {
+    type AnalysisResultElement,
     appendAnalysisResultElement,
     normalizeAnalysisResultsData,
     removeAnalysisResultElement,
@@ -1470,6 +1474,228 @@ describe('AnalysisResultsChart', () => {
         }));
     });
 
+
+    describe('comparison queue', () => {
+        afterEach(() => {
+            jest.restoreAllMocks();
+        });
+
+        const comparisonData = (durationMs: number) => ({
+            samples: durationMs > 0 ? [{
+                driverTimeMs: 0,
+                expertTimeMs: 0,
+                driverTrackPosition: 0.1,
+                expertTrackPosition: 0.1,
+                driverGas: 0.2,
+                expertGas: 0.3,
+            }, {
+                driverTimeMs: durationMs,
+                expertTimeMs: durationMs,
+                driverTrackPosition: 0.2,
+                expertTrackPosition: 0.2,
+                driverGas: 0.4,
+                expertGas: 0.5,
+            }] : [{
+                driverTimeMs: 0,
+                expertTimeMs: 0,
+                driverTrackPosition: 0.1,
+                expertTrackPosition: 0.1,
+                driverGas: 0.2,
+                expertGas: 0.3,
+            }],
+        });
+
+
+        const mountResults = async (elements: AnalysisResultElement[]) => {
+            const ref = React.createRef<AnalysisResultsChartHandle>();
+            render(<AnalysisResultsChart
+                ref={ref}
+                name="visualization:analysis-results"
+                id="queue-page"
+                sessionGame="acc"
+                data={{ elements }}
+            />);
+            await waitFor(() => expect(ref.current!.getFilteredSegments().status).toBe(elements.length ? 'ready' : 'empty'));
+            return ref;
+        };
+
+        const queueDispatch = () => createWorkflowToolDispatcher({
+            componentRefs: mockOverlayComponentDirectory,
+            sessionMode: 'live',
+        });
+
+        const element = (id: string, start = 0.4, durationMs = 2_000): AnalysisResultElement => ({
+            id, title: id, labels: labelRanges('MSP'),
+            normalizedPositionRange: { start, end: start + 0.05 },
+            comparison: comparisonData(durationMs),
+        });
+
+        it('queues filtered results in order, skips invalid/duplicate comparisons, and defers display until due', async () => {
+            const runner = new LiveRangeTodoListRunner('live-range-todo-list');
+            mockOverlayComponentDirectory.registerComponentRef({ current: runner });
+            mockOverlayComponentDirectory.registerComponentRef({ current: {
+                getComponentName: () => 'workflow-panel',
+                appendLiveRangeTodoList: runner.appendLiveRangeTodoList.bind(runner),
+            } });
+            runner.addEvent({
+                id: 'analysis-comparison:duplicate', normalized_position: 0.95, lead_time_seconds: 0,
+                content: { title: 'Existing event' }, taskStart: () => asTool(resolvedOperation({}, 'complete')),
+            });
+            const prepareVoices = jest.spyOn(comparisonOverlaySource, 'prepareDriverExpertComparisonVoices')
+                .mockImplementation(async (snapshots) => snapshots.map((snapshot, index) => ({
+                    ...snapshot,
+                    voice: { text: 'Comparison', audioDataUrl: 'data:audio/wav;base64,AA==', durationMs: index ? 8_000 : 1_000 },
+                })));
+            const ref = await mountResults([
+                element('first', 0.4, 5_000),
+                element('second', 0.7),
+                element('duplicate', 0.8),
+                element('bad-position', 1.2),
+                { ...element('missing-comparison', 0.2), comparison: undefined },
+                element('zero-duration', 0.3, 0),
+                { ...element('filtered-out', 0.5), labels: labelRanges('Telemetry') },
+            ]);
+            const display = createControlledOperation<'graph shown', never, 'complete'>();
+            const showOverlay = jest.spyOn(ref.current!, 'displaySpecificResultInOverlay').mockReturnValue(display.operation);
+            mockOverlayComponentDirectory.registerComponentRef(ref);
+            try {
+                const operation = ref.current!.addAnalysisResultToDoList(queueDispatch());
+                const terminated = jest.fn();
+                operation.notifyTerminated(terminated);
+                const result = await operation.result;
+                expect(result).toMatchObject({
+                    status: 'ready', active_page_id: 'queue-page', applied_view: 'mistakes',
+                    matched_count: 6, queued_count: 2, skipped_count: 4,
+                    skipped_segments: [
+                        expect.objectContaining({ segment_id: 'bad-position', reason_code: 'invalid_start_position' }),
+                        expect.objectContaining({ segment_id: 'missing-comparison', reason_code: 'comparison_unavailable' }),
+                        expect.objectContaining({ segment_id: 'zero-duration', reason_code: 'invalid_replay_duration' }),
+                        expect.objectContaining({ segment_id: 'duplicate', reason_code: 'already_queued' }),
+                    ],
+                });
+                expect(terminated).toHaveBeenCalledWith({ status: 'ready', result });
+                expect(prepareVoices.mock.calls[0][0]).toHaveLength(2);
+                expect(runner.get().todo_list?.events).toMatchObject([
+                    { id: 'analysis-comparison:duplicate' },
+                    { id: 'analysis-comparison:first', normalized_position: 0.4, lead_time_seconds: 7 },
+                    { id: 'analysis-comparison:second', normalized_position: 0.7, lead_time_seconds: 10 },
+                ]);
+                expect(showOverlay).not.toHaveBeenCalled();
+                jest.useFakeTimers();
+                runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_laps: 1 });
+                runner.acceptTelemetry({ Graphics_normalized_car_position: 0.5, Graphics_completed_laps: 1 });
+                expect(showOverlay).toHaveBeenCalledWith('queue-page', 'first', expect.any(AbortSignal));
+                display.resolve('complete', 'graph shown');
+            } finally {
+                runner.dispose();
+                jest.useRealTimers();
+            }
+        });
+
+        it.each(['failure', 'abort'] as const)('does not append after voice preparation %s', async (outcome) => {
+            let finish!: (value: DriverExpertComparisonSnapshot[]) => void;
+            let fail!: (error: Error) => void;
+            const preparation = new Promise<DriverExpertComparisonSnapshot[]>((resolve, reject) => {
+                finish = resolve;
+                fail = reject;
+            });
+            const prepareVoices = jest.spyOn(comparisonOverlaySource, 'prepareDriverExpertComparisonVoices')
+                .mockReturnValue(preparation);
+            const appendLiveRangeTodoList = jest.fn();
+            mockOverlayComponentDirectory.registerComponentRef({ current: {
+                getComponentName: () => 'workflow-panel', appendLiveRangeTodoList,
+            } });
+            const ref = await mountResults([element('corner')]);
+            const operation = ref.current!.addAnalysisResultToDoList(queueDispatch());
+            await Promise.resolve();
+            expect(prepareVoices).toHaveBeenCalledTimes(1);
+            if (outcome === 'abort') {
+                operation.abort();
+                finish([...prepareVoices.mock.calls[0][0]]);
+            } else {
+                fail(new Error('Speech unavailable'));
+            }
+            await expect(operation.result).rejects.toBeInstanceOf(Error);
+            expect(appendLiveRangeTodoList).not.toHaveBeenCalled();
+        });
+
+        it('rechecks duplicate events added while voices are prepared', async () => {
+            const runner = new LiveRangeTodoListRunner('live-range-todo-list');
+            mockOverlayComponentDirectory.registerComponentRef({ current: runner });
+            const appendLiveRangeTodoList = jest.fn();
+            mockOverlayComponentDirectory.registerComponentRef({ current: {
+                getComponentName: () => 'workflow-panel', appendLiveRangeTodoList,
+            } });
+            jest.spyOn(comparisonOverlaySource, 'prepareDriverExpertComparisonVoices')
+                .mockImplementation(async (snapshots) => {
+                    runner.addEvent({
+                        id: 'analysis-comparison:corner', normalized_position: 0.4, lead_time_seconds: 0,
+                        content: { title: 'Concurrent event' }, taskStart: () => asTool(resolvedOperation({}, 'complete')),
+                    });
+                    return [...snapshots];
+                });
+            const ref = await mountResults([element('corner')]);
+            try {
+                await expect(ref.current!.addAnalysisResultToDoList(queueDispatch()).result).resolves.toMatchObject({
+                    matched_count: 1, queued_count: 0, skipped_count: 1,
+                    skipped_segments: [expect.objectContaining({ reason_code: 'already_queued' })],
+                });
+                expect(appendLiveRangeTodoList).not.toHaveBeenCalled();
+            } finally {
+                runner.dispose();
+            }
+        });
+
+        it('reports busy while the displayed filter is evaluating', async () => {
+            const evaluate = analysisResultsQuery.evaluateAnalysisResultsQuery;
+            let release!: () => void;
+            const evaluation = new Promise<void>((resolve) => { release = resolve; });
+            jest.spyOn(analysisResultsQuery, 'evaluateAnalysisResultsQuery').mockImplementationOnce(async (...args) => {
+                await evaluation;
+                return evaluate(...args);
+            });
+            const ref = React.createRef<AnalysisResultsChartHandle>();
+            render(<AnalysisResultsChart
+                ref={ref}
+                name="visualization:analysis-results"
+                id="busy-page"
+                sessionGame="acc"
+                data={{ elements: [element('corner')] }}
+            />);
+            try {
+                await act(async () => {
+                    await expect(ref.current!.addAnalysisResultToDoList(queueDispatch()).result).resolves.toMatchObject({
+                        status: 'busy', matched_count: 0, queued_count: 0, skipped_count: 0,
+                    });
+                });
+                expect(mockOverlayComponentDirectory.findComponentRef('live-range-todo-list')).toBeNull();
+            } finally {
+                await act(async () => { release(); });
+            }
+        });
+
+        it('reports empty results without mounting a queue', async () => {
+            const ref = await mountResults([]);
+            const operation = ref.current!.addAnalysisResultToDoList(queueDispatch());
+            const terminated = jest.fn();
+            operation.notifyTerminated(terminated);
+            await expect(operation.result).resolves.toMatchObject({
+                status: 'empty', matched_count: 0, queued_count: 0, skipped_count: 0,
+            });
+            expect(terminated).toHaveBeenCalledWith({
+                status: 'empty', result: expect.objectContaining({ status: 'empty' }),
+            });
+            expect(mockOverlayComponentDirectory.findComponentRef('live-range-todo-list')).toBeNull();
+        });
+
+        it('fails when the filtered results have no showable graph', async () => {
+            const ref = await mountResults([{ ...element('unsupported'), comparison: undefined }]);
+            await expect(ref.current!.addAnalysisResultToDoList(queueDispatch()).result)
+                .rejects.toMatchObject({ name: 'OperationExecutionError' });
+            expect(mockOverlayComponentDirectory.findComponentRef('live-range-todo-list')).toBeNull();
+        });
+    });
+
     it.each([null, 'removed-page', 'older-page'])('queues the selected/latest lap while Overall Trends is open and activePageId is %s', async (activePageId) => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const pages: AnalysisResultsPaginationPage[] = [{
@@ -1508,9 +1734,12 @@ describe('AnalysisResultsChart', () => {
         await waitFor(() => expect(chartRef.current!.getFilteredSegments().status).toBe('ready'));
         const expectedPage = activePageId === 'older-page' ? pages[0] : pages[1];
         const expectedResultId = expectedPage.elements[0].id;
-        const prepareVoices = jest.spyOn(chartRef.current!, 'prepareComparisonVoices')
-            .mockResolvedValue({ 'older-mistake': 8_000, 'default-mistake': 8_000 });
-        const directory = createOperationComponentRefDirectory();
+        const prepareVoices = jest.spyOn(comparisonOverlaySource, 'prepareDriverExpertComparisonVoices')
+            .mockImplementation(async (snapshots) => snapshots.map((snapshot) => ({
+                ...snapshot,
+                voice: { text: 'Comparison', audioDataUrl: 'data:audio/wav;base64,AA==', durationMs: 8_000 },
+            })));
+        const directory = mockOverlayComponentDirectory;
         const runner = new LiveRangeTodoListRunner('live-range-todo-list');
         directory.registerComponentRef(chartRef);
         directory.registerComponentRef({ current: runner });
@@ -1530,7 +1759,7 @@ describe('AnalysisResultsChart', () => {
                     matched_count: 1,
                     queued_count: 1,
                 });
-            expect(prepareVoices).toHaveBeenCalledWith(expectedPage.id, [expectedResultId], expect.any(AbortSignal));
+            expect(prepareVoices).toHaveBeenCalledWith([expect.objectContaining({ game: 'acc' })], expect.any(AbortSignal));
             expect(runner.get().todo_list?.events.map(({ id }) => id)).toEqual([`analysis-comparison:${expectedResultId}`]);
             expect(screen.getByRole('button', { name: 'Overall Trends' })).toHaveAttribute('aria-pressed', 'true');
         } finally {

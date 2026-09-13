@@ -1,5 +1,5 @@
 import React, { createRef, StrictMode } from 'react';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import {
     createOperationComponentRefDirectory,
     OPERATION_COMPONENT_NAMES,
@@ -8,7 +8,9 @@ import {
 } from 'contexts/OperationComponentRefContext';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import { createAiCommandRegistry } from 'views/lap-analysis/ai-chat/ai-command-registry';
-import type { AnalysisResultsChartHandle } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
+import AnalysisResultsChart, { type AnalysisResultsChartHandle } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
+import * as comparisonOverlaySource from 'components/driver-expert-comparison/DriverExpertComparisonGraph.overlay-source';
+import type { DriverExpertComparisonSnapshot } from 'components/driver-expert-comparison';
 import WorkflowPanel, { type WorkflowPanelHandle } from '../WorkflowPanel';
 import type { ProcedurePlanInput } from '../ProcedurePlan';
 import type { RepeatablePlanInput } from '../RepeatablePlan';
@@ -25,6 +27,7 @@ jest.mock('views/floating-chat/AiOverlayManager', () => ({
 
 jest.mock('contexts/OperationComponentRefContext', () => ({
     ...jest.requireActual('contexts/OperationComponentRefContext'),
+    useOptionalOperationComponentRefDirectory: () => mockDirectory,
     useOperationComponentRefs: () => ({ directory: mockDirectory, revision: 0 }),
     useRegisterOperationComponentRef: function useRegisterOperationComponentRef(ref: OperationComponentRef) {
         const { useLayoutEffect } = jest.requireActual('react');
@@ -35,6 +38,23 @@ jest.mock('contexts/OperationComponentRefContext', () => ({
         }, [ref]);
     },
 }));
+
+jest.mock('contexts/AiLabelsContext', () => {
+    const labels = {
+        getCategoryLabels: () => [],
+        getLabelName: (id: string) => id,
+    };
+    return { useAiLabels: () => labels };
+});
+
+jest.mock('contexts/DesktopGameContext', () => ({
+    useDesktopGame: () => ({ detectedGame: null, detectionStatus: 'not-detected', error: null }),
+}));
+
+jest.mock('@radix-ui/themes', () => {
+    const Component = ({ as: Tag = 'div', children, ...props }: any) => <Tag {...props}>{children}</Tag>;
+    return { Badge: Component, Box: Component, Card: Component, Flex: Component, ScrollArea: Component, Text: Component };
+});
 
 const procedure = (): ProcedurePlanInput => ({
     workflow: { name: 'set_procedure_plan',
@@ -120,10 +140,14 @@ describe('WorkflowPanel standalone lifecycle', () => {
         const dispatch = Object.assign(jest.fn(() => task.operation), { validate: jest.fn() });
         const { ref } = renderPanel(dispatch);
         if (queueState === 'drained') act(() => { addLiveTask(ref.current!, task); });
-        let finishVoices!: (durations: Record<string, number>) => void;
-        const prepareComparisonVoices = jest.fn(() => new Promise<Record<string, number>>((resolve) => {
-            finishVoices = resolve;
-        }));
+        let finishVoices!: () => void;
+        const prepareComparisonVoices = jest.spyOn(comparisonOverlaySource, 'prepareDriverExpertComparisonVoices')
+            .mockImplementation((snapshots) => new Promise<DriverExpertComparisonSnapshot[]>((resolve) => {
+                finishVoices = () => resolve(snapshots.map((snapshot) => ({
+                    ...snapshot,
+                    voice: { text: 'Comparison', audioDataUrl: 'data:audio/wav;base64,AA==', durationMs: 8_000 },
+                })));
+            }));
         const segments = Array.from({ length: 11 }, (_, index) => ({
             id: `corner-${index}`,
             title: `Turn ${index + 1}`,
@@ -140,19 +164,17 @@ describe('WorkflowPanel standalone lifecycle', () => {
                 })),
             },
         }));
-        const displaySpecificResultInOverlay = jest.fn(() => { throw new Error('Unexpected comparison playback'); });
-        mockDirectory.registerComponentRef({ current: {
-            getComponentName: () => 'visualization:analysis-results',
-            getFilteredSegments: () => ({
-                status: 'ready',
-                activePageId: 'baseline-page',
-                appliedView: 'mistakes',
-                committedQuery: 'elements[labels[label_name = "MSP"]]',
-                segments,
-            }),
-            prepareComparisonVoices,
-            displaySpecificResultInOverlay,
-        } satisfies Partial<AnalysisResultsChartHandle> });
+        const chartRef = createRef<AnalysisResultsChartHandle>();
+        render(<AnalysisResultsChart
+            ref={chartRef}
+            name="visualization:analysis-results"
+            id="baseline-page"
+            sessionGame="acc"
+            data={{ elements: segments }}
+        />);
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments().status).toBe('ready'));
+        const displaySpecificResultInOverlay = jest.spyOn(chartRef.current!, 'displaySpecificResultInOverlay')
+            .mockImplementation(() => { throw new Error('Unexpected comparison playback'); });
         const registry = createAiCommandRegistry({
             componentRefs: mockDirectory,
             sessionMode: 'live',
@@ -173,7 +195,7 @@ describe('WorkflowPanel standalone lifecycle', () => {
         expect(screen.queryByLabelText('Live range to-do list')).not.toBeInTheDocument();
 
         await act(async () => {
-            finishVoices(Object.fromEntries(segments.map(({ id }) => [id, 8_000])));
+            finishVoices();
             await expect(operation.result).resolves.toMatchObject({
                 matched_count: 11, queued_count: 11, skipped_count: 0,
             });

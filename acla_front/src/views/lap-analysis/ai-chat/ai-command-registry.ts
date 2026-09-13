@@ -6,7 +6,6 @@ import {
     NoLiveTelemetryError,
     OperationExecutionError,
     OperationNotRegisteredError,
-    createControlledOperation,
     createOperationFrom,
     asTool,
     asWorkflow,
@@ -45,7 +44,6 @@ import type { AiMapDisplayPayload } from './AiMapToolDisplay';
 import type {
     AnalysisResultOverlayResult,
     AnalysisResultsChartHandle,
-    FilteredAnalysisSegmentsSnapshot,
 } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
 import type {
     ApplyAnalysisResultQueryInput,
@@ -54,10 +52,6 @@ import type {
 } from 'views/lap-analysis/visualization/charts/analysisResultsQuery';
 import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
 import type { QueryResult, QueryScope } from 'views/lap-analysis/session-intelligence/types';
-import {
-    getDriverExpertReplayDurationMs,
-    hasComparableDriverExpertData,
-} from 'components/driver-expert-comparison';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import type { AppendProcedurePlanInput } from 'components/ai-operations/ProcedurePlan';
 import type { AppendRepeatablePlanInput } from 'components/ai-operations/RepeatablePlan';
@@ -124,28 +118,6 @@ export interface OpportunityAgentState {
 
 export interface LivePerformanceAnalystState {
     enabled: boolean;
-}
-
-export type FilteredComparisonSkipReason =
-    | 'already_queued'
-    | 'invalid_start_position'
-    | 'comparison_unavailable'
-    | 'invalid_replay_duration';
-
-export interface AddFilteredDriverExpertComparisonsResult {
-    [key: string]: unknown;
-    status: 'ready' | 'empty' | 'busy';
-    active_page_id: string | null;
-    applied_view: string | null;
-    committed_query: string | null;
-    matched_count: number;
-    queued_count: number;
-    skipped_count: number;
-    skipped_segments: Array<{
-        segment_id: string;
-        event_id: string;
-        reason_code: FilteredComparisonSkipReason;
-    }>;
 }
 
 export interface DisplaySpecificResultInOverlayArguments {
@@ -499,153 +471,6 @@ const displaySpecificResultInOverlay = (
     ).displaySpecificResultInOverlay(request.page_id, request.result_id, signal);
 };
 
-type EligibleFilteredComparison = {
-    segmentId: string;
-    eventId: string;
-    normalizedPosition: number;
-    replayDurationMs: number;
-    leadTimeSeconds: number;
-    title: string;
-    section?: string;
-};
-
-const createFilteredComparisonResult = (
-    snapshot: FilteredAnalysisSegmentsSnapshot,
-): AddFilteredDriverExpertComparisonsResult => ({
-    status: snapshot.status,
-    active_page_id: snapshot.activePageId,
-    applied_view: snapshot.appliedView,
-    committed_query: snapshot.committedQuery,
-    matched_count: snapshot.segments.length,
-    queued_count: 0,
-    skipped_count: 0,
-    skipped_segments: [],
-});
-
-const queueFilteredDriverExpertComparisons = async (
-    context: FrontendAiCommandContext,
-    snapshot: FilteredAnalysisSegmentsSnapshot,
-    dispatchNested: WorkflowDispatcher,
-    signal: AbortSignal,
-): Promise<AddFilteredDriverExpertComparisonsResult> => {
-    const result = createFilteredComparisonResult(snapshot);
-    if (snapshot.status !== 'ready') return result;
-
-    const eligible: EligibleFilteredComparison[] = [];
-    snapshot.segments.forEach((segment) => {
-        const eventId = `analysis-comparison:${segment.id}`;
-        const skip = (reasonCode: FilteredComparisonSkipReason) => {
-            result.skipped_segments.push({
-                segment_id: segment.id,
-                event_id: eventId,
-                reason_code: reasonCode,
-            });
-        };
-        const start = segment.normalizedPositionRange?.start;
-        if (typeof start !== 'number' || !Number.isFinite(start) || start < 0 || start > 1) {
-            skip('invalid_start_position');
-            return;
-        }
-        if (!hasComparableDriverExpertData(segment.comparison, context.sessionGame ?? null)) {
-            skip('comparison_unavailable');
-            return;
-        }
-        const replayDurationMs = getDriverExpertReplayDurationMs(segment.comparison);
-        if (!Number.isFinite(replayDurationMs) || replayDurationMs <= 0) {
-            skip('invalid_replay_duration');
-            return;
-        }
-        eligible.push({
-            segmentId: segment.id,
-            eventId,
-            normalizedPosition: start,
-            replayDurationMs,
-            leadTimeSeconds: (replayDurationMs / 1000) + 2,
-            title: segment.title
-                ? `${segment.title}: Driver vs Expert`
-                : 'Driver vs Expert',
-            section: segment.section,
-        });
-    });
-
-    if (snapshot.segments.length > 0 && eligible.length === 0) {
-        throw new OperationExecutionError(
-            'The filtered analysis results contain no showable overlay graphs.',
-        );
-    }
-
-    if (eligible.length > 0) {
-        dispatchNested.validate('display_specific_result_in_overlay');
-        if (!snapshot.activePageId) {
-            throw new OperationExecutionError(
-                'The filtered analysis results do not identify a retained page.',
-            );
-        }
-        const mounted = getDirectory(context).findComponentRef<LiveRangeTodoListHandle>(
-            OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-        )?.current;
-        const existingIds = new Set(
-            mounted?.get().todo_list?.events.map((event) => event.id) ?? [],
-        );
-        const pending = eligible.filter((comparison) => {
-            if (existingIds.has(comparison.eventId)) {
-                result.skipped_segments.push({
-                    segment_id: comparison.segmentId,
-                    event_id: comparison.eventId,
-                    reason_code: 'already_queued',
-                });
-                return false;
-            }
-            existingIds.add(comparison.eventId);
-            return true;
-        });
-        const voiceDurations = pending.length > 0
-            ? await getComponent<AnalysisResultsChartHandle>(
-                context, getSingletonVisualizationComponentName('analysis-results'),
-            ).prepareComparisonVoices(snapshot.activePageId, pending.map(({ segmentId }) => segmentId), signal)
-            : {};
-        if (signal.aborted) throw createLiveRangeAbortError();
-        // Telemetry can drain and dispose the queue while voices are being prepared.
-        const current = getDirectory(context).findComponentRef<LiveRangeTodoListHandle>(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)?.current;
-        const queuedIds = new Set(current?.get().todo_list?.events.map((event) => event.id) ?? []);
-        const operations: LiveRangeTodoListInput['workflow']['operations'] = [];
-        pending.forEach((comparison) => {
-            if (queuedIds.has(comparison.eventId)) {
-                result.skipped_segments.push({
-                    segment_id: comparison.segmentId,
-                    event_id: comparison.eventId,
-                    reason_code: 'already_queued',
-                });
-                return;
-            }
-            comparison.leadTimeSeconds = Math.max(
-                comparison.replayDurationMs, voiceDurations[comparison.segmentId],
-            ) / 1000 + 2;
-            operations.push({ operation: { name: 'display_specific_result_in_overlay', event: {
-                id: comparison.eventId,
-                normalized_position: comparison.normalizedPosition,
-                lead_time_seconds: comparison.leadTimeSeconds,
-                content: {
-                    title: comparison.title,
-                    ...(comparison.section
-                        ? { description: `Section: ${comparison.section}` }
-                        : {}),
-                },
-                }, arguments: { page_id: snapshot.activePageId, result_id: comparison.segmentId } } });
-            result.queued_count += 1;
-        });
-        if (operations.length) {
-            const appended = getComponent<WorkflowPanelHandle>(context, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL)
-                .appendLiveRangeTodoList({ workflow: { name: 'add_event_to_live_range_todo_list', operations } }, dispatchNested);
-            const output = await appended.result;
-            if (output instanceof Error) throw output;
-        }
-    }
-
-    result.skipped_count = result.skipped_segments.length;
-    return result;
-};
-
 const definitionList = Object.freeze([
     {
         name: 'start_agent_session',
@@ -680,26 +505,11 @@ const definitionList = Object.freeze([
         kind: 'tool',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args, dispatchNested) => {
-            const controller = createControlledOperation<AddFilteredDriverExpertComparisonsResult>();
-            void Promise.resolve().then(async () => {
-                if (controller.signal.aborted) return;
-                validateNoArguments(
-                    args,
-                    'add_analysis_result_to_do_list',
-                );
-                // Queue the currently displayed results, preserving the view's applied filter and order.
-                const snapshot = getComponent<AnalysisResultsChartHandle>(
-                    context,
-                    getSingletonVisualizationComponentName('analysis-results'),
-                ).getFilteredSegments();
-                const result = await queueFilteredDriverExpertComparisons(
-                    context, snapshot, dispatchNested, controller.signal,
-                );
-                controller.resolve(result.status, result);
-            }).catch((error) => {
-                controller.reject('failed', error instanceof Error ? error : new Error(String(error)));
-            });
-            return asTool(controller.operation);
+            validateNoArguments(args, 'add_analysis_result_to_do_list');
+            return getComponent<AnalysisResultsChartHandle>(
+                context,
+                getSingletonVisualizationComponentName('analysis-results'),
+            ).addAnalysisResultToDoList(dispatchNested);
         },
     },
     {

@@ -43,7 +43,7 @@ import type {
 } from 'components/ai-operations';
 import type { AiChatHandle } from '../ai-chat';
 import type { AnalysisResultsChartHandle } from '../../visualization/charts/AnalysisResultsChart';
-import type { FilteredAnalysisSegmentsSnapshot } from '../../visualization/charts/AnalysisResultsChart';
+import type { AddFilteredDriverExpertComparisonsResult } from '../../visualization/charts/AnalysisResultsChart';
 import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 
@@ -431,31 +431,6 @@ const reserve = (
         ...handle,
     } as any });
 };
-
-const comparisonData = (durationMs: number) => ({
-    samples: durationMs > 0 ? [{
-        driverTimeMs: 0,
-        expertTimeMs: 0,
-        driverTrackPosition: 0.1,
-        expertTrackPosition: 0.1,
-        driverGas: 0.2,
-        expertGas: 0.3,
-    }, {
-        driverTimeMs: durationMs,
-        expertTimeMs: durationMs,
-        driverTrackPosition: 0.2,
-        expertTrackPosition: 0.2,
-        driverGas: 0.4,
-        expertGas: 0.5,
-    }] : [{
-        driverTimeMs: 0,
-        expertTimeMs: 0,
-        driverTrackPosition: 0.1,
-        expertTrackPosition: 0.1,
-        driverGas: 0.2,
-        expertGas: 0.3,
-    }],
-});
 
 const createMockComparisonOperation = () => {
     const controller = createControlledOperation<
@@ -879,262 +854,41 @@ describe('live range to-do workflow forwarding', () => {
 });
 
 describe('displayed analysis result queue tool', () => {
-    afterEach(() => {
-        jest.useRealTimers();
-    });
-
-    it.each(['failure', 'abort'] as const)('does not queue comparisons after voice generation %s', async (outcome) => {
-        const directory = createOperationComponentRefDirectory();
-        const addEvent = jest.fn();
-        reserve(directory, OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, {
-            addEvent, get: () => todoResult() as any,
-        } satisfies Partial<LiveRangeTodoListHandle>);
-        let finish!: (value: Record<string, number>) => void;
-        let fail!: (error: Error) => void;
-        const preparation = new Promise<Record<string, number>>((resolve, reject) => { finish = resolve; fail = reject; });
-        const prepareComparisonVoices = jest.fn(() => preparation);
-        reserve(directory, 'visualization:analysis-results', {
-            prepareComparisonVoices,
-            getFilteredSegments: () => ({
-                status: 'ready', activePageId: 'page', appliedView: 'mistakes', committedQuery: 'elements',
-                segments: [{ id: 'corner', labels: [], normalizedPositionRange: { start: 0.5, end: 0.6 }, comparison: comparisonData(1000) }],
-            }),
-        } satisfies Partial<AnalysisResultsChartHandle>);
-        const operation = analystLiveRegistry(directory).add_analysis_result_to_do_list({});
-        await Promise.resolve();
-        expect(prepareComparisonVoices).toHaveBeenCalled();
-        expect(addEvent).not.toHaveBeenCalled();
-        if (outcome === 'abort') {
-            operation.abort();
-            finish({ corner: 8000 });
-        } else {
-            fail(new Error('Speech unavailable'));
-        }
-        await expect(operation.result).rejects.toBeInstanceOf(Error);
-        expect(addEvent).not.toHaveBeenCalled();
-    });
-
-    it('appends eligible segments in filtered order and publishes overlays only when due', async () => {
-        jest.useFakeTimers();
-        const directory = createOperationComponentRefDirectory();
-        const runner = new LiveRangeTodoListRunner(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
-        const existingTask = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
-        const duplicateTask = jest.fn(() => asTool(resolvedOperation({}, 'complete')));
-        runner.addEvent({
-            id: 'existing-user-event',
-            normalized_position: 0.95,
-            lead_time_seconds: 0,
-            content: { title: 'Existing user event' },
-            taskStart: existingTask,
-        });
-        runner.addEvent({
-            id: 'analysis-comparison:duplicate',
-            normalized_position: 0.9,
-            lead_time_seconds: 0,
-            content: { title: 'Already queued comparison' },
-            taskStart: duplicateTask,
-        });
-        mountLiveQueue(directory, runner);
-
-        const fiveSecondComparison = comparisonData(5_000);
-        const secondComparison = comparisonData(2_000);
-        const filteredSnapshot: FilteredAnalysisSegmentsSnapshot = {
-            status: 'ready',
-            activePageId: 'analysis-page-7',
-            appliedView: 'custom',
-            committedQuery: 'elements^(>normalizedPositionRange.start)',
-            segments: [{
-                id: 'late-first',
-                labels: labelRanges('MSP'),
-                title: 'Late braking',
-                section: 'Turn 1',
-                normalizedPositionRange: { start: 0.4, end: 0.45 },
-                comparison: fiveSecondComparison,
-            }, {
-                id: 'early-second',
-                labels: labelRanges('MSR'),
-                normalizedPositionRange: { start: 0.7, end: 0.75 },
-                comparison: secondComparison,
-            }, {
-                id: 'duplicate',
-                labels: labelRanges('MSP'),
-                normalizedPositionRange: { start: 0.8, end: 0.85 },
-                comparison: secondComparison,
-            }, {
-                id: 'bad-position',
-                labels: labelRanges('MSP'),
-                normalizedPositionRange: { start: 1.2, end: 1.3 },
-                comparison: secondComparison,
-            }, {
-                id: 'missing-comparison',
-                labels: labelRanges('MSP'),
-                normalizedPositionRange: { start: 0.2, end: 0.25 },
-            }, {
-                id: 'zero-duration',
-                labels: labelRanges('MSP'),
-                normalizedPositionRange: { start: 0.3, end: 0.35 },
-                comparison: comparisonData(0),
-            }],
+    it.each(['native tool', 'procedure step'] as const)('delegates a %s to the analysis results component', async (caller) => {
+        const controller = createControlledOperation<AddFilteredDriverExpertComparisonsResult>();
+        const addAnalysisResultToDoList = jest.fn((_dispatch: WorkflowDispatcher) => controller.operation);
+        const directory = register('visualization:analysis-results', { addAnalysisResultToDoList });
+        const result: AddFilteredDriverExpertComparisonsResult = {
+            status: 'ready', active_page_id: 'page', applied_view: 'mistakes', committed_query: 'elements',
+            matched_count: 1, queued_count: 1, skipped_count: 0, skipped_segments: [],
         };
-        const displayControllers: ReturnType<typeof createMockComparisonOperation>[] = [];
-        const displaySpecificResultInOverlay = jest.fn(() => {
-            const display = createMockComparisonOperation();
-            displayControllers.push(display);
-            return display.operation;
-        });
-        reserve(directory, 'visualization:analysis-results', {
-            getFilteredSegments: () => filteredSnapshot,
-            prepareComparisonVoices: jest.fn(async (_pageId, ids) => {
-                expect(ids).toEqual(['late-first', 'early-second']);
-                expect(runner.get().todo_list?.events).toHaveLength(2);
-                return { 'late-first': 1_000, 'early-second': 1_000 };
-            }),
-            displaySpecificResultInOverlay,
-        } satisfies Partial<AnalysisResultsChartHandle>);
-        reserve(directory, OPERATION_COMPONENT_NAMES.DASHBOARD_ASSISTANT, {
-            getOpportunityTelemetryRows: () => [{
-                Graphics_normalized_car_position: 0.1,
-                Graphics_estimated_lap_time: 100_000,
-            }],
-        } satisfies Partial<AiChatHandle>);
-
-        const operation = analystLiveRegistry(directory)
-            .add_analysis_result_to_do_list({});
-        const terminated = jest.fn();
-        operation.notifyTerminated(terminated);
-        const result = await operation.result;
-
-        expect(terminated).toHaveBeenCalledWith({ status: 'ready', result });
-        expect(result).toMatchObject({
-            status: 'ready',
-            active_page_id: 'analysis-page-7',
-            applied_view: 'custom',
-            committed_query: 'elements^(>normalizedPositionRange.start)',
-            matched_count: 6,
-            queued_count: 2,
-            skipped_count: 4,
-        });
-        expect(result).not.toHaveProperty('queued_timing');
-        expect((result as any).skipped_segments).toEqual([
-            expect.objectContaining({ segment_id: 'bad-position', reason_code: 'invalid_start_position' }),
-            expect.objectContaining({ segment_id: 'missing-comparison', reason_code: 'comparison_unavailable' }),
-            expect.objectContaining({ segment_id: 'zero-duration', reason_code: 'invalid_replay_duration' }),
-            expect.objectContaining({ segment_id: 'duplicate', reason_code: 'already_queued' }),
-        ]);
-        expect(runner.get().todo_list?.events.map(({ id }) => id)).toEqual([
-            'existing-user-event',
-            'analysis-comparison:duplicate',
-            'analysis-comparison:late-first',
-            'analysis-comparison:early-second',
-        ]);
-        const queuedEvents = runner.get().todo_list?.events.slice(2) ?? [];
-        expect(queuedEvents.map(({ id }) => id)).toEqual([
-            'analysis-comparison:late-first',
-            'analysis-comparison:early-second',
-        ]);
-        expect(queuedEvents).toMatchObject([
-            { normalized_position: 0.4, lead_time_seconds: 7 },
-            { normalized_position: 0.7, lead_time_seconds: 4 },
-        ]);
-        expect(queuedEvents[0].eta_seconds).toBeNull();
-        expect(queuedEvents[1].eta_seconds).toBeNull();
-        expect(displaySpecificResultInOverlay).not.toHaveBeenCalled();
-
-        runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_laps: 1 });
-        runner.acceptTelemetry({ Graphics_normalized_car_position: 0.5, Graphics_completed_laps: 1 });
-        expect(displaySpecificResultInOverlay).toHaveBeenNthCalledWith(
-            1,
-            'analysis-page-7',
-            'late-first',
-            expect.any(AbortSignal),
-        );
-
-        runner.acceptTelemetry({ Graphics_normalized_car_position: 0.8, Graphics_completed_laps: 1 });
-        expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(1);
-        runner.removeEvents(['existing-user-event', 'analysis-comparison:duplicate']);
-
-        jest.advanceTimersByTime(60_000);
-        for (let index = 0; index < 4; index += 1) await Promise.resolve();
-        expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(1);
-
-        displayControllers[0].complete();
-        for (let index = 0; index < 6; index += 1) await Promise.resolve();
-        expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(1);
-
-        runner.acceptTelemetry({ Graphics_normalized_car_position: 0.65, Graphics_completed_laps: 2 });
-        expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(1);
-        jest.advanceTimersByTime(1_000);
-        runner.acceptTelemetry({ Graphics_normalized_car_position: 0.68, Graphics_completed_laps: 2 });
-        expect(displaySpecificResultInOverlay).toHaveBeenNthCalledWith(
-            2,
-            'analysis-page-7',
-            'early-second',
-            expect.any(AbortSignal),
-        );
-        displayControllers[0].complete();
-        expect(displaySpecificResultInOverlay).toHaveBeenCalledTimes(2);
-        expect(existingTask).not.toHaveBeenCalled();
-        expect(duplicateTask).not.toHaveBeenCalled();
-        runner.dispose();
-    });
-
-    it.each(['native tool', 'procedure step'])('queues comparison graphs from a %s with no input arguments', async (caller) => {
-        const directory = createOperationComponentRefDirectory();
-        const appendLiveRangeTodoList = jest.fn(() => asWorkflow(resolvedOperation({ status: 'ready', event_count: 1 }, 'complete')));
-        reserve(directory, OPERATION_COMPONENT_NAMES.WORKFLOW_PANEL, { appendLiveRangeTodoList });
-        reserve(directory, 'visualization:analysis-results', {
-            prepareComparisonVoices: async () => ({ 'mounted-comparison': 8_000 }),
-            getFilteredSegments: () => ({
-                status: 'ready',
-                activePageId: 'mounted-page',
-                appliedView: 'mistakes',
-                committedQuery: 'elements',
-                segments: [{
-                    id: 'mounted-comparison',
-                    labels: labelRanges('MSP'),
-                    normalizedPositionRange: { start: 0.25, end: 0.3 },
-                    comparison: comparisonData(1_000),
-                }],
-            }),
-        } satisfies Partial<AnalysisResultsChartHandle>);
-
+        const dispatch = createWorkflowToolDispatcher({ componentRefs: directory, sessionMode: 'live' });
         if (caller === 'native tool') {
             const operation = analystLiveRegistry(directory).add_analysis_result_to_do_list({
                 tool: { name: 'add_analysis_result_to_do_list', arguments: {} },
             });
+            expect(operation).toBe(controller.operation);
             expect(operation.kind).toBe('tool');
-            await expect(operation.result).resolves.toMatchObject({ queued_count: 1 });
+            controller.resolve('ready', result);
+            await expect(operation.result).resolves.toBe(result);
         } else {
-            const onError = jest.fn();
-            const runner = new ProcedurePlanRunner(
-                OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN,
-                createWorkflowToolDispatcher({ componentRefs: directory, sessionGame: 'acc' }),
-                undefined,
-                onError,
-            );
+            const runner = new ProcedurePlanRunner(OPERATION_COMPONENT_NAMES.PROCEDURE_PLAN, dispatch);
             const operation = runner.createProcedurePlan({ workflow: {
                 name: 'set_procedure_plan',
-                goal: 'Show comparison graphs while driving',
+                goal: 'Queue comparison graphs',
                 operations: [{ operation: {
-                    name: 'add_analysis_result_to_do_list',
-                    title: 'Queue mistakes for live driving overlay',
-                    arguments: {},
+                    name: 'add_analysis_result_to_do_list', title: 'Queue comparisons', arguments: {},
                 } }],
             } });
+            controller.resolve('ready', result);
             await expect(operation.result).resolves.toMatchObject({
-                status: 'complete',
-                task_results: [{ status: 'completed', output: { queued_count: 1 } }],
+                status: 'complete', task_results: [{ status: 'completed', output: result }],
             });
-            expect(onError).not.toHaveBeenCalled();
+            runner.dispose();
         }
-
-        expect(appendLiveRangeTodoList).toHaveBeenCalledWith({ workflow: {
-            name: 'add_event_to_live_range_todo_list',
-            operations: [{ operation: { name: 'display_specific_result_in_overlay',
-                event: { id: 'analysis-comparison:mounted-comparison', normalized_position: 0.25, lead_time_seconds: 10,
-                    content: { title: 'Driver vs Expert' } },
-                arguments: { page_id: 'mounted-page', result_id: 'mounted-comparison' } } }],
-        } }, expect.any(Function));
+        expect(addAnalysisResultToDoList).toHaveBeenCalledWith(expect.any(Function));
+        const nested = addAnalysisResultToDoList.mock.calls[0][0] as WorkflowDispatcher;
+        expect(() => nested.validate('display_specific_result_in_overlay')).not.toThrow();
     });
 
     it.each([
@@ -1146,82 +900,33 @@ describe('displayed analysis result queue tool', () => {
             sessionMode: 'recorded', conversationRole: 'agent', agentMode: 'live_performance_analyst',
         }],
     ])('delegates comparison scheduling in a %s', async (_label, context) => {
-        const getFilteredSegments = jest.fn(() => ({
-            status: 'busy' as const,
-            activePageId: null,
-            appliedView: null,
-            committedQuery: null,
-            segments: [],
-        }));
+        const addAnalysisResultToDoList = jest.fn(() => resolvedOperation({ status: 'busy' }, 'busy'));
         const registry = createAiCommandRegistry({
             ...context,
-            componentRefs: register('visualization:analysis-results', { getFilteredSegments }),
+            componentRefs: register('visualization:analysis-results', { addAnalysisResultToDoList }),
         } as any);
-
-        await expect(registry
-            .add_analysis_result_to_do_list({}).result)
-            .resolves.toMatchObject({ status: 'busy' });
-        expect(getFilteredSegments).toHaveBeenCalledTimes(1);
+        await expect(registry.add_analysis_result_to_do_list({}).result).resolves.toMatchObject({ status: 'busy' });
+        expect(addAnalysisResultToDoList).toHaveBeenCalledTimes(1);
     });
 
-    it.each(['busy', 'empty'] as const)('reports %s on termination without mounting a list and rejects a filter', async (status) => {
-        const directory = createOperationComponentRefDirectory();
-        reserve(directory, 'visualization:analysis-results', {
-            getFilteredSegments: () => ({
-                status,
-                activePageId: 'busy-page',
-                appliedView: 'mistakes',
-                committedQuery: 'elements',
-                segments: [],
-            }),
-        } satisfies Partial<AnalysisResultsChartHandle>);
-        const registry = analystLiveRegistry(directory);
-
-        const operation = registry.add_analysis_result_to_do_list({});
-        const terminated = jest.fn();
-        operation.notifyTerminated(terminated);
-        await expect(operation.result)
-            .resolves.toMatchObject({
-                status,
-                matched_count: 0,
-                queued_count: 0,
-                skipped_count: 0,
-            });
-        expect(terminated).toHaveBeenCalledWith({
-            status,
-            result: expect.objectContaining({ status, queued_count: 0 }),
-        });
-        expect(directory.findComponentRef(OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)).toBeNull();
-        await expect(registry
-            .add_analysis_result_to_do_list({ filter: 'mistakes' } as any).result)
+    it('rejects arguments before asking the component to queue results', async () => {
+        const addAnalysisResultToDoList = jest.fn();
+        const registry = analystLiveRegistry(register('visualization:analysis-results', { addAnalysisResultToDoList }));
+        await expect(registry.add_analysis_result_to_do_list({ filter: 'mistakes' } as any).result)
             .rejects.toMatchObject({ name: 'InvalidOperationCallError' });
+        expect(addAnalysisResultToDoList).not.toHaveBeenCalled();
     });
 
-    it('fails a matched batch when none of its results has a showable graph', async () => {
-        const directory = createOperationComponentRefDirectory();
-        reserve(directory, 'visualization:analysis-results', {
-            getFilteredSegments: () => ({
-                status: 'ready',
-                activePageId: 'unsupported-page',
-                appliedView: 'mistakes',
-                committedQuery: 'elements',
-                segments: [{
-                    id: 'unsupported-result',
-                    labels: labelRanges('MSP'),
-                    normalizedPositionRange: { start: 0.2, end: 0.3 },
-                }],
-            }),
-        } satisfies Partial<AnalysisResultsChartHandle>);
-
-        await expect(analystLiveRegistry(directory)
-            .add_analysis_result_to_do_list({}).result)
-            .rejects.toMatchObject({ name: 'OperationExecutionError' });
-        expect(directory.findComponentRef(
-            OPERATION_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-        )).toBeNull();
+    it('forwards cancellation to the component operation', async () => {
+        const controller = createControlledOperation<AddFilteredDriverExpertComparisonsResult>();
+        const addAnalysisResultToDoList = jest.fn(() => controller.operation);
+        const dispatch = createWorkflowToolDispatcher({
+            componentRefs: register('visualization:analysis-results', { addAnalysisResultToDoList }),
+        });
+        const signal = new AbortController();
+        const operation = dispatch('add_analysis_result_to_do_list', {}, signal.signal);
+        signal.abort();
+        await expect(operation.result).rejects.toMatchObject({ name: 'AbortError' });
+        expect(controller.signal.aborted).toBe(true);
     });
 });
-
-function labelRanges(...names: string[]) {
-    return names.map((label_name) => ({ label_name, start_index: 0, end_index: 1 }));
-}
