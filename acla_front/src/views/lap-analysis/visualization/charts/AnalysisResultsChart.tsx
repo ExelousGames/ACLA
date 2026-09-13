@@ -924,6 +924,7 @@ type ActivePageQueryEvaluationResult =
 interface ActivePageQueryState {
     selectedView: ActivePageQueryViewKey;
     matchedElements: AnalysisResultElement[];
+    waitForEvaluation: () => Promise<void>;
     getCommittedSnapshot: () => {
         isEvaluating: boolean;
         committedView: ActivePageQueryViewKey;
@@ -947,6 +948,7 @@ const useActivePageQueryState = (
     const [matchedElements, setMatchedElements] = React.useState<AnalysisResultElement[]>([]);
     const isEvaluatingRef = React.useRef(false);
     const generationRef = React.useRef(0);
+    const pendingEvaluationRef = React.useRef<Promise<ActivePageQueryEvaluationResult> | null>(null);
     const matchedElementsSourceRef = React.useRef<AnalysisResultElement[] | null>(null);
     const matchedElementsRef = React.useRef<AnalysisResultElement[]>([]);
     const committedExpressionRef = React.useRef(initialExpression);
@@ -964,7 +966,7 @@ const useActivePageQueryState = (
         ? null
         : templateByKey.get(selectedView) ?? null;
 
-    const evaluate = React.useCallback(async (
+    const evaluateExpression = React.useCallback(async (
         expression: string,
         options: {
             failClosed: boolean;
@@ -1014,6 +1016,20 @@ const useActivePageQueryState = (
         }
     }, [elements]);
 
+    const evaluate = React.useCallback((...args: Parameters<typeof evaluateExpression>) => {
+        const pending = evaluateExpression(...args);
+        pendingEvaluationRef.current = pending;
+        return pending;
+    }, [evaluateExpression]);
+
+    const waitForEvaluation = React.useCallback(async () => {
+        let pending: Promise<ActivePageQueryEvaluationResult> | null;
+        do {
+            pending = pendingEvaluationRef.current;
+            await pending;
+        } while (pending !== pendingEvaluationRef.current);
+    }, []);
+
     React.useEffect(() => {
         const skipped = skipNextAutomaticRef.current;
         if (skipped?.elements === elements && skipped.view === selectedView) {
@@ -1035,13 +1051,14 @@ const useActivePageQueryState = (
     }, []);
 
     const selectView = React.useCallback((view: ActivePageQueryViewKey) => {
+        if (view === selectedView) return;
         generationRef.current += 1;
         matchedElementsSourceRef.current = null;
         matchedElementsRef.current = [];
         setMatchedElements([]);
         isEvaluatingRef.current = true;
         setSelectedView(view);
-    }, []);
+    }, [selectedView]);
 
     const applyExpression = React.useCallback(async (
         expression: string,
@@ -1076,10 +1093,56 @@ const useActivePageQueryState = (
     return {
         selectedView,
         matchedElements: matchedElementsAreCurrent ? matchedElements : EMPTY_ANALYSIS_RESULT_ELEMENTS,
+        waitForEvaluation,
         getCommittedSnapshot,
         selectView,
         applyExpression,
     };
+};
+
+interface AnalysisResultsPageQueryRef {
+    elements: AnalysisResultElement[];
+    query: ActivePageQueryState;
+}
+
+interface AnalysisResultsPageQueryCacheEntry {
+    source: unknown;
+    elements: AnalysisResultElement[];
+    queryRef: React.MutableRefObject<AnalysisResultsPageQueryRef | null>;
+}
+
+// Keep a query owner mounted for every retained page, including pages off screen.
+const AnalysisResultsPageQuery = React.memo(({
+    elements,
+    templates,
+    queryRef,
+    onChange,
+}: {
+    elements: AnalysisResultElement[];
+    templates: readonly ActivePageQueryTemplate[];
+    queryRef: React.MutableRefObject<AnalysisResultsPageQueryRef | null>;
+    onChange: () => void;
+}) => {
+    const query = useActivePageQueryState(elements, templates);
+    React.useLayoutEffect(() => {
+        queryRef.current = { elements, query };
+        onChange();
+    }, [elements, onChange, query, queryRef]);
+    return null;
+});
+
+const EMPTY_ACTIVE_PAGE_QUERY: ActivePageQueryState = {
+    selectedView: 'mistakes',
+    matchedElements: EMPTY_ANALYSIS_RESULT_ELEMENTS,
+    getCommittedSnapshot: () => ({
+        isEvaluating: true,
+        committedView: 'mistakes',
+        committedExpression: '',
+        matchedElements: EMPTY_ANALYSIS_RESULT_ELEMENTS,
+    }),
+    waitForEvaluation: async () => {},
+    selectView: () => {},
+    applyExpression: async () => ({ status: 'stale' }),
 };
 
 interface OverallTrendQueryState {
@@ -1169,6 +1232,28 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const componentRefs = useOptionalOperationComponentRefDirectory();
     const { getCategoryLabels, getLabelName } = useAiLabels();
     const retainedPages = pagination?.pages ?? EMPTY_ANALYSIS_RESULTS_PAGES;
+    const isPaginated = Boolean(pagination);
+    const pageQueryCache = React.useRef(new Map<string, AnalysisResultsPageQueryCacheEntry>());
+    const [, refreshPageQueries] = React.useReducer((revision: number) => revision + 1, 0);
+    const resultPages = React.useMemo(() => {
+        const pages = isPaginated ? retainedPages : [{ id, createdAt: null, baseline: null }];
+        const nextCache = new Map<string, AnalysisResultsPageQueryCacheEntry>();
+        const result = pages.map((page) => {
+            const source = 'elements' in page ? page.elements : data;
+            const previous = pageQueryCache.current.get(page.id);
+            const entry = previous && previous.source === source ? previous : {
+                source,
+                elements: normalizeAnalysisResultsData(source).elements,
+                queryRef: previous?.queryRef ?? { current: null },
+            };
+            nextCache.set(page.id, entry);
+            return { ...page, elements: entry.elements, queryRef: entry.queryRef };
+        });
+        pageQueryCache.current = nextCache;
+        return result;
+    }, [data, id, isPaginated, retainedPages]);
+    const resultPagesRef = React.useRef(resultPages);
+    resultPagesRef.current = resultPages;
     const activePageIndex = React.useMemo(() => {
         if (!pagination || retainedPages.length === 0) return -1;
         const selectedIndex = retainedPages.findIndex((page) => page.id === pagination.activePageId);
@@ -1177,7 +1262,8 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const activePage = activePageIndex >= 0 ? retainedPages[activePageIndex] : null;
     const isOverallTrend = Boolean(pagination) && (showOverallTrend || !activePage);
     const activeData = activePage ?? data;
-    const { elements } = React.useMemo(() => normalizeAnalysisResultsData(activeData), [activeData]);
+    const activeResultPage = resultPages[pagination ? activePageIndex : 0];
+    const elements = activeResultPage?.elements ?? EMPTY_ANALYSIS_RESULT_ELEMENTS;
     const resolveSpecificResult = React.useCallback((pageId: string, resultId: string) => {
         const pageElements = pagination
             ? retainedPages.find((page) => page.id === pageId)?.elements
@@ -1338,7 +1424,10 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         getCategoryLabels: (parentId) => activeMistakeCatalog.categoryLabels[parentId],
         getLabelName,
     }), [activeMistakeCatalog.categoryLabels, getLabelName]);
-    const activeQuery = useActivePageQueryState(elements, activeQueryTemplates);
+    const activePageQuery = activeResultPage?.queryRef.current;
+    const activeQuery = activePageQuery?.elements === elements
+        ? activePageQuery.query
+        : EMPTY_ACTIVE_PAGE_QUERY;
     const activeQueryRef = React.useRef(activeQuery);
     activeQueryRef.current = activeQuery;
     const waitForAnalysisResultPage = React.useCallback((pageId: string): Promise<void> => {
@@ -1588,17 +1677,27 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 };
             }, 'applied');
         },
-        queryLapAnalysisResult: ({ query }) => createOperationFrom(async () => ({
-            status: 'ready' as const,
-            data: await evaluateAllAnalysisResultsQuery(query, {
-                analyses: pagination ? retainedPages : [{
-                    id,
-                    createdAt: null,
-                    baseline: null,
-                    elements,
-                }],
-            }),
-        }), 'ready'),
+        queryLapAnalysisResult: ({ query, scope = 'all' }) => createOperationFrom(async () => {
+            let pages: typeof resultPages;
+            let scopedPages: typeof resultPages;
+            do {
+                pages = resultPagesRef.current;
+                scopedPages = pages.filter((_page, index) => scope === 'all' || index === scope - 1);
+                await Promise.all(scopedPages.map((page) => page.queryRef.current?.query.waitForEvaluation()));
+            } while (pages !== resultPagesRef.current || scopedPages.some((page) => (
+                page.queryRef.current?.query.getCommittedSnapshot().isEvaluating
+            )));
+            return {
+                status: 'ready' as const,
+                data: await evaluateAllAnalysisResultsQuery(query, {
+                    analyses: pages.map(({ queryRef, ...page }) => ({
+                        ...page,
+                        elements: queryRef.current?.query.getCommittedSnapshot().matchedElements
+                            ?? EMPTY_ANALYSIS_RESULT_ELEMENTS,
+                    })),
+                }, scope),
+            };
+        }, 'ready'),
         replaceAnalysisResults: (nextData) => runVisualizationBooleanCallback(
             name,
             VisualizationUpdateFailedError,
@@ -1661,10 +1760,9 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         ),
     }), [
         activeData,
-        activePage?.id,
+        activePage,
         displaySpecificResultInOverlay,
         prepareComparisonVoices,
-        elements,
         id,
         name,
         onDisable,
@@ -1765,6 +1863,15 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
 
     return (
         <Card className={styles.chart} style={{ width, height }}>
+            {resultPages.map((page) => (
+                <AnalysisResultsPageQuery
+                    key={page.id}
+                    elements={page.elements}
+                    templates={activeQueryTemplates}
+                    queryRef={page.queryRef}
+                    onChange={refreshPageQueries}
+                />
+            ))}
             {pagination && (
                 <Flex className={styles.navigation} justify="between" align="center" gap="2" wrap="wrap">
                     <Flex

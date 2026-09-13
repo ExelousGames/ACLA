@@ -352,22 +352,33 @@ export type FrontendAiQueryContractCoverage = AssertTrue<QueryContractKeysAreExa
 const validateAnalysisResultQueryArguments = (
     args: unknown,
 ): QueryLapAnalysisResultInput => {
-    const validationMessage = 'query_lap_analysis_result requires exactly one non-empty string property named query.';
+    const validationMessage = 'query_lap_analysis_result requires a non-empty string property named query and accepts only an optional scope of "all" or a positive integer page number.';
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
         throw new InvalidOperationCallError(validationMessage);
     }
     const value = args as Record<string, unknown>;
     const keys = Reflect.ownKeys(value);
     const queryProperty = Object.getOwnPropertyDescriptor(value, 'query');
-    if (keys.length !== 1
-        || keys[0] !== 'query'
+    const scopeProperty = Object.getOwnPropertyDescriptor(value, 'scope');
+    if (keys.some((key) => key !== 'query' && key !== 'scope')
         || !queryProperty
         || !('value' in queryProperty)
         || typeof queryProperty.value !== 'string'
-        || !queryProperty.value.trim()) {
+        || !queryProperty.value.trim()
+        || (scopeProperty && (
+            !('value' in scopeProperty)
+            || (scopeProperty.value !== 'all' && (
+                typeof scopeProperty.value !== 'number'
+                || !Number.isInteger(scopeProperty.value)
+                || scopeProperty.value < 1
+            ))
+        ))) {
         throw new InvalidOperationCallError(validationMessage);
     }
-    return { query: queryProperty.value };
+    return {
+        query: queryProperty.value,
+        ...(scopeProperty ? { scope: scopeProperty.value as 'all' | number } : {}),
+    };
 };
 
 const validateApplyAnalysisResultQueryArguments = (

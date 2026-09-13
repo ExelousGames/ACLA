@@ -12,6 +12,7 @@ export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 
 export type QueryLapAnalysisResultInput = {
     query: string;
+    scope?: 'all' | number;
 };
 
 export type QueryLapAnalysisResultOutput = {
@@ -909,10 +910,20 @@ export const evaluateAnalysisResultsQuery = async (
 export const evaluateAllAnalysisResultsQuery = async (
     query: unknown,
     input: unknown,
+    scope: QueryLapAnalysisResultInput['scope'] = 'all',
 ): Promise<JsonValue> => {
     try {
         const source = requireQueryString(query);
         const root = normalizeAllAnalysisResultsQueryInput(input);
+        if (scope !== 'all') {
+            if (!Number.isInteger(scope) || scope < 1 || scope > root.analyses.length) {
+                throw new AnalysisResultsQueryError({
+                    code: 'INVALID_QUERY_SCOPE',
+                    message: `scope must be "all" or an existing page number between 1 and ${root.analyses.length}.`,
+                });
+            }
+            root.analyses = [root.analyses[scope - 1]];
+        }
         const expression = compileAnalysisResultsQuery(source);
         const result = await expression.evaluate(root);
         const budget = new JsonByteBudget(QUERY_RESULT_MAX_BYTES, () => (

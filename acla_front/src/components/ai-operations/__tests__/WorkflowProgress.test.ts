@@ -12,7 +12,7 @@ const due = (runner: LiveRangeTodoListRunner, position: number) => {
 };
 const start = (kind: Kind, dispatch: WorkflowDispatcher) => {
     const operations = ['first', 'second'].map((id) => ({ operation: {
-        name: 'query_analysis_result' as const, title: id, id, arguments: { query: id },
+        name: 'query_lap_analysis_result' as const, title: id, id, arguments: { query: id },
     } }));
     if (kind === 'procedure') {
         const runner = new ProcedurePlanRunner('procedure-plan', dispatch, undefined, jest.fn());
@@ -26,7 +26,7 @@ const start = (kind: Kind, dispatch: WorkflowDispatcher) => {
         const runner = new RepeatablePlanRunner('repeatable-plan', dispatch);
         const create = () => runner.createRepeatablePlan({ workflow: {
             name: 'create_repeatable_plan', goal: 'Review', operations,
-            stop_when: { tool: { name: 'query_analysis_result', arguments: { query: 'stop' } }, operator: 'eq', target: 0 },
+            stop_when: { tool: { name: 'query_lap_analysis_result', arguments: { query: 'stop' } }, operator: 'eq', target: 0 },
         } });
         return { runner, operation: create(), create };
     }
@@ -111,7 +111,7 @@ it('identifies the repeatable stop-condition check after completed steps', async
     await finished;
     expect(frames[0].result).toMatchObject({
         completed_step_count: 2,
-        stopped_at_step: { step: 3, tool_name: 'query_analysis_result' },
+        stopped_at_step: { step: 3, tool_name: 'query_lap_analysis_result' },
     });
 });
 

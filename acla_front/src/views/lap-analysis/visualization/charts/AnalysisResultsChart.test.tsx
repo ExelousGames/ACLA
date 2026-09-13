@@ -231,7 +231,7 @@ describe('AnalysisResultsChart', () => {
         const marker = 'private-analysis-output';
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const elements = Array.from({ length: 51 }, (_, index) => ({
-            id: `element-${index}`, labels: [], title: marker.repeat(20),
+            id: `element-${index}`, labels: labelRanges('MSP'), title: marker.repeat(20),
         }));
         await act(async () => {
             render(<AnalysisResultsChart
@@ -296,7 +296,7 @@ describe('AnalysisResultsChart', () => {
         await act(async () => {
             render(<AnalysisResultsChart
                 ref={chartRef} name="visualization:analysis-results" id="bounded-stop"
-                data={{ elements: [{ id: 'one', labels: [], title: 'private-stop-data'.repeat(1000) }] }}
+                data={{ elements: [{ id: 'one', labels: labelRanges('MSP'), title: 'private-stop-data'.repeat(1000) }] }}
             />);
         });
         const directory = createOperationComponentRefDirectory();
@@ -378,7 +378,7 @@ describe('AnalysisResultsChart', () => {
 
         await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
-            data: 9,
+            data: 7,
         });
         await expect(chartRef.current!.queryLapAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
@@ -389,7 +389,7 @@ describe('AnalysisResultsChart', () => {
 
         await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
-            data: 9,
+            data: 7,
         });
         await expect(chartRef.current!.queryLapAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
@@ -405,7 +405,7 @@ describe('AnalysisResultsChart', () => {
         });
     });
 
-    it('queries every retained analysis independently of the active page', async () => {
+    it('queries the default displayed results of every retained page, including unvisited pages', async () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const onSelectPage = jest.fn();
         const pages = [{
@@ -442,7 +442,7 @@ describe('AnalysisResultsChart', () => {
         expect(screen.getByRole('button', { name: 'Overall Trends' })).toHaveAttribute('aria-pressed', 'true');
         await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
-            data: 5,
+            data: 4,
         });
         await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_ANALYSES_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
@@ -453,7 +453,7 @@ describe('AnalysisResultsChart', () => {
         }).result).resolves.toEqual({
             status: 'ready',
             data: [
-                { lap_id: 1, segmentCount: 2 },
+                { lap_id: 1, segmentCount: 1 },
                 { lap_id: 2, segmentCount: 3 },
             ],
         });
@@ -472,7 +472,7 @@ describe('AnalysisResultsChart', () => {
         );
         await expect(chartRef.current!.queryLapAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
-            data: 5,
+            data: 4,
         });
 
         view.rerender(
@@ -487,6 +487,164 @@ describe('AnalysisResultsChart', () => {
             status: 'ready',
             data: 4,
         });
+    });
+
+    it('scopes queries to each page final results and retains independent filters across navigation and updates', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const first: AnalysisResultsPaginationPage = {
+            id: 'scoped-first', createdAt: 1,
+            baseline: { lap_id: 10, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
+            elements: ['first-a', 'first-b', 'hidden'].map((id) => ({ id, labels: labelRanges('MSP') })),
+        };
+        const second: AnalysisResultsPaginationPage = {
+            id: 'scoped-second', createdAt: 2,
+            baseline: { lap_id: 20, lap_time_ms: 98_000, track: 'Spa', car: 'GT3' },
+            elements: [
+                { id: 'second-mistake', labels: labelRanges('MSR') },
+                { id: 'second-telemetry', labels: labelRanges('Telemetry') },
+            ],
+        };
+        const Harness = ({ pages }: { pages: AnalysisResultsPaginationPage[] }) => {
+            const [activePageId, onSelectPage] = React.useState(first.id);
+            return <AnalysisResultsChart ref={chartRef} name="visualization:analysis-results"
+                id="scoped-results" pagination={{ pages, activePageId, onSelectPage }} />;
+        };
+        const view = render(<Harness pages={[first, second]} />);
+        const directory = createOperationComponentRefDirectory();
+        directory.registerComponentRef(chartRef);
+        const registry = createAiCommandRegistry({ componentRefs: directory });
+        const read = async (scope: 'all' | number = 'all') => {
+            let result: analysisResultsQuery.QueryLapAnalysisResultOutput | undefined;
+            await act(async () => {
+                const value = await registry.query_lap_analysis_result({
+                    query: '[analyses.{"page": sourceIndex + 1, "id": id, "ids": [elements.id]}]', scope,
+                }).result;
+                if (value instanceof Error) throw value;
+                result = value;
+            });
+            return result!.data;
+        };
+
+        fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
+        await act(async () => {
+            await chartRef.current!.applyAnalysisResultQuery({
+                query: '$reverse(elements[id != "hidden"])', page_number: 1,
+            }).result;
+        });
+        const firstDisplay = renderedResultIds();
+        expect(firstDisplay).toEqual(['first-b', 'first-a']);
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('mistakes');
+        selectView('all-results');
+        await waitFor(() => expect(renderedResultIds()).toEqual(['second-mistake', 'second-telemetry']));
+        const secondDisplay = renderedResultIds();
+
+        expect(await read(1)).toEqual([{ page: 1, id: first.id, ids: firstDisplay }]);
+        expect(await read(2)).toEqual([{ page: 2, id: second.id, ids: secondDisplay }]);
+        expect(await read()).toEqual([
+            { page: 1, id: first.id, ids: firstDisplay },
+            { page: 2, id: second.id, ids: secondDisplay },
+        ]);
+        expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+        expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('custom');
+        expect(renderedResultIds()).toEqual(firstDisplay);
+
+        // Off-screen updates use that page's own filter; order follows the retained page list.
+        const updatedSecond = { ...second, elements: [...second.elements, { id: 'new-telemetry', labels: [] }] };
+        view.rerender(<Harness pages={[updatedSecond, first]} />);
+        expect(await read()).toEqual([
+            { page: 1, id: second.id, ids: [...secondDisplay, 'new-telemetry'] },
+            { page: 2, id: first.id, ids: firstDisplay },
+        ]);
+        const third = { ...first, id: 'new-page', elements: [
+            { id: 'new-mistake', labels: labelRanges('MSP') },
+            { id: 'new-hidden', labels: [] },
+        ] };
+        view.rerender(<Harness pages={[updatedSecond, first, third]} />);
+        expect(await read(3)).toEqual([{ page: 3, id: third.id, ids: ['new-mistake'] }]);
+        await act(async () => {
+            await chartRef.current!.applyAnalysisResultQuery({ query: 'elements[id = "missing"]', page_number: 2 }).result;
+        });
+        expect(await read(2)).toEqual([{ page: 2, id: first.id, ids: [] }]);
+        await act(async () => {
+            await expect(chartRef.current!.applyAnalysisResultQuery({ query: '5', page_number: 2 }).result).rejects.toThrow();
+        });
+        expect(await read(2)).toEqual([{ page: 2, id: first.id, ids: [] }]);
+
+        view.rerender(<Harness pages={[updatedSecond]} />);
+        expect(await read()).toEqual([{ page: 1, id: second.id, ids: [...secondDisplay, 'new-telemetry'] }]);
+        await expect(registry.query_lap_analysis_result({ query: 'analyses', scope: 2 }).result)
+            .rejects.toMatchObject({ code: 'INVALID_QUERY_SCOPE' });
+        view.rerender(<Harness pages={[]} />);
+        expect(await read()).toEqual([]);
+    });
+
+    it('waits for a pending view filter before querying the displayed recorded result', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(<AnalysisResultsChart ref={chartRef} name="visualization:analysis-results" id="pending-scope"
+            data={{ elements: [
+                { id: 'mistake', labels: labelRanges('MSP') },
+                { id: 'telemetry', labels: [] },
+            ] }} />);
+        await waitFor(() => expect(renderedResultIds()).toEqual(['mistake']));
+        let resolveFilter!: (value: analysisResultsQuery.JsonValue) => void;
+        const evaluator = jest.spyOn(analysisResultsQuery, 'evaluateAnalysisResultsQuery')
+            .mockImplementationOnce(() => new Promise((resolve) => { resolveFilter = resolve; }));
+        try {
+            selectView('all-results');
+            const operation = chartRef.current!.queryLapAnalysisResult({ query: '[analyses.elements.id]', scope: 1 });
+            const settled = jest.fn();
+            void operation.result.then(settled);
+            await act(async () => { await Promise.resolve(); });
+            expect(settled).not.toHaveBeenCalled();
+            await act(async () => {
+                resolveFilter([{ id: 'mistake' }, { id: 'telemetry' }]);
+                await operation.result;
+            });
+            await expect(operation.result).resolves.toEqual({ status: 'ready', data: renderedResultIds() });
+            expect(renderedResultIds()).toEqual(['mistake', 'telemetry']);
+        } finally {
+            evaluator.mockRestore();
+        }
+    });
+
+    it('waits only for scoped pages and drops pages removed while an all-page query is waiting', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const first: AnalysisResultsPaginationPage = {
+            id: 'ready-page', createdAt: 1,
+            baseline: { lap_id: 1, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'ready-result', labels: labelRanges('MSP') }],
+        };
+        const second = { ...first, id: 'pending-page', elements: [{ id: 'pending-result', labels: [] }] };
+        const renderChart = (pages: AnalysisResultsPaginationPage[]) => (
+            <AnalysisResultsChart ref={chartRef} name="visualization:analysis-results" id="scope-readiness"
+                pagination={{ pages, activePageId: second.id, onSelectPage: jest.fn() }} />
+        );
+        const view = render(renderChart([first, second]));
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments().status).toBe('empty'));
+        fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
+        let resolveFilter!: (value: analysisResultsQuery.JsonValue) => void;
+        const evaluator = jest.spyOn(analysisResultsQuery, 'evaluateAnalysisResultsQuery')
+            .mockImplementationOnce(() => new Promise((resolve) => { resolveFilter = resolve; }));
+        try {
+            selectView('all-results');
+            await expect(chartRef.current!.queryLapAnalysisResult({ query: '[analyses.elements.id]', scope: 1 }).result)
+                .resolves.toEqual({ status: 'ready', data: ['ready-result'] });
+            const allPages = chartRef.current!.queryLapAnalysisResult({ query: '[analyses.elements.id]', scope: 'all' });
+            const settled = jest.fn();
+            void allPages.result.then(settled);
+            await act(async () => { await Promise.resolve(); });
+            expect(settled).not.toHaveBeenCalled();
+            view.rerender(renderChart([first]));
+            await act(async () => {
+                resolveFilter([{ id: 'pending-result' }]);
+                await allPages.result;
+            });
+            await expect(allPages.result).resolves.toEqual({ status: 'ready', data: ['ready-result'] });
+        } finally {
+            evaluator.mockRestore();
+        }
     });
 
     it('owns comparison overlay publication, replacement, and replay completion', async () => {
@@ -1293,7 +1451,7 @@ describe('AnalysisResultsChart', () => {
         await waitFor(() => expect(chartRef.current!.getFilteredSegments()).toMatchObject({
             status: 'ready',
             activePageId: 'filtered-second',
-            appliedView: 'custom',
+            appliedView: initialPageId === 'filtered-first' ? 'mistakes' : 'all-results',
             segments: [{ id: 'second-page-only' }],
         }));
 

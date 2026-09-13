@@ -49,6 +49,23 @@ const getTemplate = (
 };
 
 describe('analysisResultsQuery evaluator', () => {
+    it('selects a one-based page before evaluating JSONata and preserves its original source index', async () => {
+        const input = { analyses: [
+            { id: 'first', createdAt: null, baseline: null, elements: activeElements },
+            { id: 'second', createdAt: null, baseline: null, elements: [] },
+        ] };
+        await expect(evaluateAllAnalysisResultsQuery('$count(analyses.elements)', input, 'all')).resolves.toBe(2);
+        await expect(evaluateAllAnalysisResultsQuery('$count(analyses.elements)', input, 2)).resolves.toBe(0);
+        await expect(evaluateAllAnalysisResultsQuery('[analyses.sourceIndex]', input, 2)).resolves.toEqual([1]);
+        for (const scope of [0, -1, 1.5, 3, NaN, Infinity, '1', 'current', null]) {
+            await expect(evaluateAllAnalysisResultsQuery('analyses', input, scope as any))
+                .rejects.toMatchObject({ code: 'INVALID_QUERY_SCOPE' });
+        }
+        await expect(evaluateAllAnalysisResultsQuery('$count(analyses)', { analyses: [] }, 'all')).resolves.toBe(0);
+        await expect(evaluateAllAnalysisResultsQuery('analyses', { analyses: [] }, 1))
+            .rejects.toMatchObject({ code: 'INVALID_QUERY_SCOPE' });
+    });
+
     it('queries independent label intervals and returns the complete label objects', async () => {
         const labels = [
             { label_name: 'MSP1', start_index: 120, end_index: 130 },

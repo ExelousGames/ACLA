@@ -320,12 +320,28 @@ describe('frontend operation registry', () => {
         });
     });
 
+    it.each(['all', 1, 2] as const)('dispatches analysis query scope %s unchanged', async (scope) => {
+        const operation = resolvedOperation({ status: 'ready' as const, data: 1 }, 'ready');
+        const handle: Partial<AnalysisResultsChartHandle> = {
+            queryLapAnalysisResult: jest.fn(() => operation) as any,
+        };
+        const registry = createAiCommandRegistry({
+            componentRefs: register('visualization:analysis-results', handle),
+        });
+        const args = { query: '$count(analyses)', scope };
+        await expect(registry.query_lap_analysis_result(args).result).resolves.toEqual({ status: 'ready', data: 1 });
+        expect(handle.queryLapAnalysisResult).toHaveBeenCalledWith(args);
+    });
+
     it.each([
         {},
         { query: '' },
         { query: '   ' },
         { query: 4 },
         { query: '$count(analyses)', extra: true },
+        ...[0, -1, 1.5, NaN, Infinity, '1', 'current', null, {}, undefined].map((scope) => ({ query: 'analyses', scope })),
+        Object.create({ query: 'analyses', scope: 1 }),
+        Object.defineProperty({ query: 'analyses' }, 'scope', { get: () => 1 }),
     ])('rejects an invalid analysis result query: %p', async (args) => {
         const componentName = 'visualization:analysis-results';
         const handle: Partial<AnalysisResultsChartHandle> = {

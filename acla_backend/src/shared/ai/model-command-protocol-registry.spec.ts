@@ -297,11 +297,32 @@ describe('analysis result query tool', () => {
             },
             required: ['query'],
         });
-        expect(Object.keys(tool.properties)).toEqual(['query']);
+        expect(Object.keys(tool.properties)).toEqual(['query', 'scope']);
         expect(tool.properties.query).not.toHaveProperty('enum');
         expect(new RegExp(tool.properties.query.pattern).test('   ')).toBe(false);
         expect(new RegExp(tool.properties.query.pattern).test('$count(analyses)'))
             .toBe(true);
+    });
+
+    it('validates all-page and numbered scopes and documents per-page filtering', () => {
+        const tool = getToolArguments(MODEL_COMMAND_PROTOCOL.find(({ name }) => (
+            name === 'query_lap_analysis_result'
+        )));
+        const validate = new Ajv({ strictNumbers: true }).compile({
+            type: 'object', properties: tool.properties, required: tool.required, additionalProperties: false,
+        });
+        expect(validate({ query: 'analyses' })).toBe(true);
+        for (const scope of ['all', 1, 2]) {
+            expect(validate({ query: 'analyses', scope })).toBe(true);
+        }
+        for (const scope of [0, -1, 1.5, '1', 'current', null, {}, NaN, Infinity]) {
+            expect(validate({ query: 'analyses', scope })).toBe(false);
+        }
+        expect(tool.properties.scope.default).toBe('all');
+        expect(tool.description).toContain('Each page keeps its own View and applied filter');
+        expect(tool.description).toContain('final filtered and ordered elements');
+        expect(tool.description).toContain('INVALID_QUERY_SCOPE');
+        expect(tool.description).not.toContain('The current View and active page do not change');
     });
 
     it('describes one all-analysis root in every eligible context', () => {
@@ -322,7 +343,7 @@ describe('analysis result query tool', () => {
             expect(description).toContain('QUERY_RESULT_LIMIT_EXCEEDED');
             expect(description).toContain('no partial data');
             expect(description).toContain('Filter the results, select fewer fields, or aggregate');
-            expect(description).toContain('calculate over all analysis data');
+            expect(description).toContain('calculate over all scoped, filtered analysis data');
             expect(description).toContain('1,024 serialized bytes');
             expect(description).toContain('without the original message or cause');
             expect(description).toContain('not a count unless the expression returns one');

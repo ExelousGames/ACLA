@@ -144,7 +144,11 @@ describe('ModelCommandProtocolController', () => {
         const tool = tools.find(({ name }) => name === 'query_lap_analysis_result') as any;
 
         expect(tool.properties.tool.properties.arguments.required).toEqual(['query']);
-        expect(Object.keys(tool.properties.tool.properties.arguments.properties)).toEqual(['query']);
+        expect(Object.keys(tool.properties.tool.properties.arguments.properties)).toEqual(['query', 'scope']);
+        expect(tool.properties.tool.properties.arguments.properties.scope).toMatchObject({
+            oneOf: [{ type: 'string', enum: ['all'] }, { type: 'integer', minimum: 1 }],
+            default: 'all',
+        });
         expect(tool.properties.tool.properties.arguments.properties.query).toMatchObject({
             type: 'string',
             minLength: 1,
