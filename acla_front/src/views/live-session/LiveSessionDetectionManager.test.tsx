@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { act, render } from '@testing-library/react';
 import { RecordingState } from './recording-state';
-import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import { LiveSessionContext, LiveSessionProvider } from 'views/live-session/LiveSessionContext';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import type { PythonStreamEvent } from 'services/pythonStreaming';
@@ -121,6 +121,38 @@ describe('LiveSessionDetectionManager desktop game gating', () => {
         expect(runtime.transitionRecordingState).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+        { Graphics: { status: ACC_STATUS.ACC_LIVE } },
+        { Graphics_status: '2' },
+        { Graphics_status: ACC_STATUS.ACC_LIVE, Graphics_completed_laps: 1 },
+        { Graphics_status: ACC_STATUS.ACC_LIVE, Physics: { speed_kmh: 100 } },
+        { Graphics_status: ACC_STATUS.ACC_LIVE, Static: { track: 'monza' } },
+        { Graphics_status: ACC_STATUS.ACC_LIVE, Statics: { track: 'monza' } },
+    ])('ignores checker telemetry outside the dataset: %o', async (data) => {
+        mockDetectedGame = 'acc';
+        const runtime = createRuntime();
+        renderManager(runtime);
+        await flushPromises();
+
+        act(() => processStreamUpdate?.({ status: 'update', data }));
+
+        expect(runtime.transitionRecordingState).not.toHaveBeenCalled();
+    });
+
+    it('detects an offline session from the canonical status field', async () => {
+        mockDetectedGame = 'acc';
+        const runtime = createRuntime();
+        renderManager(runtime);
+        await flushPromises();
+
+        act(() => processStreamUpdate?.({
+            status: 'update', data: { Graphics_status: ACC_STATUS.ACC_OFF },
+        }));
+
+        expect(runtime.transitionRecordingState).toHaveBeenCalledTimes(1);
+        expect(runtime.transitionRecordingState).toHaveBeenCalledWith({ type: 'sessionUnavailable' });
+    });
+
     it('treats checker control messages as availability state, not telemetry', async () => {
         mockDetectedGame = 'acc';
         const runtime = createRuntime();
@@ -151,7 +183,39 @@ describe('LiveSessionDetectionManager desktop game gating', () => {
         await flushPromises();
 
         expect(mockedCreatePythonStreamSession).not.toHaveBeenCalled();
-        expect(runtime.transitionRecordingState).toHaveBeenCalledWith({ type: 'sessionUnavailable' });
+        expect(runtime.transitionRecordingState).toHaveBeenCalledWith({
+            type: detectedGame ? 'sessionAvailable' : 'sessionUnavailable',
+        });
+    });
+
+    it.each(['ac', 'iracing'] as const)('allows captured %s sessions to become ready, reset, and resume', async (game) => {
+        let runtime: React.ContextType<typeof LiveSessionContext>;
+        const Capture = () => {
+            runtime = useContext(LiveSessionContext);
+            return null;
+        };
+        render(
+            <LiveSessionProvider>
+                <LiveSessionDetectionManager />
+                <Capture />
+            </LiveSessionProvider>,
+        );
+
+        act(() => runtime.startLiveSession(game));
+        await flushPromises();
+        expect(runtime!.recordingState).toBe(RecordingState.READY);
+
+        act(() => runtime.transitionRecordingState({ type: 'reset' }));
+        await flushPromises();
+        expect(runtime!.recordingState).toBe(RecordingState.READY);
+
+        act(() => {
+            runtime.transitionRecordingState({ type: 'recordingStarted' });
+            runtime.transitionRecordingState({ type: 'recordingStopped', reason: 'pause' });
+        });
+        await flushPromises();
+        expect(runtime!.recordingState).toBe(RecordingState.RESUME_READY);
+        expect(mockedCreatePythonStreamSession).not.toHaveBeenCalled();
     });
 
     it('retains the checker when later detector polling reports a different game', async () => {

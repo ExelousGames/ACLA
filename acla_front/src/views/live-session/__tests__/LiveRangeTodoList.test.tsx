@@ -5,6 +5,8 @@ import {
     calculateLiveRangeEta,
     calculateRollingForwardRate,
     crossedLiveRangeTodoPosition,
+    getLiveRangeNormalizedPosition,
+    getLiveRangeTelemetryLap,
 } from 'views/live-session/ai-operations/LiveRangeTodoList';
 import type {
     LiveRangeTodoEventInput,
@@ -35,8 +37,8 @@ const event = (
 });
 
 const makeDue = (runner: LiveRangeTodoListRunner, endPosition = 0.5) => {
-    runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_laps: 1 });
-    runner.acceptTelemetry({ Graphics_normalized_car_position: endPosition, Graphics_completed_laps: 1 });
+    runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_lap: 1 });
+    runner.acceptTelemetry({ Graphics_normalized_car_position: endPosition, Graphics_completed_lap: 1 });
 };
 
 const flushPromises = async () => {
@@ -44,6 +46,15 @@ const flushPromises = async () => {
 };
 
 describe('live range helpers', () => {
+    it('uses only dataset position and lap fields without legacy aliases', () => {
+        expect(getLiveRangeNormalizedPosition({ Graphics_normalized_car_position: 0.25 })).toBe(0.25);
+        expect(getLiveRangeTelemetryLap({ Graphics_completed_lap: 2 })).toBe(2);
+        expect(getLiveRangeNormalizedPosition({ normalized_car_position: 0.25 })).toBeUndefined();
+        expect(getLiveRangeNormalizedPosition({ Graphics_normalized_car_position: '0.25' })).toBeUndefined();
+        expect(getLiveRangeTelemetryLap({ Graphics_completed_laps: 2 })).toBeUndefined();
+        expect(getLiveRangeTelemetryLap({ Graphics: { completed_laps: 2 } })).toBeUndefined();
+    });
+
     it('calculates circular distance, ETA, and rollover crossings', () => {
         expect(calculateForwardCircularDistance(0.9, 0.1)).toBeCloseTo(0.2);
         expect(calculateLiveRangeEta(0.9, 0.1, 0.1)).toBeCloseTo(2);
@@ -102,7 +113,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
         runner.addEvent(event('measured', 0.4));
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.1,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
 
         expect(runner.get().todo_list?.events[0].eta_seconds).toBeNull();
@@ -110,7 +121,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
         now.mockReturnValue(2_000);
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.2,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
         expect(runner.get().todo_list?.events[0].eta_seconds).toBeCloseTo(2);
     });
@@ -128,7 +139,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
             now.mockReturnValue(time);
             runner.acceptTelemetry({
                 Graphics_normalized_car_position: 0.1,
-                Graphics_completed_laps: 1,
+                Graphics_completed_lap: 1,
             });
         }
 
@@ -151,7 +162,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
             now.mockReturnValue(time);
             runner.acceptTelemetry({
                 Graphics_normalized_car_position: position,
-                Graphics_completed_laps: 1,
+                Graphics_completed_lap: 1,
             });
         };
 
@@ -185,19 +196,19 @@ describe('LiveRangeTodoListRunner executable events', () => {
         runner.addEvent({ ...event('gap', 0.5, taskStart), lead_time_seconds: 2 });
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.1,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
         now.mockReturnValue(2_000);
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.2,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
         expect(runner.get().todo_list?.events[0].eta_seconds).toBeCloseTo(3);
 
         now.mockReturnValue(60_000);
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.2,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
 
         expect(taskStart).not.toHaveBeenCalled();
@@ -223,12 +234,12 @@ describe('LiveRangeTodoListRunner executable events', () => {
 
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.1,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
         now.mockReturnValue(2_000);
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.2,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
 
         expect(nearerStart).toHaveBeenCalledTimes(1);
@@ -277,17 +288,17 @@ describe('LiveRangeTodoListRunner executable events', () => {
 
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.6,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
         expect(second).not.toHaveBeenCalled();
 
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.3,
-            Graphics_completed_laps: 2,
+            Graphics_completed_lap: 2,
         });
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.45,
-            Graphics_completed_laps: 2,
+            Graphics_completed_lap: 2,
         });
         expect(second).toHaveBeenCalledTimes(1);
 
@@ -330,7 +341,7 @@ describe('LiveRangeTodoListRunner executable events', () => {
         expect(second).not.toHaveBeenCalled();
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.9,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
         expect(second).toHaveBeenCalledTimes(1);
     });
@@ -381,20 +392,20 @@ describe('LiveRangeTodoListRunner executable events', () => {
 
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.15,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.25,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
         await flushPromises();
         runner.acceptTelemetry({
             Graphics_normalized_car_position: 0.35,
-            Graphics_completed_laps: 1,
+            Graphics_completed_lap: 1,
         });
         await flushPromises();
 

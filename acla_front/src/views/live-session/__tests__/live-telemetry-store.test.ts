@@ -11,7 +11,7 @@ const frame = (
     game: 'acc',
     sample: {
         Graphics_status: ACC_STATUS.ACC_LIVE,
-        Graphics_sequence: sequence,
+        Graphics_packed_id: sequence,
         Physics_speed_kmh: sequence,
         ...sample,
     },
@@ -21,6 +21,36 @@ const frame = (
 });
 
 describe('live telemetry store', () => {
+    it.each([
+        { Physics_speed_kmh: 100, speedKph: 200 },
+        { Graphics_status: '2' },
+        { Graphics_car_coordinates: JSON.stringify([{ x: 1, y: 2, z: 3 }]) },
+        { Graphics: { status: 2 } },
+    ])('rejects invalid dataset rows without changing the snapshot: %o', (sample) => {
+        const store = createLiveTelemetryStore();
+        const listener = jest.fn();
+        store.subscribeEvents(listener);
+        const before = store.getSnapshot();
+        const update = { ...frame(1), sample } as unknown as RecordingViewUpdate;
+
+        expect(store.publishFrame(update)).toBe(false);
+        expect(store.getSnapshot()).toBe(before);
+        expect(listener).not.toHaveBeenCalled();
+        expect(store.publishFrame(frame(1))).toBe(true);
+    });
+
+    it('takes static data from dataset rows and rejects invalid static overrides atomically', () => {
+        const store = createLiveTelemetryStore();
+        expect(store.publishFrame(frame(1, { Static_track: 'monza' }))).toBe(true);
+        const before = store.getSnapshot();
+        expect(before.currentTelemetry.Static_track).toBe('monza');
+
+        expect(store.publishFrame(frame(2), { Static_legacy: 'unsupported' })).toBe(false);
+        expect(store.getSnapshot()).toBe(before);
+        expect(store.publishFrame(frame(2, { Static_track: 'spa', Static_car_model: 'GT3' }))).toBe(true);
+        expect(store.getSnapshot().currentTelemetry).toMatchObject({ Static_track: 'monza', Static_car_model: 'GT3' });
+    });
+
     it('delivers 120 frames synchronously, exactly once, and in sequence', () => {
         const store = createLiveTelemetryStore();
         const received: number[] = [];
@@ -44,40 +74,40 @@ describe('live telemetry store', () => {
     it('replaces dynamic fields while retaining every first-seen static field', () => {
         const store = createLiveTelemetryStore();
         store.publishFrame(frame(1, {
-            Graphics_first_only: 1,
-            Physics_first_only: 2,
+            Graphics_current_time: 1,
+            Physics_gas: 2,
         }), {
             Static_track: 'monza',
             Static_num_cars: 1,
         });
         store.publishFrame(frame(2, {
-            Graphics_second_only: 3,
-            Physics_second_only: 4,
+            Graphics_last_time: 3,
+            Physics_brake: 4,
         }), {
             Static_track: 'spa',
             Static_num_cars: 99,
-            Static_late_key: 'locked-late',
+            Static_car_model: 'locked-late',
         });
 
         const snapshot = store.getSnapshot();
         expect(snapshot.graphicsTelemetry).toEqual({
             Graphics_status: ACC_STATUS.ACC_LIVE,
-            Graphics_sequence: 2,
-            Graphics_second_only: 3,
+            Graphics_packed_id: 2,
+            Graphics_last_time: 3,
         });
         expect(snapshot.physicsTelemetry).toEqual({
             Physics_speed_kmh: 2,
-            Physics_second_only: 4,
+            Physics_brake: 4,
         });
         expect(snapshot.currentTelemetry).toEqual({
             Static_track: 'monza',
             Static_num_cars: 1,
-            Static_late_key: 'locked-late',
+            Static_car_model: 'locked-late',
             ...snapshot.graphicsTelemetry,
             ...snapshot.physicsTelemetry,
         });
-        expect(snapshot.currentTelemetry).not.toHaveProperty('Graphics_first_only');
-        expect(snapshot.currentTelemetry).not.toHaveProperty('Physics_first_only');
+        expect(snapshot.currentTelemetry).not.toHaveProperty('Graphics_current_time');
+        expect(snapshot.currentTelemetry).not.toHaveProperty('Physics_gas');
     });
 
     it('emits explicit stream/session resets and supports count restoration and finalization', () => {

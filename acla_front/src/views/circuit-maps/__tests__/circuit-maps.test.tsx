@@ -172,6 +172,30 @@ describe('CircuitMaps', () => {
         expect(screen.getByRole('button', { name: /start capture/i })).toBeDisabled();
     });
 
+    it('uses Static_track from the current telemetry row for the circuit name', async () => {
+        await act(async () => {
+            renderCircuitMaps();
+            liveTelemetryStore.publishFrame({
+                type: 'frame', game: 'acc', sequence: 1, committedSequence: 1, committedCount: 1,
+                sample: { Static_track: 'Canonical Circuit' },
+            });
+        });
+
+        expect(screen.getByLabelText('Circuit name')).toHaveValue('Canonical Circuit');
+    });
+
+    it.each([
+        [{ Static_track: 'Canonical Circuit' }, 'Canonical Circuit'],
+        [{ track: 'Legacy Circuit' }, ''],
+        [{ Static: { track: 'Legacy Circuit' } }, ''],
+        [{ Statics: { track: 'Legacy Circuit' } }, ''],
+    ])('uses only canonical static fields from the session: %o', async (staticData, expectedName) => {
+        renderCircuitMaps({ staticData });
+
+        await waitFor(() => expect(mockedApi.get).toHaveBeenCalled());
+        expect(screen.getByLabelText('Circuit name')).toHaveValue(expectedName);
+    });
+
     it('saves a new global map payload without user ownership', async () => {
         renderCircuitMaps();
         act(() => {
@@ -184,7 +208,8 @@ describe('CircuitMaps', () => {
                 sample: {
                 Graphics_status: ACC_STATUS.ACC_LIVE,
                 Graphics_normalized_car_position: 0.1,
-                Graphics_car_coordinates: JSON.stringify([{ x: 1, y: 0, z: 2 }]),
+                Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
+                    ? { x: 1, y: 0, z: 2 } : { x: 0, y: 0, z: 0 }),
                 },
             });
         });
@@ -249,7 +274,8 @@ describe('CircuitMaps', () => {
                 sample: {
                     Graphics_status: ACC_STATUS.ACC_LIVE,
                     Graphics_normalized_car_position: 0,
-                    Graphics_car_coordinates: JSON.stringify([{ x: 1, y: 1, z: 2 }]),
+                    Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
+                        ? { x: 1, y: 1, z: 2 } : { x: 0, y: 0, z: 0 }),
                 },
                 sequence: 1,
                 committedSequence: 1,
@@ -267,11 +293,9 @@ describe('CircuitMaps', () => {
                     sample: {
                         Graphics_status: ACC_STATUS.ACC_LIVE,
                         Graphics_normalized_car_position: (sequence - 1) / 1000,
-                        Graphics_car_coordinates: JSON.stringify([{
-                            x: sequence + 1,
-                            y: 1,
-                            z: sequence + 2,
-                        }]),
+                        Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
+                            ? { x: sequence + 1, y: 1, z: sequence + 2 }
+                            : { x: 0, y: 0, z: 0 }),
                     },
                     sequence,
                     committedSequence: sequence,

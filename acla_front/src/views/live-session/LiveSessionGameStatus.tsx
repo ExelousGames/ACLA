@@ -6,7 +6,7 @@ import type {
 } from 'contexts/DesktopGameContext';
 import { LiveSessionContext } from './LiveSessionContext';
 
-type StatusVisualState = 'checking' | 'ready' | 'limited' | 'idle' | 'unsupported' | 'error';
+type StatusVisualState = 'checking' | 'ready' | 'idle' | 'unsupported' | 'error';
 
 interface StatusPresentation {
     title: string;
@@ -18,24 +18,6 @@ export const LIVE_SESSION_GAME_LABELS: Record<DesktopGame, string> = {
     acc: 'Assetto Corsa Competizione',
     ac: 'Assetto Corsa',
     iracing: 'iRacing',
-};
-
-const detectedGamePresentation: Record<DesktopGame, StatusPresentation> = {
-    acc: {
-        title: 'Assetto Corsa Competizione detected',
-        detail: 'Full live telemetry is available.',
-        visualState: 'ready',
-    },
-    ac: {
-        title: 'Assetto Corsa detected',
-        detail: 'A limited live workspace is available.',
-        visualState: 'limited',
-    },
-    iracing: {
-        title: 'iRacing detected',
-        detail: 'A limited live workspace is available.',
-        visualState: 'limited',
-    },
 };
 
 const getDetectorPresentation = ({
@@ -52,7 +34,11 @@ const getDetectorPresentation = ({
             };
         case 'detected':
             return detectedGame
-                ? detectedGamePresentation[detectedGame]
+                ? {
+                    title: `${LIVE_SESSION_GAME_LABELS[detectedGame]} detected`,
+                    detail: 'Start a session to open the live workspace.',
+                    visualState: 'ready',
+                }
                 : {
                     title: 'No simulator detected.',
                     detail: 'Detection continues automatically.',
@@ -82,7 +68,7 @@ const getDetectorPresentation = ({
 const getSessionPresentation = (game: DesktopGame): StatusPresentation => ({
     title: `${LIVE_SESSION_GAME_LABELS[game]} session`,
     detail: 'Game locked for this live session. Recording availability is checked when requested.',
-    visualState: detectedGamePresentation[game].visualState,
+    visualState: 'ready',
 });
 
 const LiveSessionGameStatus = () => {

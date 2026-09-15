@@ -31,7 +31,7 @@ export class CrashSensor {
             type: 'CRASHED',
             startSampleIdx: Math.max(0, sampleIdx - LOOKBACK_SAMPLES),
             endSampleIdx: sampleIdx + LOOKAHEAD_SAMPLES,
-            lap: sample.Graphics_completed_laps ?? 0,
+            lap: sample.Graphics_completed_lap ?? 0,
             trackPosition: sample.Graphics_normalized_car_position ?? 0,
             timestamp: Date.now(),
             metadata: { speedDrop, gx, gy },

@@ -224,8 +224,8 @@ const getSampleKey = (
 ): string => [
     lap,
     position,
-    sample.Graphics_current_time ?? sample.Graphics?.current_time ?? '',
-    sample.Physics_timestamp ?? sample.timestamp ?? '',
+    sample.Graphics_current_time ?? '',
+    sample.Physics_packed_id ?? '',
 ].join(':');
 
 const isTelemetrySample = (value: unknown): value is Record<string, any> => (
@@ -461,13 +461,11 @@ export const getCompletedBaselineLapTimeMs = (
     completionSample: Record<string, any>,
     recordedSamples: readonly Record<string, any>[],
 ): number | null => {
-    const exactLastLapTime = toPositiveFiniteNumber(completionSample.Graphics_last_time)
-        ?? toPositiveFiniteNumber(completionSample.Graphics?.last_time);
+    const exactLastLapTime = toPositiveFiniteNumber(completionSample.Graphics_last_time);
     if (exactLastLapTime !== null) return exactLastLapTime;
 
     return recordedSamples.reduce<number | null>((highest, sample) => {
-        const currentLapTime = toPositiveFiniteNumber(sample.Graphics_current_time)
-            ?? toPositiveFiniteNumber(sample.Graphics?.current_time);
+        const currentLapTime = toPositiveFiniteNumber(sample.Graphics_current_time);
         if (currentLapTime === null) return highest;
         return highest === null ? currentLapTime : Math.max(highest, currentLapTime);
     }, null);

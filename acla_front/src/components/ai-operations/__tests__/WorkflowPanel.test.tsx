@@ -105,7 +105,7 @@ const makeLiveTaskDue = () => {
             sequence,
             committedSequence: sequence,
             committedCount: sequence,
-            sample: { Graphics_normalized_car_position: position, Graphics_completed_laps: 1 },
+            sample: { Graphics_normalized_car_position: position, Graphics_completed_lap: 1 },
         })).toBe(true);
     });
 };

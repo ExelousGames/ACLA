@@ -98,7 +98,6 @@
 
 .live-session-game-status--checking { --live-session-status-color: var(--lp-blue); }
 .live-session-game-status--ready { --live-session-status-color: var(--lp-green); }
-.live-session-game-status--limited { --live-session-status-color: var(--lp-amber); }
 .live-session-game-status--error { --live-session-status-color: var(--lp-red); }
 
 .live-session-game-status--checking .live-session-game-status__dot,
@@ -133,8 +132,7 @@
     flex-direction: column;
 }
 
-.live-session-waiting__copy,
-.live-session-limited-workspace {
+.live-session-waiting__copy {
     flex: 1;
     min-height: 280px;
     display: flex;
@@ -149,8 +147,7 @@
     text-align: center;
 }
 
-.live-session-waiting__eyebrow,
-.live-session-limited-workspace__eyebrow {
+.live-session-waiting__eyebrow {
     color: var(--lp-blue);
     font-family: var(--lp-mono);
     font-size: 10px;
@@ -158,15 +155,13 @@
     text-transform: uppercase;
 }
 
-.live-session-waiting__copy h2,
-.live-session-limited-workspace h2 {
+.live-session-waiting__copy h2 {
     margin: 10px 0 8px;
     color: var(--lp-white);
     font-size: 24px;
 }
 
-.live-session-waiting__copy p,
-.live-session-limited-workspace p {
+.live-session-waiting__copy p {
     max-width: 600px;
     margin: 0;
     font-size: 14px;

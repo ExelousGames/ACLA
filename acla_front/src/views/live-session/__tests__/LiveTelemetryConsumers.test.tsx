@@ -42,10 +42,11 @@ const publishFrame = (sequence: number) => liveTelemetryStore.publishFrame({
     game: 'acc',
     sample: {
         Graphics_status: ACC_STATUS.ACC_LIVE,
-        Graphics_sequence: sequence,
-        Graphics_car_coordinates: JSON.stringify([{ x: sequence + 1, y: 1, z: sequence + 2 }]),
+        Graphics_packed_id: sequence,
+        Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
+            ? { x: sequence + 1, y: 1, z: sequence + 2 } : { x: 0, y: 0, z: 0 }),
         Physics_speed_kmh: sequence,
-        Physics_timestamp: sequence / 60,
+        Graphics_clock: sequence / 60,
     },
     sequence,
     committedSequence: sequence,
@@ -74,7 +75,7 @@ describe('live telemetry latest-value and trajectory consumers', () => {
         })) as any;
     });
 
-    it('shows only the newest merged compatibility sample', () => {
+    it('shows only the newest merged dataset row', () => {
         render(<LiveTelemetryOverview name="latest telemetry" />);
 
         act(() => {
@@ -84,7 +85,7 @@ describe('live telemetry latest-value and trajectory consumers', () => {
 
         expect(screen.getByText('Static_track')).toBeInTheDocument();
         expect(screen.getByText('monza')).toBeInTheDocument();
-        expect(screen.getByText('Graphics_sequence')).toBeInTheDocument();
+        expect(screen.getByText('Graphics_packed_id')).toBeInTheDocument();
         expect(screen.getAllByText('2').length).toBeGreaterThan(0);
         expect(screen.queryByText('1')).not.toBeInTheDocument();
     });

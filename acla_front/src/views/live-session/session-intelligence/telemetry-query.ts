@@ -90,9 +90,8 @@ export interface TelemetryScopeCollector {
 }
 
 const getSampleTimestamp = (sample: TelemetrySample): number | null => {
-    const value = sample.Physics_timestamp ?? sample.timestamp;
-    const timestamp = Number(value);
-    return value != null && Number.isFinite(timestamp) ? timestamp : null;
+    const value = sample.Graphics_clock;
+    return typeof value === 'number' && Number.isFinite(value) ? value * 1000 : null;
 };
 
 /**

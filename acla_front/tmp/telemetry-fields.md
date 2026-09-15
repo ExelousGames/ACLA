@@ -1,22 +1,75 @@
 # Standard Telemetry Fields
 
+## Motion and calculated fields
+
+The iRacing extension implements the following explicit normalization basis for the
+existing scalar motion fields. These rules are tested with synthetic SDK samples;
+physical equivalence with the existing ACC reader still requires controlled
+stationary, straight-line, left/right-turn, banked-track, and pitch/roll captures.
+The previously listed field types alone did not specify signs or gravity behavior.
+World car coordinates remain unmapped in iRacing.
+
+| Fields | Units and intended convention | iRacing conversion |
+| --- | --- | --- |
+| `Physics_local_velocity_x/y/z` | m/s, body right/up/forward | `-VelocityY`, `VelocityZ`, `VelocityX` |
+| `Physics_velocity_x/y/z` | m/s, fixed track frame; x = native world -Y, y = native world Z (up), z = native world X | Rotate native local velocity by `Rz(Yaw) * Ry(Pitch) * Rx(Roll)`, then map to `(-Y, Z, X)` |
+| `Physics_local_angular_vel_x/y/z` | rad/s, right-hand signed rotations about body right/up/forward | `PitchRate`, `-YawRate`, `-RollRate`; angular velocity is an axial vector, so the handedness change differs from linear velocity |
+| `Physics_g_force_x/y/z` | g, body right/up/forward; includes the source accelerometer's gravity contribution | `-LatAccel`, `VertAccel`, `LongAccel`, each divided by 9.80665; no flat-track gravity subtraction |
+| `Physics_heading` | rad, track-local yaw about up, wrapped to [-pi, pi]; zero follows the simulator's track coordinate origin, not geographic north | Wrapped `-Yaw` |
+| `Physics_pitch`, `Physics_roll` | rad, orientation about right and forward respectively, using yaw/pitch/roll rotation order | `Pitch`, `-Roll` |
+
+The native iRacing basis used here is forward/left/up. Missing and nonfinite
+local components stay absent independently. World velocity requires all three
+local components and all three orientation angles from the same live sample;
+if any input is missing or nonfinite, all three world components stay absent.
+The rotation acts on column vectors: roll first, then pitch, then yaw. This is
+equivalent to `Ry(Physics_heading) * Rx(Physics_pitch) * Rz(Physics_roll)` applied
+to standard local velocity, with right-hand rotation matrices. At zero orientation,
+the local and world frames coincide. The world frame follows the track's yaw origin,
+not geographic north; its axes stay fixed as the car turns. Positive native pitch
+rotates forward velocity toward negative world up under this convention.
+Normalization belongs in the simulator reader, never in the
+renderer or recorded-file reader. See the SDK channel units in the
+[reader library's generated channel reference](https://irsdk-node.bengsfort.dev/API-Reference/irsdk-node-types/interfaces/TelemetryVarList/).
+
+| Fields | Meaning and validity rules in the iRacing reader |
+| --- | --- |
+| `Graphics_tyre_compound` | Fitted `PlayerTireCompound` resolved by `DriverInfo.DriverTires[].TireIndex` to `TireCompoundType`; never the pending pit selection. Unknown/missing indices are omitted. |
+| `Graphics_rain_tyres` | Integer 1 for Wet/Rain, 0 for explicitly dry compound types (Dry/Slick/Soft/Medium/Hard/Qualifying). Other types, including All-Purpose, leave the Boolean interpretation unknown. |
+| `Graphics_distance_traveled` | Meters in the observed stint, integrated from `Speed` with the trapezoidal rule. Starts at zero only on an observed stationary pit stall or refuel. Reversing adds traveled distance, rather than subtracting lap progress. |
+| `Graphics_used_fuel` | Liters consumed since the observed stationary pit start/refuel. Requires `DriverCarIsElectric` explicitly false/0 and continuous valid fuel samples. Refueling starts a new total rather than counting as negative consumption. |
+| `Graphics_fuel_per_lap` | Mean liters consumed over the latest up to five fully observed non-pit laps. Fuel at the start/finish crossings is linearly interpolated. Partial laps, laps with missing fuel, reversing, and pit visits do not contribute. Refueling clears the average. |
+| `Graphics_fuel_estimated_laps` | Current liters divided by a positive observed consumption average. No estimate before the first complete observed lap; electric or unknown fuel-type metadata has no liter-based estimate. |
+| `Graphics_last_sector_time`, `Graphics_last_sector_time_str` | Integer milliseconds for the last complete observed sector. Both fields have the same integer value, as required by the existing catalog. Uses ordered `SplitTimeInfo.Sectors` boundaries and interpolated `SessionTime`; a partial first sector is omitted. |
+| `Graphics_gap_ahead`, `Graphics_gap_behind` | Nonnegative integer milliseconds to the nearest car ahead/behind **on track**, independent of race position, class, or lap count. Measured as elapsed time since the leading car crossed the trailing car's current lap position. Excludes pit cars, spectators, pace cars, and cars outside the world. No complete bracket in history means no gap value. |
+
+The tire metadata lookup follows [iRacing's documented index-to-type mapping](https://support.iracing.com/support/solutions/articles/31000176558-2025-season-3-release-notes-2024-06-10-01-).
+Fuel, distance, sector times, and gaps are calculated values, not additional native
+SDK measurements. The reader requires valid session time, lap fraction, speed,
+track length (explicit m/km), pit-road state, and track-surface state for continuity.
+Samples separated by more than one second, clock/lap resets, implausible position
+jumps, garage/towing, leaving the cockpit, replay, and session/driver/car/track
+changes invalidate history. Routine YAML updates preserve history. Gaps retain at
+most 180 seconds and 1802 samples per active car (10 Hz history plus the newest
+sample). A missing source never turns into a placeholder zero.
+
 ## Contract
 
-This is the application-wide telemetry standard. Its initial complete key set is the flat contract produced by the current `src/py-scripts/ACCMemoryExtractor.py` after flattening the data classes exposed by [PyAccSharedMemory](https://github.com/rrennoir/PyAccSharedMemory). These exact names are already consumed by the application and accepted by the upload path.
+This is the application-wide telemetry standard shared by all supported simulators. `Physics_*`, `Graphics_*`, and `Static_*` are application field groups. The application owns this contract, and each simulator reader maps its native data into it before emitting a sample.
 
 - Every game uses this same standard. A game-specific reader maps its SDK/shared-memory fields to these names and types before it emits a sample. A reader omits fields its game cannot supply; it must not create game-prefixed variants, aliases, or additional telemetry names.
-- Field meanings, coordinate conventions, and units follow the originating PyAccSharedMemory contract. A reader converts its raw values when necessary to meet those standard semantics before emitting the sample; downstream components do not perform game-specific conversions.
-- Historical names remain stable even when they originated with ACC. A future reader uses the semantically equivalent standard field or omits it; it does not introduce a clearer replacement name.
+- Field meanings, coordinate conventions, units, and enum values are shared across simulators. A reader converts its raw values when necessary to meet the standard before emitting the sample; downstream components do not perform game-specific conversions.
+- Standard field names remain stable across readers. A reader uses the semantically equivalent standard field or omits it; it does not introduce a replacement name.
 - A successful recorded row is one flat JSON object containing only keys from this catalog, regardless of the source game.
 - After a reader has produced the standard object, the writer, saved-file reader, renderer, and upload path preserve every telemetry key and value unchanged. They must not rename fields, add aliases, convert units, wrap the row in another persisted object, or add metadata fields to the row.
-- The standard contains 240 keys total: 133 Physics, 84 Graphics, and 23 Static. Adding a new game does not extend or rename this list.
-- `Graphics_status`, `Graphics_session_type`, `Graphics_flag`, `Graphics_penalty`, `Graphics_track_grip_status`, and the three `Graphics_rain_intensity*` fields contain the integer `.value` of their PyAccSharedMemory enum.
-- Preserve runtime values even where PyAccSharedMemory's annotations and assignments differ: the current library populates `Graphics_last_sector_time_str` with the integer `lastSectorTime` value and leaves `Graphics_rain_tyres` as an integer `0`/`1`. The pipeline must not coerce or rename either field.
-- `Graphics_car_coordinates` remains an array of 60 `{ "x": number, "y": number, "z": number }` objects. `Graphics_car_id` remains an array of 60 integers. Every other nested PyAccSharedMemory data class is flattened into the exact keys below.
+- The authoritative field table is [live-telemetry-dataset.js](../src/data/live-telemetry-dataset.js), currently containing 240 keys: 133 Physics, 84 Graphics, and 23 Static. Every reader and adapter must emit rows accepted by this dataset. Register new fields in that table and document their units and meanings here before use; do not introduce game-specific aliases.
+- `Graphics_status`, `Graphics_session_type`, `Graphics_flag`, `Graphics_penalty`, `Graphics_track_grip_status`, and the three `Graphics_rain_intensity*` fields contain the standard integers defined below. Readers map native enum values to these integers.
+- `Graphics_last_sector_time_str` has type integer despite its suffix, and `Graphics_rain_tyres` is an integer `0`/`1`. Readers must emit these declared types, and downstream components preserve them unchanged.
+- `Graphics_car_coordinates` is an array of 60 `{ "x": number, "y": number, "z": number }` objects. `Graphics_car_id` is an array of 60 integers. All other field values are scalar; readers flatten native objects into the exact keys below.
 - A cataloged key can be absent from an individual row when its source game cannot supply it or its reader treats its value as unavailable. Absence does not authorize a replacement name.
-- `{"available":false}` is an ACC reader-control message, not telemetry. It must never be written to the recording or uploaded. Other readers likewise keep their control messages outside the standard telemetry object.
+- Reader-control messages, including `{"available":false}`, remain outside the standard telemetry object and must never be written to the recording or uploaded.
 
-Sources: [PyAccSharedMemory data classes](https://github.com/rrennoir/PyAccSharedMemory/blob/main/src/pyaccsharedmemory.py), [PyAccSharedMemory field documentation](https://github.com/rrennoir/PyAccSharedMemory#dataclass), and the current [ACCMemoryExtractor.py](../src/py-scripts/ACCMemoryExtractor.py).
+Reader implementations: [ACC reader](../electron/recording/readers/acc/acc-python-reader.js) with its [capture script](../src/py-scripts/ACCMemoryExtractor.py), and [iRacing adapter](../electron/recording/readers/iracing/iracing-adapter.js). Both emit rows validated against the application dataset.
 
 ## Physics fields (133)
 
@@ -160,12 +213,12 @@ Physics_abs_vibration                                   number
 
 ```text
 Graphics_packed_id                                      integer
-Graphics_status                                         integer (ACC_STATUS value)
-Graphics_session_type                                   integer (ACC_SESSION_TYPE value)
+Graphics_status                                         integer (standard status value)
+Graphics_session_type                                   integer (standard session type value)
 Graphics_current_time_str                               string
 Graphics_last_time_str                                  string
 Graphics_best_time_str                                  string
-Graphics_last_sector_time_str                           integer (current PyAccSharedMemory runtime value)
+Graphics_last_sector_time_str                           integer
 Graphics_completed_lap                                  integer
 Graphics_position                                       integer
 Graphics_current_time                                   integer
@@ -184,8 +237,8 @@ Graphics_car_coordinates                                array<{x: number, y: num
 Graphics_car_id                                         integer[60]
 Graphics_player_car_id                                  integer
 Graphics_penalty_time                                   number
-Graphics_flag                                           integer (ACC_FLAG_TYPE value)
-Graphics_penalty                                        integer (ACC_PENALTY_TYPE value)
+Graphics_flag                                           integer (standard flag value)
+Graphics_penalty                                        integer (standard penalty value)
 Graphics_ideal_line_on                                  boolean
 Graphics_is_in_pit_lane                                 boolean
 Graphics_mandatory_pit_done                             boolean
@@ -235,10 +288,10 @@ Graphics_mfd_tyre_pressure_front_left                   number
 Graphics_mfd_tyre_pressure_front_right                  number
 Graphics_mfd_tyre_pressure_rear_left                    number
 Graphics_mfd_tyre_pressure_rear_right                   number
-Graphics_track_grip_status                              integer (ACC_TRACK_GRIP_STATUS value)
-Graphics_rain_intensity                                 integer (ACC_RAIN_INTENSITY value)
-Graphics_rain_intensity_in_10min                        integer (ACC_RAIN_INTENSITY value)
-Graphics_rain_intensity_in_30min                        integer (ACC_RAIN_INTENSITY value)
+Graphics_track_grip_status                              integer (standard track grip value)
+Graphics_rain_intensity                                 integer (standard rain intensity value)
+Graphics_rain_intensity_in_10min                        integer (standard rain intensity value)
+Graphics_rain_intensity_in_30min                        integer (standard rain intensity value)
 Graphics_current_tyre_set                               integer
 Graphics_strategy_tyre_set                              integer
 Graphics_gap_ahead                                      integer
@@ -275,11 +328,11 @@ Static_wet_tyres_name                                   string
 
 ## Standard enum values
 
-The numeric meanings below are part of the standard. The labels are the originating PyAccSharedMemory enum members, not additional telemetry fields. Every game reader maps its source values to these integers.
+The numeric meanings below are part of the application contract. Every simulator reader maps its source values to these integers. The descriptions explain the values; readers emit the integers in telemetry rows.
 
-- `Graphics_status`: `0` ACC_OFF, `1` ACC_REPLAY, `2` ACC_LIVE, `3` ACC_PAUSE.
-- `Graphics_session_type`: `-1` ACC_UNKNOW, `0` ACC_PRACTICE, `1` ACC_QUALIFY, `2` ACC_RACE, `3` ACC_HOTLAP, `4` ACC_TIME_ATTACK, `5` ACC_DRIFT, `6` ACC_DRAG, `7` ACC_HOTSTINT, `8` ACC_HOTLAPSUPERPOLE.
-- `Graphics_flag`: `0` ACC_NO_FLAG, `1` ACC_BLUE_FLAG, `2` ACC_YELLOW_FLAG, `3` ACC_BLACK_FLAG, `4` ACC_WHITE_FLAG, `5` ACC_CHECKERED_FLAG, `6` ACC_PENALTY_FLAG, `7` ACC_GREEN_FLAG, `8` ACC_ORANGE_FLAG.
-- `Graphics_penalty`: `-1` UnknownValue; `0` No_penalty; `1`–`6` cutting penalties; `7`–`12` pit-speeding penalties; `13` Disqualified_IgnoredMandatoryPit; `14` PostRaceTime; `15` Disqualified_Trolling; `16` Disqualified_PitEntry; `17` Disqualified_PitExit; `18` Disqualified_WrongWay_old; `19` DriveThrough_IgnoredDriverStint; `20` Disqualified_IgnoredDriverStint; `21` Disqualified_ExceededDriverStintLimit; `22` Disqualified_WrongWay.
-- `Graphics_track_grip_status`: `0` ACC_GREEN, `1` ACC_FAST, `2` ACC_OPTIMUM, `3` ACC_GREASY, `4` ACC_DAMP, `5` ACC_WET, `6` ACC_FLOODED.
-- Each `Graphics_rain_intensity*` field: `0` ACC_NO_RAIN, `1` ACC_DRIZZLE, `2` ACC_LIGHT_RAIN, `3` ACC_MEDIUM_RAIN, `4` ACC_HEAVY_RAIN, `5` ACC_THUNDERSTORM.
+- `Graphics_status`: `0` off, `1` replay, `2` live, `3` paused.
+- `Graphics_session_type`: `-1` unknown, `0` practice, `1` qualifying, `2` race, `3` hotlap, `4` time attack, `5` drift, `6` drag, `7` hotstint, `8` hotlap superpole.
+- `Graphics_flag`: `0` no flag, `1` blue, `2` yellow, `3` black, `4` white, `5` checkered, `6` penalty, `7` green, `8` orange.
+- `Graphics_penalty`: `-1` unknown; `0` no penalty; `1`–`6` cutting penalties; `7`–`12` pit-speeding penalties; `13` disqualified for ignoring a mandatory pit stop; `14` post-race time penalty; `15` disqualified for trolling; `16` disqualified for a pit-entry violation; `17` disqualified for a pit-exit violation; `18` disqualified for driving the wrong way (legacy code); `19` drive-through for ignoring a driver stint; `20` disqualified for ignoring a driver stint; `21` disqualified for exceeding the driver stint limit; `22` disqualified for driving the wrong way.
+- `Graphics_track_grip_status`: `0` green, `1` fast, `2` optimum, `3` greasy, `4` damp, `5` wet, `6` flooded.
+- Each `Graphics_rain_intensity*` field: `0` no rain, `1` drizzle, `2` light rain, `3` medium rain, `4` heavy rain, `5` thunderstorm.

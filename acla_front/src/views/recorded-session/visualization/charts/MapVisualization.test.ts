@@ -25,7 +25,7 @@ describe('MapVisualization telemetry parsing', () => {
         expect(frame?.cars[1].position).toEqual({ x: 120, y: 12, z: 2 });
     });
 
-    it('parses JSON-string coordinates and car ids', () => {
+    it('rejects legacy JSON-string coordinates and car ids', () => {
         const frame = parseTelemetryFrame({
             Graphics_current_time: 2500,
             Graphics_player_car_id: 10,
@@ -33,9 +33,7 @@ describe('MapVisualization telemetry parsing', () => {
             Graphics_car_coordinates: JSON.stringify([{ x: 50, y: -15, z: 0 }])
         }, 0);
 
-        expect(frame?.time).toBe(2.5);
-        expect(frame?.playerKey).toBe('id:10');
-        expect(frame?.cars[0].position).toEqual({ x: 50, y: -15, z: 0 });
+        expect(frame).toBeNull();
     });
 
     it('falls back to slot zero when player id is missing', () => {

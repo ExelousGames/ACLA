@@ -14,7 +14,7 @@ export class CornerSensor {
 
     tick(sample: TelemetrySample, sampleIdx: number): SessionEvent | null {
         const position: number = sample.Graphics_normalized_car_position ?? 0;
-        const lap: number = sample.Graphics_completed_laps ?? 0;
+        const lap: number = sample.Graphics_completed_lap ?? 0;
         const corner = getCornerAtPosition(this.corners, position);
 
         if (!this.activeCorner && corner) {

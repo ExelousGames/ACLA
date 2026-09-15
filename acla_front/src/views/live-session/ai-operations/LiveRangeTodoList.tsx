@@ -78,31 +78,17 @@ export const getLiveRangeNormalizedPosition = (
     telemetry: Record<string, any> | null | undefined,
 ): number | undefined => {
     if (!telemetry) return undefined;
-    const keys = [
-        'Graphics_normalized_car_position',
-        'graphics_normalized_car_position',
-        'normalized_car_position',
-        'car_position',
-    ];
-    for (const key of keys) {
-        if (key in telemetry) {
-            const value = Number(telemetry[key]);
-            if (Number.isFinite(value)) return Math.max(0, Math.min(1, value));
-        }
-    }
-    return undefined;
+    const value = telemetry.Graphics_normalized_car_position;
+    return typeof value === 'number' && Number.isFinite(value)
+        ? Math.max(0, Math.min(1, value)) : undefined;
 };
 
 export const getLiveRangeTelemetryLap = (
     telemetry: Record<string, any> | null | undefined,
 ): number | undefined => {
     if (!telemetry) return undefined;
-    const raw = telemetry.Graphics_completed_laps
-        ?? telemetry.Graphics_completed_lap
-        ?? telemetry.Graphics?.completed_laps;
-    if (raw === undefined || raw === null || raw === '') return undefined;
-    const parsed = Math.floor(Number(raw));
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+    const lap = telemetry.Graphics_completed_lap;
+    return Number.isSafeInteger(lap) && lap >= 0 ? lap : undefined;
 };
 
 const getForwardDelta = (

@@ -2,11 +2,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
-    FIELD_TYPES,
-    STANDARD_TELEMETRY_FIELDS,
-    validateSourceFrame,
-    validateStandardTelemetrySample,
-} = require('../../../electron/recording/telemetry-contract');
+    LIVE_TELEMETRY_DATASET,
+    LIVE_TELEMETRY_FIELDS,
+    validateLiveTelemetryRow,
+} = require('../../data/live-telemetry-dataset');
+const { validateSourceFrame } = require('../../../electron/recording/telemetry-contract');
 const {
     recordingStartFailure,
     validateRecordingStartConfig,
@@ -30,16 +30,16 @@ describe('shared recording architecture', () => {
     });
 
     it('enforces the exhaustive standard flat telemetry contract', () => {
-        expect(STANDARD_TELEMETRY_FIELDS).toHaveLength(240);
-        expect(Object.keys(FIELD_TYPES)).toHaveLength(240);
-        expect(validateStandardTelemetrySample({
+        expect(LIVE_TELEMETRY_FIELDS).toHaveLength(240);
+        expect(Object.keys(LIVE_TELEMETRY_DATASET)).toHaveLength(240);
+        expect(validateLiveTelemetryRow({
             Physics_speed_kmh: 120.5,
             Graphics_completed_lap: 2,
             Graphics_status: 1,
             Static_track: 'Spa',
         })).toEqual(expect.objectContaining({ ok: true }));
-        expect(validateStandardTelemetrySample({ speedKph: 120.5 })).toEqual(expect.objectContaining({ ok: false }));
-        expect(validateStandardTelemetrySample({ Graphics_car_id: [1, 2] })).toEqual(expect.objectContaining({ ok: false }));
+        expect(validateLiveTelemetryRow({ speedKph: 120.5 })).toEqual(expect.objectContaining({ ok: false }));
+        expect(validateLiveTelemetryRow({ Graphics_car_id: [1, 2] })).toEqual(expect.objectContaining({ ok: false }));
         expect(validateSourceFrame({ game: 'acc', sample: { Graphics_status: 0 } }, 'acc'))
             .toEqual(expect.objectContaining({ ok: true }));
         expect(validateSourceFrame({ game: 'iracing', sample: { Graphics_status: 0 } }, 'acc'))
@@ -61,7 +61,7 @@ describe('shared recording architecture', () => {
         ));
 
         expect(Object.keys(documented)).toHaveLength(240);
-        expect(FIELD_TYPES).toEqual(documented);
+        expect(LIVE_TELEMETRY_DATASET).toEqual(documented);
     });
 
     it('returns transport-safe discriminated failures for malformed and unknown games', () => {

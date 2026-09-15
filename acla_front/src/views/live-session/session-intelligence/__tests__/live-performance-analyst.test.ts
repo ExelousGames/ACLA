@@ -5,8 +5,9 @@ import {
 describe('live performance analyst helpers', () => {
     it('detects live session type from ACC car-count fields', () => {
         expect(detectLiveSessionType({ Static_num_cars: 1 })).toBe('solo_practice');
-        expect(detectLiveSessionType({ Graphics_active_cars_count: 1 })).toBe('solo_practice');
-        expect(detectLiveSessionType({ Graphics_active_cars_count: 8 })).toBe('traffic_or_race');
+        expect(detectLiveSessionType({ Graphics_active_cars: 1 })).toBe('solo_practice');
+        expect(detectLiveSessionType({ Graphics_active_cars: 8 })).toBe('traffic_or_race');
+        expect(detectLiveSessionType({ Graphics_active_cars_count: 8 })).toBe('unknown');
         expect(detectLiveSessionType({})).toBe('unknown');
     });
 });

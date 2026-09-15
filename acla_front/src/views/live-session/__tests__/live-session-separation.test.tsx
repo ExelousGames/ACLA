@@ -210,12 +210,12 @@ describe('live session state separation', () => {
 
         act(() => publishRecordingViewSample({
             Static_track: 'still-ignored',
-            Static_weather: 'dry',
+            Static_dry_tyres_name: 'dry',
             Graphics_status: ACC_STATUS.ACC_LIVE,
         }));
         expect(capturedLiveSession.staticData).toMatchObject({
             Static_track: 'monza',
-            Static_weather: 'dry',
+            Static_dry_tyres_name: 'dry',
         });
 
         act(() => {

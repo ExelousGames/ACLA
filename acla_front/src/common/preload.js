@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const { DESKTOP_GAME_SET, isRecordingStartFailure } = require('../../electron/recording/recording-protocol');
-const { validateStandardTelemetrySample } = require('../../electron/recording/telemetry-contract');
+const { validateLiveTelemetryRow } = require('../data/live-telemetry-dataset');
 /**
  * Electron's main process is a Node.js environment that has full operating system access. 
  * On top of Electron modules, you can also access Node.js built-ins, as well as any packages installed via npm. 
@@ -72,7 +72,7 @@ const validateViewMessage = (message, state) => {
         if (keys.length !== 6
             || !['type', 'game', 'sample', 'sequence', 'committedSequence', 'committedCount']
                 .every((key) => Object.prototype.hasOwnProperty.call(message, key))
-            || !validateStandardTelemetrySample(message.sample).ok
+            || !validateLiveTelemetryRow(message.sample).ok
             || !isSafeCount(message.sequence)
             || !isSafeCount(message.committedSequence)
             || !isSafeCount(message.committedCount)
@@ -160,7 +160,7 @@ const validateRecordedFileEvent = (payload, readId, game) => {
                 && Array.isArray(payload.rows)
                 && payload.rows.length > 0
                 && isSafeCount(payload.chunkIndex)
-                && payload.rows.every((row) => validateStandardTelemetrySample(row).ok);
+                && payload.rows.every((row) => validateLiveTelemetryRow(row).ok);
         case 'progress':
             return Object.keys(payload).length === 5
                 && isSafeCount(payload.rowsRead)

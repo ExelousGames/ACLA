@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { DESKTOP_GAME_SET } = require('../recording-protocol');
-const { validateStandardTelemetrySample } = require('../telemetry-contract');
+const { validateLiveTelemetryRow } = require('../../../src/data/live-telemetry-dataset');
 
 const READ_CHUNK_ROWS = 250;
 const PROGRESS_INTERVAL_MS = 100;
@@ -125,7 +125,7 @@ class RecordedFileReader {
         failure.byteOffset = byteOffset;
         throw failure;
       }
-      const validation = validateStandardTelemetrySample(sample);
+      const validation = validateLiveTelemetryRow(sample);
       if (!validation.ok) {
         const failure = new Error(`${validation.error} (row ${row}, byte ${byteOffset})`);
         failure.row = row;

@@ -72,14 +72,7 @@ const dot = (a: Vec2, b: Vec2): number => a.x * b.x + a.y * b.y;
 const subtract = (a: Vec2, b: Vec2): Vec2 => ({ x: a.x - b.x, y: a.y - b.y });
 
 const parseMaybeArray = (value: unknown): any[] => {
-    if (Array.isArray(value)) return value;
-    if (typeof value !== 'string') return [];
-    try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
+    return Array.isArray(value) ? value : [];
 };
 
 const coordToVec = (coord: any): Vec2 | null => {
@@ -92,9 +85,9 @@ const coordToVec = (coord: any): Vec2 | null => {
 };
 
 const getRowTimeSeconds = (row: Record<string, any>, fallbackIndex: number): number => {
-    const raw = toFiniteNumber(row.Graphics_current_time ?? row.Physics_timestamp ?? row.timestamp);
-    if (raw === null) return fallbackIndex / DEFAULT_SAMPLE_RATE_HZ;
-    return raw > 100 ? raw / 1000 : raw;
+    const lapTime = toFiniteNumber(row.Graphics_current_time);
+    if (lapTime !== null) return lapTime / 1000;
+    return toFiniteNumber(row.Graphics_clock) ?? fallbackIndex / DEFAULT_SAMPLE_RATE_HZ;
 };
 
 const getPlayerKey = (

@@ -10,11 +10,11 @@ import { CircuitMapBinSample } from '../circuit-map-types';
 const makeTelemetryRow = (normalizedPosition: number) => ({
     Graphics_normalized_car_position: normalizedPosition,
     Graphics_current_time: 1000,
-    Graphics_car_coordinates: JSON.stringify([
+    Graphics_car_coordinates: [
         { x: 10, y: 2, z: 30 },
         { x: 100, y: 20, z: 300 }
-    ]),
-    Graphics_car_id: JSON.stringify([42, 99]),
+    ],
+    Graphics_car_id: [42, 99],
     Graphics_player_car_id: 42
 });
 

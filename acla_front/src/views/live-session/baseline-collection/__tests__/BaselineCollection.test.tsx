@@ -95,7 +95,7 @@ const Harness = ({
             sequence: telemetrySequence,
             committedSequence: telemetrySequence,
             committedCount: telemetrySequence,
-        }, telemetry);
+        });
     }, [telemetry]);
     return (
         <OperationComponentRefProvider>

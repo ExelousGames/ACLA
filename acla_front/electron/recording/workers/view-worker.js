@@ -140,8 +140,12 @@ function runViewWorker() {
       view = new RecordingView({ game: message.game, updatesPort, parentSend });
       readerPort.on('message', (portEvent) => {
         const portMessage = eventData(portEvent);
-        if (portMessage?.type === 'frame') view.acceptFrame(portMessage.frame);
-        else if (portMessage?.type === 'end' && portMessage.game === message.game) view.markReaderEnded();
+        if (portMessage?.type === 'frame') {
+          view.acceptFrame(portMessage.frame);
+          if (message.game === 'iracing' && !view.terminalSent) {
+            readerPort.postMessage({ type: 'ack', game: message.game, sequence: view.receivedSequence });
+          }
+        } else if (portMessage?.type === 'end' && portMessage.game === message.game) view.markReaderEnded();
         else view.fail('View received an invalid reader message.');
       });
       readerPort.on('close', () => {

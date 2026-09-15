@@ -190,19 +190,8 @@ const OverlayIcon = ({ size = 14 }: { size?: number }) => (
 
 const getNormalizedCarPos = (telemetry: Record<string, any> | null): number | undefined => {
     if (!telemetry) return undefined;
-    const keys = [
-        'Graphics_normalized_car_position',
-        'graphics_normalized_car_position',
-        'normalized_car_position',
-        'car_position',
-    ];
-    for (const key of keys) {
-        if (key in telemetry) {
-            const value = Number(telemetry[key]);
-            if (Number.isFinite(value)) return value;
-        }
-    }
-    return undefined;
+    const value = telemetry.Graphics_normalized_car_position;
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 };
 
 const crossedNormalizedPosition = (
@@ -1547,8 +1536,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             if (triggeredCorners.length === 0) return;
 
             const lap = Number(
-                liveData.Graphics_completed_laps
-                ?? liveData.Graphics_completed_lap
+                liveData.Graphics_completed_lap
                 ?? 0
             );
             triggeredCorners.forEach((triggeredCorner) => {

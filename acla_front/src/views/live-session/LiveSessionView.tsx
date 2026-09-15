@@ -1,5 +1,4 @@
 import React, { useContext, useLayoutEffect, useRef } from 'react';
-import type { DesktopGame } from 'contexts/DesktopGameContext';
 import {
     OPERATION_COMPONENT_NAMES,
     OperationComponentRefDirectory,
@@ -35,7 +34,7 @@ import { getSegmentLabelIds } from 'views/session-shared/visualization/charts/se
 import { openAnalysisResultsVisualization } from 'views/session-shared/visualization/open-analysis-results-visualization';
 import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
 import { LiveSessionContext, LiveSessionProvider } from './LiveSessionContext';
-import LiveSessionGameStatus, { LIVE_SESSION_GAME_LABELS } from './LiveSessionGameStatus';
+import LiveSessionGameStatus from './LiveSessionGameStatus';
 import LiveTelemetryWorkspace from './LiveTelemetryWorkspace';
 import LiveAnalysisSessionRecording from 'views/live-session/live-session-recording/liveAnalysisSessionRecording';
 import LiveSessionDetectionManager from 'views/live-session/LiveSessionDetectionManager';
@@ -310,22 +309,6 @@ const getBaselineHandle = async (
     );
 };
 
-const LimitedLiveWorkspace = ({ game }: { game: Exclude<DesktopGame, 'acc'> }) => (
-    <div
-        className="live-session-limited-workspace"
-        data-testid="limited-live-workspace"
-        role="region"
-        aria-label={`${LIVE_SESSION_GAME_LABELS[game]} limited live workspace`}
-    >
-        <span className="live-session-limited-workspace__eyebrow">Limited workspace</span>
-        <h2>{LIVE_SESSION_GAME_LABELS[game]}</h2>
-        <p>
-            This session keeps the selected game locked, but ACC telemetry and recording controls
-            are not available for this simulator yet.
-        </p>
-    </div>
-);
-
 export const LiveSessionContent = ({ name }: { name: string }) => {
     const liveSession = useContext(LiveSessionContext);
     const componentRefs = useOptionalOperationComponentRefDirectory();
@@ -541,9 +524,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                         </div>
                     )}
                     <div className="live-session-view__workspace">
-                        {sessionGame === 'acc'
-                            ? <LiveTelemetryWorkspace name={OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
-                            : <LimitedLiveWorkspace game={sessionGame} />}
+                        <LiveTelemetryWorkspace name={OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
                     </div>
                     <div
                         id={LIVE_SESSION_RECORDER_HOST_ID}

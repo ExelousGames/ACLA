@@ -271,7 +271,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
                 {frames.length === 0 ? (
                     <div className="map-visualization__state">
                         <Text size="2" weight="bold">Waiting for current telemetry</Text>
-                        <Text size="1">Live trajectory data appears here when ACC is running.</Text>
+                        <Text size="1">Live trajectory data appears here when telemetry is available.</Text>
                     </div>
                 ) : null}
             </Box>

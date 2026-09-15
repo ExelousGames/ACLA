@@ -61,7 +61,7 @@ describe('telemetry query execution', () => {
         const rows = Array.from({ length: 5 }, (_, index) => sample(
             index < 2 ? 1 : 2,
             index / 10,
-            { Physics_timestamp: index * 100, Physics_speed_kmh: index },
+            { Graphics_clock: index / 10, Physics_speed_kmh: index },
         ));
         const collector = createTelemetryScopeCollector(scope, 2);
 
@@ -123,11 +123,11 @@ describe('telemetry query execution', () => {
     it('returns reduction-specific values with inferred result types', () => {
         const { query, tick } = createTelemetryQuery();
         tick(sample(1, 0.1, {
-            Physics_timestamp: 0,
+            Graphics_clock: 0,
             Physics_speed_kmh: 100,
         }));
         tick(sample(1, 0.2, {
-            Physics_timestamp: 100,
+            Graphics_clock: 0.1,
             Physics_speed_kmh: 120,
         }));
 

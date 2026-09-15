@@ -59,14 +59,14 @@ const detectionCases: Array<{
         name: 'Assetto Corsa',
         detection: { detectedGame: 'ac', detectionStatus: 'detected', error: null },
         title: 'Assetto Corsa detected',
-        visualState: 'limited',
+        visualState: 'ready',
         canStart: true,
     },
     {
         name: 'iRacing',
         detection: { detectedGame: 'iracing', detectionStatus: 'detected', error: null },
         title: 'iRacing detected',
-        visualState: 'limited',
+        visualState: 'ready',
         canStart: true,
     },
     {
@@ -156,26 +156,22 @@ const createTelemetryRuntime = () => {
         Static_track: 'brands_hatch',
         Graphics_completed_lap: 1,
         Graphics_normalized_car_position: 0.1,
-        Physics_timestamp: 0,
+        Graphics_clock: 0,
         Physics_speed_kmh: 100,
         Physics_wheel_pressure_front_left: 27,
         Physics_wheel_pressure_front_right: 28,
         Physics_wheel_pressure_rear_left: 29,
         Physics_wheel_pressure_rear_right: 30,
-        status: 5,
-        message: 6,
     }, {
         Static_track: 'brands_hatch',
         Graphics_completed_lap: 1,
         Graphics_normalized_car_position: 0.2,
-        Physics_timestamp: 100,
+        Graphics_clock: 0.1,
         Physics_speed_kmh: 120,
         Physics_wheel_pressure_front_left: 28,
         Physics_wheel_pressure_front_right: 29,
         Physics_wheel_pressure_rear_left: 30,
         Physics_wheel_pressure_rear_right: 31,
-        status: 7,
-        message: 8,
     }];
     liveTelemetryStore.publishFrame({
         type: 'frame',
@@ -273,7 +269,7 @@ describe('LiveSessionView', () => {
                     game: 'acc',
                     sample: {
                         Graphics_status: 2,
-                        Graphics_sequence: sequence,
+                        Graphics_packed_id: sequence,
                         Physics_speed_kmh: sequence,
                     },
                     sequence,
@@ -311,7 +307,7 @@ describe('LiveSessionView', () => {
         });
     });
 
-    it('keeps telemetry status and message fields nested inside data', async () => {
+    it('does not read transport status and message as telemetry fields', async () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
         const handle = renderRegisteredView(createTelemetryRuntime());
 
@@ -321,7 +317,7 @@ describe('LiveSessionView', () => {
             reduce: 'avg',
         }).result).resolves.toEqual({
             status: 'ready',
-            data: { status: 7, message: 8 },
+            data: { status: 0, message: 0 },
         });
     });
 
@@ -747,16 +743,18 @@ describe('LiveSessionView', () => {
     });
 
     it.each([
+        ['acc', 'Assetto Corsa Competizione'],
         ['ac', 'Assetto Corsa'],
         ['iracing', 'iRacing'],
-    ] as const)('renders a limited workspace without ACC controls for %s', (game, label) => {
-        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+    ] as const)('renders the live workspace and mounts the recorder for captured %s', (game, label) => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: null, detectionStatus: 'not-detected', error: null });
 
         renderView(createRuntime(game));
 
-        expect(screen.getByTestId('limited-live-workspace')).toHaveAccessibleName(`${label} limited live workspace`);
-        expect(screen.queryByText('Live workspace')).not.toBeInTheDocument();
-        expect(screen.queryByRole('button', { name: 'Start Recording' })).not.toBeInTheDocument();
+        expect(screen.getByRole('status')).toHaveTextContent(`${label} session`);
+        expect(screen.getByRole('status').parentElement).toHaveAttribute('data-state', 'ready');
+        expect(screen.getByText('Live workspace')).toBeInTheDocument();
+        expect(screen.getByTestId('live-analysis-session-recording')).toHaveAttribute('data-host', 'live-session-recorder-host');
         expect(screen.getByTestId('live-session-recorder-host')).toBeInTheDocument();
     });
 

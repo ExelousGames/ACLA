@@ -1,16 +1,16 @@
 import { useCallback, useContext, useEffect, useRef } from 'react';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
+import { validateLiveTelemetryRow } from 'data/live-telemetry-dataset';
 import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
 import { RecordingState } from './recording-state';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 
 const toAccStatus = (value: unknown): ACC_STATUS | null => {
-    const numeric = typeof value === 'string' ? Number(value) : value;
-    if (typeof numeric !== 'number' || Number.isNaN(numeric)) {
+    if (typeof value !== 'number') {
         return null;
     }
 
-    return ACC_STATUS[numeric as ACC_STATUS] !== undefined ? numeric as ACC_STATUS : null;
+    return ACC_STATUS[value as ACC_STATUS] !== undefined ? value as ACC_STATUS : null;
 };
 
 export default function LiveSessionDetectionManager() {
@@ -30,9 +30,14 @@ export default function LiveSessionDetectionManager() {
         }
 
         if (event.status === 'update') {
-            const data = (event.data ?? {}) as Record<string, any>;
-            const graphics = data.Graphics ?? {};
-            const status = toAccStatus(graphics.status ?? data.Graphics_status);
+            const data = event.data ?? {};
+            if (data.checking === true || data.available === false) {
+                ctx.transitionRecordingState({ type: 'sessionUnavailable' });
+                return;
+            }
+            if (!validateLiveTelemetryRow(data).ok) return;
+
+            const status = toAccStatus(data.Graphics_status);
 
             if (status !== null) {
                 if (status === ACC_STATUS.ACC_LIVE) {
@@ -41,10 +46,6 @@ export default function LiveSessionDetectionManager() {
                     ctx.transitionRecordingState({ type: 'sessionUnavailable' });
                 }
                 return;
-            }
-
-            if (data.checking === true || data.available === false) {
-                ctx.transitionRecordingState({ type: 'sessionUnavailable' });
             }
         } else if (event.status === 'error') {
             console.error('ACC session checker error:', event.message ?? 'Unknown error', event.traceback ?? '');
@@ -116,8 +117,8 @@ export default function LiveSessionDetectionManager() {
         }
     }, [processCheckingSessionStreamUpdate, stopSessionCheckingStream]);
 
-    const shouldMaintainSessionCheckingStream =
-        liveSession.sessionGame === 'acc'
+    const shouldCheckSession =
+        liveSession.sessionGame !== null
         && !liveSession.recordingActive
         && liveSession.restorationStatus !== 'restoring'
         && (
@@ -135,7 +136,7 @@ export default function LiveSessionDetectionManager() {
                 return;
             }
 
-            if (shouldMaintainSessionCheckingStream) {
+            if (shouldCheckSession && liveSession.sessionGame === 'acc') {
                 try {
                     await startSessionCheckingStream();
                 } catch (error) {
@@ -144,8 +145,11 @@ export default function LiveSessionDetectionManager() {
                     }
                 }
             } else {
-                if (liveSession.sessionGame !== 'acc') {
+                if (liveSession.sessionGame === null) {
                     liveSessionRef.current?.transitionRecordingState({ type: 'sessionUnavailable' });
+                } else if (shouldCheckSession) {
+                    // Other simulators validate telemetry availability when their recorder starts.
+                    liveSessionRef.current?.transitionRecordingState({ type: 'sessionAvailable' });
                 }
                 await stopSessionCheckingStream();
             }
@@ -157,7 +161,7 @@ export default function LiveSessionDetectionManager() {
             cancelled = true;
             void stopSessionCheckingStream({ force: true });
         };
-    }, [liveSession.sessionGame, shouldMaintainSessionCheckingStream, startSessionCheckingStream, stopSessionCheckingStream]);
+    }, [liveSession.sessionGame, shouldCheckSession, startSessionCheckingStream, stopSessionCheckingStream]);
 
     return null;
 }

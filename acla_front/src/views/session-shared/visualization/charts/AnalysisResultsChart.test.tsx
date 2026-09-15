@@ -1634,8 +1634,8 @@ describe('AnalysisResultsChart', () => {
                 ]);
                 expect(showOverlay).not.toHaveBeenCalled();
                 jest.useFakeTimers();
-                runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_laps: 1 });
-                runner.acceptTelemetry({ Graphics_normalized_car_position: 0.5, Graphics_completed_laps: 1 });
+                runner.acceptTelemetry({ Graphics_normalized_car_position: 0, Graphics_completed_lap: 1 });
+                runner.acceptTelemetry({ Graphics_normalized_car_position: 0.5, Graphics_completed_lap: 1 });
                 expect(showOverlay).toHaveBeenCalledWith('queue-page', 'first', expect.any(AbortSignal));
                 display.resolve('complete', 'graph shown');
             } finally {

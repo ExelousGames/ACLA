@@ -14,7 +14,7 @@ export class OvertakeSensor {
 
     tick(sample: TelemetrySample, sampleIdx: number): SessionEvent | null {
         const racePosition: number = sample.Graphics_position ?? -1;
-        const lap: number = sample.Graphics_completed_laps ?? 0;
+        const lap: number = sample.Graphics_completed_lap ?? 0;
         const trackPosition: number = sample.Graphics_normalized_car_position ?? 0;
 
         if (racePosition < 0 || this.prevPosition < 0) {

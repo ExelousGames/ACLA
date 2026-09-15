@@ -9,7 +9,7 @@ import {
     OPERATION_COMPONENT_NAMES,
     useOptionalOperationComponentSnapshot,
 } from 'contexts/OperationComponentRefContext';
-import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
+import type { LiveSessionRuntime, LiveSessionStaticData, StandardTelemetrySample } from 'views/live-session/live-session-types';
 import {
     liveTelemetryStore,
     useCurrentTelemetry,
@@ -51,11 +51,9 @@ const EMPTY_SAMPLES: CircuitMapSamplesByMode = {
     pit_lane: []
 };
 
-const getAccTrackKey = (liveData: any, staticData: any): string | null => (
+const getAccTrackKey = (liveData: StandardTelemetrySample, staticData: LiveSessionStaticData): string | null => (
     liveData?.Static_track
-    || liveData?.Static?.track
     || staticData?.Static_track
-    || staticData?.track
     || null
 );
 

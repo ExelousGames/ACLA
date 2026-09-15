@@ -1,4 +1,5 @@
 import type { DesktopGame } from 'contexts/DesktopGameContext';
+import type { LIVE_TELEMETRY_DATASET } from 'data/live-telemetry-dataset';
 import { RecordingEvent, RecordingState, StopReason } from 'views/live-session/recording-state';
 import type {
     CornerLookahead,
@@ -10,15 +11,18 @@ import type {
     LiveSessionAnalysisResultPage,
 } from './live-session-analysis-results';
 
-export type TelemetryJsonValue =
-    | string
-    | number
-    | boolean
-    | null
-    | TelemetryJsonValue[]
-    | { [key: string]: TelemetryJsonValue };
+type TelemetryFieldValues = {
+    boolean: boolean;
+    integer: number;
+    number: number;
+    string: string;
+    coordinates: { x: number; y: number; z: number }[];
+    'integer-array': number[];
+};
 
-export type StandardTelemetrySample = Record<string, TelemetryJsonValue>;
+export type StandardTelemetrySample = {
+    [Field in keyof typeof LIVE_TELEMETRY_DATASET]?: TelemetryFieldValues[typeof LIVE_TELEMETRY_DATASET[Field]];
+};
 export type LiveTelemetry = StandardTelemetrySample;
 
 export type RecordingStartFailureType =

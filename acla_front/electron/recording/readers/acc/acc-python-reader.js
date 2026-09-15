@@ -3,7 +3,7 @@
 const { spawn: defaultSpawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
-const { validateStandardTelemetrySample } = require('../../telemetry-contract');
+const { validateLiveTelemetryRow } = require('../../../../src/data/live-telemetry-dataset');
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -96,7 +96,7 @@ class AccPythonReader {
         if (sample && sample.available === false && Object.keys(sample).length === 1) {
           return;
         }
-        const validation = validateStandardTelemetrySample(sample);
+        const validation = validateLiveTelemetryRow(sample);
         if (!validation.ok) {
           const failure = new Error(validation.error);
           rejectStarted(failure);

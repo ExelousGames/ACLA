@@ -57,15 +57,7 @@ const toFiniteNumber = (value: unknown): number | null => {
 };
 
 const parseMaybeArray = (value: unknown): any[] => {
-    if (Array.isArray(value)) return value;
-    if (typeof value !== 'string') return [];
-
-    try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
+    return Array.isArray(value) ? value : [];
 };
 
 const getUsableIdSlots = (carIds: any[]): Set<number> => {
@@ -112,9 +104,7 @@ const getFrameTimeSeconds = (row: Record<string, any>, fallbackIndex: number): n
     const currentLapTime = toFiniteNumber(row.Graphics_current_time);
     if (currentLapTime !== null) return currentLapTime / 1000;
 
-    const raw = toFiniteNumber(row.Physics_timestamp ?? row.timestamp);
-    if (raw === null) return fallbackIndex / DEFAULT_SAMPLE_RATE_HZ;
-    return raw > 100 ? raw / 1000 : raw;
+    return toFiniteNumber(row.Graphics_clock) ?? fallbackIndex / DEFAULT_SAMPLE_RATE_HZ;
 };
 
 const getPlayerKey = (
