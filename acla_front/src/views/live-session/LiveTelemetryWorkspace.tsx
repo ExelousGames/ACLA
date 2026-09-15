@@ -10,12 +10,14 @@ import { LiveSessionContext } from './LiveSessionContext';
 import { LiveVisualizationInstance } from './live-session-types';
 import LiveTrajectoryMap from './LiveTrajectoryMap';
 import LiveTelemetryOverview from './LiveTelemetryOverview';
+import LiveSuspension from './LiveSuspension';
 import LiveEventLog from './LiveEventLog';
 import BaselineCollection from './baseline-collection/BaselineCollection';
 
 const OPTIONAL_VISUALIZATIONS = {
     'live-trajectory-map': { name: 'Live 2D Telemetry Trajectory' },
     'telemetry-overview': { name: 'Live Telemetry Overview' },
+    'suspension': { name: 'Suspension' },
     'event-log': { name: 'Live Event Log' },
     'analysis-results': { name: 'Analysis Results' },
     'baseline-collection': { name: 'Baseline Collection' },
@@ -82,7 +84,7 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
             name,
             id: `${type}-${Date.now()}`,
             type: type as LiveVisualizationInstance['type'],
-            height: type === 'live-trajectory-map' ? 520 : 280,
+            height: type === 'live-trajectory-map' || type === 'suspension' ? 520 : 280,
             data,
             config,
         };
@@ -123,6 +125,9 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
                     onDisable={() => this.closeVisualization({ name: instance.name }).success}
                 />
             );
+        }
+        if (instance.type === 'suspension') {
+            return <LiveSuspension key={instance.name} name={instance.name} telemetry={instance.data as Record<string, any> | undefined} />;
         }
         if (instance.type === 'event-log') {
             return (

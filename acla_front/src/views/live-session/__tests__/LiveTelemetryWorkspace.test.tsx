@@ -48,6 +48,37 @@ const DirectoryObserver = () => {
 };
 
 describe('LiveTelemetryWorkspace named manager', () => {
+    it('offers Suspension, updates the same panel, and unregisters it when removed', async () => {
+        const ref = React.createRef<VisualizationManagerHandle>();
+        render(
+            <OperationComponentRefProvider>
+                <DirectoryObserver />
+                <LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />
+            </OperationComponentRefProvider>,
+        );
+        expect(ref.current!.getVisualizationCapabilities().availableCharts).toContainEqual(
+            expect.objectContaining({ type: 'suspension', name: 'Suspension', canOpen: true }),
+        );
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Suspension' }));
+        expect(screen.getByTestId('live-suspension')).toBeInTheDocument();
+        expect(directory!.findComponentRef('visualization:suspension')?.current).not.toBeNull();
+        expect(ref.current!.getCurrentVisualizations()).toEqual([
+            expect.objectContaining({ name: 'visualization:suspension', type: 'suspension', height: 520 }),
+        ]);
+        act(() => {
+            expect(ref.current!.requestVisualization({
+                name: 'another-suspension', type: 'suspension',
+                data: { Physics_suspension_travel_front_left: 0.034 },
+            })).toMatchObject({ reused: true });
+        });
+        expect(screen.getAllByTestId('live-suspension')).toHaveLength(1);
+        expect(screen.getByText('34.0')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: 'Remove Suspension' }));
+        expect(screen.queryByTestId('live-suspension')).not.toBeInTheDocument();
+        expect(directory!.findComponentRef('visualization:suspension')).toBeNull();
+        expect(screen.getByRole('menuitem', { name: 'Suspension' })).toBeInTheDocument();
+    });
+
     it('displays locally saved analysis after remount and clears the open chart when a new session starts', async () => {
         localStorage.clear();
         let runtime!: React.ContextType<typeof LiveSessionContext>;
