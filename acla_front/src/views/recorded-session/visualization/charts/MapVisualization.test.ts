@@ -140,6 +140,18 @@ describe('MapVisualization telemetry parsing', () => {
         expect(frames[0].cars[0].position).toEqual({ x: 8, y: 9, z: 0 });
     });
 
+    it.each([0, 63])('draws player %i at the real-world reference without drawing empty car slots', (playerId) => {
+        const frame = parseTelemetryFrame({
+            Graphics_player_car_id: playerId,
+            Graphics_car_id: [playerId, ...Array(59).fill(-1)],
+            Graphics_car_coordinates: Array.from({ length: 60 }, () => ({ x: 0, y: 0, z: 0 }))
+        }, 0);
+
+        expect(frame?.playerKey).toBe(`id:${playerId}`);
+        expect(frame?.cars).toEqual([{ key: `id:${playerId}`, id: playerId, slot: 0,
+            position: { x: 0, y: 0, z: 0 } }]);
+    });
+
     it('filters impossible coordinate outliers before they affect map bounds', () => {
         const frame = parseTelemetryFrame({
             Graphics_current_time: 1000,

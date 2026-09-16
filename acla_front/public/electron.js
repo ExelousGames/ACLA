@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain } = require('electron');
+const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain, dialog } = require('electron');
+const { Worker } = require('worker_threads');
 const { PythonShell } = require('python-shell');
 const path = require('path');
 const isDev = require('electron-is-dev');
@@ -52,6 +53,7 @@ let latestDetectedGame = null;
 let recordingIpcRegistered = false;
 let quitAfterRecordingShutdown = false;
 const recordedFileReads = new Map();
+let iracingImportInFlight = false;
 
 function getRecordingDirectory() {
   return path.join(app.getPath('userData'), 'acla-temp');
@@ -216,6 +218,50 @@ function registerRecordingIpc() {
     if (!isCurrentMainRenderer(event.sender)) throw new Error('Recording stop is allowed only from the active workspace.');
     if (!recordingManager) throw new Error('No recording session is active.');
     return recordingManager.stopSession(event.sender.id);
+  });
+
+  ipcMain.handle('prepare-iracing-recorded-telemetry', async (event, filePath) => {
+    if (!isCurrentMainRenderer(event.sender)) throw new Error('Telemetry import is allowed only from the active workspace.');
+    if (recordingManager?.hasActiveSession()) throw new Error('Stop recording before importing iRacing telemetry.');
+    if (iracingImportInFlight) throw new Error('An iRacing telemetry import is already running.');
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) throw new Error('Invalid live recording path.');
+    const realDirectory = await fs.promises.realpath(getRecordingDirectory());
+    const realFile = await fs.promises.realpath(filePath);
+    if (!isPathInside(realDirectory, realFile) || !isRegularFileSync(realFile)
+      || !/^iracing_.*\.jsonl$/i.test(path.basename(realFile))) {
+      throw new Error('Select an application-owned iRacing recording.');
+    }
+    iracingImportInFlight = true;
+    const telemetryDirectory = path.join(app.getPath('documents'), 'iRacing', 'telemetry');
+    let worker;
+    try {
+      worker = new Worker(path.join(app.getAppPath(), 'electron', 'recording', 'readers', 'iracing', 'iracing-import-worker.js'), {
+        workerData: { liveFilePath: realFile, telemetryDirectory },
+      });
+      return await new Promise((resolve, reject) => {
+        worker.on('error', reject);
+        worker.on('exit', () => reject(new Error('iRacing telemetry import ended before completion.')));
+        worker.on('message', async (message) => {
+          if (message.type === 'complete') resolve({ filePath: message.filePath });
+          else if (message.type === 'error') reject(new Error(message.message));
+          else if (message.type === 'select-files') {
+            try {
+              if (!isCurrentMainRenderer(event.sender)) throw new Error('The upload workspace was closed.');
+              const result = await dialog.showOpenDialog(mainWindow, {
+                title: 'Select .ibt files for this iRacing session',
+                defaultPath: telemetryDirectory,
+                filters: [{ name: 'iRacing telemetry', extensions: ['ibt'] }],
+                properties: ['openFile', 'multiSelections'],
+              });
+              worker.postMessage({ filePaths: result.canceled ? [] : result.filePaths });
+            } catch (error) { reject(error); }
+          }
+        });
+      });
+    } finally {
+      await worker?.terminate();
+      iracingImportInFlight = false;
+    }
   });
 
   ipcMain.handle('recorded-file-read-start', async (event, request) => {

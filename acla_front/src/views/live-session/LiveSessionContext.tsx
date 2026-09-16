@@ -511,8 +511,9 @@ export const LiveSessionProvider = ({
     const streamRecordedTelemetry = useCallback(async (
         onChunk: (rows: StandardTelemetrySample[]) => void | Promise<void>,
         onProgress?: (rowsRead: number, totalRows: number | null, bytesRead: number, totalBytes: number) => void,
+        sourceFilePath?: string,
     ) => {
-        const filePath = recordingFileKeyRef.current;
+        const filePath = sourceFilePath ?? recordingFileKeyRef.current;
         const game = sessionGameRef.current;
         if (!filePath || !game) return { rowCount: 0, totalBytes: 0 };
         if (recordingMetadataRef.current?.gameRecordedFrom !== game) {

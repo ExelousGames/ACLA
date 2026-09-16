@@ -84,6 +84,38 @@ objects, and legacy aliases are rejected. There is no legacy catalog or fallback
 
 ### iRacing live recording
 
+Uploading an iRacing recording creates two sessions with matching name prefixes:
+`iracing_live` contains the app's saved live samples and `iracing_recorded` contains
+samples converted from native `.ibt` files. These values are also saved in
+`game_recorded_from`; the backend must accept both source values before the updated
+desktop app is used. Existing `iracing` sessions remain supported.
+
+Enable iRacing disk telemetry while driving and exit the car before uploading so
+the `.ibt` files are finalized. The desktop app searches the Windows Documents
+`iRacing/telemetry` folder for files overlapping the app recording's time window,
+matching track, car and driver. Multiple matching stints are combined. Ambiguous
+or missing matches open a file picker; selected files must match the recording and
+belong to one simulator session. Conversion runs in a worker, streams bounded
+batches through the dedicated
+[`IRacingIBTAdapter`](electron/recording/readers/iracing/iracing-ibt-adapter.js), and
+preserves the native files. This adapter has its own channel allowlist and coverage
+table, reuses the common iRacing mappings, and adds 36 mappings for brake-line
+pressure, tire surface temperatures, wheel speed, suspension velocity, ride height,
+oil measurements, fuel/manifold pressure, ABS force reduction, and player coordinates/identity. Thirty new shared
+Physics fields preserve measurements with different meanings from existing fields;
+surface temperatures are separate from core temperatures, and wheel speed is in
+m/s rather than rad/s. Additional mappings require matching SDK units in the file.
+Player `Lat`/`Lon`/`Alt` are converted through WGS84 Earth-centered coordinates to
+track-referenced XYZ in meters: **X east, Y up, Z north**. The origin is the session's
+`TrackLatitude`/`TrackLongitude`/`TrackAltitude`, shared across laps and stints.
+Only the player's coordinate slot is populated; missing geographic channels or
+reference metadata leave position absent. This geographic position frame differs
+from the simulator-local frame used by the existing heading and world-velocity fields.
+See [recorded-file field units and availability](tmp/telemetry-fields.md#iracing-recorded-file-fields).
+Missing or incomplete native data keeps the local draft available for retry.
+Both uploads must finish before the app recording and converted temporary file
+are deleted. Retrying in the current upload flow skips an already completed version.
+
 On Windows, launch an iRacing session and start recording from the live-session view.
 The recorder waits for the simulator while disconnected and resumes when telemetry
 returns. It uses the existing managed Python runtime and requires no extra Python
@@ -101,7 +133,7 @@ Processing runs in four OS processes: SDK capture, reader/adapter, writer, and l
 view. `IRacingAdapter.adapt()` in
 [`iracing-adapter.js`](electron/recording/readers/iracing/iracing-adapter.js) converts
 the data **before** either consumer receives it. Raw SDK names and YAML never enter
-saved rows or uploads. `IRACING_FIELD_COVERAGE` accounts for all 240 existing fields;
+saved rows or uploads. `IRACING_FIELD_COVERAGE` accounts for all 270 registered fields;
 100 have mappings, conditional on the car/session exposing the required source.
 Other fields remain absent under the [standard contract](tmp/telemetry-fields.md).
 
@@ -111,7 +143,7 @@ front brake bias as a fraction, and standard session/flag enums. Session YAML is
 parsed only when its SDK update counter changes. Metadata resets on reconnect.
 Physics is omitted outside the cockpit and during replay to avoid recording stale
 or spectator data as driver input. Cold pit tire measurements are not live tire
-pressure/core temperature; SDK repair time is not body damage. World positions
+pressure/core temperature; SDK repair time is not body damage. Live world positions
 and other channels without equivalent standard semantics remain absent.
 
 The additional mappings cover body acceleration, local and world velocity, angular velocity,

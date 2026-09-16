@@ -82,7 +82,7 @@ const getCarKey = (slot: number, carIds: any[], usableIdSlots: Set<number>): str
     return usableIdSlots.has(slot) ? `id:${String(id)}` : `slot:${slot}`;
 };
 
-const coordToVec3 = (coord: any): Vec3 | null => {
+const coordToVec3 = (coord: any, allowOrigin = false): Vec3 | null => {
     if (!coord || typeof coord !== 'object') return null;
 
     const x = toFiniteNumber(coord.x);
@@ -90,7 +90,7 @@ const coordToVec3 = (coord: any): Vec3 | null => {
     const z = toFiniteNumber(coord.z) ?? 0;
 
     if (x === null || y === null) return null;
-    if (x === 0 && y === 0 && z === 0) return null;
+    if (!allowOrigin && x === 0 && y === 0 && z === 0) return null;
     if (
         Math.abs(x) > MAX_ABSOLUTE_TRACK_COORDINATE
         || Math.abs(y) > MAX_ABSOLUTE_TRACK_COORDINATE
@@ -139,11 +139,15 @@ export const parseTelemetryFrame = (row: Record<string, any>, index: number): Te
     const cars: CarPoint[] = [];
 
     coords.forEach((coord, slot) => {
-        const position = coordToVec3(coord);
-        if (!position) return;
-
         const id = carIds[slot] ?? null;
         const key = getCarKey(slot, carIds, usableIdSlots);
+        // A positively identified player can be exactly at the track reference.
+        // Anonymous zero coordinates remain empty slots.
+        const allowOrigin = usableIdSlots.has(slot) && playerCarId !== null
+            && Number(playerCarId) >= 0 && key === `id:${String(playerCarId)}`;
+        const position = coordToVec3(coord, allowOrigin);
+        if (!position) return;
+
         cars.push({ key, id, slot, position });
     });
 

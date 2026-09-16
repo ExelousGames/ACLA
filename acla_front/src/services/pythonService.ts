@@ -37,6 +37,7 @@ declare global {
             }>;
             startRecordingSession: (config: { game: DesktopGame }) => Promise<RecordingStartResult>;
             stopRecordingSession: () => Promise<RecordingStopResult>;
+            prepareIRacingRecordedTelemetry: (filePath: string) => Promise<{ filePath: string }>;
             onRecordingViewUpdate: (callback: (update: RecordingViewUpdate) => void) => () => void;
             onRecordingSessionEnded: (callback: (result: RecordingStopResult) => void) => () => void;
             startRecordedFileRead: (request: {

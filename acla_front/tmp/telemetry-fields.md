@@ -7,7 +7,8 @@ existing scalar motion fields. These rules are tested with synthetic SDK samples
 physical equivalence with the existing ACC reader still requires controlled
 stationary, straight-line, left/right-turn, banked-track, and pitch/roll captures.
 The previously listed field types alone did not specify signs or gravity behavior.
-World car coordinates remain unmapped in iRacing.
+World car coordinates remain unmapped in live iRacing capture. Native recorded
+files provide the geographic player-position mapping described below.
 
 | Fields | Units and intended convention | iRacing conversion |
 | --- | --- | --- |
@@ -53,6 +54,85 @@ changes invalidate history. Routine YAML updates preserve history. Gaps retain a
 most 180 seconds and 1802 samples per active car (10 Hz history plus the newest
 sample). A missing source never turns into a placeholder zero.
 
+## iRacing recorded-file fields
+
+Native `.ibt` files use [IRacingIBTAdapter](../electron/recording/readers/iracing/iracing-ibt-adapter.js)
+and an independent channel allowlist. The adapter reuses the common iRacing
+conversions and adds 36 mappings: four existing brake-pressure fields, 30 new
+shared Physics fields, and two existing coordinate/identity arrays.
+Its coverage table accounts for all 270 registered fields,
+with 136 supported conditionally on source availability. The live adapter still
+maps 100 fields; disk-only values never enter the live capture allowlist.
+
+| Standard fields | Source and units |
+| --- | --- |
+| `Physics_brake_pressure_{corner}` | `LF/RF/LR/RRbrakeLinePress`, bar, nonnegative. This is hydraulic pressure, separate from normalized driver pedal input. |
+| `Physics_abs_cut` | `BrakeABSCutPct`, fraction 0–1 (SDK unit `%`); 0.25 means a 25% reduction in brake force. Separate from the existing ABS activity field and ABS setting. |
+| `Physics_tyre_surface_temp_{corner}_{inner/middle/outer}` | `LF/RF/LR/RRtempL/M/R`, degrees Celsius. On left wheels R is inner and L is outer; on right wheels L is inner and R is outer. M is always the middle. |
+| `Physics_wheel_speed_{corner}` | `LF/RF/LR/RRspeed`, signed linear tire speed in m/s. No assumed rolling radius or conversion to angular speed/slip. |
+| `Physics_ride_height_{corner}` | `LF/RF/LR/RRrideHeight`, meters, signed distance reported at that corner's simulator ride-height reference point. |
+| `Physics_suspension_velocity_{corner}` | `LF/RF/LR/RRshockVel`, m/s, signed shock-deflection velocity in the same convention as suspension travel. |
+| `Physics_oil_temp` | `OilTemp`, degrees Celsius. |
+| `Physics_oil_pressure` | `OilPress`, bar, nonnegative. |
+| `Physics_oil_level` | `OilLevel`, liters, nonnegative. |
+| `Physics_fuel_pressure` | `FuelPress`, bar, nonnegative. |
+| `Physics_manifold_pressure` | `ManifoldPress`, absolute bar, nonnegative; not boost above ambient pressure. |
+| `Graphics_car_coordinates` | Player `Lat`/`Lon` (decimal degrees, descriptor `deg`) and `Alt` (meters, descriptor `m`), converted to track-referenced X east / Y up / Z north in meters. Slot 0 holds the player; the other 59 slots are `{x: 0, y: 0, z: 0}` with unavailable IDs. |
+| `Graphics_car_id` | Slot 0 holds `PlayerCarIdx`, falling back to session `DriverInfo.DriverCarIdx` when absent. Other slots contain `-1`. `Graphics_player_car_id` holds the same actual player ID; IDs 60–63 are preserved, independent of the 60-slot array limit. |
+
+### Geographic player position
+
+The reference is `WeekendInfo.TrackLatitude`, `TrackLongitude`, and `TrackAltitude`
+from the native file. Both reference and car coordinates are converted to
+[WGS84 Earth-centered, Earth-fixed XYZ](https://proj.org/en/stable/operations/conversions/cart.html)
+using equatorial radius 6378137 m and inverse flattening 298.257223563. Subtracting
+the reference and applying the [local tangent-plane rotation](https://proj.org/en/stable/operations/conversions/topocentric.html)
+gives east/north/up; the stored XYZ order is east/up/north to preserve Y as height.
+Earth-centered coordinates are an intermediate calculation, not the stored values.
+Position axes are geographic and fixed to the reference, rather than following
+the car's heading. The existing `Physics_heading` and `Physics_velocity_*` fields
+retain their simulator-local track basis described above; they are not geographic
+heading/velocity components in this position frame.
+
+The origin does not depend on the first car sample, lap, pit visit, or file order.
+Files carrying the same track reference therefore align across stints and sessions.
+All three reference measurements are required. Native YAML labels track latitude
+and longitude with `m` despite containing decimal-degree values (observed in the
+saved Lime Rock SDK capture); `deg` and numeric YAML values are also accepted.
+This metadata exception does not relax the disk `Lat`/`Lon` descriptor unit check.
+Altitude uses the simulator's reported datum for both points; no geoid correction
+is available, so these coordinates are not survey-grade absolute elevations.
+
+Invalid/missing coordinates, altitude, units, or player identity omit both arrays.
+Coordinates are calculated independently for each sample, with no integration,
+interpolation, or carry-forward. Valid zero latitude/longitude/altitude and the
+exact origin are retained. Empty array slots are identified by `-1` IDs; no opponent
+locations are inferred from lap progress. The map retains an explicitly identified
+player at `(0, 0, 0)` while filtering anonymous zero placeholders.
+
+### Disk measurement validation
+
+`{corner}` expands to `front_left`, `front_right`, `rear_left`, or `rear_right`.
+The extra mappings require matching units in the file's variable descriptors.
+Missing, nonfinite, wrong-unit, wrong-shaped, and out-of-range values are omitted;
+valid zero values are retained. Time arrays use their latest sample, following the
+existing one-row-per-disk-tick convention. No interpolation creates extra rows.
+Explicit off-track/replay flags still suppress physics. Absent live flags default
+to cockpit capture only inside this disk adapter. Original files remain unchanged.
+
+Hot `*pressure` channels continue to populate wheel pressure in psi via the common
+kPa-to-psi conversion. Surface temperature is never substituted for core
+temperature. `*tempC*`, `*wear*`, and `*coldPressure` do not establish continuous
+on-track core temperature, wear, or hot pressure and are not substitutes.
+
+Sources: [iRacing's disk brake-pressure and ABS telemetry release notes](https://support.iracing.com/support/solutions/articles/31000170128-2023-season-3-release-notes-2023-06-05-02-),
+[AiM's native IBT channel reference](https://www.aim-sportline.com/download/doc/eng/simracing/iRacing_102_eng.pdf),
+and [the SDK library's generated channel units](https://irsdk-node.bengsfort.dev/API-Reference/irsdk-node-types/interfaces/TelemetryVarList/).
+Tests use synthetic binary IBT files, including unit descriptors, to verify mapping
+and worker/JSONL transport. Car-specific availability and physical equivalence with
+the ACC reader still require controlled simulator captures; these tests do not
+calibrate the legacy ACC brake-pressure signal or its car-specific dash coefficients.
+
 ## Contract
 
 This is the application-wide telemetry standard shared by all supported simulators. `Physics_*`, `Graphics_*`, and `Static_*` are application field groups. The application owns this contract, and each simulator reader maps its native data into it before emitting a sample.
@@ -62,7 +142,7 @@ This is the application-wide telemetry standard shared by all supported simulato
 - Standard field names remain stable across readers. A reader uses the semantically equivalent standard field or omits it; it does not introduce a replacement name.
 - A successful recorded row is one flat JSON object containing only keys from this catalog, regardless of the source game.
 - After a reader has produced the standard object, the writer, saved-file reader, renderer, and upload path preserve every telemetry key and value unchanged. They must not rename fields, add aliases, convert units, wrap the row in another persisted object, or add metadata fields to the row.
-- The authoritative field table is [live-telemetry-dataset.js](../src/data/live-telemetry-dataset.js), currently containing 240 keys: 133 Physics, 84 Graphics, and 23 Static. Every reader and adapter must emit rows accepted by this dataset. Register new fields in that table and document their units and meanings here before use; do not introduce game-specific aliases.
+- The authoritative field table is [live-telemetry-dataset.js](../src/data/live-telemetry-dataset.js), currently containing 270 keys: 163 Physics, 84 Graphics, and 23 Static. Every reader and adapter must emit rows accepted by this dataset. Register new fields in that table and document their units and meanings here before use; do not introduce game-specific aliases.
 - `Graphics_status`, `Graphics_session_type`, `Graphics_flag`, `Graphics_penalty`, `Graphics_track_grip_status`, and the three `Graphics_rain_intensity*` fields contain the standard integers defined below. Readers map native enum values to these integers.
 - `Graphics_last_sector_time_str` has type integer despite its suffix, and `Graphics_rain_tyres` is an integer `0`/`1`. Readers must emit these declared types, and downstream components preserve them unchanged.
 - `Graphics_car_coordinates` is an array of 60 `{ "x": number, "y": number, "z": number }` objects. `Graphics_car_id` is an array of 60 integers. All other field values are scalar; readers flatten native objects into the exact keys below.
@@ -71,9 +151,39 @@ This is the application-wide telemetry standard shared by all supported simulato
 
 Reader implementations: [ACC reader](../electron/recording/readers/acc/acc-python-reader.js) with its [capture script](../src/py-scripts/ACCMemoryExtractor.py), and [iRacing adapter](../electron/recording/readers/iracing/iracing-adapter.js). Both emit rows validated against the application dataset.
 
-## Physics fields (133)
+## Physics fields (163)
 
 ```text
+Physics_abs_cut                                        number
+Physics_fuel_pressure                                  number
+Physics_manifold_pressure                              number
+Physics_oil_level                                      number
+Physics_oil_pressure                                   number
+Physics_oil_temp                                       number
+Physics_ride_height_front_left                          number
+Physics_ride_height_front_right                         number
+Physics_ride_height_rear_left                           number
+Physics_ride_height_rear_right                          number
+Physics_suspension_velocity_front_left                  number
+Physics_suspension_velocity_front_right                 number
+Physics_suspension_velocity_rear_left                   number
+Physics_suspension_velocity_rear_right                  number
+Physics_tyre_surface_temp_front_left_inner              number
+Physics_tyre_surface_temp_front_left_middle             number
+Physics_tyre_surface_temp_front_left_outer              number
+Physics_tyre_surface_temp_front_right_inner             number
+Physics_tyre_surface_temp_front_right_middle            number
+Physics_tyre_surface_temp_front_right_outer             number
+Physics_tyre_surface_temp_rear_left_inner               number
+Physics_tyre_surface_temp_rear_left_middle              number
+Physics_tyre_surface_temp_rear_left_outer               number
+Physics_tyre_surface_temp_rear_right_inner               number
+Physics_tyre_surface_temp_rear_right_middle              number
+Physics_tyre_surface_temp_rear_right_outer               number
+Physics_wheel_speed_front_left                          number
+Physics_wheel_speed_front_right                         number
+Physics_wheel_speed_rear_left                           number
+Physics_wheel_speed_rear_right                          number
 Physics_packed_id                                      integer
 Physics_gas                                            number
 Physics_brake                                          number

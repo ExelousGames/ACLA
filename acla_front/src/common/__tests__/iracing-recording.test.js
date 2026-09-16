@@ -50,7 +50,7 @@ const packet = (values = {}, extra = {}) => ({ type: 'sample', tick: 120, values
 }, ...extra });
 
 describe('iRacing standard field adapter', () => {
-  it('accounts for exactly the existing 240 fields', () => {
+  it('accounts for every field in the shared catalog', () => {
     expect(Object.keys(IRACING_FIELD_COVERAGE)).toEqual(LIVE_TELEMETRY_FIELDS);
     for (const field of Object.values(IRACING_FIELD_COVERAGE)) {
       expect(field.supported ? field.source : field.reason).toEqual(expect.any(String));

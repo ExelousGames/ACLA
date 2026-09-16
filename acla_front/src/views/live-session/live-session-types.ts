@@ -148,6 +148,7 @@ export interface LiveSessionRuntime {
     streamRecordedTelemetry: (
         onChunk: (rows: StandardTelemetrySample[]) => void | Promise<void>,
         onProgress?: (rowsRead: number, totalRows: number | null, bytesRead: number, totalBytes: number) => void,
+        sourceFilePath?: string,
     ) => Promise<{ rowCount: number; totalBytes: number }>;
     clearRecordingSession: () => void;
     clearPersistedDraft: () => void;

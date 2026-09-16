@@ -283,6 +283,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     stopRecordingSession: () => ipcRenderer.invoke('recording-session-stop'),
     onRecordingViewUpdate: (callback) => subscribe(recordingViewCallbacks, callback, 'onRecordingViewUpdate'),
     onRecordingSessionEnded: (callback) => subscribe(recordingEndedCallbacks, callback, 'onRecordingSessionEnded'),
+    prepareIRacingRecordedTelemetry: (filePath) => ipcRenderer.invoke('prepare-iracing-recorded-telemetry', filePath),
     startRecordedFileRead: async (request) => {
         const result = await ipcRenderer.invoke('recorded-file-read-start', request);
         if (!result || typeof result.readId !== 'string' || !result.readId) {
