@@ -11,7 +11,6 @@ from app.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING, LABEL_NAME_TO_ID
 from app.integrations.backend.client import backend_service
 from app.ml.model_hub import (
     get_segment_classifier,
-    get_tire_grip_analysis,
     get_top_lap_reference_model,
 )
 from app.pipelines.inference.preprocessing import (
@@ -258,7 +257,6 @@ async def _scan_session(
         track=session_meta.get("map") or track_id,
         car=session_meta.get("car_name"),
     )
-    enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
     df = pd.DataFrame(enriched_rows)
     predicted_segments = get_segment_classifier().classify_ranges(
         df,

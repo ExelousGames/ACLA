@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from app.shared.telemetry import FeatureProcessor, TelemetryFeatures
+from app.shared.telemetry import FeatureProcessor
 
 
 INFERENCE_SAMPLE_INTERVAL_MS = 500
@@ -224,7 +224,7 @@ def _remove_position_anomalies(dataframe: pd.DataFrame) -> pd.DataFrame:
 def preprocess_inference_telemetry(
     telemetry_data: Sequence[Dict[str, Any]],
 ) -> InferenceTelemetryBatch:
-    """Apply the training-equivalent 500 ms preprocessing contract at inference."""
+    """Clean and resample telemetry; consumers own their feature requirements."""
     if not telemetry_data:
         return InferenceTelemetryBatch(records=[], raw_indices=[])
 
@@ -255,23 +255,8 @@ def preprocess_inference_telemetry(
         int(value)
         for value in downsampled[RAW_ROW_INDEX_COLUMN].tolist()
     ]
-    feature_names = TelemetryFeatures.get_features_for_top_lap_reference()
-    missing_features = [
-        feature
-        for feature in feature_names
-        if feature not in downsampled.columns
-    ]
-    if missing_features:
-        raise ValueError(f"Missing features: {missing_features}")
-
-    filtered = processor.filter_features_by_list(
-        downsampled,
-        feature_names,
-    )
-    filtered = filtered.reset_index(drop=True)
-
     return InferenceTelemetryBatch(
-        records=filtered.to_dict("records"),
+        records=downsampled.drop(columns=[RAW_ROW_INDEX_COLUMN]).to_dict("records"),
         raw_indices=raw_indices,
     )
 

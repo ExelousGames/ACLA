@@ -87,15 +87,6 @@ def _configure_endpoint_services(monkeypatch, segment):
         ),
     )
 
-    class TireGripService:
-        async def enrich(self, records):
-            return records
-
-    monkeypatch.setattr(
-        racing_session,
-        "get_tire_grip_analysis",
-        TireGripService,
-    )
     monkeypatch.setattr(
         racing_session,
         "split_runtime_segments",

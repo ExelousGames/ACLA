@@ -7,13 +7,16 @@ from app.pipelines.inference.preprocessing import (
     RAW_ROW_INDEX_COLUMN,
     preprocess_inference_telemetry,
 )
-from app.shared.telemetry import FeatureProcessor, TelemetryFeatures
+from app.shared.telemetry import FeatureProcessor
 
 
 def _telemetry_row(current_time: float, **overrides):
     row = {
-        feature: 0.0
-        for feature in TelemetryFeatures.get_features_for_top_lap_reference()
+        "Graphics_player_pos_x": 0.0,
+        "Graphics_player_pos_y": 0.0,
+        "Graphics_player_pos_z": 0.0,
+        "Physics_velocity_y": 0.0,
+        "Physics_velocity_z": 0.0,
     }
     row.update(
         {
@@ -27,7 +30,7 @@ def _telemetry_row(current_time: float, **overrides):
     return row
 
 
-def test_preprocess_inference_telemetry_matches_training_shape_and_tracks_raw_rows():
+def test_preprocess_inference_telemetry_preserves_columns_and_tracks_raw_rows():
     source = [
         _telemetry_row(
             0,
@@ -78,11 +81,11 @@ def test_preprocess_inference_telemetry_matches_training_shape_and_tracks_raw_ro
 
     result = preprocess_inference_telemetry(source)
 
-    expected_features = TelemetryFeatures.get_features_for_top_lap_reference()
     assert result.raw_indices == [0, 3, 4]
     assert [row["Graphics_current_time"] for row in result.records] == [0, 500, 999]
-    assert list(result.records[0]) == expected_features
-    assert "unexpected_feature" not in result.records[0]
+    assert list(result.records[0]) == list(source[0])
+    assert result.records[0]["unexpected_feature"] == 99
+    assert RAW_ROW_INDEX_COLUMN not in result.records[0]
     assert result.records[0]["Graphics_player_pos_y"] == pytest.approx(20.0)
     assert result.records[0]["Graphics_player_pos_z"] == pytest.approx(10.0)
     assert result.records[0]["Physics_velocity_y"] == pytest.approx(2.0)
@@ -252,11 +255,42 @@ def test_downsampling_starts_a_new_grid_at_each_lap_boundary(source, expected_ti
     assert result["Graphics_current_time"].tolist() == expected_times
 
 
-def test_preprocess_inference_telemetry_requires_the_complete_feature_contract():
-    with pytest.raises(ValueError, match="Missing features"):
-        preprocess_inference_telemetry(
-            [{"Graphics_current_time": 0, "Graphics_player_pos_x": 0.0}]
-        )
+@pytest.mark.parametrize("row", [
+    {"Physics_speed_kmh": 120.0},
+    {"Graphics_current_time": 500, "Physics_brake": 0.5},
+    {"unexpected_feature": 1},
+])
+def test_preprocessing_leaves_feature_validation_to_downstream_consumers(row):
 
-    with pytest.raises(ValueError, match="Missing features"):
-        preprocess_inference_telemetry([{"unexpected_feature": 1}])
+    result = preprocess_inference_telemetry([row])
+
+    assert result.raw_indices == [0]
+    assert result.records == [row]
+
+
+def test_preprocessing_keeps_available_metadata_and_opponents_for_segment_splitting():
+    row = _telemetry_row(
+        500,
+        Static_track="brands_hatch",
+        Static_car_model="car-a",
+        Car_1_pos_x=10.0,
+        Car_1_pos_y=20.0,
+        Car_1_pos_z=30.0,
+        Physics_slip_angle_front_left=0.1,
+        Graphics_gap_ahead=100.0,
+        Graphics_is_valid_lap=True,
+    )
+
+    result = preprocess_inference_telemetry([row])
+
+    assert result.records[0]["Graphics_current_time"] == 500
+    assert result.records[0]["Graphics_completed_lap"] == 0
+    assert result.records[0]["Static_track"] == "brands_hatch"
+    assert result.records[0]["Static_car_model"] == "car-a"
+    assert result.records[0]["Car_1_pos_x"] == 10.0
+    assert result.records[0]["Car_1_pos_y"] == 30.0
+    assert result.records[0]["Car_1_pos_z"] == 20.0
+    assert "Car_2_pos_x" not in result.records[0]
+    assert result.records[0]["Physics_slip_angle_front_left"] == 0.1
+    assert result.records[0]["Graphics_gap_ahead"] == 100.0
+    assert result.records[0]["Graphics_is_valid_lap"] == 1

@@ -13,6 +13,8 @@ from app.pipelines.inference.preprocessing import InferenceTelemetryBatch
 from app.top_laps.runtime import TopLapReferenceModelError
 from app.pipelines.training.pipeline.enrich import enrich_sessions_with_context
 from app.services import user_session_analysis
+from app.shared.expert_features import ExpertFeatureCatalog
+from app.shared.segment_classifier_features import SEGMENT_CLASSIFIER_FEATURES
 
 
 @pytest.fixture(autouse=True)
@@ -72,18 +74,6 @@ class UnavailableRuntime:
         raise TopLapReferenceModelError("Top-lap reference model is unavailable")
 
 
-class EnrichingTireService:
-    def __init__(self):
-        self.calls = []
-
-    async def enrich(self, records):
-        copied = [dict(row) for row in records]
-        for index, row in enumerate(copied):
-            row["driver_push_to_limit"] = 0.75 + index
-        self.calls.append((records, copied))
-        return copied
-
-
 def _preprocessed(records, raw_indices=None):
     return InferenceTelemetryBatch(
         records=[dict(row) for row in records],
@@ -93,6 +83,15 @@ def _preprocessed(records, raw_indices=None):
             else list(range(len(records)))
         ),
     )
+
+
+def _classifier_row():
+    expert_features = {feature.value for feature in ExpertFeatureCatalog.ExpertFeatures}
+    return {
+        **{feature: 0.0 for feature in SEGMENT_CLASSIFIER_FEATURES if feature not in expert_features},
+        "Graphics_normalized_car_position": 0.12,
+        "Graphics_current_time": 500,
+    }
 
 
 def _tire_grip_row(**overrides):
@@ -198,7 +197,6 @@ async def test_top_lap_reference_guidance_route_and_handler(monkeypatch):
 @pytest.mark.asyncio
 async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
     runtime = EnrichingRuntime()
-    tire_service = EnrichingTireService()
     source = [
         {"Graphics_normalized_car_position": 0.4, "source": "raw"},
         {"Graphics_normalized_car_position": 0.5, "source": "raw"},
@@ -219,11 +217,6 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
         racing_session,
         "get_top_lap_reference_model",
         lambda: runtime,
-    )
-    monkeypatch.setattr(
-        racing_session,
-        "get_tire_grip_analysis",
-        lambda: tire_service,
     )
     monkeypatch.setattr(
         racing_session,
@@ -259,7 +252,7 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
     assert result["status"] == "success"
     assert runtime.calls[0][0] == cleaned
     assert classified[0][0]["expert_optimal_speed"] == 150.0
-    assert classified[0][0]["driver_push_to_limit"] == 0.75
+    assert "driver_push_to_limit" not in classified[0][0]
     assert classified[0][0]["Static_track"] == "spa"
     assert classified[0][0]["Static_car_model"] == "car-a"
     assert result["samples_analyzed"] == 3
@@ -277,8 +270,7 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
         "expert_optimal_brake": 0.1,
         "expert_optimal_gear": 4.0,
     }]
-    assert tire_service.calls[0][0] is runtime.calls[0][3]
-    assert classified[0] is tire_service.calls[0][1]
+    assert classified[0] is runtime.calls[0][3]
     assert projected[0] == classified[0]
     assert len(runtime.calls) == 1
     assert source == [
@@ -294,7 +286,6 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
         time_differences=[10.0, 25.0],
         expert_optimal_times=[91_234.0, 93_456.0],
     )
-    tire_service = EnrichingTireService()
     source = [
         {"Graphics_normalized_car_position": 0.0},
         {"Graphics_normalized_car_position": 0.1},
@@ -319,11 +310,6 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
         racing_session,
         "get_top_lap_reference_model",
         lambda: runtime,
-    )
-    monkeypatch.setattr(
-        racing_session,
-        "get_tire_grip_analysis",
-        lambda: tire_service,
     )
     monkeypatch.setattr(
         racing_session,
@@ -392,9 +378,8 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
         },
     ]
     assert runtime.calls[0][0] == cleaned
-    assert classified[0][0]["driver_push_to_limit"] == 0.75
-    assert tire_service.calls[0][0] is runtime.calls[0][3]
-    assert classified[0] is tire_service.calls[0][1]
+    assert "driver_push_to_limit" not in classified[0][0]
+    assert classified[0] is runtime.calls[0][3]
     assert projected[0] == classified[0]
     assert len(runtime.calls) == 1
     assert source == [
@@ -412,7 +397,6 @@ async def test_empty_preprocessed_output_has_no_top_level_expert_references(
     monkeypatch,
 ):
     runtime = EnrichingRuntime()
-    tire_service = EnrichingTireService()
     source = [{"Graphics_normalized_car_position": 0.5}]
     classified = []
 
@@ -425,11 +409,6 @@ async def test_empty_preprocessed_output_has_no_top_level_expert_references(
         racing_session,
         "get_top_lap_reference_model",
         lambda: runtime,
-    )
-    monkeypatch.setattr(
-        racing_session,
-        "get_tire_grip_analysis",
-        lambda: tire_service,
     )
     monkeypatch.setattr(
         racing_session,
@@ -518,15 +497,15 @@ async def test_unavailable_runtime_returns_503_before_classification(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["recorded", "live"])
-async def test_missing_tire_grip_inputs_return_503(
+async def test_classifier_endpoints_accept_only_classifier_telemetry(
     endpoint,
     monkeypatch,
 ):
-    classifier_called = False
+    source = [_classifier_row()]
+    classified = []
 
-    def classify(*args, **kwargs):
-        nonlocal classifier_called
-        classifier_called = True
+    def classify(rows, *args, **kwargs):
+        classified.append(rows)
         return []
 
     monkeypatch.setattr(
@@ -536,59 +515,81 @@ async def test_missing_tire_grip_inputs_return_503(
     )
     monkeypatch.setattr(
         racing_session,
-        "get_tire_grip_analysis",
-        TireGripAnalysisService,
-    )
-    monkeypatch.setattr(
-        racing_session,
-        "preprocess_inference_telemetry",
-        lambda records: _preprocessed(records),
-    )
-    monkeypatch.setattr(
-        racing_session,
         "_classify_telemetry_segments",
         classify,
+    )
+
+    if endpoint == "recorded":
+        result = await racing_session.classify_session_segments(
+            racing_session.SegmentClassificationRequest(
+                session_id="session-1",
+                telemetry_data=source,
+                track_name="spa",
+                car_name="car-a",
+            )
+        )
+    else:
+        result = await racing_session.analyze_live_baseline(
+            racing_session.LiveBaselineAnalysisRequest(
+                track="spa",
+                car="car-a",
+                records=source,
+            )
+        )
+
+    assert result["status"] == "success"
+    assert len(classified) == 1
+    assert classified[0][0]["expert_optimal_speed"] == 150.0
+    assert classified[0][0]["Graphics_current_time"] == 500
+    assert "driver_push_to_limit" not in classified[0][0]
+    assert source == [_classifier_row()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["recorded", "live"])
+async def test_classifier_errors_are_caught_by_endpoints(endpoint, monkeypatch):
+    classified = []
+    message = "Temporal segment classifier model not trained or found."
+    source = [{"Graphics_normalized_car_position": 0.12, "Graphics_current_time": 500}]
+
+    def classify(dataframe, ranges):
+        classified.append(dataframe)
+        raise ValueError(message)
+
+    monkeypatch.setattr(racing_session, "get_top_lap_reference_model", EnrichingRuntime)
+    monkeypatch.setattr(
+        racing_session, "get_segment_classifier",
+        lambda: SimpleNamespace(classify_ranges=classify),
     )
 
     with pytest.raises(HTTPException) as caught:
         if endpoint == "recorded":
             await racing_session.classify_session_segments(
                 racing_session.SegmentClassificationRequest(
-                    session_id="session-1",
-                    telemetry_data=[{"Graphics_normalized_car_position": 0.5}],
-                    track_name="spa",
-                    car_name="car-a",
+                    telemetry_data=source, track_name="brands_hatch", car_name="car-a",
                 )
             )
         else:
             await racing_session.analyze_live_baseline(
                 racing_session.LiveBaselineAnalysisRequest(
-                    track="spa",
-                    car="car-a",
-                    records=[{"Graphics_normalized_car_position": 0.5}],
+                    records=source, track="brands_hatch", car="car-a",
                 )
             )
 
+    assert len(classified) == 1
     assert caught.value.status_code == 503
-    assert "missing required columns" in str(caught.value.detail)
-    assert classifier_called is False
+    assert caught.value.detail == message
 
 
 @pytest.mark.asyncio
 async def test_user_summary_session_classifier_receives_enriched_copies(monkeypatch):
     runtime = EnrichingRuntime()
-    tire_service = EnrichingTireService()
     source = [{"Graphics_normalized_car_position": 0.5}]
     classifier_frames = []
     monkeypatch.setattr(
         user_session_analysis,
         "get_top_lap_reference_model",
         lambda: runtime,
-    )
-    monkeypatch.setattr(
-        user_session_analysis,
-        "get_tire_grip_analysis",
-        lambda: tire_service,
     )
     monkeypatch.setattr(
         user_session_analysis,
@@ -611,10 +612,9 @@ async def test_user_summary_session_classifier_receives_enriched_copies(monkeypa
     )
 
     assert classifier_frames[0].iloc[0]["expert_optimal_speed"] == 150.0
-    assert classifier_frames[0].iloc[0]["driver_push_to_limit"] == 0.75
+    assert "driver_push_to_limit" not in classifier_frames[0].columns
     assert classifier_frames[0].iloc[0]["Static_track"] == "brands_hatch"
     assert classifier_frames[0].iloc[0]["Static_car_model"] == "car-a"
-    assert tire_service.calls[0][0] is runtime.calls[0][3]
     assert source == [{"Graphics_normalized_car_position": 0.5}]
 
 
@@ -652,7 +652,17 @@ async def test_user_summary_runtime_errors_propagate(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_user_summary_tire_grip_errors_mark_session_failed(monkeypatch):
+@pytest.mark.parametrize("classifier_error", [None, "Temporal segment classifier model not trained or found."])
+async def test_user_summary_handles_classifier_results(monkeypatch, classifier_error):
+    row = _classifier_row()
+    classified = []
+
+    def classify(dataframe, ranges):
+        classified.append(dataframe)
+        if classifier_error:
+            raise ValueError(classifier_error)
+        return []
+
     class Backend:
         async def get_user_analysis_sessions(self, user_id, session_limit):
             return {
@@ -664,7 +674,7 @@ async def test_user_summary_tire_grip_errors_mark_session_failed(monkeypatch):
             }
 
         async def iter_user_analysis_chunks(self, user_id, session_meta):
-            yield [{"Graphics_normalized_car_position": 0.5}]
+            yield [row]
 
     monkeypatch.setattr(user_session_analysis, "backend_service", Backend())
     monkeypatch.setattr(
@@ -674,21 +684,25 @@ async def test_user_summary_tire_grip_errors_mark_session_failed(monkeypatch):
     )
     monkeypatch.setattr(
         user_session_analysis,
-        "get_tire_grip_analysis",
-        TireGripAnalysisService,
-    )
-    monkeypatch.setattr(
-        user_session_analysis,
-        "preprocess_inference_telemetry",
-        lambda records: _preprocessed(records),
+        "get_segment_classifier",
+        lambda: SimpleNamespace(classify_ranges=classify),
     )
 
     result = await user_session_analysis.analyze_user_sessions("user-1")
 
-    assert result["sessionsAnalyzed"] == 0
-    assert result["sessionsFailed"] == 1
-    assert len(result["errors"]) == 1
-    assert "missing required columns" in result["errors"][0]["message"]
+    assert len(classified) == 1
+    if classifier_error:
+        assert result["sessionsAnalyzed"] == 0
+        assert result["sessionsFailed"] == 1
+        assert result["errors"] == [{
+            "sessionId": "session-1",
+            "trackId": "brands_hatch",
+            "message": classifier_error,
+        }]
+    else:
+        assert result["sessionsAnalyzed"] == 1
+        assert result["sessionsFailed"] == 0
+        assert result["errors"] == []
 
 
 @pytest.mark.asyncio
@@ -734,11 +748,6 @@ async def test_user_sessions_preprocess_each_assembled_session_once(monkeypatch)
         user_session_analysis,
         "get_top_lap_reference_model",
         lambda: runtime,
-    )
-    monkeypatch.setattr(
-        user_session_analysis,
-        "get_tire_grip_analysis",
-        EnrichingTireService,
     )
     monkeypatch.setattr(
         user_session_analysis,
@@ -798,11 +807,6 @@ async def test_user_sessions_use_static_track_when_session_map_is_missing(monkey
         user_session_analysis,
         "get_top_lap_reference_model",
         EnrichingRuntime,
-    )
-    monkeypatch.setattr(
-        user_session_analysis,
-        "get_tire_grip_analysis",
-        EnrichingTireService,
     )
     monkeypatch.setattr(
         user_session_analysis,

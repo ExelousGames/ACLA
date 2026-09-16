@@ -6,6 +6,7 @@ from sklearn.preprocessing import StandardScaler
 
 from app.ml.segment_classifier.model import TemporalDetectionModel
 from app.ml.segment_classifier.service import SegmentClassifierService
+from app.shared.segment_classifier_features import SEGMENT_CLASSIFIER_FEATURES
 from app.storage.datasets.segment_dataset import build_temporal_sequences
 
 
@@ -62,6 +63,39 @@ def _fixed_logit_service(label_ids, label_weights, logits):
     service.label_weights = dict(label_weights)
     service._prepare_numeric_features = lambda dataframe: dataframe[["speed"]]
     return service
+
+
+@pytest.mark.parametrize("missing_feature", SEGMENT_CLASSIFIER_FEATURES)
+def test_classifier_zero_fills_missing_raw_or_expert_features(tmp_path, missing_feature):
+    service = SegmentClassifierService(str(tmp_path))
+    dataframe = pd.DataFrame([{
+        feature: 1.0
+        for feature in SEGMENT_CLASSIFIER_FEATURES
+        if feature != missing_feature
+    }])
+
+    numeric = service._prepare_numeric_features(dataframe)
+
+    assert numeric[missing_feature].tolist() == [0.0]
+    assert numeric[f"{missing_feature}_diff"].tolist() == [0.0]
+    assert (numeric[dataframe.columns] == 1.0).all().all()
+
+
+def test_classifier_selects_feature_order_and_derives_changes(tmp_path):
+    service = SegmentClassifierService(str(tmp_path))
+    dataframe = pd.DataFrame([
+        {**{feature: 1.0 for feature in reversed(SEGMENT_CLASSIFIER_FEATURES)}, "extra": 99},
+        {**{feature: 3.0 for feature in reversed(SEGMENT_CLASSIFIER_FEATURES)}, "extra": 100},
+    ])
+
+    numeric = service._prepare_numeric_features(dataframe)
+
+    assert list(numeric.columns) == [
+        *SEGMENT_CLASSIFIER_FEATURES,
+        *(f"{feature}_diff" for feature in SEGMENT_CLASSIFIER_FEATURES),
+    ]
+    assert numeric["Physics_speed_kmh"].tolist() == [1.0, 3.0]
+    assert numeric["Physics_speed_kmh_diff"].tolist() == [0.0, 2.0]
 
 
 def test_temporal_targets_include_all_labels_on_parent_and_child_ranges():
