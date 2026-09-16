@@ -921,26 +921,8 @@
       ]
     },
     "MSP15": {
-      "enabled": true,
-      "any_of": [
-        {
-          "all_of": [
-            {
-              "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_onset_iloc",
-                  "player_throttle_reapplication_end_iloc"
-                ]
-              },
-              "condition": {
-                "fact": "find_oversteer_or_understeer_between_ilocs",
-                "operator": "eq",
-                "value": true
-              }
-            }
-          ]
-        }
-      ]
+      "enabled": false,
+      "any_of": []
     },
     "MSP25": {
       "enabled": true,
@@ -986,52 +968,8 @@
       "any_of": []
     },
     "MSP20": {
-      "enabled": true,
-      "any_of": [
-        {
-          "all_of": [
-            {
-              "inputs": {
-                "tags": {
-                  "player": "player_throttle_release_end_iloc",
-                  "expert": "expert_throttle_release_end_iloc"
-                }
-              },
-              "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "aligned"
-              }
-            },
-            {
-              "inputs": {
-                "tags": {
-                  "player": "player_throttle_reapplication_onset_iloc",
-                  "expert": "expert_throttle_reapplication_onset_iloc"
-                }
-              },
-              "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "earlier"
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_onset_iloc",
-                  "player_throttle_reapplication_end_iloc"
-                ]
-              },
-              "condition": {
-                "fact": "find_oversteer_or_understeer_between_ilocs",
-                "operator": "eq",
-                "value": true
-              }
-            }
-          ]
-        }
-      ]
+      "enabled": false,
+      "any_of": []
     },
     "MSP21": {
       "enabled": true,
@@ -1466,257 +1404,27 @@
     },
     "MSP42": {
       "enabled": false,
-      "any_of": [
-        {
-          "all_of": [
-            {
-              "inputs": {
-                "tags": [
-                  "corner_entry_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "corner_entry_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_grip_over_limit",
-                "operator": "eq",
-                "value": true
-              }
-            }
-          ]
-        },
-        {
-          "all_of": [
-            {
-              "inputs": {
-                "tags": [
-                  "corner_entry_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "corner_entry_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_sustained_low_grip",
-                "operator": "eq",
-                "value": true
-              }
-            }
-          ]
-        }
-      ]
+      "any_of": []
     },
     "MSP43": {
       "enabled": false,
-      "any_of": [
-        {
-          "all_of": [
-            {
-              "inputs": {
-                "tags": [
-                  "corner_exit_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "corner_exit_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_grip_over_limit",
-                "operator": "eq",
-                "value": true
-              }
-            }
-          ]
-        },
-        {
-          "all_of": [
-            {
-              "inputs": {
-                "tags": [
-                  "corner_exit_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "corner_exit_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_sustained_low_grip",
-                "operator": "eq",
-                "value": true
-              }
-            }
-          ]
-        }
-      ]
+      "any_of": []
     },
     "MSP44": {
-      "enabled": true,
-      "any_of": [
-        {
-          "all_of": [
-            {
-              "inputs": {
-                "tags": [
-                  "corner_entry_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "corner_entry_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_oversteer",
-                "operator": "eq",
-                "value": true
-              }
-            }
-          ]
-        }
-      ]
+      "enabled": false,
+      "any_of": []
     },
     "MSP45": {
-      "enabled": true,
-      "any_of": [
-        {
-          "all_of": [
-            {
-              "inputs": {
-                "tags": [
-                  "corner_entry_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "corner_entry_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_understeer",
-                "operator": "eq",
-                "value": true
-              }
-            }
-          ]
-        }
-      ]
+      "enabled": false,
+      "any_of": []
     },
     "MSP46": {
-      "enabled": true,
-      "any_of": [
-        {
-          "all_of": [
-            {
-              "inputs": {
-                "tags": [
-                  "corner_exit_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "corner_exit_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_oversteer",
-                "operator": "eq",
-                "value": true
-              }
-            }
-          ]
-        }
-      ]
+      "enabled": false,
+      "any_of": []
     },
     "MSP47": {
-      "enabled": true,
-      "any_of": [
-        {
-          "all_of": [
-            {
-              "inputs": {
-                "tags": [
-                  "corner_exit_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "corner_exit_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_understeer",
-                "operator": "eq",
-                "value": true
-              }
-            }
-          ]
-        }
-      ]
+      "enabled": false,
+      "any_of": []
     },
     "MSP35": {
       "enabled": true,

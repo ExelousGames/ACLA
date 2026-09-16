@@ -17,6 +17,7 @@ from app.local_annotation_agent.workflow.deterministic_engine import (
     MISSING,
     ResolvedInput,
 )
+from app.shared.annotation_telemetry import annotation_telemetry
 from app.shared.labels import LABEL_MAPPING
 
 
@@ -25,7 +26,7 @@ SLOPE_ANGLE_DEGREES = 5.0
 
 
 def smooth_telemetry(df: pd.DataFrame) -> pd.DataFrame:
-    telemetry = df.copy()
+    telemetry = annotation_telemetry(df)
     for name in telemetry.select_dtypes(include=[np.number]).columns:
         values = telemetry[name].to_numpy(dtype=float)
         if len(values) < 2:
@@ -578,46 +579,6 @@ def _speed_difference_at_iloc(
     return difference if np.isfinite(difference) else MISSING
 
 
-def _oversteer_or_understeer(
-    context: EvaluationContext, range_: HalfOpenRange,
-) -> Any:
-    required_channels = (
-        "Physics_slip_angle_front_left",
-        "Physics_slip_angle_front_right",
-        "Physics_slip_angle_rear_left",
-        "Physics_slip_angle_rear_right",
-    )
-    if any(name not in context.telemetry.columns for name in required_channels):
-        return MISSING
-
-    index = context.telemetry.index.to_numpy()
-    positions = np.flatnonzero(
-        (index >= range_.start) & (index < range_.end)
-    )
-    if not len(positions):
-        return False
-
-    analysis_range = range_
-    first_position = int(positions[0])
-    if first_position > 0:
-        analysis_range = HalfOpenRange(
-            int(index[first_position - 1]), range_.end,
-        )
-
-    values = _slip_balance(context, analysis_range)
-    if values is None:
-        return False
-    for previous, current in zip(values[:-1], values[1:]):
-        if not (np.isfinite(previous) and np.isfinite(current)):
-            continue
-        if (
-            previous <= 0.02 < current
-            or previous >= -0.02 > current
-        ):
-            return True
-    return False
-
-
 def _speed_gap_slope(
     context: EvaluationContext, range_: HalfOpenRange,
 ) -> Any:
@@ -913,58 +874,6 @@ def _opponent(context: EvaluationContext, range_: HalfOpenRange) -> Mapping[str,
     return context.memo(("opponent", range_.start, range_.end), calculate)
 
 
-def _slip_balance(context: EvaluationContext, range_: HalfOpenRange) -> Optional[np.ndarray]:
-    def calculate() -> Optional[np.ndarray]:
-        segment = context.segment(range_)
-        values = [
-            _series(segment, name) for name in (
-                "Physics_slip_angle_front_left", "Physics_slip_angle_front_right",
-                "Physics_slip_angle_rear_left", "Physics_slip_angle_rear_right",
-            )
-        ]
-        if any(value is None for value in values):
-            return None
-        front_left, front_right, rear_left, rear_right = values
-        return (np.abs(rear_left) + np.abs(rear_right)) / 2.0 - (
-            np.abs(front_left) + np.abs(front_right)
-        ) / 2.0
-    return context.memo(("slip_balance", range_.start, range_.end), calculate)
-
-
-def _push_to_limit(context: EvaluationContext, range_: HalfOpenRange) -> Optional[np.ndarray]:
-    def calculate() -> Optional[np.ndarray]:
-        from app.shared.tire_grip_features import SlipEnvelopeConfig
-
-        segment = context.segment(range_)
-        angles = [_series(segment, name) for name in (
-            "Physics_slip_angle_front_left", "Physics_slip_angle_front_right",
-            "Physics_slip_angle_rear_left", "Physics_slip_angle_rear_right",
-        )]
-        ratios = [_series(segment, name) for name in (
-            "Physics_slip_ratio_front_left", "Physics_slip_ratio_front_right",
-            "Physics_slip_ratio_rear_left", "Physics_slip_ratio_rear_right",
-        )]
-        if any(value is None for value in [*angles, *ratios]):
-            return None
-        config = SlipEnvelopeConfig()
-        lateral = np.maximum.reduce([np.abs(value) for value in angles])
-        longitudinal = np.maximum.reduce([np.abs(value) for value in ratios])
-        return np.sqrt(
-            (
-                config.slip_angle_weight * lateral
-                / max(config.front_slip_limit, config.rear_slip_limit)
-            ) ** 2
-            + (
-                config.slip_ratio_weight * longitudinal
-                / max(
-                    config.front_longitudinal_slip_limit,
-                    config.rear_longitudinal_slip_limit,
-                )
-            ) ** 2
-        )
-    return context.memo(("push_to_limit", range_.start, range_.end), calculate)
-
-
 def _control_similarity(
     context: EvaluationContext, range_: HalfOpenRange, control: str,
 ) -> Any:
@@ -1090,21 +999,6 @@ def build_fact_registry() -> FactRegistry:
         "find_trajectory_split": FactDefinition(
             iloc_pair, _trajectory_split,
         ),
-        "find_oversteer_or_understeer_between_ilocs": FactDefinition(
-            range_kind, _fact_range(_oversteer_or_understeer),
-        ),
-        "find_oversteer": FactDefinition(range_kind, _fact_range(lambda c, r: (
-            bool(np.nanmax(_slip_balance(c, r)) > 0.02) if _slip_balance(c, r) is not None else MISSING
-        ))),
-        "find_understeer": FactDefinition(range_kind, _fact_range(lambda c, r: (
-            bool(np.nanmin(_slip_balance(c, r)) < -0.02) if _slip_balance(c, r) is not None else MISSING
-        ))),
-        "find_grip_over_limit": FactDefinition(range_kind, _fact_range(lambda c, r: (
-            bool(np.nanmax(_push_to_limit(c, r)) > 1.0) if _push_to_limit(c, r) is not None else MISSING
-        ))),
-        "find_sustained_low_grip": FactDefinition(range_kind, _fact_range(lambda c, r: (
-            bool(np.mean(_push_to_limit(c, r) < 0.8) >= 0.5) if _push_to_limit(c, r) is not None else MISSING
-        ))),
         "compare_gear_range": FactDefinition(
             range_kind, _fact_range(_compare_gear_range),
         ),

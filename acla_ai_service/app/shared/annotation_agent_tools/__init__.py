@@ -32,6 +32,8 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+from app.shared.annotation_telemetry import annotation_telemetry
+
 LOGGER = logging.getLogger(__name__)
 
 TRAJECTORY_ALIGNMENT_TOLERANCE_METERS = 1.0
@@ -78,11 +80,6 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
         "description": "Expert vs player speed traces.",
     },
     {
-        "id": "push_limit",
-        "title": "Driver Push/Limit",
-        "description": "Driver push-to-limit metric.",
-    },
-    {
         "id": "trajectory_detailed",
         "title": "Detailed Trajectory",
         "description": (
@@ -100,16 +97,6 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
             "Player trajectory coloured by throttle/brake balance "
             "(green = full gas, red = full brake, yellow = coasting). "
             "Mirrors the Gas/Brake colour mode in the human annotation track map."
-        ),
-    },
-    {
-        "id": "trajectory_balance",
-        "title": "Oversteer/Understeer Slip Balance",
-        "description": (
-            "Line plot over segment index of (mean |rear slip| − mean |front slip|). "
-            "Positive (red shading above zero) = oversteer (rear-slip dominant); "
-            "negative (blue shading below zero) = understeer (front-slip dominant). "
-            "Zero = balanced front/rear slip."
         ),
     },
     {
@@ -4672,6 +4659,7 @@ def run_pipeline_query(
     callable. Missing keys default to None in the returned payload so the
     answer attachment always has a uniform shape.
     """
+    df = annotation_telemetry(df)
     base: Dict[str, Any] = {"iloc": None, "value": None, "samples": None, "extra": None}
     q = get_pipeline_query(query_id)
     if q is None:
@@ -4778,44 +4766,6 @@ def _create_gas_brake_trajectory_plot(table: pd.DataFrame) -> Optional[Image.Ima
     if ex_col:
         ax.legend(fontsize=8)
     ax.autoscale()
-
-    return _plot_to_image(fig)
-
-
-def _create_balance_line_plot(table: pd.DataFrame) -> Optional[Image.Image]:
-    """Line plot of oversteer/understeer slip balance over segment index.
-
-    Reads the pre-computed ``slip_balance`` column from the parent-built
-    table (mean(|rear|) − mean(|front|), in radians). Positive → rear
-    slipping more → oversteer (red shading above zero). Negative → front
-    slipping more → understeer (blue shading below zero).
-    """
-    if "slip_balance" not in table.columns or len(table) < 2:
-        return None
-
-    balance = table["slip_balance"].astype(float)
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-
-    idx = table.index
-    ax.plot(idx, balance, color="black", linewidth=1.2, label="Slip balance (rear − front)")
-    ax.fill_between(
-        idx, balance.values, 0.0,
-        where=(balance.values > 0), interpolate=True,
-        color="red", alpha=0.35, label="Oversteer (rear-slip dominant)",
-    )
-    ax.fill_between(
-        idx, balance.values, 0.0,
-        where=(balance.values < 0), interpolate=True,
-        color="blue", alpha=0.35, label="Understeer (front-slip dominant)",
-    )
-    ax.axhline(0.0, color="gray", linewidth=0.8, linestyle="--")
-
-    ax.set_title("Oversteer / Understeer Slip Balance")
-    ax.set_xlabel("Index")
-    ax.set_ylabel("Rear − Front mean |slip angle| (rad)")
-    ax.grid(True)
-    ax.legend(loc="best", fontsize=8)
 
     return _plot_to_image(fig)
 
@@ -5090,30 +5040,8 @@ def _build_speed(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     return _project_columns(df, ["expert_optimal_speed", "Physics_speed_kmh"])
 
 
-def _build_push_limit(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    return _project_columns(df, ["driver_push_to_limit"])
-
-
 def _build_gear(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     return _project_columns(df, ["expert_optimal_gear", "Physics_gear"])
-
-
-def _build_trajectory_balance(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """Compute the single drawn series (mean(|rear|) − mean(|front|))."""
-    raw = (
-        "Physics_slip_angle_front_left",
-        "Physics_slip_angle_front_right",
-        "Physics_slip_angle_rear_left",
-        "Physics_slip_angle_rear_right",
-    )
-    if any(c not in df.columns for c in raw):
-        return None
-    fl, fr, rl, rr = raw
-    balance = (
-        (df[rl].abs() + df[rr].abs()) / 2.0
-        - (df[fl].abs() + df[fr].abs()) / 2.0
-    ).astype(float)
-    return pd.DataFrame({"slip_balance": balance}, index=df.index)
 
 
 def _build_trajectory_detailed(df: pd.DataFrame) -> Optional[pd.DataFrame]:
@@ -5224,9 +5152,7 @@ _GRAPH_BUILDERS = {
     "time_delta":           _build_time_delta,
     "speed_delta":          _build_speed_delta,
     "speed":                _build_speed,
-    "push_limit":           _build_push_limit,
     "gear":                 _build_gear,
-    "trajectory_balance":   _build_trajectory_balance,
     "trajectory_detailed":  _build_trajectory_detailed,
     "trajectory_gas_brake": _build_trajectory_gas_brake,
     "trajectory_offset":    _build_trajectory_offset,
@@ -5237,7 +5163,6 @@ _GRAPH_BUILDERS = {
 _GRAPH_RENDERERS = {
     "trajectory_detailed":  _create_trajectory_plot,
     "trajectory_gas_brake": _create_gas_brake_trajectory_plot,
-    "trajectory_balance":   _create_balance_line_plot,
     "trajectory_offset":    _create_trajectory_offset_plot,
     "altitude_profile":     _create_altitude_profile_plot,
 }
@@ -5276,6 +5201,8 @@ def render_graph_builds(
     desc_by_id = {d["id"]: (d["title"], d["description"]) for d in AGENT_GRAPH_DEFINITIONS}
     results: List[Tuple[Image.Image, str]] = []
     for gid, table in graph_builds.items():
+        if gid not in desc_by_id:
+            continue
         sliced = _absolute_iloc_slice(table, int(start_index), int(end_index))
         if sliced.empty:
             continue

@@ -110,72 +110,6 @@ def test_catalog_requirements_are_valid():
     assert deterministic.validate_catalog() == []
 
 
-def test_msp15_uses_player_reapplication_boundaries_for_handling_balance():
-    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
-    requirements = json.loads(
-        (root / "sub_label_annotation.json").read_text(encoding="utf-8")
-    )["sub_label_selection_requirements"]
-
-    assert requirements["MSP15"] == _requirement(
-        [
-            "player_throttle_reapplication_onset_iloc",
-            "player_throttle_reapplication_end_iloc",
-        ],
-        "find_oversteer_or_understeer_between_ilocs",
-    )
-
-
-def test_msp15_checks_player_balance_across_the_combined_reapplication_range(
-    monkeypatch,
-):
-    landmarks = {
-        "player": {"reapplication_onset": 4, "reapplication_end": 7},
-        "expert": {"reapplication_onset": 2, "reapplication_end": 9},
-    }
-    monkeypatch.setattr(
-        deterministic_facts,
-        "_control_landmarks",
-        lambda _context, _scope, driver, control: (
-            landmarks[driver] if control == "throttle" else {}
-        ),
-    )
-    requirements = deterministic._requirements_for(
-        "MSP15", deterministic.get_label("MSP15"),
-    )
-
-    def evaluate(balances):
-        size = 12
-        values = np.asarray(balances, dtype=float)
-        front = np.maximum(-values, 0.0)
-        rear = np.maximum(values, 0.0)
-        context = EvaluationContext(pd.DataFrame({
-            "Physics_slip_angle_front_left": front,
-            "Physics_slip_angle_front_right": front,
-            "Physics_slip_angle_rear_left": rear,
-            "Physics_slip_angle_rear_right": rear,
-        }))
-        return deterministic.evaluate_requirements(
-            requirements, context, HalfOpenRange(0, size),
-        )
-
-    oversteer = evaluate([0.0] * 5 + [0.03] * 7)
-    understeer = evaluate([0.0] * 5 + [-0.03] * 7)
-
-    assert oversteer.matched
-    assert understeer.matched
-    assert oversteer.matched_branches[0].evidence_range == HalfOpenRange(4, 8)
-    assert understeer.matched_branches[0].evidence_range == HalfOpenRange(4, 8)
-    assert not evaluate([0.0] * 12).matched
-
-    landmarks["player"]["reapplication_end"] = None
-    missing_boundary = evaluate([0.0] * 5 + [0.03] * 7)
-
-    assert not missing_boundary.matched
-    assert "missing input player_throttle_reapplication_end_iloc" in (
-        missing_boundary.failed[0]
-    )
-
-
 def test_msp18_requires_increasing_speed_difference_during_player_release():
     root = Path(__file__).parents[1] / "app/internal_knowledge_base"
     requirements = json.loads(
@@ -252,43 +186,6 @@ def test_msp18_matches_only_when_speed_difference_increases_during_release(
     assert increasing.matched_branches[0].evidence_range == HalfOpenRange(2, 7)
     assert not flat.matched
     assert not decreasing.matched
-
-
-def test_msp20_uses_aligned_release_and_player_reapplication_stability():
-    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
-    requirements = json.loads(
-        (root / "sub_label_annotation.json").read_text(encoding="utf-8")
-    )["sub_label_selection_requirements"]
-    predicates = [
-        _requirement(
-            _comparison_tags(
-                "player_throttle_release_end_iloc",
-                "expert_throttle_release_end_iloc",
-            ),
-            "compare_ilocs",
-            value="aligned",
-        )["any_of"][0]["all_of"][0],
-        _requirement(
-            _comparison_tags(
-                "player_throttle_reapplication_onset_iloc",
-                "expert_throttle_reapplication_onset_iloc",
-            ),
-            "compare_ilocs",
-            value="earlier",
-        )["any_of"][0]["all_of"][0],
-        _requirement(
-            [
-                "player_throttle_reapplication_onset_iloc",
-                "player_throttle_reapplication_end_iloc",
-            ],
-            "find_oversteer_or_understeer_between_ilocs",
-        )["any_of"][0]["all_of"][0],
-    ]
-
-    assert requirements["MSP20"] == {
-        "enabled": True,
-        "any_of": [{"all_of": predicates}],
-    }
 
 
 def test_msp21_uses_aligned_onset_later_end_and_close_speed():
@@ -421,7 +318,7 @@ def test_registry_is_the_source_of_known_tags_and_facts():
     assert "find_trajectory_splitting_wider" not in deterministic.FACT_REGISTRY.names()
     assert (
         "find_oversteer_or_understeer_between_ilocs"
-        in deterministic.FACT_REGISTRY.names()
+        not in deterministic.FACT_REGISTRY.names()
     )
     assert "player_brake_application_onset_iloc" in deterministic.INPUT_REGISTRY.names()
     assert "player_throttle_reapplication_onset_iloc" in deterministic.INPUT_REGISTRY.names()
@@ -1713,21 +1610,6 @@ def test_every_control_onset_comparison_has_matching_end_evidence():
                         f"player_{control}_{phase}_end_iloc",
                         f"expert_{control}_{phase}_end_iloc",
                     )
-                    if (
-                        label_id == "MSP20"
-                        and control == "throttle"
-                        and phase == "reapplication"
-                    ):
-                        player_interval_tags = (
-                            "player_throttle_reapplication_onset_iloc",
-                            "player_throttle_reapplication_end_iloc",
-                        )
-                        assert by_tags[player_interval_tags] == {
-                            "fact": "find_oversteer_or_understeer_between_ilocs",
-                            "operator": "eq",
-                            "value": True,
-                        }
-                        continue
                     assert end_tags in by_tags, f"{label_id} omits {phase}_end"
                     onset = by_tags[onset_tags]
                     if onset["operator"] == "exists" or onset["value"] in {
@@ -2479,160 +2361,6 @@ def test_altitude_strategy_uses_three_degree_threshold():
         )
 
         assert result.matched, angle
-
-
-def test_balance_and_grip_are_calculated_from_raw_tire_telemetry():
-    size = 5
-    df = pd.DataFrame({
-        "Physics_slip_angle_front_left": [0.01] * size,
-        "Physics_slip_angle_front_right": [0.01] * size,
-        "Physics_slip_angle_rear_left": [0.2] * size,
-        "Physics_slip_angle_rear_right": [0.2] * size,
-        "Physics_slip_ratio_front_left": [2.0] * size,
-        "Physics_slip_ratio_front_right": [2.0] * size,
-        "Physics_slip_ratio_rear_left": [2.0] * size,
-        "Physics_slip_ratio_rear_right": [2.0] * size,
-    })
-    branch = {"all_of": [
-        _requirement(["control_range"], "find_oversteer")["any_of"][0]["all_of"][0],
-        _requirement(["control_range"], "find_grip_over_limit")["any_of"][0]["all_of"][0],
-    ]}
-
-    assert _evaluate({"enabled": True, "any_of": [branch]}, df).matched
-
-
-def _handling_balance_frame(balances, *, index=None):
-    values = np.asarray(balances, dtype=float)
-    front = np.maximum(-values, 0.0)
-    rear = np.maximum(values, 0.0)
-    return pd.DataFrame({
-        "Physics_slip_angle_front_left": front,
-        "Physics_slip_angle_front_right": front,
-        "Physics_slip_angle_rear_left": rear,
-        "Physics_slip_angle_rear_right": rear,
-    }, index=index)
-
-
-def _evaluate_handling_balance(df, onset, end):
-    requirements = _requirement(
-        ["onset", "end"],
-        "find_oversteer_or_understeer_between_ilocs",
-    )
-    values = {"onset": onset, "end": end}
-    inputs = InputRegistry({
-        tag: InputDefinition(
-            "iloc",
-            lambda _context, _scope, tag=tag, value=value: ResolvedInput(
-                tag, "iloc", value, HalfOpenRange(value, value + 1),
-            ),
-        )
-        for tag, value in values.items()
-    })
-    scope = HalfOpenRange(int(df.index.min()), int(df.index.max()) + 1)
-    return RequirementInterpreter(inputs, deterministic.FACT_REGISTRY).evaluate(
-        requirements,
-        EvaluationContext(df),
-        scope,
-    )
-
-
-def test_oversteer_or_understeer_between_ilocs_detects_new_threshold_entries():
-    cases = (
-        ([0.0, 0.03], 0, 1),
-        ([0.0, -0.03], 0, 1),
-        ([0.02, 0.03], 0, 1),
-        ([-0.02, -0.03], 0, 1),
-        ([0.0, 0.03, 0.0], 0, 2),
-        ([0.0, -0.03, 0.0], 0, 2),
-        ([0.03, 0.0, 0.03], 1, 2),
-        ([-0.03, 0.0, -0.03], 1, 2),
-    )
-
-    for balances, onset, end in cases:
-        result = _evaluate_handling_balance(
-            _handling_balance_frame(balances), onset, end,
-        )
-
-        assert result.matched, (balances, onset, end)
-        assert result.matched_branches[0].evidence_range == HalfOpenRange(
-            min(onset, end), max(onset, end) + 1,
-        )
-
-
-def test_oversteer_or_understeer_between_ilocs_uses_positional_predecessor():
-    df = _handling_balance_frame([0.0, 0.03], index=[10, 20])
-
-    result = _evaluate_handling_balance(df, 20, 20)
-
-    assert result.matched
-    assert result.matched_branches[0].evidence_range == HalfOpenRange(20, 21)
-
-
-def test_oversteer_or_understeer_between_ilocs_accepts_reversed_endpoints():
-    df = _handling_balance_frame([0.0, 0.03, 0.0], index=[10, 20, 30])
-
-    result = _evaluate_handling_balance(df, 30, 20)
-
-    assert result.matched
-    assert result.matched_branches[0].evidence_range == HalfOpenRange(20, 31)
-
-
-def test_oversteer_or_understeer_between_ilocs_rejects_carried_in_problems():
-    cases = (
-        [0.03, 0.03, 0.03, 0.03],
-        [0.05, 0.04, 0.03, 0.025],
-        [0.03, 0.04, 0.05, 0.06],
-        [-0.03, -0.03, -0.03, -0.03],
-        [-0.05, -0.04, -0.03, -0.025],
-        [-0.03, -0.04, -0.05, -0.06],
-    )
-
-    for balances in cases:
-        result = _evaluate_handling_balance(
-            _handling_balance_frame(balances), 1, 3,
-        )
-
-        assert not result.matched, balances
-
-
-def test_oversteer_or_understeer_between_ilocs_honors_boundaries_and_adjacency():
-    rejected = (
-        [0.0, 0.02],
-        [0.0, -0.02],
-        [0.0, np.nan, 0.03],
-        [0.0, np.nan, -0.03],
-        [0.03, 0.0],
-        [-0.03, 0.0],
-    )
-    matched = (
-        [0.0, np.nan, 0.0, 0.03],
-        [0.0, np.nan, 0.0, -0.03],
-    )
-
-    for balances in rejected:
-        result = _evaluate_handling_balance(
-            _handling_balance_frame(balances), 0, len(balances) - 1,
-        )
-        assert not result.matched, balances
-    for balances in matched:
-        result = _evaluate_handling_balance(
-            _handling_balance_frame(balances), 0, len(balances) - 1,
-        )
-        assert result.matched, balances
-
-
-def test_oversteer_or_understeer_between_ilocs_rejects_missing_or_insufficient_data():
-    complete = _handling_balance_frame([0.0, 0.0])
-    missing = complete.drop(columns=["Physics_slip_angle_rear_right"])
-    empty_range = _handling_balance_frame([0.0, 0.03], index=[0, 10])
-    no_predecessor = _handling_balance_frame([0.03], index=[10])
-    no_comparable_pair = _handling_balance_frame([np.nan, 0.0])
-
-    assert not _evaluate_handling_balance(complete, 0, 1).matched
-    assert not _evaluate_handling_balance(missing, 0, 1).matched
-    assert not _evaluate_handling_balance(empty_range, 3, 5).matched
-    assert not _evaluate_handling_balance(no_predecessor, 10, 10).matched
-    assert not _evaluate_handling_balance(no_comparable_pair, 0, 1).matched
 
 
 def test_opponent_strategies_share_one_cached_analysis(monkeypatch):
