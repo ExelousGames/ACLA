@@ -2,7 +2,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const readline = require('readline');
 const { TextDecoder } = require('util');
 const { IRacingIBTAdapter, IRACING_IBT_VARIABLES } = require('./iracing-ibt-adapter');
 
@@ -117,22 +116,6 @@ class IBTFile {
   close() { return this.file.close(); }
 }
 
-async function readLiveRecordingInfo(filePath) {
-  const stat = await fs.promises.stat(filePath);
-  const stream = fs.createReadStream(filePath);
-  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  let sample;
-  try {
-    for await (const line of lines) {
-      if (!line.trim()) continue;
-      const row = JSON.parse(line);
-      if (row.Static_track && row.Static_car_model) { sample = row; break; }
-    }
-  } finally { lines.close(); stream.destroy(); }
-  if (!sample) throw new Error('The live recording has no track and car information to match an .ibt file.');
-  return { sample, startedAt: stat.birthtimeMs, endedAt: stat.mtimeMs };
-}
-
 function matchesVehicle(ibt, live) {
   const sample = ibt.adapter.staticFields;
   return ['Static_track', 'Static_car_model', 'Static_player_name'].every((field) => (
@@ -143,28 +126,6 @@ function matchesVehicle(ibt, live) {
 function sessionKey(ibt) {
   const weekend = ibt.adapter.session.WeekendInfo || {};
   return JSON.stringify([weekend.SessionID, weekend.SubSessionID, ibt.adapter.session.DriverInfo?.DriverCarIdx]);
-}
-
-async function findMatchingIBTFiles(directory, live) {
-  let entries;
-  try { entries = await fs.promises.readdir(directory, { withFileTypes: true }); }
-  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-  const matches = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.ibt') continue;
-    const filePath = path.join(directory, entry.name);
-    const stat = await fs.promises.stat(filePath);
-    if (stat.mtimeMs < live.startedAt - 2000 || stat.birthtimeMs > live.endedAt + 2000) continue;
-    let ibt;
-    try {
-      ibt = await IBTFile.open(filePath);
-      if (matchesVehicle(ibt, live)) matches.push({ filePath, key: sessionKey(ibt), createdAt: stat.birthtimeMs });
-    } catch { /* Unfinalized or unreadable files can be selected after the driver exits the car. */ }
-    finally { await ibt?.close(); }
-  }
-  // A second simulator session in the same time window needs explicit selection.
-  if (new Set(matches.map(({ key }) => key)).size > 1) return [];
-  return matches.sort((a, b) => a.createdAt - b.createdAt).map(({ filePath }) => filePath);
 }
 
 async function convertIBTFiles(filePaths, outputPath, live) {
@@ -206,4 +167,4 @@ async function convertIBTFiles(filePaths, outputPath, live) {
   }
 }
 
-module.exports = { IBTFile, readLiveRecordingInfo, findMatchingIBTFiles, convertIBTFiles };
+module.exports = { IBTFile, convertIBTFiles };

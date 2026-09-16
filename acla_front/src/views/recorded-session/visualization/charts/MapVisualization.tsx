@@ -21,6 +21,7 @@ import {
     getPlaybackFrameIndex,
     normalizeTelemetryFrames,
     parseTelemetryFrame,
+    parseTelemetryFrames,
     segmentVisiblePoints,
     TelemetryFrame,
     Vec3,
@@ -211,6 +212,7 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
     useImperativeHandle(forwardedRef, () => handle, [handle]);
 
     const selectedSessionId = analysisContext.sessionSelected?.SessionId || '';
+    const isLocalSession = analysisContext.sessionSelected?.storage === 'local';
     const circuitSourceTrackKey = useMemo(() => getAccTelemetryTrackKey(
         analysisContext.sessionSelected?.map,
         analysisContext.mapSelected
@@ -337,7 +339,7 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
     useEffect(() => {
         let cancelled = false;
 
-        if (!circuitSourceTrackKey) {
+        if (!circuitSourceTrackKey || isLocalSession) {
             setCircuitMap(null);
             return;
         }
@@ -354,7 +356,7 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
         return () => {
             cancelled = true;
         };
-    }, [circuitSourceTrackKey, getCircuitMapByTrack]);
+    }, [circuitSourceTrackKey, getCircuitMapByTrack, isLocalSession]);
 
     useEffect(() => {
         const wrapper = wrapperRef.current;
@@ -372,7 +374,19 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
         return () => observer.disconnect();
     }, []);
 
+    const localRows = analysisContext.sessionSelected?.storage === 'local' ? analysisContext.sessionSelected.data : null;
+
     useEffect(() => {
+        if (localRows) {
+            const parsed = parseTelemetryFrames(localRows);
+            setRecordedFrames(parsed);
+            setPlaybackIndex(getLastFrameIndex(parsed));
+            setIsPlaying(false);
+            setLoadState(parsed.length > 0
+                ? { status: 'ready' }
+                : { status: 'empty', message: 'No drawable trajectory data was found in this .ibt file.' });
+            return;
+        }
         if (!selectedSessionId) {
             setRecordedFrames([]);
             setPlaybackIndex(0);
@@ -462,7 +476,7 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
         return () => {
             cancelled = true;
         };
-    }, [analysisContext.mapSelected, analysisContext.sessionSelected?.car, selectedSessionId]);
+    }, [analysisContext.mapSelected, analysisContext.sessionSelected?.car, selectedSessionId, localRows]);
 
     const handleRunSegmentClassification = useCallback(async () => {
         if (!selectedSessionId || segmentLoadState.status === 'loading') {
@@ -825,7 +839,8 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
                             size="1"
                             variant="soft"
                             onClick={handleRunSegmentClassification}
-                            disabled={!selectedSessionId || segmentLoadState.status === 'loading'}
+                            disabled={!selectedSessionId || localRows !== null || segmentLoadState.status === 'loading'}
+                            title={localRows ? 'AI analysis is available for cloud saved sessions.' : undefined}
                         >
                             {segmentLoadState.status === 'loading' ? 'Analyzing...' : 'Run AI Analysis'}
                         </Button>

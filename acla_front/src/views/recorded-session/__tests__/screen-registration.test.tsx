@@ -17,7 +17,7 @@ import type { SessionAnalysisHandle } from '../session-analysis';
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');
     const Element = ({ children }: { children?: React.ReactNode }) => React.createElement('div', null, children);
-    return { Box: Element, Tabs: { Root: Element, List: Element, Trigger: Element, Content: Element } };
+    return { Box: Element, Text: Element, Tabs: { Root: Element, List: Element, Trigger: Element, Content: Element } };
 });
 jest.mock('../map-list/map-list', () => () => <div>Maps</div>);
 jest.mock('../session-list/session-list', () => () => <div>Sessions</div>);

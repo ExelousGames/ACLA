@@ -40,7 +40,7 @@ jest.mock('radix-ui', () => ({
     },
 }));
 
-jest.mock('views/recorded-session/session-analysis', () => () => <div>Analysis Content</div>);
+jest.mock('views/recorded-session/session-analysis', () => ({ source }: any) => <div>Analysis Content: {source}</div>);
 jest.mock('views/user-summary/user-summary', () => () => <div>User Summary Content</div>);
 jest.mock('views/circuit-maps/circuit-maps', () => () => <div>Circuit Maps Content</div>);
 jest.mock('views/live-session/LiveSessionView', () => () => <div>Live Session Content</div>);
@@ -94,5 +94,17 @@ describe('SideMainMenu', () => {
 
         expect(root).toHaveAttribute('data-menu-collapsed', 'true');
         expect(screen.getByRole('button', { name: 'Expand main menu' })).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('switches between cloud and local recorded analysis, including with the menu collapsed', () => {
+        render(<SideMainMenu />);
+        expect(screen.getByRole('button', { name: 'Cloud saved' })).toHaveAttribute('aria-pressed', 'true');
+        expect(screen.getByText('Analysis Content: cloud')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Collapse main menu' }));
+        fireEvent.click(screen.getByRole('button', { name: 'iRacing recorded telemetry' }));
+        expect(screen.getByText('Analysis Content: iracing')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'iRacing recorded telemetry' })).toHaveAttribute('aria-pressed', 'true');
+        fireEvent.click(screen.getByRole('button', { name: 'Cloud saved' }));
+        expect(screen.getByText('Analysis Content: cloud')).toBeInTheDocument();
     });
 });

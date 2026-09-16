@@ -220,44 +220,44 @@ function registerRecordingIpc() {
     return recordingManager.stopSession(event.sender.id);
   });
 
-  ipcMain.handle('prepare-iracing-recorded-telemetry', async (event, filePath) => {
+  ipcMain.handle('import-local-iracing-telemetry', async (event) => {
     if (!isCurrentMainRenderer(event.sender)) throw new Error('Telemetry import is allowed only from the active workspace.');
     if (recordingManager?.hasActiveSession()) throw new Error('Stop recording before importing iRacing telemetry.');
     if (iracingImportInFlight) throw new Error('An iRacing telemetry import is already running.');
-    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) throw new Error('Invalid live recording path.');
-    const realDirectory = await fs.promises.realpath(getRecordingDirectory());
-    const realFile = await fs.promises.realpath(filePath);
-    if (!isPathInside(realDirectory, realFile) || !isRegularFileSync(realFile)
-      || !/^iracing_.*\.jsonl$/i.test(path.basename(realFile))) {
-      throw new Error('Select an application-owned iRacing recording.');
-    }
     iracingImportInFlight = true;
-    const telemetryDirectory = path.join(app.getPath('documents'), 'iRacing', 'telemetry');
     let worker;
+    let outputPath;
     try {
-      worker = new Worker(path.join(app.getAppPath(), 'electron', 'recording', 'readers', 'iracing', 'iracing-import-worker.js'), {
-        workerData: { liveFilePath: realFile, telemetryDirectory },
+      const selection = await dialog.showOpenDialog(mainWindow, {
+        title: 'Open iRacing recorded telemetry',
+        defaultPath: path.join(app.getPath('documents'), 'iRacing', 'telemetry'),
+        filters: [{ name: 'iRacing telemetry', extensions: ['ibt'] }],
+        properties: ['openFile'],
       });
-      return await new Promise((resolve, reject) => {
+      if (selection.canceled || !selection.filePaths.length) return null;
+      if (!isCurrentMainRenderer(event.sender)) throw new Error('The analysis workspace was closed.');
+      await fs.promises.mkdir(getRecordingDirectory(), { recursive: true });
+      outputPath = path.join(getRecordingDirectory(), `iracing_local_${crypto.randomUUID()}.jsonl`);
+      worker = new Worker(path.join(app.getAppPath(), 'electron', 'recording', 'readers', 'iracing', 'iracing-local-import-worker.js'), {
+        workerData: { sourcePath: selection.filePaths[0], outputPath },
+      });
+      const result = await new Promise((resolve, reject) => {
         worker.on('error', reject);
         worker.on('exit', () => reject(new Error('iRacing telemetry import ended before completion.')));
-        worker.on('message', async (message) => {
-          if (message.type === 'complete') resolve({ filePath: message.filePath });
+        worker.on('message', (message) => {
+          if (message.type === 'complete') resolve(message);
           else if (message.type === 'error') reject(new Error(message.message));
-          else if (message.type === 'select-files') {
-            try {
-              if (!isCurrentMainRenderer(event.sender)) throw new Error('The upload workspace was closed.');
-              const result = await dialog.showOpenDialog(mainWindow, {
-                title: 'Select .ibt files for this iRacing session',
-                defaultPath: telemetryDirectory,
-                filters: [{ name: 'iRacing telemetry', extensions: ['ibt'] }],
-                properties: ['openFile', 'multiSelections'],
-              });
-              worker.postMessage({ filePaths: result.canceled ? [] : result.filePaths });
-            } catch (error) { reject(error); }
-          }
         });
       });
+      if (!isCurrentMainRenderer(event.sender)) throw new Error('The analysis workspace was closed.');
+      return { filePath: result.filePath, fileName: path.basename(selection.filePaths[0]), rowCount: result.rowCount, track: result.track, car: result.car };
+    } catch (error) {
+      await worker?.terminate();
+      if (outputPath) {
+        await fs.promises.unlink(outputPath).catch(() => undefined);
+        await fs.promises.unlink(`${outputPath}.partial`).catch(() => undefined);
+      }
+      throw error;
     } finally {
       await worker?.terminate();
       iracingImportInFlight = false;

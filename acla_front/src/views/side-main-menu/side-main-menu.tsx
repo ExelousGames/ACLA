@@ -6,6 +6,8 @@ import {
     BarChartIcon,
     ChevronLeftIcon,
     ChevronRightIcon,
+    DownloadIcon,
+    FileIcon,
     DashboardIcon,
     GlobeIcon,
     LapTimerIcon,
@@ -41,6 +43,7 @@ const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
     const dashboardTabs = getDashboardTabs(environment);
     const defaultTab = getDefaultDashboardTab(environment);
     const [isCollapsed, setIsCollapsed] = React.useState(false);
+    const [analysisSource, setAnalysisSource] = React.useState<'cloud' | 'iracing'>('cloud');
     const [uncontrolledTab, setUncontrolledTab] = React.useState(defaultTab);
     const selectedTab = activeTab ?? uncontrolledTab;
     const [openedTabs, setOpenedTabs] = React.useState<Set<string>>(
@@ -99,7 +102,8 @@ const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
                                     const TabIcon = TAB_ICONS[tab.value] ?? DashboardIcon;
 
                                     return (
-                                        <Tooltip.Root key={tab.value} disableHoverableContent>
+                                        <React.Fragment key={tab.value}>
+                                        <Tooltip.Root disableHoverableContent>
                                             <Tooltip.Trigger asChild>
                                                 <Tabs.Trigger
                                                     className="TabsTrigger"
@@ -119,6 +123,36 @@ const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
                                                 </Tooltip.Content>
                                             </Tooltip.Portal>
                                         </Tooltip.Root>
+                                        {tab.value === DASHBOARD_TABS.ANALYSIS && selectedTab === DASHBOARD_TABS.ANALYSIS && (
+                                            <div className="SideMenuSubsections" role="group" aria-label="Recorded analysis sources">
+                                                {([
+                                                    { value: 'cloud', label: 'Cloud saved', Icon: DownloadIcon },
+                                                    { value: 'iracing', label: 'iRacing recorded telemetry', Icon: FileIcon },
+                                                ] as const).map(({ value, label, Icon }) => (
+                                                    <Tooltip.Root key={value} disableHoverableContent>
+                                                        <Tooltip.Trigger asChild>
+                                                            <button
+                                                                type="button"
+                                                                className="TabsTrigger SideMenuSubsection"
+                                                                aria-label={label}
+                                                                aria-pressed={analysisSource === value}
+                                                                onClick={() => setAnalysisSource(value)}
+                                                            >
+                                                                <span className="TabsTriggerIcon" aria-hidden="true"><Icon width={17} height={17} /></span>
+                                                                <span className="TabsTriggerLabel">{label}</span>
+                                                            </button>
+                                                        </Tooltip.Trigger>
+                                                        <Tooltip.Portal>
+                                                            <Tooltip.Content className="SideMenuTooltip" side="right" sideOffset={10}>
+                                                                {label}
+                                                                <Tooltip.Arrow className="SideMenuTooltipArrow" />
+                                                            </Tooltip.Content>
+                                                        </Tooltip.Portal>
+                                                    </Tooltip.Root>
+                                                ))}
+                                            </div>
+                                        )}
+                                        </React.Fragment>
                                     );
                                 })}
                             </Tabs.List>
@@ -143,7 +177,7 @@ const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
 
                 {isOpened('analysis') ? (
                     <Tabs.Content className="TabsContent" value="analysis" forceMount>
-                        <SessionAnalysis name={OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS} />
+                        <SessionAnalysis key={analysisSource} name={OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS} source={analysisSource} />
                     </Tabs.Content>
                 ) : null}
 

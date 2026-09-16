@@ -1,6 +1,6 @@
 import './session-analysis.css';
 
-import { Box, Tabs } from '@radix-ui/themes';
+import { Box, Tabs, Text } from '@radix-ui/themes';
 import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import apiService from 'services/api.service';
@@ -22,6 +22,7 @@ import {
     TelemetryDataFailedError,
 } from 'contexts/OperationComponentError';
 import SessionList from './session-list/session-list';
+import LocalIRacingTelemetry from './local-iracing/LocalIRacingTelemetry';
 import MapList from './map-list/map-list';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
@@ -176,6 +177,12 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     const recordedAiAnalysisCacheRef = useRef<Map<string, RecordedAiAnalysisState>>(new Map());
 
     const runRecordedAiAnalysis = useCallback(async ({ force = false }: { force?: boolean } = {}): Promise<RecordedAiAnalysisState> => {
+        if (sessionSelected?.storage === 'local') {
+            throw new RecordedAnalysisFailedError(
+                OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
+                'AI analysis is available for cloud saved sessions. Local .ibt telemetry can be reviewed with playback.',
+            );
+        }
         const sessionId = sessionSelected?.SessionId;
         if (!sessionId) {
             const nextState: RecordedAiAnalysisState = {
@@ -230,7 +237,7 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
                 { cause: error },
             );
         }
-    }, [sessionSelected?.SessionId]);
+    }, [sessionSelected?.SessionId, sessionSelected?.storage]);
 
     const sendGuidanceToChat = useCallback((message: string) => {
         setLatestGuidanceMessage((previous) => previous === message ? previous : message);
@@ -288,7 +295,9 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     return <AnalysisContext.Provider value={contextValue}>{children}</AnalysisContext.Provider>;
 };
 
-export const SessionAnalysisContent = ({ name }: { name: string }) => {
+type SessionAnalysisProps = { name: string; source?: 'cloud' | 'iracing' };
+
+export const SessionAnalysisContent = ({ name, source = 'cloud' }: SessionAnalysisProps) => {
     const analysisContext = useContext(AnalysisContext);
     const componentRefs = useOptionalOperationComponentRefDirectory();
     const analysisContextRef = useRef(analysisContext);
@@ -429,8 +438,11 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
 
     const { activeTab, mapSelected, sessionSelected, setActiveTab } = analysisContext;
 
+    if (source === 'iracing') return <LocalIRacingTelemetry />;
+
     return (
         <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
+            <Box px="4" pt="4"><Text size="3" weight="bold">Cloud saved</Text></Box>
             <Tabs.List className="live-analysis-tablists" justify="start">
                 <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
                 {mapSelected === null ? null : <Tabs.Trigger value="sessionLists">{mapSelected}</Tabs.Trigger>}
@@ -445,9 +457,9 @@ export const SessionAnalysisContent = ({ name }: { name: string }) => {
     );
 };
 
-const SessionAnalysis = ({ name }: { name: string }) => (
+const SessionAnalysis = ({ name, source = 'cloud' }: SessionAnalysisProps) => (
     <SessionAnalysisProvider>
-        <SessionAnalysisContent name={name} />
+        <SessionAnalysisContent name={name} source={source} />
     </SessionAnalysisProvider>
 );
 

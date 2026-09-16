@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import './liveAnalysisSessionRecording.css';
 import { UploadReacingSessionInitDto } from 'data/live-analysis/live-analysis-type';
 import { useAuth } from 'hooks/AuthProvider';
-import { prepareIRacingRecording, uploadRecordingVersions, waitForIRacingPreparation } from './upload-recording-versions';
+import { uploadRecording } from './upload-recording';
 import { RecordingState, StopReason } from '../recording-state';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import type { LiveRecordingMetadata } from 'views/live-session/live-session-types';
@@ -74,7 +74,6 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     }, [analysisContext.sessionGame, recorderHostId]);
 
     const uploadInFlightRef = useRef(false);
-    const completedUploadVersionsRef = useRef(new Set<string>());
     const restoredFileIsUploadable = analysisContext.recordingFileValidation
         ? analysisContext.recordingFileValidation.exists
             && analysisContext.recordingFileValidation.readable
@@ -182,7 +181,6 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
 
     const resetRecorderUi = useCallback(() => {
         uploadInFlightRef.current = false;
-        completedUploadVersionsRef.current.clear();
         setDataStructureOpen(false);
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
         startInFlightRef.current = false;
@@ -228,16 +226,13 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                 userId: auth?.userProfile.id || 'unknown',
                 game_recorded_from: uploadContext.recordingMetadata!.gameRecordedFrom,
             };
-            const convertedFiles = await uploadRecordingVersions({
+            await uploadRecording({
                 metadata,
                 filePath: uploadContext.recordingFileKey!,
-                sampleCount: liveTelemetryStore.getSnapshot().committedSampleCount,
                 stream: uploadContext.streamRecordedTelemetry,
-                completedVersions: completedUploadVersionsRef.current,
                 onProgress: (progress, status) => { setUploadProgress(progress); setUploadStatus(status); },
             });
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
-            for (const filePath of convertedFiles) await cleanupTelemetryFile(filePath);
             if (uploadContext.recordingFileKey) await cleanupTelemetryFile(uploadContext.recordingFileKey);
             uploadContext.clearPersistedDraft?.();
             setTimeout(() => { setIsUploading(false); setTimeout(() => returnToDetectionGate(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
@@ -264,9 +259,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             } catch { /* the main process has already torn down the failed pipeline */ }
         }
         if (fileKey) {
-            if (discardContext.sessionGame === 'iracing') await waitForIRacingPreparation(fileKey);
             await cleanupTelemetryFile(fileKey);
-            if (discardContext.sessionGame === 'iracing') await cleanupTelemetryFile(`${fileKey}.iracing-recorded.jsonl`);
         }
         discardContext.clearPersistedDraft?.();
         returnToDetectionGate();
@@ -299,14 +292,6 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         streamRecordedTelemetry(onChunk, undefined, recordingFileKey ?? undefined)
     ), [streamRecordedTelemetry, recordingFileKey]);
 
-    const readIRacingRecordedStructure = useCallback(async (onChunk: (records: unknown[]) => void) => {
-        if (!recordingFileKey) return;
-        const converted = await prepareIRacingRecording(recordingFileKey);
-        // Check whether the preview closed while conversion was pending.
-        onChunk([]);
-        return streamRecordedTelemetry(onChunk, undefined, converted.filePath);
-    }, [streamRecordedTelemetry, recordingFileKey]);
-
     useEffect(() => {
         if (!uploadDialogOpen) setDataStructureOpen(false);
     }, [uploadDialogOpen]);
@@ -322,9 +307,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             <AlertDialog.Content maxWidth="600px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
                 <AlertDialog.Title>Finish Live Session</AlertDialog.Title>
                 <AlertDialog.Description size="2">
-                    {analysisContext.sessionGame === 'iracing'
-                        ? 'Upload iracing_live from the app recording and iracing_recorded from matching .ibt files. Exit the car in iRacing to finish writing those files first.'
-                        : 'Upload the recorded data, discard it, or keep the current session open.'}
+                    Upload the recorded data, discard it, or keep the current session open.
                 </AlertDialog.Description>
                 {(isUploading || showRetryButton || uploadError || analysisContext.restorationError) && (
                     <Box my="4">
@@ -366,7 +349,6 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                             {analysisContext.sessionGame === 'iracing' ? (
                                 <div key={recordingFileKey}>
                                     <DataStructureSection title="iracing_live" description="Data recorded live by the app." readRecords={readRecordedStructure} />
-                                    <DataStructureSection title="iracing_recorded" description="Data converted from matching .ibt files. Stop recording and exit the car in iRacing before inspecting." readRecords={readIRacingRecordedStructure} />
                                 </div>
                             ) : (
                                 <DataStructurePreview key={recordingFileKey} readRecords={readRecordedStructure} />

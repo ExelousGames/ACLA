@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { Worker } = require('worker_threads');
-const { IBTFile, readLiveRecordingInfo, findMatchingIBTFiles, convertIBTFiles } = require('../../../electron/recording/readers/iracing/iracing-ibt');
+const { IBTFile, convertIBTFiles } = require('../../../electron/recording/readers/iracing/iracing-ibt');
 const { IRacingIBTAdapter, IRACING_IBT_VARIABLES, IRACING_IBT_FIELD_COVERAGE } = require('../../../electron/recording/readers/iracing/iracing-ibt-adapter');
 const { IRacingAdapter, IRACING_VARIABLES, IRACING_FIELD_COVERAGE } = require('../../../electron/recording/readers/iracing/iracing-adapter');
 const { LIVE_TELEMETRY_FIELDS, validateLiveTelemetryRow } = require('../../data/live-telemetry-dataset');
@@ -315,20 +315,6 @@ describe('iRacing .ibt import', () => {
     expect(() => adapter.adapt({ values: {} })).toThrow('Invalid');
   });
 
-  it('finds all matching stints and excludes old files and other tracks', async () => {
-    const first = writeFixture('a.ibt');
-    const second = writeFixture('b.ibt');
-    writeFixture('other.ibt', { track: 'monza' });
-    const old = writeFixture('old.ibt');
-    fs.utimesSync(old, new Date(0), new Date(0));
-    expect(await findMatchingIBTFiles(directory, live)).toEqual([first, second]);
-  });
-
-  it('requests selection when two simulator sessions match the same track and time window', async () => {
-    writeFixture('a.ibt'); writeFixture('b.ibt', { sessionId: 43 });
-    expect(await findMatchingIBTFiles(directory, live)).toEqual([]);
-  });
-
   it.each(['empty', 'truncated', 'variable bounds'])('rejects %s telemetry', async (kind) => {
     let buffer = fixture();
     if (kind === 'empty') buffer.writeInt32LE(0, 140);
@@ -367,23 +353,21 @@ describe('iRacing .ibt import', () => {
     } finally { await ibt.close(); }
   });
 
-  it('runs automatic matching and conversion in the import worker', async () => {
-    const liveFilePath = path.join(directory, 'iracing_live.jsonl');
-    fs.writeFileSync(liveFilePath, JSON.stringify(live.sample) + '\n');
-    writeFixture('session.ibt', { channels: [...diskChannels(), ...positionChannels()], reference: trackReference() });
-    expect((await readLiveRecordingInfo(liveFilePath)).sample).toEqual(live.sample);
-    const worker = new Worker(path.resolve(__dirname, '../../../electron/recording/readers/iracing/iracing-import-worker.js'), {
-      workerData: { liveFilePath, telemetryDirectory: directory },
+  it('imports a standalone .ibt file without an app recording and preserves the source', async () => {
+    const sourcePath = writeFixture('local.ibt', { channels: [...diskChannels(), ...positionChannels()], reference: trackReference() });
+    const original = fs.readFileSync(sourcePath);
+    const outputPath = path.join(directory, 'local.jsonl');
+    const worker = new Worker(path.resolve(__dirname, '../../../electron/recording/readers/iracing/iracing-local-import-worker.js'), {
+      workerData: { sourcePath, outputPath },
     });
     try {
       const result = await new Promise((resolve, reject) => { worker.once('message', resolve); worker.once('error', reject); });
-      expect(result).toMatchObject({ type: 'complete', filePath: `${liveFilePath}.iracing-recorded.jsonl`, rowCount: 2 });
-      const rows = fs.readFileSync(result.filePath, 'utf8').trim().split('\n').map(JSON.parse);
-      expect(rows[0]).toMatchObject({ Physics_brake_pressure_front_left: 40,
-        Physics_tyre_surface_temp_front_right_inner: 90, Physics_abs_cut: 0.25, Physics_oil_temp: 105 });
+      expect(result).toMatchObject({ type: 'complete', filePath: outputPath, rowCount: 2, track: 'spa', car: 'GT3' });
+      const rows = fs.readFileSync(outputPath, 'utf8').trim().split('\n').map(JSON.parse);
       expect(rows.every((row) => validateLiveTelemetryRow(row).ok)).toBe(true);
       expect(rows[0].Graphics_car_coordinates[0].x).toBeCloseTo(-189013.869, 3);
-      expect(rows[0].Graphics_car_id[0]).toBe(rows[0].Graphics_player_car_id);
+      expect(rows[0].Physics_speed_kmh).toBe(180);
+      expect(fs.readFileSync(sourcePath)).toEqual(original);
     } finally { await worker.terminate(); }
   });
 });

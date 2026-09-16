@@ -40,6 +40,7 @@ export type SessionBasicInfoListDto = {
 }
 
 export type RacingSessionDetailedInfoDto = {
+    storage?: 'cloud' | 'local';
     session_name: string;
     game_recorded_from?: RecordedSessionSource;
     SessionId: string;
