@@ -30,7 +30,11 @@ class DynamicVisualizationManagerImpl extends VisualizationPanelManager<
     }
 
     protected getStaticMapTitle() {
-        return '2D Telemetry Trajectory';
+        return '2D Telemetry Trajectory & Overview';
+    }
+
+    protected getManagerClassName() {
+        return `${super.getManagerClassName()} recorded-visualization-manager`;
     }
 
     protected getPanelTypes() {

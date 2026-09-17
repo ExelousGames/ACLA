@@ -7,6 +7,7 @@ import {
     useOperationComponentRefDirectory,
 } from 'contexts/OperationComponentRefContext';
 import type { VisualizationManagerHandle } from '../../session-shared/visualization/VisualizationPanelManager';
+import DynamicVisualizationManager from './DynamicVisualizationManager';
 
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');
@@ -27,7 +28,6 @@ jest.mock('@radix-ui/themes', () => {
 jest.mock('@radix-ui/react-icons', () => ({
     Cross2Icon: () => <span>Close</span>, PlusIcon: () => <span>Add</span>,
 }));
-jest.mock('./charts/TelemetryOverview', () => ({ id, data }: any) => <div data-testid={`recorded-chart-${id}`}>Telemetry chart {data?.label}</div>);
 jest.mock('./charts/MapVisualization', () => {
     const React = require('react');
     return React.forwardRef(({ id, name }: any, ref: React.Ref<any>) => {
@@ -40,10 +40,8 @@ jest.mock('./charts/MapVisualization', () => {
     });
 });
 jest.mock('./charts/ImitationGuidanceChart', () => () => <div>Guidance chart</div>);
-jest.mock('./charts/EventLogChart', () => () => <div>Event log chart</div>);
+jest.mock('./charts/EventLogChart', () => ({ data }: any) => <div>Event log chart {data?.label}</div>);
 jest.mock('../../session-shared/visualization/charts/AnalysisResultsChart', () => () => <div>Analysis results chart</div>);
-
-import DynamicVisualizationManager from './DynamicVisualizationManager';
 
 let componentDirectory: OperationComponentRefDirectory | null = null;
 
@@ -60,15 +58,20 @@ describe('DynamicVisualizationManager named ref', () => {
 
         expect(ref.current!.getComponentName()).toBe('recorded-visualization-manager');
         expect(screen.getByTestId('static-map-visualization')).toHaveTextContent('Recorded map');
-        expect(screen.getByRole('menuitem', { name: 'Telemetry Overview' })).toBeInTheDocument();
+        expect(screen.getByText('2D Telemetry Trajectory & Overview')).toBeInTheDocument();
+        expect(screen.queryByRole('menuitem', { name: 'Telemetry Overview' })).not.toBeInTheDocument();
         expect(screen.queryByRole('menuitem', { name: 'Analysis Results' })).not.toBeInTheDocument();
+        expect(ref.current!.getVisualizationCapabilities().availableCharts).not.toEqual(
+            expect.arrayContaining([expect.objectContaining({ type: 'telemetry-overview' })]),
+        );
+        expect(() => ref.current!.requestVisualization({ name: 'telemetry:general', type: 'telemetry-overview' })).toThrow();
 
-        await userEvent.click(screen.getByRole('menuitem', { name: 'Telemetry Overview' }));
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Event Log' }));
         expect(ref.current!.getCurrentVisualizations()).toEqual([
-            expect.objectContaining({ name: 'telemetry:general', type: 'telemetry-overview' }),
+            expect.objectContaining({ name: 'visualization:event-log', type: 'event-log' }),
         ]);
         expect(onLayoutChange).toHaveBeenLastCalledWith([
-            expect.objectContaining({ name: 'telemetry:general', type: 'telemetry-overview' }),
+            expect.objectContaining({ name: 'visualization:event-log', type: 'event-log' }),
         ]);
     });
 
@@ -78,17 +81,17 @@ describe('DynamicVisualizationManager named ref', () => {
 
         act(() => {
             expect(ref.current!.requestVisualization({
-                name: 'telemetry:speed', type: 'telemetry-overview', data: { label: 'speed' },
-            })).toMatchObject({ success: true, reused: false, componentName: 'telemetry:speed' });
+                name: 'visualization:event-log', type: 'event-log', data: { label: 'speed' },
+            })).toMatchObject({ success: true, reused: false, componentName: 'visualization:event-log' });
         });
-        expect(screen.getByText('Telemetry chart speed')).toBeInTheDocument();
+        expect(screen.getByText('Event log chart speed')).toBeInTheDocument();
 
         act(() => {
             expect(ref.current!.requestVisualization({
-                name: 'telemetry:speed', type: 'telemetry-overview', data: { label: 'updated' },
-            })).toMatchObject({ success: true, reused: true, componentName: 'telemetry:speed' });
+                name: 'visualization:event-log', type: 'event-log', data: { label: 'updated' },
+            })).toMatchObject({ success: true, reused: true, componentName: 'visualization:event-log' });
         });
-        expect(screen.getByText('Telemetry chart updated')).toBeInTheDocument();
+        expect(screen.getByText('Event log chart updated')).toBeInTheDocument();
         expect(ref.current!.getCurrentVisualizations()).toHaveLength(1);
     });
 

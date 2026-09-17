@@ -64,7 +64,7 @@ export default function LocalIRacingTelemetry() {
             <Box p="4">
                 <Flex direction="column" gap="2">
                     <Heading size="4">iRacing recorded telemetry</Heading>
-                    <Text size="2" color="gray">Open a locally saved .ibt file to review its telemetry and playback. Files stay on this computer.</Text>
+                    <Text size="2" color="gray">Open a locally saved .ibt file to review its telemetry and playback. Running AI analysis sends telemetry to the analysis service.</Text>
                     {environment === 'electron' ? (
                         <>
                             <Text size="1" color="gray">Exit the car in iRacing before opening the file so recording has finished.</Text>

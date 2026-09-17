@@ -534,11 +534,11 @@ abstract class VisualizationPanelManager<
                     </DropdownMenu.Root>
                 </Flex>
 
-                <Box className={`visualization-workspace${secondaryVisualizations.length === 0 ? ' visualization-workspace--map-only' : ''}`}>
+                <Box className="visualization-workspace">
                     {staticMap && (
                         <Box className="static-map-container">
                             <Box className="static-map-header">
-                                <Text size="2" weight="medium">{this.getStaticMapTitle()}</Text>
+                                <Text size="2">{this.getStaticMapTitle()}</Text>
                             </Box>
                             <Box className="static-map-body">
                                 {staticMap}

@@ -1,6 +1,5 @@
 import type { VisualizationProps } from 'views/session-shared/visualization/visualization-types';
 import { ComponentType } from 'react';
-import TelemetryOverview from './charts/TelemetryOverview';
 import MapVisualization from './charts/MapVisualization';
 import ImitationGuidanceChart from './charts/ImitationGuidanceChart';
 import EventLogChart from './charts/EventLogChart';
@@ -88,20 +87,10 @@ export const visualizationRegistry = new VisualizationRegistry();
 
 // Register all visualization components
 export const initializeVisualizations = () => {
-    visualizationRegistry.register('telemetry-overview', {
-        component: TelemetryOverview,
-        name: 'Telemetry Overview',
-        description: 'Shows telemetry supplied to the recorded analysis workspace',
-        defaultConfig: {},
-        minWidth: 250,
-        minHeight: 150,
-        preferredAspectRatio: 4 / 3
-    });
-
     visualizationRegistry.register('map-visualization', {
         component: MapVisualization,
-        name: 'Track Map',
-        description: 'Interactive track map with session data',
+        name: '2D Telemetry Trajectory & Overview',
+        description: 'Recorded trajectory playback with all telemetry fields synchronized to the current sample',
         defaultConfig: {},
         minWidth: 300,
         minHeight: 300,

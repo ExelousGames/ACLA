@@ -1,8 +1,8 @@
 import React, { forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Badge, Box, Button, Card, Flex, Select, Slider, Text } from '@radix-ui/themes';
 import { PauseIcon, PlayIcon, ReloadIcon } from '@radix-ui/react-icons';
-import apiService from 'services/api.service';
 import { AnalysisContext } from '../../analysis-context';
+import { useRecordedSessionData } from '../../data/RecordedSessionDataProvider';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
 import { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
@@ -19,8 +19,6 @@ import {
 import {
     CarPoint,
     getPlaybackFrameIndex,
-    normalizeTelemetryFrames,
-    parseTelemetryFrame,
     parseTelemetryFrames,
     segmentVisiblePoints,
     TelemetryFrame,
@@ -40,6 +38,8 @@ import {
     SegmentClassificationResult,
 } from 'views/session-shared/segment-classification';
 import '../../../session-shared/visualization/charts/MapVisualization.css';
+import TelemetryOverview from './TelemetryOverview';
+import './MapVisualization.css';
 
 type LoadState = {
     status: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
@@ -63,7 +63,6 @@ type AxisFlipState = Record<AxisName, boolean>;
 type CameraMode = 'driver' | 'fit';
 
 const RECORDED_RENDER_FRAME_LIMIT = 900;
-const RECORDED_TELEMETRY_TIMEOUT_MS = 120000;
 const MAX_PLAYBACK_DELTA_SECONDS = 0.25;
 const FIT_ZOOM = 1;
 const DRIVER_FOCUS_ZOOM = 2.8;
@@ -171,12 +170,12 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
     onDisable,
 }, forwardedRef) => {
     const analysisContext = useContext(AnalysisContext);
+    const recordedSessionData = useRecordedSessionData();
     const { runRecordedAiAnalysis, setRecordedPlaybackSummary } = analysisContext;
     const { getLabelName } = useAiLabels();
     const { getCircuitMapByTrack } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
-    const recordedCacheRef = useRef<Map<string, TelemetryFrame[]>>(new Map());
     const currentPlaybackTimeRef = useRef(0);
     const playbackRef = useRef<{ animationId: number | null; lastTick: number | null; elapsed: number }>({
         animationId: null,
@@ -185,7 +184,9 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
     });
 
     const [canvasSize, setCanvasSize] = useState({ width: 800, height: 520 });
-    const [recordedFrames, setRecordedFrames] = useState<TelemetryFrame[]>([]);
+    // Keep original row indices so the overview follows the same sample as the map.
+    const recordedFrames = useMemo(() => recordedSessionData.status === 'ready'
+        ? parseTelemetryFrames(recordedSessionData.table) : [], [recordedSessionData]);
     const [loadState, setLoadState] = useState<LoadState>({ status: 'idle' });
     const [playbackIndex, setPlaybackIndex] = useState(0);
     const [isPlaying, setIsPlaying] = useState(false);
@@ -227,6 +228,8 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
     ), [analysisContext.sessionSelected?.points, circuitMap]);
     const frames = recordedFrames;
     const currentFrame = recordedFrames[playbackIndex];
+    const currentTelemetry = currentFrame?.sourceIndex !== undefined
+        ? recordedSessionData.table[currentFrame.sourceIndex] : undefined;
     const recordedAiAnalysis = analysisContext.recordedAiAnalysis;
     const isCurrentRecordedAnalysis = Boolean(selectedSessionId)
         && recordedAiAnalysis.sessionId === selectedSessionId;
@@ -374,109 +377,15 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
         return () => observer.disconnect();
     }, []);
 
-    const localRows = analysisContext.sessionSelected?.storage === 'local' ? analysisContext.sessionSelected.data : null;
-
     useEffect(() => {
-        if (localRows) {
-            const parsed = parseTelemetryFrames(localRows);
-            setRecordedFrames(parsed);
-            setPlaybackIndex(getLastFrameIndex(parsed));
-            setIsPlaying(false);
-            setLoadState(parsed.length > 0
+        setPlaybackIndex(getLastFrameIndex(recordedFrames));
+        setIsPlaying(false);
+        setLoadState(recordedSessionData.status === 'ready'
+            ? recordedFrames.length > 0
                 ? { status: 'ready' }
-                : { status: 'empty', message: 'No drawable trajectory data was found in this .ibt file.' });
-            return;
-        }
-        if (!selectedSessionId) {
-            setRecordedFrames([]);
-            setPlaybackIndex(0);
-            setIsPlaying(false);
-            setLoadState({ status: 'idle' });
-            return;
-        }
-
-        const cached = recordedCacheRef.current.get(selectedSessionId);
-        if (cached) {
-            setRecordedFrames(cached);
-            setPlaybackIndex(getLastFrameIndex(cached));
-            setLoadState(cached.length > 0 ? { status: 'ready' } : { status: 'empty', message: 'No telemetry rows were found for this session.' });
-            return;
-        }
-
-        let cancelled = false;
-
-        const loadRecordedTelemetry = async () => {
-            setIsPlaying(false);
-            setPlaybackIndex(0);
-            setRecordedFrames([]);
-            setLoadState({ status: 'loading', message: 'Loading recorded telemetry from backend...' });
-
-            try {
-                const initResponse = await apiService.post<any>('/racing-session/download/init', {
-                    sessionId: selectedSessionId
-                }, { timeout: RECORDED_TELEMETRY_TIMEOUT_MS });
-                const initData = initResponse.data;
-                const metadata = Array.isArray(initData?.sessionMetadata)
-                    ? initData.sessionMetadata.find((session: any) => session.sessionId === selectedSessionId)
-                    : null;
-
-                if (!metadata) {
-                    throw new Error('Selected session was not returned by the backend download initializer.');
-                }
-
-                const chunkCount = Math.max(1, Number(metadata.chunkCount) || 1);
-                const rawFrames: TelemetryFrame[] = [];
-                let rowOffset = 0;
-
-                for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
-                    const chunkResponse = await apiService.post<any>('/racing-session/download/chunk', {
-                        downloadId: initData.downloadId,
-                        sessionId: selectedSessionId,
-                        trackName: analysisContext.mapSelected || metadata.map || '',
-                        carName: metadata.car_name || analysisContext.sessionSelected?.car || '',
-                        chunkIndex
-                    }, { timeout: RECORDED_TELEMETRY_TIMEOUT_MS });
-
-                    if (cancelled) return;
-
-                    const body = chunkResponse.data;
-                    const chunkRows: Record<string, any>[] = Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : [];
-                    for (let rowIndex = 0; rowIndex < chunkRows.length; rowIndex += 1) {
-                        const frame = parseTelemetryFrame(chunkRows[rowIndex], rowOffset + rowIndex);
-                        if (frame) rawFrames.push(frame);
-                    }
-                    rowOffset += chunkRows.length;
-                    setLoadState({
-                        status: 'loading',
-                        message: `Loading recorded telemetry ${chunkIndex + 1}/${chunkCount}...`
-                    });
-                }
-
-                const parsed = normalizeTelemetryFrames(rawFrames);
-
-                if (cancelled) return;
-
-                recordedCacheRef.current.set(selectedSessionId, parsed);
-                setRecordedFrames(parsed);
-                setPlaybackIndex(getLastFrameIndex(parsed));
-                setLoadState(parsed.length > 0
-                    ? { status: 'ready' }
-                    : { status: 'empty', message: 'No drawable trajectory data was found in this session.' });
-            } catch (error: any) {
-                if (cancelled) return;
-                setLoadState({
-                    status: 'error',
-                    message: error?.message || 'Failed to load recorded telemetry.'
-                });
-            }
-        };
-
-        void loadRecordedTelemetry();
-
-        return () => {
-            cancelled = true;
-        };
-    }, [analysisContext.mapSelected, analysisContext.sessionSelected?.car, selectedSessionId, localRows]);
+                : { status: 'empty', message: 'No drawable trajectory data was found in this session.' }
+            : { status: recordedSessionData.status, message: recordedSessionData.message });
+    }, [recordedFrames, recordedSessionData]);
 
     const handleRunSegmentClassification = useCallback(async () => {
         if (!selectedSessionId || segmentLoadState.status === 'loading') {
@@ -819,165 +728,174 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
     };
 
     return (
-        <Card className="map-visualization-card" style={{ width, height }}>
-            <Box ref={wrapperRef} className="map-visualization">
-                <canvas
-                    ref={canvasRef}
-                    className="map-visualization__canvas"
-                />
+        <Card className="map-visualization-card recorded-telemetry-card" style={{ width, height }}>
+            <div className="recorded-telemetry-layout">
+                <Box ref={wrapperRef} className="map-visualization">
+                    <canvas
+                        ref={canvasRef}
+                        className="map-visualization__canvas"
+                    />
 
-                <div className="map-visualization__hud map-visualization__hud--top map-visualization__hud--recorded">
-                    <Flex align="center" gap="2" wrap="wrap">
-                        <Badge color="blue" variant="soft">Recorded Telemetry</Badge>
-                        <Text size="1" className="map-visualization__metric">
-                            {frames.length.toLocaleString()} samples
-                        </Text>
-                        <Text size="1" className="map-visualization__metric">
-                            {Math.max(0, (currentFrame?.cars.length || 1) - 1)} opponents
-                        </Text>
-                        <Button
-                            size="1"
-                            variant="soft"
-                            onClick={handleRunSegmentClassification}
-                            disabled={!selectedSessionId || localRows !== null || segmentLoadState.status === 'loading'}
-                            title={localRows ? 'AI analysis is available for cloud saved sessions.' : undefined}
-                        >
-                            {segmentLoadState.status === 'loading' ? 'Analyzing...' : 'Run AI Analysis'}
-                        </Button>
-                    </Flex>
-                </div>
+                    <div className="map-visualization__hud map-visualization__hud--top map-visualization__hud--recorded">
+                        <Flex align="center" gap="2" wrap="wrap">
+                            <Badge color="blue" variant="soft">Recorded Telemetry</Badge>
+                            <Text size="1" className="map-visualization__metric">
+                                {frames.length.toLocaleString()} samples
+                            </Text>
+                            <Text size="1" className="map-visualization__metric">
+                                {Math.max(0, (currentFrame?.cars.length || 1) - 1)} opponents
+                            </Text>
+                            <Button
+                                size="1"
+                                variant="soft"
+                                onClick={handleRunSegmentClassification}
+                                disabled={!selectedSessionId || recordedSessionData.status !== 'ready'
+                                    || recordedSessionData.table.length === 0 || segmentLoadState.status === 'loading'}
+                            >
+                                {segmentLoadState.status === 'loading' ? 'Analyzing...' : 'Run AI Analysis'}
+                            </Button>
+                        </Flex>
+                    </div>
 
-                {segmentLoadState.status !== 'idle' && (
-                    <div className="map-visualization__hud map-visualization__hud--segments">
-                        <Flex direction="column" gap="2">
-                            <Flex align="center" gap="2" wrap="wrap">
-                                <Badge
-                                    color={segmentLoadState.status === 'error' ? 'red' : segmentLoadState.status === 'empty' ? 'gray' : 'amber'}
-                                    variant="soft"
-                                >
-                                    {segmentLoadState.status === 'loading'
-                                        ? 'AI analyzing'
-                                        : segmentLoadState.status === 'error'
-                                            ? 'AI analysis failed'
-                                            : segmentLoadState.status === 'empty'
-                                                ? 'No AI segments'
-                                                : 'AI analysis ready'}
-                                </Badge>
-                                {segmentLoadState.status === 'ready' && activeSegmentSummary && (
-                                    <Text size="1" className="map-visualization__metric">
-                                        Section: {activeSegmentSummary.trackSection}
-                                        {activeSegmentSummary.labels.length > 0
-                                            ? ` - Labels: ${activeSegmentSummary.labels.join(', ')}`
-                                            : ''}
+                    {segmentLoadState.status !== 'idle' && (
+                        <div className="map-visualization__hud map-visualization__hud--segments">
+                            <Flex direction="column" gap="2">
+                                <Flex align="center" gap="2" wrap="wrap">
+                                    <Badge
+                                        color={segmentLoadState.status === 'error' ? 'red' : segmentLoadState.status === 'empty' ? 'gray' : 'amber'}
+                                        variant="soft"
+                                    >
+                                        {segmentLoadState.status === 'loading'
+                                            ? 'AI analyzing'
+                                            : segmentLoadState.status === 'error'
+                                                ? 'AI analysis failed'
+                                                : segmentLoadState.status === 'empty'
+                                                    ? 'No AI segments'
+                                                    : 'AI analysis ready'}
+                                    </Badge>
+                                    {segmentLoadState.status === 'ready' && activeSegmentSummary && (
+                                        <Text size="1" className="map-visualization__metric">
+                                            Section: {activeSegmentSummary.trackSection}
+                                            {activeSegmentSummary.labels.length > 0
+                                                ? ` - Labels: ${activeSegmentSummary.labels.join(', ')}`
+                                                : ''}
+                                        </Text>
+                                    )}
+                                </Flex>
+                                {segmentLoadState.message && (
+                                    <Text size="1" className="map-visualization__segment-message">
+                                        {segmentLoadState.message}
                                     </Text>
                                 )}
-                            </Flex>
-                            {segmentLoadState.message && (
-                                <Text size="1" className="map-visualization__segment-message">
-                                    {segmentLoadState.message}
-                                </Text>
-                            )}
-                            {segmentLoadState.status === 'ready' && segmentClassification?.segments?.length ? (
-                                <div className="map-visualization__segment-legend">
-                                    {segmentClassification.segments.slice(0, 6).map((segment, index) => {
-                                        const labelTexts = resolveSegmentLabelTexts(segment, getLabelName);
+                                {segmentLoadState.status === 'ready' && segmentClassification?.segments?.length ? (
+                                    <div className="map-visualization__segment-legend">
+                                        {segmentClassification.segments.slice(0, 6).map((segment, index) => {
+                                            const labelTexts = resolveSegmentLabelTexts(segment, getLabelName);
 
-                                        return (
-                                            <span key={segment.id || `${segment.start_index}-${segment.end_index}`} className="map-visualization__segment-legend-item">
-                                                <span
-                                                    className="map-visualization__segment-swatch"
-                                                    style={{ backgroundColor: getSegmentColor(segment, index) }}
-                                                />
-                                                <span className="map-visualization__segment-copy">
-                                                    <span className="map-visualization__segment-parent-label">
-                                                        Section: {getSegmentTrackSectionText(segment, getLabelName)}
-                                                    </span>
-                                                    {labelTexts.length > 0 && (
-                                                        <span className="map-visualization__segment-sub-labels">
-                                                            Labels: {labelTexts.join(', ')}
+                                            return (
+                                                <span key={segment.id || `${segment.start_index}-${segment.end_index}`} className="map-visualization__segment-legend-item">
+                                                    <span
+                                                        className="map-visualization__segment-swatch"
+                                                        style={{ backgroundColor: getSegmentColor(segment, index) }}
+                                                    />
+                                                    <span className="map-visualization__segment-copy">
+                                                        <span className="map-visualization__segment-parent-label">
+                                                            Section: {getSegmentTrackSectionText(segment, getLabelName)}
                                                         </span>
-                                                    )}
+                                                        {labelTexts.length > 0 && (
+                                                            <span className="map-visualization__segment-sub-labels">
+                                                                Labels: {labelTexts.join(', ')}
+                                                            </span>
+                                                        )}
+                                                    </span>
                                                 </span>
-                                            </span>
-                                        );
-                                    })}
-                                </div>
-                            ) : null}
+                                            );
+                                        })}
+                                    </div>
+                                ) : null}
+                            </Flex>
+                        </div>
+                    )}
+
+                    <div className="map-visualization__hud map-visualization__hud--camera">
+                        <Flex align="center" gap="2" justify="end" wrap="wrap">
+                            <Flex align="center" gap="1" className="map-visualization__axis-flips">
+                                {AXES.map((axis) => (
+                                    <Button
+                                        key={axis}
+                                        size="1"
+                                        variant={axisFlip[axis] ? 'solid' : 'soft'}
+                                        color={axisFlip[axis] ? 'orange' : undefined}
+                                        aria-pressed={axisFlip[axis]}
+                                        aria-label={`Flip ${axis.toUpperCase()} axis`}
+                                        className="map-visualization__axis-button"
+                                        onClick={() => toggleAxisFlip(axis)}
+                                    >
+                                        {axis.toUpperCase()}
+                                    </Button>
+                                ))}
+                            </Flex>
+                            <Button
+                                size="1"
+                                variant={cameraMode === 'driver' ? 'solid' : 'soft'}
+                                onClick={focusDriver}
+                            >
+                                Driver
+                            </Button>
+                            <Button size="1" variant={cameraMode === 'fit' ? 'solid' : 'soft'} onClick={fitTrack}>
+                                Fit
+                            </Button>
                         </Flex>
                     </div>
-                )}
 
-                <div className="map-visualization__hud map-visualization__hud--camera">
-                    <Flex align="center" gap="2" justify="end" wrap="wrap">
-                        <Flex align="center" gap="1" className="map-visualization__axis-flips">
-                            {AXES.map((axis) => (
-                                <Button
-                                    key={axis}
-                                    size="1"
-                                    variant={axisFlip[axis] ? 'solid' : 'soft'}
-                                    color={axisFlip[axis] ? 'orange' : undefined}
-                                    aria-pressed={axisFlip[axis]}
-                                    aria-label={`Flip ${axis.toUpperCase()} axis`}
-                                    className="map-visualization__axis-button"
-                                    onClick={() => toggleAxisFlip(axis)}
-                                >
-                                    {axis.toUpperCase()}
+                    <div className="map-visualization__player">
+                            <Flex align="center" gap="2" className="map-visualization__player-row">
+                                <Button size="2" variant="soft" aria-label={isPlaying ? 'Pause playback' : 'Play trajectory'} onClick={togglePlayback} disabled={recordedFrames.length < 2}>
+                                    {isPlaying ? <PauseIcon /> : <PlayIcon />}
                                 </Button>
-                            ))}
-                        </Flex>
-                        <Button
-                            size="1"
-                            variant={cameraMode === 'driver' ? 'solid' : 'soft'}
-                            onClick={focusDriver}
-                        >
-                            Driver
-                        </Button>
-                        <Button size="1" variant={cameraMode === 'fit' ? 'solid' : 'soft'} onClick={fitTrack}>
-                            Fit
-                        </Button>
-                    </Flex>
-                </div>
-
-                <div className="map-visualization__player">
-                        <Flex align="center" gap="2" className="map-visualization__player-row">
-                            <Button size="2" variant="soft" onClick={togglePlayback} disabled={recordedFrames.length < 2}>
-                                {isPlaying ? <PauseIcon /> : <PlayIcon />}
-                            </Button>
-                            <Button size="2" variant="ghost" onClick={resetPlayback} disabled={recordedFrames.length < 2}>
-                                <ReloadIcon />
-                            </Button>
-                            <Text size="1" className="map-visualization__time">
-                                {formatTime(currentPlaybackTime)} / {formatTime(duration)}
-                            </Text>
-                            <Select.Root value={String(playbackSpeed)} onValueChange={(value) => setPlaybackSpeed(Number(value))}>
-                                <Select.Trigger className="map-visualization__speed" />
-                                <Select.Content>
-                                    <Select.Item value="0.5">0.5x</Select.Item>
-                                    <Select.Item value="1">1x</Select.Item>
-                                    <Select.Item value="2">2x</Select.Item>
-                                </Select.Content>
-                            </Select.Root>
-                        </Flex>
-                        <Slider
-                            value={[playbackIndex]}
-                            min={0}
-                            max={Math.max(0, recordedFrames.length - 1)}
-                            step={1}
-                            disabled={recordedFrames.length < 2}
-                            onValueChange={handleScrub}
-                        />
-                </div>
-
-                {loadState.status !== 'ready' && (
-                    <div className="map-visualization__state">
-                        <Text size="2" weight="bold">
-                            {loadState.status === 'loading' ? 'Loading telemetry' : loadState.status === 'error' ? 'Telemetry unavailable' : 'No telemetry'}
-                        </Text>
-                        <Text size="1">{loadState.message || 'Select a recorded backend session to replay telemetry.'}</Text>
+                                <Button size="2" variant="ghost" aria-label="Restart playback" onClick={resetPlayback} disabled={recordedFrames.length < 2}>
+                                    <ReloadIcon />
+                                </Button>
+                                <Text size="1" className="map-visualization__time">
+                                    {formatTime(currentPlaybackTime)} / {formatTime(duration)}
+                                </Text>
+                                <Select.Root value={String(playbackSpeed)} onValueChange={(value) => setPlaybackSpeed(Number(value))}>
+                                    <Select.Trigger className="map-visualization__speed" aria-label="Playback speed" />
+                                    <Select.Content>
+                                        <Select.Item value="0.5">0.5x</Select.Item>
+                                        <Select.Item value="1">1x</Select.Item>
+                                        <Select.Item value="2">2x</Select.Item>
+                                    </Select.Content>
+                                </Select.Root>
+                            </Flex>
+                            <Slider
+                                role="group"
+                                aria-label="Playback position"
+                                value={[playbackIndex]}
+                                min={0}
+                                max={Math.max(0, recordedFrames.length - 1)}
+                                step={1}
+                                disabled={recordedFrames.length < 2}
+                                onValueChange={handleScrub}
+                            />
                     </div>
-                )}
 
-            </Box>
+                    {loadState.status !== 'ready' && (
+                        <div className="map-visualization__state">
+                            <Text size="2" weight="bold">
+                                {loadState.status === 'loading' ? 'Loading telemetry' : loadState.status === 'error' ? 'Telemetry unavailable' : 'No telemetry'}
+                            </Text>
+                            <Text size="1">{loadState.message || 'Select a recorded backend session to replay telemetry.'}</Text>
+                        </div>
+                    )}
+
+                </Box>
+                <TelemetryOverview
+                    data={currentTelemetry}
+                    sampleIndex={currentFrame?.sourceIndex}
+                    sampleCount={recordedSessionData.table.length}
+                />
+            </div>
         </Card>
     );
 });

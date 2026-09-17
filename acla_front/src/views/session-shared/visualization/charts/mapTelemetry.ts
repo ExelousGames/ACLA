@@ -190,7 +190,7 @@ export const normalizeTelemetryFrames = (frames: TelemetryFrame[]): TelemetryFra
     });
 };
 
-export const parseTelemetryFrames = (rows: Record<string, any>[]): TelemetryFrame[] => (
+export const parseTelemetryFrames = (rows: readonly Readonly<Record<string, any>>[]): TelemetryFrame[] => (
     normalizeTelemetryFrames(
         rows
             .map((row, index) => parseTelemetryFrame(row, index))

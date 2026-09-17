@@ -27,15 +27,14 @@ import MapList from './map-list/map-list';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
 import { AnalysisContext, AnalysisContextType } from './analysis-context';
+import { RecordedSessionDataProvider, useRecordedSessionData, RecordedSessionData } from './data/RecordedSessionDataProvider';
 import {
     RecordedAiAnalysisState,
     createEmptyRecordedPlaybackSummary,
     createIdleRecordedAiAnalysis,
     getRecordedAnalysisStateForResult,
 } from './recorded-session-analysis';
-import {
-    normalizeSegmentClassificationResult,
-} from 'views/session-shared/segment-classification';
+import { analyzeRecordedTelemetry } from './analyze-recorded-telemetry';
 import { getSegmentLabelIds } from '../session-shared/visualization/charts/segmentClassificationDisplay';
 import {
     openAnalysisResultsVisualization,
@@ -72,8 +71,6 @@ export type RecordedTelemetryAnalysisAiResult = {
     component_name: string | null;
 };
 
-const RECORDED_AI_ANALYSIS_TIMEOUT_MS = 120000;
-
 const getRequestFailureMessage = (error: unknown, fallback: string): string => {
     const value = error as any;
     return value?.response?.data?.message
@@ -102,6 +99,7 @@ const requestSessionAnalysisOperation = async <T,>(
 
 export interface SessionAnalysisHandle extends ObservableOperationComponentHandle<AnalysisContextType> {
     getSelectedSession(): RacingSessionDetailedInfoDto | null;
+    getRecordedSessionData(): RecordedSessionData;
     getMapSelected(): string | null;
     getRecordedAiAnalysis(): RecordedAiAnalysisState;
     getRecordedPlaybackSummary(): ReturnType<typeof createEmptyRecordedPlaybackSummary>;
@@ -169,20 +167,41 @@ const compactRecordedAnalysisForAi = (
 export const SessionAnalysisProvider = ({ children }: { children: React.ReactNode }) => {
     const [mapSelected, setMap] = useState<string | null>(null);
     const [sessionSelected, setSession] = useState<RacingSessionDetailedInfoDto | null>(null);
+    return (
+        <RecordedSessionDataProvider session={sessionSelected} map={mapSelected}>
+            <SessionAnalysisStateProvider
+                mapSelected={mapSelected}
+                setMap={setMap}
+                sessionSelected={sessionSelected}
+                setSession={setSession}
+            >
+                {children}
+            </SessionAnalysisStateProvider>
+        </RecordedSessionDataProvider>
+    );
+};
+
+const SessionAnalysisStateProvider = ({ children, mapSelected, setMap, sessionSelected, setSession }: {
+    children: React.ReactNode;
+} & Pick<AnalysisContextType, 'mapSelected' | 'setMap' | 'sessionSelected' | 'setSession'>) => {
+    const recordedSessionData = useRecordedSessionData();
     const [activeTab, setActiveTab] = useState('mapLists');
     const [activeVisualizations, setActiveVisualizations] = useState<VisualizationInstance[]>([]);
     const [latestGuidanceMessage, setLatestGuidanceMessage] = useState<string | null>(null);
     const [recordedAiAnalysis, setRecordedAiAnalysis] = useState<RecordedAiAnalysisState>(createIdleRecordedAiAnalysis());
     const [recordedPlaybackSummary, setRecordedPlaybackSummary] = useState(createEmptyRecordedPlaybackSummary());
     const recordedAiAnalysisCacheRef = useRef<Map<string, RecordedAiAnalysisState>>(new Map());
+    const activeAnalysisRef = useRef<{
+        controller: AbortController;
+        promise: Promise<RecordedAiAnalysisState>;
+    } | null>(null);
+
+    useLayoutEffect(() => () => {
+        activeAnalysisRef.current?.controller.abort();
+        activeAnalysisRef.current = null;
+    }, [sessionSelected, recordedSessionData]);
 
     const runRecordedAiAnalysis = useCallback(async ({ force = false }: { force?: boolean } = {}): Promise<RecordedAiAnalysisState> => {
-        if (sessionSelected?.storage === 'local') {
-            throw new RecordedAnalysisFailedError(
-                OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
-                'AI analysis is available for cloud saved sessions. Local .ibt telemetry can be reviewed with playback.',
-            );
-        }
         const sessionId = sessionSelected?.SessionId;
         if (!sessionId) {
             const nextState: RecordedAiAnalysisState = {
@@ -197,6 +216,8 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             );
         }
 
+        if (activeAnalysisRef.current && !force) return activeAnalysisRef.current.promise;
+        activeAnalysisRef.current?.controller.abort();
         const cached = recordedAiAnalysisCacheRef.current.get(sessionId);
         if (cached && !force) {
             setRecordedAiAnalysis(cached);
@@ -210,34 +231,56 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             result: cached?.result ?? null,
         });
 
-        try {
-            const response = await apiService.post('/racing-session/segment-classification', {
-                session_id: sessionId,
-            }, { timeout: RECORDED_AI_ANALYSIS_TIMEOUT_MS });
-            const result = normalizeSegmentClassificationResult(response.data as any, sessionId);
-            const nextState: RecordedAiAnalysisState = {
-                sessionId,
-                result,
-                ...getRecordedAnalysisStateForResult(result),
-            };
-            recordedAiAnalysisCacheRef.current.set(sessionId, nextState);
-            setRecordedAiAnalysis(nextState);
-            return nextState;
-        } catch (error: any) {
-            const nextState: RecordedAiAnalysisState = {
-                sessionId,
-                status: 'error',
-                message: error?.data?.message || error?.message || 'Failed to run AI segment analysis.',
-                result: cached?.result ?? null,
-            };
-            setRecordedAiAnalysis(nextState);
-            throw new RecordedAnalysisFailedError(
-                OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
-                nextState.message!,
-                { cause: error },
-            );
-        }
-    }, [sessionSelected?.SessionId, sessionSelected?.storage]);
+        const controller = new AbortController();
+        const promise = Promise.resolve().then(async () => {
+            try {
+                if (recordedSessionData.sessionId !== sessionId || recordedSessionData.status !== 'ready') {
+                    throw new Error(recordedSessionData.message || 'Recorded telemetry is not ready for analysis.');
+                }
+                const result = await analyzeRecordedTelemetry({
+                    sessionId,
+                    track: sessionSelected?.map || mapSelected,
+                    car: sessionSelected?.car,
+                    table: recordedSessionData.table,
+                    signal: controller.signal,
+                    onProgress: (completed, total) => {
+                        if (!controller.signal.aborted) setRecordedAiAnalysis({
+                            sessionId,
+                            status: 'loading',
+                            message: `Analyzing telemetry: ${completed.toLocaleString()} / ${total.toLocaleString()} samples...`,
+                            result: cached?.result ?? null,
+                        });
+                    },
+                });
+                if (controller.signal.aborted) throw new Error('Recorded analysis was cancelled.');
+                const nextState: RecordedAiAnalysisState = {
+                    sessionId,
+                    result,
+                    ...getRecordedAnalysisStateForResult(result),
+                };
+                recordedAiAnalysisCacheRef.current.set(sessionId, nextState);
+                setRecordedAiAnalysis(nextState);
+                return nextState;
+            } catch (error: any) {
+                const nextState: RecordedAiAnalysisState = {
+                    sessionId,
+                    status: 'error',
+                    message: getRequestFailureMessage(error, 'Failed to run AI segment analysis.'),
+                    result: cached?.result ?? null,
+                };
+                if (!controller.signal.aborted) setRecordedAiAnalysis(nextState);
+                throw new RecordedAnalysisFailedError(
+                    OPERATION_COMPONENT_NAMES.SESSION_ANALYSIS,
+                    nextState.message!,
+                    { cause: error },
+                );
+            } finally {
+                if (activeAnalysisRef.current?.controller === controller) activeAnalysisRef.current = null;
+            }
+        });
+        activeAnalysisRef.current = { controller, promise };
+        return promise;
+    }, [mapSelected, recordedSessionData, sessionSelected]);
 
     const sendGuidanceToChat = useCallback((message: string) => {
         setLatestGuidanceMessage((previous) => previous === message ? previous : message);
@@ -292,13 +335,20 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
         sessionSelected,
     ]);
 
-    return <AnalysisContext.Provider value={contextValue}>{children}</AnalysisContext.Provider>;
+    return (
+        <AnalysisContext.Provider value={contextValue}>
+            {children}
+        </AnalysisContext.Provider>
+    );
 };
 
 type SessionAnalysisProps = { name: string; source?: 'cloud' | 'iracing' };
 
 export const SessionAnalysisContent = ({ name, source = 'cloud' }: SessionAnalysisProps) => {
     const analysisContext = useContext(AnalysisContext);
+    const recordedSessionData = useRecordedSessionData();
+    const recordedSessionDataRef = useRef(recordedSessionData);
+    recordedSessionDataRef.current = recordedSessionData;
     const componentRefs = useOptionalOperationComponentRefDirectory();
     const analysisContextRef = useRef(analysisContext);
     analysisContextRef.current = analysisContext;
@@ -314,6 +364,7 @@ export const SessionAnalysisContent = ({ name, source = 'cloud' }: SessionAnalys
                 return () => assistantSnapshotListenersRef.current.delete(listener);
             },
             getSelectedSession: () => analysisContextRef.current.sessionSelected,
+            getRecordedSessionData: () => recordedSessionDataRef.current,
             getMapSelected: () => analysisContextRef.current.mapSelected,
             getRecordedAiAnalysis: () => analysisContextRef.current.recordedAiAnalysis,
             getRecordedPlaybackSummary: () => analysisContextRef.current.recordedPlaybackSummary,
@@ -369,7 +420,7 @@ export const SessionAnalysisContent = ({ name, source = 'cloud' }: SessionAnalys
                         directory: componentRefs,
                         managerName: OPERATION_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
                         result: state.result,
-                        records: analysisContextRef.current.sessionSelected?.data ?? [],
+                        records: [...recordedSessionDataRef.current.table],
                     });
                 }
                 return compactRecordedAnalysisForAi(
@@ -418,7 +469,7 @@ export const SessionAnalysisContent = ({ name, source = 'cloud' }: SessionAnalys
                         directory: componentRefs,
                         managerName: OPERATION_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
                         result: state.result,
-                        records: analysisContextRef.current.sessionSelected?.data ?? [],
+                        records: [...recordedSessionDataRef.current.table],
                     })
                     : { chart_id: null, component_name: null };
                 return {
