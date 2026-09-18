@@ -25,6 +25,8 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+Trained Ultralytics model storage: see the [Ultralytics model API contract](src/modules/ai-model/ultralytics/README.md).
+
 ## Project setup
 
 ```bash

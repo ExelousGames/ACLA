@@ -3,11 +3,13 @@ import { InjectConnection } from '@nestjs/mongoose';
 import { Connection } from 'mongoose';
 import { GridFSBucket, ObjectId } from 'mongodb';
 import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 
 // Constants for GridFS bucket names
 export const GRIDFS_BUCKETS = {
     AI_MODELS: 'ai_models',
     RACING_SESSIONS: 'racing_sessions',
+    ULTRALYTICS_MODELS: 'ultralytics_models',
 } as const;
 
 @Injectable()
@@ -172,37 +174,26 @@ export class GridFSService implements OnModuleInit, OnModuleDestroy {
      */
     async uploadStream(readable: Readable, filename: string, metadata?: any, bucketName?: string): Promise<ObjectId> {
         const bucket = await this.getBucket(bucketName);
+        const uploadStream = bucket.openUploadStream(filename, {
+            metadata: {
+                ...metadata,
+                uploadedAt: new Date(),
+                bucketName: bucketName || GRIDFS_BUCKETS.AI_MODELS
+            }
+        });
 
         try {
-            const uploadStream = bucket.openUploadStream(filename, {
-                metadata: {
-                    ...metadata,
-                    uploadedAt: new Date(),
-                    bucketName: bucketName || GRIDFS_BUCKETS.AI_MODELS
-                }
+            await pipeline(readable, uploadStream, {
+                signal: AbortSignal.timeout(60000),
             });
-
-            return new Promise<ObjectId>((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error('Upload timeout after 60 seconds'));
-                }, 60000);
-
-                readable
-                    .on('error', (err) => {
-                        clearTimeout(timeout);
-                        reject(err);
-                    })
-                    .pipe(uploadStream)
-                    .on('error', (error) => {
-                        clearTimeout(timeout);
-                        reject(error);
-                    })
-                    .on('finish', () => {
-                        clearTimeout(timeout);
-                        resolve(uploadStream.id as ObjectId);
-                    });
-            });
+            return uploadStream.id;
         } catch (error) {
+            await uploadStream.abort().catch(async () => {
+                // GridFS cannot abort after finalization starts, even if that write failed.
+                await bucket.delete(uploadStream.id).catch((cleanupError: unknown) => {
+                    console.error('Failed to clean up incomplete GridFS upload:', cleanupError);
+                });
+            });
             throw new InternalServerErrorException(`Failed to upload stream to ${bucketName || GRIDFS_BUCKETS.AI_MODELS}: ${error.message}`);
         }
     }
@@ -230,6 +221,10 @@ export class GridFSService implements OnModuleInit, OnModuleDestroy {
      * This method streams the file and parses JSON in chunks if needed.
      */
     async downloadJSONStream(fileId: ObjectId, bucketName?: string): Promise<NodeJS.ReadableStream> {
+        return this.downloadStream(fileId, bucketName);
+    }
+
+    async downloadStream(fileId: ObjectId, bucketName?: string): Promise<Readable> {
         const bucket = await this.getBucket(bucketName);
 
         try {
