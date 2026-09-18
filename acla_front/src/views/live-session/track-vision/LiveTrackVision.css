@@ -1,0 +1,39 @@
+.track-vision {
+    height: 100%; min-height: 0; overflow: auto; display: flex; flex-direction: column;
+    gap: 10px; padding: 12px; color: var(--lp-white, #e7ecf2); font-size: 12px;
+}
+.track-vision__controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.track-vision__stack, .track-vision__depth { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; }
+.track-vision__stack legend, .track-vision__depth legend { padding: 0 6px; font-weight: 600; }
+.track-vision__stack legend span, .track-vision__depth legend span { margin-left: 8px; color: var(--lp-gray, #a4adbb); font-weight: 400; font-size: 11px; }
+.track-vision__detector { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 12px; padding: 8px; border-radius: 6px; background: var(--lp-bg, #10131a); }
+.track-vision__detector[data-enabled="true"] { background: #37efac0a; }
+.track-vision__detector label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.track-vision__detector input { accent-color: #37efac; }
+.track-vision__fallback { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.track-vision__fallback input { accent-color: #37efac; }
+.track-vision__detector label span { display: flex; flex-direction: column; gap: 3px; }
+.track-vision__detector small, .track-vision__detector-state { color: var(--lp-gray, #a4adbb); font-size: 11px; }
+.track-vision__detector .track-vision__hint, .track-vision__detector .track-vision__error { grid-column: 1 / -1; }
+.track-vision__controls label { display: flex; flex-direction: column; gap: 4px; color: var(--lp-gray, #a4adbb); }
+.track-vision__depth .track-vision__controls label { flex: 1 1 140px; min-width: 0; }
+.track-vision__depth input { width: 100%; margin: 4px 0; accent-color: #37efac; }
+.track-vision__depth-meter { height: 8px; margin-top: 4px; border-radius: 4px; background: linear-gradient(to right, rgb(255, 80, 0), rgb(128, 80, 128), rgb(0, 80, 255)); }
+.track-vision select { flex: 1 1 160px; min-width: 0; max-width: 100%; }
+.track-vision button, .track-vision select {
+    color: inherit; background: var(--lp-bg, #10131a); border: 1px solid var(--lp-border, #343b46);
+    border-radius: 6px; padding: 7px 10px; font: inherit;
+}
+.track-vision button { cursor: pointer; }
+.track-vision button:disabled { cursor: default; opacity: .45; }
+.track-vision button:focus-visible, .track-vision input:focus-visible, .track-vision select:focus-visible { outline: 2px solid #37efac; outline-offset: 2px; }
+.track-vision .track-vision__start { color: #37efac; background: #37efac16; border-color: #37efac50; }
+.track-vision__preview { flex: 1 1 180px; min-height: 130px; position: relative; border: 1px solid var(--lp-border, #343b46); background: #090d13; border-radius: 8px; overflow: hidden; }
+.track-vision__preview canvas { width: 100%; height: 100%; object-fit: contain; position: absolute; inset: 0; }
+.track-vision__empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 20px; text-align: center; color: var(--lp-gray, #a4adbb); }
+.track-vision__empty strong { color: var(--lp-white, #e7ecf2); font-weight: 500; font-size: 15px; }
+.track-vision__hint { margin: 0; color: var(--lp-gray, #a4adbb); font-size: 11px; overflow-wrap: anywhere; }
+.track-vision__error { color: #ff9f9f; }
+.track-vision__legend { display: flex; justify-content: space-between; gap: 16px; font-size: 11px; }
+.track-vision__legend span:first-child { color: #ff9a70; }
+.track-vision__legend span:last-child { color: #839fff; }

@@ -1,6 +1,10 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const { DESKTOP_GAME_SET, isRecordingStartFailure } = require('../../electron/recording/recording-protocol');
 const { validateLiveTelemetryRow } = require('../data/live-telemetry-dataset');
+contextBridge.exposeInMainWorld('screenCapture', {
+    listSources: () => ipcRenderer.invoke('screen-capture-sources'),
+    selectSource: (id) => ipcRenderer.invoke('screen-capture-select', id),
+});
 /**
  * Electron's main process is a Node.js environment that has full operating system access. 
  * On top of Electron modules, you can also access Node.js built-ins, as well as any packages installed via npm. 

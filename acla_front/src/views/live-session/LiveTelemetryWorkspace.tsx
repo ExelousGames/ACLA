@@ -11,6 +11,7 @@ import { LiveVisualizationInstance } from './live-session-types';
 import LiveTrajectoryMap from './LiveTrajectoryMap';
 import LiveTelemetryOverview from './LiveTelemetryOverview';
 import LiveSuspension from './LiveSuspension';
+import LiveTrackVision from './track-vision/LiveTrackVision';
 import LiveEventLog from './LiveEventLog';
 import BaselineCollection from './baseline-collection/BaselineCollection';
 
@@ -18,6 +19,7 @@ const OPTIONAL_VISUALIZATIONS = {
     'live-trajectory-map': { name: 'Live 2D Telemetry Trajectory' },
     'telemetry-overview': { name: 'Live Telemetry Overview' },
     'suspension': { name: 'Suspension' },
+    'track-vision': { name: 'Track Vision' },
     'event-log': { name: 'Live Event Log' },
     'analysis-results': { name: 'Analysis Results' },
     'baseline-collection': { name: 'Baseline Collection' },
@@ -84,7 +86,7 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
             name,
             id: `${type}-${Date.now()}`,
             type: type as LiveVisualizationInstance['type'],
-            height: type === 'live-trajectory-map' || type === 'suspension' ? 520 : 280,
+            height: type === 'track-vision' ? 680 : type === 'live-trajectory-map' || type === 'suspension' ? 520 : 280,
             data,
             config,
         };
@@ -112,6 +114,9 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
     }
 
     protected renderPanelContent(instance: LiveVisualizationInstance) {
+        if (instance.type === 'track-vision') {
+            return <LiveTrackVision key={instance.name} name={instance.name} />;
+        }
         if (instance.type === 'live-trajectory-map') {
             return <LiveTrajectoryMap key={instance.name} name={instance.name} />;
         }

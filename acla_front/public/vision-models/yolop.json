@@ -1,0 +1,12 @@
+{
+  "name": "YOLOP road segmentation",
+  "file": "yolop-320-320.onnx",
+  "inputSize": 320,
+  "bytes": 31817335,
+  "sha256": "86d6e8b6dfdef195c061e9bcad82d9487bb5ee1ac4a1cf9a3dc4736657a07369",
+  "url": "https://raw.githubusercontent.com/hustvl/YOLOP/8d8f68df318c71f01d6f813c024df646c7d1978f/weights/yolop-320-320.onnx",
+  "source": "https://github.com/hustvl/YOLOP",
+  "license": "MIT",
+  "trainingDataset": "BDD100K",
+  "limitations": "Pretrained on road scenes; not fine-tuned or validated on racing simulators."
+}

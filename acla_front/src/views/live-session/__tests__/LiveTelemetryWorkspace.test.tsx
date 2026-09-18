@@ -40,6 +40,9 @@ jest.mock('components/data-graphs', () => ({
 jest.mock('../LiveTrajectoryMap', () => () => <div>Live trajectory map</div>);
 jest.mock('../LiveTelemetryOverview', () => ({ name, telemetry }: any) => <div data-testid={name}>Live telemetry {telemetry?.label}</div>);
 jest.mock('../LiveEventLog', () => () => <div>Live event log</div>);
+jest.mock('../track-vision/track-vision-model', () => ({
+    TrackVisionModel: { loadBuiltin: jest.fn(async () => ({ dispose: jest.fn() })) },
+}));
 
 let directory: OperationComponentRefDirectory | null = null;
 const DirectoryObserver = () => {
@@ -48,6 +51,21 @@ const DirectoryObserver = () => {
 };
 
 describe('LiveTelemetryWorkspace named manager', () => {
+    beforeEach(() => {
+        window.screenCapture = { listSources: jest.fn().mockResolvedValue([]), selectSource: jest.fn() };
+    });
+    afterEach(() => { delete window.screenCapture; });
+
+    it('opens one Track Vision panel and registers its detection API', async () => {
+        const ref = React.createRef<VisualizationManagerHandle>();
+        render(<OperationComponentRefProvider><DirectoryObserver /><LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" /></OperationComponentRefProvider>);
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Track Vision' }));
+        expect(screen.getByRole('region', { name: 'Track Vision' })).toBeInTheDocument();
+        expect(directory!.findComponentRef('visualization:track-vision')?.current).toEqual(expect.objectContaining({ getLatestDetection: expect.any(Function) }));
+        act(() => { expect(ref.current!.requestVisualization({ name: 'another-vision', type: 'track-vision' }).reused).toBe(true); });
+        await userEvent.click(screen.getByRole('button', { name: 'Remove Track Vision' }));
+        expect(directory!.findComponentRef('visualization:track-vision')).toBeNull();
+    });
     it('offers Suspension, updates the same panel, and unregisters it when removed', async () => {
         const ref = React.createRef<VisualizationManagerHandle>();
         render(

@@ -1,0 +1,357 @@
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import { captureGameScreen, ScreenCaptureSource } from './screen-capture';
+import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
+import { DEFAULT_DEPTH_RANGE, DETECTION_TASKS, DetectionTask, EnabledDetections, TrackVisionDetection } from './track-vision-types';
+import { drawVisionOverlay } from './vision-overlay';
+import './LiveTrackVision.css';
+
+export interface TrackVisionHandle extends NamedOperationComponentHandle {
+    getLatestDetection(): TrackVisionDetection | null;
+    subscribeDetection(listener: () => void): () => void;
+}
+
+const message = (error: unknown) => error instanceof Error ? error.message : 'Vision detection failed.';
+const GPU_RETRY_DELAY_MS = 3000;
+type DetectorState = { status: 'off' | 'loading' | 'ready' | 'retrying' | 'error'; device?: string; error?: string };
+
+const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name }, forwardedRef) => {
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const previewFrameRef = useRef<HTMLCanvasElement | null>(null);
+    const streamRef = useRef<MediaStream | null>(null);
+    const models = useRef<Partial<Record<DetectionTask, TrackVisionModel>>>({});
+    const modelQueue = useRef<Promise<void>>(Promise.resolve());
+    const inferenceRef = useRef<Promise<unknown>>(Promise.resolve());
+    const captureVersion = useRef(0);
+    const modelVersion = useRef(0);
+    const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const latest = useRef<TrackVisionDetection | null>(null);
+    const listeners = useRef(new Set<() => void>());
+    const [sources, setSources] = useState<ScreenCaptureSource[]>([]);
+    const [sourceId, setSourceId] = useState('');
+    const [enabled, setEnabled] = useState<EnabledDetections>({ semantic: true, depth: false, segment: false });
+    const [allowCpuFallback, setAllowCpuFallback] = useState(false);
+    const [retry, setRetry] = useState(0);
+    const [detectors, setDetectors] = useState<Record<DetectionTask, DetectorState>>({
+        semantic: { status: 'loading' }, depth: { status: 'off' }, segment: { status: 'off' },
+    });
+    const [captureState, setCaptureState] = useState<'idle' | 'starting' | 'active'>('idle');
+    const [error, setError] = useState('');
+    const [status, setStatus] = useState('Share your game screen to run the detection stack.');
+    const [hasFrame, setHasFrame] = useState(false);
+    const [confidence, setConfidence] = useState(0.5);
+    const [depthRange, setDepthRange] = useState(DEFAULT_DEPTH_RANGE);
+    const options = useRef({ confidence, enabled, depthRange, allowCpuFallback });
+    options.current = { confidence, enabled, depthRange, allowCpuFallback };
+
+    const redrawPreview = useCallback((result: TrackVisionDetection) => {
+        const frame = previewFrameRef.current;
+        const canvas = canvasRef.current;
+        if (!frame || !canvas) return;
+        canvas.width = frame.width;
+        canvas.height = frame.height;
+        const preview = canvas.getContext('2d');
+        if (!preview) throw new Error('Screen preview is unavailable.');
+        preview.drawImage(frame, 0, 0);
+        drawVisionOverlay(preview, result, options.current.depthRange);
+    }, []);
+
+    useEffect(() => {
+        // Recolor the displayed frame immediately, even while the next inference is pending.
+        if (latest.current) redrawPreview(latest.current);
+    }, [depthRange, redrawPreview]);
+
+    const publish = useCallback((result: TrackVisionDetection | null) => {
+        latest.current = result;
+        listeners.current.forEach((listener) => listener());
+    }, []);
+    const handle = useMemo<TrackVisionHandle>(() => ({
+        getComponentName: () => name,
+        getLatestDetection: () => latest.current,
+        subscribeDetection: (listener) => {
+            listeners.current.add(listener);
+            return () => { listeners.current.delete(listener); };
+        },
+    }), [name]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    const registeredHandle = useRef(handle);
+    registeredHandle.current = handle;
+    useRegisterOperationComponentRef(registeredHandle);
+
+    const releaseCapture = useCallback(() => {
+        captureVersion.current++;
+        clearTimeout(timerRef.current);
+        streamRef.current?.getTracks().forEach((track) => { track.onended = null; track.stop(); });
+        streamRef.current = null;
+        previewFrameRef.current = null;
+        if (videoRef.current) videoRef.current.srcObject = null;
+        publish(null);
+    }, [publish]);
+    const stop = useCallback(() => {
+        releaseCapture();
+        setCaptureState('idle');
+        setHasFrame(false);
+        setStatus('Screen capture stopped.');
+        const canvas = canvasRef.current;
+        if (canvas && !canvas.hidden) canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+    }, [releaseCapture]);
+
+    useEffect(() => () => {
+        releaseCapture();
+        modelVersion.current++;
+        Object.values(models.current).forEach((model) => { void model.dispose().catch(() => undefined); });
+        models.current = {};
+    }, [releaseCapture]);
+
+    const refreshSources = async () => {
+        setError('');
+        try {
+            const available = await window.screenCapture!.listSources();
+            setSources(available);
+            setSourceId((current) => available.some(({ id }) => id === current) ? current : '');
+            if (!available.length) setError('No capture sources found. Open the simulator and refresh.');
+        } catch (reason) { setError(message(reason)); }
+    };
+
+    useEffect(() => {
+        if (!window.screenCapture) return;
+        const version = ++modelVersion.current;
+        publish(null);
+        setDetectors(Object.fromEntries(DETECTION_TASKS.map(({ id }) => {
+            const current = models.current[id];
+            const model = current?.executionProvider === 'wasm' && !allowCpuFallback ? undefined : current;
+            return [id, !enabled[id] ? { status: 'off' } : model ? {
+                status: 'ready', device: model.executionProvider === 'webgpu' ? 'GPU acceleration active'
+                    : `CPU inference · ${model.fallbackReason || 'GPU acceleration unavailable.'}`,
+            } : { status: 'loading' }];
+        })) as Record<DetectionTask, DetectorState>);
+        // Serialize loading so rapid toggles cannot leave duplicate model sessions alive.
+        modelQueue.current = modelQueue.current.then(async () => {
+            for (const { id } of DETECTION_TASKS) {
+                if (version !== modelVersion.current) return;
+                if (!enabled[id] || (!allowCpuFallback && models.current[id]?.executionProvider === 'wasm')) {
+                    const previous = models.current[id];
+                    delete models.current[id];
+                    await previous?.dispose().catch(() => undefined);
+                    if (version !== modelVersion.current) return;
+                }
+                if (!enabled[id]) continue;
+                if (models.current[id]) continue;
+                try {
+                    const model = await TrackVisionModel.loadBuiltin(id, allowCpuFallback);
+                    if (version !== modelVersion.current) { await model.dispose().catch(() => undefined); return; }
+                    models.current[id] = model;
+                    setDetectors((current) => ({ ...current, [id]: {
+                        status: 'ready', device: model.executionProvider === 'webgpu' ? 'GPU acceleration active'
+                            : `CPU inference · ${model.fallbackReason || 'GPU acceleration unavailable.'}`,
+                    } }));
+                } catch (reason) {
+                    if (version === modelVersion.current) setDetectors((current) => ({ ...current, [id]: {
+                        status: !allowCpuFallback && reason instanceof GpuInferenceError ? 'retrying' : 'error', error: message(reason),
+                    } }));
+                }
+            }
+        });
+        // Reconfiguration increments the version above; unmount cleanup invalidates it too.
+    }, [enabled, allowCpuFallback, retry, publish]);
+
+    useEffect(() => {
+        const active = DETECTION_TASKS.filter(({ id }) => enabled[id]).map(({ id }) => detectors[id]);
+        // Let the current load queue finish before scheduling another GPU attempt.
+        if (active.some(({ status }) => status === 'loading') || !active.some(({ status }) => status === 'retrying')) return;
+        const timer = setTimeout(() => setRetry((current) => current + 1), GPU_RETRY_DELAY_MS);
+        return () => clearTimeout(timer);
+    }, [detectors, enabled, allowCpuFallback]);
+
+    const toggleDetection = (task: DetectionTask) => {
+        // Remove stale overlays immediately; the next captured frame uses the new stack.
+        modelVersion.current++;
+        publish(null);
+        setHasFrame(false);
+        setEnabled((current) => ({ ...current, [task]: !current[task] }));
+    };
+
+    const start = async () => {
+        releaseCapture();
+        const version = captureVersion.current;
+        setCaptureState('starting');
+        setError('');
+        setStatus('Waiting for screen selection…');
+        try {
+            const stream = await captureGameScreen(sourceId);
+            if (version !== captureVersion.current) { stream.getTracks().forEach((track) => track.stop()); return; }
+            streamRef.current = stream;
+            stream.getVideoTracks().forEach((track) => { track.onended = stop; });
+            const video = videoRef.current!;
+            video.srcObject = stream;
+            await video.play();
+            await inferenceRef.current.catch(() => undefined);
+            if (version !== captureVersion.current) return;
+            setCaptureState('active');
+            const frame = document.createElement('canvas');
+            const tick = async () => {
+                if (version !== captureVersion.current) return;
+                const started = performance.now();
+                try {
+                    if (video.readyState >= 2 && video.videoWidth && video.videoHeight) {
+                        frame.width = video.videoWidth;
+                        frame.height = video.videoHeight;
+                        const context = frame.getContext('2d');
+                        if (!context) throw new Error('Screen preview is unavailable.');
+                        context.drawImage(video, 0, 0);
+                        const stackVersion = modelVersion.current;
+                        const result: TrackVisionDetection = { capturedAt: Date.now(), width: frame.width, height: frame.height, detections: {} };
+                        const inference = (async () => {
+                            for (const { id } of DETECTION_TASKS) {
+                                if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
+                                const model = models.current[id];
+                                if (!options.current.enabled[id] || !model || (!options.current.allowCpuFallback && model.executionProvider === 'wasm')) continue;
+                                try { result.detections[id] = await model.detect(frame, options.current.confidence); }
+                                catch (reason) {
+                                    if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
+                                    delete models.current[id];
+                                    void model.dispose().catch(() => undefined);
+                                    setDetectors((current) => ({ ...current, [id]: {
+                                        status: model.executionProvider === 'webgpu' ? 'retrying' : 'error', error: message(reason),
+                                    } }));
+                                }
+                            }
+                        })();
+                        inferenceRef.current = inference;
+                        await inference;
+                        if (version !== captureVersion.current) return;
+                        if (stackVersion !== modelVersion.current) {
+                            timerRef.current = setTimeout(tick, 0);
+                            return;
+                        }
+                        // Keep a clean copy so slider changes cannot accumulate overlays or mix frames.
+                        const previewFrame = previewFrameRef.current ?? document.createElement('canvas');
+                        previewFrame.width = frame.width;
+                        previewFrame.height = frame.height;
+                        const previewContext = previewFrame.getContext('2d');
+                        if (!previewContext) throw new Error('Screen preview is unavailable.');
+                        previewContext.drawImage(frame, 0, 0);
+                        previewFrameRef.current = previewFrame;
+                        redrawPreview(result);
+                        publish(result);
+                        setHasFrame(true);
+                        const completed = DETECTION_TASKS.filter(({ id }) => result.detections[id]);
+                        setStatus(completed.length ? completed.map(({ id, label }) => `${label} · ${Math.round(result.detections[id]!.inferenceMs)} ms`).join(' / ')
+                            : Object.values(options.current.enabled).some(Boolean) ? 'Screen shared. Waiting for enabled detectors.'
+                                : 'Screen shared. Enable a detection to analyze the scene.');
+                    }
+                    timerRef.current = setTimeout(tick, Math.max(0, 200 - (performance.now() - started)));
+                } catch (reason) {
+                    if (version !== captureVersion.current) return;
+                    stop();
+                    setError(message(reason));
+                }
+            };
+            void tick();
+        } catch (reason) {
+            if (version !== captureVersion.current) return;
+            stop();
+            setError(reason instanceof Error && reason.name === 'NotAllowedError'
+                ? 'Screen sharing was cancelled or denied. Share again and select your game window.' : message(reason));
+        }
+    };
+
+    const saveFrame = () => {
+        const video = videoRef.current;
+        if (!video?.videoWidth || !video.videoHeight) return;
+        const frame = document.createElement('canvas');
+        frame.width = video.videoWidth;
+        frame.height = video.videoHeight;
+        frame.getContext('2d')?.drawImage(video, 0, 0);
+        const anchor = document.createElement('a');
+        anchor.download = `track-frame-${Date.now()}.png`;
+        anchor.href = frame.toDataURL('image/png');
+        anchor.click();
+    };
+
+    if (!window.screenCapture) {
+        return <section className="track-vision" aria-label="Track Vision">
+            <p role="alert">Track Vision is available only in the Electron desktop app.</p>
+        </section>;
+    }
+
+    return (
+        <section className="track-vision" aria-label="Track Vision">
+            <fieldset className="track-vision__stack">
+                <legend>Detection stack <span>Ultralytics</span></legend>
+                <label className="track-vision__fallback">
+                    <input type="checkbox" checked={allowCpuFallback} onChange={(event) => {
+                        modelVersion.current++;
+                        publish(null);
+                        setHasFrame(false);
+                        setAllowCpuFallback(event.target.checked);
+                    }} />
+                    Allow CPU fallback
+                </label>
+                <p className="track-vision__hint">{allowCpuFallback
+                    ? 'Try GPU first, then use CPU if GPU inference is unavailable.'
+                    : 'CPU fallback is off. Failed GPU inference retries automatically every 3 seconds.'}</p>
+                {DETECTION_TASKS.map(({ id, label, description }) => <div className="track-vision__detector" key={id} data-enabled={enabled[id]}>
+                    <label>
+                        <input type="checkbox" aria-label={`Enable ${label}`} checked={enabled[id]} onChange={() => toggleDetection(id)} />
+                        <span><strong>{label}</strong><small>{description}</small></span>
+                    </label>
+                    <span className="track-vision__detector-state">{!enabled[id] ? 'Off' : detectors[id].status === 'ready'
+                        ? captureState === 'active' ? 'Running' : 'Ready' : detectors[id].status === 'retrying' ? 'Retrying GPU…'
+                            : detectors[id].status === 'error' ? 'Unavailable' : 'Loading…'}</span>
+                    {enabled[id] && detectors[id].device && <div className="track-vision__hint" aria-label={`${label} inference device`}>{detectors[id].device}</div>}
+                    {enabled[id] && detectors[id].error && <div className="track-vision__error" role="alert">
+                        {detectors[id].error} <button type="button" onClick={() => setRetry((current) => current + 1)}>Retry {label}</button>
+                    </div>}
+                </div>)}
+            </fieldset>
+            {enabled.depth && <fieldset className="track-vision__depth">
+                <legend>Depth range <span>Estimated meters</span></legend>
+                <div className="track-vision__controls">
+                    <label>Close · {depthRange.near} m
+                        <input aria-label="Close depth" aria-valuetext={`${depthRange.near} meters or closer`} type="range"
+                            min="0" max={depthRange.far - 0.5} step="0.5" value={depthRange.near}
+                            onChange={(event) => setDepthRange((current) => ({ ...current, near: Math.min(Number(event.target.value), current.far - 0.5) }))} />
+                    </label>
+                    <label>Far · {depthRange.far} m
+                        <input aria-label="Far depth" aria-valuetext={`${depthRange.far} meters or farther`} type="range"
+                            min={depthRange.near + 0.5} max="200" step="0.5" value={depthRange.far}
+                            onChange={(event) => setDepthRange((current) => ({ ...current, far: Math.max(Number(event.target.value), current.near + 0.5) }))} />
+                    </label>
+                    <button type="button" onClick={() => setDepthRange(DEFAULT_DEPTH_RANGE)}>Reset depth range</button>
+                </div>
+                <div className="track-vision__depth-meter" aria-hidden="true" />
+                <div className="track-vision__legend"><span>Close ≤ {depthRange.near} m</span><span>Far ≥ {depthRange.far} m</span></div>
+                <p className="track-vision__hint">Warm at or below Close, cool at or above Far. Adjust to tune the depth colors.</p>
+            </fieldset>}
+            <div className="track-vision__controls">
+                <label>Segment confidence {Math.round(confidence * 100)}%
+                    <input aria-label="Segment confidence" disabled={!enabled.segment} type="range" min="0.1" max="0.95" step="0.05" value={confidence}
+                        onChange={(event) => setConfidence(Number(event.target.value))} />
+                </label>
+            </div>
+            <div className="track-vision__controls">
+                <select aria-label="Game window or screen" value={sourceId} disabled={captureState !== 'idle'} onChange={(event) => setSourceId(event.target.value)}>
+                    <option value="">Choose a window or screen</option>
+                    {sources.map(({ id, name: sourceName }) => <option key={id} value={id}>{sourceName}</option>)}
+                </select>
+                <button type="button" disabled={captureState !== 'idle'} onClick={() => void refreshSources()}>Refresh sources</button>
+                {captureState === 'idle'
+                    ? <button type="button" className="track-vision__start" disabled={!sourceId} onClick={() => void start()}>Share game screen</button>
+                    : <button type="button" onClick={stop}>Stop capture</button>}
+                <button type="button" disabled={!hasFrame || captureState !== 'active'} onClick={saveFrame}>Save frame</button>
+            </div>
+            <div className="track-vision__preview">
+                <video ref={videoRef} muted playsInline hidden />
+                <canvas ref={canvasRef} aria-label="Captured game frame with vision detections" hidden={!hasFrame} />
+                {!hasFrame && <div className="track-vision__empty"><strong>See the full racing scene</strong><span>Share your simulator window and enable the detections you need.</span></div>}
+            </div>
+            <div className="track-vision__status" role="status">{status}</div>
+            {error && <div className="track-vision__error" role="alert">{error}</div>}
+            <p className="track-vision__hint">Frames and inference stay on this device. Pretrained models may vary in simulator accuracy.</p>
+        </section>
+    );
+});
+
+export default LiveTrackVision;

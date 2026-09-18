@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain, dialog, desktopCapturer } = require('electron');
 const { Worker } = require('worker_threads');
 const { PythonShell } = require('python-shell');
 const path = require('path');
@@ -9,6 +9,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { detectSupportedDesktopGame } = require('./desktop-game-detection');
 const { RecordingSessionManager } = require('../electron/recording/recording-session-manager');
+const { registerScreenCapture } = require('../electron/screen-capture');
 const {
   DESKTOP_GAME_SET,
   recordingStartFailure,
@@ -47,6 +48,7 @@ function getPythonExecutable() {
 
 const devMode = app.isPackaged ? false : isDev;
 let mainWindow;
+const configureScreenCapture = registerScreenCapture({ ipcMain, desktopCapturer, getMainWindow: () => mainWindow });
 let isAppQuitting = false;
 let recordingManager = null;
 let latestDetectedGame = null;
@@ -466,6 +468,7 @@ function createWindow() {
     }
   });
 
+  configureScreenCapture(mainWindow);
   mainWindow.loadURL(devMode ? 'http://localhost:3000' : `file://${path.join(__dirname, '../build/index.html')}`);
   const ownerWebContentsId = mainWindow.webContents.id;
   mainWindow.webContents.on('destroyed', () => {
