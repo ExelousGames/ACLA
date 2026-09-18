@@ -13,7 +13,7 @@ from app.ml.model_hub import (
     get_segment_classifier,
     get_top_lap_reference_model,
 )
-from app.pipelines.inference.preprocessing import (
+from app.shared.inference_preprocessing import (
     preprocess_inference_telemetry,
 )
 from app.top_laps.runtime import TopLapReferenceModelError

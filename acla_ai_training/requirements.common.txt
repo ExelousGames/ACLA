@@ -1,0 +1,17 @@
+# Reuse the runtime model/feature dependencies to keep artifact formats compatible.
+-r ../acla_ai_service/requirements.common.txt
+
+# Local dataset preparation, annotation UI, and annotation providers.
+pyarrow>=15.0.2
+# Lance is the telemetry store backend. `pylance` ships the Python
+# bindings (import name: `lance`). The previous Zarr backend was removed once the
+# typed-Lance migration completed.
+pylance>=0.20.0
+getdaft>=0.3.0
+plotly==5.17.0
+matplotlib>=3.9.0,<4
+seaborn==0.13.0
+streamlit>=1.41.0
+claude-agent-sdk>=0.1.0
+# SDK tool handlers return CallToolResult; older MCP versions mishandle it.
+mcp>=1.19

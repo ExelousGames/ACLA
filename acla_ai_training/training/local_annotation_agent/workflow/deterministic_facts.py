@@ -1,0 +1,1092 @@
+"""Telemetry input and fact strategies for deterministic annotation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+
+from training.local_annotation_agent.workflow.deterministic_engine import (
+    FactDefinition,
+    FactRegistry,
+    HalfOpenRange,
+    InputDefinition,
+    InputRegistry,
+    MISSING,
+    ResolvedInput,
+)
+from app.shared.annotation_telemetry import annotation_telemetry
+from app.shared.labels import LABEL_MAPPING
+
+
+SMOOTHING_WINDOW = 3
+SLOPE_ANGLE_DEGREES = 5.0
+
+
+def smooth_telemetry(df: pd.DataFrame) -> pd.DataFrame:
+    telemetry = annotation_telemetry(df)
+    for name in telemetry.select_dtypes(include=[np.number]).columns:
+        values = telemetry[name].to_numpy(dtype=float)
+        if len(values) < 2:
+            continue
+        telemetry[name] = (
+            pd.Series(values)
+            .rolling(SMOOTHING_WINDOW, center=True, min_periods=1)
+            .mean()
+            .to_numpy(dtype=float)
+        )
+    return telemetry
+
+
+def _series(df: pd.DataFrame, *names: str) -> Optional[np.ndarray]:
+    for name in names:
+        if name in df.columns:
+            values = pd.to_numeric(df[name], errors="coerce").to_numpy(dtype=float)
+            if np.any(np.isfinite(values)):
+                return values
+    return None
+
+
+@dataclass
+class EvaluationContext:
+    telemetry: pd.DataFrame
+    section_id: str = ""
+    overlap_section_ids: Tuple[str, ...] = ()
+    _input_cache: Dict[Tuple[int, int, str], Optional[ResolvedInput]] = field(default_factory=dict)
+    _fact_cache: Dict[Tuple[Any, ...], Any] = field(default_factory=dict)
+    _analysis_cache: Dict[Tuple[Any, ...], Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dataframe(
+        cls, df: pd.DataFrame, *, section_id: str = "",
+        overlap_section_ids: Sequence[str] = (),
+    ) -> "EvaluationContext":
+        return cls(
+            smooth_telemetry(df), section_id,
+            tuple(str(value) for value in overlap_section_ids),
+        )
+
+    def segment(self, range_: HalfOpenRange) -> pd.DataFrame:
+        return self.telemetry.loc[
+            (self.telemetry.index >= range_.start)
+            & (self.telemetry.index < range_.end)
+        ]
+
+    def memo(self, key: Tuple[Any, ...], calculate: Callable[[], Any]) -> Any:
+        if key not in self._analysis_cache:
+            self._analysis_cache[key] = calculate()
+        return self._analysis_cache[key]
+
+    def resolve_input(
+        self, tag: str, scope: HalfOpenRange, registry: InputRegistry,
+    ) -> Optional[ResolvedInput]:
+        key = (scope.start, scope.end, tag)
+        if key not in self._input_cache:
+            definition = registry.get(tag)
+            self._input_cache[key] = (
+                definition.resolve(self, scope) if definition is not None else None
+            )
+        return self._input_cache[key]
+
+    def calculate_fact(
+        self, name: str, definition: FactDefinition,
+        inputs: Sequence[ResolvedInput],
+    ) -> Any:
+        key = (
+            name,
+            *((value.kind, value.value) for value in inputs),
+        )
+        if key not in self._fact_cache:
+            try:
+                self._fact_cache[key] = definition.calculate(self, inputs)
+            except (KeyError, TypeError, ValueError, IndexError, ZeroDivisionError):
+                self._fact_cache[key] = MISSING
+        return self._fact_cache[key]
+
+
+def _range_input(tag: str, range_: HalfOpenRange) -> ResolvedInput:
+    return ResolvedInput(tag, "range", range_, range_)
+
+
+def _iloc_input(tag: str, value: int) -> ResolvedInput:
+    point = HalfOpenRange(value, value + 1)
+    return ResolvedInput(tag, "iloc", int(value), point)
+
+
+def _scope_resolver(tag: str) -> Callable[[EvaluationContext, HalfOpenRange], ResolvedInput]:
+    return lambda _context, scope: _range_input(tag, scope)
+
+
+def _scope_start_iloc_resolver(
+    tag: str,
+) -> Callable[[EvaluationContext, HalfOpenRange], ResolvedInput]:
+    return lambda _context, scope: _iloc_input(tag, scope.start)
+
+
+def _scope_end_iloc_resolver(
+    tag: str,
+) -> Callable[[EvaluationContext, HalfOpenRange], ResolvedInput]:
+    return lambda _context, scope: _iloc_input(tag, scope.end - 1)
+
+
+def _shape_analysis(context: EvaluationContext, range_: HalfOpenRange) -> Mapping[str, Any]:
+    def calculate() -> Mapping[str, Any]:
+        from training.shared.annotation_agent_tools import measure_segment_shape
+
+        try:
+            return measure_segment_shape(context.telemetry, range_.start, range_.end) or {}
+        except Exception:
+            return {}
+    return context.memo(("shape", range_.start, range_.end), calculate)
+
+
+def _phase_resolver(
+    tag: str, phase_name: str,
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
+        ranges = []
+        for phase in _shape_analysis(context, scope).get("phases") or []:
+            if not isinstance(phase, Mapping):
+                continue
+            entry, apex, exit_ = phase.get("entry"), phase.get("apex"), phase.get("exit")
+            if not all(isinstance(value, int) for value in (entry, apex, exit_)):
+                continue
+            named = {
+                "entry": HalfOpenRange(entry, apex + 1),
+                "apex": HalfOpenRange(
+                    max(entry, apex - 2),
+                    min(exit_, apex + 2) + 1,
+                ),
+                "exit": HalfOpenRange(apex, exit_ + 1),
+            }
+            ranges.append(named[phase_name])
+        envelope = HalfOpenRange.envelope(ranges)
+        return _range_input(tag, envelope) if envelope is not None else None
+    return resolve
+
+
+def _segment_apex_iloc_resolver(
+    tag: str,
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
+        phases = _shape_analysis(context, scope).get("phases")
+        if not isinstance(phases, list) or not phases:
+            return None
+        first_phase = phases[0]
+        if not isinstance(first_phase, Mapping):
+            return None
+        apex = first_phase.get("apex")
+        if (
+            isinstance(apex, bool)
+            or not isinstance(apex, (int, np.integer))
+            or not scope.start < int(apex) < scope.end
+        ):
+            return None
+        return _iloc_input(tag, int(apex))
+    return resolve
+
+
+def _phase_end_iloc_resolver(
+    tag: str, phase_name: str,
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    resolve_range = _phase_resolver(tag, phase_name)
+
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
+        resolved = resolve_range(context, scope)
+        if resolved is None or not isinstance(resolved.value, HalfOpenRange):
+            return None
+        return _iloc_input(tag, resolved.value.end - 1)
+    return resolve
+
+
+def _phase_start_iloc_resolver(
+    tag: str, phase_name: str,
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    resolve_range = _phase_resolver(tag, phase_name)
+
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
+        resolved = resolve_range(context, scope)
+        if resolved is None or not isinstance(resolved.value, HalfOpenRange):
+            return None
+        return _iloc_input(tag, resolved.value.start)
+    return resolve
+
+
+def _first(mask: np.ndarray, index: np.ndarray) -> Optional[int]:
+    positions = np.flatnonzero(mask)
+    return int(index[int(positions[0])]) if len(positions) else None
+
+
+def _landmarks(values: Optional[np.ndarray], index: np.ndarray) -> Dict[str, Any]:
+    if values is None or len(values) != len(index):
+        return {}
+    finite = np.where(np.isfinite(values), values, 0.0)
+    peak_position = int(np.argmax(finite))
+    peak = float(finite[peak_position])
+    active = finite >= max(0.05, peak * 0.10)
+    high = finite >= max(0.10, peak * 0.90)
+    application_onset = _first(active, index)
+    application_end = _first(high, index)
+    after_peak = np.arange(len(finite)) > peak_position
+    release_onset_positions = np.flatnonzero(
+        after_peak & (finite < max(0.10, peak * 0.90))
+    )
+    release_end_positions = np.flatnonzero(after_peak & (finite <= 0.05))
+    release_onset = (
+        int(index[int(release_onset_positions[0])])
+        if len(release_onset_positions) else None
+    )
+    release_end = (
+        int(index[int(release_end_positions[0])])
+        if len(release_end_positions) else None
+    )
+    hold_length = (
+        max(0, release_onset - application_end)
+        if application_end is not None and release_onset is not None else None
+    )
+    return {
+        "application_onset": application_onset,
+        "application_end": application_end,
+        "release_onset": release_onset,
+        "release_end": release_end,
+        "peak": peak,
+        "peak_iloc": int(index[peak_position]),
+        "hold_length": hold_length,
+    }
+
+
+def _throttle_landmarks(
+    values: Optional[np.ndarray], index: np.ndarray,
+) -> Dict[str, Any]:
+    landmarks = _landmarks(values, index)
+    if not landmarks or values is None:
+        return landmarks
+
+    landmarks.pop("application_onset", None)
+    landmarks.pop("application_end", None)
+    finite = np.where(np.isfinite(values), values, 0.0)
+    positive_steps = np.diff(finite) > 0.0
+    runs: list[Tuple[int, int]] = []
+    run_start: Optional[int] = None
+    for position, positive in enumerate(positive_steps):
+        if positive and run_start is None:
+            run_start = position
+        if run_start is not None and (
+            not positive or position == len(positive_steps) - 1
+        ):
+            run_end = position + 1 if positive else position
+            runs.append((run_start, run_end))
+            run_start = None
+
+    candidates = []
+    for start, end in runs:
+        peak = float(finite[end])
+        active_threshold = max(0.05, peak * 0.10)
+        high_threshold = max(0.10, peak * 0.90)
+        active_positions = np.flatnonzero(
+            finite[start:end + 1] >= active_threshold
+        )
+        high_positions = np.flatnonzero(
+            finite[start:end + 1] >= high_threshold
+        )
+        if not len(active_positions) or not len(high_positions):
+            continue
+        onset = start + int(active_positions[0])
+        reapplication_end = start + int(high_positions[0])
+        if reapplication_end < onset:
+            continue
+        candidates.append((
+            float(finite[end] - finite[start]),
+            onset,
+            reapplication_end,
+        ))
+
+    if candidates:
+        _, onset, reapplication_end = max(candidates, key=lambda item: item[0])
+        landmarks["reapplication_onset"] = int(index[onset])
+        landmarks["reapplication_end"] = int(index[reapplication_end])
+    return landmarks
+
+
+CONTROL_COLUMNS = {
+    ("player", "brake"): ("Physics_brake",),
+    ("expert", "brake"): ("expert_optimal_brake",),
+    ("player", "throttle"): ("Physics_gas",),
+    ("expert", "throttle"): ("expert_optimal_throttle",),
+}
+
+
+def _control_landmarks(
+    context: EvaluationContext, scope: HalfOpenRange, driver: str, control: str,
+) -> Mapping[str, Any]:
+    def calculate() -> Mapping[str, Any]:
+        segment = context.segment(scope)
+        values = _series(segment, *CONTROL_COLUMNS[(driver, control)])
+        index = segment.index.to_numpy(dtype=int)
+        return (
+            _throttle_landmarks(values, index)
+            if control == "throttle"
+            else _landmarks(values, index)
+        )
+    return context.memo(
+        ("landmarks", scope.start, scope.end, driver, control), calculate,
+    )
+
+
+def _control_iloc_resolver(
+    tag: str, driver: str, control: str, landmark: str,
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
+        value = _control_landmarks(context, scope, driver, control).get(landmark)
+        return _iloc_input(tag, value) if value is not None else None
+    return resolve
+
+
+def _brake_comparison_range_resolver(
+    tag: str,
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
+        player = _control_landmarks(context, scope, "player", "brake")
+        expert = _control_landmarks(context, scope, "expert", "brake")
+        onsets = [player.get("application_onset"), expert.get("application_onset")]
+        ends = [player.get("release_end"), expert.get("release_end")]
+        if not all(isinstance(value, int) for value in (*onsets, *ends)):
+            return None
+        range_ = HalfOpenRange(min(onsets), max(ends) + 1)
+        return _range_input(tag, range_)
+    return resolve
+
+
+def _steering_landmarks(
+    context: EvaluationContext, scope: HalfOpenRange, driver: str,
+) -> Mapping[str, Optional[int]]:
+    def calculate() -> Mapping[str, Optional[int]]:
+        segment = context.segment(scope)
+        names = ("Physics_steer_angle",) if driver == "player" else ("expert_optimal_steering",)
+        values = _series(segment, *names)
+        if values is None:
+            return {}
+        index = segment.index.to_numpy(dtype=int)
+        absolute = np.abs(values)
+        peak_position = int(np.nanargmax(absolute))
+        threshold = max(0.02, float(absolute[peak_position]) * 0.10)
+        exit_ = np.flatnonzero(
+            (np.arange(len(values)) > peak_position) & (absolute < threshold)
+        )
+        return {
+            "apex": int(index[peak_position]),
+            "turn_exit": int(index[int(exit_[0])]) if len(exit_) else None,
+        }
+    return context.memo(("steering", scope.start, scope.end, driver), calculate)
+
+
+def _steering_iloc_resolver(
+    tag: str, driver: str, landmark: str,
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
+        value = _steering_landmarks(context, scope, driver).get(landmark)
+        return _iloc_input(tag, value) if value is not None else None
+    return resolve
+
+
+def _expert_shift_range_resolver(
+    tag: str, direction: str,
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
+        segment = context.segment(scope)
+        gears = _series(segment, "expert_optimal_gear")
+        if gears is None:
+            return None
+        differences = np.diff(gears)
+        matches = differences > 0 if direction == "up" else differences < 0
+        positions = np.flatnonzero(matches)
+        if not len(positions):
+            return None
+        start = int(positions[0])
+        end = start
+        while end + 1 < len(matches) and bool(matches[end + 1]):
+            end += 1
+        index = segment.index.to_numpy(dtype=int)
+        range_ = HalfOpenRange(int(index[start]), int(index[end + 1]) + 1)
+        return _range_input(tag, range_)
+    return resolve
+
+
+def build_input_registry() -> InputRegistry:
+    definitions: Dict[str, InputDefinition] = {}
+    for tag in (
+        "section_range", "segment_range", "opponent_interaction_range",
+        "control_range",
+    ):
+        definitions[tag] = InputDefinition("range", _scope_resolver(tag))
+    definitions.update({
+        "speed_comparison_range": InputDefinition(
+            "range", _scope_resolver("speed_comparison_range"),
+        ),
+        "trajectory_comparison_range": InputDefinition(
+            "range", _scope_resolver("trajectory_comparison_range"),
+        ),
+        "brake_comparison_range": InputDefinition(
+            "range", _brake_comparison_range_resolver("brake_comparison_range"),
+        ),
+        "expert_upshift_range": InputDefinition(
+            "range",
+            _expert_shift_range_resolver("expert_upshift_range", "up"),
+        ),
+        "expert_downshift_range": InputDefinition(
+            "range",
+            _expert_shift_range_resolver("expert_downshift_range", "down"),
+        ),
+        "corner_entry_range": InputDefinition("range", _phase_resolver("corner_entry_range", "entry")),
+        "corner_apex_range": InputDefinition("range", _phase_resolver("corner_apex_range", "apex")),
+        "corner_exit_range": InputDefinition("range", _phase_resolver("corner_exit_range", "exit")),
+        "corner_entry_start_iloc": InputDefinition(
+            "iloc", _phase_start_iloc_resolver("corner_entry_start_iloc", "entry"),
+        ),
+        "corner_exit_end_iloc": InputDefinition(
+            "iloc", _phase_end_iloc_resolver("corner_exit_end_iloc", "exit"),
+        ),
+        "segment_start_iloc": InputDefinition(
+            "iloc", _scope_start_iloc_resolver("segment_start_iloc"),
+        ),
+        "segment_end_iloc": InputDefinition(
+            "iloc", _scope_end_iloc_resolver("segment_end_iloc"),
+        ),
+        "segment_apex_iloc": InputDefinition(
+            "iloc",
+            _segment_apex_iloc_resolver(
+                "segment_apex_iloc",
+            ),
+        ),
+    })
+    for driver in ("player", "expert"):
+        for control, landmarks in (
+            ("brake", (
+                "application_onset", "application_end",
+                "release_onset", "release_end",
+            )),
+            ("throttle", (
+                "reapplication_onset", "reapplication_end",
+                "release_onset", "release_end",
+            )),
+        ):
+            for landmark in landmarks:
+                tag = f"{driver}_{control}_{landmark}_iloc"
+                definitions[tag] = InputDefinition(
+                    "iloc", _control_iloc_resolver(tag, driver, control, landmark),
+                )
+        for landmark in ("apex", "turn_exit"):
+            tag = f"{driver}_{landmark}_iloc"
+            definitions[tag] = InputDefinition(
+                "iloc", _steering_iloc_resolver(tag, driver, landmark),
+            )
+    return InputRegistry(definitions)
+
+
+def _range(inputs: Sequence[ResolvedInput]) -> HalfOpenRange:
+    value = inputs[0].value
+    if not isinstance(value, HalfOpenRange):
+        raise TypeError("range input required")
+    return value
+
+
+def _relation(player: Optional[int], expert: Optional[int]) -> Any:
+    if player is None or expert is None:
+        return MISSING
+    delta = int(player) - int(expert)
+    if delta == 0:
+        return "aligned"
+    return "earlier" if delta < 0 else "later"
+
+
+def _compare_ilocs(_context: EvaluationContext, inputs: Sequence[ResolvedInput]) -> Any:
+    return _relation(int(inputs[0].value), int(inputs[1].value))
+
+
+def _compare_shift_timing(
+    context: EvaluationContext, range_: HalfOpenRange, direction: str,
+) -> Any:
+    segment = context.segment(range_)
+    player = _series(segment, "Physics_gear")
+    expert = _series(segment, "expert_optimal_gear")
+    if player is None or expert is None or len(player) < 2 or len(expert) < 2:
+        return MISSING
+    if not np.all(np.isfinite(player)) or not np.all(np.isfinite(expert)):
+        return MISSING
+
+    sign = 1.0 if direction == "up" else -1.0
+    expert_progress = sign * float(expert[-1] - expert[0])
+    player_progress = sign * float(player[-1] - player[0])
+    player_differences = sign * np.diff(player)
+    if (
+        expert_progress <= 0.0
+        or player_progress < 0.0
+        or np.any(player_differences < 0.0)
+    ):
+        return MISSING
+
+    start_gap = sign * float(player[0] - expert[0])
+    end_gap = sign * float(player[-1] - expert[-1])
+    if start_gap >= 0.0 and end_gap >= 0.0:
+        return max(start_gap, end_gap)
+    if start_gap <= 0.0 and end_gap <= 0.0:
+        return min(start_gap, end_gap)
+    return MISSING
+
+
+def _trajectory(context: EvaluationContext, range_: HalfOpenRange) -> Optional[np.ndarray]:
+    def calculate() -> Optional[np.ndarray]:
+        from training.shared.annotation_agent_tools import calculate_trajectory_offset
+
+        return calculate_trajectory_offset(context.segment(range_))
+    return context.memo(("trajectory", range_.start, range_.end), calculate)
+
+
+def _corresponding_trajectory(context: EvaluationContext) -> Optional[np.ndarray]:
+    def calculate() -> Optional[np.ndarray]:
+        from training.shared.annotation_agent_tools import (
+            calculate_corresponding_trajectory_offset,
+        )
+
+        return calculate_corresponding_trajectory_offset(context.telemetry)
+    return context.memo(("corresponding_trajectory",), calculate)
+
+
+def _speed_delta(context: EvaluationContext, range_: HalfOpenRange) -> Optional[np.ndarray]:
+    def calculate() -> Optional[np.ndarray]:
+        segment = context.segment(range_)
+        player = _series(segment, "Physics_speed_kmh")
+        expert = _series(segment, "expert_optimal_speed")
+        return expert - player if player is not None and expert is not None else None
+    return context.memo(("speed_delta", range_.start, range_.end), calculate)
+
+
+def _speed_difference_at_iloc(
+    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+) -> Any:
+    iloc = int(inputs[0].value)
+    positions = np.flatnonzero(context.telemetry.index.to_numpy() == iloc)
+    if len(positions) != 1:
+        return MISSING
+    row = context.telemetry.iloc[[int(positions[0])]]
+    player = _series(row, "Physics_speed_kmh")
+    expert = _series(row, "expert_optimal_speed")
+    if player is None or expert is None:
+        return MISSING
+    difference = float(expert[0] - player[0])
+    return difference if np.isfinite(difference) else MISSING
+
+
+def _speed_gap_slope(
+    context: EvaluationContext, range_: HalfOpenRange,
+) -> Any:
+    values = _speed_delta(context, range_)
+    if values is None:
+        return MISSING
+    finite = np.isfinite(values)
+    if int(np.count_nonzero(finite)) < 2:
+        return MISSING
+    positions = np.arange(len(values), dtype=float)[finite]
+    centered_positions = positions - float(np.mean(positions))
+    centered_values = values[finite] - float(np.mean(values[finite]))
+    denominator = float(np.dot(centered_positions, centered_positions))
+    if denominator == 0.0:
+        return MISSING
+    slope = float(np.dot(centered_positions, centered_values) / denominator)
+    return slope if np.isfinite(slope) else MISSING
+
+
+def _player_brake_peak(
+    context: EvaluationContext, range_: HalfOpenRange,
+) -> Any:
+    values = _finite(_series(context.segment(range_), "Physics_brake"))
+    return float(np.max(values)) if len(values) else MISSING
+
+
+def _finite(values: Optional[np.ndarray]) -> np.ndarray:
+    return values[np.isfinite(values)] if values is not None else np.array([])
+
+
+def _classify_trajectory_offset(offset: float) -> Any:
+    from training.shared.annotation_agent_tools import (
+        TRAJECTORY_ALIGNMENT_TOLERANCE_METERS,
+    )
+
+    if not np.isfinite(offset):
+        return MISSING
+    if abs(float(offset)) <= TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
+        return "aligned"
+    return "wider" if float(offset) > 0 else "tighter"
+
+
+def _trajectory_position(context: EvaluationContext, range_: HalfOpenRange) -> Any:
+    values = _finite(_trajectory(context, range_))
+    if not len(values):
+        return MISSING
+    return _classify_trajectory_offset(float(np.nanmedian(values)))
+
+
+def _trajectory_position_at_range_start(
+    context: EvaluationContext, range_: HalfOpenRange,
+) -> Any:
+    values = _trajectory(context, range_)
+    if values is None or not len(values):
+        return MISSING
+    return _classify_trajectory_offset(float(values[0]))
+
+
+def _trajectory_split(
+    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+) -> Any:
+    from training.shared.annotation_agent_tools import (
+        TRAJECTORY_ALIGNMENT_TOLERANCE_METERS,
+    )
+
+    start_iloc = int(inputs[0].value)
+    end_iloc = int(inputs[1].value)
+    if start_iloc >= end_iloc:
+        return MISSING
+
+    offsets = _corresponding_trajectory(context)
+    if offsets is None or len(offsets) != len(context.telemetry):
+        return MISSING
+
+    telemetry_ilocs = context.telemetry.index.to_numpy()
+    start_positions = np.flatnonzero(telemetry_ilocs == start_iloc)
+    end_positions = np.flatnonzero(telemetry_ilocs == end_iloc)
+    if len(start_positions) != 1 or len(end_positions) != 1:
+        return MISSING
+
+    values = np.asarray(offsets, dtype=float)
+    if values.ndim != 1:
+        return MISSING
+
+    start_position = int(start_positions[0])
+    end_position = int(end_positions[0])
+    if start_position >= end_position:
+        return MISSING
+
+    split_offsets = values[start_position:end_position + 1]
+    if len(split_offsets) < 3:
+        return MISSING
+
+    start_offset = float(split_offsets[0])
+    if not np.isfinite(start_offset):
+        return MISSING
+    if abs(start_offset) > TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
+        return MISSING
+
+    for candidate_position in range(2, len(split_offsets)):
+        candidate_offsets = split_offsets[:candidate_position + 1]
+        if not np.all(np.isfinite(candidate_offsets)):
+            return MISSING
+
+        evidence = candidate_offsets[-3:]
+        median_offset = float(np.median(evidence))
+        positions = np.arange(len(candidate_offsets), dtype=float)
+        centered_positions = positions - float(np.mean(positions))
+        centered_offsets = candidate_offsets - float(np.mean(candidate_offsets))
+        denominator = float(np.dot(centered_positions, centered_positions))
+        slope = float(
+            np.dot(centered_positions, centered_offsets) / denominator
+        )
+
+        if (
+            median_offset > TRAJECTORY_ALIGNMENT_TOLERANCE_METERS
+            and slope > 0.0
+        ):
+            return "wider"
+        if (
+            median_offset < -TRAJECTORY_ALIGNMENT_TOLERANCE_METERS
+            and slope < 0.0
+        ):
+            return "narrower"
+    return MISSING
+
+
+def _time_analysis(context: EvaluationContext, range_: HalfOpenRange) -> Mapping[str, Any]:
+    def calculate() -> Mapping[str, Any]:
+        segment = context.segment(range_)
+        values = _series(segment, "expert_time_difference")
+        finite = _finite(values)
+        if len(finite) < 2:
+            return {}
+        runs, accelerating_rises = _time_slope_runs(context.telemetry, range_)
+        return {
+            "delta_value": round(float(finite[-1] - finite[0]), 2),
+            "starting_direction": runs[0].get("direction") if runs else None,
+            "ending_direction": runs[-1].get("direction") if runs else None,
+            "middle_has_rise": bool(accelerating_rises),
+        }
+    return context.memo(("time", range_.start, range_.end), calculate)
+
+
+def _time_slope_direction(
+    previous_angle: float, current_angle: float, flattening: bool,
+) -> str:
+    angle_change = current_angle - previous_angle
+    moves_toward_zero = (
+        previous_angle * current_angle >= 0.0
+        and abs(current_angle) < abs(previous_angle)
+        and abs(angle_change) >= SLOPE_ANGLE_DEGREES
+    )
+    if moves_toward_zero:
+        return "flattening"
+    if flattening:
+        if angle_change >= SLOPE_ANGLE_DEGREES:
+            return "rising"
+        if angle_change <= -SLOPE_ANGLE_DEGREES:
+            return "falling"
+        return "flattening"
+    if current_angle >= SLOPE_ANGLE_DEGREES:
+        return "rising"
+    if current_angle <= -SLOPE_ANGLE_DEGREES:
+        return "falling"
+    return "flat"
+
+
+def _time_slope_runs(
+    df: pd.DataFrame, range_: HalfOpenRange,
+) -> Tuple[list[Dict[str, Any]], list[Tuple[int, int]]]:
+    segment = df.loc[
+        (df.index >= range_.start) & (df.index < range_.end)
+    ]
+    if "expert_time_difference" not in segment.columns:
+        return [], []
+    values = pd.to_numeric(
+        segment["expert_time_difference"], errors="coerce",
+    ).to_numpy(dtype=float)
+    ilocs = segment.index.to_numpy(dtype=float)
+    if len(values) < 2:
+        return [], []
+    iloc_deltas = np.diff(ilocs)
+    value_deltas = np.diff(values)
+    valid = (
+        np.isfinite(values[:-1])
+        & np.isfinite(values[1:])
+        & np.isfinite(iloc_deltas)
+        & (iloc_deltas == 1.0)
+        & np.isfinite(value_deltas)
+    )
+    if not np.any(valid):
+        return [], []
+    finite_values = values[np.isfinite(values)]
+    value_span = float(np.max(finite_values) - np.min(finite_values))
+    iloc_span = float(np.max(ilocs) - np.min(ilocs))
+    normalized_slopes = (
+        (value_deltas[valid] / iloc_deltas[valid]) * (iloc_span / value_span)
+        if value_span > 0.0 and iloc_span > 0.0
+        else np.zeros(int(np.sum(valid)), dtype=float)
+    )
+    angles = np.degrees(np.arctan(normalized_slopes))
+    step_starts = ilocs[:-1][valid]
+    step_ends = ilocs[1:][valid]
+    step_start_values = values[:-1][valid]
+    step_end_values = values[1:][valid]
+    runs: list[Dict[str, Any]] = []
+    accelerating_rises: list[Tuple[int, int]] = []
+    previous_angle: Optional[float] = None
+    previous_end_iloc: Optional[int] = None
+    flattening = False
+    for angle, start_iloc, end_iloc, start_value, end_value in zip(
+        angles, step_starts, step_ends, step_start_values, step_end_values,
+    ):
+        if previous_end_iloc is not None and int(start_iloc) != previous_end_iloc:
+            previous_angle = None
+            flattening = False
+        if (
+            previous_angle is not None
+            and float(angle) > 0.0
+            and float(angle) - previous_angle >= SLOPE_ANGLE_DEGREES
+        ):
+            accelerating_rises.append((int(start_iloc), int(end_iloc)))
+        direction = _time_slope_direction(
+            previous_angle if previous_angle is not None else 0.0,
+            float(angle), flattening,
+        )
+        flattening = direction == "flattening"
+        step = {
+            "start_iloc": int(start_iloc),
+            "end_iloc": int(end_iloc),
+            "start_value": float(start_value),
+            "end_value": float(end_value),
+            "direction": direction,
+        }
+        if (
+            runs
+            and runs[-1]["direction"] == direction
+            and runs[-1]["end_iloc"] == step["start_iloc"]
+        ):
+            runs[-1]["end_iloc"] = step["end_iloc"]
+            runs[-1]["end_value"] = step["end_value"]
+        else:
+            runs.append(step)
+        previous_angle = float(angle)
+        previous_end_iloc = int(end_iloc)
+    return runs, accelerating_rises
+
+
+def _opponent(context: EvaluationContext, range_: HalfOpenRange) -> Mapping[str, Any]:
+    def calculate() -> Mapping[str, Any]:
+        from training.shared.annotation_agent_tools import (
+            classify_opponent_interaction,
+            query_opponent_trajectory,
+        )
+
+        try:
+            content = classify_opponent_interaction(
+                context.telemetry, range_.start, range_.end,
+            ) or {}
+        except Exception:
+            return {}
+        facts: Dict[str, Any] = {
+            "outcome": content.get("outcome"),
+            "confidence_level": content.get("confidence_level"),
+        }
+        candidates = content.get("candidates") or []
+        primary = candidates[0] if candidates and isinstance(candidates[0], Mapping) else {}
+        entry = primary.get("entry_signed_long_gap_m")
+        exit_ = primary.get("exit_signed_long_gap_m")
+        facts["gap_shrank"] = (
+            abs(float(exit_)) < abs(float(entry))
+            if entry is not None and exit_ is not None else None
+        )
+        facts["drew_alongside"] = int(primary.get("side_by_side_iloc_count") or 0) > 0
+        facts["side_swap"] = None
+        slot = content.get("targeted_car_slot")
+        if slot is not None:
+            try:
+                trajectory = query_opponent_trajectory(
+                    context.telemetry, range_.start, range_.end, int(slot), n_samples=7,
+                )
+            except Exception:
+                trajectory = {}
+            lateral = [
+                float(sample["lateral_offset_m"])
+                for sample in trajectory.get("samples") or []
+                if isinstance(sample, Mapping) and sample.get("lateral_offset_m") is not None
+            ]
+            if lateral:
+                facts["side_swap"] = min(lateral) < 0 < max(lateral)
+        return facts
+    return context.memo(("opponent", range_.start, range_.end), calculate)
+
+
+def _control_similarity(
+    context: EvaluationContext, range_: HalfOpenRange, control: str,
+) -> Any:
+    segment = context.segment(range_)
+    player = _series(segment, *CONTROL_COLUMNS[("player", control)])
+    expert = _series(segment, *CONTROL_COLUMNS[("expert", control)])
+    if player is None or expert is None:
+        return MISSING
+    return float(np.mean(np.isclose(player, expert, atol=0.02, equal_nan=False)))
+
+
+def _control_overlap(
+    context: EvaluationContext, range_: HalfOpenRange, driver: str,
+) -> Any:
+    segment = context.segment(range_)
+    brake = _series(segment, *CONTROL_COLUMNS[(driver, "brake")])
+    throttle = _series(segment, *CONTROL_COLUMNS[(driver, "throttle")])
+    if brake is None or throttle is None:
+        return MISSING
+    return int(np.sum((brake > 0.05) & (throttle > 0.05)))
+
+
+def _control_comparison(
+    context: EvaluationContext, range_: HalfOpenRange, control: str, metric: str,
+) -> Any:
+    player = _control_landmarks(context, range_, "player", control)
+    expert = _control_landmarks(context, range_, "expert", control)
+    first, second = player.get(metric), expert.get(metric)
+    if first is None or second is None:
+        return MISSING
+    if metric == "peak":
+        return (
+            "aligned" if abs(float(first) - float(second)) <= 0.10
+            else "higher" if float(first) > float(second) else "lower"
+        )
+    if metric == "hold_length":
+        return (
+            "aligned" if int(first) == int(second)
+            else "longer" if int(first) > int(second) else "shorter"
+        )
+    raise ValueError(metric)
+
+
+def _fact_range(
+    calculate: Callable[[EvaluationContext, HalfOpenRange], Any],
+) -> Callable[[EvaluationContext, Sequence[ResolvedInput]], Any]:
+    return lambda context, inputs: calculate(context, _range(inputs))
+
+
+def _mapping_fact(
+    analysis: Callable[[EvaluationContext, HalfOpenRange], Mapping[str, Any]], key: str,
+) -> Callable[[EvaluationContext, Sequence[ResolvedInput]], Any]:
+    return _fact_range(lambda context, range_: analysis(context, range_).get(key, MISSING))
+
+
+def build_fact_registry() -> FactRegistry:
+    range_kind = ("range",)
+    iloc_kind = ("iloc",)
+    iloc_pair = ("iloc", "iloc")
+    definitions: Dict[str, FactDefinition] = {
+        "compare_ilocs": FactDefinition(iloc_pair, _compare_ilocs),
+        "compare_upshift_timing": FactDefinition(
+            range_kind,
+            _fact_range(lambda c, r: _compare_shift_timing(c, r, "up")),
+        ),
+        "compare_downshift_timing": FactDefinition(
+            range_kind,
+            _fact_range(lambda c, r: _compare_shift_timing(c, r, "down")),
+        ),
+        "find_phase_presence": FactDefinition(range_kind, lambda _context, _inputs: True),
+        "find_section_overlap_names": FactDefinition(range_kind, lambda context, _inputs: [
+            LABEL_MAPPING[value] for value in context.overlap_section_ids if value in LABEL_MAPPING
+        ]),
+        "find_total_time_change": FactDefinition(range_kind, _mapping_fact(_time_analysis, "delta_value")),
+        "find_starting_time_direction": FactDefinition(range_kind, _mapping_fact(_time_analysis, "starting_direction")),
+        "find_ending_time_direction": FactDefinition(range_kind, _mapping_fact(_time_analysis, "ending_direction")),
+        "find_middle_time_rise": FactDefinition(range_kind, _mapping_fact(_time_analysis, "middle_has_rise")),
+        "find_brake_similarity": FactDefinition(range_kind, _fact_range(lambda c, r: _control_similarity(c, r, "brake"))),
+        "find_throttle_similarity": FactDefinition(range_kind, _fact_range(lambda c, r: _control_similarity(c, r, "throttle"))),
+        "find_brake_peak_ratio": FactDefinition(range_kind, _fact_range(lambda c, r: (
+            float(_control_landmarks(c, r, "player", "brake")["peak"])
+            / float(_control_landmarks(c, r, "expert", "brake")["peak"])
+        ))),
+        "compare_brake_peaks": FactDefinition(range_kind, _fact_range(lambda c, r: _control_comparison(c, r, "brake", "peak"))),
+        "compare_brake_holds": FactDefinition(range_kind, _fact_range(lambda c, r: _control_comparison(c, r, "brake", "hold_length"))),
+        "count_control_overlap": FactDefinition(range_kind, _fact_range(lambda c, r: _control_overlap(c, r, "player"))),
+        "count_expert_control_overlap": FactDefinition(range_kind, _fact_range(lambda c, r: _control_overlap(c, r, "expert"))),
+        "find_speed_expert_faster": FactDefinition(range_kind, _fact_range(lambda c, r: (
+            float(np.nanmedian(_finite(_speed_delta(c, r)))) > 0
+            if len(_finite(_speed_delta(c, r))) else MISSING
+        ))),
+        "find_speed_peak_gap": FactDefinition(range_kind, _fact_range(lambda c, r: (
+            float(np.max(np.abs(_finite(_speed_delta(c, r)))))
+            if len(_finite(_speed_delta(c, r))) else MISSING
+        ))),
+        "find_speed_gap_closing": FactDefinition(range_kind, _fact_range(lambda c, r: (
+            abs(float(_finite(_speed_delta(c, r))[-1])) < abs(float(_finite(_speed_delta(c, r))[0]))
+            if len(_finite(_speed_delta(c, r))) else MISSING
+        ))),
+        "find_speed_difference_at_iloc": FactDefinition(
+            iloc_kind, _speed_difference_at_iloc,
+        ),
+        "find_speed_gap_slope": FactDefinition(
+            range_kind, _fact_range(_speed_gap_slope),
+        ),
+        "find_player_brake_peak": FactDefinition(
+            range_kind, _fact_range(_player_brake_peak),
+        ),
+        "find_trajectory_peak_offset": FactDefinition(range_kind, _fact_range(lambda c, r: (
+            float(np.max(np.abs(_finite(_trajectory(c, r)))))
+            if len(_finite(_trajectory(c, r))) else MISSING
+        ))),
+        "find_trajectory_convergence": FactDefinition(range_kind, _fact_range(lambda c, r: (
+            abs(float(_finite(_trajectory(c, r))[-1])) < abs(float(_finite(_trajectory(c, r))[0]))
+            if len(_finite(_trajectory(c, r))) else MISSING
+        ))),
+        "find_trajectory_position": FactDefinition(
+            range_kind, _fact_range(_trajectory_position),
+        ),
+        "find_trajectory_position_at_range_start": FactDefinition(
+            range_kind, _fact_range(_trajectory_position_at_range_start),
+        ),
+        "find_trajectory_split": FactDefinition(
+            iloc_pair, _trajectory_split,
+        ),
+        "compare_gear_range": FactDefinition(
+            range_kind, _fact_range(_compare_gear_range),
+        ),
+        "compare_exit_gear": FactDefinition(range_kind, _fact_range(lambda c, r: _compare_exit_gear(c, r))),
+        "find_entry_altitude_trend": FactDefinition(range_kind, _fact_range(lambda c, r: _altitude(c, r, "entry"))),
+        "find_apex_altitude_trend": FactDefinition(range_kind, _fact_range(lambda c, r: _altitude(c, r, "apex"))),
+        "find_exit_altitude_trend": FactDefinition(range_kind, _fact_range(lambda c, r: _altitude(c, r, "exit"))),
+    }
+    for key in ("outcome", "confidence_level", "gap_shrank", "drew_alongside", "side_swap"):
+        definitions[f"find_opponent_{key}"] = FactDefinition(
+            range_kind, _mapping_fact(_opponent, key),
+        )
+    definitions["classify_segment_shape"] = FactDefinition(
+        range_kind, _fact_range(lambda c, r: (_shape_analysis(c, r).get("base_segment_shape") or {}).get("shape_key", MISSING)),
+    )
+    definitions["classify_corner_shape"] = FactDefinition(
+        range_kind, _fact_range(lambda c, r: (_shape_analysis(c, r).get("corner_shape_refinement") or {}).get("shape_key", MISSING)),
+    )
+    return FactRegistry(definitions)
+
+
+def _compare_gear_range(
+    context: EvaluationContext, range_: HalfOpenRange,
+) -> Any:
+    segment = context.segment(range_)
+    player = _series(segment, "Physics_gear")
+    expert = _series(segment, "expert_optimal_gear")
+    if player is None or expert is None:
+        return MISSING
+    comparable = np.isfinite(player) & np.isfinite(expert)
+    if not np.any(comparable):
+        return MISSING
+    differences = player[comparable] - expert[comparable]
+    if np.all(differences < 0):
+        return "lower"
+    if np.all(differences > 0):
+        return "higher"
+    if np.all(differences == 0):
+        return "aligned"
+    return "mixed"
+
+
+def _compare_exit_gear(context: EvaluationContext, range_: HalfOpenRange) -> Any:
+    segment = context.segment(range_)
+    player = _series(segment, "Physics_gear")
+    expert = _series(segment, "expert_optimal_gear")
+    if player is None or expert is None:
+        return MISSING
+    return "lower" if player[-1] < expert[-1] else "higher" if player[-1] > expert[-1] else "aligned"
+
+
+def _altitude(context: EvaluationContext, range_: HalfOpenRange, phase: str) -> Any:
+    del phase
+    segment = context.segment(range_)
+    if "expert_optimal_player_pos_z" in segment.columns:
+        altitude = "expert_optimal_player_pos_z"
+        x_column, y_column = (
+            "expert_optimal_player_pos_x", "expert_optimal_player_pos_y",
+        )
+    elif "Graphics_player_pos_z" in segment.columns:
+        altitude = "Graphics_player_pos_z"
+        x_column, y_column = "Graphics_player_pos_x", "Graphics_player_pos_y"
+    else:
+        return MISSING
+    if x_column not in segment.columns or y_column not in segment.columns:
+        return MISSING
+    z = pd.to_numeric(segment[altitude], errors="coerce").to_numpy(dtype=float)
+    x = pd.to_numeric(segment[x_column], errors="coerce").to_numpy(dtype=float)
+    y = pd.to_numeric(segment[y_column], errors="coerce").to_numpy(dtype=float)
+    finite = np.flatnonzero(np.isfinite(z) & np.isfinite(x) & np.isfinite(y))
+    if len(finite) < 2:
+        return MISSING
+    first, last = int(finite[0]), int(finite[-1])
+    distances = np.hypot(
+        np.diff(x[first:last + 1]), np.diff(y[first:last + 1]),
+    )
+    horizontal = float(np.sum(distances[np.isfinite(distances)]))
+    if horizontal <= 0.0:
+        return MISSING
+    angle = float(np.degrees(np.arctan2(float(z[last] - z[first]), horizontal)))
+    return "uphill" if angle > 3.0 else "downhill" if angle < -3.0 else "level"
+
+
+INPUT_REGISTRY = build_input_registry()
+FACT_REGISTRY = build_fact_registry()
+
+
+__all__ = [
+    "EvaluationContext", "FACT_REGISTRY", "INPUT_REGISTRY", "build_fact_registry",
+    "build_input_registry", "smooth_telemetry",
+]

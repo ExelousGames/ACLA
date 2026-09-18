@@ -221,23 +221,49 @@ docker compose -f docker-compose.prod.yaml --env-file .prod.env up -d
 docker exec -it mongodb_c /bin/bash /backup.sh
 docker exec -it mongodb_c /bin/bash /restore.sh
 
-AI service Lance telemetry storage backups:
+### Separate AI serving and local training
+
+- [`acla_ai_service/`](acla_ai_service/README.md) runs the live API, AI chat/voice, and segment classifier inference on port 8000.
+- [`acla_ai_training/`](acla_ai_training/README.md) runs local annotation, dataset preparation, and model training through Streamlit on http://localhost:8501.
+
+Start both containers with the development stack (CPU example):
 
 ```bash
-# Local, from acla_ai_service/
+docker compose --env-file .dev.env --env-file .env.secrets \
+  -f docker-compose.dev.yaml -f docker-compose.cpu.yaml up -d --build
+```
+
+Use `docker-compose.nvidia.yaml` or `docker-compose.amd.yaml` for the corresponding GPU configuration. These overrides configure both AI containers. Production runs only `ai_service`.
+
+The training container stays idle until you start the UI manually:
+
+```bash
+docker exec -it acla_ai_training_c python3 /app/scripts/open_pipeline_management.py
+```
+
+Open http://localhost:8501 after launching it. Press Ctrl+C in the terminal to close the UI.
+
+Training publishes model artifacts to the backend's active model store; serving loads those artifacts at startup. Restart `ai_service` after publishing a replacement model. The existing `ai_models` volume belongs to training, while serving uses `ai_runtime_models`. Telemetry datasets, backups, and pipeline manifests live in `acla_ai_training/storage`, mounted at `/app/storage` in the training container.
+
+Local AI training Lance telemetry storage backups:
+
+```bash
+# Local, from acla_ai_training/
 python scripts/lance_storage_backup.py create
 python scripts/lance_storage_backup.py list
 python scripts/lance_storage_backup.py restore --latest
 python scripts/lance_storage_backup.py restore telemetry_lance_YYYYMMDD_HHMMSS.tar.gz
 
 # Docker
-docker exec -it acla_ai_service_c python scripts/lance_storage_backup.py create
-docker exec -it acla_ai_service_c python scripts/lance_storage_backup.py list
-docker exec -it acla_ai_service_c python scripts/lance_storage_backup.py restore --latest
+docker exec -it acla_ai_training_c python scripts/lance_storage_backup.py create
+docker exec -it acla_ai_training_c python scripts/lance_storage_backup.py list
+docker exec -it acla_ai_training_c python scripts/lance_storage_backup.py restore --latest
 ```
 
 Set `LANCE_BACKUP_DIR` to override the backup directory. By default backups
-are written to `app/storage/telemetry_lance_backups`. Restore replaces the
+are written beside the telemetry store. Local training defaults to
+`acla_ai_training/storage/telemetry_lance_backups`, also used by development
+Compose. Restore replaces the
 whole Lance telemetry store and creates a pre-restore safety backup unless
 `--no-safety-backup` is passed.
 

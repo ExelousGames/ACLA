@@ -1,30 +1,25 @@
 """Top-lap reference guidance for the racing engineer.
 
-Generates segment-purpose guidance using the LLM, classifying telemetry into
-segment labels and asking the LLM to verbalize. The function operates on a
-``Full_dataset_TelemetryMLService`` instance because the telemetry features and
-LLM orchestrator live there; runtime enrichment comes from the model hub.
+Generates guidance using the configured cloud LLM. Runtime enrichment comes
+from the model hub; the cloud client is opened only when requested.
 """
 
 import time
 import pandas as pd
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
+from openai import AsyncOpenAI
 
-from app.shared.telemetry import FeatureProcessor
-from app.local_llm.local_llm import GenerationRequest
+from app.chat_llm import resolve_chat_llm_config
+from app.shared.telemetry import FeatureProcessor, TelemetryFeatures
 from app.ml.model_hub import (
     get_top_lap_reference_model,
     get_tire_grip_analysis,
 )
 from app.ml.prompts import generate_llm_prompt_from_labels
 
-if TYPE_CHECKING:
-    from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
-
 
 async def generate_top_lap_reference_guidance(
-    service: "Full_dataset_TelemetryMLService",
     telemetry_dict: Dict[str, Any],
     *,
     sequence_length: int = 40,
@@ -43,10 +38,7 @@ async def generate_top_lap_reference_guidance(
         processed_df = processor.general_cleaning_for_analysis()
 
         processor.flip_y_z_features()
-        features = (
-            service._top_lap_reference_feature_names
-            or service.telemetry_features.get_features_for_top_lap_reference()
-        )
+        features = TelemetryFeatures().get_features_for_top_lap_reference()
 
         filtered_df = processor.filter_features_by_list(processed_df, features)
         processed_telemetry_dict = (
@@ -80,10 +72,6 @@ async def generate_top_lap_reference_guidance(
             segment_metadata["user_request"] = driver_request
 
         print("[DEBUG] Generating label-free LLM prompt for point-in-time guidance...")
-        llm_model, llm_metadata = await service.llm_orchestrator.get_llm_for_inference()
-        if llm_model is None:
-            raise RuntimeError("LLM guidance model is not available")
-
         try:
             # This endpoint has one telemetry row. Temporal detection requires a
             # sequence, so guidance deliberately uses the existing generic prompt.
@@ -91,12 +79,16 @@ async def generate_top_lap_reference_guidance(
         except Exception as e:
             raise RuntimeError(f"Failed to generate LLM prompt from labels: {str(e)}")
 
-        generation_request = GenerationRequest(
-            user_prompt=user_prompt,
-        )
-
         try:
-            output_text = llm_model.generate(generation_request)
+            llm_config = resolve_chat_llm_config()
+            async with AsyncOpenAI(**llm_config.openai_client_kwargs()) as client:
+                completion = await client.chat.completions.create(
+                    model=llm_config.model,
+                    messages=[{"role": "user", "content": user_prompt}],
+                )
+            output_text = completion.choices[0].message.content
+            if not output_text or not output_text.strip():
+                raise RuntimeError("Cloud LLM returned no guidance text")
         except Exception as e:
             raise RuntimeError(f"LLM generation failed: {str(e)}")
 

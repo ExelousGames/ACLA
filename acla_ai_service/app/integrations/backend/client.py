@@ -244,7 +244,8 @@ class BackendService:
         carName: Optional[str] = None,
         chunk_size: int = 1000,
         cleanup_cache: bool = True,
-        data_cache=None,
+        *,
+        data_cache,
     ) -> Dict[str, Any]:
         """
         Stream all racing sessions directly to cache without loading into memory
@@ -256,16 +257,11 @@ class BackendService:
             carName: Optional car name filter  
             chunk_size: Unused parameter (kept for API compatibility)
             cleanup_cache: When True, remove existing cache for cache_key before streaming
-            data_cache:  instance to stream data to (uses shared cache if None)
+            data_cache: Training-owned cache instance to stream data to
             
         Returns:
             Dictionary with metadata only (no session data in memory)
         """
-        if not data_cache:
-            # Deferred import to avoid circular imports.
-            from app.storage import get_shared_telemetry_store
-            data_cache = get_shared_telemetry_store()
-
         # Ensure we always start with a clean cache entry for this key
         if hasattr(data_cache, "has_cached_data") and data_cache.has_cached_data(cache_key):
             if cleanup_cache:

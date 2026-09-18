@@ -16,8 +16,10 @@ from sklearn.preprocessing import StandardScaler
 from app.ml.segment_classifier.model import TemporalDetectionModel
 from app.shared.labels import BEHAVIOR_LABELS, LABEL_CATEGORIES, LABEL_MAPPING
 from app.shared.segment import PredictedSegment
-from app.shared.segment_classifier_features import SEGMENT_CLASSIFIER_FEATURES
-from app.storage.datasets.segment_dataset import compute_derived_features
+from app.shared.segment_classifier_features import (
+    SEGMENT_CLASSIFIER_FEATURES,
+    compute_derived_features,
+)
 
 
 LOGGER = logging.getLogger(__name__)

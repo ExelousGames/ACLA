@@ -2,80 +2,42 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.top_laps.model import NoTopLapReferenceError, TopLapStore
-from app.top_laps.service import TopLapReferenceModelService
-from app.top_laps.shared import calculate_reference_features
+from app.top_laps.shared import calculate_reference_features, deserialize_top_lap_store
 
 
 class TopLapReferenceModelError(ValueError):
     """The runtime top-lap reference cannot satisfy an analysis request."""
 
 
-class RuntimeTopLapReferenceModel(TopLapReferenceModelService):
-    """Install backend payloads and enrich runtime telemetry without training."""
+class RuntimeTopLapReferenceModel:
+    """Keep backend references in memory and enrich runtime telemetry."""
 
     def __init__(
         self,
-        artifact_path: Optional[Path] = None,
         *,
         logger: Optional[logging.Logger] = None,
     ):
-        service_root = Path(__file__).resolve().parents[2]
-        self.artifact_path = Path(
-            artifact_path
-            or (service_root / "top_lap_models" / "top_lap_store.json")
-        )
-        runtime_logger = logger or logging.getLogger(
+        self.logger = logger or logging.getLogger(
             f"{__name__}.{self.__class__.__name__}"
         )
-        super().__init__(logger=runtime_logger)
+        self.top_lap_store = TopLapStore(logger=self.logger)
 
     def reset(self) -> None:
-        """Clear runtime readiness without reading or deleting a local artifact."""
+        """Discard the in-memory reference and clear runtime readiness."""
 
         self.top_lap_store = TopLapStore(logger=self.logger)
 
     def install_backend_payload(self, payload: Dict[str, Any]) -> None:
-        """Validate, atomically persist, and activate a backend model payload."""
+        """Validate a backend payload before replacing the in-memory reference."""
 
-        candidate_service = TopLapReferenceModelService(
+        self.top_lap_store = deserialize_top_lap_store(
+            payload,
             logger=self.logger,
         )
-        candidate_service.load_reference_model(payload)
-        serialized_payload = json.dumps(
-            payload,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-
-        self.artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path: Optional[Path] = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=self.artifact_path.parent,
-                prefix=f".{self.artifact_path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as temporary_file:
-                temporary_path = Path(temporary_file.name)
-                temporary_file.write(serialized_payload)
-                temporary_file.flush()
-                os.fsync(temporary_file.fileno())
-            os.replace(temporary_path, self.artifact_path)
-        finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
-
-        self.top_lap_store = candidate_service.top_lap_store
         self.logger.info(
             "Installed %d runtime top-lap reference entries",
             len(self.top_lap_store.entries),

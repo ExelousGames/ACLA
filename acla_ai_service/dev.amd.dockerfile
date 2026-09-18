@@ -23,40 +23,13 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.common.txt \
     && pip install --no-cache-dir -r requirements.amd.txt
 
-# Install native llama.cpp with ROCm support
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    cmake \
-    libcurl4-openssl-dev \
-    curl \
-    ca-certificates \
-    bash \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js 20 + Claude Code CLI (driven by claude-agent-sdk for the
-# Claude annotation backend). Auth is supplied at runtime by bind-mounting
-# the host's ~/.claude into the container — no API key is baked into the image.
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && npm install -g @anthropic-ai/claude-code \
-    && rm -rf /var/lib/apt/lists/*
-RUN git clone https://github.com/ROCm/llama.cpp /opt/llama.cpp \
-    && cd /opt/llama.cpp \
-    && HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
-       cmake -S . -B build -DGGML_HIP=ON -DAMDGPU_TARGETS='gfx1151' \
-       -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=ON \
-    && cmake --build build --config Release -j$(nproc) \
-    && ln -s /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server \
-    && ln -s /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli \
-    && ln -s /opt/llama.cpp/build/bin/llama-quantize /usr/local/bin/llama-quantize
-
 # Copy the rest of the application
 COPY . .
 RUN chmod +x /app/start-dev.sh \
-    && mkdir -p /app/models/llama_server /app/models/kokoro
+    && mkdir -p /app/models/kokoro
 
-# Expose ports: 8000 = FastAPI, 8080 = llama-server, 8501 = streamlit UI
-EXPOSE 8000 8080 8501
+# Frontend-facing API and chat WebSocket
+EXPOSE 8000
 
 # Start the application
 CMD ["./start-dev.sh"]

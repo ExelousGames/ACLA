@@ -1,7 +1,5 @@
 #!/bin/bash
-# Prod entrypoint. llama-server is now spawned by the FastAPI lifespan (see
-# app/main.py -> _start_chat_sidecar / LlamaServerProcess), so we just run
-# uvicorn.
+# Live AI API and chat WebSocket entrypoint.
 
 set -e
 

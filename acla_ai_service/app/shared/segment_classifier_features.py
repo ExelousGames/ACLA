@@ -1,6 +1,7 @@
 """Explicit raw feature allowlist for the segment classifier."""
 
 from typing import List
+import pandas as pd
 
 
 SEGMENT_CLASSIFIER_FEATURES: List[str] = [
@@ -50,4 +51,9 @@ SEGMENT_CLASSIFIER_FEATURES: List[str] = [
 ]
 
 
-__all__ = ["SEGMENT_CLASSIFIER_FEATURES"]
+def compute_derived_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Append the same first-order differences during training and inference."""
+    return pd.concat([df, df.diff().fillna(0).add_suffix("_diff")], axis=1)
+
+
+__all__ = ["SEGMENT_CLASSIFIER_FEATURES", "compute_derived_features"]

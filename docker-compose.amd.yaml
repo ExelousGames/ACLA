@@ -16,3 +16,20 @@ services:
       - render
     environment:
       - ROCM_PATH=/opt/rocm
+  ai_training:
+    build:
+      context: .
+      dockerfile: acla_ai_training/dev.amd.dockerfile
+    privileged: true
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+      - /dev/mem:/dev/mem
+    security_opt:
+      - seccomp=unconfined
+    group_add:
+      - video
+      - render
+    environment:
+      - ROCM_PATH=/opt/rocm

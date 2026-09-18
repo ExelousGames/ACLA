@@ -59,6 +59,7 @@ services:
       - .dev.env
       - .env.secrets
     environment:
+      - AI_SERVICE_URL=${AI_SERVICE_URL:-http://ai_service:8000}
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - AI_SERVICE_USERNAME=${AI_SERVICE_USERNAME}
@@ -73,6 +74,7 @@ services:
     networks:
       - db-network
       - frontend-network
+      - ai-network
     deploy:
       resources:
         limits:
@@ -80,6 +82,7 @@ services:
         reservations:
           memory: 1G
 
+  # Live frontend-facing API: chat, voice, and telemetry inference.
   ai_service:
     build:
       context: ./acla_ai_service
@@ -89,34 +92,54 @@ services:
       - .dev.env
       - .env.secrets
     environment:
-      - BACKEND_SERVER_IP=${BACKEND_SERVER_IP_FOR_AI}
-      - BACKEND_PROXY_PORT=${BACKEND_PORT}
+      - BACKEND_SERVER_IP=${BACKEND_SERVER_IP_FOR_AI:-http://backend}
+      - BACKEND_PROXY_PORT=${BACKEND_PORT:-7001}
       - AI_SERVICE_USERNAME=${AI_SERVICE_USERNAME}
       - AI_SERVICE_PASSWORD=${AI_SERVICE_PASSWORD}
       - HF_TOKEN=${HF_TOKEN}
-      # Telemetry storage backend: 'lance' (Lance-backed columnar store) or
-      # 'zarr' (legacy chunked-JSON-over-Zarr). Defaults to 'lance' after the
-      # migration in scripts/migrate_zarr_to_lance.py copied all cache_keys
-      # from telemetry_zarr_store/ to telemetry_lance_store/.
-      - TELEMETRY_STORE_BACKEND=${TELEMETRY_STORE_BACKEND:-lance}
     volumes:
       - ./acla_ai_service:/app
-      # Share the host's Claude Code login (Max subscription) with the
-      # container so claude-agent-sdk can spawn `claude` without re-auth.
-      # Read-write so the CLI can refresh its OAuth tokens.
-      # The CLI expects both ~/.claude/ (state dir, holds .credentials.json)
-      # AND ~/.claude.json (top-level config file, sibling of the dir).
-      - ${HOME}/.claude:/root/.claude
-      - ${HOME}/.claude.json:/root/.claude.json
-      # One volume for ALL on-disk AI models: chat sidecar GGUF, Kokoro TTS,
-      # annotation VLM GGUFs + mmproj, HuggingFace cache, LoRA adapters,
-      # and trained telemetry models. Subdirs are created on demand.
-      - ai_models:/app/models
+      - ai_runtime_models:/app/models
     ports:
       - '8000:8000'
-      - '8080:8080'
-      - '8501:8501'
-    network_mode: "host"
+    networks:
+      - ai-network
+    deploy:
+      resources:
+        reservations:
+          memory: 1G
+
+  # Local annotation UI and training jobs. Models are published through the backend.
+  ai_training:
+    build:
+      context: .
+      dockerfile: acla_ai_training/dev.dockerfile
+    container_name: acla_ai_training_c
+    env_file:
+      - .dev.env
+      - .env.secrets
+    environment:
+      - BACKEND_SERVER_IP=${BACKEND_SERVER_IP_FOR_AI:-http://backend}
+      - BACKEND_PROXY_PORT=${BACKEND_PORT:-7001}
+      - AI_SERVICE_USERNAME=${AI_SERVICE_USERNAME}
+      - AI_SERVICE_PASSWORD=${AI_SERVICE_PASSWORD}
+      - HF_TOKEN=${HF_TOKEN}
+      - TELEMETRY_STORE_DIR=/app/storage/telemetry_lance_store
+      - PIPELINE_STORAGE_DIR=/app/storage/pipelines
+      - LANCE_BACKUP_DIR=/app/storage/telemetry_lance_backups
+    volumes:
+      - ./acla_ai_training:/app
+      # Shared model formats/features; serving never mounts the training source.
+      - ./acla_ai_service:/acla_ai_service:ro
+      - ${HOME}/.claude:/root/.claude
+      - ${HOME}/.claude.json:/root/.claude.json
+      # Retain the existing training model volume; datasets live in /app/storage.
+      - ai_models:/app/models
+      - ai_models:/acla_ai_service/models
+    ports:
+      - '127.0.0.1:8501:8501'
+    networks:
+      - ai-network
     deploy:
       resources:
         reservations:
@@ -182,10 +205,15 @@ volumes:
     driver: local
   ai_models:
     driver: local
+  ai_runtime_models:
+    driver: local
 
 networks:
   db-network:
     driver: bridge
 
   frontend-network:
+    driver: bridge
+
+  ai-network:
     driver: bridge

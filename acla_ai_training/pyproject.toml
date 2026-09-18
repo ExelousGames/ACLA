@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+pythonpath = [".", "../acla_ai_service"]
+asyncio_mode = "strict"
+addopts = "--import-mode=importlib"

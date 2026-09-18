@@ -69,7 +69,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_front/src/py-scripts/util/__pycache__
 
 /acla_ai_service/app/__pycache__
-/acla_ai_service/app/models/__pycache__
 /acla_ai_service/app/services/__pycache__
 
 
@@ -96,22 +95,19 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/app/scripts/debug_output
 /acla_front/src/py-scripts/__pycache__
 
-# Runtime top-lap reference model installed at AI-service startup
-/acla_ai_service/top_lap_models/*
-!/acla_ai_service/top_lap_models/.gitkeep
-
-# Obsolete local artifacts are ignored but never loaded
-/acla_ai_service/imitation_models/*
+# Local top-lap reference artifacts belong to training
+/acla_ai_training/top_lap_models/*
+!/acla_ai_training/top_lap_models/.gitkeep
 
 # Frontend Python environments
 /acla_front/.venv/
 /acla_front/dist/
-/acla_ai_service/models/llm_datasets
 /acla_ai_service/telemetry_zarr_store
-/acla_ai_service/app/storage/telemetry_zarr_store
 /acla_ai_service/scripts/output
-/acla_ai_service/models/llm_adapters
+# Runtime model artifacts and obsolete model/cache locations
 /acla_ai_service/models
+/acla_ai_service/app/models/
+/models/
 /acla_ai_service/scripts/telemetry_zarr_store
 /acla_ai_service/ui/segment_tabs/__pycache__
 /acla_ai_service/ui/segment_tabs/components/__pycache__
@@ -138,7 +134,13 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/app/services/llm/annotation/agents/__pycache__
 /acla_ai_service/app/services/llm/annotation/tools/__pycache__
 /.claude
-/acla_ai_service/app/storage/telemetry_lance_store
-/acla_ai_service/app/storage/pipelines
-/acla_ai_service/app/pipelines/scripts/debug_output
-/acla_ai_service/app/storage
+
+# Local AI training artifacts
+/acla_ai_training/models/
+/acla_ai_training/storage/
+/acla_ai_training/.cache/
+/acla_ai_training/.pytest_cache/
+/acla_ai_training/scripts/debug_output/
+/acla_ai_training/training/pipelines/scripts/debug_output/
+/acla_ai_training/scripts/output/
+**/*.egg-info/

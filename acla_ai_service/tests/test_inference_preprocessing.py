@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from app.pipelines.inference.preprocessing import (
+from app.shared.inference_preprocessing import (
     RAW_ROW_INDEX_COLUMN,
     preprocess_inference_telemetry,
 )

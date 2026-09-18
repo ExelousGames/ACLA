@@ -1,8 +1,8 @@
 """
 ACLA AI Service — FastAPI application (startup wiring).
 
-The llama-server boot lives in ``app.startup.llama``; this module owns the
-FastAPI app, its lifespan, CORS, and router wiring. ASGI target: ``app.startup.app:app``.
+This module owns the FastAPI app, its lifespan, CORS, and router wiring.
+ASGI target: ``app.startup.app:app``.
 """
 
 from contextlib import asynccontextmanager
@@ -13,10 +13,8 @@ from dotenv import load_dotenv
 from app.chat_llm import resolve_chat_llm_config
 from app.infra.config import settings
 from app.integrations.backend.client import backend_service
-from app.llama.health import check_llama_server
 from app.ml.model_hub import hydrate_chatbot_models
 from app.api import (
-    annotation_router,
     health_router,
     racing_session_router,
 )
@@ -42,22 +40,6 @@ async def lifespan(app: FastAPI):
     )
     print(f"🤖 LLM: {provider_label}")
 
-    # Chat uses remote providers only. Keep llama health reporting for other
-    # features that may depend on a separately managed llama-server.
-    print("🦙 chat llama-server sidecar: skipped for remote chat LLM")
-
-    llama_health = await check_llama_server()
-    if llama_health.reachable:
-        print(
-            f"🦙 llama-server: reachable at {llama_health.base_url} "
-            f"({len(llama_health.models)} model(s), {llama_health.latency_ms:.0f}ms)"
-        )
-    else:
-        print(
-            f"🦙 llama-server: NOT reachable at {llama_health.base_url} "
-            f"({llama_health.error})"
-        )
-
     # Establish backend connection
     print("🔌 Establishing backend connection...")
     backend_ok = await backend_service.establish_connection()
@@ -71,7 +53,7 @@ async def lifespan(app: FastAPI):
 
     # Hydrate chatbot-facing models from the backend active model store. This
     # runs even after the connection probe fails so runtime readiness is reset
-    # and no previous local top-lap artifact can become an implicit fallback.
+    # and no earlier in-memory top-lap reference can become an implicit fallback.
     model_status = await hydrate_chatbot_models()
     for model_name, is_ready in model_status.items():
         if is_ready:
@@ -108,7 +90,6 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(racing_session_router)
 app.include_router(voice_router)  # voice WS = single chat surface (audio + tool-relay)
-app.include_router(annotation_router)  # Step 13 — replaces Streamlit's in-process import
 
 if __name__ == "__main__":
     import uvicorn

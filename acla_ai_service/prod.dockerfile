@@ -39,19 +39,17 @@ COPY requirements.nvidia.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.nvidia.txt
-RUN CMAKE_ARGS="-DGGML_CUDA=on" pip install --no-cache-dir llama-cpp-python
 
 # Copy application code and set ownership
 COPY . .
-ENV STREAMLIT_CONFIG_FILE=/app/.streamlit/config.toml
 RUN chmod +x /app/start-prod.sh \
-    && mkdir -p /app/models/llama_server /app/models/kokoro \
+    && mkdir -p /app/models/kokoro \
     && chown -R appuser:appuser /app
 
 # Switch to non-root user for security
 USER appuser
 
-# Expose ports: 8000 = FastAPI, 8080 = llama-server (spawned by app lifespan)
+# Frontend-facing API and chat WebSocket
 EXPOSE 8000
 
 CMD ["/app/start-prod.sh"]

@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api import racing_session
-from app.pipelines.inference.preprocessing import InferenceTelemetryBatch
+from app.shared.inference_preprocessing import InferenceTelemetryBatch
 
 
 def _configure_analysis_dependencies(monkeypatch):
