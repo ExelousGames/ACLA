@@ -1,0 +1,8 @@
+auto_save: true
+with_image_data: false
+keep_prev: false
+sort_labels: false
+validate_label: exact
+display_label_popup: true
+canvas:
+  double_click: close

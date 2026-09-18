@@ -1,0 +1,2 @@
+# Desktop annotation only; Labelme 6 supports the project's Python 3.11.
+labelme>=6.3.1,<7

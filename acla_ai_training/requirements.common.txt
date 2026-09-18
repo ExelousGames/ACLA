@@ -15,3 +15,6 @@ streamlit>=1.41.0
 claude-agent-sdk>=0.1.0
 # SDK tool handlers return CallToolResult; older MCP versions mishandle it.
 mcp>=1.19
+
+# Track-image polygon segmentation (kept out of the live AI service).
+ultralytics>=8.3,<9

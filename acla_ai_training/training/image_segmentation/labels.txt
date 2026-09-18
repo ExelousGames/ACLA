@@ -1,0 +1,5 @@
+track
+curb
+grass
+car
+other

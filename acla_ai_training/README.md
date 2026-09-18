@@ -23,6 +23,15 @@ publishes its reference payload to the backend. Existing local reference files
 live in `top_lap_models`. Serving loads the published payload into memory without
 saving another copy.
 
+## Image polygon annotation and training
+
+[Labelme + Ultralytics](training/image_segmentation/README.md) adds a separate
+image segmentation workflow under `training/image_segmentation`: draw polygons
+for track, curbs, grass, cars, and other regions; convert Labelme JSON to YOLO
+segmentation datasets; train locally or in the training container. Labelme is
+installed through Python on a desktop with a display. Ultralytics is included in
+the training dependencies.
+
 ## Docker
 
 From the repository root:
