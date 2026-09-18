@@ -27,6 +27,7 @@ from app.ml.opportunity_forecaster.service import (
 )
 from training.storage import get_shared_telemetry_store
 from training.ml.opportunity_forecaster.trainer import train_opportunity_forecaster
+from training.model_publication import save_ai_model
 
 
 def _iter_annotation_segments(annotation_key: str) -> Iterable[Dict[str, Any]]:
@@ -143,7 +144,8 @@ async def main() -> int:
     print(f"[INFO] Training complete: {result}")
 
     try:
-        await backend_service.save_ai_model(
+        await save_ai_model(
+            backend_service,
             model_type="opportunity_forecaster",
             model_data=opportunity_forecaster.serialize_artifacts(),
             metadata={

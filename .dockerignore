@@ -14,7 +14,6 @@
 **/.env*
 **/service_src/
 **/models/
-**/top_lap_models/
 **/logs/
 **/*.log
 **/storage/telemetry_lance_store/

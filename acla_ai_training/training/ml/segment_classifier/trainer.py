@@ -510,8 +510,10 @@ class SegmentClassifierTrainer:
 
         try:
             from app.integrations.backend.client import backend_service
+            from training.model_publication import save_ai_model
 
-            await backend_service.save_ai_model(
+            await save_ai_model(
+                backend_service,
                 model_type="segment_classifier",
                 model_data=classifier.serialize_artifacts(),
                 metadata={

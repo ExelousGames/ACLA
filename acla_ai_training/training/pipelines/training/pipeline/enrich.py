@@ -15,6 +15,7 @@ import pandas as pd
 from app.features.tire_grip import TireGripAnalysisService
 from app.integrations.backend.client import backend_service as default_backend_service
 from app.ml.segment_classifier.service import segment_classifier
+from training.model_publication import save_ai_model
 from training.pipelines.inference.visualizer import (
     visualize_optimal_segments,
     visualize_segment_position_coverage,
@@ -176,7 +177,8 @@ async def enriched_contextual_data(
     if not serialized_data:
         raise RuntimeError("No serialized top-lap reference model data available")
 
-    await backend.save_ai_model(
+    await save_ai_model(
+        backend,
         model_type="top_lap_reference",
         model_data=serialized_data,
         metadata=reference_result.get("reference_summary", {}),
@@ -215,7 +217,8 @@ async def enriched_contextual_data(
         )
     tire_service_serialized = tire_service.serialize_tire_grip_model()
 
-    await backend.save_ai_model(
+    await save_ai_model(
+        backend,
         model_type="tire_grip_analysis",
         model_data=tire_service_serialized,
         metadata={

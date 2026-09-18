@@ -25,8 +25,8 @@ from app.top_laps.shared import (
     bucket_key_from_dataframe,
     calculate_reference_features,
     deserialize_top_lap_store,
-    serialize_top_lap_store,
 )
+from training.top_laps.serialization import serialize_top_lap_store
 
 
 class TopLapReferenceModelService:

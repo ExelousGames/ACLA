@@ -47,12 +47,14 @@ def test_shared_model_adapters_import_without_training(tmp_path):
         [sys.executable, "-c", """
 import importlib.util
 import sys
+from app.integrations.backend.client import BackendService
 from app.ml.opportunity_forecaster.service import OpportunityForecasterService
 from app.ml.segment_cropper.service import SegmentCropperService
 from app.ml.transformer.model import ExpertActionTransformer
 from app.top_laps.runtime import RuntimeTopLapReferenceModel
 
 assert importlib.util.find_spec('training') is None
+assert not hasattr(BackendService, 'save_ai_model')
 assert not hasattr(OpportunityForecasterService, 'train')
 assert not hasattr(RuntimeTopLapReferenceModel, 'build_from_cached_top_laps')
 assert not hasattr(RuntimeTopLapReferenceModel, 'serialize_reference_model')

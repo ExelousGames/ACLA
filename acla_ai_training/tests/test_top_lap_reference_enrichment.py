@@ -946,8 +946,11 @@ async def test_pipeline_builds_uploads_and_reuses_local_reference(
         def __init__(self):
             self.saved = []
 
-        async def save_ai_model(self, **kwargs):
-            self.saved.append(kwargs)
+        async def send_chunked_data(self, *, data, endpoint, chunk_size):
+            assert endpoint == "ai-model/save"
+            assert chunk_size == 512 * 1024
+            self.saved.append(data)
+            return {"success": True}
 
     telemetry_store = TelemetryStore()
     backend = Backend()
@@ -970,12 +973,13 @@ async def test_pipeline_builds_uploads_and_reuses_local_reference(
     assert events[0:2] == [("build", "top-laps", telemetry_store), ("serialize",)]
     assert any(event[0] == "extract" for event in events)
     assert backend.saved[0] == {
-        "model_type": "top_lap_reference",
-        "model_data": {
+        "modelType": "top_lap_reference",
+        "modelData": {
             "top_lap_store": {"spa|car-a|grip2": "encoded"}
         },
         "metadata": {"buckets_recorded": 1},
-        "is_active": True,
+        "isActive": True,
     }
+    assert backend.saved[1]["modelType"] == "tire_grip_analysis"
     enriched_payload = telemetry_store.cached[0][1][0]
     assert enriched_payload[0]["expert_optimal_speed"] == 150.0

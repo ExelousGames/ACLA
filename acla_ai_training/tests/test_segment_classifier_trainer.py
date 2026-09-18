@@ -300,11 +300,15 @@ async def test_training_runs_all_epochs_and_restores_best_loss_state(monkeypatch
     monkeypatch.setattr(torch.optim.lr_scheduler, "ReduceLROnPlateau", NoOpScheduler)
 
     backend_client = ModuleType("app.integrations.backend.client")
-    backend_client.backend_service = SimpleNamespace(save_ai_model=AsyncMock())
+    upload = AsyncMock(return_value={"success": True})
+    backend_client.backend_service = SimpleNamespace(send_chunked_data=upload)
     monkeypatch.setitem(sys.modules, "app.integrations.backend.client", backend_client)
 
     await trainer.train_model(epochs=5, annotation_cache_key="annotations")
 
+    upload.assert_awaited_once()
+    assert upload.call_args.kwargs["endpoint"] == "ai-model/save"
+    assert upload.call_args.kwargs["data"]["modelType"] == "segment_classifier"
     assert optimizers[0].step_count == 5
     assert validation_losses == []
     assert trainer.model.weight.item() == 1.0

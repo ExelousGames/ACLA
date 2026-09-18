@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import pickle
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +12,6 @@ from app.top_laps.runtime import (
     RuntimeTopLapReferenceModel,
     TopLapReferenceModelError,
 )
-from app.top_laps.shared import serialize_top_lap_store
 
 
 def _top_lap(track: str = "spa", car: str = "car-a", grip: int = 2):
@@ -55,9 +56,13 @@ def _top_lap(track: str = "spa", car: str = "car-a", grip: int = 2):
 
 
 def _backend_payload(track: str = "spa", car: str = "car-a"):
+    # Build a backend-format fixture without importing the training publisher.
     store = TopLapStore()
-    store.record_lap(_top_lap(track=track, car=car))
-    return serialize_top_lap_store(store)
+    key = store.record_lap(_top_lap(track=track, car=car))
+    encoded = base64.b64encode(
+        pickle.dumps(store.entries[key].to_components(), protocol=pickle.HIGHEST_PROTOCOL)
+    ).decode("utf-8")
+    return {"top_lap_store": {f"{track}|{car}|grip2": encoded}}
 
 
 def _runtime_record():

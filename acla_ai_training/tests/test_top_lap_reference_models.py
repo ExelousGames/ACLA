@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -92,6 +95,35 @@ async def test_service_builds_from_cached_top_laps():
     ]
     assert result["metadata"]["total_training_samples"] == 2
     assert service.serialize_reference_model()["top_lap_store"]
+
+
+def test_serialized_payload_preserves_all_buckets_through_backend_json():
+    training = TopLapReferenceModelService()
+    buckets = [("spa", "car-a", 2), ("spa", "car-a", 5), ("monza", "car-b", 3)]
+    for track, car, grip in buckets:
+        training.top_lap_store.record_lap(_top_lap(track, car, grip))
+
+    payload = json.loads(json.dumps(training.serialize_reference_model()))
+
+    assert set(payload) == {"top_lap_store"}
+    assert set(payload["top_lap_store"]) == {
+        f"{track}|{car}|grip{grip}" for track, car, grip in buckets
+    }
+    assert all(isinstance(value, str) for value in payload["top_lap_store"].values())
+    runtime = RuntimeTopLapReferenceModel()
+    runtime.install_backend_payload(payload)
+
+    assert set(runtime.top_lap_store.entries) == set(buckets)
+    for key, expected in training.top_lap_store.entries.items():
+        actual = runtime.top_lap_store.entries[key]
+        assert actual.target_features == expected.target_features
+        np.testing.assert_array_equal(actual.x, expected.x)
+        np.testing.assert_array_equal(actual.y, expected.y)
+
+
+def test_serializing_empty_reference_store_is_rejected():
+    with pytest.raises(ValueError, match="No stored top laps to serialize"):
+        TopLapReferenceModelService().serialize_reference_model()
 
 
 def test_nearest_grip_runtime_values_match_pipeline_features():

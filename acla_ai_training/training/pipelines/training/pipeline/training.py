@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.integrations.backend.client import backend_service as default_backend_service
+from training.model_publication import save_ai_model
 from training.pipelines.training.config import TrainingPipelineConfig
 from training.pipelines.training.pipeline.cleaning import print_section_divider
 from training.pipelines.training.transformer_trainer import (
@@ -74,7 +75,8 @@ async def run_transformer_guidance_training(
         if not transformer_training.get("success"):
             raise RuntimeError(transformer_training.get("error") or "Transformer training failed")
 
-        await backend.save_ai_model(
+        await save_ai_model(
+            backend,
             model_type="transformer_expert_action",
             model_data=transformer_training["serialized_model"],
             metadata={

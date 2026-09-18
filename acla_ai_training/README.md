@@ -18,10 +18,10 @@ forecaster) and `training/pipelines/training/transformer_trainer.py`.
 Storage utilities and dataset adapters live in `training/storage`; cropper
 target construction and calibration live in `training/ml/segment_cropper`.
 The shared scaler lives in `app/ml/transformer/scaler.py` in the runtime package.
-Top-lap reference building lives in `training/top_laps`; the enrichment pipeline
-publishes its reference payload to the backend. Existing local reference files
-live in `top_lap_models`. Serving loads the published payload into memory without
-saving another copy.
+Top-lap reference building and payload serialization live in `training/top_laps`;
+the enrichment pipeline publishes its reference payload to the backend. Existing
+local reference files live in `storage/top_lap_models`. Serving loads the published
+payload into memory without saving another copy.
 
 ## Image polygon annotation and training
 

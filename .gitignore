@@ -95,10 +95,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/app/scripts/debug_output
 /acla_front/src/py-scripts/__pycache__
 
-# Local top-lap reference artifacts belong to training
-/acla_ai_training/top_lap_models/*
-!/acla_ai_training/top_lap_models/.gitkeep
-
 # Frontend Python environments
 /acla_front/.venv/
 /acla_front/dist/
