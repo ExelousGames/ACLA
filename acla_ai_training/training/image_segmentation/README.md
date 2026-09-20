@@ -33,14 +33,14 @@ Python 3.11 compatibility; the launcher uses its command-line interface.
 
 ## Draw polygons and boundary polylines
 
-Put screenshots or extracted video frames in these folders, keeping all frames
-from a recording/session in the same split. Reserve separate sessions for
-validation; adjacent frames split between training and validation inflate scores.
+Put screenshots or extracted video frames in a folder with any number of nested
+subfolders. The training launcher mixes individual annotated images from all
+folders before splitting them into training and validation samples.
 
 ```text
-storage/image_segmentation/annotations/
-  train/session_a/frame_001.png
-  val/session_b/frame_001.png
+storage/annotation_images/
+  session_a/frame_001.png
+  session_b/frame_001.png
 ```
 
 Launch Labelme in the training container:
@@ -67,10 +67,10 @@ folders recursively and shows the images in one file list:
 
 ```bash
 docker exec -it acla_ai_training_c python3 /app/scripts/open_labelme.py \
-  /app/storage/image_segmentation/annotations/train
+  /app/storage/annotation_images
 ```
 
-Use the `val` folder for validation images. On a local desktop, run
+On a local desktop, run
 `python scripts/open_labelme.py [path/to/images]` from `acla_ai_training/`.
 
 In Labelme, press **Ctrl+N** (Create Polygons), click along the region boundary,
@@ -130,7 +130,60 @@ To add specific regions such as gravel or barriers, append labels to a copy of
 `annotate` and `prepare`. Preserve the class order for existing datasets/models.
 Keep the original images alongside their JSON files (image bytes are not embedded).
 
+## Split and start training
+
+Run the companion launcher in the training container:
+
+```bash
+docker exec -it acla_ai_training_c python3 /app/scripts/train_labelme.py
+```
+
+Or run it locally from `acla_ai_training/`:
+
+```bash
+python scripts/train_labelme.py
+```
+
+On the first run it recursively finds Labelme JSON annotations under
+`storage/annotation_images`, shuffles all images together with seed 42, and assigns
+80% to training and 20% to validation. Folder boundaries do not affect the split.
+Only annotated images are included; metadata JSON and images without annotations
+are skipped. An explicitly saved annotation with no shapes is a background sample.
+At least two annotated images are required, with at least one in each split.
+
+The sample lists are saved in `storage/image_segmentation/split.json` as `train`
+and `val` arrays of annotation paths relative to the recorded source folder.
+Each annotation points to its original image through Labelme's `imagePath`.
+The source path is relative to the split file so the same lists work on the host
+and through the `/app` Docker mount. Later runs load these exact lists; they do
+not reshuffle or automatically add new images. Missing or invalid listed samples
+stop preparation instead of silently changing the dataset.
+
+Supply a different source, validation fraction, or seed when creating a split:
+
+```bash
+python scripts/train_labelme.py storage/my_annotations \
+  --split-file storage/image_segmentation/my_split.json \
+  --val-fraction 0.2 --seed 42 --device 0 --epochs 100 --batch 8
+```
+
+Use `--rebuild-split` to replace the saved lists with a new split of all current
+annotations, including newly annotated images. This can change previous sample
+assignments. If the source is omitted, the saved source folder is reused.
+`--val-fraction` and `--seed` apply only when creating or rebuilding a split.
+Use `--prepare-only` to save the lists and export the dataset without training.
+
+Each run validates and exports exactly the listed samples to a new
+`storage/image_segmentation/dataset_*/yolo/` directory, then passes its `data.yaml`
+to the existing trainer. Fresh exports include annotation edits and avoid stale
+images or label caches. Earlier exports are retained; with `--split-file`, exports
+are placed beside that file. Training options below also apply to this launcher,
+along with `--labels` and `--polyline-width` from dataset preparation.
+
 ## Prepare the dataset
+
+If you already maintain separate training and validation folders, you can still
+prepare them explicitly instead of using the automatic split launcher:
 
 ```bash
 python -m training.image_segmentation prepare \
@@ -148,8 +201,9 @@ path across its endpoints or fill the track between boundaries. `--polyline-widt
 sets the stroke thickness in original-image pixels (default 8, minimum 2). Increase
 it for high-resolution images if the boundaries become too thin after resizing to
 the training `--imgsz`. Repeated points are allowed if at least two distinct pixel
-positions remain. Strokes that enclose holes are rejected; split those paths into
-separate shapes.
+positions remain. Boundaries may cross, touch, retrace themselves, or form loops.
+The exporter preserves enclosed gaps in the stroke mask and keeps each boundary
+as one instance; no splitting or stroke-width adjustment is needed for intersections.
 
 The trained model predicts separate left/right boundary **masks**, not ordered
 polyline points. Source JSON keeps the original editable polylines. Prepare a new
@@ -186,7 +240,8 @@ docker exec -it acla_ai_training_c python -m training.image_segmentation train \
 ```
 
 The default is CPU; select `--device 0` for a configured NVIDIA/ROCm GPU or `mps`
-for Apple Silicon. Pretrained weights download on first use. Supply a local
+for Apple Silicon. Pretrained weights download on first use to
+`storage/image_segmentation/pretrained/`, independent of the working directory. Supply a local
 segmentation checkpoint to avoid that download, or `--model yolo11n-seg.yaml`
 to initialize without pretrained weights.
 
@@ -202,13 +257,46 @@ flips otherwise mirror the edges without swapping their class IDs. It uses
 input image; this uses more mask memory. Preserve these settings when training
 boundary datasets outside this CLI.
 
-Checkpoints and metrics go under `models/image_segmentation/train*/`, including
+Checkpoints and metrics go under `storage/image_segmentation/runs/train*/`, including
 `weights/best.pt` and `weights/last.pt`. `--project` and `--name` change the run
-location. Publish a selected checkpoint with the local FastAPI endpoint below.
+location. In Docker these defaults live under `/app/storage/image_segmentation/`
+and persist in the host's `acla_ai_training/storage/image_segmentation/` directory.
+After successful training, both `train` and `train-labelme` (including
+`scripts/train_labelme.py`) upload the actual run's `best.pt` to
+`POST /ai-model/ultralytics`, falling back to `last.pt` if there is no best
+checkpoint. Local checkpoints are preserved. Use `--upload-name track-segments`
+to set the backend model name (default: `track-segments`), or `--no-upload` to
+train offline without publishing.
 
 ## Upload a trained model
 
-Start the existing local training API from the training Python environment:
+The publication component in `publication.py` reads class names in class-ID order,
+training parameters, and metrics from the saved checkpoint, then streams its
+unchanged bytes through the existing authenticated backend uploader. The shared
+backend client uses `BACKEND_SERVER_IP`, `BACKEND_PROXY_PORT`,
+`AI_SERVICE_USERNAME`, and `AI_SERVICE_PASSWORD`. Docker configures these from
+the training service's environment. When running locally, make the shared
+runtime package available with `export PYTHONPATH=../acla_ai_service` from
+`acla_ai_training`, and configure the backend environment variables there.
+
+To publish an existing trained checkpoint without retraining or starting the
+local API:
+
+```bash
+python -m training.image_segmentation upload \
+  storage/image_segmentation/runs/train/weights/best.pt --name track-segments
+```
+
+Use the actual run directory (`train`, `train2`, etc.). Successful uploads print
+the backend model ID. An upload failure exits with a nonzero status and preserves
+the local weights; after resolving the failure, use the command above to upload
+them without retraining. A timeout may occur after the backend saved the record,
+so check its model list before repeating an uncertain upload.
+
+### Upload through the local FastAPI endpoint
+
+For clients that supply a checkpoint and their own metadata, the existing local
+training API remains available. Start it from the training Python environment:
 
 ```bash
 python -m uvicorn training.api.app:app --host 127.0.0.1 --port 8002
@@ -238,7 +326,7 @@ Upload the checkpoint and metadata to FastAPI:
 
 ```bash
 curl --fail-with-body http://127.0.0.1:8002/models/ultralytics/upload \
-  -F "file=@models/image_segmentation/train/weights/best.pt" \
+  -F "file=@storage/image_segmentation/runs/train/weights/best.pt" \
   -F "metadata=<model-metadata.json"
 ```
 
@@ -249,10 +337,10 @@ the saved backend record with HTTP 201, including `_id`, `modelFileId`, and
 `sha256`. It does not load or execute the checkpoint. Each successful upload
 creates a new record, even when the name matches an existing model.
 
-Uploads are explicit; training still saves checkpoints locally. Backend storage
-does not activate a model or add live inference. Validation and backend errors
-return non-success HTTP statuses; a timeout may occur after the backend saved
-the record, so check the backend model list before repeating an uncertain upload.
+Backend storage does not activate a model or add live inference. Validation and
+backend errors return non-success HTTP statuses. This raw-file endpoint does not
+inspect checkpoint contents; the training publication component and `upload`
+command load local trusted checkpoints to obtain their metadata automatically.
 
 References: [Labelme](https://github.com/wkentaro/labelme),
 [noVNC](https://github.com/novnc/noVNC),

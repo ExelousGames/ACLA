@@ -36,8 +36,19 @@ recreating the training container, launch the editor with
 [Labelme in your browser](http://localhost:6080/vnc.html?autoconnect=true&resize=remote).
 The launcher starts a virtual desktop when no display is available; Ctrl+C stops
 it. Images and annotations under `/app/storage` persist in the host workspace.
-Upload a selected `.pt` checkpoint through the local
-FastAPI endpoint described in the workflow guide.
+Start training with
+`docker exec -it acla_ai_training_c python3 /app/scripts/train_labelme.py`.
+It recursively reads `storage/annotation_images`, mixes annotated images from all
+folders into an 80/20 training/validation split, and saves reusable sample lists in
+`storage/image_segmentation/split.json`. Pass `--prepare-only` to export without
+training, `--device 0` to use a configured GPU, or `--rebuild-split` to include new
+annotations in a fresh split. See the workflow guide for the full options.
+Downloaded pretrained weights live in `storage/image_segmentation/pretrained/`;
+training checkpoints and metrics live in `storage/image_segmentation/runs/train*/`.
+Successful training uploads the saved checkpoint to `POST /ai-model/ultralytics`.
+Pass `--no-upload` for offline training or `--upload-name` to set the backend model
+name. The workflow guide also describes uploading existing `.pt` checkpoints
+without retraining and the local FastAPI upload endpoint.
 
 ## Extract images from videos
 

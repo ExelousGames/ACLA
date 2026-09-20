@@ -4,10 +4,11 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import cv2
 import numpy as np
 import pytest
 import yaml
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from training.image_segmentation import read_labels
 from training.image_segmentation.__main__ import main
@@ -31,9 +32,9 @@ def _mask(row):
     assert len(coordinates) >= 3
     assert np.isfinite(coordinates).all()
     assert ((coordinates >= 0) & (coordinates <= 1)).all()
-    mask = Image.new("L", (100, 100))
-    ImageDraw.Draw(mask).polygon([tuple(point) for point in np.rint(coordinates * 100)], fill=1)
-    return np.array(mask)
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    cv2.fillPoly(mask, [np.rint(coordinates * 100).astype(np.int32)], color=1)
+    return mask
 
 
 def test_boundary_classes_are_appended():
@@ -102,13 +103,42 @@ def test_invalid_polyline_width_fails_before_writing_output(tmp_path, width):
     assert not (tmp_path / "out").exists()
 
 
-@pytest.mark.parametrize(("shape_type", "points", "message"), [
-    ("line", [[10, 10], [50, 50], [90, 90]], "exactly two"),
-    ("linestrip", [[10, 10], [90, 10], [90, 90], [10, 90], [10, 10]], "without holes"),
+@pytest.mark.parametrize("points", [
+    [[10, 10], [90, 90], [10, 90], [90, 10]],  # Self-intersection.
+    [[10, 10], [90, 10], [90, 90], [10, 90], [10, 10]],  # Closed loop.
+    [[10, 10], [20, 10], [20, 20], [10, 20], [10, 17]],  # One-pixel gap at width 8.
+    [[10, 20], [40, 20], [40, 80], [10, 80], [10, 20], [60, 20],
+     [90, 20], [90, 80], [60, 80], [60, 20]],  # Side-by-side holes: bridges can meet a joined hole.
+    [[50, 50], [10, 10], [90, 10], [50, 50], [10, 90], [90, 90], [50, 50], [10, 10]],  # Retraced edge.
+    [[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]],  # Loop clipped at image edges.
 ])
-def test_unsupported_line_geometry_is_rejected(tmp_path, shape_type, points, message):
-    _annotations(tmp_path, [{"label": "left_boundary", "shape_type": shape_type, "points": points}])
-    with pytest.raises(ValueError, match=message):
+@pytest.mark.parametrize("stroke_width", [2, 8, 14])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_self_touching_boundaries_preserve_stroke_masks(tmp_path, points, stroke_width, reverse):
+    if reverse:
+        points = points[::-1]
+    _annotations(tmp_path, [{"label": "left_boundary", "shape_type": "linestrip", "points": points}])
+    original = (tmp_path / "train/frame.json").read_bytes()
+    expected = np.zeros((100, 100), dtype=np.uint8)
+    cv2.polylines(expected, [np.array(points, dtype=np.int32)], isClosed=False, color=1, thickness=stroke_width)
+
+    data = prepare_dataset(
+        tmp_path / "train", tmp_path / "val", tmp_path / "out", polyline_width=stroke_width,
+    )
+
+    for split in ("train", "val"):
+        rows = (data.parent / f"labels/{split}/frame.txt").read_text().splitlines()
+        assert len(rows) == 1
+        assert rows[0].split()[0] == "8"
+        np.testing.assert_array_equal(_mask(rows[0]), expected)
+    assert (tmp_path / "train/frame.json").read_bytes() == original
+
+
+def test_line_with_more_than_two_points_is_rejected(tmp_path):
+    _annotations(tmp_path, [{
+        "label": "left_boundary", "shape_type": "line", "points": [[10, 10], [50, 50], [90, 90]],
+    }])
+    with pytest.raises(ValueError, match="exactly two"):
         prepare_dataset(tmp_path / "train", tmp_path / "val", tmp_path / "out")
     assert not (tmp_path / "out").exists()
 
@@ -122,7 +152,7 @@ def test_boundary_training_preserves_side_labels(tmp_path, monkeypatch, names):
     model = MagicMock(task="segment")
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda *a, **kw: model))
 
-    train_model(data)
+    train_model(data, upload=False)
 
     options = model.train.call_args.kwargs
     assert options["fliplr"] == 0.0

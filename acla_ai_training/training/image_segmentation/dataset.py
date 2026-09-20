@@ -22,10 +22,34 @@ def _polyline_polygon(points: list, width: int, height: int, stroke_width: int) 
         raise ValueError("Polyline needs at least two distinct pixel points.")
     mask = np.zeros((height, width), dtype=np.uint8)
     cv2.polylines(mask, [pixels], isClosed=False, color=255, thickness=stroke_width)
-    contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    if len(contours) != 1 or cv2.contourArea(contours[0]) == 0:
-        raise ValueError("Polyline stroke must form one nonzero-area region without holes inside the image.")
-    return contours[0].reshape(-1, 2).tolist()
+    contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    outer = [i for i in range(len(contours)) if hierarchy[0, i, 3] == -1]
+    if len(outer) != 1 or cv2.contourArea(contours[outer[0]]) == 0:
+        raise ValueError("Polyline stroke must form one nonzero-area region inside the image.")
+    polygon = contours[outer[0]].reshape(-1, 2).tolist()
+    holes = [contour.reshape(-1, 2).tolist() for i, contour in enumerate(contours) if i != outer[0]]
+
+    # YOLO stores one vertex list per instance. Splice each hole into the outer
+    # contour with a bridge traversed in both directions, preserving its empty
+    # interior when OpenCV fills the polygon during training. Process holes from
+    # left to right so a leftward bridge can only meet an already joined contour.
+    for hole in sorted(holes, key=lambda ring: min(x for x, _ in ring)):
+        start = min(range(len(hole)), key=lambda i: hole[i][0])
+        hole = hole[start:] + hole[:start]
+        hx, hy = hole[0]
+        intersections = []
+        for i, ((x1, y1), (x2, y2)) in enumerate(zip(polygon, polygon[1:] + polygon[:1])):
+            if y1 == y2 or not min(y1, y2) <= hy <= max(y1, y2):
+                continue
+            x = x1 + (hy - y1) * (x2 - x1) / (y2 - y1)
+            if x <= hx:
+                intersections.append((x, i))
+        x, edge = max(intersections)
+        # Raster contour edges are horizontal, vertical or diagonal, so this
+        # intersection lies on a pixel even when it splits a simplified edge.
+        bridge = [round(x), hy]
+        polygon = polygon[:edge + 1] + [bridge] + hole + hole[:1] + [bridge] + polygon[edge + 1:]
+    return polygon
 
 
 def _segmentation_rows(annotation: dict, labels: list[str], polyline_width: int) -> str:
@@ -76,12 +100,14 @@ def prepare_dataset(
     *,
     labels_file: Path = DEFAULT_LABELS,
     polyline_width: int = 8,
+    annotation_splits: dict[str, list[Path]] | None = None,
 ) -> Path:
     """Validate all input first, then write a new dataset without changing sources.
 
     Splits are explicit so adjacent frames from a session can stay together.
     Each polygon or polyline becomes one instance; group IDs are not merged.
     Polyline width is the stroke thickness in original-image pixels.
+    Explicit annotation lists, when supplied, replace directory discovery.
     """
     if not isinstance(polyline_width, int) or polyline_width < 2:
         raise ValueError("Polyline width must be an integer of at least 2 pixels.")
@@ -93,7 +119,10 @@ def prepare_dataset(
     seen_images: set[Path] = set()
     for split, source in (("train", train_dir), ("val", val_dir)):
         source = source.resolve()
-        annotations = sorted(source.rglob("*.json"))
+        annotations = (
+            sorted(source.rglob("*.json")) if annotation_splits is None
+            else annotation_splits[split]
+        )
         if not annotations:
             raise ValueError(f"No Labelme JSON annotations in {split} directory: {source}")
         for annotation_path in annotations:

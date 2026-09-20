@@ -10,7 +10,7 @@ import pytest
 import yaml
 from PIL import Image
 
-from training.image_segmentation import DEFAULT_LABELS, PACKAGE_DIR, read_labels
+from training.image_segmentation import DEFAULT_LABELS, PACKAGE_DIR, WORKSPACE_DIR, read_labels
 from training.image_segmentation.__main__ import main
 from training.image_segmentation.dataset import prepare_dataset
 from training.image_segmentation.trainer import train_model
@@ -196,6 +196,7 @@ def test_labelme_child_removes_only_opencv_qt_paths(monkeypatch, plugin_dir):
 
 
 def test_train_cli_passes_dataset_and_device_to_segmentation_model(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     data = tmp_path / "data.yaml"
     data.write_text("names: [track]\n")
     model = MagicMock(task="segment")
@@ -203,11 +204,13 @@ def test_train_cli_passes_dataset_and_device_to_segmentation_model(tmp_path, mon
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=factory))
 
     assert main([
-        "train", "--data", str(data), "--epochs", "2", "--imgsz", "128",
+        "train", "--no-upload", "--data", str(data), "--epochs", "2", "--imgsz", "128",
         "--batch", "2", "--device", "0", "--project", str(tmp_path / "runs"),
     ]) == 0
 
-    factory.assert_called_once_with("yolo11n-seg.pt", task="segment")
+    factory.assert_called_once_with(
+        str(WORKSPACE_DIR / "storage/image_segmentation/pretrained/yolo11n-seg.pt"), task="segment",
+    )
     model.train.assert_called_once_with(
         data=str(data), epochs=2, imgsz=128, batch=2, device="0", workers=0,
         project=str(tmp_path / "runs"), name="train", overlap_mask=False,
