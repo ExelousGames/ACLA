@@ -13,7 +13,7 @@ export function readVisionModel(url: string): Promise<ArrayBuffer> {
         request.open('GET', url);
         request.responseType = 'arraybuffer';
         request.timeout = 60000;
-        const fail = () => reject(new Error('Built-in model unavailable. Run npm run setup:vision, then restart the app, or load a custom ONNX model.'));
+        const fail = () => reject(new Error('Depth weights unavailable. Run npm run setup:vision-models, then restart the app.'));
         request.onload = () => {
             const success = request.status === 200 || (new URL(url).protocol === 'file:' && request.status === 0);
             if (success && request.response instanceof ArrayBuffer && request.response.byteLength) resolve(request.response);

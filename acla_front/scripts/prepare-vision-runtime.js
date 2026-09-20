@@ -12,8 +12,3 @@ for (const name of [
     fs.copyFileSync(path.join(source, name), path.join(target, name));
 }
 console.log('Prepared local track-vision runtime.');
-for (const model of ['yolo26n-sem', 'yolo26n-depth', 'yolo11n-seg']) {
-    if (!fs.existsSync(path.resolve(__dirname, '../public/vision-models', `${model}.onnx`))) {
-        console.warn(`${model} is not prepared. Run npm run setup:vision-models to enable its detector.`);
-    }
-}

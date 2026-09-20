@@ -82,6 +82,25 @@ export class UltralyticsModelService {
       .exec();
   }
 
+  async findTrackVisionModel() {
+    const model = await this.ultralyticsModels
+      .findOne({ task: 'segment' })
+      .sort({ createdAt: -1, _id: -1 })
+      .exec();
+    if (!model) {
+      throw new NotFoundException('No Track Vision segmentation model has been uploaded');
+    }
+    return {
+      id: String(model._id),
+      name: model.name,
+      task: model.task,
+      classNames: model.classNames,
+      sizeBytes: model.sizeBytes,
+      sha256: model.sha256,
+      downloadPath: `/ai-model/ultralytics/${String(model._id)}/file`,
+    };
+  }
+
   async findOne(id: string) {
     if (!/^[a-f\d]{24}$/i.test(id)) {
       throw new BadRequestException('Invalid Ultralytics model ID');

@@ -13,7 +13,7 @@ export interface TrackVisionHandle extends NamedOperationComponentHandle {
 
 const message = (error: unknown) => error instanceof Error ? error.message : 'Vision detection failed.';
 const GPU_RETRY_DELAY_MS = 3000;
-type DetectorState = { status: 'off' | 'loading' | 'ready' | 'retrying' | 'error'; device?: string; error?: string };
+type DetectorState = { status: 'off' | 'loading' | 'ready' | 'retrying' | 'error'; device?: string; error?: string; modelName?: string; classNames?: string[] };
 
 const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name }, forwardedRef) => {
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -30,15 +30,15 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const listeners = useRef(new Set<() => void>());
     const [sources, setSources] = useState<ScreenCaptureSource[]>([]);
     const [sourceId, setSourceId] = useState('');
-    const [enabled, setEnabled] = useState<EnabledDetections>({ semantic: true, depth: false, segment: false });
+    const [enabled, setEnabled] = useState<EnabledDetections>({ segment: true, depth: false });
     const [allowCpuFallback, setAllowCpuFallback] = useState(false);
     const [retry, setRetry] = useState(0);
     const [detectors, setDetectors] = useState<Record<DetectionTask, DetectorState>>({
-        semantic: { status: 'loading' }, depth: { status: 'off' }, segment: { status: 'off' },
+        segment: { status: 'loading' }, depth: { status: 'off' },
     });
     const [captureState, setCaptureState] = useState<'idle' | 'starting' | 'active'>('idle');
     const [error, setError] = useState('');
-    const [status, setStatus] = useState('Share your game screen to run the detection stack.');
+    const [status, setStatus] = useState('Share your game screen to run segmentation and depth estimation.');
     const [hasFrame, setHasFrame] = useState(false);
     const [confidence, setConfidence] = useState(0.5);
     const [depthRange, setDepthRange] = useState(DEFAULT_DEPTH_RANGE);
@@ -122,7 +122,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
             const current = models.current[id];
             const model = current?.executionProvider === 'wasm' && !allowCpuFallback ? undefined : current;
             return [id, !enabled[id] ? { status: 'off' } : model ? {
-                status: 'ready', device: model.executionProvider === 'webgpu' ? 'GPU acceleration active'
+                status: 'ready', modelName: model.name, classNames: model.classNames, device: model.executionProvider === 'webgpu' ? 'GPU acceleration active'
                     : `CPU inference · ${model.fallbackReason || 'GPU acceleration unavailable.'}`,
             } : { status: 'loading' }];
         })) as Record<DetectionTask, DetectorState>);
@@ -139,11 +139,13 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 if (!enabled[id]) continue;
                 if (models.current[id]) continue;
                 try {
-                    const model = await TrackVisionModel.loadBuiltin(id, allowCpuFallback);
+                    const model = id === 'depth'
+                        ? await TrackVisionModel.loadBuiltin(id, allowCpuFallback)
+                        : await TrackVisionModel.loadBackend(allowCpuFallback);
                     if (version !== modelVersion.current) { await model.dispose().catch(() => undefined); return; }
                     models.current[id] = model;
                     setDetectors((current) => ({ ...current, [id]: {
-                        status: 'ready', device: model.executionProvider === 'webgpu' ? 'GPU acceleration active'
+                        status: 'ready', modelName: model.name, classNames: model.classNames, device: model.executionProvider === 'webgpu' ? 'GPU acceleration active'
                             : `CPU inference · ${model.fallbackReason || 'GPU acceleration unavailable.'}`,
                     } }));
                 } catch (reason) {
@@ -266,7 +268,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     return (
         <section className="track-vision" aria-label="Track Vision">
             <fieldset className="track-vision__stack">
-                <legend>Detection stack <span>Ultralytics</span></legend>
+                <legend>Track models <span>Ultralytics</span></legend>
                 <label className="track-vision__fallback">
                     <input type="checkbox" checked={allowCpuFallback} onChange={(event) => {
                         modelVersion.current++;
@@ -287,6 +289,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     <span className="track-vision__detector-state">{!enabled[id] ? 'Off' : detectors[id].status === 'ready'
                         ? captureState === 'active' ? 'Running' : 'Ready' : detectors[id].status === 'retrying' ? 'Retrying GPU…'
                             : detectors[id].status === 'error' ? 'Unavailable' : 'Loading…'}</span>
+                    {enabled[id] && detectors[id].modelName && <div className="track-vision__hint">Model: {detectors[id].modelName}</div>}
+                    {enabled[id] && !!detectors[id].classNames?.length && <div className="track-vision__hint" aria-label="Model labels">Labels: {detectors[id].classNames!.join(', ')}</div>}
                     {enabled[id] && detectors[id].device && <div className="track-vision__hint" aria-label={`${label} inference device`}>{detectors[id].device}</div>}
                     {enabled[id] && detectors[id].error && <div className="track-vision__error" role="alert">
                         {detectors[id].error} <button type="button" onClick={() => setRetry((current) => current + 1)}>Retry {label}</button>
@@ -313,8 +317,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 <p className="track-vision__hint">Warm at or below Close, cool at or above Far. Adjust to tune the depth colors.</p>
             </fieldset>}
             <div className="track-vision__controls">
-                <label>Segment confidence {Math.round(confidence * 100)}%
-                    <input aria-label="Segment confidence" disabled={!enabled.segment} type="range" min="0.1" max="0.95" step="0.05" value={confidence}
+                <label>Segmentation confidence {Math.round(confidence * 100)}%
+                    <input aria-label="Segmentation confidence" disabled={!enabled.segment} type="range" min="0.1" max="0.95" step="0.05" value={confidence}
                         onChange={(event) => setConfidence(Number(event.target.value))} />
                 </label>
             </div>
@@ -335,7 +339,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
             </div>
             <div className="track-vision__status" role="status">{status}</div>
             {error && <div className="track-vision__error" role="alert">{error}</div>}
-            <p className="track-vision__hint">Frames and inference stay on this device. Pretrained models may vary in simulator accuracy.</p>
+            <p className="track-vision__hint">Segmentation downloads from the backend and is saved on this device. Depth uses the bundled model. Frames and inference stay local.</p>
         </section>
     );
 });

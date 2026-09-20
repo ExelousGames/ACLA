@@ -1,101 +1,50 @@
 # Track Vision
 
-Track Vision is available only in the Electron desktop app, within Live Session.
-Open **Live Session → Add Visualization → Track Vision**. The **Ultralytics
-detection stack** has three independent switches. Semantic starts enabled;
-Depth and Segment start off. Toggle any combination while sharing a game window.
-Each detector shows its own loading, ready/running, error, and inference-device state.
+Track Vision runs locally in the Electron desktop app. Open **Live Session → Add Visualization → Track Vision**, select a simulator window, and share it. Segmentation starts enabled and shows the uploaded model name and its labels. **Depth** remains available as an independent, optional detector using the bundled YOLO26n depth model. Enable it to show estimated distances beneath segmentation; the Close and Far controls tune the overlay colors.
 
-| Option | Bundled model | Output |
-| --- | --- | --- |
-| Semantic | YOLO26n-sem, Cityscapes | Per-pixel scene classes, including road and surrounding objects |
-| Depth | YOLO26n-depth | Per-pixel estimated distance, displayed as a warm-to-cool depth map |
-| Segment | YOLO11n-seg, COCO | Separate object masks, class labels, boxes, and confidence |
+## Backend model contract
 
-Segment confidence applies only to instance detection. Semantic has no per-object
-confidence threshold. Generic COCO weights do not include a racing-track class.
-Depth is an estimate from a pretrained model, not simulator telemetry or validated
-track geometry. Simulator accuracy depends on view, lighting, and scene content.
+`GET /ai-model/ultralytics/track-vision` requires the normal JWT and returns the newest uploaded `segment` model, ordered by `createdAt` and `_id`. It returns 404 when none is available. The response contains:
 
-Enable **Depth** to show the **Depth range** meter. Adjust **Close** and **Far**
-in estimated meters: distances at or below Close use warm colors, distances at
-or above Far use cool colors, and the range between them blends smoothly.
-The range stays fixed across frames and slider changes recolor the current
-preview immediately. Close and Far stay at least 0.5 m apart; the controls cover
-0–200 m. **Reset depth range** restores Close to 5 m and Far to 50 m.
-
-## Prepare models once
-
-Inference runs locally in the Electron renderer. Python is used only to export the packaged models:
-
-```sh
-python -m venv .venv/track-vision
-# Windows:
-.venv/track-vision/Scripts/python -m pip install -r scripts/vision-requirements.txt
-# macOS/Linux:
-.venv/track-vision/bin/python -m pip install -r scripts/vision-requirements.txt
-npm run setup:vision-models
-npm run setup:vision
+```json
+{
+  "id": "MongoDB model ID",
+  "name": "track-features",
+  "task": "segment",
+  "classNames": ["track", "curb"],
+  "sizeBytes": 123456,
+  "sha256": "checkpoint SHA-256",
+  "downloadPath": "/ai-model/ultralytics/<id>/file"
+}
 ```
 
-The model setup script uses that project environment when present, or `python`.
-Set `VISION_PYTHON` to choose another interpreter. It downloads official pretrained
-weights and exports static 640px, batch-one ONNX models and class-name metadata to
-`public/vision-models`. Subsequent runs reuse those files. The pinned Ultralytics
-export version is in `scripts/vision-requirements.txt`. Runtime assets come from
-the pinned `onnxruntime-web` dependency.
+`POST /ai-model/ultralytics` publishes a `.pt` checkpoint with metadata. Array positions in `classNames` are class IDs. The frontend checks the metadata when loading a model and uses the authenticated `GET /ai-model/ultralytics/:id/file` route only if that checkpoint is missing locally. Upload a new segmentation model to make it the version selected on the next model load.
 
-Start/build scripts prepare runtime files and report missing models without
-blocking the rest of the app. A detector with missing weights shows an error and
-a Retry button; other detectors and screen capture remain usable. For offline
-builds, preserve the exported ONNX files and their JSON metadata. ONNX files are
-excluded from Git and included in builds through `public`. Exported models use
-the upstream Ultralytics license; `ULTRALYTICS-LICENSE.txt` is packaged with them.
+## Local storage and inference
 
-## Capture and results
+Electron stores backend checkpoints, ONNX exports, and their metadata under:
 
-Refresh sources, select the simulator window or screen, then click
-**Share game screen**. Capture requires the Electron screen-capture bridge and an
-explicit source selection.
-No audio is captured. All frames and inference stay on this device.
+```text
+<app userData>/track-vision/models/<model-id>-<sha256>/
+  weights.pt
+  weights.onnx
+  manifest.json
+```
 
-The stack processes one captured frame at a time, sequentially across enabled
-models, at no more than 5 FPS. Actual speed depends on the selected models and
-hardware. Every overlay matches its captured frame. Models try WebGPU first in
-the Electron renderer, requesting the high-performance GPU. All detectors in the
-renderer share one GPU queue for initialization, warm-up, inference, and disposal,
-so multiple detectors can stay enabled and take turns without overlapping GPU work.
-CPU worker operations do not wait on this queue. **Allow CPU fallback**
-starts off: failed GPU initialization, warm-up, or live inference automatically
-retries after 3 seconds, once any queued model loads finish. Other detectors and
-screen capture remain usable. Enable the toggle to allow a CPU WASM worker when
-GPU loading fails; GPU is still tried first. Turning it off releases CPU models
-and retries them on GPU. Disabling a detector or closing the panel cancels its
-retries. Missing weights and CPU failures still require a manual Retry.
-Disabling a detector releases its model, clears stale published results and
-removes its overlay. Disabling all detectors keeps raw screen capture available.
+Downloads are checked against the backend byte length and SHA-256 before saving. On first use, the desktop Python environment converts the verified checkpoint to a static, float32, 640px ONNX segmentation model. Export is offline and automatic package installation is disabled. The exporter validates the model task, class count, and output layout. Backend class names are applied in class-ID order and used by both the label list and overlays.
 
-`TrackVisionModel.loadBuiltin(task, allowCpuFallback = false)` loads `semantic`,
-`depth`, or `segment`. GPU failures throw `GpuInferenceError` when fallback is off;
-the panel schedules retries.
-`detect(canvas, confidence)` returns task-specific masks/maps with processing
-time and class names. Call `dispose()` when finished. The semantic decoder handles
-baked integer class maps and float logits; depth copies its float output before
-tensor disposal; Segment decodes raw YOLO11 outputs with class-aware NMS.
+The original checkpoint is retained if conversion fails, so a retry can export it without another download. Verified ONNX exports survive app restarts; damaged exports are rebuilt from the saved checkpoint. Segmentation metadata is requested from the backend when loading, so segmentation requires a backend connection. Depth loads independently from the bundled `public/vision-models/yolo26n-depth.onnx` and needs no backend connection.
 
-`LiveTrackVision` registers a `TrackVisionHandle` as `visualization:track-vision`.
-Consumers call `getLatestDetection()` or `subscribeDetection(listener)` (compatible
-with `useSyncExternalStore`). Results contain `capturedAt`, source `width` and
-`height`, and a `detections` object keyed by enabled, successful tasks. Each task
-includes its own output dimensions and inference time. Masks/maps refer to the
-letterboxed 640px input; the preview removes padding when drawing. Segment boxes
-are normalized to that model input. Results become `null` on stop, configuration
-change, or unmount. Use capture timestamps to assess freshness.
+Desktop development and packaging install the conversion dependencies from `src/py-scripts/requirements.txt` through the existing `setup:python` lifecycle. After updating an existing checkout, run `npm run setup:python` and restart Electron, or use `npm run start:electron`, which performs setup automatically. `npm run setup:vision` only copies the pinned ONNX Runtime Web assets from node_modules into the app; it never downloads models.
 
-The earlier YOLOP and track-boundary decoding helpers remain available separately;
-they are not used by the Track Vision stack.
+To prepare the bundled depth weights before development or packaging, install `scripts/vision-requirements.txt` in a Python environment and run `npm run setup:vision-models`. The script uses `.venv/track-vision` when present; `VISION_PYTHON` selects another interpreter. This exports only YOLO26n depth, downloading its checkpoint on first use and reusing prepared weights thereafter. The generated ONNX file is ignored by Git and copied into the build with the public assets. Its Ultralytics license is included in `public/vision-models/ULTRALYTICS-LICENSE.txt`.
 
-References: [Ultralytics Semantic](https://docs.ultralytics.com/tasks/semantic/),
-[Depth](https://docs.ultralytics.com/tasks/depth/),
-[Segment](https://docs.ultralytics.com/tasks/segment/),
-[ONNX Runtime WebGPU](https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html).
+Inference uses WebGPU by default. **Allow CPU fallback** permits either model to run in a CPU WASM worker if GPU initialization fails. GPU-only failures retry after three seconds. Model retrieval, export, and CPU errors offer a manual Retry button. Screen preview remains available when a model cannot load. Disabling a detector releases its inference session; the other detector and capture continue running.
+
+All frames and inference stay on this device. Captured frames run sequentially at up to 5 FPS. GPU initialization, inference, and disposal share one queue across Track Vision panels.
+
+## Results
+
+`TrackVisionModel.loadBackend(allowCpuFallback = false)` loads segmentation through the desktop cache. `TrackVisionModel.loadBuiltin('depth', allowCpuFallback = false)` loads bundled depth weights. `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time, and ordered class names for segmentation, or a copied float32 distance map for depth. Call `dispose()` when finished.
+
+`LiveTrackVision` registers a `TrackVisionHandle` as `visualization:track-vision`. Consumers use `getLatestDetection()` or `subscribeDetection(listener)`. Results include the source timestamp and dimensions, successful segmentation under `detections.segment`, and depth under `detections.depth`. Masks, boxes, and depth maps refer to the letterboxed model input; drawing removes its padding. Results clear on stop, configuration changes, and unmount. Changing the depth range immediately recolors the displayed frame without rerunning inference.

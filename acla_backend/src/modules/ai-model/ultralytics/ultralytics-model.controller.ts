@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Logger,
   Param,
   Post,
@@ -79,6 +80,12 @@ export class UltralyticsModelController {
   @Get()
   findAll(@Query('name') name?: string) {
     return this.ultralyticsModelService.findAll(name);
+  }
+
+  @Get('track-vision')
+  @Header('Cache-Control', 'no-store')
+  trackVision() {
+    return this.ultralyticsModelService.findTrackVisionModel();
   }
 
   @Get(':id')

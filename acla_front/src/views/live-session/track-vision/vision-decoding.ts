@@ -1,36 +1,5 @@
 import { FloatTensor } from './yolo-segmentation';
-import { DepthResult, SemanticResult, SegmentResult } from './track-vision-types';
-
-export function decodeSemantic(output: { dims: readonly number[]; data: ArrayLike<number | bigint> }): SemanticResult {
-    if (output.dims.length === 3) {
-        const [batch, height, width] = output.dims;
-        if (batch !== 1 || height < 1 || width < 1 || output.data.length !== width * height) {
-            throw new Error('Semantic requires a [1, height, width] class map.');
-        }
-        const classes = new Uint16Array(width * height);
-        for (let pixel = 0; pixel < classes.length; pixel++) {
-            const classId = Number(output.data[pixel]);
-            if (!Number.isInteger(classId) || classId < 0 || classId > 65535) throw new Error('Invalid semantic class ID.');
-            classes[pixel] = classId;
-        }
-        return { task: 'semantic', width, height, classes };
-    }
-    const [batch, channels, height, width] = output.dims;
-    if (output.dims.length !== 4 || batch !== 1 || channels < 1 || channels > 65535
-        || width < 1 || height < 1 || !(output.data instanceof Float32Array) || output.data.length !== channels * width * height) {
-        throw new Error('Semantic requires float32 [1, classes, height, width] logits.');
-    }
-    const pixels = width * height;
-    const classes = new Uint16Array(pixels);
-    for (let pixel = 0; pixel < pixels; pixel++) {
-        let winner = 0;
-        for (let channel = 1; channel < channels; channel++) {
-            if (output.data[channel * pixels + pixel] > output.data[winner * pixels + pixel]) winner = channel;
-        }
-        classes[pixel] = channels === 1 ? Number(output.data[pixel] > 0) : winner;
-    }
-    return { task: 'semantic', width, height, classes };
-}
+import { DepthResult, SegmentResult } from './track-vision-types';
 
 export function decodeDepth(output: FloatTensor): DepthResult {
     const dims = output.dims;
@@ -53,16 +22,16 @@ const iou = (a: Candidate, b: Candidate) => {
     return intersection / ((ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - intersection || 1);
 };
 
-/** Raw YOLO11-seg outputs, retaining separate masks for every detected class. */
-export function decodeSegments(predictions: FloatTensor, prototypes: FloatTensor, size: number, threshold: number): SegmentResult {
+/** Raw Ultralytics segmentation outputs, retaining separate masks for every detected class. */
+export function decodeSegments(predictions: FloatTensor, prototypes: FloatTensor, size: number, threshold: number, classCount: number): SegmentResult {
     const [batch, channels, count] = predictions.dims;
     const [maskBatch, maskChannels, height, width] = prototypes.dims;
     const classes = channels - 4 - maskChannels;
     if (predictions.dims.length !== 3 || prototypes.dims.length !== 4 || batch !== 1 || maskBatch !== 1
-        || classes < 1 || maskChannels < 1 || width < 1 || height < 1
-        || count !== (size / 8) ** 2 + (size / 16) ** 2 + (size / 32) ** 2
+        || classes < 1 || classes !== classCount || maskChannels < 1 || width < 1 || height < 1
+        || count < 1
         || predictions.data.length !== channels * count || prototypes.data.length !== maskChannels * height * width) {
-        throw new Error('Segment requires raw YOLO11 segmentation outputs without embedded NMS.');
+        throw new Error('Segmentation output does not match the backend labels or raw mask format.');
     }
     if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1) throw new Error('Invalid confidence threshold.');
     const at = (channel: number, index: number) => predictions.data[channel * count + index];

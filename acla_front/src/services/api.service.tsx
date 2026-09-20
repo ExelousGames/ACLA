@@ -68,6 +68,14 @@ export class ApiService {
         }
     }
 
+    public async getBinary(url: string, opts?: { timeoutMs?: number }): Promise<ArrayBuffer> {
+        const response = await this.axiosInstance.get<ArrayBuffer>(url, {
+            responseType: 'arraybuffer',
+            timeout: opts?.timeoutMs ?? 30000,
+        });
+        return response.data;
+    }
+
     // POST method
     public async post<T>(url: string, data?: object, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
         try {

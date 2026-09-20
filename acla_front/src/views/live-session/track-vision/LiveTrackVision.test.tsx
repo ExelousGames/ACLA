@@ -7,7 +7,7 @@ import { drawVisionOverlay } from './vision-overlay';
 jest.mock('./vision-overlay', () => ({ drawVisionOverlay: jest.fn() }));
 
 jest.mock('./track-vision-model', () => ({
-    ...jest.requireActual('./track-vision-model'), TrackVisionModel: { loadBuiltin: jest.fn() },
+    ...jest.requireActual('./track-vision-model'), TrackVisionModel: { loadBackend: jest.fn(), loadBuiltin: jest.fn() },
 }));
 
 const flush = async () => { await act(async () => { await Promise.resolve(); }); };
@@ -27,8 +27,8 @@ const deferred = <T,>() => {
 let track: { stop: jest.Mock; onended: (() => void) | null };
 let stream: MediaStream;
 let getDisplayMedia: jest.Mock;
-let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu' | 'wasm'; fallbackReason?: string };
-const detection = { task: 'semantic' as const, width: 2, height: 2, classes: new Uint16Array([0, 1, 1, 0]), inferenceMs: 50 };
+let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu' | 'wasm'; fallbackReason?: string; name: string; classNames: string[] };
+const detection = { task: 'segment' as const, width: 2, height: 2, instances: [], classNames: ['track', 'curb'], inferenceMs: 50 };
 
 beforeEach(() => {
     jest.useFakeTimers();
@@ -41,8 +41,8 @@ beforeEach(() => {
     jest.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(1280);
     jest.spyOn(HTMLVideoElement.prototype, 'videoHeight', 'get').mockReturnValue(720);
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: jest.fn(), clearRect: jest.fn(), beginPath: jest.fn(), moveTo: jest.fn(), lineTo: jest.fn(), stroke: jest.fn() } as any);
-    model = { detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu' };
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(model);
+    model = { name: 'track-features-v2', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu' };
+    (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue(model);
     window.screenCapture = {
         listSources: jest.fn().mockResolvedValue([{ id: 'window:42', name: 'Simulator' }]),
         selectSource: jest.fn().mockResolvedValue(undefined),
@@ -59,12 +59,12 @@ it('captures silently, publishes detections, clears empty frames, and stops on u
     ref.current!.subscribeDetection(listener);
     await startCapture();
     expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({ audio: false }));
-    expect(ref.current!.getLatestDetection()?.detections.semantic).toEqual(detection);
-    expect(screen.getByRole('status')).toHaveTextContent('Semantic · 50 ms');
+    expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(detection);
+    expect(screen.getByRole('status')).toHaveTextContent('Segmentation · 50 ms');
     expect(listener).toHaveBeenCalled();
-    model.detect.mockResolvedValue({ ...detection, classes: new Uint16Array(4) });
+    model.detect.mockResolvedValue({ ...detection, instances: [] });
     await act(async () => { jest.advanceTimersByTime(200); });
-    expect(ref.current!.getLatestDetection()?.detections.semantic).toMatchObject({ classes: new Uint16Array(4) });
+    expect(ref.current!.getLatestDetection()?.detections.segment).toMatchObject({ instances: [] });
     const handle = ref.current!;
     unmount();
     expect(track.stop).toHaveBeenCalledTimes(1);
@@ -123,7 +123,7 @@ it('requires an explicit desktop source and grants it before requesting capture'
 
 it('releases a model whose loading finishes after unmount', async () => {
     const pending = deferred<any>();
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockReturnValue(pending.promise);
+    (TrackVisionModel.loadBackend as jest.Mock).mockReturnValue(pending.promise);
     const { unmount } = render(<LiveTrackVision name="vision" />);
     await flush();
     unmount();
@@ -132,87 +132,147 @@ it('releases a model whose loading finishes after unmount', async () => {
 });
 
 it('shows model errors and keeps the screen preview available without weights', async () => {
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockRejectedValue(new Error('Built-in model unavailable.'));
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValue(new Error('Backend model unavailable.'));
     render(<LiveTrackVision name="vision" />);
     await flush();
-    expect(screen.getByRole('alert')).toHaveTextContent('Built-in model unavailable');
+    expect(screen.getByRole('alert')).toHaveTextContent('Backend model unavailable');
     await startCapture();
     expect(screen.getByLabelText('Captured game frame with vision detections')).toBeVisible();
     expect(screen.getByRole('status')).toHaveTextContent('Waiting for enabled detectors');
     expect(model.detect).not.toHaveBeenCalled();
 });
 
-it('loads the bundled model automatically and detects without a file upload', async () => {
+it('loads the backend model automatically and detects without a file upload', async () => {
     const ref = React.createRef<TrackVisionHandle>();
     const { unmount } = render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('semantic', false);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledWith(false);
     expect(screen.getByRole('checkbox', { name: 'Allow CPU fallback' })).not.toBeChecked();
-    expect(screen.getByLabelText('Semantic inference device')).toHaveTextContent('GPU acceleration active');
-    expect(screen.queryByLabelText('Track class')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
+    expect(screen.getByLabelText('Model labels')).toHaveTextContent('track, curb');
+    expect(screen.getByRole('checkbox', { name: 'Enable Depth' })).not.toBeChecked();
+    expect(TrackVisionModel.loadBuiltin).not.toHaveBeenCalled();
+    expect(screen.queryByRole('checkbox', { name: 'Enable Semantic' })).not.toBeInTheDocument();
     await startCapture();
     expect(model.detect).toHaveBeenCalledTimes(1);
-    expect(ref.current!.getLatestDetection()?.detections.semantic).toEqual(detection);
+    expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(detection);
     unmount();
     expect(model.dispose).toHaveBeenCalledTimes(1);
 });
 
-it('allows retrying a failed bundled load', async () => {
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockRejectedValueOnce(new Error('Built-in model unavailable.'));
+it('allows retrying a failed backend load', async () => {
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValueOnce(new Error('Backend model unavailable.'));
     render(<LiveTrackVision name="vision" />);
     await flush();
-    expect(screen.getByRole('alert')).toHaveTextContent('Built-in model unavailable');
-    fireEvent.click(screen.getByRole('button', { name: 'Retry Semantic' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Backend model unavailable');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Segmentation' }));
     await flush();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Semantic inference device')).toHaveTextContent('GPU acceleration active');
+    expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
+});
+
+it('runs depth alongside backend segmentation and releases only depth when disabled', async () => {
+    const depthResult = { task: 'depth', width: 2, height: 2, values: new Float32Array([1, 2, 3, 4]), inferenceMs: 20, classNames: [] };
+    const depth = { ...model, name: 'YOLO26n Depth', classNames: [], detect: jest.fn().mockResolvedValue(depthResult), dispose: jest.fn().mockResolvedValue(undefined) };
+    (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depth);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
+    await flush();
+    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth', false);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('Depth inference device')).toHaveTextContent('GPU acceleration active');
+    await startCapture();
+    expect(ref.current!.getLatestDetection()?.detections).toEqual({ segment: detection, depth: depthResult });
+    expect(depth.detect.mock.calls[0][0]).toBe(model.detect.mock.calls[0][0]);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    await flush();
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.detections).toEqual({ segment: detection });
+    expect(depth.dispose).toHaveBeenCalledTimes(1);
+    expect(model.dispose).not.toHaveBeenCalled();
+    expect(track.stop).not.toHaveBeenCalled();
+});
+
+it('keeps depth available when backend segmentation cannot load', async () => {
+    const depthResult = { task: 'depth', width: 2, height: 2, values: new Float32Array([1, 2, 3, 4]), inferenceMs: 20, classNames: [] };
+    const depth = { ...model, detect: jest.fn().mockResolvedValue(depthResult), dispose: jest.fn().mockResolvedValue(undefined) };
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValue(new Error('Backend unavailable'));
+    (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depth);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
+    await flush();
+    await startCapture();
+    expect(ref.current!.getLatestDetection()?.detections).toEqual({ depth: depthResult });
+    expect(screen.getByRole('alert')).toHaveTextContent('Backend unavailable');
+    expect(track.stop).not.toHaveBeenCalled();
+});
+
+it('keeps segmentation running when depth inference fails', async () => {
+    const depth = { ...model, detect: jest.fn().mockRejectedValue(new Error('Depth inference failed')), dispose: jest.fn().mockResolvedValue(undefined) };
+    (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depth);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
+    await flush();
+    await startCapture();
+    expect(ref.current!.getLatestDetection()?.detections).toEqual({ segment: detection });
+    expect(screen.getByRole('alert')).toHaveTextContent('Depth inference failed');
+    expect(depth.dispose).toHaveBeenCalledTimes(1);
+    expect(model.dispose).not.toHaveBeenCalled();
+    expect(track.stop).not.toHaveBeenCalled();
 });
 
 it('automatically retries GPU failures until loading succeeds', async () => {
-    (TrackVisionModel.loadBuiltin as jest.Mock)
+    (TrackVisionModel.loadBackend as jest.Mock)
         .mockRejectedValueOnce(new GpuInferenceError('GPU device lost'))
         .mockRejectedValueOnce(new GpuInferenceError('GPU device lost'));
     render(<LiveTrackVision name="vision" />);
     await flush();
     expect(screen.getByText('Retrying GPU…')).toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(2999); });
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     await act(async () => { jest.advanceTimersByTime(1); });
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(2);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(2);
     expect(screen.getByText('Retrying GPU…')).toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(3000); });
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(3);
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenLastCalledWith('semantic', false);
-    expect(screen.getByLabelText('Semantic inference device')).toHaveTextContent('GPU acceleration active');
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(3);
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(false);
+    expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(6000); });
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(3);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(3);
 });
 
 it('leaves missing weights available for manual retry without automatic loading', async () => {
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockRejectedValue(new Error('Weights unavailable'));
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValue(new Error('Weights unavailable'));
     render(<LiveTrackVision name="vision" />);
     await flush();
     await act(async () => { jest.advanceTimersByTime(10000); });
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('button', { name: 'Retry Semantic' })).toBeEnabled();
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Retry Segmentation' })).toBeEnabled();
 });
 
 it.each(['disable', 'unmount'])('cancels scheduled GPU retries on %s', async (action) => {
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockRejectedValue(new GpuInferenceError('GPU device lost'));
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValue(new GpuInferenceError('GPU device lost'));
     const { unmount } = render(<LiveTrackVision name="vision" />);
     await flush();
     if (action === 'unmount') unmount();
-    else fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Semantic' }));
+    else fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
     await flush();
     await act(async () => { jest.advanceTimersByTime(10000); });
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
 });
 
 it('allows CPU fallback on demand and reloads CPU models on GPU when turned off', async () => {
     const cpu = { ...model, executionProvider: 'wasm', fallbackReason: 'GPU could not run this model; using CPU.', dispose: jest.fn().mockResolvedValue(undefined) };
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockImplementation(async (_task, allowCpuFallback) => {
+    (TrackVisionModel.loadBackend as jest.Mock).mockImplementation(async (allowCpuFallback) => {
         if (allowCpuFallback) return cpu;
         throw new GpuInferenceError('GPU device lost');
     });
@@ -220,16 +280,16 @@ it('allows CPU fallback on demand and reloads CPU models on GPU when turned off'
     await flush();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Allow CPU fallback' }));
     await flush();
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenLastCalledWith('semantic', true);
-    expect(screen.getByLabelText('Semantic inference device')).toHaveTextContent('CPU inference · GPU could not run this model; using CPU.');
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(true);
+    expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('CPU inference · GPU could not run this model; using CPU.');
     await act(async () => { jest.advanceTimersByTime(6000); });
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(2);
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(model);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(2);
+    (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue(model);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Allow CPU fallback' }));
     await flush();
     expect(cpu.dispose).toHaveBeenCalledTimes(1);
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenLastCalledWith('semantic', false);
-    expect(screen.getByLabelText('Semantic inference device')).toHaveTextContent('GPU acceleration active');
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(false);
+    expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
 });
 
 it('keeps healthy GPU sessions when CPU fallback is toggled', async () => {
@@ -239,14 +299,14 @@ it('keeps healthy GPU sessions when CPU fallback is toggled', async () => {
     await flush();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Allow CPU fallback' }));
     await flush();
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(model.dispose).not.toHaveBeenCalled();
 });
 
 it('discards a pending CPU load when fallback is turned off', async () => {
     const pending = deferred<any>();
     const cpu = { ...model, executionProvider: 'wasm', dispose: jest.fn().mockResolvedValue(undefined) };
-    (TrackVisionModel.loadBuiltin as jest.Mock)
+    (TrackVisionModel.loadBackend as jest.Mock)
         .mockRejectedValueOnce(new GpuInferenceError('GPU device lost'))
         .mockReturnValueOnce(pending.promise);
     render(<LiveTrackVision name="vision" />);
@@ -256,14 +316,14 @@ it('discards a pending CPU load when fallback is turned off', async () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Allow CPU fallback' }));
     await act(async () => { pending.resolve(cpu); });
     expect(cpu.dispose).toHaveBeenCalledTimes(1);
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenLastCalledWith('semantic', false);
-    expect(screen.getByLabelText('Semantic inference device')).toHaveTextContent('GPU acceleration active');
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(false);
+    expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
 });
 
 it('automatically recovers GPU inference during capture', async () => {
     const recovered = { ...model, detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined) };
     model.detect.mockRejectedValue(new Error('GPU device lost'));
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValueOnce(model).mockResolvedValue(recovered);
+    (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValueOnce(model).mockResolvedValue(recovered);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
@@ -272,53 +332,8 @@ it('automatically recovers GPU inference during capture', async () => {
     expect(screen.getByText('Retrying GPU…')).toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(3000); });
     await act(async () => { jest.advanceTimersByTime(200); });
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenLastCalledWith('semantic', false);
-    expect(ref.current!.getLatestDetection()?.detections.semantic).toEqual(detection);
-    expect(track.stop).not.toHaveBeenCalled();
-});
-
-it('waits for queued detectors to load before retrying GPU failures', async () => {
-    const pending = deferred<any>();
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockImplementation(async (task) => {
-        if (task === 'depth') return pending.promise;
-        throw new GpuInferenceError('GPU device lost');
-    });
-    render(<LiveTrackVision name="vision" />);
-    await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    await flush();
-    const calls = (TrackVisionModel.loadBuiltin as jest.Mock).mock.calls.length;
-    await act(async () => { jest.advanceTimersByTime(10000); });
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(calls);
-    await act(async () => { pending.resolve(model); });
-    await act(async () => { jest.advanceTimersByTime(3000); });
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(calls + 1);
-    expect(screen.getByLabelText('Depth inference device')).toHaveTextContent('GPU acceleration active');
-    expect(model.dispose).not.toHaveBeenCalled();
-});
-
-it('runs enabled detectors on the same frame and removes a disabled detection immediately', async () => {
-    const depth = { ...model, detect: jest.fn().mockResolvedValue({ task: 'depth', width: 2, height: 2, values: new Float32Array([1, 2, 3, 4]), inferenceMs: 20 }), dispose: jest.fn().mockResolvedValue(undefined) };
-    const segment = { ...model, detect: jest.fn().mockResolvedValue({ task: 'segment', width: 2, height: 2, instances: [], inferenceMs: 10 }), dispose: jest.fn().mockResolvedValue(undefined) };
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockImplementation(async (task) => task === 'depth' ? depth : task === 'segment' ? segment : model);
-    const ref = React.createRef<TrackVisionHandle>();
-    render(<LiveTrackVision ref={ref} name="vision" />);
-    await flush();
-    expect(screen.getByRole('checkbox', { name: 'Enable Semantic' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Enable Depth' })).not.toBeChecked();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segment' }));
-    await flush();
-    await startCapture();
-    expect(Object.keys(ref.current!.getLatestDetection()!.detections)).toEqual(['semantic', 'depth', 'segment']);
-    expect(depth.detect.mock.calls[0][0]).toBe(model.detect.mock.calls[0][0]);
-    expect(segment.detect.mock.calls[0][0]).toBe(model.detect.mock.calls[0][0]);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Semantic' }));
-    expect(ref.current!.getLatestDetection()).toBeNull();
-    await flush();
-    await act(async () => { jest.advanceTimersByTime(200); });
-    expect(Object.keys(ref.current!.getLatestDetection()!.detections)).toEqual(['depth', 'segment']);
-    expect(model.dispose).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(false);
+    expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(detection);
     expect(track.stop).not.toHaveBeenCalled();
 });
 
@@ -326,7 +341,7 @@ it('allows all detectors to be disabled while capture continues', async () => {
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Semantic' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
     await flush();
     await startCapture();
     expect(ref.current!.getLatestDetection()?.detections).toEqual({});
@@ -334,28 +349,12 @@ it('allows all detectors to be disabled while capture continues', async () => {
     expect(screen.getByRole('status')).toHaveTextContent('Enable a detection');
 });
 
-it('keeps working detections running if another detector fails', async () => {
-    const failed = { ...model, detect: jest.fn().mockRejectedValue(new Error('Depth inference failed.')), dispose: jest.fn().mockResolvedValue(undefined) };
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockImplementation(async (task) => task === 'depth' ? failed : model);
-    const ref = React.createRef<TrackVisionHandle>();
-    render(<LiveTrackVision ref={ref} name="vision" />);
-    await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    await flush();
-    await startCapture();
-    expect(screen.getByRole('alert')).toHaveTextContent('Depth inference failed');
-    expect(ref.current!.getLatestDetection()?.detections.semantic).toEqual(detection);
-    expect(ref.current!.getLatestDetection()?.detections.depth).toBeUndefined();
-    expect(failed.dispose).toHaveBeenCalled();
-    expect(track.stop).not.toHaveBeenCalled();
-});
-
 it('discards a detector load that finishes after it is disabled', async () => {
     const pending = deferred<any>();
-    (TrackVisionModel.loadBuiltin as jest.Mock).mockReturnValue(pending.promise);
+    (TrackVisionModel.loadBackend as jest.Mock).mockReturnValue(pending.promise);
     render(<LiveTrackVision name="vision" />);
     await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Semantic' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
     await act(async () => { pending.resolve(model); });
     expect(model.dispose).toHaveBeenCalledTimes(1);
     await startCapture();
@@ -369,12 +368,22 @@ it('does not republish a disabled detector when its pending inference finishes',
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     await startCapture();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Semantic' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
     await act(async () => { pending.resolve(detection); });
     expect(ref.current!.getLatestDetection()).toBeNull();
     await act(async () => { jest.advanceTimersByTime(200); });
     expect(ref.current!.getLatestDetection()?.detections).toEqual({});
     expect(model.detect).toHaveBeenCalledTimes(1);
+});
+
+it('requires the Electron bridge before loading models or offering capture', async () => {
+    delete window.screenCapture;
+    render(<LiveTrackVision name="vision" />);
+    await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('Track Vision is available only in the Electron desktop app.');
+    expect(screen.queryByRole('button', { name: 'Share game screen' })).not.toBeInTheDocument();
+    expect(TrackVisionModel.loadBackend).not.toHaveBeenCalled();
+    expect(getDisplayMedia).not.toHaveBeenCalled();
 });
 
 it('recolors the displayed frame while inference is pending without restarting the detection stack', async () => {
@@ -403,7 +412,8 @@ it('recolors the displayed frame while inference is pending without restarting t
     expect(drawVisionOverlay).toHaveBeenLastCalledWith(context, displayedResult, { near: 10, far: 80 });
     expect(drawImage).toHaveBeenLastCalledWith(displayedFrame, 0, 0);
     expect(displayedFrame).not.toBe(depth.detect.mock.calls[1][0]);
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(2);
+    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(depth.detect).toHaveBeenCalledTimes(2);
     expect(track.stop).not.toHaveBeenCalled();
 
@@ -414,6 +424,7 @@ it('recolors the displayed frame while inference is pending without restarting t
 });
 
 it('keeps the close and far cutoffs ordered and retains them when depth is toggled', async () => {
+    (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue({ ...model, dispose: jest.fn().mockResolvedValue(undefined) });
     render(<LiveTrackVision name="vision" />);
     await flush();
     expect(screen.queryByRole('slider', { name: 'Close depth' })).not.toBeInTheDocument();
@@ -435,14 +446,4 @@ it('keeps the close and far cutoffs ordered and retains them when depth is toggl
     expect(close).not.toBeInTheDocument();
     expect(screen.getByRole('slider', { name: 'Close depth' })).toHaveValue('5');
     expect(screen.getByRole('slider', { name: 'Far depth' })).toHaveValue('50');
-});
-
-it('requires the Electron bridge before loading models or offering capture', async () => {
-    delete window.screenCapture;
-    render(<LiveTrackVision name="vision" />);
-    await flush();
-    expect(screen.getByRole('alert')).toHaveTextContent('Track Vision is available only in the Electron desktop app.');
-    expect(screen.queryByRole('button', { name: 'Share game screen' })).not.toBeInTheDocument();
-    expect(TrackVisionModel.loadBuiltin).not.toHaveBeenCalled();
-    expect(getDisplayMedia).not.toHaveBeenCalled();
 });

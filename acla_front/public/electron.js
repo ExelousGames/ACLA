@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const { detectSupportedDesktopGame } = require('./desktop-game-detection');
 const { RecordingSessionManager } = require('../electron/recording/recording-session-manager');
 const { registerScreenCapture } = require('../electron/screen-capture');
+const { registerTrackVisionModels } = require('../electron/track-vision-models');
 const {
   DESKTOP_GAME_SET,
   recordingStartFailure,
@@ -49,6 +50,7 @@ function getPythonExecutable() {
 const devMode = app.isPackaged ? false : isDev;
 let mainWindow;
 const configureScreenCapture = registerScreenCapture({ ipcMain, desktopCapturer, getMainWindow: () => mainWindow });
+registerTrackVisionModels({ app, ipcMain, getMainWindow: () => mainWindow, getPythonExecutable });
 let isAppQuitting = false;
 let recordingManager = null;
 let latestDetectedGame = null;

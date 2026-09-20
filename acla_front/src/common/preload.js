@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const { DESKTOP_GAME_SET, isRecordingStartFailure } = require('../../electron/recording/recording-protocol');
 const { validateLiveTelemetryRow } = require('../data/live-telemetry-dataset');
+contextBridge.exposeInMainWorld('trackVisionModels', {
+    prepare: (model, bytes) => ipcRenderer.invoke('track-vision-model-prepare', model, bytes),
+});
 contextBridge.exposeInMainWorld('screenCapture', {
     listSources: () => ipcRenderer.invoke('screen-capture-sources'),
     selectSource: (id) => ipcRenderer.invoke('screen-capture-select', id),

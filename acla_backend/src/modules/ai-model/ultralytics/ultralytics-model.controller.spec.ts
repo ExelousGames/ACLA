@@ -43,6 +43,7 @@ describe('Ultralytics model API (backend only)', () => {
   const model = {
     create: jest.fn(),
     find: jest.fn(),
+    findOne: jest.fn(),
     findById: jest.fn(),
   };
   const legacyModelService = {
@@ -279,6 +280,42 @@ describe('Ultralytics model API (backend only)', () => {
       .expect(200, []);
     expect(model.find).toHaveBeenCalledWith({ name: 'track-segments' });
     expect(sort).toHaveBeenCalledWith({ createdAt: -1, _id: -1 });
+  });
+
+  it('returns the newest segmentation model and its ordered labels for Track Vision', async () => {
+    await upload().expect(201);
+    const sort = jest.fn().mockReturnValue({ exec: () => Promise.resolve(savedModel) });
+    model.findOne.mockReturnValue({ sort });
+    const response = await request(app.getHttpServer())
+      .get('/ai-model/ultralytics/track-vision')
+      .set('Authorization', 'Bearer backend-test')
+      .expect(200)
+      .expect('Cache-Control', 'no-store');
+    expect(response.body).toEqual({
+      id, name: metadata.name, task: 'segment', classNames: metadata.classNames,
+      sizeBytes: weights.length, sha256: savedModel.sha256,
+      downloadPath: `/ai-model/ultralytics/${id}/file`,
+    });
+    expect(model.findOne).toHaveBeenCalledWith({ task: 'segment' });
+    expect(sort).toHaveBeenCalledWith({ createdAt: -1, _id: -1 });
+    expect(model.findById).not.toHaveBeenCalled();
+    expect(gridfs.downloadStream).not.toHaveBeenCalled();
+  });
+
+  it('requires authentication for Track Vision metadata', async () => {
+    await request(app.getHttpServer()).get('/ai-model/ultralytics/track-vision').expect(401);
+    expect(model.findOne).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when no segmentation model is available', async () => {
+    model.findOne.mockReturnValue({
+      sort: () => ({ exec: () => Promise.resolve(null) }),
+    });
+    await request(app.getHttpServer())
+      .get('/ai-model/ultralytics/track-vision')
+      .set('Authorization', 'Bearer backend-test')
+      .expect(404);
+    expect(model.findById).not.toHaveBeenCalled();
   });
 
   it('rejects malformed IDs without querying MongoDB', async () => {

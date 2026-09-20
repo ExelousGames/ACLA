@@ -6,8 +6,8 @@ const COLORS = [[55, 239, 172], [87, 185, 255], [255, 190, 87], [206, 135, 255],
 
 export function drawVisionOverlay(context: CanvasRenderingContext2D, result: TrackVisionDetection, depthRange: DepthRange = DEFAULT_DEPTH_RANGE) {
     const { padX, padY, resizedWidth, resizedHeight } = letterbox(result.width, result.height, VISION_INPUT_SIZE);
-    // Depth underneath scene classes, with object masks and boxes on top.
-    for (const task of ['depth', 'semantic', 'segment'] as const) {
+    // Depth underneath segmentation masks and boxes.
+    for (const task of ['depth', 'segment'] as const) {
         const detection = result.detections[task];
         if (!detection) continue;
         const layer = document.createElement('canvas');
@@ -36,7 +36,7 @@ export function drawVisionOverlay(context: CanvasRenderingContext2D, result: Tra
                 context.strokeStyle = `rgb(${COLORS[instance.classId % COLORS.length].join(',')})`;
                 context.fillStyle = context.strokeStyle;
                 context.strokeRect(x, y, right - x, bottom - y);
-                context.fillText(`${detection.classNames?.[instance.classId] || `Object ${instance.classId}`} · ${Math.round(instance.confidence * 100)}%`, x + 4, Math.max(16, y + 16));
+                context.fillText(`${detection.classNames[instance.classId]} · ${Math.round(instance.confidence * 100)}%`, x + 4, Math.max(16, y + 16));
             }
         }
         context.restore();
@@ -47,9 +47,7 @@ function paintMask(pixels: Uint8ClampedArray, result: VisionResult, depthRange: 
     const paint = (pixel: number, color: number[], alpha: number) => {
         pixels.set([...color, alpha], pixel * 4);
     };
-    if (result.task === 'semantic') {
-        result.classes.forEach((classId, pixel) => paint(pixel, COLORS[classId % COLORS.length], 70));
-    } else if (result.task === 'depth') {
+    if (result.task === 'depth') {
         result.values.forEach((value, pixel) => {
             if (!Number.isFinite(value) || value <= 0) return;
             const distance = Math.max(0, Math.min(1, (value - depthRange.near) / (depthRange.far - depthRange.near)));

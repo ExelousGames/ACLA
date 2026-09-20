@@ -1,13 +1,16 @@
 import type { InferenceSession } from 'onnxruntime-web';
 import { letterbox, rgbaToChw, FloatTensor } from './yolo-segmentation';
-import { decodeDepth, decodeSegments, decodeSemantic } from './vision-decoding';
+import { decodeDepth, decodeSegments } from './vision-decoding';
 import { DETECTION_TASKS, DetectionTask, VisionResult } from './track-vision-types';
 import { readVisionModel, visionAssetUrl } from './vision-assets';
+import { loadBackendVisionModel } from './backend-vision-model';
 import { runWithVisionGpuQueue } from './vision-gpu-queue';
 
 export const VISION_INPUT_SIZE = 640;
 
 export class GpuInferenceError extends Error {}
+
+type ModelMetadata = { task: DetectionTask; name: string; classNames: string[] };
 
 export class TrackVisionModel {
     private pending: Promise<unknown> = Promise.resolve();
@@ -19,40 +22,40 @@ export class TrackVisionModel {
         private runtime: typeof import('onnxruntime-web'),
         private session: InferenceSession,
         readonly task: DetectionTask,
+        readonly name: string,
+        readonly classNames: string[],
         readonly executionProvider: 'webgpu' | 'wasm',
         readonly fallbackReason?: string,
-        readonly classNames: Record<number, string> = {},
     ) {
         this.inputCanvas.width = VISION_INPUT_SIZE;
         this.inputCanvas.height = VISION_INPUT_SIZE;
     }
 
-    static async loadBuiltin(task: DetectionTask, allowCpuFallback = false): Promise<TrackVisionModel> {
-        const definition = DETECTION_TASKS.find(({ id }) => id === task)!;
-        let bytes: ArrayBuffer;
-        let classNames: Record<number, string>;
-        try {
-            const [model, metadata] = await Promise.all([
-                readVisionModel(visionAssetUrl(`vision-models/${definition.file}`)),
-                readVisionModel(visionAssetUrl(`vision-models/${definition.file.replace('.onnx', '.json')}`)),
-            ]);
-            bytes = model;
-            classNames = JSON.parse(new TextDecoder().decode(metadata)).names;
-        }
-        catch { throw new Error(`${definition.label} weights unavailable. Run npm run setup:vision-models, then restart the app.`); }
+    static async loadBackend(allowCpuFallback = false): Promise<TrackVisionModel> {
+        const { bytes, metadata } = await loadBackendVisionModel();
+        return TrackVisionModel.load(bytes, { task: 'segment', name: metadata.name, classNames: metadata.classNames }, allowCpuFallback);
+    }
+
+    static async loadBuiltin(task: 'depth', allowCpuFallback = false): Promise<TrackVisionModel> {
+        const definition = DETECTION_TASKS.find((definition): definition is Extract<typeof DETECTION_TASKS[number], { id: 'depth' }> => definition.id === task)!;
+        const bytes = await readVisionModel(visionAssetUrl(`vision-models/${definition.file}`));
+        return TrackVisionModel.load(bytes, { task, name: 'YOLO26n Depth', classNames: [] }, allowCpuFallback);
+    }
+
+    private static async load(bytes: ArrayBuffer, metadata: ModelMetadata, allowCpuFallback: boolean): Promise<TrackVisionModel> {
         let fallbackReason = 'GPU acceleration is unavailable in the desktop app.';
         if ('gpu' in navigator && navigator.gpu) {
-            try { return await TrackVisionModel.loadWithProvider(bytes, task, 'webgpu', undefined, classNames); }
+            try { return await TrackVisionModel.loadWithProvider(bytes, metadata, 'webgpu'); }
             catch (error) {
                 if (!allowCpuFallback) throw new GpuInferenceError(`GPU inference failed. ${error instanceof Error ? error.message : String(error)}`);
                 fallbackReason = 'GPU could not run this model; using CPU.';
             }
         }
         if (!allowCpuFallback) throw new GpuInferenceError(fallbackReason);
-        return TrackVisionModel.loadWithProvider(bytes, task, 'wasm', fallbackReason, classNames);
+        return TrackVisionModel.loadWithProvider(bytes, metadata, 'wasm', fallbackReason);
     }
 
-    private static async loadWithProvider(bytes: ArrayBuffer, task: DetectionTask, provider: 'webgpu' | 'wasm', fallbackReason?: string, classNames?: Record<number, string>) {
+    private static async loadWithProvider(bytes: ArrayBuffer, metadata: ModelMetadata, provider: 'webgpu' | 'wasm', fallbackReason?: string) {
         return runWithVisionGpuQueue(provider, async () => {
             const runtime = provider === 'webgpu' ? await import('onnxruntime-web/webgpu') : await import('onnxruntime-web/wasm');
             runtime.env.wasm.wasmPaths = visionAssetUrl('vision-runtime/');
@@ -60,10 +63,12 @@ export class TrackVisionModel {
             runtime.env.wasm.proxy = provider === 'wasm';
             if (provider === 'webgpu') runtime.env.webgpu.powerPreference = 'high-performance';
             const session = await runtime.InferenceSession.create(bytes, { executionProviders: [provider] });
-            const model = new TrackVisionModel(runtime, session, task, provider, fallbackReason, classNames);
+            const model = new TrackVisionModel(runtime, session, metadata.task, metadata.name, metadata.classNames, provider, fallbackReason);
             try {
-                if (session.inputNames.length !== 1 || session.outputNames.length !== (task === 'segment' ? 2 : 1)) {
-                    throw new Error(`Unexpected ${task} model inputs or outputs. Re-export the bundled weights.`);
+                if (session.inputNames.length !== 1 || session.outputNames.length !== (metadata.task === 'segment' ? 2 : 1)) {
+                    throw new Error(metadata.task === 'depth'
+                        ? 'Unexpected depth model inputs or outputs. Re-export the bundled weights.'
+                        : 'Unexpected segmentation model inputs or outputs. Upload compatible segmentation weights.');
                 }
                 await model.run(new Float32Array(3 * VISION_INPUT_SIZE ** 2), 0.5);
                 return model;
@@ -80,13 +85,6 @@ export class TrackVisionModel {
         let outputs: InferenceSession.ReturnType | undefined;
         try {
             outputs = await this.session.run({ [this.session.inputNames[0]]: tensor });
-            if (this.task === 'semantic') {
-                const value = Object.values(outputs)[0];
-                if (value.type !== 'float32' && value.type !== 'int64' && value.type !== 'int32' && value.type !== 'uint8') {
-                    throw new Error('Unsupported semantic tensor type.');
-                }
-                return decodeSemantic({ dims: value.dims, data: value.data as Float32Array | BigInt64Array | Int32Array | Uint8Array });
-            }
             const values: FloatTensor[] = Object.values(outputs).map((value) => {
                 if (!(value.data instanceof Float32Array)) throw new Error('Track Vision requires float32 model outputs.');
                 return { dims: value.dims, data: value.data };
@@ -95,7 +93,7 @@ export class TrackVisionModel {
             const predictions = values.find(({ dims }) => dims.length === 3);
             const prototypes = values.find(({ dims }) => dims.length === 4);
             if (!predictions || !prototypes) throw new Error('Segment requires prediction and mask-prototype outputs.');
-            return decodeSegments(predictions, prototypes, VISION_INPUT_SIZE, threshold);
+            return decodeSegments(predictions, prototypes, VISION_INPUT_SIZE, threshold, this.classNames.length);
         } finally {
             tensor.dispose();
             if (outputs) Object.values(outputs).forEach((output) => output.dispose());

@@ -41,7 +41,7 @@ jest.mock('../LiveTrajectoryMap', () => () => <div>Live trajectory map</div>);
 jest.mock('../LiveTelemetryOverview', () => ({ name, telemetry }: any) => <div data-testid={name}>Live telemetry {telemetry?.label}</div>);
 jest.mock('../LiveEventLog', () => () => <div>Live event log</div>);
 jest.mock('../track-vision/track-vision-model', () => ({
-    TrackVisionModel: { loadBuiltin: jest.fn(async () => ({ dispose: jest.fn() })) },
+    TrackVisionModel: { loadBackend: jest.fn(async () => ({ dispose: jest.fn() })) },
 }));
 
 let directory: OperationComponentRefDirectory | null = null;

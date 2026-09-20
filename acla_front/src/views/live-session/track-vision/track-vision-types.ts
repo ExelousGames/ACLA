@@ -1,7 +1,6 @@
 export const DETECTION_TASKS = [
-    { id: 'semantic', label: 'Semantic', description: 'Label the scene, including road, vehicles, and surroundings.', file: 'yolo26n-sem.onnx' },
+    { id: 'segment', label: 'Segmentation', description: 'Detect track features using the model and labels uploaded to the backend.' },
     { id: 'depth', label: 'Depth', description: 'Estimate distance throughout the scene.', file: 'yolo26n-depth.onnx' },
-    { id: 'segment', label: 'Segment', description: 'Detect and mask individual objects.', file: 'yolo11n-seg.onnx' },
 ] as const;
 
 export type DetectionTask = typeof DETECTION_TASKS[number]['id'];
@@ -14,13 +13,6 @@ export interface DepthRange {
 }
 
 export const DEFAULT_DEPTH_RANGE: DepthRange = { near: 5, far: 50 };
-
-export interface SemanticResult {
-    task: 'semantic';
-    width: number;
-    height: number;
-    classes: Uint16Array;
-}
 
 export interface DepthResult {
     task: 'depth';
@@ -42,7 +34,7 @@ export interface SegmentResult {
     }>;
 }
 
-export type VisionResult = (SemanticResult | DepthResult | SegmentResult) & { inferenceMs: number; classNames?: Record<number, string> };
+export type VisionResult = (SegmentResult | DepthResult) & { inferenceMs: number; classNames: string[] };
 export interface TrackVisionDetection {
     capturedAt: number;
     width: number;
