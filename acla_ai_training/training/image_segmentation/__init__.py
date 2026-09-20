@@ -1,4 +1,4 @@
-"""Labelme polygon annotation and Ultralytics training for racing images."""
+"""Labelme polygon/polyline annotation and Ultralytics training for racing images."""
 
 from pathlib import Path
 

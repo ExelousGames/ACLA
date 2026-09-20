@@ -1,9 +1,43 @@
 """Publish trained model artifacts to the backend model store."""
 
 import logging
-from typing import Any, Dict, Optional
+import json
+from typing import Any, BinaryIO, Dict, Optional
+
+import httpx
 
 logger = logging.getLogger(__name__)
+
+
+async def upload_ultralytics_model(
+    backend_service,
+    model_file: BinaryIO,
+    filename: str,
+    metadata: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Stream a checkpoint to the backend's binary Ultralytics model store."""
+    if not await backend_service.ensure_connection():
+        raise ConnectionError("Failed to establish backend connection")
+
+    url = f"{backend_service.base_url}:{backend_service.base_port}/ai-model/ultralytics"
+    timeout = httpx.Timeout(connect=10.0, read=180.0, write=180.0, pool=180.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for attempt in range(2):
+            model_file.seek(0)
+            response = await client.post(
+                url,
+                headers=backend_service.get_auth_headers(),
+                data={"metadata": json.dumps(metadata, allow_nan=False)},
+                files={"file": (filename, model_file, "application/octet-stream")},
+            )
+            # A rejected JWT cannot create a record. Other failures must not be
+            # retried automatically because each upload creates a new record.
+            if response.status_code == 401 and attempt == 0:
+                if not await backend_service.establish_connection():
+                    raise ConnectionError("Failed to refresh backend authentication")
+                continue
+            response.raise_for_status()
+            return response.json()
 
 
 async def save_ai_model(

@@ -10,7 +10,7 @@ import pytest
 import yaml
 from PIL import Image
 
-from training.image_segmentation import DEFAULT_LABELS, read_labels
+from training.image_segmentation import DEFAULT_LABELS, PACKAGE_DIR, read_labels
 from training.image_segmentation.__main__ import main
 from training.image_segmentation.dataset import prepare_dataset
 from training.image_segmentation.trainer import train_model
@@ -44,7 +44,7 @@ def test_preparation_preserves_classes_polygons_and_nested_names(tmp_path):
         "train": "images/train", "val": "images/val", "names": labels,
     }
     rows = (data.parent / "labels/train/session_a/frame.txt").read_text().splitlines()
-    assert len(rows) == 5
+    assert len(rows) == len(labels)
     for index, row in enumerate(rows):
         assert [float(value) for value in row.split()] == [index, 0, 0, 1, 0, 0.5, 1]
     assert len((data.parent / "labels/train/session_b/frame.txt").read_text().splitlines()) == 2
@@ -128,16 +128,71 @@ def test_desktop_launcher_uses_same_python_and_shared_labels(tmp_path, monkeypat
     from training.image_segmentation import __main__ as cli
 
     launch = MagicMock(return_value=0)
+    monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(cli.subprocess, "call", launch)
 
     assert main(["annotate", str(tmp_path)]) == 0
     command = launch.call_args.args[0]
-    assert command[:4] == [sys.executable, "-m", "labelme", str(tmp_path)]
+    assert command[:3] == [sys.executable, str(PACKAGE_DIR / "labelme_editor.py"), str(tmp_path)]
     assert command[command.index("--labels") + 1] == str(DEFAULT_LABELS)
     config = yaml.safe_load(Path(command[command.index("--config") + 1]).read_text())
     assert config["validate_label"] == "exact"
     assert config["with_image_data"] is False
+
+
+@pytest.mark.parametrize("with_images", [False, True])
+def test_headless_launcher_opens_browser_with_optional_images(tmp_path, monkeypatch, with_images):
+    from training.image_segmentation import __main__ as cli
+    from training.image_segmentation import browser
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
+    launch = MagicMock(return_value=7)
+    monkeypatch.setattr(browser, "run_browser", launch)
+    images = [str(tmp_path)] if with_images else []
+
+    assert main(["annotate", *images]) == 7
+    command = launch.call_args.args[0]
+    assert command[:2] == [sys.executable, str(PACKAGE_DIR / "labelme_editor.py")]
+    assert command[2:2 + len(images)] == images
+    assert command[2 + len(images)] == "--labels"
+
+
+def test_browser_flag_overrides_desktop_display(monkeypatch):
+    from training.image_segmentation import __main__ as cli
+    from training.image_segmentation import browser
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
+    launch = MagicMock(return_value=0)
+    monkeypatch.setattr(browser, "run_browser", launch)
+
+    assert main(["annotate", "--browser"]) == 0
+    launch.assert_called_once()
+
+
+@pytest.mark.parametrize("plugin_dir", ["/fake/cv2/qt/plugins", "/custom/qt/plugins"])
+def test_labelme_child_removes_only_opencv_qt_paths(monkeypatch, plugin_dir):
+    from training.image_segmentation import labelme_editor
+
+    monkeypatch.setitem(sys.modules, "cv2", SimpleNamespace(__file__="/fake/cv2/__init__.py"))
+    monkeypatch.setattr(labelme_editor.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setenv("QT_QPA_PLATFORM_PLUGIN_PATH", plugin_dir)
+    monkeypatch.setenv("QT_QPA_FONTDIR", "/fake/cv2/qt/fonts")
+
+    def start_labelme(*args, **kwargs):
+        assert "QT_QPA_FONTDIR" not in labelme_editor.os.environ
+        expected = plugin_dir if plugin_dir.startswith("/custom") else None
+        assert labelme_editor.os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH") == expected
+
+    launch = MagicMock(side_effect=start_labelme)
+    labelme_cli = SimpleNamespace(MainWindow=object, main=launch)
+    monkeypatch.setitem(sys.modules, "labelme", SimpleNamespace(__main__=labelme_cli))
+    labelme_editor.main()
+    launch.assert_called_once_with()
 
 
 def test_train_cli_passes_dataset_and_device_to_segmentation_model(tmp_path, monkeypatch):
@@ -155,7 +210,7 @@ def test_train_cli_passes_dataset_and_device_to_segmentation_model(tmp_path, mon
     factory.assert_called_once_with("yolo11n-seg.pt", task="segment")
     model.train.assert_called_once_with(
         data=str(data), epochs=2, imgsz=128, batch=2, device="0", workers=0,
-        project=str(tmp_path / "runs"), name="train",
+        project=str(tmp_path / "runs"), name="train", overlap_mask=False,
     )
 
 
