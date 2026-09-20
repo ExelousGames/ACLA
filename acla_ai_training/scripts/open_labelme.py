@@ -1,6 +1,7 @@
-"""Start Labelme with the project's polygon annotation settings.
+"""Start Labelme; headless Linux containers serve the editor at localhost:6080.
 
-Usage: python scripts/open_labelme.py path/to/images [--labels path/to/labels.txt]
+Usage: python scripts/open_labelme.py [path/to/images] [--labels path/to/labels.txt] [--browser]
+Use Create LineStrip for left_boundary/right_boundary polylines; Ctrl+N for region polygons.
 """
 
 import sys

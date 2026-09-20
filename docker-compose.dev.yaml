@@ -138,6 +138,7 @@ services:
       - ai_models:/acla_ai_service/models
     ports:
       - '127.0.0.1:8501:8501'
+      - '127.0.0.1:6080:6080'
     networks:
       - ai-network
     deploy:

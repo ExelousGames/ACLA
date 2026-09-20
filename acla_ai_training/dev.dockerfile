@@ -22,6 +22,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     libgl1 \
     libglib2.0-0 \
+    tigervnc-standalone-server \
+    openbox \
+    novnc \
+    fonts-dejavu-core \
+    libxkbcommon-x11-0 \
+    libxcb-xinerama0 \
+    libxcb-icccm4 \
+    libxcb-image0 \
+    libxcb-keysyms1 \
+    libxcb-render-util0 \
+    libxcb-shape0 \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
@@ -51,6 +62,7 @@ COPY acla_ai_service/requirements*.txt /acla_ai_service/
 # Copy requirements first for better caching
 COPY acla_ai_training/requirements.common.txt .
 COPY acla_ai_training/requirements.nvidia.txt .
+COPY acla_ai_training/training/image_segmentation/requirements-labelme.txt training/image_segmentation/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.nvidia.txt
@@ -62,8 +74,8 @@ ENV PYTHONPATH=/app:/acla_ai_service
 ENV STREAMLIT_CONFIG_FILE=/app/.streamlit/config.toml
 RUN chmod +x /app/start-dev.sh
 
-# Local training UI
-EXPOSE 8501
+# Local training UI and Labelme browser desktop
+EXPOSE 8501 6080
 
 # Command to run the application in development mode with memory-efficient options
 CMD ["/app/start-dev.sh"]

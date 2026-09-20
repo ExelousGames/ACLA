@@ -19,6 +19,7 @@ COPY acla_ai_service/requirements*.txt /acla_ai_service/
 # Copy requirements first for better caching
 COPY acla_ai_training/requirements.amd.txt .
 COPY acla_ai_training/requirements.common.txt .
+COPY acla_ai_training/training/image_segmentation/requirements-labelme.txt training/image_segmentation/
 
 # Install Python dependencies. The base image already provides Python 3.11,
 # ROCm 7.2, and the matching PyTorch 2.10 stack.
@@ -34,6 +35,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     libgl1 \
     libglib2.0-0 \
+    tigervnc-standalone-server \
+    openbox \
+    novnc \
+    fonts-dejavu-core \
+    libxkbcommon-x11-0 \
+    libxcb-xinerama0 \
+    libxcb-icccm4 \
+    libxcb-image0 \
+    libxcb-keysyms1 \
+    libxcb-render-util0 \
+    libxcb-shape0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20 + Claude Code CLI (driven by claude-agent-sdk for the
@@ -50,8 +62,8 @@ COPY acla_ai_training/ .
 ENV PYTHONPATH=/app:/acla_ai_service
 RUN chmod +x /app/start-dev.sh
 
-# Local training UI
-EXPOSE 8501
+# Local training UI and Labelme browser desktop
+EXPOSE 8501 6080
 
 # Start the application
 CMD ["./start-dev.sh"]
