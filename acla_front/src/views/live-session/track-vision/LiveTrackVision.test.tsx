@@ -131,13 +131,13 @@ it('releases a model whose loading finishes after unmount', async () => {
     expect(model.dispose).toHaveBeenCalledTimes(1);
 });
 
-it('shows model errors and allows capture for collecting frames without weights', async () => {
+it('shows model errors and keeps the screen preview available without weights', async () => {
     (TrackVisionModel.loadBuiltin as jest.Mock).mockRejectedValue(new Error('Built-in model unavailable.'));
     render(<LiveTrackVision name="vision" />);
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('Built-in model unavailable');
     await startCapture();
-    expect(screen.getByRole('button', { name: 'Save frame' })).toBeEnabled();
+    expect(screen.getByLabelText('Captured game frame with vision detections')).toBeVisible();
     expect(screen.getByRole('status')).toHaveTextContent('Waiting for enabled detectors');
     expect(model.detect).not.toHaveBeenCalled();
 });

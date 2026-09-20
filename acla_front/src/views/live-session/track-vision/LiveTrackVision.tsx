@@ -257,19 +257,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         }
     };
 
-    const saveFrame = () => {
-        const video = videoRef.current;
-        if (!video?.videoWidth || !video.videoHeight) return;
-        const frame = document.createElement('canvas');
-        frame.width = video.videoWidth;
-        frame.height = video.videoHeight;
-        frame.getContext('2d')?.drawImage(video, 0, 0);
-        const anchor = document.createElement('a');
-        anchor.download = `track-frame-${Date.now()}.png`;
-        anchor.href = frame.toDataURL('image/png');
-        anchor.click();
-    };
-
     if (!window.screenCapture) {
         return <section className="track-vision" aria-label="Track Vision">
             <p role="alert">Track Vision is available only in the Electron desktop app.</p>
@@ -340,7 +327,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 {captureState === 'idle'
                     ? <button type="button" className="track-vision__start" disabled={!sourceId} onClick={() => void start()}>Share game screen</button>
                     : <button type="button" onClick={stop}>Stop capture</button>}
-                <button type="button" disabled={!hasFrame || captureState !== 'active'} onClick={saveFrame}>Save frame</button>
             </div>
             <div className="track-vision__preview">
                 <video ref={videoRef} muted playsInline hidden />

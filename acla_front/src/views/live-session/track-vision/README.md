@@ -56,7 +56,7 @@ the upstream Ultralytics license; `ULTRALYTICS-LICENSE.txt` is packaged with the
 
 Refresh sources, select the simulator window or screen, then click
 **Share game screen**. Capture requires the Electron screen-capture bridge and an
-explicit source selection. **Save frame** saves the original frame without overlays.
+explicit source selection.
 No audio is captured. All frames and inference stay on this device.
 
 The stack processes one captured frame at a time, sequentially across enabled
