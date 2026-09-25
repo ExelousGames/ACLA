@@ -6,6 +6,4 @@ other
 fence
 car pack
 sand
-left_boundary
-right_boundary
 Outfield asphalt road

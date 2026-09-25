@@ -37,14 +37,21 @@ def _mask(row):
     return mask
 
 
-def test_boundary_classes_are_appended():
+@pytest.fixture
+def boundary_labels(tmp_path):
+    path = tmp_path / "labels.txt"
+    path.write_text("track\ncurb\ngrass\ncar\nother\nfence\ncar pack\nsand\nleft_boundary\nright_boundary\n")
+    return path
+
+
+def test_default_labels_contain_only_regions():
     assert read_labels() == [
         "track", "curb", "grass", "car", "other", "fence", "car pack", "sand",
-        "left_boundary", "right_boundary",
+        "Outfield asphalt road",
     ]
 
 
-def test_prepare_keeps_open_boundaries_separate_from_region_polygons(tmp_path):
+def test_prepare_keeps_open_boundaries_separate_from_region_polygons(tmp_path, boundary_labels):
     _annotations(tmp_path, [
         {"label": "track", "shape_type": "polygon", "points": [[0, 0], [100, 0], [50, 100]]},
         {"label": "left_boundary", "shape_type": "linestrip", "points": [[10, 90], [10, 10], [60, 10]]},
@@ -55,6 +62,7 @@ def test_prepare_keeps_open_boundaries_separate_from_region_polygons(tmp_path):
     assert main([
         "prepare", "--train", str(tmp_path / "train"), "--val", str(tmp_path / "val"),
         "--output", str(tmp_path / "out"), "--polyline-width", "6",
+        "--labels", str(boundary_labels),
     ]) == 0
 
     rows = (tmp_path / "out/labels/train/frame.txt").read_text().splitlines()
@@ -66,7 +74,7 @@ def test_prepare_keeps_open_boundaries_separate_from_region_polygons(tmp_path):
     assert left[50, 12] == 1 and left[50, 16] == 0
     assert right[50, 99] == 1 and right[50, 90] == 0  # Stroke clips at image edge.
     assert (tmp_path / "train/frame.json").read_bytes() == original
-    assert yaml.safe_load((tmp_path / "out/data.yaml").read_text())["names"] == read_labels()
+    assert yaml.safe_load((tmp_path / "out/data.yaml").read_text())["names"] == read_labels(boundary_labels)
 
 
 @pytest.mark.parametrize("points", [
@@ -74,9 +82,11 @@ def test_prepare_keeps_open_boundaries_separate_from_region_polygons(tmp_path):
     [[10, 10], [10, 10], [50, 50], [90, 90]],  # Duplicate point and collinear segments.
     [[90.4, 90.2], [50.5, 40.1], [10.2, 10.8]],  # Fractional points in reverse order.
 ])
-def test_valid_polylines_export_nonempty_masks(tmp_path, points):
+def test_valid_polylines_export_nonempty_masks(tmp_path, points, boundary_labels):
     _annotations(tmp_path, [{"label": "left_boundary", "shape_type": "linestrip", "points": points}])
-    data = prepare_dataset(tmp_path / "train", tmp_path / "val", tmp_path / "out")
+    data = prepare_dataset(
+        tmp_path / "train", tmp_path / "val", tmp_path / "out", labels_file=boundary_labels,
+    )
     mask = _mask((data.parent / "labels/train/frame.txt").read_text())
     assert mask.sum() > 0
 
@@ -114,7 +124,7 @@ def test_invalid_polyline_width_fails_before_writing_output(tmp_path, width):
 ])
 @pytest.mark.parametrize("stroke_width", [2, 8, 14])
 @pytest.mark.parametrize("reverse", [False, True])
-def test_self_touching_boundaries_preserve_stroke_masks(tmp_path, points, stroke_width, reverse):
+def test_self_touching_boundaries_preserve_stroke_masks(tmp_path, points, stroke_width, reverse, boundary_labels):
     if reverse:
         points = points[::-1]
     _annotations(tmp_path, [{"label": "left_boundary", "shape_type": "linestrip", "points": points}])
@@ -124,6 +134,7 @@ def test_self_touching_boundaries_preserve_stroke_masks(tmp_path, points, stroke
 
     data = prepare_dataset(
         tmp_path / "train", tmp_path / "val", tmp_path / "out", polyline_width=stroke_width,
+        labels_file=boundary_labels,
     )
 
     for split in ("train", "val"):
@@ -134,12 +145,14 @@ def test_self_touching_boundaries_preserve_stroke_masks(tmp_path, points, stroke
     assert (tmp_path / "train/frame.json").read_bytes() == original
 
 
-def test_line_with_more_than_two_points_is_rejected(tmp_path):
+def test_line_with_more_than_two_points_is_rejected(tmp_path, boundary_labels):
     _annotations(tmp_path, [{
         "label": "left_boundary", "shape_type": "line", "points": [[10, 10], [50, 50], [90, 90]],
     }])
     with pytest.raises(ValueError, match="exactly two"):
-        prepare_dataset(tmp_path / "train", tmp_path / "val", tmp_path / "out")
+        prepare_dataset(
+            tmp_path / "train", tmp_path / "val", tmp_path / "out", labels_file=boundary_labels,
+        )
     assert not (tmp_path / "out").exists()
 
 

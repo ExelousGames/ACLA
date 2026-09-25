@@ -77,13 +77,6 @@ In Labelme, press **Ctrl+N** (Create Polygons), click along the region boundary,
 and double-click to finish. Choose a label, then **Ctrl+S** to save. Use **D** / **A**
 for the next / previous image. JSON annotations are saved beside the images.
 
-For track edges, choose **Create LineStrip**, click successive points along
-one edge, and press **Enter** to finish. Choose `left_boundary` or `right_boundary`
-from the driver's perspective looking forward along the track. These are open
-polylines: do not connect the last point back to the first. Two points suffice
-for a straight edge; add points to follow curves. Labelme stores these shapes as
-`linestrip`; two-point `line` shapes are also accepted during preparation.
-
 The class IDs follow the order in `labels.txt`:
 
 | ID | Label | Region |
@@ -96,15 +89,7 @@ The class IDs follow the order in `labels.txt`:
 | 5 | fence | Visible fence regions |
 | 6 | car pack | Regions annotated as a pack of cars |
 | 7 | sand | Visible sand regions |
-| 8 | left_boundary | Polyline along the left track edge in the direction of travel |
-| 9 | right_boundary | Polyline along the right track edge in the direction of travel |
-| 10 | Outfield asphalt road | Visible asphalt road regions outside the track |
-
-The boundary classes are appended so existing class IDs stay unchanged. Trace
-each continuous edge as its own polyline; split disconnected or uncertain sections
-into separate shapes. Left/right identify the side of the track, even when a turn
-places both visible edges on the same side of the image. Annotate both boundaries
-where they can be identified, along with the existing track polygon.
+| 8 | Outfield asphalt road | Visible asphalt road regions outside the track |
 
 For `track`, trace the continuous outer boundaries, including the road behind cars
 or other foreground objects where its continuation is reasonably clear. Do not cut
@@ -118,8 +103,8 @@ For the other region classes, trace visible boundaries and draw disconnected vis
 pieces as separate polygons. Annotate all instances of the chosen classes in each
 image. Unannotated pixels are background; `other` is an explicit class, not an
 automatic background label. Each shape becomes a separate instance. Holes and
-Labelme group IDs are not merged. Use polygons for regions and polylines for
-boundaries; rectangles and AI mask shapes are not supported by this exporter.
+Labelme group IDs are not merged. Use polygons for regions; rectangles and AI mask
+shapes are not supported by this exporter.
 
 Apply this policy consistently to training and validation images. Review existing
 visible-only track annotations and prepare a new dataset after revising them;
@@ -250,7 +235,7 @@ preserving the track beneath cars in the training targets. Ultralytics' default
 merges masks with smaller masks on top, which can remove those hidden track areas.
 Keep this setting when training or validating these annotations outside this CLI.
 
-When the dataset contains `left_boundary` or `right_boundary`, the trainer also
+When a custom dataset contains `left_boundary` or `right_boundary`, the trainer also
 sets `fliplr=0`, `flipud=0`, and `copy_paste=0` to preserve side labels. Horizontal
 flips otherwise mirror the edges without swapping their class IDs. It uses
 `mask_ratio=1` to avoid further downsampling thin mask targets after resizing the
@@ -313,7 +298,7 @@ Save `model-metadata.json` with the class names from the trained dataset's
 {
   "name": "track-segments",
   "task": "segment",
-  "classNames": ["track", "curb", "grass", "car", "other", "fence", "car pack", "sand", "left_boundary", "right_boundary"],
+  "classNames": ["track", "curb", "grass", "car", "other", "fence", "car pack", "sand", "Outfield asphalt road"],
   "metadata": {
     "baseModel": "yolo11n-seg.pt",
     "epochs": 100,
