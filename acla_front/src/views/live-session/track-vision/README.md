@@ -65,8 +65,7 @@ Label matching ignores case and normalizes whitespace.
 
 | Labels | Use in position analysis |
 | --- | --- |
-| `track` | Racing surface used to follow the road |
-| `left_boundary`, `right_boundary` | Refine the left and right edges inside the detected road region; an absent side falls back to the track mask |
+| `track` | Racing surface whose mask defines the left and right track edges |
 | `car` | Locate an individual opponent relative to track edges at its depth |
 | `car pack` | Establish traffic ahead and bridge road occlusion; a group does not supply an individual opponent position |
 | `curb`, `grass`, `other`, `fence`, `sand`, `Outfield asphalt road` | Excluded from usable track, even where their masks overlap the track mask |
@@ -76,7 +75,7 @@ remain supported, but are not required. `Outfield asphalt road` is never a track
 alias. Depth is optional and is not used for position analysis. Position analysis
 requires detection confidence of at least 65%.
 
-`track-position-analysis.ts` removes model letterboxing and follows visible track edges
+`track-position-analysis.ts` removes model letterboxing and follows visible track-mask edges
 at five image depths. Both edges must curve in the same direction to identify a
 left- or right-hand corner. A simple screen offset or slanted straight road does
 not establish a corner. Missing or clipped edges and conflicting bends withhold

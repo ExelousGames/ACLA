@@ -1,28 +1,7 @@
-import type { SegmentResult, TrackVisionFrame, VisionResult } from './track-vision-types';
+import type { SegmentResult, VisionResult } from './track-vision-types';
 import { analyzeTrackPositions } from './track-position-analysis';
 import type { CornerPosition } from './track-vision-types';
 import { MODEL_LABELS, vision } from './test-fixtures';
-
-const addBoundaries = (frame: TrackVisionFrame) => {
-    const segment = frame.detections.segment as SegmentResult & VisionResult;
-    const road = segment.instances[0];
-    const left = new Uint8Array(road.mask.length);
-    const right = new Uint8Array(road.mask.length);
-    for (let row = 0; row < segment.height; row++) {
-        const pixels = road.mask.subarray(row * segment.width, (row + 1) * segment.width);
-        const first = pixels.indexOf(1);
-        const last = pixels.lastIndexOf(1);
-        if (first < 0) continue;
-        left[row * segment.width + first] = 1;
-        right[row * segment.width + last] = 1;
-    }
-    const boundaries = [
-        { ...road, classId: segment.classNames.indexOf('left_boundary'), mask: left },
-        { ...road, classId: segment.classNames.indexOf('right_boundary'), mask: right },
-    ];
-    segment.instances.push(...boundaries);
-    return { segment, road, boundaries };
-};
 
 const positions: CornerPosition[] = ['inside', 'middle', 'outside'];
 describe('corner position vision geometry', () => {
@@ -36,31 +15,20 @@ describe('corner position vision geometry', () => {
 
     it.each((['left', 'right'] as const).flatMap((corner) => [[1600, 900], [900, 1600], [3440, 1440]].map(([width, height]) => (
         { corner, width, height }
-    ))))('uses labeled boundaries to constrain a broad track mask in a $corner corner at $width × $height', ({ corner, width, height }) => {
+    ))))('uses track-mask edges in a $corner corner at $width × $height', ({ corner, width, height }) => {
         const frame = vision(0, { corner, width, height, player: 'middle', classNames: MODEL_LABELS });
-        const { road } = addBoundaries(frame);
-        road.mask.fill(1);
         expect(analyzeTrackPositions(frame)).toEqual({
             cornerDirection: corner, playerPosition: 'middle', carAhead: 1, opponentPosition: 'outside',
         });
     });
 
-    it('falls back to the track mask when only one labeled boundary is visible', () => {
+    it.each(['clipped edges', 'low confidence', 'invalid mask'])('withholds positions when the track mask has %s', (scenario) => {
         const frame = vision(0, { classNames: MODEL_LABELS });
-        const { boundaries } = addBoundaries(frame);
-        boundaries[1].mask.fill(0);
-        expect(analyzeTrackPositions(frame)).toEqual({
-            cornerDirection: 'left', playerPosition: 'inside', carAhead: 1, opponentPosition: 'outside',
-        });
-    });
-
-    it.each(['reversed sides', 'low confidence', 'invalid masks'])('withholds positions when a broad track has %s boundary evidence', (scenario) => {
-        const frame = vision(0, { classNames: MODEL_LABELS });
-        const { road, boundaries } = addBoundaries(frame);
-        road.mask.fill(1);
-        if (scenario === 'reversed sides') [boundaries[0].classId, boundaries[1].classId] = [boundaries[1].classId, boundaries[0].classId];
-        if (scenario === 'low confidence') boundaries.forEach((item) => { item.confidence = 0.64; });
-        if (scenario === 'invalid masks') boundaries.forEach((item) => { item.mask = new Uint8Array(); });
+        const segment = frame.detections.segment as SegmentResult & VisionResult;
+        const road = segment.instances[0];
+        if (scenario === 'clipped edges') road.mask.fill(1);
+        if (scenario === 'low confidence') road.confidence = 0.64;
+        if (scenario === 'invalid mask') road.mask = new Uint8Array();
         expect(analyzeTrackPositions(frame)).toEqual({});
     });
 

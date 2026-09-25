@@ -2,7 +2,7 @@ import type { CornerPosition, SegmentResult, TrackVisionFrame } from './track-vi
 import { letterbox } from './yolo-segmentation';
 
 type Box = SegmentResult['instances'][number]['box'];
-export const MODEL_LABELS = ['track', 'curb', 'grass', 'car', 'other', 'fence', 'car pack', 'sand', 'left_boundary', 'right_boundary', 'Outfield asphalt road'];
+export const MODEL_LABELS = ['track', 'curb', 'grass', 'car', 'other', 'fence', 'car pack', 'sand', 'Outfield asphalt road'];
 export function vision(capturedAt: number, options: {
     corner?: 'left' | 'right' | 'straight';
     player?: CornerPosition;

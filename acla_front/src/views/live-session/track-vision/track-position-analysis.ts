@@ -5,7 +5,6 @@ import { letterbox } from './yolo-segmentation';
 export const VISION_CONFIDENCE = 0.65;
 const TRACK_LABELS = ['track', 'road', 'asphalt', 'tarmac'];
 const CAR_LABELS = ['car', 'cars', 'vehicle', 'vehicles', 'race car', 'racecar', 'opponent', 'opponent car'];
-const BOUNDARY_LABELS = ['left_boundary', 'right_boundary'];
 
 type Box = SegmentResult['instances'][number]['box'];
 type TrackRow = { left: number; right: number; center: number; y: number };
@@ -40,9 +39,7 @@ export function analyzeTrackPositions(vision: TrackVisionFrame | null): TrackVis
     };
     const obstacles = instances.filter((item) => !TRACK_LABELS.includes(labels[item.classId])
         && !CAR_LABELS.includes(labels[item.classId]) && labels[item.classId] !== 'car pack'
-        && !BOUNDARY_LABELS.includes(labels[item.classId]) && item.mask.length === segment.width * segment.height);
-    const boundaries = BOUNDARY_LABELS.map((label) => instances.filter((item) => labels[item.classId] === label
-        && item.mask.length === segment.width * segment.height));
+        && item.mask.length === segment.width * segment.height);
     const onTrack = (x: number, y: number) => tracks.some((item) => maskAt(item.mask, x, y))
         && !obstacles.some((item) => maskAt(item.mask, x, y));
     const traffic = instances.filter((item) => CAR_LABELS.includes(labels[item.classId]) || labels[item.classId] === 'car pack')
@@ -68,16 +65,9 @@ export function analyzeTrackPositions(vision: TrackVisionFrame | null): TrackVis
                     || obstacles.some((item) => maskAt(item.mask, x, y))) break;
             }
             if (start / columns > anchor || (end + 1) / columns < anchor) continue;
-            // Boundary polylines describe edges, not holes in the track mask.
-            // Use their inner pixels within this road region; fall back to the
-            // track mask for a side whose boundary is absent at this depth.
-            const edges = boundaries.map((items) => Array.from({ length: end - start + 1 }, (_, index) => start + index)
-                .filter((index) => items.some((item) => maskAt(item.mask, (index + 0.5) / columns, y))));
-            const leftColumn = edges[0].length ? Math.max(...edges[0]) : start;
-            const rightColumn = edges[1].length ? Math.min(...edges[1]) : end;
-            const left = edges[0].length ? (leftColumn + 0.5) / columns : start / columns;
-            const right = edges[1].length ? (rightColumn + 0.5) / columns : (end + 1) / columns;
-            if (left > anchor || right < anchor || right - left < 0.12 || leftColumn <= 0 || rightColumn >= columns - 1) return undefined;
+            const left = start / columns;
+            const right = (end + 1) / columns;
+            if (right - left < 0.12 || start <= 0 || end >= columns - 1) return undefined;
             return { left, right, center: (left + right) / 2, y };
         }
         return undefined;
@@ -85,7 +75,7 @@ export function analyzeTrackPositions(vision: TrackVisionFrame | null): TrackVis
 
     // Start at the marked vehicle centerline, then follow this road into the
     // distance. Row centers only trace the road; they never relocate the player.
-    // Both boundaries must be visible to establish a position.
+    // Both track-mask edges must be visible to establish a position.
     const rows: TrackRow[] = [];
     for (const y of [PLAYER_TRACK_ROW, 0.7, 0.6, 0.5, 0.4]) {
         const row = trackRow(y, rows.length ? rows[rows.length - 1].center : playerCenterX);

@@ -415,7 +415,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     <div><dt>Opponent position</dt><dd aria-label="Opponent position">{analysis?.opponentPosition ? analysis.opponentPosition[0].toUpperCase() + analysis.opponentPosition.slice(1) : analysis?.carAhead === 1 ? 'Individual position unresolved' : analysis?.carAhead === 0 ? 'No opponent detected' : 'Unknown'}</dd></div>
                 </dl>
                 <p className="track-vision__hint">Positions are estimated from the visible track edges: inside, middle, or outside of the corner. Unclear or stale frames show unknown positions.</p>
-                <p className="track-vision__hint">Track and car detections identify positions. Left_boundary and right_boundary refine the track edges when visible. A car pack indicates grouped traffic; an individual car detection is needed for an opponent position.</p>
+                <p className="track-vision__hint">Track and car detections identify positions. The track mask defines the track edges. A car pack indicates grouped traffic; an individual car detection is needed for an opponent position.</p>
                 <p className="track-vision__hint">Curb, grass, other, fence, sand, and Outfield asphalt road are excluded from the track surface. Analysis uses detections with confidence ≥ 65%. Labels ignore case and surrounding spaces.</p>
             </section>
             <div className="track-vision__status" role="status">{status}</div>
