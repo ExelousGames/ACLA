@@ -1,4 +1,5 @@
 from pyaccsharedmemory import accSharedMemory
+from acc_broadcasting import ACCBroadcasting
 import sched, time
 import csv
 from typing import List, Any, Dict
@@ -14,6 +15,7 @@ recordedData = []
 class ACCRecording:
     def __init__(self, target_fps: int = 60):
         self.asm = accSharedMemory()
+        self.broadcasting = ACCBroadcasting()
         self.target_fps = target_fps if target_fps > 0 else 60
         self._frame_delay = 1.0 / float(self.target_fps)
         return
@@ -22,7 +24,10 @@ class ACCRecording:
         my_scheduler = sched.scheduler(time.time, time.sleep)
         # 60 FPS = 1/60 seconds delay between calls
         my_scheduler.enter(self._frame_delay, 1, self.recordOnce, (my_scheduler,full_path))
-        my_scheduler.run()
+        try:
+            my_scheduler.run()
+        finally:
+            self.broadcasting.close()
 
     def recordOnce(self,scheduler,full_path): 
         # schedule the next call first
@@ -31,6 +36,12 @@ class ACCRecording:
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             flattened = self.flatten_object(sm)
+            if flattened.get('Graphics_status') == 2:
+                positions = self.broadcasting.poll()
+                if positions is not None:
+                    flattened['Graphics_normalized_positions'] = positions
+            else:
+                self.broadcasting.close()
             
             #self.append_object_to_csv(flattened,full_path)
 
@@ -38,6 +49,7 @@ class ACCRecording:
             # emit compact JSON so the renderer receives a single line per sample
             print(DataclassJSONUtility.to_json(flattened).rstrip(), flush=True)
         else:
+            self.broadcasting.close()
             print(json.dumps({"available": False}).rstrip(), flush=True)
             
 

@@ -113,6 +113,17 @@ describe('iRacing .ibt import', () => {
     } finally { await ibt.close(); }
   });
 
+  it('imports per-car normalized positions when the IBT channel exists', async () => {
+    const ibt = await IBTFile.open(writeFixture('positions.ibt', { channels: [
+      { name: 'CarIdxLapDistPct', unit: '%', value: [0, 0.5, 1] },
+    ] }));
+    try {
+      const { value: row } = await ibt.rows().next();
+      expect(row.Graphics_normalized_positions).toEqual({ 0: 0, 2: 1 });
+      expect(validateLiveTelemetryRow(row).ok).toBe(true);
+    } finally { await ibt.close(); }
+  });
+
   it('imports disk measurements with corner orientation and physical units intact', async () => {
     const ibt = await IBTFile.open(writeFixture('rich.ibt', { channels: diskChannels() }));
     try {
@@ -292,7 +303,7 @@ describe('iRacing .ibt import', () => {
 
   it('keeps disk capabilities separate from live capture and never carries measurements into later rows', () => {
     expect(Object.keys(IRACING_IBT_FIELD_COVERAGE)).toEqual(LIVE_TELEMETRY_FIELDS);
-    expect(Object.values(IRACING_IBT_FIELD_COVERAGE).filter(({ supported }) => supported)).toHaveLength(136);
+    expect(Object.values(IRACING_IBT_FIELD_COVERAGE).filter(({ supported }) => supported)).toHaveLength(137);
     const channels = [...diskChannels(), ...positionChannels()];
     const values = Object.fromEntries(channels.map(({ name, value }) => [name, value]));
     const packet = { type: 'sample', tick: 1, values: { IsOnTrack: true, ...values } };

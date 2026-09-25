@@ -30,6 +30,10 @@ const invalidRows = [
     { Graphics_rain_tyres: true },
     { Graphics_car_coordinates: JSON.stringify(Array(60).fill({ x: 0, y: 0, z: 0 })) },
     { Graphics_car_id: [1, 2] },
+    ...[[], null, '0.5', { '-1': 0.5 }, { '01': 0.5 }, { car: 0.5 }, { '1.5': 0.5 },
+        { '9007199254740992': 0.5 }, { 0: -1 }, { 0: 1.01 }, { 0: NaN }, { 0: Infinity },
+        { 0: null }, { 0: '0.5' }, { 0: { position: 0.5 } }]
+        .map((value) => ({ Graphics_normalized_positions: value })),
 ];
 
 describe('live telemetry dataset boundary', () => {
@@ -54,6 +58,7 @@ describe('live telemetry dataset boundary', () => {
             boolean: false, integer: 0, number: 0.25, string: '',
             coordinates: Array.from({ length: 60 }, (_, i) => ({ x: i, y: i + 1, z: -i - 1 })),
             'integer-array': Array.from({ length: 60 }, (_, i) => i),
+            'normalized-positions': { 0: 0, 63: 1, 1052: 0.25 },
         };
         const sample = Object.fromEntries(Object.entries(LIVE_TELEMETRY_DATASET)
             .map(([field, type]) => [field, values[type]]));
@@ -127,10 +132,10 @@ describe('live telemetry dataset boundary', () => {
         const started = reader.start(emit);
         lines.emit('line', '{"available":false}');
         expect(emit).not.toHaveBeenCalled();
-        lines.emit('line', '{"Physics_speed_kmh":120,"Graphics_status":2}');
+        lines.emit('line', '{"Physics_speed_kmh":120,"Graphics_status":2,"Graphics_normalized_positions":{"1052":0.25}}');
         await started;
         expect(emit).toHaveBeenCalledWith({ type: 'frame', frame: {
-            game: 'acc', sample: { Physics_speed_kmh: 120, Graphics_status: 2 },
+            game: 'acc', sample: { Physics_speed_kmh: 120, Graphics_status: 2, Graphics_normalized_positions: { 1052: 0.25 } },
         } });
         lines.emit('line', '{"Physics_speed_kmh":121,"speedKph":121}');
         expect(emit.mock.calls.filter(([event]) => event.type === 'frame')).toHaveLength(1);

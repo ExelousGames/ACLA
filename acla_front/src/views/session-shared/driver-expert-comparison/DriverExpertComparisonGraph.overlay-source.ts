@@ -1,6 +1,7 @@
 import { MutableAiOverlayComponent } from 'views/floating-chat/MutableAiOverlayComponent';
 import type { DriverExpertComparisonSnapshot } from './DriverExpertComparisonOverlay';
-import { synthesizeTtsPack } from 'components/tts';
+import { synthesizeTtsPack, type TtsPack } from 'components/tts';
+import type { AiOverlayRendererEvent } from 'views/floating-chat/ai-overlay-types';
 
 export const getDriverExpertComparisonNarration = (snapshot: DriverExpertComparisonSnapshot): string => (
     [snapshot.title.replace(/(?:^|:\s*)Driver vs Expert$/i, '').trim(), ...(snapshot.labelGroups ?? []).filter((group) => group.subLabels.length > 0)
@@ -12,19 +13,16 @@ export const getDriverExpertComparisonNarration = (snapshot: DriverExpertCompari
 export const prepareDriverExpertComparisonVoices = async (
     snapshots: readonly DriverExpertComparisonSnapshot[],
     signal?: AbortSignal,
-): Promise<DriverExpertComparisonSnapshot[]> => {
+): Promise<Array<TtsPack | undefined>> => {
     const narrations = snapshots.map(getDriverExpertComparisonNarration);
     const voices = await synthesizeTtsPack(narrations.filter(Boolean).map((text) => ({ text })), signal);
     let voiceIndex = 0;
-    return snapshots.map((snapshot, index) => ({
-        ...snapshot,
-        voice: narrations[index] ? voices[voiceIndex++] : undefined,
-    }));
+    return narrations.map((narration) => narration ? voices[voiceIndex++] : undefined);
 };
 
 export const createDriverExpertComparisonOverlayComponent = (
     componentName: string,
-    onRendererEvent: (event: string) => void = () => undefined,
+    onRendererEvent: (event: AiOverlayRendererEvent) => void = () => undefined,
 ) => (
     new MutableAiOverlayComponent<DriverExpertComparisonSnapshot>(
         componentName,
@@ -35,6 +33,6 @@ export const createDriverExpertComparisonOverlayComponent = (
             transientDurationMs: null,
             presentationId: publication.presentationId,
         }),
-        (event) => onRendererEvent(event.event),
+        onRendererEvent,
     )
 );

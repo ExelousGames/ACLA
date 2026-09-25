@@ -1,4 +1,4 @@
-import React, { useContext, useLayoutEffect, useRef } from 'react';
+import React, { useContext, useEffect, useLayoutEffect, useRef } from 'react';
 import {
     OPERATION_COMPONENT_NAMES,
     OperationComponentRefDirectory,
@@ -61,6 +61,9 @@ import type { LiveSessionRuntime, LiveSessionSnapshot } from './live-session-typ
 import type { LiveEventLogHandle } from './LiveEventLog';
 import type { EventSearchParams } from './event-log/EventLog';
 import { liveTelemetryStore } from './live-telemetry-store';
+import type { LiveTelemetryEventListener } from './live-telemetry-store';
+import type { TrackVisionHandle } from './track-vision/LiveTrackVision';
+import type { TrackVisionDetection } from './track-vision/track-vision-types';
 import {
     createControlledOperation,
     createOperationFrom,
@@ -131,6 +134,9 @@ export type LiveTelemetryAnalysisAiResult = {
 export interface LiveSessionHandle extends ObservableOperationComponentHandle<LiveSessionRuntime> {
     getRecordingState(): RecordingState;
     getCurrentTelemetry(): Record<string, any>;
+    subscribeTelemetry(listener: LiveTelemetryEventListener): () => void;
+    getTrackVisionDetection(): TrackVisionDetection | null;
+    subscribeTrackVision(listener: () => void): () => void;
     queryTelemetryMetric<TReduce extends ReduceOp>(args: TelemetryQuery<TReduce>): Promise<QueryResult<TReduce>>;
     getTelemetryForScope(scope: QueryScope): Promise<Record<string, any>[]>;
     getEventLog(args: Record<string, any>): any[];
@@ -317,7 +323,19 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
     const liveSessionRef = useRef(liveSession);
     liveSessionRef.current = liveSession;
     const assistantSnapshotListenersRef = useRef(new Set<() => void>());
+    const trackVisionListenersRef = useRef(new Set<() => void>());
     const componentRef = useRef<LiveSessionHandle | null>(null);
+    const trackVision = componentRefs?.findComponentRef<TrackVisionHandle>(
+        getVisualizationComponentName('track-vision'),
+    )?.current ?? null;
+    const trackVisionRef = useRef(trackVision);
+    trackVisionRef.current = trackVision;
+
+    useEffect(() => {
+        const notify = () => trackVisionListenersRef.current.forEach((listener) => listener());
+        notify();
+        return trackVision?.subscribeDetection(notify);
+    }, [trackVision]);
 
     const getMountedEventLog = () => componentRefsRef.current
         ?.findComponentRef<LiveEventLogHandle>(LIVE_EVENT_LOG_COMPONENT_NAME)
@@ -370,6 +388,13 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
             },
             getRecordingState: () => liveSessionRef.current.recordingState,
             getCurrentTelemetry: () => liveTelemetryStore.getSnapshot().currentTelemetry,
+            // Only new frames: a retained frame must not be treated as fresh on mount.
+            subscribeTelemetry: (listener) => liveTelemetryStore.subscribeEvents(listener),
+            getTrackVisionDetection: () => trackVisionRef.current?.getLatestDetection() ?? null,
+            subscribeTrackVision: (listener) => {
+                trackVisionListenersRef.current.add(listener);
+                return () => { trackVisionListenersRef.current.delete(listener); };
+            },
             queryTelemetryMetric: (args) => queryLiveTelemetry(args),
             getTelemetryForScope: (scope) => getTelemetryForLiveScope(scope),
             getEventLog: (args) => findLiveEvents(args),

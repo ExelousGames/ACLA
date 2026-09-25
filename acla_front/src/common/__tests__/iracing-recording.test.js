@@ -119,7 +119,8 @@ describe('iRacing standard field adapter', () => {
       VelocityX: NaN, SessionFlags: undefined,
     }));
     expect(sample).toEqual({ Physics_packed_id: 120, Graphics_packed_id: 120,
-      Graphics_status: 2, Graphics_player_car_id: 4, Graphics_session_index: 1 });
+      Graphics_status: 2, Graphics_player_car_id: 4, Graphics_session_index: 1,
+      Graphics_normalized_positions: { 0: 0.2 } });
   });
 
   it('caches YAML between updates and clears metadata on reconnect', () => {
@@ -132,6 +133,30 @@ describe('iRacing standard field adapter', () => {
     expect(adapter.adapt(packet())).not.toHaveProperty('Static_car_model');
     adapter.reset();
     expect(adapter.adapt(packet())).not.toHaveProperty('Static_track');
+  });
+
+  it('preserves native car indices, endpoints and pit cars in normalized positions', () => {
+    const positions = Array(64).fill(-1);
+    const surfaces = Array(64).fill(-1);
+    for (const [carId, position, surface] of [[0, 0, 3], [4, 0.25, 2], [60, 0.75, 1], [63, 1, 3]]) {
+      positions[carId] = position;
+      surfaces[carId] = surface;
+    }
+    positions[2] = 0.5; // Not in the world, despite a stale lap fraction.
+    const row = new IRacingAdapter().adapt(packet({ CarIdxLapDistPct: positions, CarIdxTrackSurface: surfaces, LapDistPct: 0.25 }));
+    expect(row.Graphics_normalized_positions).toEqual({ 0: 0, 4: 0.25, 60: 0.75, 63: 1 });
+    expect(row.Graphics_normalized_car_position).toBe(0.25);
+    expect(IRACING_FIELD_COVERAGE.Graphics_normalized_positions.supported).toBe(true);
+  });
+
+  it('omits invalid positions and never carries them into another sample or replay', () => {
+    const adapter = new IRacingAdapter();
+    const values = { CarIdxLapDistPct: [0.5, -1, NaN, Infinity, null, '0.2', 1.01] };
+    expect(adapter.adapt(packet(values)).Graphics_normalized_positions).toEqual({ 0: 0.5 });
+    expect(adapter.adapt(packet({ CarIdxLapDistPct: [-1] })).Graphics_normalized_positions).toEqual({});
+    expect(adapter.adapt(packet())).not.toHaveProperty('Graphics_normalized_positions');
+    expect(adapter.adapt(packet({ ...values, IsReplayPlaying: true }))).not.toHaveProperty('Graphics_normalized_positions');
+    expect(adapter.adapt(packet({ ...values, IsOnTrack: false }))).not.toHaveProperty('Graphics_normalized_positions');
   });
 
   it('never forwards stale cockpit values while spectating or replaying', () => {

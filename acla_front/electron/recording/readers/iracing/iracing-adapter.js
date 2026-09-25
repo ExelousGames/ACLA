@@ -88,6 +88,7 @@ const derived = {
   Graphics_estimated_lap_time: 'LapBestLapTime + validated session-best delta -> ms',
   Graphics_estimated_lap_time_str: 'Estimated lap time -> lap-time string',
   Graphics_active_cars: 'Count CarIdxTrackSurface entries in the world',
+  Graphics_normalized_positions: 'Valid CarIdxLapDistPct entries keyed by native car index; excludes cars outside the world',
   Graphics_number_of_laps: 'LapCompleted after checkered/cooldown only',
   Graphics_current_sector_index: 'LapDistPct against SplitTimeInfo.Sectors',
   Graphics_session_type: 'SessionInfo.Sessions[SessionNum].SessionType -> standard enum',
@@ -258,6 +259,17 @@ class IRacingAdapter {
     }
     if (Array.isArray(values.CarIdxTrackSurface)) {
       put('Graphics_active_cars', values.CarIdxTrackSurface.filter((surface) => Number.isInteger(surface) && surface >= 0).length);
+    }
+    if (Array.isArray(values.CarIdxLapDistPct)) {
+      const positions = {};
+      values.CarIdxLapDistPct.forEach((position, carId) => {
+        const surface = values.CarIdxTrackSurface?.[carId];
+        if (fraction(position) !== undefined
+          && (!Array.isArray(values.CarIdxTrackSurface) || (Number.isInteger(surface) && surface >= 0))) {
+          positions[carId] = position;
+        }
+      });
+      put('Graphics_normalized_positions', positions);
     }
     if (values.SessionState === 5 || values.SessionState === 6) put('Graphics_number_of_laps', positive(values.LapCompleted));
     const sectors = this.session.SplitTimeInfo?.Sectors;

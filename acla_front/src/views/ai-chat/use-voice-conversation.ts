@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import apiService from 'services/api.service';
+import { audioManager, type AudioStreamHandle } from 'services/audio';
 import { buildFormattedToolResultFrame } from './voice-tool-result-formatter';
 import { readWorkflowProgress } from 'components/ai-operations/workflow';
 import {
@@ -83,6 +84,8 @@ type VoiceEventPayload =
 export type VoiceEvent = VoiceEventPayload & { clientSessionId?: string };
 
 export interface VoiceConversationOptions {
+    audioPriority?: number;
+    audioVolume?: number;
     /** Driving session id — required for backend tools that look up
      *  recent telemetry / lap data by session. */
     sessionId?: string;
@@ -430,10 +433,7 @@ export function useVoiceConversation(
     const audioContextRef = useRef<AudioContext | null>(null);
     const micStreamRef = useRef<MediaStream | null>(null);
     const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-    const playbackContextRef = useRef<AudioContext | null>(null);
-    const playbackQueueTimeRef = useRef<number>(0);
-    const playbackSerialRef = useRef<number>(0);
-    const playbackIdleTimeoutRef = useRef<number | null>(null);
+    const playbackRef = useRef<AudioStreamHandle | null>(null);
     const connectTimeoutRef = useRef<number | null>(null);
     const connectionAttemptRef = useRef(0);
     const micDisabledRef = useRef(false);
@@ -591,14 +591,8 @@ export function useVoiceConversation(
         try { audioContextRef.current?.close(); } catch { /* ignore */ }
         audioContextRef.current = null;
 
-        try { playbackContextRef.current?.close(); } catch { /* ignore */ }
-        playbackContextRef.current = null;
-        playbackQueueTimeRef.current = 0;
-        playbackSerialRef.current += 1;
-        if (playbackIdleTimeoutRef.current !== null) {
-            window.clearTimeout(playbackIdleTimeoutRef.current);
-            playbackIdleTimeoutRef.current = null;
-        }
+        playbackRef.current?.stop();
+        playbackRef.current = null;
 
         const ws = wsRef.current;
         wsRef.current = null;
@@ -751,10 +745,25 @@ export function useVoiceConversation(
                 }
             };
 
-            // --- 4. Set up playback AudioContext ---
-            const playbackContext = new AudioContext({ sampleRate: 24000 });
-            playbackContextRef.current = playbackContext;
-            playbackQueueTimeRef.current = playbackContext.currentTime;
+            // A discarded handle stays invalid through quiet intervals, until restart.
+            const playback = audioManager.createStream({
+                type: 'voice', priority: options.audioPriority ?? 50,
+                volume: options.audioVolume, format: 'pcm16', sampleRate: 24000,
+                onStart: () => {
+                    if (wsRef.current === ws && playbackRef.current === playback) setState('speaking');
+                },
+                onIdle: () => {
+                    if (wsRef.current === ws && playbackRef.current === playback) {
+                        setState((previous) => previous === 'speaking' ? 'listening' : previous);
+                    }
+                },
+                onComplete: (outcome) => {
+                    if (wsRef.current !== ws || playbackRef.current !== playback) return;
+                    setState((previous) => previous === 'speaking' ? 'listening' : previous);
+                    if (outcome.status === 'failed') console.warn('[voice] playback failed:', outcome.error);
+                },
+            });
+            playbackRef.current = playback;
 
             ws.onopen = () => {
                 if (wsRef.current !== ws) return;
@@ -920,10 +929,7 @@ export function useVoiceConversation(
                 if (!(event.data instanceof ArrayBuffer)) return;
                 if (readyWsRef.current !== ws) return;
                 // Server sent raw PCM16 mono at the kokoro sample rate.
-                queuePlayback(event.data, playbackContext);
-                // Always set 'speaking' — setState is idempotent and the
-                // closure-captured `state` value is stale here.
-                setState((prev) => (prev === 'speaking' ? prev : 'speaking'));
+                playback.enqueuePcm16(event.data);
             };
 
             ws.onerror = (event) => {
@@ -951,53 +957,11 @@ export function useVoiceConversation(
         options.clientSessionId,
         options.conversationRole,
         options.parentClientSessionId,
+        options.audioPriority,
+        options.audioVolume,
         resetMicLevel,
         scheduleMicLevel,
     ]);
-
-    /**
-     * Schedule a PCM16 chunk for gapless playback on the playback AudioContext.
-     */
-    const queuePlayback = (pcm16Buffer: ArrayBuffer, context: AudioContext) => {
-        const int16 = new Int16Array(pcm16Buffer);
-        if (int16.length === 0) return;
-
-        if (playbackIdleTimeoutRef.current !== null) {
-            window.clearTimeout(playbackIdleTimeoutRef.current);
-            playbackIdleTimeoutRef.current = null;
-        }
-
-        // Convert to Float32 in [-1, 1].
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) {
-            float32[i] = int16[i] < 0 ? int16[i] / 0x8000 : int16[i] / 0x7fff;
-        }
-
-        const audioBuffer = context.createBuffer(1, float32.length, context.sampleRate);
-        audioBuffer.copyToChannel(float32, 0);
-
-        const source = context.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(context.destination);
-        const serial = ++playbackSerialRef.current;
-        source.onended = () => {
-            if (serial !== playbackSerialRef.current) return;
-            playbackIdleTimeoutRef.current = window.setTimeout(() => {
-                playbackIdleTimeoutRef.current = null;
-                if (serial !== playbackSerialRef.current) return;
-                const ws = wsRef.current;
-                if (ws && readyWsRef.current === ws && ws.readyState === WebSocket.OPEN) {
-                    playbackQueueTimeRef.current = context.currentTime;
-                    setState((prev) => (prev === 'speaking' ? 'listening' : prev));
-                }
-            }, 160);
-        };
-
-        const now = context.currentTime;
-        const startAt = Math.max(now, playbackQueueTimeRef.current);
-        source.start(startAt);
-        playbackQueueTimeRef.current = startAt + audioBuffer.duration;
-    };
 
     /**
      * Send a typed chat message over the open voice WS. Backend treats it

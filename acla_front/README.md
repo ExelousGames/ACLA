@@ -8,6 +8,34 @@ This package contains the React UI and the Electron desktop shell that executes 
 - npm 9+
 - Python 3.10 or newer (system interpreter used to create virtual environments)
 
+## ACC per-car track positions
+
+ACC recording supplements shared memory with the local UDP Broadcasting API.
+`Graphics_normalized_positions` contains native car IDs mapped to lap fractions
+from 0 to 1, for example `{"7":0.25,"1052":0.8}`. iRacing emits the same field
+from `CarIdxLapDistPct`; the existing player-only `Graphics_normalized_car_position`
+is unchanged. Missing or stale car positions are omitted.
+
+Enable broadcasting in `Documents\Assetto Corsa Competizione\Config\broadcasting.json`
+with a nonzero `updListenerPort` (ACC's spelling), for example:
+
+```json
+{
+  "updListenerPort": 9000,
+  "connectionPassword": "your-password",
+  "commandPassword": ""
+}
+```
+
+Preserve any existing settings and restart ACC after changing its configuration.
+The extractor reads the port and connection password from that file automatically,
+including redirected Documents folders. Set `ACLA_ACC_BROADCAST_CONFIG` to use a
+different config file. It only connects to `127.0.0.1` and never sends driving,
+camera, or replay controls. No additional Python dependencies are required.
+If broadcasting is disabled or unavailable, shared-memory recording continues
+and the new field is omitted. UDP samples are requested every 100 ms; individual
+car positions expire after two seconds without an update.
+
 ## Python environments for desktop scripts
 
 All Electron-only Python entry points live under `src/py-scripts/`. We manage their dependencies with

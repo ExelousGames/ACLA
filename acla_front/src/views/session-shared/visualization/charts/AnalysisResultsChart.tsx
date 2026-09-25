@@ -1,4 +1,6 @@
 import React from 'react';
+import { audioManager, type PlaybackHandle } from 'services/audio';
+import type { TtsPack } from 'components/tts';
 import { Badge, Box, Card, Flex, ScrollArea, Text } from '@radix-ui/themes';
 import { ChevronDownIcon, ChevronUpIcon } from '@radix-ui/react-icons';
 import type { VisualizationProps } from 'views/session-shared/visualization/visualization-types';
@@ -279,6 +281,7 @@ export interface AnalysisResultsChartHandle extends NamedOperationComponentHandl
         pageId: string,
         resultId: string,
         signal?: AbortSignal,
+        audioOptions?: { priority?: number; volume?: number },
     ): AnalysisResultOverlayOperation;
     applyAnalysisResultQuery(
         args: ApplyAnalysisResultQueryInput,
@@ -1344,7 +1347,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const activeOverlayRef = React.useRef<ActiveAnalysisResultOverlay | null>(null);
     const comparisonVoicesRef = React.useRef(new Map<string, {
         source: string;
-        snapshot: DriverExpertComparisonSnapshot;
+        voice: TtsPack | undefined;
     }>());
     const componentRefs = useOptionalOperationComponentRefDirectory();
     const { getCategoryLabels, getLabelName } = useAiLabels();
@@ -1413,13 +1416,13 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         const prepared = await prepareDriverExpertComparisonVoices(snapshots, signal);
         if (signal.aborted || !mountedRef.current) throw createAnalysisResultOverlayAbortError();
         const durations: Record<string, number> = {};
-        prepared.forEach((snapshot, index) => {
+        prepared.forEach((voice, index) => {
             const resultId = resultIds[index];
             comparisonVoicesRef.current.set(JSON.stringify([pageId, resultId]), {
                 source: JSON.stringify(snapshots[index]),
-                snapshot,
+                voice,
             });
-            durations[resultId] = snapshot.voice?.durationMs ?? 0;
+            durations[resultId] = voice?.durationMs ?? 0;
         });
         return durations;
     }, [createComparisonSnapshot, resolveSpecificResult]);
@@ -1433,6 +1436,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         pageId: string,
         resultId: string,
         signal?: AbortSignal,
+        audioOptions?: { priority?: number; volume?: number },
     ): AnalysisResultOverlayOperation => {
         const result = resolveSpecificResult(pageId, resultId);
         if (!result) {
@@ -1473,13 +1477,25 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         );
 
         const componentName = `${name}:driver-expert-comparison:${++overlayComponentSequenceRef.current}`;
+        const snapshot = createComparisonSnapshot(result);
+        const prepared = comparisonVoicesRef.current.get(JSON.stringify([pageId, resultId]));
+        const voice = prepared?.source === JSON.stringify(snapshot) ? prepared.voice : undefined;
+        let playback: PlaybackHandle | null = null;
+        let closed = false;
+        let replayStarted = false;
+        let animationSettled = false;
+        let narrationSettled = true;
+        let rendererRevision: number | undefined;
         let ref: React.MutableRefObject<MutableAiOverlayComponent<any> | null>;
         let active: ActiveAnalysisResultOverlay;
         const finish = (
             status: AnalysisResultOverlayTerminationStatus,
             error?: Error,
         ) => {
-            if (controller.settled) return;
+            if (closed) return;
+            closed = true;
+            playback?.stop();
+            playback = null;
             signal?.removeEventListener('abort', handleAbort);
             ref.current?.clear();
             componentRefs.unregisterComponentRef(ref);
@@ -1494,10 +1510,38 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             );
         };
         const handleAbort = () => finish('cancelled', createAnalysisResultOverlayAbortError());
+        const completeIfSettled = () => {
+            if (!closed && animationSettled && narrationSettled) finish('complete');
+        };
         safelyAbortOverlay = handleAbort;
         ref = {
             current: createDriverExpertComparisonOverlayComponent(componentName, (event) => {
-                if (event === 'replay_complete') finish('complete');
+                if (closed || activeOverlayRef.current !== active
+                    || event.presentationId !== presentationId || event.componentName !== componentName
+                    || (event.event !== 'replay_started' && event.event !== 'replay_complete')) return;
+                if (rendererRevision !== undefined && rendererRevision !== event.revision) return;
+                rendererRevision = event.revision;
+                if (event.event === 'replay_started') {
+                    if (replayStarted || animationSettled) return;
+                    replayStarted = true;
+                    if (voice) {
+                        narrationSettled = false;
+                        playback = audioManager.play({
+                            url: voice.audioDataUrl, type: 'voice',
+                            priority: audioOptions?.priority ?? 50, volume: audioOptions?.volume,
+                            onComplete: () => {
+                                if (closed) return;
+                                playback = null;
+                                narrationSettled = true;
+                                completeIfSettled();
+                            },
+                        });
+                    }
+                } else {
+                    // Static/reduced-motion renders never start narration.
+                    animationSettled = true;
+                    completeIfSettled();
+                }
             }),
         };
         active = {
@@ -1513,10 +1557,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
 
         try {
             componentRefs.registerComponentRef(ref);
-            const snapshot = createComparisonSnapshot(result);
-            const prepared = comparisonVoicesRef.current.get(JSON.stringify([pageId, resultId]));
-            ref.current?.publish(prepared?.source === JSON.stringify(snapshot)
-                ? prepared.snapshot : snapshot, { presentationId });
+            ref.current?.publish(snapshot, { presentationId });
         } catch (error) {
             finish('failed', error instanceof Error ? error : new Error(String(error)));
         }
@@ -1697,6 +1738,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     }, []);
 
     React.useLayoutEffect(() => () => {
+        comparisonVoicesRef.current.clear();
         activeOverlayRef.current?.terminate(
             'cancelled',
             new OperationExecutionError('Analysis Results unmounted before the graph display completed.'),

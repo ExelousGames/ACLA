@@ -1,0 +1,21 @@
+.live-phrases { box-sizing: border-box; height: 100%; min-height: 0; overflow: auto; padding: 12px; color: var(--lp-white, #e7ecf2); font-size: 12px; }
+/* Let sections grow inside the scrolling panel despite the dashboard's global height cap. */
+.live-phrases > section { max-height: none; }
+.live-phrases h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 17px; }
+.live-phrases h2 span { color: var(--lp-green, #37efac); font-size: 10px; font-weight: 500; border: 1px solid var(--lp-green, #37efac); border-radius: 4px; padding: 3px 6px; }
+.live-phrases h3 { margin: 0 0 10px; font-size: 13px; }
+.live-phrases p { line-height: 1.6; }
+.live-phrases__hint, .live-phrases header p, .live-phrases time, .live-phrases small { color: var(--lp-gray, #a4adbb); }
+.live-phrases__hint { font-size: 11px; }
+.live-phrases__sources { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 6px; background: var(--lp-bg, #10131a); }
+.live-phrases [data-ready="true"], .live-phrases [data-active="true"] { color: var(--lp-green, #37efac); }
+.live-phrases__output { margin: 16px 0; padding: 12px; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; }
+.live-phrases__output ol { max-height: 200px; overflow: auto; margin: 0; padding: 0; list-style: none; }
+.live-phrases__output li { display: flex; align-items: baseline; gap: 10px; padding: 7px 0; }
+.live-phrases time { flex: 0 0 auto; font-size: 10px; }
+.live-phrases__catalog { display: flex; flex-direction: column; gap: 10px; padding: 0; margin: 12px 0; list-style: none; }
+.live-phrases__catalog li { padding: 12px; background: var(--lp-bg, #10131a); border: 1px solid var(--lp-border, #343b46); border-radius: 8px; overflow-wrap: anywhere; }
+.live-phrases__rule-heading { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; color: var(--lp-gray, #a4adbb); font-size: 10px; }
+.live-phrases__catalog strong { font-weight: 600; }
+.live-phrases__catalog p { margin: 8px 0; font-size: 11px; }
+.live-phrases__missing { display: block; margin-top: 6px; }

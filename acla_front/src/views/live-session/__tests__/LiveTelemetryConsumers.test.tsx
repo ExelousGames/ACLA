@@ -103,4 +103,27 @@ describe('live telemetry latest-value and trajectory consumers', () => {
 
         expect(screen.getByText('120 visible samples')).toBeInTheDocument();
     });
+
+    it.each(['acc', 'iracing'] as const)('shows per-car positions from %s and removes unavailable values', (game) => {
+        render(<LiveTelemetryOverview name="latest telemetry" />);
+        const positions = { 0: 0, 63: 0.75, 1052: 1 };
+        act(() => {
+            expect(liveTelemetryStore.publishFrame({
+                type: 'frame', game,
+                sample: { Graphics_status: ACC_STATUS.ACC_LIVE, Graphics_normalized_positions: positions },
+                sequence: 1, committedSequence: 1, committedCount: 1,
+            })).toBe(true);
+        });
+        expect(screen.getByText('Graphics_normalized_positions')).toBeInTheDocument();
+        expect(screen.getByText(JSON.stringify(positions))).toBeInTheDocument();
+
+        act(() => {
+            liveTelemetryStore.publishFrame({
+                type: 'frame', game, sample: { Graphics_status: ACC_STATUS.ACC_LIVE },
+                sequence: 2, committedSequence: 2, committedCount: 2,
+            });
+        });
+        expect(screen.queryByText('Graphics_normalized_positions')).not.toBeInTheDocument();
+        expect(screen.getByText('Graphics_status')).toBeInTheDocument();
+    });
 });

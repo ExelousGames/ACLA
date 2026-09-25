@@ -1,4 +1,5 @@
 import React from 'react';
+import { audioManager, type PlaybackHandle, type PlaybackOutcome } from 'services/audio';
 import type { TtsPack } from './tts-service';
 
 export interface TtsHandle {
@@ -8,54 +9,45 @@ export interface TtsHandle {
 
 export interface TtsProps {
     pack: TtsPack;
+    priority?: number;
+    volume?: number;
     onEnded?: () => void;
     onError?: (error: Error) => void;
+    onComplete?: (outcome: PlaybackOutcome) => void;
 }
 
-/** Playback belongs to the component that owns the pack; synthesis never plays audio. */
-export const Tts = React.forwardRef<TtsHandle, TtsProps>(({ pack, onEnded, onError }, ref) => {
-    const audioRef = React.useRef<HTMLAudioElement>(null);
-    const playbackRef = React.useRef(0);
-    const errorCallbackRef = React.useRef(onError);
-    errorCallbackRef.current = onError;
+/** The owner retains the pack and decides when an explicit replay is appropriate. */
+export const Tts = React.forwardRef<TtsHandle, TtsProps>((props, ref) => {
+    const playbackRef = React.useRef<PlaybackHandle | null>(null);
+    const propsRef = React.useRef(props);
+    propsRef.current = props;
+    const stop = React.useCallback(() => {
+        const playback = playbackRef.current;
+        playbackRef.current = null;
+        playback?.stop();
+    }, []);
 
-    React.useEffect(() => {
-        const audio = audioRef.current;
-        return () => {
-            playbackRef.current += 1;
-            audio?.pause();
-        };
-    }, [pack.audioDataUrl]);
-
+    React.useEffect(() => stop, [props.pack.audioDataUrl, stop]);
     React.useImperativeHandle(ref, () => ({
         play: () => {
-            const audio = audioRef.current;
-            if (!audio) return;
-            const playback = ++playbackRef.current;
-            const reportError = (error: unknown) => {
-                if (playback !== playbackRef.current) return;
-                errorCallbackRef.current?.(error instanceof Error ? error : new Error(String(error)));
-            };
-            try {
-                audio.currentTime = 0;
-                void audio.play().catch(reportError);
-            } catch (error) {
-                reportError(error);
-            }
+            stop();
+            const { pack, priority = 50, volume } = propsRef.current;
+            const playback = audioManager.play({
+                url: pack.audioDataUrl, type: 'voice', priority, volume,
+                onComplete: (outcome) => {
+                    if (playbackRef.current !== playback) return;
+                    playbackRef.current = null;
+                    if (outcome.status === 'completed') propsRef.current.onEnded?.();
+                    if (outcome.status === 'failed') propsRef.current.onError?.(outcome.error);
+                    propsRef.current.onComplete?.(outcome);
+                },
+            });
+            playbackRef.current = playback;
         },
-        stop: () => {
-            playbackRef.current += 1;
-            audioRef.current?.pause();
-        },
-    }), []);
+        stop,
+    }), [stop]);
 
-    return <audio
-        ref={audioRef}
-        src={pack.audioDataUrl}
-        preload="auto"
-        onEnded={onEnded}
-        onError={() => errorCallbackRef.current?.(new Error('The speech audio could not be played.'))}
-    />;
+    return null;
 });
 
 Tts.displayName = 'Tts';

@@ -56,6 +56,7 @@ interface MockStream extends MediaStream {
 }
 
 class MockAudioContext {
+    state = 'running';
     readonly sampleRate: number;
     currentTime = 0;
     destination = {} as AudioDestinationNode;
@@ -64,6 +65,7 @@ class MockAudioContext {
     } as unknown as AudioWorklet;
     close = jest.fn().mockResolvedValue(undefined);
     createMediaStreamSource = jest.fn(() => ({ connect: jest.fn() }));
+    createGain = jest.fn(() => ({ gain: { value: 1 }, connect: jest.fn(), disconnect: jest.fn() }));
     createBuffer = jest.fn(() => ({
         copyToChannel: jest.fn(),
         duration: 0.01,
@@ -72,7 +74,9 @@ class MockAudioContext {
         buffer: null,
         connect: jest.fn(),
         start: jest.fn(),
-        onended: null,
+        stop: jest.fn(),
+        disconnect: jest.fn(),
+        onended: null as (() => void) | null,
     }));
 
     constructor(options?: AudioContextOptions) {
@@ -172,6 +176,45 @@ describe('useVoiceConversation chat session lifecycle', () => {
 
     afterEach(() => {
         jest.restoreAllMocks();
+    });
+
+    it('owns its output stream through silence and requires restart after another caller replaces it', async () => {
+        const first = renderHook(() => useVoiceConversation({ clientSessionId: 'first' }));
+        const firstSocket = await startAndOpen(first.result);
+        markReady(firstSocket, 'first-server', false);
+        const pcm = new Int16Array([1, 2, 3]).buffer;
+        const deliver = async (socket: MockVoiceWebSocket) => act(async () => {
+            socket.onmessage?.({ data: pcm } as MessageEvent);
+        });
+        await deliver(firstSocket);
+        expect(first.result.current.state).toBe('speaking');
+        const firstPlayback = mockAudioContexts[1];
+        const firstNode = firstPlayback.createBufferSource.mock.results[0].value;
+        await act(async () => { firstNode.onended?.(); });
+        expect(first.result.current.state).toBe('listening');
+        const second = renderHook(() => useVoiceConversation({ clientSessionId: 'second' }));
+        const secondSocket = await startAndOpen(second.result);
+        markReady(secondSocket, 'second-server', false);
+        await deliver(secondSocket);
+        expect(second.result.current.state).toBe('speaking');
+        expect(firstPlayback.close).toHaveBeenCalledTimes(1);
+        await deliver(firstSocket);
+        expect(firstPlayback.createBufferSource).toHaveBeenCalledTimes(1);
+        expect(first.result.current.state).toBe('listening');
+        const secondPlayback = mockAudioContexts[3];
+        act(() => { first.result.current.stop(); });
+        expect(secondPlayback.close).not.toHaveBeenCalled();
+        expect(second.result.current.state).toBe('speaking');
+        const restartedSocket = await startAndOpen(first.result);
+        markReady(restartedSocket, 'first-server', true);
+        await deliver(restartedSocket);
+        expect(first.result.current.state).toBe('speaking');
+        expect(secondPlayback.close).toHaveBeenCalledTimes(1);
+        expect(secondPlayback.createBufferSource.mock.results[0].value.stop).toHaveBeenCalledTimes(1);
+        expect(second.result.current.state).toBe('listening');
+        const restartedPlayback = mockAudioContexts[5];
+        first.unmount(); second.unmount();
+        expect(restartedPlayback.close).toHaveBeenCalledTimes(1);
     });
 
     it('creates a session and gates traffic until chat_session_ready', async () => {

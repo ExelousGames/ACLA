@@ -7,7 +7,7 @@ export interface TtsRequest {
     language?: string;
 }
 
-/** JSON-safe audio that can be retained with a component or sent to an overlay. */
+/** Prepared audio retained by its main-window component owner. */
 export interface TtsPack {
     text: string;
     audioDataUrl: string;

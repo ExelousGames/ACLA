@@ -18,6 +18,7 @@ type TelemetryFieldValues = {
     string: string;
     coordinates: { x: number; y: number; z: number }[];
     'integer-array': number[];
+    'normalized-positions': Record<string, number>;
 };
 
 export type StandardTelemetrySample = {

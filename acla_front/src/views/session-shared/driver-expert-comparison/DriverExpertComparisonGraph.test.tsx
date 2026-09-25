@@ -12,6 +12,8 @@ import {
 } from './DriverExpertComparisonGraph';
 import { useDesktopGame } from 'contexts/DesktopGameContext';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
+import { installAudioDoubles } from 'services/audio/test-audio';
+import { audioManager } from 'services/audio';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: jest.fn(),
@@ -210,9 +212,9 @@ describe('DriverExpertComparisonGraph', () => {
         setReducedMotion(false);
     });
 
-    it('plays stored narration on the first animation frame, waits for speech, and stops on unmount', () => {
-        const play = jest.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
-        const pause = jest.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+    it('plays stored narration on the first animation frame, waits for speech, and stops on unmount', async () => {
+        const audio = installAudioDoubles();
+        const { play, pause } = audio;
         const onReplayComplete = jest.fn();
         const voice = { text: 'Brake smoothly.', audioDataUrl: 'data:audio/wav;base64,UklGRg==', durationMs: 8000 };
         const view = render(<DriverExpertComparisonGraph data={completeData} voice={voice} onReplayComplete={onReplayComplete} />);
@@ -224,7 +226,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(play).toHaveBeenCalledTimes(1);
         expect(onReplayComplete).not.toHaveBeenCalled();
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Finishing narration');
-        fireEvent.ended(view.container.querySelector('audio')!);
+        await act(async () => { fireEvent.ended(audio.media[0]); });
         expect(onReplayComplete).toHaveBeenCalledTimes(1);
         fireEvent.click(screen.getByRole('button', { name: 'Replay comparison' }));
         expect(pause).toHaveBeenCalled();
@@ -234,17 +236,16 @@ describe('DriverExpertComparisonGraph', () => {
         runAnimationFrame(9_750);
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Finishing narration');
         expect(onReplayComplete).toHaveBeenCalledTimes(1);
-        fireEvent.ended(view.container.querySelector('audio')!);
+        await act(async () => { fireEvent.ended(audio.media[1]); });
         expect(onReplayComplete).toHaveBeenCalledTimes(2);
         view.unmount();
         expect(pause).toHaveBeenCalled();
-        play.mockRestore();
-        pause.mockRestore();
+        audio.restore();
     });
 
     it('finishes the graph if audio playback is blocked', async () => {
-        const play = jest.spyOn(HTMLMediaElement.prototype, 'play').mockRejectedValue(new Error('Autoplay blocked'));
-        const pause = jest.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+        const audio = installAudioDoubles();
+        audio.play.mockRejectedValue(new Error('Autoplay blocked'));
         const onReplayComplete = jest.fn();
         const voice = { text: 'Brake smoothly.', audioDataUrl: 'data:audio/wav;base64,UklGRg==', durationMs: 8000 };
         const view = render(<DriverExpertComparisonGraph data={completeData} voice={voice} onReplayComplete={onReplayComplete} />);
@@ -253,13 +254,12 @@ describe('DriverExpertComparisonGraph', () => {
         runAnimationFrame(4750);
         expect(onReplayComplete).toHaveBeenCalledTimes(1);
         view.unmount();
-        play.mockRestore();
-        pause.mockRestore();
+        audio.restore();
     });
 
     it('stops narration when the graph is replaced and starts the new replay once', () => {
-        const play = jest.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
-        const pause = jest.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
+        const audio = installAudioDoubles();
+        const { play, pause } = audio;
         const voice = { text: 'Brake smoothly.', audioDataUrl: 'data:audio/wav;base64,UklGRg==', durationMs: 8000 };
         const view = render(<DriverExpertComparisonGraph data={completeData} voice={voice} />);
         runAnimationFrame(0);
@@ -268,8 +268,41 @@ describe('DriverExpertComparisonGraph', () => {
         runAnimationFrame(1000);
         expect(play).toHaveBeenCalledTimes(2);
         view.unmount();
-        play.mockRestore();
-        pause.mockRestore();
+        audio.restore();
+    });
+
+    it('stops local speech immediately on replay and restarts when its saved pack changes', async () => {
+        const audio = installAudioDoubles();
+        const voice = { text: 'First', audioDataUrl: 'data:audio/wav;base64,Zmlyc3Q=', durationMs: 8000 };
+        const view = render(<DriverExpertComparisonGraph data={completeData} voice={voice} />);
+        await act(async () => runAnimationFrame(0));
+        fireEvent.click(screen.getByRole('button', { name: 'Replay comparison' }));
+        expect(audio.media[0].hasAttribute('src')).toBe(false);
+        expect(audio.play).toHaveBeenCalledTimes(1);
+        await act(async () => runAnimationFrame(1000));
+        expect(audio.play).toHaveBeenCalledTimes(2);
+        const nextVoice = { ...voice, text: 'Second', audioDataUrl: 'data:audio/wav;base64,c2Vjb25k' };
+        view.rerender(<DriverExpertComparisonGraph data={completeData} voice={nextVoice} />);
+        expect(audio.media[1].hasAttribute('src')).toBe(false);
+        await act(async () => runAnimationFrame(2000));
+        expect(audio.media[2].src).toBe(nextVoice.audioDataUrl);
+        view.unmount();
+        expect(audio.media[2].hasAttribute('src')).toBe(false);
+        audio.restore();
+    });
+
+    it('settles local narration when another voice replaces it', async () => {
+        const audio = installAudioDoubles();
+        const onReplayComplete = jest.fn();
+        const view = render(<DriverExpertComparisonGraph data={completeData}
+            voice={{ text: 'Speech', audioDataUrl: 'data:audio/wav;base64,c2F2ZWQ=', durationMs: 8000 }}
+            onReplayComplete={onReplayComplete} />);
+        await act(async () => runAnimationFrame(0));
+        const competitor = audioManager.play({ type: 'voice', priority: 50, url: 'another.wav' });
+        await act(async () => { await Promise.resolve(); });
+        runAnimationFrame(4750);
+        expect(onReplayComplete).toHaveBeenCalledTimes(1);
+        view.unmount(); competitor.stop(); audio.restore();
     });
 
     it('renders a compact HUD with no conventional telemetry charts or axes', () => {
@@ -1279,7 +1312,8 @@ describe('DriverExpertComparisonGraph', () => {
         expect(neverComplete).not.toHaveBeenCalled();
     });
 
-    it('converts graph completion to the replay_complete renderer event', () => {
+    it('emits presentation events exactly once and never starts overlay audio', () => {
+        const audio = installAudioDoubles();
         const emitRendererEvent = jest.fn();
         render(driverExpertComparisonOverlayRenderer.renderOverlay({
             title: 'Comparison',
@@ -1299,14 +1333,29 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.queryByRole('button', { name: 'Replay comparison' })).not.toBeInTheDocument();
 
         runAnimationFrame(0);
+        expect(emitRendererEvent.mock.calls).toEqual([['replay_started']]);
         runAnimationFrame(4_750);
 
-        expect(emitRendererEvent).toHaveBeenCalledTimes(1);
-        expect(emitRendererEvent).toHaveBeenCalledWith('replay_complete');
+        expect(emitRendererEvent.mock.calls).toEqual([['replay_started'], ['replay_complete']]);
         runAnimationFrame(9_500);
-        expect(emitRendererEvent).toHaveBeenCalledTimes(1);
+        expect(emitRendererEvent).toHaveBeenCalledTimes(2);
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
         expect(pendingFrames.size).toBe(0);
+        expect(audio.play).not.toHaveBeenCalled();
+        expect(document.querySelector('audio')).toBeNull();
+        audio.restore();
+    });
+
+    it('completes a reduced-motion overlay without emitting replay_started or playing audio', () => {
+        setReducedMotion(true);
+        const audio = installAudioDoubles();
+        const emitRendererEvent = jest.fn();
+        render(driverExpertComparisonOverlayRenderer.renderOverlay({
+            title: 'Static comparison', comparison: completeData,
+        }, 'expanded', { componentName: 'static', revision: 1, emitRendererEvent }));
+        expect(emitRendererEvent.mock.calls).toEqual([['replay_complete']]);
+        expect(audio.play).not.toHaveBeenCalled();
+        audio.restore();
     });
 
     it('shows parent-only labels and removes stale groups when the segment changes', () => {

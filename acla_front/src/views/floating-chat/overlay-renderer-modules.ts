@@ -2,7 +2,7 @@ import type { AiOverlayRenderer } from './ai-overlay-types';
 import { repeatablePlanOverlayRenderer } from 'components/ai-operations/RepeatablePlan';
 import { liveRangeTodoListOverlayRenderer } from 'views/live-session/ai-operations/LiveRangeTodoList';
 import { procedurePlanOverlayRenderer } from 'components/ai-operations/ProcedurePlan';
-import { driverExpertComparisonOverlayRenderer } from 'views/session-shared/driver-expert-comparison/DriverExpertComparisonGraph';
+import { driverExpertComparisonOverlayRenderer } from 'views/session-shared/driver-expert-comparison/DriverExpertComparisonPresentation';
 import { aiMapToolDisplayOverlayRenderer } from 'views/ai-chat/AiMapToolDisplay';
 import { aiMessageDisplayOverlayRenderer } from 'views/ai-chat/AiMessageDisplay';
 import { toolMessageDisplayOverlayRenderer } from 'views/ai-chat/ToolMessageDisplay';

@@ -2,8 +2,9 @@ import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import * as comparisonOverlaySource from 'views/session-shared/driver-expert-comparison/DriverExpertComparisonGraph.overlay-source';
 import { createControlledOperation, resolvedOperation, asTool } from 'components/ai-operations';
-import type { DriverExpertComparisonSnapshot } from 'views/session-shared/driver-expert-comparison';
-import { synthesizeTtsPack } from 'components/tts';
+import { synthesizeTtsPack, type TtsPack } from 'components/tts';
+import { audioManager } from 'services/audio';
+import { installAudioDoubles } from 'services/audio/test-audio';
 
 jest.mock('components/tts/tts-service', () => ({
     ...jest.requireActual('components/tts/tts-service'),
@@ -785,7 +786,7 @@ describe('AnalysisResultsChart', () => {
         expect(mockOverlayComponentDirectory.getComponentRefs()).not.toContain(firstRef);
 
         const secondRef = mockOverlayComponentDirectory.getComponentRefs()[0];
-        expect(JSON.parse(JSON.stringify(secondRef.current.getSnapshot())).voice).toEqual(voice);
+        expect(JSON.parse(JSON.stringify(secondRef.current.getSnapshot()))).not.toHaveProperty('voice');
         secondRef.current.handleOverlayRendererEvent({
             presentationId: 'analysis-overlay-session',
             componentName: secondRef.current.getComponentName(),
@@ -795,6 +796,119 @@ describe('AnalysisResultsChart', () => {
 
         await expect(second.result).resolves.toBe('graph shown');
         expect(mockOverlayComponentDirectory.getComponentRefs()).toHaveLength(0);
+    });
+
+    it.each(['animation-first', 'audio-first', 'discard', 'rejection', 'failure', 'static'] as const)(
+        'settles main-owned narration and overlay animation: %s', async (order) => {
+            const audio = installAudioDoubles();
+            const play = jest.spyOn(audioManager, 'play');
+            const chartRef = React.createRef<AnalysisResultsChartHandle>();
+            const view = render(<AnalysisResultsChart ref={chartRef} name="narration-owner" id="narration-owner"
+                data={{ elements: [{ id: 'corner', title: 'Corner', labels: [], comparison: replayComparisonData() }] }} />);
+            const voice = Object.freeze({ text: 'Corner', audioDataUrl: 'data:audio/wav;base64,c2F2ZWQ=', durationMs: 8000 });
+            let competitor: ReturnType<typeof audioManager.play> | undefined;
+            try {
+                (synthesizeTtsPack as jest.Mock).mockResolvedValueOnce([voice]);
+                await act(async () => { await chartRef.current!.prepareComparisonVoices('narration-owner', ['corner'], new AbortController().signal); });
+                if (order === 'rejection') competitor = audioManager.play({ type: 'voice', priority: 100, url: 'competitor.wav' });
+                if (order === 'failure') audio.play.mockRejectedValueOnce(new Error('blocked'));
+                const operation = chartRef.current!.displaySpecificResultInOverlay('narration-owner', 'corner');
+                const terminated = jest.fn();
+                operation.notifyTerminated(terminated);
+                const source = mockOverlayComponentDirectory.getComponentRefs()[0].current;
+                const snapshot = JSON.stringify(source.getSnapshot());
+                expect(snapshot).not.toContain('audioDataUrl');
+                expect(snapshot).not.toContain('durationMs');
+                expect(snapshot).not.toContain(voice.audioDataUrl);
+                const event = (name: string, overrides = {}) => source.handleOverlayRendererEvent({
+                    presentationId: 'analysis-overlay-session', componentName: source.getComponentName(),
+                    revision: 1, event: name, ...overrides,
+                });
+                event('replay_started', { presentationId: 'stale-session' });
+                event('replay_started', { componentName: 'stale-component' });
+                expect(play).toHaveBeenCalledTimes(order === 'rejection' ? 1 : 0);
+                if (order === 'static') {
+                    event('replay_complete');
+                    event('replay_started');
+                    expect(audio.play).not.toHaveBeenCalled();
+                } else {
+                    await act(async () => { event('replay_started'); event('replay_started'); });
+                    expect(play).toHaveBeenCalledTimes(order === 'rejection' ? 2 : 1);
+                    expect(play).toHaveBeenLastCalledWith(expect.objectContaining({
+                        type: 'voice', priority: 50, url: voice.audioDataUrl,
+                    }));
+                    event('replay_complete', { revision: 2 });
+                    expect(terminated).not.toHaveBeenCalled();
+                    if (order === 'audio-first') {
+                        await act(async () => { fireEvent.ended(audio.media[0]); });
+                        expect(terminated).not.toHaveBeenCalled();
+                        event('replay_complete');
+                    } else {
+                        event('replay_complete');
+                        event('replay_complete');
+                        if (order === 'animation-first' || order === 'discard') {
+                            expect(terminated).not.toHaveBeenCalled();
+                            await act(async () => {
+                                if (order === 'discard') competitor = audioManager.play({ type: 'voice', priority: 50, url: 'replacement.wav' });
+                                else fireEvent.ended(audio.media[0]);
+                            });
+                        }
+                    }
+                }
+                await expect(operation.result).resolves.toBe('graph shown');
+                expect(terminated).toHaveBeenCalledTimes(1);
+                event('replay_started');
+                event('replay_complete');
+                expect(terminated).toHaveBeenCalledTimes(1);
+                expect(mockOverlayComponentDirectory.getComponentRefs()).toHaveLength(0);
+                expect(voice.audioDataUrl).toBe('data:audio/wav;base64,c2F2ZWQ=');
+            } finally {
+                view.unmount(); competitor?.stop(); audio.restore();
+            }
+        },
+    );
+
+    it.each(['abort', 'replace', 'unmount'] as const)('stops main narration on %s and ignores stale events', async (action) => {
+        const audio = installAudioDoubles();
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const view = render(<AnalysisResultsChart ref={chartRef} name="cancel-narration" id="cancel-narration"
+            data={{ elements: [{ id: 'corner', title: 'Corner', labels: [], comparison: replayComparisonData() }] }} />);
+        try {
+            (synthesizeTtsPack as jest.Mock).mockResolvedValueOnce([{
+                text: 'Corner', audioDataUrl: 'data:audio/wav;base64,c2F2ZWQ=', durationMs: 8000,
+            }]);
+            await act(async () => { await chartRef.current!.prepareComparisonVoices('cancel-narration', ['corner'], new AbortController().signal); });
+            const controller = new AbortController();
+            const operation = chartRef.current!.displaySpecificResultInOverlay('cancel-narration', 'corner', controller.signal);
+            const source = mockOverlayComponentDirectory.getComponentRefs()[0].current;
+            const event = (name: string) => source.handleOverlayRendererEvent({
+                presentationId: 'analysis-overlay-session', componentName: source.getComponentName(), revision: 1, event: name,
+            });
+            await act(async () => { event('replay_started'); });
+            const oldEnded = audio.media[0].onended!;
+            let replacement: ReturnType<AnalysisResultsChartHandle['displaySpecificResultInOverlay']> | undefined;
+            if (action === 'abort') controller.abort();
+            else if (action === 'replace') replacement = chartRef.current!.displaySpecificResultInOverlay('cancel-narration', 'corner');
+            else view.unmount();
+            await expect(operation.result).rejects.toBeInstanceOf(Error);
+            expect(audio.media[0].hasAttribute('src')).toBe(false);
+            expect(audio.pause).toHaveBeenCalledTimes(1);
+            event('replay_started');
+            event('replay_complete');
+            oldEnded.call(audio.media[0], new Event('ended'));
+            expect(audio.play).toHaveBeenCalledTimes(1);
+            if (replacement) {
+                const next = mockOverlayComponentDirectory.getComponentRefs()[0].current;
+                const nextEvent = (name: string) => next.handleOverlayRendererEvent({
+                    presentationId: 'analysis-overlay-session', componentName: next.getComponentName(), revision: 1, event: name,
+                });
+                await act(async () => { nextEvent('replay_started'); });
+                expect(audio.play).toHaveBeenCalledTimes(2);
+                nextEvent('replay_complete');
+                await act(async () => { fireEvent.ended(audio.media[1]); });
+                await expect(replacement.result).resolves.toBe('graph shown');
+            }
+        } finally { view.unmount(); audio.restore(); }
     });
 
     it('owns comparison overlay cancellation when the overlay closes or the task aborts', async () => {
@@ -1594,9 +1708,8 @@ describe('AnalysisResultsChart', () => {
                 content: { title: 'Existing event' }, taskStart: () => asTool(resolvedOperation({}, 'complete')),
             });
             const prepareVoices = jest.spyOn(comparisonOverlaySource, 'prepareDriverExpertComparisonVoices')
-                .mockImplementation(async (snapshots) => snapshots.map((snapshot, index) => ({
-                    ...snapshot,
-                    voice: { text: 'Comparison', audioDataUrl: 'data:audio/wav;base64,AA==', durationMs: index ? 8_000 : 1_000 },
+                .mockImplementation(async (snapshots) => snapshots.map((_snapshot, index) => ({
+                    text: 'Comparison', audioDataUrl: 'data:audio/wav;base64,AA==', durationMs: index ? 8_000 : 1_000,
                 })));
             const ref = await mountResults([
                 element('first', 0.4, 5_000),
@@ -1645,9 +1758,9 @@ describe('AnalysisResultsChart', () => {
         });
 
         it.each(['failure', 'abort'] as const)('does not append after voice preparation %s', async (outcome) => {
-            let finish!: (value: DriverExpertComparisonSnapshot[]) => void;
+            let finish!: (value: Array<TtsPack | undefined>) => void;
             let fail!: (error: Error) => void;
-            const preparation = new Promise<DriverExpertComparisonSnapshot[]>((resolve, reject) => {
+            const preparation = new Promise<Array<TtsPack | undefined>>((resolve, reject) => {
                 finish = resolve;
                 fail = reject;
             });
@@ -1663,7 +1776,7 @@ describe('AnalysisResultsChart', () => {
             expect(prepareVoices).toHaveBeenCalledTimes(1);
             if (outcome === 'abort') {
                 operation.abort();
-                finish([...prepareVoices.mock.calls[0][0]]);
+                finish(prepareVoices.mock.calls[0][0].map(() => undefined));
             } else {
                 fail(new Error('Speech unavailable'));
             }
@@ -1684,7 +1797,7 @@ describe('AnalysisResultsChart', () => {
                         id: 'analysis-comparison:corner', normalized_position: 0.4, lead_time_seconds: 0,
                         content: { title: 'Concurrent event' }, taskStart: () => asTool(resolvedOperation({}, 'complete')),
                     });
-                    return [...snapshots];
+                    return snapshots.map(() => undefined);
                 });
             const ref = await mountResults([element('corner')]);
             try {
@@ -1787,9 +1900,8 @@ describe('AnalysisResultsChart', () => {
         const expectedPage = activePageId === 'older-page' ? pages[0] : pages[1];
         const expectedResultId = expectedPage.elements[0].id;
         const prepareVoices = jest.spyOn(comparisonOverlaySource, 'prepareDriverExpertComparisonVoices')
-            .mockImplementation(async (snapshots) => snapshots.map((snapshot) => ({
-                ...snapshot,
-                voice: { text: 'Comparison', audioDataUrl: 'data:audio/wav;base64,AA==', durationMs: 8_000 },
+            .mockImplementation(async (snapshots) => snapshots.map(() => ({
+                text: 'Comparison', audioDataUrl: 'data:audio/wav;base64,AA==', durationMs: 8_000,
             })));
         const directory = mockOverlayComponentDirectory;
         const runner = new LiveRangeTodoListRunner('live-range-todo-list');

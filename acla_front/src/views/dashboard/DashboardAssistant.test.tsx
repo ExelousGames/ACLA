@@ -40,6 +40,20 @@ const RecordedScreenReference = ({ snapshot }: { snapshot: AnalysisContextType }
 };
 
 describe('DashboardAssistant', () => {
+    it('offers the local sentence catalog in the expandable live sidebar and keeps chat mounted', () => {
+        const view = render(<DashboardAssistant activeDashboardTab={DASHBOARD_TABS.LIVE_SESSION} />);
+        const chat = screen.getByTestId('dashboard-ai-chat');
+        fireEvent.click(screen.getByRole('button', { name: 'Open AI Assistant' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Live phrases' }));
+        expect(screen.getByRole('region', { name: 'Sentence catalog' })).toBeVisible();
+        expect(chat).not.toBeVisible();
+        fireEvent.click(screen.getByRole('button', { name: 'Assistant' }));
+        expect(screen.getByTestId('dashboard-ai-chat')).toBe(chat);
+        expect(chat).toBeVisible();
+        view.rerender(<DashboardAssistant activeDashboardTab={DASHBOARD_TABS.CIRCUIT_MAPS} />);
+        expect(screen.queryByRole('button', { name: 'Live phrases' })).not.toBeInTheDocument();
+    });
+
     it.each([
         [DASHBOARD_TABS.LIVE_SESSION, 'live', 'live-session', 'Live Session'],
         [DASHBOARD_TABS.USER_SUMMARY, 'user_summary', 'user-summary', 'User Summary'],

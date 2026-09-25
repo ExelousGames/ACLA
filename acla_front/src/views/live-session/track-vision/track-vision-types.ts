@@ -35,9 +35,29 @@ export interface SegmentResult {
 }
 
 export type VisionResult = (SegmentResult | DepthResult) & { inferenceMs: number; classNames: string[] };
-export interface TrackVisionDetection {
+/** Image row at which the marked vehicle centerline is compared with track edges. */
+export const PLAYER_TRACK_ROW = 0.8;
+export const VISION_MAX_AGE_MS = 2000;
+export type CornerDirection = 'left' | 'right';
+export type CornerPosition = 'inside' | 'middle' | 'outside';
+/** Scene interpretation produced by Track Vision, independent of phrase rules. */
+export interface TrackVisionAnalysis {
+    carAhead?: 0 | 1;
+    cornerDirection?: CornerDirection;
+    playerPosition?: CornerPosition;
+    opponentPosition?: CornerPosition;
+}
+
+export interface TrackVisionFrame {
     capturedAt: number;
     width: number;
     height: number;
+    /** Vehicle centerline marked on the car at PLAYER_TRACK_ROW, normalized to the capture. No implicit default. */
+    playerCenterX?: number;
     detections: Partial<Record<DetectionTask, VisionResult>>;
+}
+
+export interface TrackVisionDetection extends TrackVisionFrame {
+    /** Null without segmentation; unknown scene properties remain unset. */
+    analysis: TrackVisionAnalysis | null;
 }

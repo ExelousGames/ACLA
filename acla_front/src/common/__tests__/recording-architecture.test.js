@@ -30,8 +30,8 @@ describe('shared recording architecture', () => {
     });
 
     it('enforces the exhaustive standard flat telemetry contract', () => {
-        expect(LIVE_TELEMETRY_FIELDS).toHaveLength(270);
-        expect(Object.keys(LIVE_TELEMETRY_DATASET)).toHaveLength(270);
+        expect(LIVE_TELEMETRY_FIELDS).toHaveLength(271);
+        expect(Object.keys(LIVE_TELEMETRY_DATASET)).toHaveLength(271);
         expect(validateLiveTelemetryRow({
             Physics_speed_kmh: 120.5,
             Graphics_completed_lap: 2,
@@ -60,7 +60,7 @@ describe('shared recording architecture', () => {
             },
         ));
 
-        expect(Object.keys(documented)).toHaveLength(270);
+        expect(Object.keys(documented)).toHaveLength(271);
         expect(LIVE_TELEMETRY_DATASET).toEqual(documented);
     });
 

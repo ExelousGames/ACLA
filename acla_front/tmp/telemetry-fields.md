@@ -60,9 +60,9 @@ Native `.ibt` files use [IRacingIBTAdapter](../electron/recording/readers/iracin
 and an independent channel allowlist. The adapter reuses the common iRacing
 conversions and adds 36 mappings: four existing brake-pressure fields, 30 new
 shared Physics fields, and two existing coordinate/identity arrays.
-Its coverage table accounts for all 270 registered fields,
-with 136 supported conditionally on source availability. The live adapter still
-maps 100 fields; disk-only values never enter the live capture allowlist.
+Its coverage table accounts for all 271 registered fields,
+with 137 supported conditionally on source availability. The live adapter still
+maps 101 fields; disk-only values never enter the live capture allowlist.
 
 | Standard fields | Source and units |
 | --- | --- |
@@ -142,10 +142,10 @@ This is the application-wide telemetry standard shared by all supported simulato
 - Standard field names remain stable across readers. A reader uses the semantically equivalent standard field or omits it; it does not introduce a replacement name.
 - A successful recorded row is one flat JSON object containing only keys from this catalog, regardless of the source game.
 - After a reader has produced the standard object, the writer, saved-file reader, renderer, and upload path preserve every telemetry key and value unchanged. They must not rename fields, add aliases, convert units, wrap the row in another persisted object, or add metadata fields to the row.
-- The authoritative field table is [live-telemetry-dataset.js](../src/data/live-telemetry-dataset.js), currently containing 270 keys: 163 Physics, 84 Graphics, and 23 Static. Every reader and adapter must emit rows accepted by this dataset. Register new fields in that table and document their units and meanings here before use; do not introduce game-specific aliases.
+- The authoritative field table is [live-telemetry-dataset.js](../src/data/live-telemetry-dataset.js), currently containing 271 keys: 163 Physics, 85 Graphics, and 23 Static. Every reader and adapter must emit rows accepted by this dataset. Register new fields in that table and document their units and meanings here before use; do not introduce game-specific aliases.
 - `Graphics_status`, `Graphics_session_type`, `Graphics_flag`, `Graphics_penalty`, `Graphics_track_grip_status`, and the three `Graphics_rain_intensity*` fields contain the standard integers defined below. Readers map native enum values to these integers.
 - `Graphics_last_sector_time_str` has type integer despite its suffix, and `Graphics_rain_tyres` is an integer `0`/`1`. Readers must emit these declared types, and downstream components preserve them unchanged.
-- `Graphics_car_coordinates` is an array of 60 `{ "x": number, "y": number, "z": number }` objects. `Graphics_car_id` is an array of 60 integers. All other field values are scalar; readers flatten native objects into the exact keys below.
+- `Graphics_car_coordinates` is an array of 60 `{ "x": number, "y": number, "z": number }` objects. `Graphics_car_id` is an array of 60 integers. `Graphics_normalized_positions` is a car-ID-keyed object described below. All other field values are scalar; readers flatten native objects into the exact keys below.
 - A cataloged key can be absent from an individual row when its source game cannot supply it or its reader treats its value as unavailable. Absence does not authorize a replacement name.
 - Reader-control messages, including `{"available":false}`, remain outside the standard telemetry object and must never be written to the recording or uploaded.
 
@@ -319,7 +319,34 @@ Physics_g_vibration                                     number
 Physics_abs_vibration                                   number
 ```
 
-## Graphics fields (84)
+## Per-car normalized track positions
+
+`Graphics_normalized_positions` has type `normalized-positions`: a JSON object
+mapping canonical nonnegative integer car IDs to finite lap fractions in [0, 1].
+Example: `{"0":0,"63":0.75,"1052":1}`. Zero is the start of the lap and one is
+the finish. Keys are native simulator car IDs (the same identity domain as
+`Graphics_player_car_id` and the values in `Graphics_car_id`), not coordinate
+array slots, race positions, or car numbers. There is no 60-car limit. Pit cars
+with valid source positions are included. Unavailable cars are omitted, never
+assigned zero or -1; an available feed with no valid cars emits `{}`. An
+unavailable feed omits the field. The player-only
+`Graphics_normalized_car_position` remains a separate scalar.
+
+ACC uses Broadcasting protocol v4 `RealtimeCarUpdate.CarIndex` / `SplinePosition`
+alongside shared memory. The [v4 packet layout](https://github.com/EmperorCookie/accapi/blob/main/src/accapi/structs.py)
+includes driver count before gear. The client requests 100 ms updates, expires
+individual car values after two seconds, and clears them on reconnect, session
+or track changes, clock resets, replay transitions, and leaving live capture.
+UDP loss never blocks shared-memory sampling. See [ACC setup](../README.md#acc-per-car-track-positions).
+
+iRacing uses each array index in `CarIdxLapDistPct` as the car ID, including
+indices 60-63. When `CarIdxTrackSurface` is present, entries outside the world
+or without a valid surface are excluded. Missing, negative, nonfinite and
+out-of-range fractions are excluded. The map is rebuilt for every live sample
+and is also imported from native IBT files when that channel exists. Existing
+non-driving/replay gating applies.
+
+## Graphics fields (85)
 
 ```text
 Graphics_packed_id                                      integer
@@ -342,6 +369,7 @@ Graphics_last_sector_time                               integer
 Graphics_number_of_laps                                 integer
 Graphics_tyre_compound                                  string
 Graphics_normalized_car_position                        number
+Graphics_normalized_positions                           normalized-positions
 Graphics_active_cars                                    integer
 Graphics_car_coordinates                                array<{x: number, y: number, z: number}>[60]
 Graphics_car_id                                         integer[60]

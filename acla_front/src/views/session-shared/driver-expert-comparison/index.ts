@@ -1,22 +1,22 @@
+export { DriverExpertComparisonGraph } from './DriverExpertComparisonGraph';
+export type { DriverExpertComparisonGraphProps } from './DriverExpertComparisonGraph';
 export {
     DRIVER_COMPARISON_COLOR,
     EXPERT_COMPARISON_COLOR,
-    DriverExpertComparisonGraph,
     getDriverExpertReplayDurationMs,
     getDriverExpertComparisonAvailability,
     getDriverExpertComparisonUnavailableDiagnostics,
     hasComparableDriverExpertData,
     normalizeDriverExpertComparisonData,
-} from './DriverExpertComparisonGraph';
+} from './DriverExpertComparisonPresentation';
 export type {
     DriverExpertComparisonAvailability,
     DriverExpertComparisonData,
     DriverExpertComparisonDiagnostic,
-    DriverExpertComparisonGraphProps,
     DriverExpertComparisonLabelGroup,
     DriverExpertComparisonLayout,
     DriverExpertComparisonSample,
     DriverExpertTrajectoryPoint,
-} from './DriverExpertComparisonGraph';
+} from './DriverExpertComparisonPresentation';
 export type { DriverExpertComparisonSnapshot } from './DriverExpertComparisonOverlay';
 export type { DriverExpertComparisonLabelRange } from './DriverExpertComparisonRoadSigns';

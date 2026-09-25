@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import LiveTrackVision, { TrackVisionHandle } from './LiveTrackVision';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
 import { drawVisionOverlay } from './vision-overlay';
+import { MODEL_LABELS, vision } from './test-fixtures';
+import { VISION_MAX_AGE_MS } from './track-vision-types';
 
 jest.mock('./vision-overlay', () => ({ drawVisionOverlay: jest.fn() }));
 
@@ -40,7 +42,11 @@ beforeEach(() => {
     jest.spyOn(HTMLMediaElement.prototype, 'readyState', 'get').mockReturnValue(4);
     jest.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(1280);
     jest.spyOn(HTMLVideoElement.prototype, 'videoHeight', 'get').mockReturnValue(720);
-    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: jest.fn(), clearRect: jest.fn(), beginPath: jest.fn(), moveTo: jest.fn(), lineTo: jest.fn(), stroke: jest.fn() } as any);
+    const contexts = new WeakMap<HTMLCanvasElement, CanvasRenderingContext2D>();
+    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
+        if (!contexts.has(this)) contexts.set(this, { drawImage: jest.fn(), clearRect: jest.fn(), beginPath: jest.fn(), moveTo: jest.fn(), lineTo: jest.fn(), stroke: jest.fn() } as any);
+        return contexts.get(this)!;
+    });
     model = { name: 'track-features-v2', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu' };
     (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue(model);
     window.screenCapture = {
@@ -50,6 +56,178 @@ beforeEach(() => {
 });
 
 afterEach(() => { jest.restoreAllMocks(); jest.clearAllTimers(); jest.useRealTimers(); delete window.screenCapture; });
+
+it('analyzes and displays driver and opponent positions without Live Phrases or telemetry', async () => {
+    model.detect.mockResolvedValue(vision(0, { classNames: MODEL_LABELS }).detections.segment);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
+    const capturedAt = ref.current!.getLatestDetection()!.capturedAt;
+    const observed: unknown[] = [];
+    const handle = ref.current!;
+    handle.subscribeDetection(() => observed.push(handle.getLatestDetection()?.analysis));
+    fireEvent.click(screen.getByRole('button', { name: 'Set car center' }));
+    expect(ref.current!.getLatestDetection()).toMatchObject({ capturedAt, analysis: {
+        cornerDirection: 'left', playerPosition: 'inside', carAhead: 1, opponentPosition: 'outside',
+    } });
+    expect(observed[observed.length - 1]).toEqual(ref.current!.getLatestDetection()!.analysis);
+    expect(screen.getByLabelText('Visible corner')).toHaveTextContent('Left-hand corner');
+    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Inside');
+    expect(screen.getByLabelText('Opponent position')).toHaveTextContent('Outside');
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Car center alignment' }), { target: { value: '0.65' } });
+    expect(ref.current!.getLatestDetection()!.analysis).toEqual({});
+    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
+    fireEvent.click(screen.getByRole('button', { name: 'Set car center' }));
+    expect(ref.current!.getLatestDetection()).toMatchObject({ capturedAt, analysis: { playerPosition: 'middle' } });
+    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Middle');
+
+    model.detect.mockResolvedValue(vision(0, { cars: [] }).detections.segment);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()!.analysis).toMatchObject({ carAhead: 0, playerPosition: 'middle' });
+    expect(screen.getByLabelText('Opponent position')).toHaveTextContent('No opponent detected');
+
+    const pack = vision(0, { classNames: MODEL_LABELS }).detections.segment!;
+    if (pack.task !== 'segment') throw new Error('Expected segmentation fixture');
+    pack.instances[1].classId = MODEL_LABELS.indexOf('car pack');
+    model.detect.mockResolvedValue(pack);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()!.analysis).toMatchObject({ carAhead: 1, playerPosition: 'middle' });
+    expect(ref.current!.getLatestDetection()!.analysis?.opponentPosition).toBeUndefined();
+    expect(screen.getByLabelText('Opponent position')).toHaveTextContent('Individual position unresolved');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
+    expect(screen.getByLabelText('Opponent position')).toHaveTextContent('Unknown');
+});
+
+it('clears stale displayed positions while inference is pending and when segmentation is disabled', async () => {
+    model.detect.mockResolvedValue(vision(0).detections.segment);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    fireEvent.click(screen.getByRole('button', { name: 'Set car center' }));
+    const pending = deferred<typeof detection>();
+    model.detect.mockReturnValueOnce(pending.promise);
+    await act(async () => { jest.advanceTimersByTime(VISION_MAX_AGE_MS + 1); });
+    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
+    expect(screen.getByLabelText('Opponent position')).toHaveTextContent('Unknown');
+    fireEvent.click(screen.getByRole('button', { name: 'Set car center' }));
+    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
+    await act(async () => { pending.resolve(detection); });
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.analysis).toBeNull();
+    expect(screen.getByLabelText('Opponent position')).toHaveTextContent('Unknown');
+});
+
+it('accepts a car-center mark independently of road detections without refreshing the captured timestamp', async () => {
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    expect(screen.getByRole('button', { name: 'Set car center' })).toBeDisabled();
+    await startCapture();
+    const original = ref.current!.getLatestDetection()!;
+    expect(original.playerCenterX).toBeUndefined();
+    const listener = jest.fn();
+    ref.current!.subscribeDetection(listener);
+    const slider = screen.getByRole('slider', { name: 'Car center alignment' });
+    fireEvent.change(slider, { target: { value: '0.62' } });
+    expect(ref.current!.getLatestDetection()?.playerCenterX).toBeUndefined();
+    const preview = screen.getByLabelText('Car center marker') as HTMLCanvasElement;
+    expect(preview.getContext('2d')!.moveTo).toHaveBeenCalledWith(0.62 * 1280, (0.8 - 0.035) * 720);
+    fireEvent.click(screen.getByRole('button', { name: 'Set car center' }));
+    expect(ref.current!.getLatestDetection()).toMatchObject({ playerCenterX: 0.62, capturedAt: original.capturedAt });
+    expect(listener).toHaveBeenCalled();
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.playerCenterX).toBe(0.62);
+    fireEvent.change(slider, { target: { value: '0.64' } });
+    expect(ref.current!.getLatestDetection()?.playerCenterX).toBeUndefined();
+    expect(preview.getContext('2d')!.moveTo).toHaveBeenLastCalledWith(0.64 * 1280, (0.8 - 0.035) * 720);
+    expect(preview.getContext('2d')!.strokeStyle).toBe('#ffbe57');
+    fireEvent.click(screen.getByRole('button', { name: 'Set car center' }));
+    expect(ref.current!.getLatestDetection()?.playerCenterX).toBe(0.64);
+    expect(preview.getContext('2d')!.strokeStyle).toBe('#37efac');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear alignment' }));
+    expect(ref.current!.getLatestDetection()?.playerCenterX).toBeUndefined();
+    expect(preview.getContext('2d')!.strokeStyle).toBe('#ffbe57');
+});
+
+it('keeps the latest alignment when an in-flight inference completes and clears it for a resized capture', async () => {
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    const pending = deferred<typeof detection>();
+    model.detect.mockReturnValueOnce(pending.promise);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    const preview = screen.getByLabelText('Captured game frame with vision detections') as HTMLCanvasElement;
+    const marker = screen.getByLabelText('Car center marker') as HTMLCanvasElement;
+    const context = marker.getContext('2d')!;
+    const drawImage = preview.getContext('2d')!.drawImage as jest.Mock;
+    const imageDrawCount = drawImage.mock.calls.length;
+    const overlayDrawCount = (drawVisionOverlay as jest.Mock).mock.calls.length;
+    for (const value of [0.6, 0.7, 0.62]) {
+        fireEvent.input(screen.getByRole('slider', { name: 'Car center alignment' }), { target: { value: String(value) } });
+        expect(context.moveTo).toHaveBeenLastCalledWith(value * 1280, (0.8 - 0.035) * 720);
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Set car center' }));
+    expect(context.strokeStyle).toBe('#37efac');
+    expect(drawImage).toHaveBeenCalledTimes(imageDrawCount);
+    expect(drawVisionOverlay).toHaveBeenCalledTimes(overlayDrawCount);
+    await act(async () => { pending.resolve(detection); });
+    expect(ref.current!.getLatestDetection()?.playerCenterX).toBe(0.62);
+    expect(context.moveTo).toHaveBeenLastCalledWith(0.62 * 1280, (0.8 - 0.035) * 720);
+    jest.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(1920);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.playerCenterX).toBeUndefined();
+    expect(marker.width).toBe(1920);
+    expect(marker.height).toBe(preview.height);
+    expect(context.moveTo).toHaveBeenLastCalledWith(0.62 * 1920, (0.8 - 0.035) * 720);
+    expect(context.strokeStyle).toBe('#ffbe57');
+    fireEvent.click(screen.getByRole('button', { name: 'Set car center' }));
+    expect(ref.current!.getLatestDetection()?.playerCenterX).toBe(0.62);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+    expect(marker).not.toBeVisible();
+    await startCapture();
+    expect(ref.current!.getLatestDetection()?.playerCenterX).toBeUndefined();
+});
+
+it('updates and confirms the visible car-center marker while a detector retry has cleared its result', async () => {
+    const pending = deferred<typeof model>();
+    (TrackVisionModel.loadBackend as jest.Mock)
+        .mockRejectedValueOnce(new Error('Backend unavailable'))
+        .mockReturnValueOnce(pending.promise);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    const preview = screen.getByLabelText('Captured game frame with vision detections') as HTMLCanvasElement;
+    const marker = screen.getByLabelText('Car center marker') as HTMLCanvasElement;
+    const context = marker.getContext('2d')!;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Segmentation' }));
+    await flush();
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(preview).toBeVisible();
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Car center alignment' }), { target: { value: '0.62' } });
+    expect(context.moveTo).toHaveBeenLastCalledWith(0.62 * 1280, (0.8 - 0.035) * 720);
+    expect(context.strokeStyle).toBe('#ffbe57');
+    fireEvent.click(screen.getByRole('button', { name: 'Set car center' }));
+    expect(context.strokeStyle).toBe('#37efac');
+    expect(screen.getByRole('button', { name: 'Clear alignment' })).toBeEnabled();
+    expect(ref.current!.getLatestDetection()).toBeNull();
+
+    await act(async () => { pending.resolve(model); });
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.playerCenterX).toBe(0.62);
+    expect(context.moveTo).toHaveBeenLastCalledWith(0.62 * 1280, (0.8 - 0.035) * 720);
+});
 
 it('captures silently, publishes detections, clears empty frames, and stops on unmount', async () => {
     const ref = React.createRef<TrackVisionHandle>();
@@ -403,7 +581,9 @@ it('recolors the displayed frame while inference is pending without restarting t
     const context = preview.getContext('2d')!;
     const drawImage = context.drawImage as jest.Mock;
     const displayedFrame = drawImage.mock.calls[drawImage.mock.calls.length - 1][0];
-    expect(drawVisionOverlay).toHaveBeenLastCalledWith(context, displayedResult, { near: 5, far: 50 });
+    expect(drawVisionOverlay).toHaveBeenLastCalledWith(context, expect.objectContaining({
+        capturedAt: displayedResult!.capturedAt, detections: displayedResult!.detections,
+    }), { near: 5, far: 50 });
 
     await act(async () => { jest.advanceTimersByTime(200); });
     expect(depth.detect).toHaveBeenCalledTimes(2);
@@ -418,7 +598,9 @@ it('recolors the displayed frame while inference is pending without restarting t
     expect(track.stop).not.toHaveBeenCalled();
 
     await act(async () => { pending.resolve(depthResult); });
-    expect(drawVisionOverlay).toHaveBeenLastCalledWith(context, ref.current!.getLatestDetection(), { near: 10, far: 80 });
+    expect(drawVisionOverlay).toHaveBeenLastCalledWith(context, expect.objectContaining({
+        capturedAt: ref.current!.getLatestDetection()!.capturedAt, detections: ref.current!.getLatestDetection()!.detections,
+    }), { near: 10, far: 80 });
     fireEvent.click(screen.getByRole('button', { name: 'Reset depth range' }));
     expect(drawVisionOverlay).toHaveBeenLastCalledWith(context, ref.current!.getLatestDetection(), { near: 5, far: 50 });
 });

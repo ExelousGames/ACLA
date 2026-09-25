@@ -3,7 +3,8 @@
 // validated against this table. Readers convert to the documented units and
 // enum meanings before emitting a row.
 // Missing source values are omitted, never filled with aliases or legacy data.
-// Coordinates and car IDs each have 60 entries; all other values are scalar.
+// Coordinates and car IDs each have 60 entries. Normalized positions are keyed
+// by native car ID; all other values are scalar.
 // Units and enum meanings are documented in tmp/telemetry-fields.md.
 const LIVE_TELEMETRY_DATASET = Object.freeze(/** @type {const} */ ({
   // Physics
@@ -230,6 +231,7 @@ const LIVE_TELEMETRY_DATASET = Object.freeze(/** @type {const} */ ({
   Graphics_mfd_tyre_set: 'integer',
   Graphics_missing_mandatory_pits: 'integer',
   Graphics_normalized_car_position: 'number',
+  Graphics_normalized_positions: 'normalized-positions',
   Graphics_number_of_laps: 'integer',
   Graphics_packed_id: 'integer',
   Graphics_penalty: 'integer',
@@ -315,6 +317,10 @@ function validateLiveTelemetryField(field, value) {
     case 'number': return isFiniteNumber(value);
     case 'string': return typeof value === 'string';
     case 'coordinates': return validateCoordinates(value);
+    case 'normalized-positions': return isPlainObject(value)
+      && Object.entries(value).every(([carId, position]) => /^(0|[1-9]\d*)$/.test(carId)
+        && Number.isSafeInteger(Number(carId))
+        && isFiniteNumber(position) && position >= 0 && position <= 1);
     case 'integer-array': return Array.isArray(value)
       && value.length === 60
       && value.every(Number.isSafeInteger);

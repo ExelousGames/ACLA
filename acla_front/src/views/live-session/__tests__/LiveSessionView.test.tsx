@@ -199,6 +199,44 @@ describe('LiveSessionView', () => {
         componentDirectory = null;
     });
 
+    it('bridges new telemetry, resets and late-mounted Track Vision through the live root', () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const view = renderRegisteredView(createRuntime('acc'));
+        const onTelemetry = jest.fn();
+        const unsubscribeTelemetry = view.subscribeTelemetry(onTelemetry);
+        expect(onTelemetry).not.toHaveBeenCalled();
+        act(() => {
+            liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sample: { Graphics_status: 2, Physics_gas: 0.5 }, sequence: 1, committedSequence: 0, committedCount: 0 });
+        });
+        expect(onTelemetry).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'frame', sample: expect.objectContaining({ Physics_gas: 0.5 }) }));
+        act(() => { liveTelemetryStore.beginStream(); });
+        expect(onTelemetry).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'stream-reset' }));
+        unsubscribeTelemetry();
+
+        const onVision = jest.fn();
+        const unsubscribeVision = view.subscribeTrackVision(onVision);
+        const detection = { capturedAt: Date.now(), width: 10, height: 10, detections: {}, analysis: { cornerDirection: 'left' as const, playerPosition: 'inside' as const, opponentPosition: 'outside' as const, carAhead: 1 as const } };
+        const stopVision = jest.fn();
+        let notifyVision!: () => void;
+        const visionRef = { current: {
+            getComponentName: () => 'visualization:track-vision',
+            getLatestDetection: () => detection,
+            subscribeDetection: (listener: () => void) => { notifyVision = listener; return stopVision; },
+        } };
+        expect(view.getTrackVisionDetection()).toBeNull();
+        act(() => { componentDirectory!.registerComponentRef(visionRef); });
+        expect(view.getTrackVisionDetection()).toBe(detection);
+        expect(view.getTrackVisionDetection()?.analysis).toBe(detection.analysis);
+        onVision.mockClear();
+        act(() => { notifyVision(); });
+        expect(onVision).toHaveBeenCalledTimes(1);
+        act(() => { componentDirectory!.unregisterComponentRef(visionRef); });
+        expect(stopVision).toHaveBeenCalledTimes(1);
+        expect(view.getTrackVisionDetection()).toBeNull();
+        expect(onVision).toHaveBeenCalledTimes(2);
+        unsubscribeVision();
+    });
+
     it('registers current live operations under the exact component name', () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
         const runtime: any = createRuntime('acc');

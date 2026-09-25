@@ -54,6 +54,7 @@
     width: clamp(360px, 32vw, 520px);
     flex: 0 0 clamp(360px, 32vw, 520px);
     position: relative;
+    z-index: 1;
     display: flex;
     min-width: 56px;
     min-height: 0;
@@ -69,18 +70,20 @@
 }
 
 .main-dashboard-assistant__toggle {
-    width: 40px;
-    height: 40px;
-    flex: 0 0 40px;
-    margin: 12px 8px;
+    position: absolute;
+    left: -20px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 20px;
+    height: 44px;
+    padding: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 2px;
     color: var(--lp-green);
-    background: var(--lp-green-dim);
-    border: 1px solid var(--lp-green);
-    border-radius: var(--lp-radius-sm);
+    background: var(--lp-bg);
+    border: 1px solid var(--lp-border);
+    border-radius: var(--lp-radius-sm) 0 0 var(--lp-radius-sm);
     cursor: pointer;
     transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
@@ -92,15 +95,48 @@
 }
 
 .main-dashboard-assistant__body {
+    display: flex;
+    flex-direction: column;
     flex: 1;
     min-width: 0;
     min-height: 0;
-    padding: 12px 12px 12px 0;
+    padding: 12px;
     opacity: 1;
     transition: opacity 0.14s ease;
 }
 
+.main-dashboard-assistant__tabs {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 0 0 55px;
+    gap: 8px;
+    padding: 12px 0;
+    border-right: 1px solid var(--lp-border);
+}
+.main-dashboard-assistant__tabs button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 40px;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    color: var(--lp-gray);
+    background: transparent;
+    border: 1px solid var(--lp-border);
+    border-radius: var(--lp-radius-sm);
+    cursor: pointer;
+}
+.main-dashboard-assistant__tabs button:hover { color: var(--lp-white); border-color: var(--lp-gray); }
+.main-dashboard-assistant__tabs button[aria-pressed="true"] { color: var(--lp-green); background: var(--lp-green-dim); }
+.main-dashboard-assistant__toggle:focus-visible,
+.main-dashboard-assistant__tabs button:focus-visible { outline: 2px solid var(--lp-white); outline-offset: 2px; }
+.main-dashboard-assistant__panel { flex: 1; min-height: 0; overflow: hidden; }
+.main-dashboard-assistant__panel[hidden] { display: none; }
+
 .main-dashboard-assistant--folded .main-dashboard-assistant__body {
+    display: none;
     opacity: 0;
     visibility: hidden;
     pointer-events: none;

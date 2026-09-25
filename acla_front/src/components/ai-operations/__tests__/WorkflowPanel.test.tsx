@@ -10,7 +10,7 @@ import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import { createAiCommandRegistry } from 'views/ai-chat/ai-command-registry';
 import AnalysisResultsChart, { type AnalysisResultsChartHandle } from 'views/session-shared/visualization/charts/AnalysisResultsChart';
 import * as comparisonOverlaySource from 'views/session-shared/driver-expert-comparison/DriverExpertComparisonGraph.overlay-source';
-import type { DriverExpertComparisonSnapshot } from 'views/session-shared/driver-expert-comparison';
+import type { TtsPack } from 'components/tts';
 import WorkflowPanel, { type WorkflowPanelHandle } from '../WorkflowPanel';
 import type { ProcedurePlanInput } from '../ProcedurePlan';
 import type { RepeatablePlanInput } from '../RepeatablePlan';
@@ -142,10 +142,9 @@ describe('WorkflowPanel standalone lifecycle', () => {
         if (queueState === 'drained') act(() => { addLiveTask(ref.current!, task); });
         let finishVoices!: () => void;
         const prepareComparisonVoices = jest.spyOn(comparisonOverlaySource, 'prepareDriverExpertComparisonVoices')
-            .mockImplementation((snapshots) => new Promise<DriverExpertComparisonSnapshot[]>((resolve) => {
-                finishVoices = () => resolve(snapshots.map((snapshot) => ({
-                    ...snapshot,
-                    voice: { text: 'Comparison', audioDataUrl: 'data:audio/wav;base64,AA==', durationMs: 8_000 },
+            .mockImplementation((snapshots) => new Promise<TtsPack[]>((resolve) => {
+                finishVoices = () => resolve(snapshots.map(() => ({
+                    text: 'Comparison', audioDataUrl: 'data:audio/wav;base64,AA==', durationMs: 8_000,
                 })));
             }));
         const segments = Array.from({ length: 11 }, (_, index) => ({

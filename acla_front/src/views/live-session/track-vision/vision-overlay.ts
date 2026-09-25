@@ -1,10 +1,10 @@
 import { letterbox } from './yolo-segmentation';
 import { VISION_INPUT_SIZE } from './track-vision-model';
-import { DEFAULT_DEPTH_RANGE, DepthRange, TrackVisionDetection, VisionResult } from './track-vision-types';
+import { DEFAULT_DEPTH_RANGE, DepthRange, TrackVisionFrame, VisionResult } from './track-vision-types';
 
 const COLORS = [[55, 239, 172], [87, 185, 255], [255, 190, 87], [206, 135, 255], [255, 115, 137], [110, 221, 235]];
 
-export function drawVisionOverlay(context: CanvasRenderingContext2D, result: TrackVisionDetection, depthRange: DepthRange = DEFAULT_DEPTH_RANGE) {
+export function drawVisionOverlay(context: CanvasRenderingContext2D, result: TrackVisionFrame, depthRange: DepthRange = DEFAULT_DEPTH_RANGE) {
     const { padX, padY, resizedWidth, resizedHeight } = letterbox(result.width, result.height, VISION_INPUT_SIZE);
     // Depth underneath segmentation masks and boxes.
     for (const task of ['depth', 'segment'] as const) {

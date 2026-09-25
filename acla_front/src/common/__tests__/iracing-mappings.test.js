@@ -39,7 +39,7 @@ describe('additional iRacing mappings', () => {
       'YawRate', 'PitchRate', 'RollRate', 'SessionTime', 'PlayerTireCompound',
       'CarIdxLapDistPct', 'CarIdxOnPitRoad', 'PlayerCarTowTime', 'IsInGarage',
     ]));
-    expect(Object.values(IRACING_FIELD_COVERAGE).filter((entry) => entry.supported)).toHaveLength(100);
+    expect(Object.values(IRACING_FIELD_COVERAGE).filter((entry) => entry.supported)).toHaveLength(101);
     for (const axis of ['x', 'y', 'z']) expect(IRACING_FIELD_COVERAGE[`Physics_velocity_${axis}`].supported).toBe(true);
   });
 

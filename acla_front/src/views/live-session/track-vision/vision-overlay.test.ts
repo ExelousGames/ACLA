@@ -1,12 +1,12 @@
 import { drawVisionOverlay } from './vision-overlay';
-import { DepthRange, TrackVisionDetection } from './track-vision-types';
+import { DepthRange, TrackVisionFrame } from './track-vision-types';
 
 const renderDepth = (values: number[], range: DepthRange) => {
     const pixels = new Uint8ClampedArray(values.length * 4);
     const layerContext = { createImageData: () => ({ data: pixels }), putImageData: jest.fn() };
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(layerContext as any);
     const context = { save: jest.fn(), restore: jest.fn(), drawImage: jest.fn() } as unknown as CanvasRenderingContext2D;
-    const result: TrackVisionDetection = {
+    const result: TrackVisionFrame = {
         capturedAt: 1, width: values.length, height: 1,
         detections: { depth: { task: 'depth', width: values.length, height: 1, values: new Float32Array(values), inferenceMs: 1, classNames: [] } },
     };
@@ -41,7 +41,7 @@ it('draws the backend labels in class-ID order and removes letterbox padding', (
     const context = {
         save: jest.fn(), restore: jest.fn(), drawImage: jest.fn(), strokeRect: jest.fn(), fillText: jest.fn(),
     } as unknown as CanvasRenderingContext2D;
-    const result: TrackVisionDetection = {
+    const result: TrackVisionFrame = {
         capturedAt: 1, width: 1280, height: 720, detections: { segment: {
             task: 'segment', width: 2, height: 2, inferenceMs: 1, classNames: ['curb', 'track surface'],
             instances: [{ classId: 1, confidence: 0.9, box: [0, 0, 1, 1], mask: new Uint8Array([1, 0, 1, 0]) }],
