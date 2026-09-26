@@ -14,7 +14,7 @@ const INPUT_LABELS = {
 } as const;
 type Input = keyof typeof INPUT_LABELS;
 type Inputs = TrackVisionAnalysis & { speed?: number };
-type PhraseVisionInput = Pick<TrackVisionDetection, 'capturedAt' | 'playerCenterX' | 'analysis'>;
+type PhraseVisionInput = Pick<TrackVisionDetection, 'capturedAt' | 'calibration' | 'analysis'>;
 type Condition = { input: Input; operator: '>=' | '='; value: number | string };
 export interface PhraseRule {
     id: string;
@@ -102,7 +102,8 @@ export class PhraseEngine {
 
     receiveVision(vision: PhraseVisionInput | null, now: number): PhraseSnapshot {
         // A fresh result cannot retroactively fill a capture gap when no timer ran.
-        if (!this.vision || now - this.vision.capturedAt > VISION_MAX_AGE_MS || vision?.playerCenterX !== this.vision.playerCenterX) {
+        if (!this.vision || now - this.vision.capturedAt > VISION_MAX_AGE_MS
+            || JSON.stringify(vision?.calibration) !== JSON.stringify(this.vision.calibration)) {
             this.memory.forEach((memory) => { memory.since = undefined; });
         }
         this.vision = vision;

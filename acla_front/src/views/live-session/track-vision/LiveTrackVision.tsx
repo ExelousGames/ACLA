@@ -2,9 +2,13 @@ import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import { captureGameScreen, ScreenCaptureSource } from './screen-capture';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
-import { DEFAULT_DEPTH_RANGE, DETECTION_TASKS, DetectionTask, EnabledDetections, PLAYER_TRACK_ROW, TrackVisionAnalysis, TrackVisionDetection, TrackVisionFrame, VISION_MAX_AGE_MS } from './track-vision-types';
-import { analyzeTrackPositions } from './track-position-analysis';
+import { CameraCalibration, DETECTION_TASKS, DetectionTask, EnabledDetections, TrackVisionAnalysis, TrackVisionDetection, TrackVisionFrame, VISION_MAX_AGE_MS } from './track-vision-types';
+import { analyzeTrackPositions, reconstructTrack } from './track-position-analysis';
+import { DEFAULT_CAMERA, validCalibration } from './camera-projection';
+import TrackCalibration, { CameraGroundGrid } from './TrackCalibration';
+import TrackBoundaryCutoff from './TrackBoundaryCutoff';
 import { drawVisionOverlay } from './vision-overlay';
+import LocalTrackView from './LocalTrackView';
 import './LiveTrackVision.css';
 
 export interface TrackVisionHandle extends NamedOperationComponentHandle {
@@ -19,7 +23,7 @@ type DetectorState = { status: 'off' | 'loading' | 'ready' | 'retrying' | 'error
 const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name }, forwardedRef) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const carCenterCanvasRef = useRef<HTMLCanvasElement>(null);
+    const previewRef = useRef<HTMLDialogElement>(null);
     const previewFrameRef = useRef<HTMLCanvasElement | null>(null);
     const streamRef = useRef<MediaStream | null>(null);
     const models = useRef<Partial<Record<DetectionTask, TrackVisionModel>>>({});
@@ -34,23 +38,41 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const listeners = useRef(new Set<() => void>());
     const [sources, setSources] = useState<ScreenCaptureSource[]>([]);
     const [sourceId, setSourceId] = useState('');
-    const [enabled, setEnabled] = useState<EnabledDetections>({ segment: true, depth: false });
+    const [enabled, setEnabled] = useState<EnabledDetections>({ segment: true, depth: true });
     const [allowCpuFallback, setAllowCpuFallback] = useState(false);
     const [retry, setRetry] = useState(0);
     const [detectors, setDetectors] = useState<Record<DetectionTask, DetectorState>>({
-        segment: { status: 'loading' }, depth: { status: 'off' },
+        segment: { status: 'loading' }, depth: { status: 'loading' },
     });
     const [captureState, setCaptureState] = useState<'idle' | 'starting' | 'active'>('idle');
     const [error, setError] = useState('');
     const [status, setStatus] = useState('Share your game screen to run segmentation and depth estimation.');
     const [hasFrame, setHasFrame] = useState(false);
+    const [previewExpanded, setPreviewExpanded] = useState(false);
     const [confidence, setConfidence] = useState(0.5);
-    const [depthRange, setDepthRange] = useState(DEFAULT_DEPTH_RANGE);
-    const [carCenterDraft, setCarCenterDraft] = useState(0.5);
-    const [playerCenterX, setPlayerCenterX] = useState<number>();
-    const carAlignment = useRef<{ x: number; width: number; height: number } | undefined>(undefined);
-    const options = useRef({ confidence, enabled, depthRange, allowCpuFallback, carCenterDraft });
-    options.current = { confidence, enabled, depthRange, allowCpuFallback, carCenterDraft };
+    const [boundaryStartY, setBoundaryStartY] = useState(0.75);
+    const [cameraDraft, setCameraDraft] = useState(DEFAULT_CAMERA);
+    const [calibration, setCalibration] = useState<CameraCalibration>();
+    const [showCalibrationOnCapture, setShowCalibrationOnCapture] = useState(false);
+    const cameraCalibration = useRef<CameraCalibration | undefined>(undefined);
+    const [previewResult, setPreviewResult] = useState<TrackVisionFrame | null>(null);
+    const previewWidth = previewFrameRef.current?.width ?? 0, previewHeight = previewFrameRef.current?.height ?? 0;
+    const previewCamera = useMemo(() => ({ ...cameraDraft, imageWidth: previewWidth, imageHeight: previewHeight }),
+        [cameraDraft, previewWidth, previewHeight]);
+    const previewScene = useMemo(() => previewResult ? reconstructTrack({ ...previewResult, calibration: previewCamera }) : null,
+        [previewResult, previewCamera]);
+    const options = useRef({ confidence, enabled, allowCpuFallback, boundaryStartY });
+    options.current = { confidence, enabled, allowCpuFallback, boundaryStartY };
+
+    const togglePreviewSize = () => {
+        const preview = previewRef.current;
+        if (!preview) return;
+        // Keep the video and canvas mounted while moving the preview into the browser's top layer.
+        preview.close();
+        if (previewExpanded) preview.show();
+        else preview.showModal();
+        setPreviewExpanded((current) => !current);
+    };
 
     const redrawPreview = useCallback((result: TrackVisionFrame) => {
         const frame = previewFrameRef.current;
@@ -61,56 +83,33 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         const preview = canvas.getContext('2d');
         if (!preview) throw new Error('Screen preview is unavailable.');
         preview.drawImage(frame, 0, 0);
-        drawVisionOverlay(preview, result, options.current.depthRange);
+        drawVisionOverlay(preview, result);
     }, []);
-
-    const redrawCarCenter = useCallback(() => {
-        const frame = previewFrameRef.current;
-        const canvas = carCenterCanvasRef.current;
-        if (!frame || !canvas) return;
-        canvas.width = frame.width;
-        canvas.height = frame.height;
-        const preview = canvas.getContext('2d');
-        if (!preview) return;
-        // Mark the vehicle's centerline in capture coordinates. The draft is
-        // not used for position analysis until the car reference is confirmed.
-        const x = (carAlignment.current?.x ?? options.current.carCenterDraft) * frame.width;
-        const y = PLAYER_TRACK_ROW * frame.height;
-        preview.strokeStyle = carAlignment.current ? '#37efac' : '#ffbe57';
-        preview.lineWidth = Math.max(2, frame.width / 500);
-        preview.beginPath();
-        preview.moveTo(x - frame.width * 0.02, y);
-        preview.lineTo(x + frame.width * 0.02, y);
-        preview.moveTo(x, y - frame.height * 0.035);
-        preview.lineTo(x, y + frame.height * 0.035);
-        preview.stroke();
-    }, []);
-
-    useEffect(() => {
-        // Recolor the displayed frame immediately, even while the next inference is pending.
-        if (latest.current) redrawPreview(latest.current);
-    }, [depthRange, redrawPreview]);
-
-    useEffect(() => {
-        // Alignment stays responsive even when detector retries clear the latest result.
-        redrawCarCenter();
-    }, [carCenterDraft, playerCenterX, redrawCarCenter]);
 
     const publish = useCallback((result: TrackVisionFrame | null) => {
         clearTimeout(analysisExpiry.current);
-        const scene = result?.detections.segment?.task === 'segment' ? analyzeTrackPositions(result) : null;
-        latest.current = result ? { ...result, analysis: scene } : null;
+        const reconstruction = reconstructTrack(result);
+        const geometry = reconstruction?.geometry ?? null;
+        const scene = result?.detections.segment?.task === 'segment' ? analyzeTrackPositions(result, reconstruction) : null;
+        latest.current = result ? { ...result, reconstruction, geometry, analysis: scene } : null;
+        setPreviewResult(result);
         const remaining = result ? result.capturedAt + VISION_MAX_AGE_MS - Date.now() : 0;
         setAnalysis(remaining > 0 ? scene : null);
         if (scene && remaining > 0) analysisExpiry.current = setTimeout(() => setAnalysis(null), remaining);
         listeners.current.forEach((listener) => listener());
     }, []);
-    const updateCarAlignment = (x?: number) => {
+    const updateCalibration = (camera?: CameraCalibration) => {
         const frame = previewFrameRef.current;
         const result = latest.current;
-        carAlignment.current = x !== undefined && frame ? { x, width: frame.width, height: frame.height } : undefined;
-        setPlayerCenterX(carAlignment.current?.x);
-        if (result) publish({ ...result, playerCenterX: carAlignment.current?.x });
+        cameraCalibration.current = frame && validCalibration(camera) ? camera : undefined;
+        setCalibration(cameraCalibration.current);
+        if (result) publish({ ...result, calibration: cameraCalibration.current });
+    };
+    const updateBoundaryStart = (value: number) => {
+        const next = Math.round(Math.max(0, Math.min(1, value)) * 100) / 100;
+        options.current.boundaryStartY = next;
+        setBoundaryStartY(next);
+        if (latest.current) publish({ ...latest.current, boundaryStartY: next });
     };
     const handle = useMemo<TrackVisionHandle>(() => ({
         getComponentName: () => name,
@@ -131,8 +130,9 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         streamRef.current?.getTracks().forEach((track) => { track.onended = null; track.stop(); });
         streamRef.current = null;
         previewFrameRef.current = null;
-        carAlignment.current = undefined;
-        setPlayerCenterX(undefined);
+        cameraCalibration.current = undefined;
+        setCalibration(undefined);
+        setShowCalibrationOnCapture(false);
         if (videoRef.current) videoRef.current.srcObject = null;
         publish(null);
     }, [publish]);
@@ -275,7 +275,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             timerRef.current = setTimeout(tick, 0);
                             return;
                         }
-                        // Keep a clean copy so slider changes cannot accumulate overlays or mix frames.
+                        // Keep a clean copy for the camera calibration preview.
                         const previewFrame = previewFrameRef.current ?? document.createElement('canvas');
                         previewFrame.width = frame.width;
                         previewFrame.height = frame.height;
@@ -283,15 +283,14 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                         if (!previewContext) throw new Error('Screen preview is unavailable.');
                         previewContext.drawImage(frame, 0, 0);
                         previewFrameRef.current = previewFrame;
-                        // Read after inference: changing alignment during a pending
-                        // frame must not let that frame restore an older reference.
-                        if (carAlignment.current && (carAlignment.current.width !== frame.width || carAlignment.current.height !== frame.height)) {
-                            carAlignment.current = undefined;
-                            setPlayerCenterX(undefined);
+                        // Read after inference so a pending frame cannot restore an old calibration.
+                        if (cameraCalibration.current && (cameraCalibration.current.imageWidth !== frame.width || cameraCalibration.current.imageHeight !== frame.height)) {
+                            cameraCalibration.current = undefined;
+                            setCalibration(undefined);
                         }
-                        result.playerCenterX = carAlignment.current?.x;
+                        result.calibration = cameraCalibration.current;
+                        result.boundaryStartY = options.current.boundaryStartY;
                         redrawPreview(result);
-                        redrawCarCenter();
                         publish(result);
                         setHasFrame(true);
                         const completed = DETECTION_TASKS.filter(({ id }) => result.detections[id]);
@@ -353,25 +352,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     </div>}
                 </div>)}
             </fieldset>
-            {enabled.depth && <fieldset className="track-vision__depth">
-                <legend>Depth range <span>Estimated meters</span></legend>
-                <div className="track-vision__controls">
-                    <label>Close · {depthRange.near} m
-                        <input aria-label="Close depth" aria-valuetext={`${depthRange.near} meters or closer`} type="range"
-                            min="0" max={depthRange.far - 0.5} step="0.5" value={depthRange.near}
-                            onChange={(event) => setDepthRange((current) => ({ ...current, near: Math.min(Number(event.target.value), current.far - 0.5) }))} />
-                    </label>
-                    <label>Far · {depthRange.far} m
-                        <input aria-label="Far depth" aria-valuetext={`${depthRange.far} meters or farther`} type="range"
-                            min={depthRange.near + 0.5} max="200" step="0.5" value={depthRange.far}
-                            onChange={(event) => setDepthRange((current) => ({ ...current, far: Math.max(Number(event.target.value), current.near + 0.5) }))} />
-                    </label>
-                    <button type="button" onClick={() => setDepthRange(DEFAULT_DEPTH_RANGE)}>Reset depth range</button>
-                </div>
-                <div className="track-vision__depth-meter" aria-hidden="true" />
-                <div className="track-vision__legend"><span>Close ≤ {depthRange.near} m</span><span>Far ≥ {depthRange.far} m</span></div>
-                <p className="track-vision__hint">Warm at or below Close, cool at or above Far. Adjust to tune the depth colors.</p>
-            </fieldset>}
             <div className="track-vision__controls">
                 <label>Segmentation confidence {Math.round(confidence * 100)}%
                     <input aria-label="Segmentation confidence" disabled={!enabled.segment} type="range" min="0.1" max="0.95" step="0.05" value={confidence}
@@ -388,25 +368,35 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     ? <button type="button" className="track-vision__start" disabled={!sourceId} onClick={() => void start()}>Share game screen</button>
                     : <button type="button" onClick={stop}>Stop capture</button>}
             </div>
-            <div className="track-vision__preview">
+            <dialog ref={previewRef} open className={`track-vision__preview${hasFrame && showCalibrationOnCapture ? ' track-vision__preview--calibrated' : ''}`}
+                aria-label="Capture preview" onCancel={(event) => { event.preventDefault(); togglePreviewSize(); }}>
                 <video ref={videoRef} muted playsInline hidden />
                 <canvas ref={canvasRef} aria-label="Captured game frame with vision detections" hidden={!hasFrame} />
-                <canvas ref={carCenterCanvasRef} className="track-vision__car-center" aria-label="Car center marker" hidden={!hasFrame} />
+                {hasFrame && showCalibrationOnCapture && previewFrameRef.current && validCalibration(previewCamera)
+                    && <CameraGroundGrid camera={previewCamera} applied={Boolean(calibration)} />}
+                {hasFrame && <TrackBoundaryCutoff width={previewWidth} height={previewHeight}
+                    value={boundaryStartY} onChange={updateBoundaryStart} />}
                 {!hasFrame && <div className="track-vision__empty"><strong>See the full racing scene</strong><span>Share your simulator window and enable the detections you need.</span></div>}
-            </div>
-            <fieldset className="track-vision__alignment">
-                <legend>Car center alignment</legend>
-                <p className="track-vision__hint">Align the crosshair with your car's centerline at the marker height, using the visible nose or bonnet as the reference, then select Set car center. You can do this wherever the car is on the track. Leave alignment unset if the car's centerline is not visible.</p>
-                <div className="track-vision__controls">
-                    <label>Car center · {Math.round(carCenterDraft * 100)}% of image width
-                        <input aria-label="Car center alignment" disabled={!hasFrame} type="range" min="0.05" max="0.95" step="0.005" value={carCenterDraft}
-                            onChange={(event) => { setCarCenterDraft(Number(event.target.value)); updateCarAlignment(); }} />
-                    </label>
-                    <button type="button" disabled={!hasFrame} onClick={() => updateCarAlignment(carCenterDraft)}>Set car center</button>
-                    <button type="button" disabled={playerCenterX === undefined} onClick={() => updateCarAlignment()}>Clear alignment</button>
+                <div className="track-vision__preview-controls">
+                    {previewExpanded && captureState !== 'idle' && <button type="button" onClick={stop}>Stop capture</button>}
+                    <button type="button" aria-expanded={previewExpanded} onClick={togglePreviewSize}>
+                        {previewExpanded ? 'Restore capture' : 'Expand capture'}
+                    </button>
                 </div>
-                <p className="track-vision__hint">{playerCenterX === undefined ? 'Alignment needed to identify the driver position.' : 'Car center set for this capture.'} Align again after changing car, camera, seat position, or field of view. Use a fixed forward view.</p>
-            </fieldset>
+            </dialog>
+            <div className="track-vision__controls">
+                <label>Boundary start {Math.round(boundaryStartY * 100)}% from top
+                    <input aria-label="Boundary start" type="range" min="0" max="1" step="0.01" value={boundaryStartY}
+                        onChange={(event) => updateBoundaryStart(Number(event.target.value))} />
+                </label>
+            </div>
+            <p className="track-vision__hint">Drag the amber line above the hood or cockpit. Track edges are detected only above the line; the shaded area is excluded from boundary detection. Set to 100% to use the full frame.</p>
+            <TrackCalibration source={hasFrame ? previewFrameRef.current : null} draft={cameraDraft} applied={calibration}
+                showOnCapture={showCalibrationOnCapture} onToggleCapture={() => setShowCalibrationOnCapture((current) => !current)}
+                onChange={(draft) => { setCameraDraft(draft); updateCalibration(); }}
+                onApply={() => { const frame = previewFrameRef.current; if (frame) updateCalibration({ ...cameraDraft, imageWidth: frame.width, imageHeight: frame.height }); }}
+                onClear={() => updateCalibration()} />
+            <LocalTrackView frame={hasFrame ? previewResult : null} scene={previewScene} camera={previewCamera} applied={Boolean(calibration)} />
             <section className="track-vision__analysis" aria-label="Screen analysis">
                 <h3>Screen analysis</h3>
                 <dl>
@@ -414,8 +404,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     <div><dt>Driver position</dt><dd aria-label="Driver position">{analysis?.playerPosition ? analysis.playerPosition[0].toUpperCase() + analysis.playerPosition.slice(1) : 'Unknown'}</dd></div>
                     <div><dt>Opponent position</dt><dd aria-label="Opponent position">{analysis?.opponentPosition ? analysis.opponentPosition[0].toUpperCase() + analysis.opponentPosition.slice(1) : analysis?.carAhead === 1 ? 'Individual position unresolved' : analysis?.carAhead === 0 ? 'No opponent detected' : 'Unknown'}</dd></div>
                 </dl>
-                <p className="track-vision__hint">Positions are estimated from the visible track edges: inside, middle, or outside of the corner. Unclear or stale frames show unknown positions.</p>
-                <p className="track-vision__hint">Track and car detections identify positions. The track mask defines the track edges. A car pack indicates grouped traffic; an individual car detection is needed for an opponent position.</p>
+                <p className="track-vision__hint">Positions use segmentation, estimated depth and camera position: inside, middle, or outside of the corner. Unclear or stale frames show unknown positions.</p>
+                <p className="track-vision__hint">Track and car detections identify positions. The track mask defines the track edges. Car masks and depth reconstruct visible car surfaces. A car pack indicates grouped traffic; an individual car detection is needed for an opponent position.</p>
                 <p className="track-vision__hint">Curb, grass, other, fence, sand, and Outfield asphalt road are excluded from the track surface. Analysis uses detections with confidence ≥ 65%. Labels ignore case and surrounding spaces.</p>
             </section>
             <div className="track-vision__status" role="status">{status}</div>

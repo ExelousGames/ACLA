@@ -63,7 +63,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 <span data-ready={snapshot.telemetryReady}>Telemetry: {snapshot.telemetryReady ? 'Live' : 'Waiting for live data'}</span>
                 <span data-ready={snapshot.visionReady}>Track Vision: {snapshot.visionReady ? 'Live' : 'Unavailable or stale'}</span>
             </div>
-            {!snapshot.visionReady && <p className="live-phrases__hint">Open Track Vision in Add Visualization, share your forward-facing driving view, and set the car-center alignment to enable corner-position phrases.</p>}
+            {!snapshot.visionReady && <p className="live-phrases__hint">Open Track Vision in Add Visualization, share your forward-facing driving view, and apply the camera calibration to enable corner-position phrases.</p>}
             <section aria-label="Sentence catalog">
                 <h3>All possible sentences <span>({PHRASE_RULES.length})</span></h3>
                 <p className="live-phrases__hint">Every possible sentence is listed below, including inactive rules. All conditions must hold for the listed duration. A phrase appears once per match, with an 8 s cooldown and 0.5 s clear period before repeating.</p>

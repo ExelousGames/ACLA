@@ -3,9 +3,9 @@
     gap: 10px; padding: 12px; color: var(--lp-white, #e7ecf2); font-size: 12px;
 }
 .track-vision__controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.track-vision__stack, .track-vision__depth, .track-vision__alignment { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; }
-.track-vision__stack legend, .track-vision__depth legend, .track-vision__alignment legend { padding: 0 6px; font-weight: 600; }
-.track-vision__stack legend span, .track-vision__depth legend span { margin-left: 8px; color: var(--lp-gray, #a4adbb); font-weight: 400; font-size: 11px; }
+.track-vision__stack, .track-vision__alignment { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; }
+.track-vision__stack legend, .track-vision__alignment legend { padding: 0 6px; font-weight: 600; }
+.track-vision__stack legend span { margin-left: 8px; color: var(--lp-gray, #a4adbb); font-weight: 400; font-size: 11px; }
 .track-vision__detector { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 12px; padding: 8px; border-radius: 6px; background: var(--lp-bg, #10131a); }
 .track-vision__detector[data-enabled="true"] { background: #37efac0a; }
 .track-vision__detector label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
@@ -16,9 +16,6 @@
 .track-vision__detector small, .track-vision__detector-state { color: var(--lp-gray, #a4adbb); font-size: 11px; }
 .track-vision__detector .track-vision__hint, .track-vision__detector .track-vision__error { grid-column: 1 / -1; }
 .track-vision__controls label { display: flex; flex-direction: column; gap: 4px; color: var(--lp-gray, #a4adbb); }
-.track-vision__depth .track-vision__controls label { flex: 1 1 140px; min-width: 0; }
-.track-vision__depth input { width: 100%; margin: 4px 0; accent-color: #37efac; }
-.track-vision__depth-meter { height: 8px; margin-top: 4px; border-radius: 4px; background: linear-gradient(to right, rgb(255, 80, 0), rgb(128, 80, 128), rgb(0, 80, 255)); }
 .track-vision select { flex: 1 1 160px; min-width: 0; max-width: 100%; }
 .track-vision button, .track-vision select {
     color: inherit; background: var(--lp-bg, #10131a); border: 1px solid var(--lp-border, #343b46);
@@ -28,9 +25,23 @@
 .track-vision button:disabled { cursor: default; opacity: .45; }
 .track-vision button:focus-visible, .track-vision input:focus-visible, .track-vision select:focus-visible { outline: 2px solid #37efac; outline-offset: 2px; }
 .track-vision .track-vision__start { color: #37efac; background: #37efac16; border-color: #37efac50; }
-.track-vision__preview { flex: 1 1 180px; min-height: 130px; position: relative; border: 1px solid var(--lp-border, #343b46); background: #090d13; border-radius: 8px; overflow: hidden; }
-.track-vision__preview canvas { width: 100%; height: 100%; object-fit: contain; position: absolute; inset: 0; }
-.track-vision__car-center { pointer-events: none; }
+.track-vision__capture-toggle[aria-pressed="true"] { color: #37efac; background: #37efac16; border-color: #37efac50; }
+.track-vision__preview { flex: 1 1 180px; min-height: 130px; position: relative; width: auto; max-width: none; margin: 0; padding: 0; color: inherit; box-sizing: border-box; border: 1px solid var(--lp-border, #343b46); background: #090d13; border-radius: 8px; overflow: hidden; }
+.track-vision__preview > canvas { width: 100%; height: 100%; object-fit: contain; position: absolute; inset: 0; }
+.track-vision__preview--calibrated { min-height: 280px; }
+.track-vision__preview:modal { position: fixed; inset: 24px; width: calc(100% - 48px); height: calc(100% - 48px); min-height: 0; max-height: none; }
+.track-vision__preview::backdrop { background: #000b; }
+.track-vision__preview-controls { position: absolute; top: 8px; right: 8px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.track-vision__ground-grid { pointer-events: none; width: 100%; height: 100%; position: absolute; inset: 0; }
+.track-vision__boundary-cutoff { pointer-events: none; width: 100%; height: 100%; position: absolute; inset: 0; }
+.track-vision__boundary-handle { pointer-events: all; cursor: ns-resize; touch-action: none; }
+.track-vision__boundary-handle:focus-visible { outline: 2px solid #37efac; }
+.track-vision__camera-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.track-vision__camera-controls label { display: flex; flex-direction: column; gap: 5px; color: var(--lp-gray, #a4adbb); }
+.track-vision__camera-controls input { width: 100%; box-sizing: border-box; padding: 7px; color: inherit; background: var(--lp-bg, #10131a); border: 1px solid var(--lp-border, #343b46); border-radius: 5px; }
+.track-vision__geometry { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 6px 0; }
+.track-vision__geometry dt { color: var(--lp-gray, #a4adbb); }
+.track-vision__geometry dd { margin: 4px 0 0; font-weight: 600; }
 .track-vision__analysis { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; }
 .track-vision__analysis h3 { margin: 0; font-size: 12px; }
 .track-vision__analysis dl { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0; }
@@ -40,6 +51,7 @@
 .track-vision__empty strong { color: var(--lp-white, #e7ecf2); font-weight: 500; font-size: 15px; }
 .track-vision__hint { margin: 0; color: var(--lp-gray, #a4adbb); font-size: 11px; overflow-wrap: anywhere; }
 .track-vision__error { color: #ff9f9f; }
-.track-vision__legend { display: flex; justify-content: space-between; gap: 16px; font-size: 11px; }
-.track-vision__legend span:first-child { color: #ff9a70; }
-.track-vision__legend span:last-child { color: #839fff; }
+.track-vision__reconstruction { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; }
+.track-vision__reconstruction h3 { margin: 0; font-size: 12px; }
+.track-vision__local-scene { width: 100%; min-height: 180px; max-height: 420px; background: #090d13; border-radius: 6px; }
+.track-vision__local-scene text { fill: #e7ecf2; font-size: 11px; paint-order: stroke; stroke: #090d13; stroke-width: 2px; }

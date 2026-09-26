@@ -21,7 +21,7 @@ timers only expire inputs. Session and stream resets clear the history and
 invalidate previous vision. Track Vision computes visual geometry before publishing
 each result, independently of whether Live Phrases is mounted.
 
-Screen analysis, model requirements, and car-center alignment belong to
+Screen analysis, model requirements, and camera calibration belong to
 [Track Vision](../track-vision/README.md#screen-analysis). Live Phrases reads the
 published `analysis` fields (corner direction, driver position, opponent position,
 and whether a car is ahead); it never inspects masks, boxes, or image geometry.

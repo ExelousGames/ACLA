@@ -108,7 +108,7 @@ describe('visual corner position phrase rules', () => {
         ['missing vision', null],
         ['missing published analysis', { ...vision(0), analysis: null }],
         ['car pack without an individual position', { ...vision(0), analysis: { cornerDirection: 'left' as const, playerPosition: 'inside' as const, carAhead: 1 as const } }],
-        ['missing camera alignment', vision(0, { playerCenterX: null })],
+        ['missing camera calibration', vision(0, { cameraOffset: null })],
         ['no car ahead', vision(0, { carAhead: false })],
         ['straight road', vision(0, { corner: 'straight' })],
         ['future timestamp', vision(5000)],
@@ -165,7 +165,7 @@ describe('visual corner position phrase rules', () => {
     it('restarts the hold when the camera alignment changes even within the same position band', () => {
         const engine = new PhraseEngine();
         update(engine, 0);
-        engine.receiveVision(vision(500, { playerCenterX: 0.51 }), 500);
+        engine.receiveVision(vision(500, { cameraOffset: -0.35 }), 500);
         engine.receiveTelemetry(frame(driving), 800);
         expect(ids(engine, 800)).toEqual([]);
         engine.receiveTelemetry(frame(driving), 1300);
