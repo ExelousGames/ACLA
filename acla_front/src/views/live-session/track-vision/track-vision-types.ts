@@ -99,8 +99,8 @@ export interface TrackVisionFrame {
     capturedAt: number;
     width: number;
     height: number;
-    /** Lowest row used for track edges, normalized to source-image height. Defaults to 1. */
-    boundaryStartY?: number;
+    /** Boundary start plane, in vehicle-forward meters from the camera. Omit for all observed edges. */
+    boundaryStartDistanceM?: number;
     /** Explicitly applied calibration for this capture resolution. No implicit default. */
     calibration?: CameraCalibration;
     detections: Partial<Record<DetectionTask, VisionResult>>;

@@ -71,12 +71,14 @@ it('updates boundary geometry immediately and keeps the newest cutoff through pe
     await startCapture();
     fireEvent.click(screen.getByRole('button', { name: 'Apply camera calibration' }));
     const before = ref.current!.getLatestDetection()!;
-    expect(before.boundaryStartY).toBe(0.75);
+    expect(before.boundaryStartDistanceM).toBe(5);
+    expect(within(screen.getByRole('dialog', { name: 'Capture preview' })).queryByRole('slider')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Local 3D reconstruction' })).getByRole('slider', { name: 'Boundary start line' })).toBeInTheDocument();
     const edges = screen.getByLabelText('Reconstructed track edges');
     const originalEdges = edges.innerHTML;
     const listener = jest.fn();
     ref.current!.subscribeDetection(listener);
-    fireEvent.change(screen.getByRole('slider', { name: 'Boundary start' }), { target: { value: '0.5' } });
+    fireEvent.change(screen.getByRole('slider', { name: 'Boundary start' }), { target: { value: '12' } });
     const after = ref.current!.getLatestDetection()!;
     expect(after.capturedAt).toBe(before.capturedAt);
     expect(after.calibration).toEqual(before.calibration);
@@ -85,20 +87,20 @@ it('updates boundary geometry immediately and keeps the newest cutoff through pe
     expect(edges.innerHTML).not.toBe(originalEdges);
     expect(listener).toHaveBeenCalledTimes(1);
     expect(model.detect).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('slider', { name: 'Boundary start line' })).toHaveAttribute('aria-valuenow', '50');
+    expect(screen.getByRole('slider', { name: 'Boundary start line' })).toHaveAttribute('aria-valuenow', '12');
 
     const pending = deferred<typeof detection>();
     model.detect.mockReturnValueOnce(pending.promise);
     await act(async () => { jest.advanceTimersByTime(200); });
     fireEvent.keyDown(screen.getByRole('slider', { name: 'Boundary start line' }), { key: 'ArrowUp' });
     await act(async () => { pending.resolve(fixture.detections.segment as typeof detection); });
-    expect(ref.current!.getLatestDetection()!.boundaryStartY).toBe(0.49);
-    expect(screen.getByRole('slider', { name: 'Boundary start' })).toHaveValue('0.49');
+    expect(ref.current!.getLatestDetection()!.boundaryStartDistanceM).toBe(12.5);
+    expect(screen.getByRole('slider', { name: 'Boundary start' })).toHaveValue('12.5');
 
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(screen.queryByRole('slider', { name: 'Boundary start line' })).not.toBeInTheDocument();
     await startCapture();
-    expect(ref.current!.getLatestDetection()!.boundaryStartY).toBe(0.49);
+    expect(ref.current!.getLatestDetection()!.boundaryStartDistanceM).toBe(12.5);
 });
 
 it.each(['restore', 'escape'])('keeps capture and calibration running while expanding and returning with %s', async (action) => {
@@ -244,7 +246,7 @@ it('expires positions and boundary coordinates during pending inference without 
     expect(screen.getByLabelText('Road fit status')).toHaveTextContent('Waiting for a fresh frame');
     expect(screen.getByLabelText('Reconstructed cars').children).toHaveLength(0);
     expect(edges.querySelectorAll('path')).toHaveLength(0);
-    fireEvent.change(screen.getByRole('slider', { name: 'Boundary start' }), { target: { value: '0.5' } });
+    fireEvent.change(screen.getByRole('slider', { name: 'Boundary start' }), { target: { value: '12' } });
     expect(edges.querySelectorAll('path')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Apply camera calibration' }));
     expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');

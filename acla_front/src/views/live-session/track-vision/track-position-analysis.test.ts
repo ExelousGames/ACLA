@@ -7,40 +7,58 @@ import { letterbox } from './yolo-segmentation';
 
 describe('segmentation and depth reconstruction', () => {
     it.each([[1600, 900], [900, 1600], [1000, 1000], [3440, 1440]])
-    ('excludes hood edges and depth below the source-image cutoff at %s × %s', (width, height) => {
-        const frame = vision(0, { width, height, corner: 'straight', player: 'middle', cars: [] });
-        frame.boundaryStartY = 0.57;
+    ('starts both boundaries in local 3D beyond nearby bodywork at %s × %s', (width, height) => {
+        const frame = vision(0, { width, height, corner: 'straight', player: 'middle', cars: [],
+            camera: { yawDeg: 15, forwardOffsetM: 1.5, lateralOffsetM: -0.4 } });
+        frame.boundaryStartDistanceM = 12;
         const clean = reconstructTrack(frame)!;
-        expect(clean.leftBoundary.length).toBeGreaterThan(8);
-        expect(clean.rightBoundary.length).toBeGreaterThan(8);
-        const projection = createCameraProjection(frame.calibration!);
-        for (const point of [...clean.leftBoundary, ...clean.rightBoundary]) {
-            expect(projection.localToImage(point)!.v).toBeLessThanOrEqual(frame.boundaryStartY);
+        const startY = frame.calibration!.forwardOffsetM + 12;
+        for (const boundary of [clean.leftBoundary, clean.rightBoundary]) {
+            expect(boundary.length).toBeGreaterThan(3);
+            expect(boundary[0].y).toBe(startY);
+            expect(boundary[0].z).toBeCloseTo(0, 1);
+            expect(boundary.every(({ y }) => y >= startY)).toBe(true);
         }
-        const { padY, resizedHeight } = letterbox(width, height, 640);
+        expect(clean.leftBoundary[0].x).toBeCloseTo(-5, 0);
+        expect(clean.rightBoundary[0].x).toBeCloseTo(5, 0);
+        if (width >= height) expect(clean.geometry!.referenceY).toBe(startY);
+        const projection = createCameraProjection(frame.calibration!);
+        // With yaw, a shared local forward plane crosses different image rows on each side.
+        expect(Math.abs(projection.localToImage(clean.leftBoundary[0])!.v
+            - projection.localToImage(clean.rightBoundary[0])!.v)).toBeGreaterThan(0.005);
+        const { padX, padY, resizedWidth, resizedHeight } = letterbox(width, height, 640);
         const segment = frame.detections.segment!, depth = frame.detections.depth!;
         if (segment.task !== 'segment' || depth.task !== 'depth') throw new Error('Expected segmentation and depth');
-        const belowCutoff = (index: number, columns: number, rows: number) =>
-            ((Math.floor(index / columns) + 0.5) / rows * 640 - padY) / resizedHeight > frame.boundaryStartY!;
-        // A narrow false track region follows bodywork in the excluded lower image.
-        segment.instances[0].mask = segment.instances[0].mask.map((value, i) => belowCutoff(i, segment.width, segment.height)
+        const nearby = (index: number, columns: number, rows: number) => {
+            const point = projection.imageToGround(((index % columns + 0.5) / columns * 640 - padX) / resizedWidth,
+                ((Math.floor(index / columns) + 0.5) / rows * 640 - padY) / resizedHeight);
+            return point && point.y < 7;
+        };
+        segment.instances[0].mask = segment.instances[0].mask.map((value, i) => nearby(i, segment.width, segment.height)
             ? Number(i % segment.width > segment.width * 0.4 && i % segment.width < segment.width * 0.6) : value);
-        depth.values = depth.values.map((value, i) => belowCutoff(i, depth.width, depth.height) ? 2 : value);
+        depth.values = depth.values.map((value, i) => nearby(i, depth.width, depth.height) ? 2 : value);
         const mask = segment.instances[0].mask.slice(), values = depth.values.slice();
         expect(reconstructTrack(frame)).toEqual(clean);
-        const unrestricted = reconstructTrack({ ...frame, boundaryStartY: 1 })!;
-        expect(unrestricted.leftBoundary).not.toEqual(clean.leftBoundary);
+        expect(reconstructTrack({ ...frame, boundaryStartDistanceM: 0 })!.leftBoundary).not.toEqual(clean.leftBoundary);
         expect(segment.instances[0].mask).toEqual(mask);
         expect(depth.values).toEqual(values);
     });
 
-    it('supports full-frame or empty boundary scans without clipping cars', () => {
+    it('supports full or empty boundary scans without clipping cars', () => {
         const frame = vision(0);
         const full = reconstructTrack(frame)!;
-        expect(reconstructTrack({ ...frame, boundaryStartY: 1 })).toEqual(full);
-        const excluded = reconstructTrack({ ...frame, boundaryStartY: 0 })!;
+        expect(reconstructTrack({ ...frame, boundaryStartDistanceM: 0 })).toEqual(full);
+        const excluded = reconstructTrack({ ...frame, boundaryStartDistanceM: 100 })!;
         expect(excluded).toEqual({ leftBoundary: [], rightBoundary: [], cars: full.cars, geometry: null });
-        expect(analyzeTrackPositions({ ...frame, boundaryStartY: 0 })).toEqual({});
+        expect(analyzeTrackPositions({ ...frame, boundaryStartDistanceM: 100 })).toEqual({});
+    });
+
+    it('does not invent start positions across missing road observations', () => {
+        const frame = vision(0, { cars: [], road: (x, y) => Math.abs(x) < 5 && (y < 10 || y > 28) && y < 59 });
+        frame.boundaryStartDistanceM = 16;
+        const scene = reconstructTrack(frame)!;
+        expect(scene.leftBoundary[0].y).toBeGreaterThan(28);
+        expect(scene.rightBoundary[0].y).toBeGreaterThan(28);
     });
 
     it.each(['segment', 'depth'] as const)('requires same-frame %s for reconstruction', (task) => {
@@ -76,6 +94,7 @@ describe('segmentation and depth reconstruction', () => {
         ['invalid depth', 'clipped', 'occluded'].map((reason) => ({ side, reason }))))
     ('preserves the opposite edge when the $side edge is $reason', ({ side, reason }) => {
         const frame = vision(0, { corner: 'straight', player: 'middle', cars: [] });
+        frame.boundaryStartDistanceM = 12;
         const before = reconstructTrack(frame)!;
         const segment = frame.detections.segment!, depth = frame.detections.depth!;
         if (segment.task !== 'segment' || depth.task !== 'depth') throw new Error('Expected segmentation and depth');
@@ -139,7 +158,10 @@ describe('segmentation and depth reconstruction', () => {
         if (depth.task !== 'depth') throw new Error('Expected depth');
         // For a level camera and road Z = 0.03 Y, depth = height / (ray-down + slope).
         depth.values = depth.values.map((value) => 2 / (2 / value + 0.03));
+        frame.boundaryStartDistanceM = 10;
         const scene = reconstructTrack(frame)!;
+        expect(scene.leftBoundary[0].y).toBe(10);
+        expect(scene.rightBoundary[0].y).toBe(10);
         expect(scene.leftBoundary.length).toBeGreaterThan(8);
         for (const point of [...scene.leftBoundary, ...scene.rightBoundary]) {
             expect(point.z).toBeCloseTo(point.y * 0.03, 2);

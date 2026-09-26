@@ -80,3 +80,25 @@ it('hides the scene for invalid camera settings without substituting a camera', 
     rerender(<LocalTrackView frame={frame} scene={scene} camera={camera} applied={false} />);
     expect(screen.getByLabelText('Perspective 3D track edges and cars')).toBeInTheDocument();
 });
+
+it('shows measured start positions independently and clears them when the frame expires', () => {
+    const frame = vision(Date.now(), { cars: [], corner: 'straight', player: 'middle', camera: { yawDeg: 15, forwardOffsetM: 1 } });
+    frame.boundaryStartDistanceM = 12;
+    const scene = reconstructTrack(frame)!;
+    const props = { frame, scene, camera: frame.calibration!, applied: true, boundaryStartDistanceM: 12, onBoundaryStartChange: jest.fn() };
+    const { rerender } = render(<LocalTrackView {...props} />);
+    const positions = screen.getByLabelText('Boundary starting positions');
+    for (const point of [scene.leftBoundary[0], scene.rightBoundary[0]]) {
+        expect(positions).toHaveTextContent(`${point.x.toFixed(2)}, 13.00, ${point.z.toFixed(2)} m`);
+    }
+    expect(screen.getByLabelText('Left boundary start')).toBeInTheDocument();
+    expect(screen.getByLabelText('Right boundary start')).toBeInTheDocument();
+    rerender(<LocalTrackView {...props} scene={{ ...scene, leftBoundary: [] }} />);
+    expect(screen.queryByLabelText('Left boundary start')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Right boundary start')).toBeInTheDocument();
+    expect(positions).toHaveTextContent('Unobserved at start line');
+    rerender(<LocalTrackView {...props} frame={{ ...frame, capturedAt: Date.now() - VISION_MAX_AGE_MS - 1 }} />);
+    expect(screen.queryByLabelText('Left boundary start')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Right boundary start')).not.toBeInTheDocument();
+    expect(positions).not.toHaveTextContent('13.00');
+});

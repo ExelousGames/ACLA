@@ -64,15 +64,15 @@ it('breaks guides at cars and excluded surfaces instead of using their depth as 
     }
 });
 
-it('clips the grid to the boundary cutoff', () => {
+it('clips the grid to the local boundary start plane relative to the camera', () => {
     const frame = nearRoad();
-    frame.boundaryStartY = 0.55;
+    frame.calibration!.forwardOffsetM = 1;
+    frame.boundaryStartDistanceM = 2.5;
     const grid = reconstructDistanceGrid(frame);
     expect(grid.some(({ distanceM }) => distanceM === 3)).toBe(false);
     expect(grid.some(({ distanceM }) => distanceM === 4)).toBe(true);
-    const projection = createCameraProjection(frame.calibration!);
     for (const point of grid.flatMap(({ segments }) => segments.flat())) {
-        expect(projection.localToImage(point)!.v).toBeLessThanOrEqual(0.55);
+        expect(point.y).toBeGreaterThanOrEqual(3.5);
     }
 });
 

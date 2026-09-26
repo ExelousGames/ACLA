@@ -6,7 +6,7 @@ import { CameraCalibration, DETECTION_TASKS, DetectionTask, EnabledDetections, T
 import { analyzeTrackPositions, reconstructTrack } from './track-position-analysis';
 import { DEFAULT_CAMERA, validCalibration } from './camera-projection';
 import TrackCalibration, { CameraGroundGrid } from './TrackCalibration';
-import TrackBoundaryCutoff from './TrackBoundaryCutoff';
+import { MAX_BOUNDARY_START_M, MIN_BOUNDARY_START_M } from './TrackBoundaryCutoff';
 import { drawVisionOverlay } from './vision-overlay';
 import LocalTrackView from './LocalTrackView';
 import './LiveTrackVision.css';
@@ -50,7 +50,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const [hasFrame, setHasFrame] = useState(false);
     const [previewExpanded, setPreviewExpanded] = useState(false);
     const [confidence, setConfidence] = useState(0.5);
-    const [boundaryStartY, setBoundaryStartY] = useState(0.75);
+    const [boundaryStartDistanceM, setBoundaryStartDistanceM] = useState(5);
     const [cameraDraft, setCameraDraft] = useState(DEFAULT_CAMERA);
     const [calibration, setCalibration] = useState<CameraCalibration>();
     const [showCalibrationOnCapture, setShowCalibrationOnCapture] = useState(false);
@@ -61,8 +61,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         [cameraDraft, previewWidth, previewHeight]);
     const previewScene = useMemo(() => previewResult ? reconstructTrack({ ...previewResult, calibration: previewCamera }) : null,
         [previewResult, previewCamera]);
-    const options = useRef({ confidence, enabled, allowCpuFallback, boundaryStartY });
-    options.current = { confidence, enabled, allowCpuFallback, boundaryStartY };
+    const options = useRef({ confidence, enabled, allowCpuFallback, boundaryStartDistanceM });
+    options.current = { confidence, enabled, allowCpuFallback, boundaryStartDistanceM };
 
     const togglePreviewSize = () => {
         const preview = previewRef.current;
@@ -106,10 +106,10 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         if (result) publish({ ...result, calibration: cameraCalibration.current });
     };
     const updateBoundaryStart = (value: number) => {
-        const next = Math.round(Math.max(0, Math.min(1, value)) * 100) / 100;
-        options.current.boundaryStartY = next;
-        setBoundaryStartY(next);
-        if (latest.current) publish({ ...latest.current, boundaryStartY: next });
+        const next = Math.round(Math.max(MIN_BOUNDARY_START_M, Math.min(MAX_BOUNDARY_START_M, value)) * 10) / 10;
+        options.current.boundaryStartDistanceM = next;
+        setBoundaryStartDistanceM(next);
+        if (latest.current) publish({ ...latest.current, boundaryStartDistanceM: next });
     };
     const handle = useMemo<TrackVisionHandle>(() => ({
         getComponentName: () => name,
@@ -289,7 +289,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             setCalibration(undefined);
                         }
                         result.calibration = cameraCalibration.current;
-                        result.boundaryStartY = options.current.boundaryStartY;
+                        result.boundaryStartDistanceM = options.current.boundaryStartDistanceM;
                         redrawPreview(result);
                         publish(result);
                         setHasFrame(true);
@@ -374,8 +374,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 <canvas ref={canvasRef} aria-label="Captured game frame with vision detections" hidden={!hasFrame} />
                 {hasFrame && showCalibrationOnCapture && previewFrameRef.current && validCalibration(previewCamera)
                     && <CameraGroundGrid camera={previewCamera} applied={Boolean(calibration)} />}
-                {hasFrame && <TrackBoundaryCutoff width={previewWidth} height={previewHeight}
-                    value={boundaryStartY} onChange={updateBoundaryStart} />}
                 {!hasFrame && <div className="track-vision__empty"><strong>See the full racing scene</strong><span>Share your simulator window and enable the detections you need.</span></div>}
                 <div className="track-vision__preview-controls">
                     {previewExpanded && captureState !== 'idle' && <button type="button" onClick={stop}>Stop capture</button>}
@@ -384,19 +382,13 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     </button>
                 </div>
             </dialog>
-            <div className="track-vision__controls">
-                <label>Boundary start {Math.round(boundaryStartY * 100)}% from top
-                    <input aria-label="Boundary start" type="range" min="0" max="1" step="0.01" value={boundaryStartY}
-                        onChange={(event) => updateBoundaryStart(Number(event.target.value))} />
-                </label>
-            </div>
-            <p className="track-vision__hint">Drag the amber line above the hood or cockpit. Track edges are detected only above the line; the shaded area is excluded from boundary detection. Set to 100% to use the full frame.</p>
             <TrackCalibration source={hasFrame ? previewFrameRef.current : null} draft={cameraDraft} applied={calibration}
                 showOnCapture={showCalibrationOnCapture} onToggleCapture={() => setShowCalibrationOnCapture((current) => !current)}
                 onChange={(draft) => { setCameraDraft(draft); updateCalibration(); }}
                 onApply={() => { const frame = previewFrameRef.current; if (frame) updateCalibration({ ...cameraDraft, imageWidth: frame.width, imageHeight: frame.height }); }}
                 onClear={() => updateCalibration()} />
-            <LocalTrackView frame={hasFrame ? previewResult : null} scene={previewScene} camera={previewCamera} applied={Boolean(calibration)} />
+            <LocalTrackView frame={hasFrame ? previewResult : null} scene={previewScene} camera={previewCamera} applied={Boolean(calibration)}
+                boundaryStartDistanceM={boundaryStartDistanceM} onBoundaryStartChange={updateBoundaryStart} />
             <section className="track-vision__analysis" aria-label="Screen analysis">
                 <h3>Screen analysis</h3>
                 <dl>

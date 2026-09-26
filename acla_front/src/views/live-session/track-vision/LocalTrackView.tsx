@@ -3,9 +3,11 @@ import type { CameraCalibration, GroundPoint, LocalTrackScene, TrackVisionFrame 
 import { VISION_MAX_AGE_MS } from './track-vision-types';
 import { createCameraProjection, validCalibration } from './camera-projection';
 import { reconstructDistanceGrid } from './track-position-analysis';
+import TrackBoundaryCutoff, { MAX_BOUNDARY_START_M, MIN_BOUNDARY_START_M } from './TrackBoundaryCutoff';
 
-export default function LocalTrackView({ frame, scene, camera, applied }: {
+export default function LocalTrackView({ frame, scene, camera, applied, boundaryStartDistanceM = 5, onBoundaryStartChange }: {
     frame: TrackVisionFrame | null; scene: LocalTrackScene | null; camera: CameraCalibration; applied: boolean;
+    boundaryStartDistanceM?: number; onBoundaryStartChange?: (value: number) => void;
 }) {
     const [now, setNow] = useState(Date.now);
     useEffect(() => {
@@ -36,6 +38,9 @@ export default function LocalTrackView({ frame, scene, camera, applied }: {
     const fresh = frame && frame.capturedAt + VISION_MAX_AGE_MS > Math.max(now, Date.now());
     const visible = fresh && view ? scene : null;
     const geometry = visible?.geometry;
+    const startY = camera.forwardOffsetM + boundaryStartDistanceM;
+    const starts = [visible?.leftBoundary[0], visible?.rightBoundary[0]].map((point) =>
+        point && Math.abs(point.y - startY) < 0.0001 ? point : null);
     const gridLabels: Array<{ x: number; y: number; width: number }> = [];
     const status = !frame ? 'Share a driving view to reconstruct the scene.' : !fresh ? 'Waiting for a fresh frame.'
         : !frame.detections.segment || !frame.detections.depth ? 'Enable segmentation and depth; both results are needed for local 3D.'
@@ -45,7 +50,7 @@ export default function LocalTrackView({ frame, scene, camera, applied }: {
     return <section className="track-vision__reconstruction" aria-label="Local 3D reconstruction">
         <h3>Local 3D · track edges and cars</h3>
         <span className="track-vision__hint">{applied ? 'Calibration applied' : 'Draft camera preview'}</span>
-        {view && <svg className="track-vision__local-scene" viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="img" aria-label="Perspective 3D track edges and cars">
+        {view && <svg className="track-vision__local-scene" viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="group" aria-label="Perspective 3D track edges and cars">
             <g aria-label="Depth distance grid">
                 {visible && distanceGrid.map(({ distanceM, segments }) => {
                     const label = segments.flat().map(project).filter((point): point is { x: number; y: number } =>
@@ -85,7 +90,22 @@ export default function LocalTrackView({ frame, scene, camera, applied }: {
             </g>
             <path d={path([{ x: 0, y: 0, z: 0 }, { x: 0, y: 3, z: 0 }])} stroke="#ffbe57" strokeWidth="4" />
             {origin && <text x={origin.x + 6} y={origin.y}>Your car</text>}
+            {frame && onBoundaryStartChange && <TrackBoundaryCutoff camera={camera} width={viewWidth} value={boundaryStartDistanceM}
+                left={starts[0]} right={starts[1]} onChange={onBoundaryStartChange} />}
         </svg>}
+        {onBoundaryStartChange && <>
+            <div className="track-vision__controls">
+                <label>Boundary start {boundaryStartDistanceM.toFixed(1)} m forward from camera
+                    <input aria-label="Boundary start" type="range" min={MIN_BOUNDARY_START_M} max={MAX_BOUNDARY_START_M}
+                        step="0.1" value={boundaryStartDistanceM} onChange={(event) => onBoundaryStartChange(Number(event.target.value))} />
+                </label>
+            </div>
+            <p className="track-vision__hint">Drag the amber line in local 3D to start detection beyond the hood or cockpit. The line sets a shared forward distance from the camera for both edges.</p>
+            <dl className="track-vision__geometry" aria-label="Boundary starting positions">
+                {starts.map((point, index) => <div key={index}><dt>{index ? 'Right' : 'Left'} start (X, Y, Z)</dt>
+                    <dd>{point ? `${point.x.toFixed(2)}, ${point.y.toFixed(2)}, ${point.z.toFixed(2)} m` : 'Unobserved at start line'}</dd></div>)}
+            </dl>
+        </>}
         <p aria-label="Reconstruction status">{status}</p>
         <p className="track-vision__hint">Green / blue: track edges · amber: cars · purple: car packs. X right, Y forward, Z up. Distances and visible car surfaces are estimated from monocular depth.</p>
         <p aria-label="Road fit status">{!fresh ? 'Waiting for a fresh frame.' : geometry
