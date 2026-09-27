@@ -3,6 +3,8 @@
 Usage: python scripts/open_labelme.py [path/to/images] [--labels path/to/labels.txt] [--browser]
 Use Ctrl+N to create region polygons.
 Use Ctrl+L to create polylines.
+Use Ctrl+Shift+L to initialize a polygon from a polyline.
+Set its total width in pixels with Edit > Set Polyline Polygon Width.
 """
 
 import sys

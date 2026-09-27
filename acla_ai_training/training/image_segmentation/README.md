@@ -81,6 +81,15 @@ For an open polyline, press **Ctrl+L**, click along the line, then double-click 
 finish and choose its label. Polylines use Labelme's default display style.
 Polygons remain region annotations.
 
+To initialize a polygon from a centerline, choose **Polygon from Polyline**
+(**Ctrl+Shift+L**), click along the centerline, and double-click to finish. Each
+centerline point creates two polygon vertices, one on each side, which you can
+then move independently with **Edit Shapes**. Set the total distance between each
+vertex pair with **Edit > Set Polyline Polygon Width…** (default **5 image pixels**,
+independent of zoom). The offsets follow the average direction at bends and are
+clipped to the image edges. Consecutive duplicate points are ignored. Choose the
+label as usual; the saved annotation is a polygon.
+
 The class IDs follow the order in `labels.txt`:
 
 | ID | Label | Region |
@@ -96,6 +105,7 @@ The class IDs follow the order in `labels.txt`:
 | 8 | Outfield asphalt road | Visible asphalt road regions outside the track |
 | 9 | sky | Visible sky regions |
 | 10 | car interior | Visible car interior regions |
+| 11 | racing track white line | Visible white line markings on the racing track |
 
 For `track`, trace the continuous outer boundaries, including the road behind cars
 or other foreground objects where its continuation is reasonably clear. Do not cut
