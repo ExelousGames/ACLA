@@ -1,7 +1,8 @@
-"""Start Labelme; headless Linux containers serve the editor at localhost:6080.
+"""Restart Labelme; headless Linux containers serve the editor at localhost:6080.
 
 Usage: python scripts/open_labelme.py [path/to/images] [--labels path/to/labels.txt] [--browser]
 Use Ctrl+N to create region polygons.
+Use Ctrl+L to create polylines.
 """
 
 import sys

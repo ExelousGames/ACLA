@@ -88,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "annotate":
+        from .processes import stop_existing_labelme
+
         if args.images is not None and not args.images.is_dir():
             parser.error(f"Image directory does not exist: {args.images}")
         read_labels(args.labels)
@@ -102,6 +104,10 @@ def main(argv: list[str] | None = None) -> int:
             "--labels", str(args.labels.resolve()),
             "--config", str(PACKAGE_DIR / "labelme.yaml"),
         ]
+        try:
+            stop_existing_labelme()
+        except (OSError, RuntimeError) as exc:
+            parser.error(str(exc))
         if args.browser or (
             sys.platform == "linux"
             and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))

@@ -47,7 +47,7 @@ def boundary_labels(tmp_path):
 def test_default_labels_contain_only_regions():
     assert read_labels() == [
         "track", "curb", "grass", "car", "other", "fence", "car pack", "sand",
-        "Outfield asphalt road",
+        "Outfield asphalt road", "sky", "car interior",
     ]
 
 

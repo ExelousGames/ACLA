@@ -7,3 +7,5 @@ fence
 car pack
 sand
 Outfield asphalt road
+sky
+car interior

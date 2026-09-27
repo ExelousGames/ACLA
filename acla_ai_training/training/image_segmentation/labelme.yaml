@@ -6,3 +6,5 @@ validate_label: exact
 display_label_popup: true
 canvas:
   double_click: close
+shortcuts:
+  create_linestrip: Ctrl+L

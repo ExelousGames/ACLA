@@ -77,6 +77,10 @@ In Labelme, press **Ctrl+N** (Create Polygons), click along the region boundary,
 and double-click to finish. Choose a label, then **Ctrl+S** to save. Use **D** / **A**
 for the next / previous image. JSON annotations are saved beside the images.
 
+For an open polyline, press **Ctrl+L**, click along the line, then double-click to
+finish and choose its label. Polylines use Labelme's default display style.
+Polygons remain region annotations.
+
 The class IDs follow the order in `labels.txt`:
 
 | ID | Label | Region |
@@ -90,6 +94,8 @@ The class IDs follow the order in `labels.txt`:
 | 6 | car pack | Regions annotated as a pack of cars |
 | 7 | sand | Visible sand regions |
 | 8 | Outfield asphalt road | Visible asphalt road regions outside the track |
+| 9 | sky | Visible sky regions |
+| 10 | car interior | Visible car interior regions |
 
 For `track`, trace the continuous outer boundaries, including the road behind cars
 or other foreground objects where its continuation is reasonably clear. Do not cut

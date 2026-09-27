@@ -124,10 +124,23 @@ def test_refuses_missing_split_and_existing_output(tmp_path):
     assert data.read_bytes() == before
 
 
-def test_desktop_launcher_uses_same_python_and_shared_labels(tmp_path, monkeypatch):
+@pytest.fixture
+def labelme_shutdown(monkeypatch):
+    from training.image_segmentation import processes
+
+    stop = MagicMock()
+    monkeypatch.setattr(processes, "stop_existing_labelme", stop)
+    return stop
+
+
+def test_desktop_launcher_uses_same_python_and_shared_labels(tmp_path, monkeypatch, labelme_shutdown):
     from training.image_segmentation import __main__ as cli
 
-    launch = MagicMock(return_value=0)
+    def start(command):
+        labelme_shutdown.assert_called_once_with()
+        return 0
+
+    launch = MagicMock(side_effect=start)
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(cli.subprocess, "call", launch)
@@ -142,7 +155,7 @@ def test_desktop_launcher_uses_same_python_and_shared_labels(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("with_images", [False, True])
-def test_headless_launcher_opens_browser_with_optional_images(tmp_path, monkeypatch, with_images):
+def test_headless_launcher_opens_browser_with_optional_images(tmp_path, monkeypatch, with_images, labelme_shutdown):
     from training.image_segmentation import __main__ as cli
     from training.image_segmentation import browser
 
@@ -150,7 +163,11 @@ def test_headless_launcher_opens_browser_with_optional_images(tmp_path, monkeypa
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
-    launch = MagicMock(return_value=7)
+    def start(command):
+        labelme_shutdown.assert_called_once_with()
+        return 7
+
+    launch = MagicMock(side_effect=start)
     monkeypatch.setattr(browser, "run_browser", launch)
     images = [str(tmp_path)] if with_images else []
 
@@ -161,7 +178,7 @@ def test_headless_launcher_opens_browser_with_optional_images(tmp_path, monkeypa
     assert command[2 + len(images)] == "--labels"
 
 
-def test_browser_flag_overrides_desktop_display(monkeypatch):
+def test_browser_flag_overrides_desktop_display(monkeypatch, labelme_shutdown):
     from training.image_segmentation import __main__ as cli
     from training.image_segmentation import browser
 
@@ -171,7 +188,27 @@ def test_browser_flag_overrides_desktop_display(monkeypatch):
     monkeypatch.setattr(browser, "run_browser", launch)
 
     assert main(["annotate", "--browser"]) == 0
+    labelme_shutdown.assert_called_once_with()
     launch.assert_called_once()
+
+
+def test_failed_shutdown_does_not_launch_a_replacement(monkeypatch, labelme_shutdown):
+    from training.image_segmentation import __main__ as cli
+    from training.image_segmentation import browser
+
+    monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
+    desktop = MagicMock()
+    web = MagicMock()
+    monkeypatch.setattr(cli.subprocess, "call", desktop)
+    monkeypatch.setattr(browser, "run_browser", web)
+    labelme_shutdown.side_effect = RuntimeError("Previous session did not stop")
+
+    with pytest.raises(SystemExit) as exc:
+        main(["annotate"])
+
+    assert exc.value.code == 2
+    desktop.assert_not_called()
+    web.assert_not_called()
 
 
 @pytest.mark.parametrize("plugin_dir", ["/fake/cv2/qt/plugins", "/custom/qt/plugins"])
