@@ -3,13 +3,13 @@ import type { CameraCalibration, GroundPoint, LocalTrackScene, TrackVisionFrame 
 import { VISION_MAX_AGE_MS } from './track-vision-types';
 import { createCameraProjection, validCalibration } from './camera-projection';
 import { reconstructDistanceGrid } from './track-position-analysis';
-import TrackBoundaryCutoff, { MAX_BOUNDARY_START_M, MIN_BOUNDARY_START_M } from './TrackBoundaryCutoff';
+import { createLocalOverviewCamera } from './local-overview-camera';
 
-export default function LocalTrackView({ frame, scene, camera, applied, boundaryStartDistanceM = 5, onBoundaryStartChange }: {
+export default function LocalTrackView({ frame, scene, camera, applied }: {
     frame: TrackVisionFrame | null; scene: LocalTrackScene | null; camera: CameraCalibration; applied: boolean;
-    boundaryStartDistanceM?: number; onBoundaryStartChange?: (value: number) => void;
 }) {
     const [now, setNow] = useState(Date.now);
+    const [overview, setOverview] = useState(true);
     useEffect(() => {
         setNow(Date.now());
         const remaining = frame ? frame.capturedAt + VISION_MAX_AGE_MS - Date.now() : 0;
@@ -17,9 +17,19 @@ export default function LocalTrackView({ frame, scene, camera, applied, boundary
         return () => clearTimeout(timer);
     }, [frame]);
     const distanceGrid = useMemo(() => frame ? reconstructDistanceGrid({ ...frame, calibration: camera }) : [], [frame, camera]);
-    const view = validCalibration(camera) ? createCameraProjection(camera) : null;
-    // Normalize SVG units for readable labels while retaining the capture aspect ratio.
-    const viewWidth = 800, viewHeight = view ? viewWidth * camera.imageHeight / camera.imageWidth : 0;
+    const captureView = validCalibration(camera) ? createCameraProjection(camera) : null;
+    const fresh = frame && frame.capturedAt + VISION_MAX_AGE_MS > Math.max(now, Date.now());
+    const visible = fresh && captureView ? scene : null;
+    const cameraPosition = { x: camera.lateralOffsetM, y: camera.forwardOffsetM, z: camera.heightM };
+    const frustum = captureView ? [[0, 0], [1, 0], [1, 1], [0, 1]].map(([u, v]) => captureView.imageToLocal(u, v, 6)!) : [];
+    const viewCamera = overview && captureView ? createLocalOverviewCamera([
+        { x: 0, y: 0, z: 0 }, { x: 0, y: 3, z: 0 }, cameraPosition, ...frustum,
+        ...(visible?.leftBoundary ?? []), ...(visible?.rightBoundary ?? []),
+        ...(visible?.cars.flatMap((car) => [car.min, car.max]) ?? []),
+    ]) : camera;
+    const view = captureView ? createCameraProjection(viewCamera) : null;
+    // Normalize SVG units for readable labels; camera view retains the capture aspect ratio.
+    const viewWidth = 800, viewHeight = view ? viewWidth * viewCamera.imageHeight / viewCamera.imageWidth : 0;
     const project = (point: GroundPoint) => {
         const pixel = view?.localToImage(point);
         return pixel ? { x: pixel.u * viewWidth, y: pixel.v * viewHeight } : null;
@@ -35,12 +45,8 @@ export default function LocalTrackView({ frame, scene, camera, applied, boundary
         }).join(' ');
     };
     const origin = project({ x: 0, y: 0, z: 0 });
-    const fresh = frame && frame.capturedAt + VISION_MAX_AGE_MS > Math.max(now, Date.now());
-    const visible = fresh && view ? scene : null;
+    const cameraPixel = project(cameraPosition);
     const geometry = visible?.geometry;
-    const startY = camera.forwardOffsetM + boundaryStartDistanceM;
-    const starts = [visible?.leftBoundary[0], visible?.rightBoundary[0]].map((point) =>
-        point && Math.abs(point.y - startY) < 0.0001 ? point : null);
     const gridLabels: Array<{ x: number; y: number; width: number }> = [];
     const status = !frame ? 'Share a driving view to reconstruct the scene.' : !fresh ? 'Waiting for a fresh frame.'
         : !frame.detections.segment || !frame.detections.depth ? 'Enable segmentation and depth; both results are needed for local 3D.'
@@ -48,8 +54,14 @@ export default function LocalTrackView({ frame, scene, camera, applied, boundary
                 : !scene.leftBoundary.length && !scene.rightBoundary.length && !scene.cars.length ? 'No supported track edges or cars in this frame.'
                     : `${scene.leftBoundary.length} left / ${scene.rightBoundary.length} right edge points · ${scene.cars.length} car detections reconstructed.`;
     return <section className="track-vision__reconstruction" aria-label="Local 3D reconstruction">
-        <h3>Local 3D · track edges and cars</h3>
+        <h3>Local 3D · camera, track edges and cars</h3>
         <span className="track-vision__hint">{applied ? 'Calibration applied' : 'Draft camera preview'}</span>
+        <div className="track-vision__controls" role="group" aria-label="Local 3D viewpoint">
+            {[true, false].map((value) => <button key={String(value)} type="button" className="track-vision__capture-toggle"
+                aria-pressed={overview === value} onClick={() => setOverview(value)}>
+                {value ? '3D overview' : 'Camera view'}
+            </button>)}
+        </div>
         {view && <svg className="track-vision__local-scene" viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="group" aria-label="Perspective 3D track edges and cars">
             <g aria-label="Depth distance grid">
                 {visible && distanceGrid.map(({ distanceM, segments }) => {
@@ -89,25 +101,20 @@ export default function LocalTrackView({ frame, scene, camera, applied, boundary
                 })}
             </g>
             <path d={path([{ x: 0, y: 0, z: 0 }, { x: 0, y: 3, z: 0 }])} stroke="#ffbe57" strokeWidth="4" />
-            {origin && <text x={origin.x + 6} y={origin.y}>Your car</text>}
-            {frame && onBoundaryStartChange && <TrackBoundaryCutoff camera={camera} width={viewWidth} value={boundaryStartDistanceM}
-                left={starts[0]} right={starts[1]} onChange={onBoundaryStartChange} />}
+            {origin && <text x={origin.x + (overview ? 14 : 6)} y={origin.y + (overview ? 20 : 0)}>Your car</text>}
+            {overview && cameraPixel && <g aria-label="Capture camera" fill="none" stroke="#ff91d0" strokeWidth="1.5">
+                <path aria-label="Camera field of view" d={[path([...frustum, frustum[0]]),
+                    ...frustum.map((point) => path([cameraPosition, point]))].join(' ')} opacity="0.65" />
+                <path d={path([cameraPosition, { ...cameraPosition, z: 0 }])} strokeDasharray="3 3" />
+                <g transform={`translate(${cameraPixel.x},${cameraPixel.y})`}>
+                    <rect x="-7" y="-5" width="14" height="10" rx="2" fill="#090d13" />
+                    <path d="M7,-3 L12,-6 L12,6 L7,3 Z" fill="#ff91d0" />
+                    <text x="-10" y="20" textAnchor="end">Camera</text>
+                </g>
+            </g>}
         </svg>}
-        {onBoundaryStartChange && <>
-            <div className="track-vision__controls">
-                <label>Boundary start {boundaryStartDistanceM.toFixed(1)} m forward from camera
-                    <input aria-label="Boundary start" type="range" min={MIN_BOUNDARY_START_M} max={MAX_BOUNDARY_START_M}
-                        step="0.1" value={boundaryStartDistanceM} onChange={(event) => onBoundaryStartChange(Number(event.target.value))} />
-                </label>
-            </div>
-            <p className="track-vision__hint">Drag the amber line in local 3D to start detection beyond the hood or cockpit. The line sets a shared forward distance from the camera for both edges.</p>
-            <dl className="track-vision__geometry" aria-label="Boundary starting positions">
-                {starts.map((point, index) => <div key={index}><dt>{index ? 'Right' : 'Left'} start (X, Y, Z)</dt>
-                    <dd>{point ? `${point.x.toFixed(2)}, ${point.y.toFixed(2)}, ${point.z.toFixed(2)} m` : 'Unobserved at start line'}</dd></div>)}
-            </dl>
-        </>}
         <p aria-label="Reconstruction status">{status}</p>
-        <p className="track-vision__hint">Green / blue: track edges · amber: cars · purple: car packs. X right, Y forward, Z up. Distances and visible car surfaces are estimated from monocular depth.</p>
+        <p className="track-vision__hint">Green / blue: track edges · amber: cars · purple: car packs · pink: camera and field of view. X right, Y forward, Z up. Distances and visible car surfaces are estimated from monocular depth.</p>
         <p aria-label="Road fit status">{!fresh ? 'Waiting for a fresh frame.' : geometry
             ? `Road observed from ${geometry.referenceY.toFixed(1)} to ${Math.min(geometry.left.maxY, geometry.right.maxY).toFixed(1)} m ahead.`
             : 'Road geometry unresolved — both edges need reliable segmentation and depth.'}</p>

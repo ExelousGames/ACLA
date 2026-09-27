@@ -55,9 +55,7 @@ export function reconstructDistanceGrid(vision: TrackVisionFrame) {
     const lift = createDepthProjection(vision), scene = semanticScene(vision);
     if (!lift || !scene) return [];
     const supports = scene.visibleRoad;
-    const startY = vision.boundaryStartDistanceM === undefined ? 0 : vision.calibration!.forwardOffsetM + vision.boundaryStartDistanceM;
     const guides = [0.5, 1, 2, 3, 4, 5, 7.5, 10, 15, 20, 30, 40, 60, 100, 150, 200]
-        .filter((distanceM) => distanceM >= startY)
         .map((distanceM) => ({ distanceM, segments: [] as Array<[GroundPoint, GroundPoint]> }));
     // Sample in mask coordinates so letterboxing and excluded surfaces match reconstruction.
     const stride = Math.max(1, Math.ceil(Math.max(scene.width, scene.height) / 80));
@@ -71,7 +69,7 @@ export function reconstructDistanceGrid(vision: TrackVisionFrame) {
         rows.push(points);
     }
     const contour = (a: GroundPoint | null, b: GroundPoint | null, c: GroundPoint | null) => {
-        // Missing road/depth breaks the contour; do not bridge cars, cutoffs or background.
+        // Missing road/depth breaks the contour; do not bridge cars or background.
         if (!a || !b || !c) return;
         const near = Math.min(a.y, b.y, c.y), far = Math.max(a.y, b.y, c.y);
         for (const guide of guides) {
@@ -104,27 +102,17 @@ export function reconstructTrack(vision: TrackVisionFrame | null): LocalTrackSce
     if (!vision) return null;
     const lift = createDepthProjection(vision), scene = semanticScene(vision);
     if (!lift || !scene) return null;
-    const startY = vision.boundaryStartDistanceM === undefined ? 0 : vision.calibration!.forwardOffsetM + vision.boundaryStartDistanceM;
+    const startV = vision.boundaryDetectionStartV ?? 1;
     const leftBoundary: GroundPoint[] = [], rightBoundary: GroundPoint[] = [], centers: GroundPoint[] = [];
     let anchor = 0.5, lastLeftRow = scene.height, lastRightRow = scene.height;
-    let previousLeft: GroundPoint | null = null, previousRight: GroundPoint | null = null;
     const continuous = (a: GroundPoint, b: GroundPoint) => {
         const dy = b.y - a.y;
         return dy > 0 && dy <= 15 && Math.abs(b.x - a.x) <= 1 + dy * 0.7;
     };
-    const append = (boundary: GroundPoint[], point: GroundPoint, previous: GroundPoint | null, rowGap: number) => {
-        if (point.y < startY) return;
-        // Intersect each observed edge with the same local Y plane. Never extrapolate across missing data.
-        if (!boundary.length && previous && previous.y < startY && point.y > startY && rowGap === 1 && continuous(previous, point)) {
-            const t = (startY - previous.y) / (point.y - previous.y);
-            boundary.push({ x: previous.x + t * (point.x - previous.x), y: startY,
-                z: previous.z + t * (point.z - previous.z) });
-        }
-        boundary.push(point);
-    };
     for (let row = scene.height - 1; row >= 0; row--) {
         const { v } = scene.sourcePixel(0, row + 0.5);
-        if (v <= 0 || v >= 1) continue;
+        // The line limits image rows only. Each retained pixel gets its distance from depth.
+        if (v <= 0 || v >= 1 || v > startV) continue;
         const candidates: Array<{ left: GroundPoint | null; right: GroundPoint | null; center: number }> = [];
         const at = (column: number) => scene.sample(scene.sourcePixel(column + 0.5, row + 0.5).u, v);
         const edge = (column: number, outside: number, boundary: GroundPoint[], lastRow: number) => {
@@ -154,18 +142,16 @@ export function reconstructTrack(vision: TrackVisionFrame | null): LocalTrackSce
         const best = candidates.sort((a, b) => Math.abs(a.center - previousCenter) - Math.abs(b.center - previousCenter))[0];
         if (!best) continue;
         if (best.left) {
-            append(leftBoundary, best.left, previousLeft, lastLeftRow - row);
-            previousLeft = best.left;
+            leftBoundary.push(best.left);
             lastLeftRow = row;
         }
         if (best.right) {
-            append(rightBoundary, best.right, previousRight, lastRightRow - row);
-            previousRight = best.right;
+            rightBoundary.push(best.right);
             lastRightRow = row;
         }
-        if (best.left && best.right && best.left.y >= startY && best.right.y >= startY) centers.push({ x: (best.left.x + best.right.x) / 2,
+        if (best.left && best.right) centers.push({ x: (best.left.x + best.right.x) / 2,
             y: (best.left.y + best.right.y) / 2, z: (best.left.z + best.right.z) / 2 });
-        if ((best.left && best.left.y >= startY) || (best.right && best.right.y >= startY)) anchor = best.center;
+        anchor = best.center;
     }
     const cars: ReconstructedCar[] = [];
     for (const item of scene.traffic) {

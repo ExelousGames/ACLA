@@ -126,28 +126,26 @@ estimate, especially on simulator images; camera settings describe camera pose,
 not a learned depth-scale correction. See the
 [Ultralytics depth model contract](https://docs.ultralytics.com/tasks/depth/).
 
-Drag the amber **Boundary start** line in the local 3D panel, or adjust its meter
-slider, to place the detection start beyond the hood or cockpit. The default is
-5 m forward from the camera. The line lies in the local cross-track plane
-`Y = camera.forwardOffsetM + boundaryStartDistanceM`; camera yaw can make its two
-ends appear on different image rows. It is projected with the same calibrated
-camera as the reconstructed edges.
+Drag the amber **Boundary detection start** line on the capture preview, or use
+its percentage slider, to choose the lowest image row for boundary detection.
+The default is 80% down from the top. Detection scans upward from this horizontal
+screen-space line, ignoring rows below it. The line stays at the same image row
+regardless of camera calibration, depth estimates, or the local 3D viewpoint.
+It remains adjustable in the expanded capture preview.
 
-Both boundary starting positions are calculated independently by interpolating
-observed edge segments at that plane, preserving their X and Z coordinates.
-Colored markers and coordinate readouts show supported starts. Missing, clipped
-or occluded edges remain unresolved at the line rather than being extrapolated;
-detection can resume farther ahead. The distance grid and road fit also begin
-at or beyond the local start plane. Raw masks, depth maps and car reconstruction
-are unchanged.
+Every detected edge pixel gets its own 3D position from the depth model and
+camera calibration. The line specifies no metric distance, shared forward plane,
+or boundary endpoint. Left and right edges may have different measured distances;
+missing or occluded observations are not interpolated onto the screen line.
+Raw masks, depth maps, distance contours and car reconstruction are unchanged.
 
-Moving the line updates the local 3D preview and published geometry immediately,
-without rerunning inference or renewing the frame timestamp. Its distance is
-retained across capture restarts while the panel stays open. Arrow keys move the
-line by 0.5 m; the slider supports 0.1 m adjustments from 0.5 to 100 m.
+Moving the line updates boundary reconstruction and published geometry immediately,
+without rerunning inference or renewing the frame timestamp. Its screen position
+is retained across capture restarts and resolution changes while the panel stays
+open. Arrow keys and the slider move it by 1% of image height.
 
-`TrackVisionFrame.boundaryStartDistanceM` stores the vehicle-forward distance
-from the camera in meters; frames without it use all observed edges.
+`TrackVisionFrame.boundaryDetectionStartV` stores the normalized capture-image row:
+0 is the top (no rows), 1 is the bottom (all rows). Frames without it scan all rows.
 `track-position-analysis.ts` scans the mask and lifts each visible edge
 independently using its depth. Cars can bridge an occlusion between road pixels
 but cannot supply a road edge. Other surface masks override road labels. Clipped

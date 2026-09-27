@@ -71,14 +71,17 @@ it('updates boundary geometry immediately and keeps the newest cutoff through pe
     await startCapture();
     fireEvent.click(screen.getByRole('button', { name: 'Apply camera calibration' }));
     const before = ref.current!.getLatestDetection()!;
-    expect(before.boundaryStartDistanceM).toBe(5);
-    expect(within(screen.getByRole('dialog', { name: 'Capture preview' })).queryByRole('slider')).not.toBeInTheDocument();
-    expect(within(screen.getByRole('region', { name: 'Local 3D reconstruction' })).getByRole('slider', { name: 'Boundary start line' })).toBeInTheDocument();
+    expect(before.boundaryDetectionStartV).toBe(0.8);
+    const capture = within(screen.getByRole('dialog', { name: 'Capture preview' }));
+    expect(capture.getByRole('slider', { name: 'Boundary start line' })).toBeInTheDocument();
+    expect(capture.getByRole('slider', { name: 'Boundary start' })).toBeInTheDocument();
+    expect(capture.queryByLabelText('Projected ground grid')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Local 3D reconstruction' })).queryByRole('slider')).not.toBeInTheDocument();
     const edges = screen.getByLabelText('Reconstructed track edges');
     const originalEdges = edges.innerHTML;
     const listener = jest.fn();
     ref.current!.subscribeDetection(listener);
-    fireEvent.change(screen.getByRole('slider', { name: 'Boundary start' }), { target: { value: '12' } });
+    fireEvent.change(screen.getByRole('slider', { name: 'Boundary start' }), { target: { value: '60' } });
     const after = ref.current!.getLatestDetection()!;
     expect(after.capturedAt).toBe(before.capturedAt);
     expect(after.calibration).toEqual(before.calibration);
@@ -87,20 +90,20 @@ it('updates boundary geometry immediately and keeps the newest cutoff through pe
     expect(edges.innerHTML).not.toBe(originalEdges);
     expect(listener).toHaveBeenCalledTimes(1);
     expect(model.detect).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('slider', { name: 'Boundary start line' })).toHaveAttribute('aria-valuenow', '12');
+    expect(screen.getByRole('slider', { name: 'Boundary start line' })).toHaveAttribute('aria-valuenow', '60');
 
     const pending = deferred<typeof detection>();
     model.detect.mockReturnValueOnce(pending.promise);
     await act(async () => { jest.advanceTimersByTime(200); });
     fireEvent.keyDown(screen.getByRole('slider', { name: 'Boundary start line' }), { key: 'ArrowUp' });
     await act(async () => { pending.resolve(fixture.detections.segment as typeof detection); });
-    expect(ref.current!.getLatestDetection()!.boundaryStartDistanceM).toBe(12.5);
-    expect(screen.getByRole('slider', { name: 'Boundary start' })).toHaveValue('12.5');
+    expect(ref.current!.getLatestDetection()!.boundaryDetectionStartV).toBe(0.59);
+    expect(screen.getByRole('slider', { name: 'Boundary start' })).toHaveValue('59');
 
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(screen.queryByRole('slider', { name: 'Boundary start line' })).not.toBeInTheDocument();
     await startCapture();
-    expect(ref.current!.getLatestDetection()!.boundaryStartDistanceM).toBe(12.5);
+    expect(ref.current!.getLatestDetection()!.boundaryDetectionStartV).toBe(0.59);
 });
 
 it.each(['restore', 'escape'])('keeps capture and calibration running while expanding and returning with %s', async (action) => {
@@ -129,6 +132,10 @@ it.each(['restore', 'escape'])('keeps capture and calibration running while expa
     expect(model.detect.mock.calls.length).toBeGreaterThan(callsBeforeFrame);
     expect(ref.current!.getLatestDetection()!.calibration).toEqual(calibration);
     expect(within(preview).getByLabelText('Projected ground grid')).toBeVisible();
+    const boundaryLine = within(preview).getByRole('slider', { name: 'Boundary start line' });
+    fireEvent.keyDown(boundaryLine, { key: 'ArrowUp' });
+    expect(ref.current!.getLatestDetection()!.boundaryDetectionStartV).toBe(0.79);
+    expect(within(preview).getByRole('slider', { name: 'Boundary start' })).toHaveValue('79');
 
     if (action === 'restore') fireEvent.click(screen.getByRole('button', { name: 'Restore capture' }));
     else fireEvent(preview, new Event('cancel', { cancelable: true }));
@@ -136,6 +143,7 @@ it.each(['restore', 'escape'])('keeps capture and calibration running while expa
     expect(screen.getByRole('button', { name: 'Expand capture' })).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByLabelText('Captured game frame with vision detections')).toBe(canvas);
     expect(preview.querySelector('video')).toBe(video);
+    expect(within(preview).getByRole('slider', { name: 'Boundary start line' })).toBe(boundaryLine);
     expect(video.srcObject).toBe(stream);
     expect(getDisplayMedia).toHaveBeenCalledTimes(1);
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
@@ -149,19 +157,20 @@ it.each(['restore', 'escape'])('keeps capture and calibration running while expa
     expect(within(preview).getByRole('button', { name: 'Restore capture' })).toBeEnabled();
 });
 
-it('keeps camera position and the optional reference grid without any bird-eye view', async () => {
+it('shows the camera in local 3D alongside the optional capture reference grid', async () => {
     model.detect.mockResolvedValue(vision(0).detections.segment);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     expect(screen.getByRole('group', { name: 'Camera position' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Enable on capture' })).toBeDisabled();
-    expect(screen.queryByText(/bird.?s?.?eye/i)).not.toBeInTheDocument();
     await startCapture();
     const capture = within(screen.getByLabelText('Capture preview'));
     fireEvent.click(screen.getByRole('button', { name: 'Enable on capture' }));
     expect(capture.getByLabelText('Projected ground grid')).toBeInTheDocument();
     expect(screen.getByLabelText('Perspective 3D track edges and cars')).toBeInTheDocument();
+    expect(screen.getByLabelText('Capture camera')).toBeInTheDocument();
+    expect(screen.getByLabelText('Boundary start line')).toBeInTheDocument();
     expect(screen.getByLabelText('Reconstructed cars').querySelectorAll('circle').length).toBeGreaterThan(0);
     expect(ref.current!.getLatestDetection()?.reconstruction).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Apply camera calibration' }));
@@ -170,6 +179,7 @@ it('keeps camera position and the optional reference grid without any bird-eye v
     expect(applied?.geometry).not.toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Disable on capture' }));
     expect(capture.queryByLabelText('Projected ground grid')).not.toBeInTheDocument();
+    expect(capture.getByRole('slider', { name: 'Boundary start line' })).toBeInTheDocument();
     expect(ref.current!.getLatestDetection()).toBe(applied);
     expect(model.detect).toHaveBeenCalledTimes(1);
     expect(track.stop).not.toHaveBeenCalled();
@@ -228,7 +238,7 @@ it('publishes metric geometry and positions only after camera calibration is app
     expect(screen.queryByLabelText('Perspective 3D track edges and cars')).not.toBeInTheDocument();
 });
 
-it('expires positions and boundary coordinates during pending inference without renewing the timestamp', async () => {
+it('expires reconstructed positions during pending inference without renewing the timestamp', async () => {
     model.detect.mockResolvedValue(vision(0).detections.segment);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
@@ -246,7 +256,7 @@ it('expires positions and boundary coordinates during pending inference without 
     expect(screen.getByLabelText('Road fit status')).toHaveTextContent('Waiting for a fresh frame');
     expect(screen.getByLabelText('Reconstructed cars').children).toHaveLength(0);
     expect(edges.querySelectorAll('path')).toHaveLength(0);
-    fireEvent.change(screen.getByRole('slider', { name: 'Boundary start' }), { target: { value: '12' } });
+    fireEvent.change(screen.getByRole('slider', { name: 'Boundary start' }), { target: { value: '60' } });
     expect(edges.querySelectorAll('path')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Apply camera calibration' }));
     expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
@@ -267,11 +277,14 @@ it('validates camera settings and previews height and angle changes without reru
     await flush();
     expect(screen.getByRole('button', { name: 'Apply camera calibration' })).toBeDisabled();
     await startCapture();
+    fireEvent.click(screen.getByRole('button', { name: 'Camera view' }));
     fireEvent.click(screen.getByRole('button', { name: 'Enable on capture' }));
     const capturedAt = ref.current!.getLatestDetection()!.capturedAt;
     const grid = screen.getByLabelText('Projected ground grid');
     const originalGrid = grid.innerHTML;
     const localView = screen.getByLabelText('Perspective 3D track edges and cars');
+    const scanLine = screen.getByRole('slider', { name: 'Boundary start line' });
+    const originalScanLine = scanLine.querySelector('path')!.getAttribute('d');
     const localGrid = () => Array.from(screen.getByLabelText('Depth distance grid').querySelectorAll('path'))
         .map((path) => path.getAttribute('d')).join(' ');
     const originalLocalGrid = localGrid();
@@ -281,6 +294,7 @@ it('validates camera settings and previews height and angle changes without reru
     // Height moves the calibration plane, but must not displace measured road contours.
     expect(localGrid()).toBe(originalLocalGrid);
     fireEvent.change(screen.getByLabelText('Pitch down (°)'), { target: { value: '8' } });
+    expect(scanLine.querySelector('path')).toHaveAttribute('d', originalScanLine);
     expect(grid.innerHTML).not.toBe(originalGrid);
     expect(localGrid()).not.toBe(originalLocalGrid);
     const draftLocalGrid = localGrid();
@@ -289,6 +303,8 @@ it('validates camera settings and previews height and angle changes without reru
     expect(ref.current!.getLatestDetection()).toMatchObject({ capturedAt, calibration: { heightM: 1.8, pitchDeg: 8 } });
     expect(localGrid()).toBe(draftLocalGrid);
     fireEvent.change(screen.getByLabelText('Camera height (m)'), { target: { value: '' } });
+    expect(scanLine).toBeInTheDocument();
+    expect(scanLine.querySelector('path')).toHaveAttribute('d', originalScanLine);
     expect(ref.current!.getLatestDetection()?.calibration).toBeUndefined();
     expect(screen.getByRole('button', { name: 'Apply camera calibration' })).toBeDisabled();
     expect(screen.queryByLabelText('Projected ground grid')).not.toBeInTheDocument();

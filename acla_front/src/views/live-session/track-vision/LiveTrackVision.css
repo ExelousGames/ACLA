@@ -32,7 +32,8 @@
 .track-vision__preview:modal { position: fixed; inset: 24px; width: calc(100% - 48px); height: calc(100% - 48px); min-height: 0; max-height: none; }
 .track-vision__preview::backdrop { background: #000b; }
 .track-vision__preview-controls { position: absolute; top: 8px; right: 8px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.track-vision__ground-grid { pointer-events: none; width: 100%; height: 100%; position: absolute; inset: 0; }
+.track-vision__ground-grid, .track-vision__boundary-overlay { pointer-events: none; width: 100%; height: 100%; position: absolute; inset: 0; }
+.track-vision__boundary-controls { position: absolute; bottom: 8px; left: 8px; max-width: calc(100% - 32px); padding: 6px 8px; border-radius: 6px; background: #090d13df; }
 .track-vision__boundary-handle { pointer-events: all; cursor: ns-resize; touch-action: none; }
 .track-vision__boundary-handle:focus-visible { outline: 2px solid #37efac; }
 .track-vision__camera-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
@@ -53,4 +54,4 @@
 .track-vision__reconstruction { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; }
 .track-vision__reconstruction h3 { margin: 0; font-size: 12px; }
 .track-vision__local-scene { width: 100%; min-height: 180px; max-height: 420px; background: #090d13; border-radius: 6px; }
-.track-vision__local-scene text { fill: #e7ecf2; font-size: 11px; paint-order: stroke; stroke: #090d13; stroke-width: 2px; }
+.track-vision__local-scene text, .track-vision__boundary-overlay text { fill: #e7ecf2; font-size: 11px; paint-order: stroke; stroke: #090d13; stroke-width: 2px; }

@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import LocalTrackView from './LocalTrackView';
 import { reconstructTrack } from './track-position-analysis';
 import { vision } from './test-fixtures';
@@ -14,6 +14,7 @@ it('aligns the rendered grid with near road depth, preserves car distances and h
     const scene = reconstructTrack(frame)!;
     expect(scene.geometry).toBeNull();
     const { rerender } = render(<LocalTrackView frame={frame} scene={scene} camera={frame.calibration!} applied />);
+    fireEvent.click(screen.getByRole('button', { name: 'Camera view' }));
     const grid = screen.getByLabelText('Depth distance grid');
     const paths = Array.from(grid.querySelectorAll('path')).map((path) => path.getAttribute('d')).join(' ');
     const coordinates = Array.from(paths.matchAll(/[ML](-?[\d.]+),(-?[\d.]+)/g));
@@ -60,6 +61,7 @@ it.each<[Partial<CameraParameters>, string]>([
     const scene: LocalTrackScene = { leftBoundary: [{ x: 1, y: 15, z: 0 }, { x: 1, y: 25, z: 0 }],
         rightBoundary: [], cars: [], geometry: null };
     const { rerender } = render(<LocalTrackView frame={frame} scene={scene} camera={camera} applied />);
+    fireEvent.click(screen.getByRole('button', { name: 'Camera view' }));
     const edge = () => screen.getByLabelText('Reconstructed track edges').querySelector('path')!.getAttribute('d');
     expect(screen.getByLabelText('Perspective 3D track edges and cars')).toHaveAttribute('viewBox', '0 0 800 450');
     expect(edge()).toBe('M480.00,305.00 L440.00,265.00');
@@ -81,24 +83,38 @@ it('hides the scene for invalid camera settings without substituting a camera', 
     expect(screen.getByLabelText('Perspective 3D track edges and cars')).toBeInTheDocument();
 });
 
-it('shows measured start positions independently and clears them when the frame expires', () => {
-    const frame = vision(Date.now(), { cars: [], corner: 'straight', player: 'middle', camera: { yawDeg: 15, forwardOffsetM: 1 } });
-    frame.boundaryStartDistanceM = 12;
-    const scene = reconstructTrack(frame)!;
-    const props = { frame, scene, camera: frame.calibration!, applied: true, boundaryStartDistanceM: 12, onBoundaryStartChange: jest.fn() };
-    const { rerender } = render(<LocalTrackView {...props} />);
-    const positions = screen.getByLabelText('Boundary starting positions');
-    for (const point of [scene.leftBoundary[0], scene.rightBoundary[0]]) {
-        expect(positions).toHaveTextContent(`${point.x.toFixed(2)}, 13.00, ${point.z.toFixed(2)} m`);
+it.each([0, 0.6, 1])('keeps the screen cutoff %s out of local 3D', (startV) => {
+    const frame = vision(Date.now(), { camera: { lateralOffsetM: -3, forwardOffsetM: 5, yawDeg: 45,
+        pitchDeg: -15, horizontalFovDeg: 150 }, cars: [] });
+    frame.boundaryDetectionStartV = startV;
+    render(<LocalTrackView frame={frame} scene={null} camera={frame.calibration!} applied={false} />);
+    expect(screen.getByRole('button', { name: '3D overview' })).toHaveAttribute('aria-pressed', 'true');
+    const camera = screen.getByLabelText('Capture camera');
+    const position = camera.querySelector('g')!.getAttribute('transform')!.match(/translate\(([^,]+),([^\)]+)\)/)!;
+    for (const [x, y] of [[Number(position[1]), Number(position[2])]]) {
+        expect(x).toBeGreaterThan(20);
+        expect(x).toBeLessThan(780);
+        expect(y).toBeGreaterThan(20);
+        expect(y).toBeLessThan(430);
     }
-    expect(screen.getByLabelText('Left boundary start')).toBeInTheDocument();
-    expect(screen.getByLabelText('Right boundary start')).toBeInTheDocument();
-    rerender(<LocalTrackView {...props} scene={{ ...scene, leftBoundary: [] }} />);
-    expect(screen.queryByLabelText('Left boundary start')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Right boundary start')).toBeInTheDocument();
-    expect(positions).toHaveTextContent('Unobserved at start line');
-    rerender(<LocalTrackView {...props} frame={{ ...frame, capturedAt: Date.now() - VISION_MAX_AGE_MS - 1 }} />);
-    expect(screen.queryByLabelText('Left boundary start')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Right boundary start')).not.toBeInTheDocument();
-    expect(positions).not.toHaveTextContent('13.00');
+    expect(screen.queryByLabelText('Boundary start line')).not.toBeInTheDocument();
+    expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Boundary starting positions')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Camera view' }));
+    expect(screen.queryByLabelText('Capture camera')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Boundary start line')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '3D overview' }));
+    expect(screen.getByLabelText('Capture camera')).toBeInTheDocument();
+});
+
+it('updates the camera pose and field of view in the overview when calibration changes', () => {
+    const frame = vision(Date.now(), { cars: [] });
+    const props = { frame, scene: reconstructTrack(frame), camera: frame.calibration!, applied: false };
+    const { rerender } = render(<LocalTrackView {...props} />);
+    const frustum = () => screen.getByLabelText('Camera field of view').getAttribute('d');
+    const original = frustum();
+    rerender(<LocalTrackView {...props} camera={{ ...props.camera, heightM: 3, yawDeg: 30, horizontalFovDeg: 60 }} />);
+    expect(frustum()).not.toBe(original);
+    expect(screen.getByLabelText('Capture camera')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Boundary start line')).not.toBeInTheDocument();
 });

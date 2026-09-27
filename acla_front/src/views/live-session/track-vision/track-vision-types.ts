@@ -99,8 +99,8 @@ export interface TrackVisionFrame {
     capturedAt: number;
     width: number;
     height: number;
-    /** Boundary start plane, in vehicle-forward meters from the camera. Omit for all observed edges. */
-    boundaryStartDistanceM?: number;
+    /** Lowest capture-image row to scan for boundaries: 0 = top, 1 = bottom. Omit to scan the full image. */
+    boundaryDetectionStartV?: number;
     /** Explicitly applied calibration for this capture resolution. No implicit default. */
     calibration?: CameraCalibration;
     detections: Partial<Record<DetectionTask, VisionResult>>;
