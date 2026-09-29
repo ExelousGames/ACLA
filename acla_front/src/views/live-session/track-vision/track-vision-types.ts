@@ -46,6 +46,10 @@ export interface CameraCalibration extends CameraParameters {
 
 /** Vehicle coordinates in meters: X right, Y forward, Z up. */
 export interface GroundPoint { x: number; y: number; z: number }
+export interface TrackBoundaryPoint extends GroundPoint {
+    /** Inferred behind traffic from visible edge points; not a depth observation. */
+    estimated?: boolean;
+}
 export interface ReconstructedCar {
     classId: number;
     confidence: number;
@@ -58,11 +62,26 @@ export interface ReconstructedCar {
     roadSupported: boolean;
 }
 export interface LocalTrackScene {
-    /** Independently observed edges; arrays need not have matching lengths or rows. */
-    leftBoundary: GroundPoint[];
-    rightBoundary: GroundPoint[];
+    /** Visible edges plus marked occlusion estimates; lengths and rows can differ. */
+    leftBoundary: TrackBoundaryPoint[];
+    rightBoundary: TrackBoundaryPoint[];
     cars: ReconstructedCar[];
     geometry: TrackGeometry | null;
+}
+export interface SceneMemoryPoint extends GroundPoint {
+    surface: 'road' | 'roadside' | 'left-edge' | 'right-edge';
+    lastSeenAt: number;
+    observations: number;
+}
+/** Short-lived static surfaces, expressed in the latest frame's local coordinates. */
+export interface TrackSceneMemory {
+    capturedAt: number;
+    points: SceneMemoryPoint[];
+    status: 'seeded' | 'aligned' | 'reset';
+    reason: string;
+    matchedFeatures: number;
+    inliers: number;
+    alignmentErrorM: number | null;
 }
 export interface RoadPolynomial {
     /** X(Y) = c0 + c1 Y + c2 Y², in meters. */
@@ -72,8 +91,8 @@ export interface RoadPolynomial {
     rmseM: number;
 }
 export interface TrackGeometry {
-    leftBoundary: GroundPoint[];
-    rightBoundary: GroundPoint[];
+    leftBoundary: TrackBoundaryPoint[];
+    rightBoundary: TrackBoundaryPoint[];
     left: RoadPolynomial;
     right: RoadPolynomial;
     center: RoadPolynomial;
@@ -99,8 +118,6 @@ export interface TrackVisionFrame {
     capturedAt: number;
     width: number;
     height: number;
-    /** Lowest capture-image row to scan for boundaries: 0 = top, 1 = bottom. Omit to scan the full image. */
-    boundaryDetectionStartV?: number;
     /** Explicitly applied calibration for this capture resolution. No implicit default. */
     calibration?: CameraCalibration;
     detections: Partial<Record<DetectionTask, VisionResult>>;
@@ -108,6 +125,8 @@ export interface TrackVisionFrame {
 
 export interface TrackVisionDetection extends TrackVisionFrame {
     reconstruction: LocalTrackScene | null;
+    /** Visual-motion fusion only; cars and coaching geometry remain frame-local. */
+    sceneMemory?: TrackSceneMemory | null;
     geometry: TrackGeometry | null;
     /** Null without segmentation; unknown scene properties remain unset. */
     analysis: TrackVisionAnalysis | null;

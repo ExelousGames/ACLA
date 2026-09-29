@@ -4,6 +4,8 @@ Track Vision runs locally in the Electron desktop app. Open **Live Session → A
 
 Use **Expand capture** in the preview to fill most of the app window. Capture, detections, and the optional camera grid continue at the larger size. Choose **Restore capture** or press **Escape** to return to the panel; **Stop capture** is also available in the expanded view.
 
+Use **Display label** to show only one segmentation label's masks, boxes, and captions in the capture preview, or choose **All labels** (the default). Changing the selection updates the current preview immediately. Detection, screen analysis, and local 3D reconstruction continue using every label.
+
 ## Backend model contract
 
 `GET /ai-model/ultralytics/track-vision` requires the normal JWT and returns the newest uploaded `segment` model, ordered by `createdAt` and `_id`. It returns 404 when none is available. The response contains:
@@ -51,7 +53,7 @@ All frames and inference stay on this device. Captured frames run sequentially a
 
 `LiveTrackVision` registers a `TrackVisionHandle` as `visualization:track-vision`. Consumers use `getLatestDetection()` or `subscribeDetection(listener)`. Results include the source timestamp and dimensions, successful segmentation under `detections.segment`, and depth under `detections.depth`. Masks, boxes, and depth maps refer to the letterboxed model input; drawing segmentation removes its padding. Results clear on stop, configuration changes, and unmount. Depth values remain available to detection consumers without being rendered as colors.
 
-The capture preview and working map both use `createSegmentationLayers` for overlapping masks. Track coverage is retained independently of cars and car packs, regardless of detection order. The preview composites foreground masks over the track instead of replacing its pixels. Reconstruction uses the retained track for road support while excluding car-covered pixels from road depth sampling. Raw instance masks remain unchanged.
+The capture preview and working map both use `createSegmentationLayers` for overlapping masks. Track coverage is retained independently of cars and car packs, regardless of detection order. The preview draws the constructed, cleaned track corridor and composites traffic over it; excluded surfaces, including car interior, remove overlapping track pixels. Reconstruction uses the retained track for road support while excluding car-covered pixels from road depth sampling. Raw instance masks remain unchanged.
 
 ## Screen analysis
 
@@ -69,10 +71,12 @@ Label matching ignores case and normalizes whitespace.
 
 | Labels | Use in position analysis |
 | --- | --- |
-| `track` | Racing surface whose mask defines the left and right track edges |
+| `track` | Identifies the racing corridor and anchors left/right boundary construction |
 | `car` | Locate an individual opponent relative to track edges at its depth |
 | `car pack` | Establish traffic ahead and bridge road occlusion; a group does not supply an individual opponent position |
-| `curb`, `grass`, `other`, `fence`, `sand`, `Outfield asphalt road` | Excluded from usable track, even where their masks overlap the track mask |
+| `curb`, `grass`, `sand`, `Outfield asphalt road` | Their nearby inner edges refine the track outline; their surfaces remain excluded even where they overlap track |
+| `car interior` | Cuts bonnet, dashboard and windshield/pillar regions out of the completed track mask and rejects nearby outline points so its contour is not treated as a track boundary |
+| `other`, `fence` | Excluded obstacles that block boundary expansion |
 
 Legacy track aliases (`road`, `asphalt`, `tarmac`) and individual-car aliases
 remain supported, but are not required. `Outfield asphalt road` is never a track
@@ -88,11 +92,14 @@ origin. A left-seat camera has a negative lateral offset. The centered pinhole
 camera assumes square pixels and zero roll. Initial values are a draft; select
 **Apply camera calibration** to publish the reconstruction and positions.
 
-The local 3D preview uses the same camera height, angles, field of view and offsets
-shown in the camera controls for both reconstruction and display. It preserves
-the capture aspect ratio and updates from draft settings without rerunning
-inference. There is no separate display camera or automatic camera override;
-invalid settings hide the preview until corrected.
+The local 3D preview defaults to a **3D overview** of the reconstructed world,
+without a capture camera icon or field-of-view lines. Drag with a mouse, pen or
+touch to orbit the scene, or focus it and use the arrow keys. **Reset view** or
+Home restores the initial viewpoint. Rotation persists across incoming frames
+and viewpoint switches and does not change capture calibration.
+**Camera view** uses the camera controls for display and preserves the capture
+aspect ratio. Reconstruction in both modes follows draft camera settings without
+rerunning inference; invalid settings hide the preview until corrected.
 **Enable on capture** shows a reference ground grid on the source image for
 checking camera placement. The grid is only a calibration aid; it supplies no
 reconstructed geometry. The perspective 3D panel shows track edges, visible car
@@ -102,7 +109,7 @@ from individual opponents. No top-down image warp or display range controls rema
 The local 3D distance grid follows contours of the detected road's measured depth,
 using the same vehicle-forward meters as car labels. It retains road elevation
 instead of assuming a flat ground plane, and works without a successful road-edge
-fit. Cars, excluded surfaces, missing depth and the boundary cutoff interrupt the
+fit. Cars, excluded surfaces and missing depth interrupt the
 grid; absent or stale road observations show no distance grid. The optional grid
 on the capture remains a separate camera-calibration reference.
 
@@ -126,31 +133,51 @@ estimate, especially on simulator images; camera settings describe camera pose,
 not a learned depth-scale correction. See the
 [Ultralytics depth model contract](https://docs.ultralytics.com/tasks/depth/).
 
-Drag the amber **Boundary detection start** line on the capture preview, or use
-its percentage slider, to choose the lowest image row for boundary detection.
-The default is 80% down from the top. Detection scans upward from this horizontal
-screen-space line, ignoring rows below it. The line stays at the same image row
-regardless of camera calibration, depth estimates, or the local 3D viewpoint.
-It remains adjustable in the expanded capture preview.
-
+Boundary detection scans the full captured image from bottom to top.
 Every detected edge pixel gets its own 3D position from the depth model and
-camera calibration. The line specifies no metric distance, shared forward plane,
-or boundary endpoint. Left and right edges may have different measured distances;
-missing or occluded observations are not interpolated onto the screen line.
-Raw masks, depth maps, distance contours and car reconstruction are unchanged.
+camera calibration. Left and right edges may have different measured distances.
+`track-boundary-mask.ts` constructs a corridor using the track mask as a seed and
+the inner edges of nearby curb, grass, sand and outfield-asphalt masks as boundary
+evidence. It closes unlabeled edge gaps within 4% of the mask width and 35% of the
+observed corridor width (with a two-pixel minimum search distance). When track
+labels are missing for at most two rows, both roadside edges and track observations
+above and below must support the section. It does not extend through traffic or
+obstacles, search beyond these limits, or grow from already recovered rows.
+Without nearby surface evidence, the observed track edge remains the fallback.
+After construction, a far-to-near pass rejects abrupt increases in corridor width.
+Its tolerance follows the width and perspective growth of accepted rows, with a
+pixel-quantization allowance; ordinary widening and bends remain supported.
+Rejected rows never become new width references, preventing a sustained bonnet
+flare from seeding both boundaries. Missing observations of up to two rows retain
+continuity; longer gaps allow independently observed track to resume. The filter
+removes unsupported spans instead of clamping them into invented boundary edges.
+The `car interior` mask is subtracted after construction and filtering, so gap
+filling cannot leave track pixels on bodywork. Overlapping interior pixels do not
+supply visible road evidence or create artificial narrowing in the width check.
+Constructed and fallback edge points near `car interior` are rejected before depth
+reconstruction and road fitting. The check covers neighboring rows and columns
+within 1% of the larger mask dimension, rounded up, with a two-pixel minimum to
+tolerate small segmentation gaps. This suppresses cockpit contours without moving
+the road edge to the margin; the opposite edge and observations beyond it remain usable.
+Raw masks, opponent road support and the distance grid retain observed track coverage.
 
-Moving the line updates boundary reconstruction and published geometry immediately,
-without rerunning inference or renewing the frame timestamp. Its screen position
-is retained across capture restarts and resolution changes while the panel stays
-open. Arrow keys and the slider move it by 1% of image height.
-
-`TrackVisionFrame.boundaryDetectionStartV` stores the normalized capture-image row:
-0 is the top (no rows), 1 is the bottom (all rows). Frames without it scan all rows.
-`track-position-analysis.ts` scans the mask and lifts each visible edge
-independently using its depth. Cars can bridge an occlusion between road pixels
-but cannot supply a road edge. Other surface masks override road labels. Clipped
+`track-position-analysis.ts` lifts each constructed edge independently using
+measured depth from inside the corridor. Car-covered pixels never supply measured
+road edges or road depth. Other surface masks override road labels. Clipped
 edges, invalid depths and abrupt changes reject only the affected edge observation.
 Scanning resumes beyond gaps, and the boundary arrays can have different lengths.
+
+After collecting visible edges, short car/car-pack occlusions are filled by
+interpolating between visible 3D points on the same edge. Both endpoints must be
+present in the current frame, no more than 15 m apart in forward distance, and pass
+lateral and elevation continuity checks. Every missing image row must project
+inside traffic, outside excluded surfaces and away from the cockpit. Perspective-correct
+weights preserve depth and elevation along the endpoints' 3D segment, including
+slopes and camera rotation. Inferred points carry `estimated: true` and appear as
+dashed sections in the local 3D view. Long or unbracketed gaps remain unresolved;
+estimates are never used to seed more estimates. Visible measurements replace them
+as soon as traffic clears. Raw masks and the measured distance grid are unchanged.
+
 Individual car and car-pack masks select depth samples
 for visible surface point clouds. Robust bounds and median centers are computed
 from those samples, without inventing hidden vehicle surfaces or fixed dimensions.
@@ -159,7 +186,9 @@ Cars can be reconstructed even when there is no usable road fit.
 `reconstruction` contains `leftBoundary`, `rightBoundary`, `cars`, and a nullable
 `geometry`. `road-polynomial.ts` fits each boundary's horizontal trace as
 `X(Y) = c0 + c1*Y + c2*Y²`, using robust least squares with at least eight observed
-samples spanning 10 m. Width, fit error and opposing bends reject uncertain fits.
+samples spanning 10 m. Inferred points are excluded from fitting, so they do not
+increase support or confidence; geometry's boundary arrays retain their estimate
+markers for display. Width, fit error and opposing bends reject uncertain fits.
 Raw 3D edges and cars remain visible even when the horizontal road fit is unresolved.
 
 The existing `geometry` and `analysis` fields remain available to consumers.
@@ -176,3 +205,36 @@ Missing or failed segmentation/depth clears the reconstruction and leaves positi
 unknown. Capture can continue with either detector alone. Displayed 3D geometry
 and positions expire after two seconds; camera edits never renew a capture timestamp.
 Live Phrases restarts its hold when applied camera parameters change.
+
+## Rolling scene memory
+
+Applying camera calibration also starts a small static scene memory, published as
+`TrackVisionDetection.sceneMemory` and shown as points in the local 3D view.
+`scene-memory.ts` samples confidently segmented track and roadside surfaces plus
+the observed reconstructed edges; inferred boundary points are never counted as
+static observations. Cars, car packs, cockpit and unknown/obstacle masks do
+not supply motion features or static surface samples. Cars, road fits and coaching
+analysis continue to use the current frame.
+
+`visual-motion.ts` matches textured patches in consecutive clean captures, reduced
+to at most 256 pixels on the longest side. Matches must pass uniqueness and reverse
+tracking checks and have valid depth in both frames. A robust fixed-scale 3D rigid
+fit estimates translation and rotation from those correspondences alone. **Driver
+car velocity, rotation and other telemetry are not used.** At least 12 inliers and
+65% agreement are required; degenerate support, excessive residuals and implausible
+frame-to-frame transforms restart memory instead of fusing uncertain geometry.
+
+Each accepted transform moves the old map into the newest frame's local coordinates.
+Samples merge in 0.4 m voxels with bounded observation weights. The map retains at
+most 2,000 points for three seconds, within 40 m sideways and -10 to 80 m forward.
+Observation ages are preserved through alignment; current free-space evidence
+removes contradicted points. Older samples fade in the display, and all memory is
+hidden when the capture is two seconds old or calibration is only a draft.
+
+Capture stop/restart, model reconfiguration/failure, missing depth or segmentation,
+calibration/resolution changes, frame gaps over one second and failed visual
+alignment clear or reseed memory. Reapplying the same calibration to the same
+capture never adds another observation. This is a local rolling map, not persistent
+SLAM: low texture, large image motion (beyond the 16-pixel search radius), depth
+scale drift and camera cuts can prevent accumulation. The status line reports
+alignment or reset, feature support and fit error.

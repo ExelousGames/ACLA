@@ -1,13 +1,16 @@
 import type { CameraCalibration, GroundPoint } from './track-vision-types';
 
+export const DEFAULT_OVERVIEW_ORBIT = { pitchDeg: 40, yawDeg: -25 };
+
 /** An observer outside the reconstructed scene, independent of capture calibration. */
-export function createLocalOverviewCamera(points: GroundPoint[]): CameraCalibration {
+export function createLocalOverviewCamera(points: GroundPoint[], orbit = DEFAULT_OVERVIEW_ORBIT): CameraCalibration {
     const bounds = (axis: keyof GroundPoint) => {
         const values = points.map((point) => point[axis]);
         return (Math.min(...values) + Math.max(...values)) / 2;
     };
     const center = { x: bounds('x'), y: bounds('y'), z: bounds('z') };
-    const pitchDeg = 40, yawDeg = -25, horizontalFovDeg = 60;
+    const { pitchDeg, yawDeg } = orbit;
+    const horizontalFovDeg = 60;
     const pitch = pitchDeg * Math.PI / 180, yaw = yawDeg * Math.PI / 180;
     const horizontalTan = Math.tan(horizontalFovDeg * Math.PI / 360), verticalTan = horizontalTan * 450 / 800;
     // Fit the projected extents so long, narrow roads still fill the viewport.

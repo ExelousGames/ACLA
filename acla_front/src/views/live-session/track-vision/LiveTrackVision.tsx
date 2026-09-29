@@ -6,9 +6,9 @@ import { CameraCalibration, DETECTION_TASKS, DetectionTask, EnabledDetections, T
 import { analyzeTrackPositions, reconstructTrack } from './track-position-analysis';
 import { DEFAULT_CAMERA, validCalibration } from './camera-projection';
 import TrackCalibration, { CameraGroundGrid } from './TrackCalibration';
-import CaptureBoundaryStart from './CaptureBoundaryStart';
 import { drawVisionOverlay } from './vision-overlay';
 import LocalTrackView from './LocalTrackView';
+import { readSceneImage, RollingSceneMemory } from './scene-memory';
 import './LiveTrackVision.css';
 
 export interface TrackVisionHandle extends NamedOperationComponentHandle {
@@ -25,6 +25,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const previewRef = useRef<HTMLDialogElement>(null);
     const previewFrameRef = useRef<HTMLCanvasElement | null>(null);
+    const motionCanvasRef = useRef<HTMLCanvasElement | null>(null);
+    const sceneMemory = useRef(new RollingSceneMemory());
     const streamRef = useRef<MediaStream | null>(null);
     const models = useRef<Partial<Record<DetectionTask, TrackVisionModel>>>({});
     const modelQueue = useRef<Promise<void>>(Promise.resolve());
@@ -50,19 +52,19 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const [hasFrame, setHasFrame] = useState(false);
     const [previewExpanded, setPreviewExpanded] = useState(false);
     const [confidence, setConfidence] = useState(0.5);
-    const [boundaryDetectionStartV, setBoundaryDetectionStartV] = useState(0.8);
+    const [displayLabel, setDisplayLabel] = useState('');
     const [cameraDraft, setCameraDraft] = useState(DEFAULT_CAMERA);
     const [calibration, setCalibration] = useState<CameraCalibration>();
     const [showCalibrationOnCapture, setShowCalibrationOnCapture] = useState(false);
     const cameraCalibration = useRef<CameraCalibration | undefined>(undefined);
-    const [previewResult, setPreviewResult] = useState<TrackVisionFrame | null>(null);
+    const [previewResult, setPreviewResult] = useState<TrackVisionDetection | null>(null);
     const previewWidth = previewFrameRef.current?.width ?? 0, previewHeight = previewFrameRef.current?.height ?? 0;
     const previewCamera = useMemo(() => ({ ...cameraDraft, imageWidth: previewWidth, imageHeight: previewHeight }),
         [cameraDraft, previewWidth, previewHeight]);
     const previewScene = useMemo(() => previewResult ? reconstructTrack({ ...previewResult, calibration: previewCamera }) : null,
         [previewResult, previewCamera]);
-    const options = useRef({ confidence, enabled, allowCpuFallback, boundaryDetectionStartV });
-    options.current = { confidence, enabled, allowCpuFallback, boundaryDetectionStartV };
+    const options = useRef({ confidence, enabled, allowCpuFallback, displayLabel });
+    options.current = { confidence, enabled, allowCpuFallback, displayLabel };
 
     const togglePreviewSize = () => {
         const preview = previewRef.current;
@@ -83,16 +85,30 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         const preview = canvas.getContext('2d');
         if (!preview) throw new Error('Screen preview is unavailable.');
         preview.drawImage(frame, 0, 0);
-        drawVisionOverlay(preview, result);
+        drawVisionOverlay(preview, result, options.current.displayLabel);
     }, []);
+
+    useEffect(() => {
+        if (latest.current) redrawPreview(latest.current);
+    }, [displayLabel, redrawPreview]);
+
+    useEffect(() => {
+        if (detectors.segment.status === 'ready' && displayLabel && !detectors.segment.classNames?.includes(displayLabel)) {
+            setDisplayLabel('');
+        }
+    }, [detectors.segment, displayLabel]);
 
     const publish = useCallback((result: TrackVisionFrame | null) => {
         clearTimeout(analysisExpiry.current);
         const reconstruction = reconstructTrack(result);
+        const source = previewFrameRef.current;
+        const pixels = reconstruction && source ? readSceneImage(source,
+            motionCanvasRef.current ?? (motionCanvasRef.current = document.createElement('canvas'))) : null;
+        const memory = sceneMemory.current.update(result, reconstruction, pixels);
         const geometry = reconstruction?.geometry ?? null;
         const scene = result?.detections.segment?.task === 'segment' ? analyzeTrackPositions(result, reconstruction) : null;
-        latest.current = result ? { ...result, reconstruction, geometry, analysis: scene } : null;
-        setPreviewResult(result);
+        latest.current = result ? { ...result, reconstruction, sceneMemory: memory, geometry, analysis: scene } : null;
+        setPreviewResult(latest.current);
         const remaining = result ? result.capturedAt + VISION_MAX_AGE_MS - Date.now() : 0;
         setAnalysis(remaining > 0 ? scene : null);
         if (scene && remaining > 0) analysisExpiry.current = setTimeout(() => setAnalysis(null), remaining);
@@ -104,12 +120,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         cameraCalibration.current = frame && validCalibration(camera) ? camera : undefined;
         setCalibration(cameraCalibration.current);
         if (result) publish({ ...result, calibration: cameraCalibration.current });
-    };
-    const updateBoundaryStart = (value: number) => {
-        const next = Math.round(Math.max(0, Math.min(1, value)) * 100) / 100;
-        options.current.boundaryDetectionStartV = next;
-        setBoundaryDetectionStartV(next);
-        if (latest.current) publish({ ...latest.current, boundaryDetectionStartV: next });
     };
     const handle = useMemo<TrackVisionHandle>(() => ({
         getComponentName: () => name,
@@ -289,7 +299,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             setCalibration(undefined);
                         }
                         result.calibration = cameraCalibration.current;
-                        result.boundaryDetectionStartV = options.current.boundaryDetectionStartV;
                         redrawPreview(result);
                         publish(result);
                         setHasFrame(true);
@@ -353,6 +362,13 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 </div>)}
             </fieldset>
             <div className="track-vision__controls">
+                <label>Display label
+                    <select value={displayLabel} disabled={!enabled.segment || !detectors.segment.classNames?.length}
+                        onChange={(event) => setDisplayLabel(event.target.value)}>
+                        <option value="">All labels</option>
+                        {detectors.segment.classNames?.map((label, index) => <option key={index} value={label}>{label}</option>)}
+                    </select>
+                </label>
                 <label>Segmentation confidence {Math.round(confidence * 100)}%
                     <input aria-label="Segmentation confidence" disabled={!enabled.segment} type="range" min="0.1" max="0.95" step="0.05" value={confidence}
                         onChange={(event) => setConfidence(Number(event.target.value))} />
@@ -374,8 +390,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 <canvas ref={canvasRef} aria-label="Captured game frame with vision detections" hidden={!hasFrame} />
                 {hasFrame && showCalibrationOnCapture && previewFrameRef.current && validCalibration(previewCamera)
                     && <CameraGroundGrid camera={previewCamera} applied={Boolean(calibration)} />}
-                {hasFrame && <CaptureBoundaryStart width={previewWidth} height={previewHeight}
-                    value={boundaryDetectionStartV} onChange={updateBoundaryStart} />}
                 {!hasFrame && <div className="track-vision__empty"><strong>See the full racing scene</strong><span>Share your simulator window and enable the detections you need.</span></div>}
                 <div className="track-vision__preview-controls">
                     {previewExpanded && captureState !== 'idle' && <button type="button" onClick={stop}>Stop capture</button>}
@@ -384,13 +398,13 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     </button>
                 </div>
             </dialog>
-            <p className="track-vision__hint">Drag the amber line above the hood or cockpit. Boundary detection scans upward from this screen line; distances come from the depth model.</p>
             <TrackCalibration source={hasFrame ? previewFrameRef.current : null} draft={cameraDraft} applied={calibration}
                 showOnCapture={showCalibrationOnCapture} onToggleCapture={() => setShowCalibrationOnCapture((current) => !current)}
                 onChange={(draft) => { setCameraDraft(draft); updateCalibration(); }}
                 onApply={() => { const frame = previewFrameRef.current; if (frame) updateCalibration({ ...cameraDraft, imageWidth: frame.width, imageHeight: frame.height }); }}
                 onClear={() => updateCalibration()} />
-            <LocalTrackView frame={hasFrame ? previewResult : null} scene={previewScene} camera={previewCamera} applied={Boolean(calibration)} />
+            <LocalTrackView frame={hasFrame ? previewResult : null} scene={previewScene} camera={previewCamera} applied={Boolean(calibration)}
+                memory={previewResult?.sceneMemory} />
             <section className="track-vision__analysis" aria-label="Screen analysis">
                 <h3>Screen analysis</h3>
                 <dl>

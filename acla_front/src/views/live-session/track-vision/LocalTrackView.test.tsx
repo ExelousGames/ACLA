@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import LocalTrackView from './LocalTrackView';
 import { reconstructTrack } from './track-position-analysis';
 import { vision } from './test-fixtures';
-import type { CameraParameters, LocalTrackScene } from './track-vision-types';
+import type { CameraParameters, LocalTrackScene, TrackSceneMemory } from './track-vision-types';
 import { VISION_MAX_AGE_MS } from './track-vision-types';
 
 it('aligns the rendered grid with near road depth, preserves car distances and hides stale guides', () => {
@@ -47,6 +47,28 @@ it.each(['left', 'right'] as const)('renders a supported %s edge when the other 
     expect(screen.getByLabelText('Road fit status')).toHaveTextContent('Road geometry unresolved');
 });
 
+it('draws occluded sections as dashed estimates and replaces them when the edge is visible again', () => {
+    const frame = vision(Date.now(), { cars: [] });
+    const scene = reconstructTrack(frame)!;
+    scene.leftBoundary = scene.leftBoundary.map((point, i) => i >= 2 && i <= 5 ? { ...point, estimated: true } : point);
+    const props = { frame, scene, camera: frame.calibration!, applied: true };
+    const { rerender } = render(<LocalTrackView {...props} />);
+    const estimated = screen.getByLabelText('Estimated track edges');
+    expect(estimated).toHaveAttribute('stroke-dasharray', '5 4');
+    const left = screen.getByLabelText('Estimated left track edge');
+    expect(left.getAttribute('d')!.match(/M/g)).toHaveLength(1);
+    expect(left.getAttribute('d')!.match(/L/g)).toHaveLength(5);
+    expect(screen.getByLabelText('Estimated right track edge')).toHaveAttribute('d', '');
+    const measured = screen.getByLabelText('Observed left track edge');
+    expect(measured.getAttribute('d')!.match(/M/g)).toHaveLength(2);
+    expect(screen.getByLabelText('Reconstruction status')).toHaveTextContent('4 edge points estimated behind traffic');
+    rerender(<LocalTrackView {...props} scene={reconstructTrack(frame)} />);
+    expect(screen.getByLabelText('Estimated left track edge')).toHaveAttribute('d', '');
+    expect(screen.getByLabelText('Reconstruction status')).not.toHaveTextContent('estimated behind traffic');
+    rerender(<LocalTrackView {...props} frame={{ ...frame, capturedAt: Date.now() - VISION_MAX_AGE_MS - 1 }} />);
+    expect(estimated).toBeEmptyDOMElement();
+});
+
 it.each<[Partial<CameraParameters>, string]>([
     [{ heightM: 4 }, 'M480.00,385.00'],
     [{ pitchDeg: 45 }, 'M494.28,-41.67'],
@@ -83,38 +105,122 @@ it('hides the scene for invalid camera settings without substituting a camera', 
     expect(screen.getByLabelText('Perspective 3D track edges and cars')).toBeInTheDocument();
 });
 
-it.each([0, 0.6, 1])('keeps the screen cutoff %s out of local 3D', (startV) => {
-    const frame = vision(Date.now(), { camera: { lateralOffsetM: -3, forwardOffsetM: 5, yawDeg: 45,
-        pitchDeg: -15, horizontalFovDeg: 150 }, cars: [] });
-    frame.boundaryDetectionStartV = startV;
-    render(<LocalTrackView frame={frame} scene={null} camera={frame.calibration!} applied={false} />);
-    expect(screen.getByRole('button', { name: '3D overview' })).toHaveAttribute('aria-pressed', 'true');
-    const camera = screen.getByLabelText('Capture camera');
-    const position = camera.querySelector('g')!.getAttribute('transform')!.match(/translate\(([^,]+),([^\)]+)\)/)!;
-    for (const [x, y] of [[Number(position[1]), Number(position[2])]]) {
-        expect(x).toBeGreaterThan(20);
-        expect(x).toBeLessThan(780);
-        expect(y).toBeGreaterThan(20);
-        expect(y).toBeLessThan(430);
-    }
-    expect(screen.queryByLabelText('Boundary start line')).not.toBeInTheDocument();
-    expect(screen.queryByRole('slider')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Boundary starting positions')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Camera view' }));
-    expect(screen.queryByLabelText('Capture camera')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Boundary start line')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '3D overview' }));
-    expect(screen.getByLabelText('Capture camera')).toBeInTheDocument();
-});
-
-it('updates the camera pose and field of view in the overview when calibration changes', () => {
+it('shows the reconstructed world without the capture camera or its field of view', () => {
     const frame = vision(Date.now(), { cars: [] });
     const props = { frame, scene: reconstructTrack(frame), camera: frame.calibration!, applied: false };
     const { rerender } = render(<LocalTrackView {...props} />);
-    const frustum = () => screen.getByLabelText('Camera field of view').getAttribute('d');
-    const original = frustum();
-    rerender(<LocalTrackView {...props} camera={{ ...props.camera, heightM: 3, yawDeg: 30, horizontalFovDeg: 60 }} />);
-    expect(frustum()).not.toBe(original);
-    expect(screen.getByLabelText('Capture camera')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Boundary start line')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '3D overview' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByLabelText('Capture camera')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Camera field of view')).not.toBeInTheDocument();
+    expect(screen.getByText('Your car')).toBeInTheDocument();
+    const edge = () => screen.getByLabelText('Observed left track edge').getAttribute('d');
+    const original = edge();
+    // Capture pose must not affect world framing when reconstructed geometry is unchanged.
+    rerender(<LocalTrackView {...props} camera={{ ...props.camera, lateralOffsetM: -3, forwardOffsetM: 5,
+        yawDeg: 45, pitchDeg: -15, horizontalFovDeg: 150 }} />);
+    expect(edge()).toBe(original);
+    fireEvent.click(screen.getByRole('button', { name: 'Camera view' }));
+    expect(edge()).not.toBe(original);
+    expect(screen.queryByRole('button', { name: 'Reset view' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '3D overview' }));
+    expect(edge()).toBe(original);
+    expect(screen.queryByLabelText('Capture camera')).not.toBeInTheDocument();
+});
+
+it.each([
+    ['mouse', 'pointerup'], ['touch', 'pointercancel'], ['pen', 'lostpointercapture'],
+])('rotates the world with %s dragging and stops on %s', (pointerType, endEvent) => {
+    const frame = vision(Date.now(), { cars: [] });
+    render(<LocalTrackView frame={frame} scene={reconstructTrack(frame)} camera={frame.calibration!} applied />);
+    const world = screen.getByLabelText('Perspective 3D track edges and cars');
+    const captured = new Set<number>();
+    Object.assign(world, {
+        setPointerCapture: jest.fn((id: number) => captured.add(id)),
+        hasPointerCapture: (id: number) => captured.has(id),
+        releasePointerCapture: jest.fn((id: number) => captured.delete(id)),
+    });
+    // JSDOM has no PointerEvent constructor or pointer capture implementation.
+    const pointer = (type: string, x: number, y: number, pointerId = 1, button = 0) => fireEvent(world,
+        Object.assign(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button }), { pointerId, pointerType }));
+    const edge = () => screen.getByLabelText('Observed left track edge').getAttribute('d');
+    const original = edge();
+    pointer('pointermove', 200, 200);
+    pointer('pointerdown', 100, 100, 1, 2);
+    pointer('pointermove', 200, 200);
+    expect(edge()).toBe(original);
+    pointer('pointerdown', 100, 100);
+    expect(world).toHaveFocus();
+    expect(world.setPointerCapture).toHaveBeenCalledWith(1);
+    pointer('pointerdown', 300, 300, 2);
+    pointer('pointermove', 400, 400, 2);
+    expect(edge()).toBe(original);
+    pointer('pointermove', 200, 100);
+    const horizontal = edge();
+    expect(horizontal).not.toBe(original);
+    pointer('pointermove', 200, 160);
+    const rotated = edge();
+    expect(rotated).not.toBe(horizontal);
+    pointer(endEvent, 200, 160);
+    expect(world.releasePointerCapture).toHaveBeenCalledWith(1);
+    pointer('pointermove', 300, 250);
+    expect(edge()).toBe(rotated);
+    fireEvent.click(screen.getByRole('button', { name: 'Reset view' }));
+    expect(edge()).toBe(original);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Camera view' }));
+    const cameraView = edge();
+    pointer('pointerdown', 100, 100);
+    pointer('pointermove', 200, 200);
+    expect(edge()).toBe(cameraView);
+});
+
+it('supports keyboard rotation, keeps the orbit across frames and mode switches, and resets it', () => {
+    const frame = vision(Date.now(), { cars: [] });
+    const props = { frame, scene: reconstructTrack(frame), camera: frame.calibration!, applied: true };
+    const { rerender } = render(<LocalTrackView {...props} />);
+    const world = screen.getByLabelText('Perspective 3D track edges and cars');
+    const edge = () => screen.getByLabelText('Observed left track edge').getAttribute('d');
+    const original = edge();
+    expect(world).toHaveAttribute('tabindex', '0');
+    expect(world).toHaveAccessibleDescription(/Drag to rotate the 3D world/);
+    fireEvent.keyDown(world, { key: 'ArrowLeft' });
+    expect(edge()).not.toBe(original);
+    fireEvent.keyDown(world, { key: 'ArrowRight' });
+    expect(edge()).toBe(original);
+    fireEvent.keyDown(world, { key: 'ArrowUp' });
+    expect(edge()).not.toBe(original);
+    fireEvent.keyDown(world, { key: 'ArrowDown' });
+    expect(edge()).toBe(original);
+    fireEvent.keyDown(world, { key: 'ArrowRight' });
+    const rotated = edge();
+    rerender(<LocalTrackView {...props} frame={{ ...frame, capturedAt: Date.now() + 1 }} scene={{ ...props.scene! }} />);
+    expect(edge()).toBe(rotated);
+    fireEvent.click(screen.getByRole('button', { name: 'Camera view' }));
+    expect(world).not.toHaveAttribute('tabindex');
+    const cameraView = edge();
+    fireEvent.keyDown(world, { key: 'ArrowRight' });
+    expect(edge()).toBe(cameraView);
+    fireEvent.click(screen.getByRole('button', { name: '3D overview' }));
+    expect(edge()).toBe(rotated);
+    fireEvent.keyDown(world, { key: 'Home' });
+    expect(edge()).toBe(original);
+});
+
+it('renders aligned memory only alongside its fresh frame with applied calibration', () => {
+    const frame = vision(Date.now(), { cars: [] });
+    const scene = reconstructTrack(frame)!;
+    const memory: TrackSceneMemory = { capturedAt: frame.capturedAt, status: 'aligned', reason: 'Visual motion aligned.',
+        matchedFeatures: 20, inliers: 18, alignmentErrorM: 0.12,
+        points: [{ x: 1, y: 10, z: 0, surface: 'road', lastSeenAt: frame.capturedAt - 200, observations: 2 }] };
+    const props = { frame, scene, camera: frame.calibration!, applied: true, memory };
+    const { rerender } = render(<LocalTrackView {...props} />);
+    expect(screen.getByLabelText('Rolling scene memory')).not.toBeEmptyDOMElement();
+    expect(screen.getByLabelText('Scene memory status')).toHaveTextContent('18/20 features · 0.12 m');
+    rerender(<LocalTrackView {...props} applied={false} />);
+    expect(screen.getByLabelText('Rolling scene memory')).toBeEmptyDOMElement();
+    rerender(<LocalTrackView {...props} memory={{ ...memory, capturedAt: frame.capturedAt - 200 }} />);
+    expect(screen.getByLabelText('Rolling scene memory')).toBeEmptyDOMElement();
+    const capturedAt = Date.now() - VISION_MAX_AGE_MS - 1;
+    rerender(<LocalTrackView {...props} frame={{ ...frame, capturedAt }} memory={{ ...memory, capturedAt }} />);
+    expect(screen.getByLabelText('Rolling scene memory')).toBeEmptyDOMElement();
 });

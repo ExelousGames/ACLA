@@ -1,15 +1,33 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import type { CameraCalibration, GroundPoint, LocalTrackScene, TrackVisionFrame } from './track-vision-types';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { CameraCalibration, GroundPoint, LocalTrackScene, TrackBoundaryPoint, TrackSceneMemory, TrackVisionFrame } from './track-vision-types';
 import { VISION_MAX_AGE_MS } from './track-vision-types';
 import { createCameraProjection, validCalibration } from './camera-projection';
 import { reconstructDistanceGrid } from './track-position-analysis';
-import { createLocalOverviewCamera } from './local-overview-camera';
+import { createLocalOverviewCamera, DEFAULT_OVERVIEW_ORBIT } from './local-overview-camera';
+import { SCENE_MEMORY_MAX_AGE_MS } from './scene-memory';
 
-export default function LocalTrackView({ frame, scene, camera, applied }: {
+const carCorners = (car: LocalTrackScene['cars'][number]) => [0, 1, 2, 3, 4, 5, 6, 7].map((bits) => ({
+    x: bits & 1 ? car.max.x : car.min.x, y: bits & 2 ? car.max.y : car.min.y, z: bits & 4 ? car.max.z : car.min.z,
+}));
+
+export default function LocalTrackView({ frame, scene, camera, applied, memory }: {
     frame: TrackVisionFrame | null; scene: LocalTrackScene | null; camera: CameraCalibration; applied: boolean;
+    memory?: TrackSceneMemory | null;
 }) {
     const [now, setNow] = useState(Date.now);
     const [overview, setOverview] = useState(true);
+    const [orbit, setOrbit] = useState(DEFAULT_OVERVIEW_ORBIT);
+    const drag = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+    const orbitHintId = useId();
+    const rotate = (yaw: number, pitch: number) => setOrbit((previous) => ({
+        yawDeg: (previous.yawDeg + yaw) % 360,
+        pitchDeg: Math.max(-85, Math.min(85, previous.pitchDeg + pitch)),
+    }));
+    const endDrag = (event: React.PointerEvent<SVGSVGElement>) => {
+        if (drag.current?.pointerId !== event.pointerId) return;
+        drag.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    };
     useEffect(() => {
         setNow(Date.now());
         const remaining = frame ? frame.capturedAt + VISION_MAX_AGE_MS - Date.now() : 0;
@@ -20,13 +38,13 @@ export default function LocalTrackView({ frame, scene, camera, applied }: {
     const captureView = validCalibration(camera) ? createCameraProjection(camera) : null;
     const fresh = frame && frame.capturedAt + VISION_MAX_AGE_MS > Math.max(now, Date.now());
     const visible = fresh && captureView ? scene : null;
-    const cameraPosition = { x: camera.lateralOffsetM, y: camera.forwardOffsetM, z: camera.heightM };
-    const frustum = captureView ? [[0, 0], [1, 0], [1, 1], [0, 1]].map(([u, v]) => captureView.imageToLocal(u, v, 6)!) : [];
+    const visibleMemory = visible && applied && memory?.capturedAt === frame?.capturedAt ? memory : null;
     const viewCamera = overview && captureView ? createLocalOverviewCamera([
-        { x: 0, y: 0, z: 0 }, { x: 0, y: 3, z: 0 }, cameraPosition, ...frustum,
+        { x: 0, y: 0, z: 0 }, { x: 0, y: 3, z: 0 },
         ...(visible?.leftBoundary ?? []), ...(visible?.rightBoundary ?? []),
-        ...(visible?.cars.flatMap((car) => [car.min, car.max]) ?? []),
-    ]) : camera;
+        ...(visible?.cars.flatMap(carCorners) ?? []),
+        ...(visibleMemory?.points ?? []),
+    ], orbit) : camera;
     const view = captureView ? createCameraProjection(viewCamera) : null;
     // Normalize SVG units for readable labels; camera view retains the capture aspect ratio.
     const viewWidth = 800, viewHeight = view ? viewWidth * viewCamera.imageHeight / viewCamera.imageWidth : 0;
@@ -45,24 +63,76 @@ export default function LocalTrackView({ frame, scene, camera, applied }: {
         }).join(' ');
     };
     const origin = project({ x: 0, y: 0, z: 0 });
-    const cameraPixel = project(cameraPosition);
+    const edgePath = (points: TrackBoundaryPoint[], estimated: boolean) => {
+        const runs: GroundPoint[][] = [];
+        let run: GroundPoint[] = [];
+        for (let i = 1; i < points.length; i++) {
+            const previous = points[i - 1], point = points[i];
+            if (Boolean(previous.estimated || point.estimated) === estimated) {
+                if (!run.length) run.push(previous);
+                run.push(point);
+            } else if (run.length) { runs.push(run); run = []; }
+        }
+        return [...runs, run].map(path).filter(Boolean).join(' ');
+    };
+    const estimatedCount = [...(visible?.leftBoundary ?? []), ...(visible?.rightBoundary ?? [])].filter((point) => point.estimated).length;
     const geometry = visible?.geometry;
     const gridLabels: Array<{ x: number; y: number; width: number }> = [];
     const status = !frame ? 'Share a driving view to reconstruct the scene.' : !fresh ? 'Waiting for a fresh frame.'
         : !frame.detections.segment || !frame.detections.depth ? 'Enable segmentation and depth; both results are needed for local 3D.'
             : !view || !scene ? 'Enter valid camera settings and wait for valid depth.'
                 : !scene.leftBoundary.length && !scene.rightBoundary.length && !scene.cars.length ? 'No supported track edges or cars in this frame.'
-                    : `${scene.leftBoundary.length} left / ${scene.rightBoundary.length} right edge points · ${scene.cars.length} car detections reconstructed.`;
+                    : `${scene.leftBoundary.length} left / ${scene.rightBoundary.length} right edge points · ${scene.cars.length} car detections reconstructed.`
+                        + (estimatedCount ? ` ${estimatedCount} edge points estimated behind traffic.` : '');
     return <section className="track-vision__reconstruction" aria-label="Local 3D reconstruction">
-        <h3>Local 3D · camera, track edges and cars</h3>
+        <h3>Local 3D · track edges and cars</h3>
         <span className="track-vision__hint">{applied ? 'Calibration applied' : 'Draft camera preview'}</span>
         <div className="track-vision__controls" role="group" aria-label="Local 3D viewpoint">
             {[true, false].map((value) => <button key={String(value)} type="button" className="track-vision__capture-toggle"
-                aria-pressed={overview === value} onClick={() => setOverview(value)}>
+                aria-pressed={overview === value} onClick={() => { drag.current = null; setOverview(value); }}>
                 {value ? '3D overview' : 'Camera view'}
             </button>)}
+            {overview && <button type="button" onClick={() => setOrbit(DEFAULT_OVERVIEW_ORBIT)}>Reset view</button>}
         </div>
-        {view && <svg className="track-vision__local-scene" viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="group" aria-label="Perspective 3D track edges and cars">
+        {overview && <p id={orbitHintId} className="track-vision__hint">Drag to rotate the 3D world. Use arrow keys when focused; Home resets the view.</p>}
+        {view && <svg className={`track-vision__local-scene${overview ? ' track-vision__local-scene--orbit' : ''}`}
+            viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="group" aria-label="Perspective 3D track edges and cars"
+            tabIndex={overview ? 0 : undefined} aria-describedby={overview ? orbitHintId : undefined}
+            onPointerDown={(event) => {
+                if (!overview || event.button !== 0 || drag.current) return;
+                event.preventDefault();
+                event.currentTarget.focus();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+            }}
+            onPointerMove={(event) => {
+                const previous = drag.current;
+                if (!overview || !previous || previous.pointerId !== event.pointerId) return;
+                rotate((previous.x - event.clientX) * 0.4, (event.clientY - previous.y) * 0.4);
+                drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+            }}
+            onPointerUp={endDrag} onPointerCancel={endDrag} onLostPointerCapture={endDrag}
+            onKeyDown={(event) => {
+                if (!overview) return;
+                switch (event.key) {
+                    case 'ArrowLeft': rotate(5, 0); break;
+                    case 'ArrowRight': rotate(-5, 0); break;
+                    case 'ArrowUp': rotate(0, -5); break;
+                    case 'ArrowDown': rotate(0, 5); break;
+                    case 'Home': setOrbit(DEFAULT_OVERVIEW_ORBIT); break;
+                    default: return;
+                }
+                event.preventDefault();
+            }}>
+            <g aria-label="Rolling scene memory">
+                {visibleMemory?.points.map((point, index) => {
+                    const pixel = project(point);
+                    const color = { road: '#6d919a', roadside: '#8d9368', 'left-edge': '#37efac', 'right-edge': '#57b9ff' }[point.surface];
+                    const age = Math.max(0, visibleMemory.capturedAt - point.lastSeenAt);
+                    return pixel ? <circle key={index} cx={pixel.x} cy={pixel.y} r={point.surface.endsWith('edge') ? 1.8 : 1.2}
+                        fill={color} opacity={(0.3 + Math.min(point.observations, 4) * 0.12) * (1 - age / SCENE_MEMORY_MAX_AGE_MS)} /> : null;
+                })}
+            </g>
             <g aria-label="Depth distance grid">
                 {visible && distanceGrid.map(({ distanceM, segments }) => {
                     const label = segments.flat().map(project).filter((point): point is { x: number; y: number } =>
@@ -78,16 +148,20 @@ export default function LocalTrackView({ frame, scene, camera, applied }: {
             </g>
             <g aria-label="Reconstructed track edges" fill="none" strokeWidth="2">
                 {visible && <>
-                    <path d={path(visible.leftBoundary)} stroke="#37efac" />
-                    <path d={path(visible.rightBoundary)} stroke="#57b9ff" />
+                    <path aria-label="Observed left track edge" d={edgePath(visible.leftBoundary, false)} stroke="#37efac" />
+                    <path aria-label="Observed right track edge" d={edgePath(visible.rightBoundary, false)} stroke="#57b9ff" />
+                </>}
+            </g>
+            <g aria-label="Estimated track edges" fill="none" strokeWidth="2" strokeDasharray="5 4" opacity="0.65">
+                {visible && <>
+                    <path aria-label="Estimated left track edge" d={edgePath(visible.leftBoundary, true)} stroke="#37efac" />
+                    <path aria-label="Estimated right track edge" d={edgePath(visible.rightBoundary, true)} stroke="#57b9ff" />
                 </>}
             </g>
             <g aria-label="Reconstructed cars">
                 {visible?.cars.slice().sort((a, b) => b.center.y - a.center.y).map((car, i) => {
                     const label = project({ ...car.center, z: car.max.z + 0.5 });
-                    const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((bits) => ({
-                        x: bits & 1 ? car.max.x : car.min.x, y: bits & 2 ? car.max.y : car.min.y, z: bits & 4 ? car.max.z : car.min.z,
-                    }));
+                    const corners = carCorners(car);
                     return <g key={i} fill={car.pack ? '#cf9fff' : '#ffbe57'}>
                         {car.points.map((point, j) => {
                             const pixel = project(point);
@@ -102,19 +176,13 @@ export default function LocalTrackView({ frame, scene, camera, applied }: {
             </g>
             <path d={path([{ x: 0, y: 0, z: 0 }, { x: 0, y: 3, z: 0 }])} stroke="#ffbe57" strokeWidth="4" />
             {origin && <text x={origin.x + (overview ? 14 : 6)} y={origin.y + (overview ? 20 : 0)}>Your car</text>}
-            {overview && cameraPixel && <g aria-label="Capture camera" fill="none" stroke="#ff91d0" strokeWidth="1.5">
-                <path aria-label="Camera field of view" d={[path([...frustum, frustum[0]]),
-                    ...frustum.map((point) => path([cameraPosition, point]))].join(' ')} opacity="0.65" />
-                <path d={path([cameraPosition, { ...cameraPosition, z: 0 }])} strokeDasharray="3 3" />
-                <g transform={`translate(${cameraPixel.x},${cameraPixel.y})`}>
-                    <rect x="-7" y="-5" width="14" height="10" rx="2" fill="#090d13" />
-                    <path d="M7,-3 L12,-6 L12,6 L7,3 Z" fill="#ff91d0" />
-                    <text x="-10" y="20" textAnchor="end">Camera</text>
-                </g>
-            </g>}
         </svg>}
         <p aria-label="Reconstruction status">{status}</p>
-        <p className="track-vision__hint">Green / blue: track edges · amber: cars · purple: car packs · pink: camera and field of view. X right, Y forward, Z up. Distances and visible car surfaces are estimated from monocular depth.</p>
+        <p aria-label="Scene memory status" className="track-vision__hint">{!applied ? 'Apply camera calibration to build scene memory.'
+            : !visibleMemory ? 'Waiting for a fresh scene for memory.'
+                : `${visibleMemory.points.length} static memory points · ${visibleMemory.reason}${visibleMemory.status === 'aligned'
+                    ? ` ${visibleMemory.inliers}/${visibleMemory.matchedFeatures} features · ${visibleMemory.alignmentErrorM!.toFixed(2)} m fit error.` : ''}`}</p>
+        <p className="track-vision__hint">Green / blue: track edges · dashed edges: estimated behind traffic · muted points: road and roadside memory · amber: cars · purple: car packs. X right, Y forward, Z up. Distances and visible car surfaces are estimated from monocular depth.</p>
         <p aria-label="Road fit status">{!fresh ? 'Waiting for a fresh frame.' : geometry
             ? `Road observed from ${geometry.referenceY.toFixed(1)} to ${Math.min(geometry.left.maxY, geometry.right.maxY).toFixed(1)} m ahead.`
             : 'Road geometry unresolved — both edges need reliable segmentation and depth.'}</p>

@@ -64,14 +64,12 @@ it('breaks guides at cars and excluded surfaces instead of using their depth as 
     }
 });
 
-it('keeps depth distance contours independent of the boundary detection line', () => {
+it('retains near-distance contours when the camera is ahead of the car origin', () => {
     const frame = nearRoad();
     frame.calibration!.forwardOffsetM = 1;
     const grid = reconstructDistanceGrid(frame);
     expect(grid.some(({ distanceM }) => distanceM === 3)).toBe(true);
     expect(grid.some(({ distanceM }) => distanceM === 4)).toBe(true);
-    expect(reconstructDistanceGrid({ ...frame, boundaryDetectionStartV: 0 })).toEqual(grid);
-    expect(reconstructDistanceGrid({ ...frame, boundaryDetectionStartV: 0.6 })).toEqual(grid);
 });
 
 it.each(['calibration', 'depth', 'segment', 'road', 'invalid depth'] as const)('shows no invented grid without %s', (missing) => {

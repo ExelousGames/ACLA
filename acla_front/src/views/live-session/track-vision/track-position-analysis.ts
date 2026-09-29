@@ -1,14 +1,16 @@
-import type { CornerPosition, GroundPoint, LocalTrackScene, ReconstructedCar, SegmentResult, TrackGeometry, TrackVisionAnalysis, TrackVisionFrame } from './track-vision-types';
+import type { CornerPosition, GroundPoint, LocalTrackScene, ReconstructedCar, SegmentResult, TrackBoundaryPoint, TrackGeometry, TrackVisionAnalysis, TrackVisionFrame } from './track-vision-types';
+import { createCameraProjection } from './camera-projection';
 import { createDepthProjection } from './depth-projection';
 import { evaluateRoad, fitRoadPolynomial, roadCurvature } from './road-polynomial';
 import { letterbox } from './yolo-segmentation';
 import { createSegmentationLayers } from './segmentation-layers';
+import { createTrackBoundaryMask } from './track-boundary-mask';
 
 export const VISION_CONFIDENCE = 0.65;
 type Box = SegmentResult['instances'][number]['box'];
 
 /** Sample the shared, overlapping track / traffic / excluded surface layers. */
-function semanticScene(vision: TrackVisionFrame) {
+function semanticScene(vision: TrackVisionFrame, constructBoundaries = false) {
     const segment = vision.detections.segment;
     if (segment?.task !== 'segment') return null;
     const layers = createSegmentationLayers(segment, VISION_CONFIDENCE);
@@ -31,6 +33,9 @@ function semanticScene(vision: TrackVisionFrame) {
     };
     const road = (u: number, v: number) => inMask(layers.trackMask, u, v) && !inMask(layers.excludedMask, u, v);
     const occluded = (u: number, v: number) => inMask(layers.trafficMask, u, v);
+    const boundaryMask = constructBoundaries ? createTrackBoundaryMask(layers, segment.width, segment.height) : layers.trackMask;
+    const boundaryRoad = (u: number, v: number) => inMask(boundaryMask, u, v) && !inMask(layers.excludedMask, u, v);
+    const interiorMargin = Math.max(2, Math.ceil(Math.max(segment.width, segment.height) * 0.01));
     return {
         traffic, road, inMask, width: segment.width, height: segment.height,
         sourcePixel(x: number, y: number) {
@@ -39,13 +44,23 @@ function semanticScene(vision: TrackVisionFrame) {
         },
         pixelHeight: 640 / resizedHeight / segment.height,
         hasCarLabels: layers.hasCarLabels,
+        nearCarInterior(column: number, row: number) {
+            // Check in 2D so pillars and dashboards also suppress edges across small mask gaps.
+            for (let y = Math.max(0, row - interiorMargin); y <= Math.min(segment.height - 1, row + interiorMargin); y++) {
+                for (let x = Math.max(0, column - interiorMargin); x <= Math.min(segment.width - 1, column + interiorMargin); x++) {
+                    if (layers.carInteriorMask[y * segment.width + x]) return true;
+                }
+            }
+            return false;
+        },
         // Car depth is not road depth, even though the track continues underneath.
         visibleRoad: (u: number, v: number) => road(u, v) && !occluded(u, v),
+        visibleBoundaryRoad: (u: number, v: number) => boundaryRoad(u, v) && !occluded(u, v),
         sample(u: number, v: number) {
             if (u < 0 || u >= 1 || v < 0 || v >= 1) return 255;
             if (inMask(layers.excludedMask, u, v)) return 3;
             if (occluded(u, v)) return 2;
-            return road(u, v) ? 1 : 0;
+            return boundaryRoad(u, v) ? 1 : 0;
         },
     };
 }
@@ -100,9 +115,8 @@ export function reconstructDistanceGrid(vision: TrackVisionFrame) {
 /** Same-frame segmentation identifies surfaces; depth and camera pose locate them in 3D. */
 export function reconstructTrack(vision: TrackVisionFrame | null): LocalTrackScene | null {
     if (!vision) return null;
-    const lift = createDepthProjection(vision), scene = semanticScene(vision);
+    const lift = createDepthProjection(vision), scene = semanticScene(vision, true);
     if (!lift || !scene) return null;
-    const startV = vision.boundaryDetectionStartV ?? 1;
     const leftBoundary: GroundPoint[] = [], rightBoundary: GroundPoint[] = [], centers: GroundPoint[] = [];
     let anchor = 0.5, lastLeftRow = scene.height, lastRightRow = scene.height;
     const continuous = (a: GroundPoint, b: GroundPoint) => {
@@ -111,14 +125,15 @@ export function reconstructTrack(vision: TrackVisionFrame | null): LocalTrackSce
     };
     for (let row = scene.height - 1; row >= 0; row--) {
         const { v } = scene.sourcePixel(0, row + 0.5);
-        // The line limits image rows only. Each retained pixel gets its distance from depth.
-        if (v <= 0 || v >= 1 || v > startV) continue;
+        if (v <= 0 || v >= 1) continue;
         const candidates: Array<{ left: GroundPoint | null; right: GroundPoint | null; center: number }> = [];
         const at = (column: number) => scene.sample(scene.sourcePixel(column + 0.5, row + 0.5).u, v);
         const edge = (column: number, outside: number, boundary: GroundPoint[], lastRow: number) => {
             // Validate each visible edge independently, including its own depth and continuity.
             if (outside < 0 || outside >= scene.width || at(column) !== 1 || at(outside) === 255 || at(outside) === 2) return null;
-            const point = lift(scene.sourcePixel(column + 0.5, row + 0.5).u, v, scene.visibleRoad);
+            // Reject the cockpit contour itself; trimming the corridor would create another false edge.
+            if (scene.nearCarInterior(column, row)) return null;
+            const point = lift(scene.sourcePixel(column + 0.5, row + 0.5).u, v, scene.visibleBoundaryRoad);
             if (!point) return null;
             const previous = boundary[boundary.length - 1];
             // Resume beyond gaps instead of ending the scan or comparing across missing rows.
@@ -179,7 +194,49 @@ export function reconstructTrack(vision: TrackVisionFrame | null): LocalTrackSce
         cars.push({ classId: item.classId, confidence: item.confidence, pack: item.pack,
             points: points.filter((point) => point.y >= min.y && point.y <= max.y), min, max, center, roadSupported: supported >= 2 });
     }
-    return { leftBoundary, rightBoundary, cars, geometry: fitTrackBoundaries(leftBoundary, rightBoundary, centers) };
+    // Fit only observations: interpolated samples must not inflate fit support or confidence.
+    const geometry = fitTrackBoundaries(leftBoundary, rightBoundary, centers);
+    const camera = createCameraProjection(vision.calibration!);
+    const origin = { x: vision.calibration!.lateralOffsetM, y: vision.calibration!.forwardOffsetM, z: vision.calibration!.heightM };
+    const axis = camera.imageToLocal(0.5, 0.5, 1)!;
+    const opticalDepth = (point: GroundPoint) => (point.x - origin.x) * (axis.x - origin.x)
+        + (point.y - origin.y) * (axis.y - origin.y) + (point.z - origin.z) * (axis.z - origin.z);
+    const firstPixel = scene.sourcePixel(0.5, 0.5);
+    const pixelWidth = scene.sourcePixel(1.5, 0.5).u - firstPixel.u;
+    const inferOccluded = (observed: GroundPoint[]): TrackBoundaryPoint[] => {
+        const boundary: TrackBoundaryPoint[] = [];
+        for (let i = 0; i < observed.length; i++) {
+            const near = observed[i - 1], far = observed[i];
+            if (near && continuous(near, far) && Math.abs(far.z - near.z) <= 1 + (far.y - near.y) * 0.3) {
+                const a = camera.localToImage(near)!, b = camera.localToImage(far)!;
+                const rows = Math.round((a.v - b.v) / scene.pixelHeight);
+                const nearDepth = opticalDepth(near), farDepth = opticalDepth(far);
+                const estimates: TrackBoundaryPoint[] = [];
+                for (let step = 1; step < rows; step++) {
+                    const fraction = step / rows;
+                    const u = a.u + fraction * (b.u - a.u), v = a.v + fraction * (b.v - a.v);
+                    const column = Math.round((u - firstPixel.u) / pixelWidth);
+                    const row = Math.round((v - firstPixel.v) / scene.pixelHeight);
+                    // Require traffic across the entire gap, and never bridge cockpit/obstacles.
+                    if (scene.sample(u, v) !== 2 || scene.nearCarInterior(column, row)) {
+                        estimates.length = 0;
+                        break;
+                    }
+                    // Perspective-correct interpolation on the visible endpoints' 3D segment.
+                    // Linear image-row weights alone would put the road at the wrong distance.
+                    const t = fraction * nearDepth / ((1 - fraction) * farDepth + fraction * nearDepth);
+                    estimates.push({ x: near.x + t * (far.x - near.x), y: near.y + t * (far.y - near.y),
+                        z: near.z + t * (far.z - near.z), estimated: true });
+                }
+                boundary.push(...estimates);
+            }
+            boundary.push(far);
+        }
+        return boundary;
+    };
+    const inferredLeft = inferOccluded(leftBoundary), inferredRight = inferOccluded(rightBoundary);
+    return { leftBoundary: inferredLeft, rightBoundary: inferredRight, cars,
+        geometry: geometry && { ...geometry, leftBoundary: inferredLeft, rightBoundary: inferredRight } };
 }
 
 function fitTrackBoundaries(leftBoundary: GroundPoint[], rightBoundary: GroundPoint[], centers: GroundPoint[]): TrackGeometry | null {

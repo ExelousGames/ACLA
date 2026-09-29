@@ -2,15 +2,18 @@ import { letterbox } from './yolo-segmentation';
 import { VISION_INPUT_SIZE } from './track-vision-model';
 import { SegmentResult, TrackVisionFrame } from './track-vision-types';
 import { createSegmentationLayers } from './segmentation-layers';
+import { createTrackBoundaryMask } from './track-boundary-mask';
 
 const COLORS = [[55, 239, 172], [87, 185, 255], [255, 190, 87], [206, 135, 255], [255, 115, 137], [110, 221, 235]];
 
-export function drawVisionOverlay(context: CanvasRenderingContext2D, result: TrackVisionFrame) {
+export function drawVisionOverlay(context: CanvasRenderingContext2D, result: TrackVisionFrame, displayLabel = '') {
     const detection = result.detections.segment;
     if (detection?.task !== 'segment') return;
     const layers = createSegmentationLayers(detection);
     if (!layers) return;
-    const { instances } = layers;
+    // Keep every layer available for track cleanup even when its label is hidden.
+    const instances = layers.instances.filter((instance) => !displayLabel || detection.classNames[instance.classId] === displayLabel);
+    if (!instances.length) return;
     const { padX, padY, resizedWidth, resizedHeight } = letterbox(result.width, result.height, VISION_INPUT_SIZE);
     const layer = document.createElement('canvas');
     layer.width = detection.width;
@@ -18,7 +21,11 @@ export function drawVisionOverlay(context: CanvasRenderingContext2D, result: Tra
     const layerContext = layer.getContext('2d');
     if (!layerContext) return;
     const pixels = layerContext.createImageData(layer.width, layer.height);
-    paintMask(pixels.data, instances);
+    const track = instances.find((instance) => instance.kind === 'track');
+    paintMask(pixels.data, [
+        ...(track ? [{ ...track, mask: createTrackBoundaryMask(layers, detection.width, detection.height) }] : []),
+        ...instances.filter((instance) => instance.kind !== 'track'),
+    ]);
     layerContext.putImageData(pixels, 0, 0);
     context.save();
     context.imageSmoothingEnabled = false;
