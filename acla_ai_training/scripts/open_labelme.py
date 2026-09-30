@@ -5,6 +5,9 @@ Use Ctrl+N to create region polygons.
 Use Ctrl+L to create polylines.
 Use Ctrl+Shift+L to initialize a polygon from a polyline.
 Set its total width in pixels with Edit > Set Polyline Polygon Width.
+Track, grass, fence, curb, sand, sky, and racing track white line regions may
+continue behind car or car pack polygons where their hidden extent is clear.
+Annotate those regions continuously and annotate the cars separately.
 """
 
 import sys

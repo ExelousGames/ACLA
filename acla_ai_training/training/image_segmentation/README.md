@@ -95,25 +95,27 @@ The class IDs follow the order in `labels.txt`:
 | ID | Label | Region |
 | --- | --- | --- |
 | 0 | track | Full track surface within the image, including reasonably inferred parts hidden by cars |
-| 1 | curb | Each visible curb region |
-| 2 | grass | Each visible grass region |
+| 1 | curb | Full curb regions, including reasonably inferred parts hidden by cars or car packs |
+| 2 | grass | Full grass regions, including reasonably inferred parts hidden by cars or car packs |
 | 3 | car | One polygon per visible car |
 | 4 | other | Other regions you explicitly want the model to identify |
-| 5 | fence | Visible fence regions |
+| 5 | fence | Full fence regions, including reasonably inferred parts hidden by cars or car packs |
 | 6 | car pack | Regions annotated as a pack of cars |
-| 7 | sand | Visible sand regions |
+| 7 | sand | Full sand regions, including reasonably inferred parts hidden by cars or car packs |
 | 8 | Outfield asphalt road | Visible asphalt road regions outside the track |
-| 9 | sky | Visible sky regions |
+| 9 | sky | Full sky regions, including reasonably inferred parts hidden by cars or car packs |
 | 10 | car interior | Visible car interior regions |
-| 11 | racing track white line | Visible white line markings on the racing track |
+| 11 | racing track white line | Full white line markings, including reasonably inferred parts hidden by cars or car packs |
 
-For `track`, trace the continuous outer boundaries, including the road behind cars
-or other foreground objects where its continuation is reasonably clear. Do not cut
-holes or split the track polygon around those objects. This is amodal road
-segmentation: the mask describes the track's extent, including occupied areas.
-Annotate cars separately; their polygons may overlap the track polygon. Use nearby
-video frames to resolve uncertain boundaries when possible, and avoid inventing
-hidden turns or edges without supporting evidence.
+For `track`, `grass`, `fence`, `curb`, `sand`, `sky`, and `racing track white line`,
+trace the continuous outer boundaries, including portions behind a `car` or
+`car pack` where the region's continuation is reasonably clear. Do not cut holes
+or split these polygons around cars or car packs. This is amodal segmentation:
+each mask describes the region's extent, including occupied areas. For `track`,
+this also applies to other foreground objects. Annotate cars and car packs
+separately; their polygons may overlap these region polygons. Use nearby video
+frames to resolve uncertain boundaries when possible, and avoid inventing hidden
+turns or edges without supporting evidence.
 
 For the other region classes, trace visible boundaries and draw disconnected visible
 pieces as separate polygons. Annotate all instances of the chosen classes in each
@@ -123,7 +125,7 @@ Labelme group IDs are not merged. Use polygons for regions; rectangles and AI ma
 shapes are not supported by this exporter.
 
 Apply this policy consistently to training and validation images. Review existing
-visible-only track annotations and prepare a new dataset after revising them;
+visible-only annotations of these regions and prepare a new dataset after revising them;
 training does not automatically fill missing sections in the source polygons.
 
 To add specific regions such as gravel or barriers, append labels to a copy of
@@ -246,9 +248,10 @@ for Apple Silicon. Pretrained weights download on first use to
 segmentation checkpoint to avoid that download, or `--model yolo11n-seg.yaml`
 to initialize without pretrained weights.
 
-The trainer sets `overlap_mask=False` so track and car masks remain separate,
-preserving the track beneath cars in the training targets. Ultralytics' default
-merges masks with smaller masks on top, which can remove those hidden track areas.
+The trainer sets `overlap_mask=False` for all classes so region, car, and car pack
+masks remain separate, preserving annotated regions beneath cars and car packs in
+the training targets. Ultralytics' default merges masks with smaller masks on top,
+which can remove those hidden regions.
 Keep this setting when training or validating these annotations outside this CLI.
 
 When a custom dataset contains `left_boundary` or `right_boundary`, the trainer also
@@ -257,6 +260,9 @@ flips otherwise mirror the edges without swapping their class IDs. It uses
 `mask_ratio=1` to avoid further downsampling thin mask targets after resizing the
 input image; this uses more mask memory. Preserve these settings when training
 boundary datasets outside this CLI.
+
+Each validation pass prints the full box and mask metric header separately from
+the progress bar, so narrow terminals wrap the labels instead of cutting them off.
 
 Checkpoints and metrics go under `storage/image_segmentation/runs/train*/`, including
 `weights/best.pt` and `weights/last.pt`. `--project` and `--name` change the run

@@ -11,6 +11,11 @@ import yaml
 from . import WORKSPACE_DIR
 
 
+def _print_validation_header(validator):
+    # Progress bars truncate this header on narrow terminals; plain output wraps.
+    print(validator.get_desc(), flush=True)
+
+
 def train_model(
     data: Path,
     *,
@@ -37,6 +42,7 @@ def train_model(
     network = YOLO(model, task="segment")
     if network.task != "segment":
         raise ValueError("Use a segmentation checkpoint or model YAML, such as yolo11n-seg.pt.")
+    network.add_callback("on_val_start", _print_validation_header)
     names = yaml.safe_load(data.read_text(encoding="utf-8")).get("names", [])
     if isinstance(names, dict):
         names = names.values()
@@ -48,7 +54,7 @@ def train_model(
     results = network.train(
         data=str(data), epochs=epochs, imgsz=imgsz, batch=batch,
         device=device, workers=workers, project=str(project.resolve()), name=name,
-        # Keep the full track mask beneath overlapping car masks.
+        # Keep full region masks beneath overlapping car and car pack masks.
         overlap_mask=False,
         **boundary_options,
     )

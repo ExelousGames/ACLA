@@ -192,7 +192,7 @@ def test_duplicate_image_references_do_not_save_a_split(samples):
     assert not split_file.exists()
 
 
-def test_training_uses_dataset_from_saved_assignments(samples, monkeypatch):
+def test_training_uses_dataset_from_saved_assignments(samples, monkeypatch, capsys):
     source, split_file = samples
     prepare_training_dataset(source, split_file=split_file)
     manifest = json.loads(split_file.read_text())
@@ -200,6 +200,22 @@ def test_training_uses_dataset_from_saved_assignments(samples, monkeypatch):
     manifest["train"] = manifest["train"][:2]
     split_file.write_text(json.dumps(manifest))
     model = MagicMock(task="segment")
+    header = ("%22s" + "%11s" * 10) % (
+        "Class", "Images", "Instances", "Box(P", "R", "mAP50", "mAP50-95)",
+        "Mask(P", "R", "mAP50", "mAP50-95)",
+    )
+    validator = SimpleNamespace(get_desc=lambda: header)
+    callbacks = {}
+    model.add_callback.side_effect = callbacks.__setitem__
+
+    def validate(**kwargs):
+        # The progress bar truncates this header in an 80-column terminal.
+        for _ in range(2):
+            if "on_val_start" in callbacks:
+                callbacks["on_val_start"](validator)
+            print(header[:79] + "…")
+
+    model.train.side_effect = validate
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda *a, **kw: model))
 
     assert main([
@@ -209,6 +225,7 @@ def test_training_uses_dataset_from_saved_assignments(samples, monkeypatch):
     options = model.train.call_args.kwargs
     assert options["epochs"] == 1 and options["device"] == "0"
     _assert_export(Path(options["data"]), source, manifest)
+    assert capsys.readouterr().out.splitlines().count(header) == 2
 
 
 def test_launcher_prepares_from_any_working_directory(samples, tmp_path):
