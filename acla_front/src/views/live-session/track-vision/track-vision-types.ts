@@ -1,6 +1,6 @@
 export const DETECTION_TASKS = [
     { id: 'segment', label: 'Segmentation', description: 'Detect track features using the model and labels uploaded to the backend.' },
-    { id: 'depth', label: 'Depth', description: 'Estimate depth for local 3D track and car reconstruction.', file: 'yolo26n-depth.onnx' },
+    { id: 'depth', label: 'Depth', description: 'Estimate label distances while preserving the car interior for downstream boundary filtering.', file: 'yolo26n-depth.onnx' },
 ] as const;
 
 export type DetectionTask = typeof DETECTION_TASKS[number]['id'];
@@ -10,7 +10,7 @@ export interface DepthResult {
     task: 'depth';
     width: number;
     height: number;
-    /** Estimated optical-axis depth in meters in the letterboxed model input. */
+    /** Estimated optical-axis depth in meters in the letterboxed model input; excluded pixels are zero. */
     values: Float32Array;
 }
 
@@ -68,21 +68,6 @@ export interface LocalTrackScene {
     cars: ReconstructedCar[];
     geometry: TrackGeometry | null;
 }
-export interface SceneMemoryPoint extends GroundPoint {
-    surface: 'road' | 'roadside' | 'left-edge' | 'right-edge';
-    lastSeenAt: number;
-    observations: number;
-}
-/** Short-lived static surfaces, expressed in the latest frame's local coordinates. */
-export interface TrackSceneMemory {
-    capturedAt: number;
-    points: SceneMemoryPoint[];
-    status: 'seeded' | 'aligned' | 'reset';
-    reason: string;
-    matchedFeatures: number;
-    inliers: number;
-    alignmentErrorM: number | null;
-}
 export interface RoadPolynomial {
     /** X(Y) = c0 + c1 Y + c2 Y², in meters. */
     coefficients: [number, number, number];
@@ -125,8 +110,8 @@ export interface TrackVisionFrame {
 
 export interface TrackVisionDetection extends TrackVisionFrame {
     reconstruction: LocalTrackScene | null;
-    /** Visual-motion fusion only; cars and coaching geometry remain frame-local. */
-    sceneMemory?: TrackSceneMemory | null;
+    /** Track edges and all accepted car/car-pack boxes in the captured image, independent of depth and calibration. */
+    reconstructedScene?: import('./reconstructed-scene').ReconstructedScene | null;
     geometry: TrackGeometry | null;
     /** Null without segmentation; unknown scene properties remain unset. */
     analysis: TrackVisionAnalysis | null;

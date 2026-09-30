@@ -1,18 +1,15 @@
 import { letterbox } from './yolo-segmentation';
 import { VISION_INPUT_SIZE } from './track-vision-model';
 import { SegmentResult, TrackVisionFrame } from './track-vision-types';
-import { createSegmentationLayers } from './segmentation-layers';
-import { createTrackBoundaryMask } from './track-boundary-mask';
+import { VISION_LABEL_COLORS } from './vision-colors';
 
-const COLORS = [[55, 239, 172], [87, 185, 255], [255, 190, 87], [206, 135, 255], [255, 115, 137], [110, 221, 235]];
+const COLORS = VISION_LABEL_COLORS.map((color) => [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16)));
 
 export function drawVisionOverlay(context: CanvasRenderingContext2D, result: TrackVisionFrame, displayLabel = '') {
     const detection = result.detections.segment;
     if (detection?.task !== 'segment') return;
-    const layers = createSegmentationLayers(detection);
-    if (!layers) return;
-    // Keep every layer available for track cleanup even when its label is hidden.
-    const instances = layers.instances.filter((instance) => !displayLabel || detection.classNames[instance.classId] === displayLabel);
+    // Capture shows raw detections; interior exclusions and amodal completion belong downstream.
+    const instances = detection.instances.filter((instance) => !displayLabel || detection.classNames[instance.classId] === displayLabel);
     if (!instances.length) return;
     const { padX, padY, resizedWidth, resizedHeight } = letterbox(result.width, result.height, VISION_INPUT_SIZE);
     const layer = document.createElement('canvas');
@@ -21,11 +18,7 @@ export function drawVisionOverlay(context: CanvasRenderingContext2D, result: Tra
     const layerContext = layer.getContext('2d');
     if (!layerContext) return;
     const pixels = layerContext.createImageData(layer.width, layer.height);
-    const track = instances.find((instance) => instance.kind === 'track');
-    paintMask(pixels.data, [
-        ...(track ? [{ ...track, mask: createTrackBoundaryMask(layers, detection.width, detection.height) }] : []),
-        ...instances.filter((instance) => instance.kind !== 'track'),
-    ]);
+    paintMask(pixels.data, instances);
     layerContext.putImageData(pixels, 0, 0);
     context.save();
     context.imageSmoothingEnabled = false;
@@ -52,7 +45,7 @@ export function drawVisionOverlay(context: CanvasRenderingContext2D, result: Tra
 function paintMask(pixels: Uint8ClampedArray, instances: SegmentResult['instances']) {
     const paint = (pixel: number, color: number[], alpha: number) => {
         const offset = pixel * 4;
-        // Source-over compositing keeps the track underneath foreground masks.
+        // Composite overlapping raw masks without subtracting either detection.
         const backgroundAlpha = pixels[offset + 3] * (1 - alpha / 255);
         const combinedAlpha = alpha + backgroundAlpha;
         for (let channel = 0; channel < 3; channel++) {

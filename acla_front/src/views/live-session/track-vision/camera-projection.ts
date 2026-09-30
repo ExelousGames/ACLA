@@ -5,6 +5,10 @@ export const DEFAULT_CAMERA: CameraParameters = {
 };
 const radians = (angle: number) => angle * Math.PI / 180;
 
+export function sameCalibration(a: CameraCalibration | undefined, b: CameraCalibration | undefined) {
+    return Boolean(a && b && (Object.keys(a) as Array<keyof CameraCalibration>).every((key) => a[key] === b[key]));
+}
+
 export function validCalibration(camera: CameraCalibration | undefined): camera is CameraCalibration {
     return Boolean(camera && Object.values(camera).every(Number.isFinite)
         && camera.heightM >= 0.2 && camera.heightM <= 5
@@ -14,7 +18,7 @@ export function validCalibration(camera: CameraCalibration | undefined): camera 
         && camera.imageWidth > 0 && camera.imageHeight > 0);
 }
 
-/** Pinhole intrinsics and camera pose for the local 3D scene. */
+/** Pinhole intrinsics and camera pose for calibration and metric coaching geometry. */
 export function createCameraProjection(camera: CameraCalibration) {
     const pitch = radians(camera.pitchDeg);
     const yaw = radians(camera.yawDeg);
@@ -22,6 +26,10 @@ export function createCameraProjection(camera: CameraCalibration) {
     const fx = 1 / (2 * Math.tan(radians(camera.horizontalFovDeg) / 2));
     const fy = fx * camera.imageWidth / camera.imageHeight;
     return {
+        opticalDepth({ x, y, z }: GroundPoint) {
+            return cp * (sy * (x - camera.lateralOffsetM) + cy * (y - camera.forwardOffsetM))
+                + (camera.heightM - z) * sp;
+        },
         localToImage({ x, y, z }: GroundPoint): { u: number; v: number } | null {
             const dx = x - camera.lateralOffsetM, dy = y - camera.forwardOffsetM;
             const along = sy * dx + cy * dy;

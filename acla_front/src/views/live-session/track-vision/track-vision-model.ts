@@ -5,6 +5,7 @@ import { DETECTION_TASKS, DetectionTask, VisionResult } from './track-vision-typ
 import { readVisionModel, visionAssetUrl } from './vision-assets';
 import { loadBackendVisionModel } from './backend-vision-model';
 import { runWithVisionGpuQueue } from './vision-gpu-queue';
+import { MaskRegion, resizeMask } from './world-mask';
 
 export const VISION_INPUT_SIZE = 640;
 
@@ -100,10 +101,11 @@ export class TrackVisionModel {
         }
     }
 
-    async detect(frame: HTMLCanvasElement, threshold: number): Promise<VisionResult> {
+    async detect(frame: HTMLCanvasElement, threshold: number, region?: MaskRegion): Promise<VisionResult> {
         if (this.disposed) throw new Error('The vision model has been released.');
         if (this.busy) throw new Error('Vision inference is already running.');
         if (!frame.width || !frame.height) throw new Error('No captured frame is available.');
+        if (this.task === 'depth' && !region) throw new Error('Depth requires the current frame\'s segmentation mask.');
         this.busy = true;
         const operation = (async () => {
             const started = performance.now();
@@ -114,7 +116,23 @@ export class TrackVisionModel {
             context.fillRect(0, 0, VISION_INPUT_SIZE, VISION_INPUT_SIZE);
             context.drawImage(frame, padX, padY, resizedWidth, resizedHeight);
             const input = rgbaToChw(context.getImageData(0, 0, VISION_INPUT_SIZE, VISION_INPUT_SIZE).data);
+            if (this.task === 'depth' && region) {
+                const mask = resizeMask(region, VISION_INPUT_SIZE, VISION_INPUT_SIZE);
+                for (let i = 0; i < mask.length; i++) {
+                    if (mask[i]) continue;
+                    // Neutralize excluded pixels without cropping or changing the camera's image coordinates.
+                    input[i] = input[i + mask.length] = input[i + mask.length * 2] = 114 / 255;
+                }
+            }
             const result = await runWithVisionGpuQueue(this.executionProvider, () => this.run(input, threshold));
+            if (result.task === 'depth' && region) {
+                const mask = resizeMask(region, result.width, result.height);
+                for (let i = 0; i < mask.length; i++) {
+                    const x = (i % result.width + 0.5) / result.width * VISION_INPUT_SIZE;
+                    const y = (Math.floor(i / result.width) + 0.5) / result.height * VISION_INPUT_SIZE;
+                    if (!mask[i] || x < padX || x >= padX + resizedWidth || y < padY || y >= padY + resizedHeight) result.values[i] = 0;
+                }
+            }
             return { ...result, inferenceMs: performance.now() - started, classNames: this.classNames };
         })();
         this.pending = operation;

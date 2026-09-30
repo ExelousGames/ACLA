@@ -3,6 +3,30 @@ import { TrackVisionFrame } from './track-vision-types';
 
 afterEach(() => { jest.restoreAllMocks(); });
 
+it.each(['track', 'car', 'grass'])('shows only observed pixels for %s even when depth supports hidden predictions', (label) => {
+    const width = 10, pixels = new Uint8ClampedArray(400);
+    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+        createImageData: () => ({ data: pixels }), putImageData: jest.fn(),
+    } as any);
+    const context = { save: jest.fn(), restore: jest.fn(), drawImage: jest.fn(), strokeRect: jest.fn(), fillText: jest.fn(),
+    } as unknown as CanvasRenderingContext2D;
+    const target = Uint8Array.from({ length: 100 }, (_, i) => Number(i % width >= 2 && i % width <= 7
+        && Math.floor(i / width) >= 2 && Math.floor(i / width) <= 7 && i % width !== 5));
+    const foreground = Uint8Array.from(target, (_, i) => Number(i % width === 5));
+    drawVisionOverlay(context, { capturedAt: 0, width: 640, height: 640, detections: {
+        segment: { task: 'segment', width, height: width, classNames: [label, 'occluder'], inferenceMs: 0, instances: [
+            { classId: 0, confidence: 0.9, box: [0.2, 0.2, 0.8, 0.8], mask: target },
+            { classId: 1, confidence: 0.9, box: [0.5, 0, 0.6, 1], mask: foreground },
+        ] },
+        depth: { task: 'depth', width, height: width, classNames: [], inferenceMs: 0,
+            values: Float32Array.from(target, (_, i) => foreground[i] ? 5 : 10) },
+    } }, label);
+    expect(Array.from(pixels.slice(45 * 4, 46 * 4))).toEqual([0, 0, 0, 0]);
+    expect(Array.from(pixels.slice(44 * 4, 45 * 4))).toEqual([55, 239, 172, 110]);
+    expect(target[45]).toBe(0);
+    expect(context.fillText).toHaveBeenCalledTimes(1);
+});
+
 it('does not paint depth data over the captured frame', () => {
     const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext');
     const context = { save: jest.fn(), restore: jest.fn(), drawImage: jest.fn() } as unknown as CanvasRenderingContext2D;
@@ -44,7 +68,7 @@ it.each([false, true])('draws segmentation labels and masks with letterbox paddi
     jest.restoreAllMocks();
 });
 
-it.each(['track', 'car', 'grass'])('shows only the selected %s label while preserving track cleanup and raw detections', (label) => {
+it.each(['track', 'car', 'grass'])('shows only the selected %s label without subtracting other detections', (label) => {
     const pixels = new Uint8ClampedArray(16);
     const layerContext = { createImageData: () => ({ data: pixels }), putImageData: jest.fn() };
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(layerContext as any);
@@ -63,17 +87,17 @@ it.each(['track', 'car', 'grass'])('shows only the selected %s label while prese
         } },
     }, label);
     const expected = label === 'track'
-        ? [0, 0, 0, 0, 55, 239, 172, 110, 55, 239, 172, 110, 0, 0, 0, 0]
+        ? [55, 239, 172, 110, 55, 239, 172, 110, 55, 239, 172, 110, 0, 0, 0, 0]
         : label === 'car' ? [0, 0, 0, 0, 255, 190, 87, 110, 0, 0, 0, 0, 0, 0, 0, 0] : Array(16).fill(0);
     expect(Array.from(pixels)).toEqual(expected);
     expect(context.strokeRect).toHaveBeenCalledTimes(label === 'grass' ? 0 : 1);
     expect(context.fillText).toHaveBeenCalledTimes(label === 'grass' ? 0 : 1);
-    if (label !== 'grass') expect(context.fillText).toHaveBeenCalledWith(`${label} · 90%`, 4, 16);
+    expect((context.fillText as jest.Mock).mock.calls).toEqual(label === 'grass' ? [] : [[`${label} · 90%`, 4, 16]]);
     expect(instances).toEqual(original);
 });
 
 it.each(['car', 'car pack', 'curb', 'grass', 'other', 'fence', 'sand', 'Outfield asphalt road', 'car interior'])
-('keeps %s visible where it overlaps a track mask, regardless of detection order', (label) => {
+('composites both raw masks where %s overlaps track, preserving detection order', (label) => {
     const pixels = new Uint8ClampedArray(16);
     const layerContext = { createImageData: () => ({ data: pixels }), putImageData: jest.fn() };
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(layerContext as any);
@@ -93,7 +117,7 @@ it.each(['car', 'car pack', 'curb', 'grass', 'other', 'fence', 'sand', 'Outfield
                     task: 'segment', width: 2, height: 2, inferenceMs: 1, classNames: [label, trackLabel], instances,
                 } },
             });
-            const overlapping = ['car', 'car pack'].includes(label) ? [67, 219, 202, 173] : [55, 239, 172, 110];
+            const overlapping = trackFirst ? [67, 219, 202, 173] : [75, 205, 225, 173];
             expect(Array.from(pixels)).toEqual([
                 ...overlapping, 55, 239, 172, 110, 87, 185, 255, 110, 0, 0, 0, 0,
             ]);
@@ -104,7 +128,7 @@ it.each(['car', 'car pack', 'curb', 'grass', 'other', 'fence', 'sand', 'Outfield
     }
 });
 
-it('shows the cleaned corridor without bonnet flares or track underneath the windshield mask', () => {
+it.each(['', 'car interior', 'track'])('shows raw interior and track detections with display label "%s"', (displayLabel) => {
     const width = 20, height = 7, pixels = new Uint8ClampedArray(width * height * 4);
     const layerContext = { createImageData: () => ({ data: pixels }), putImageData: jest.fn() };
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(layerContext as any);
@@ -113,19 +137,25 @@ it('shows the cleaned corridor without bonnet flares or track underneath the win
     const track = { classId: 0, confidence: 0.9, box: [0, 0, 1, 1] as [number, number, number, number],
         mask: Uint8Array.from({ length: width * height }, (_, i) => Number(Math.floor(i / width) >= 3
             || (i % width >= 6 && i % width < 14))) };
-    const cockpit = { ...track, classId: 1, mask: Uint8Array.from({ length: width * height }, (_, i) =>
+    const cockpit = { ...track, classId: 1, confidence: 0.6, mask: Uint8Array.from({ length: width * height }, (_, i) =>
         Number(Math.floor(i / width) === 1 && i % width >= 8 && i % width < 12)) };
     const original = track.mask.slice();
+    const originalInterior = cockpit.mask.slice();
     for (const instances of [[track, cockpit], [cockpit, track]]) {
         pixels.fill(0);
-        drawVisionOverlay(context, { capturedAt: 0, width, height, detections: { segment: {
+        drawVisionOverlay(context, { capturedAt: 0, width: 640, height: 640, detections: { segment: {
             task: 'segment', width, height, inferenceMs: 1, classNames: ['track', 'car interior'], instances,
-        } } });
+        } } }, displayLabel);
         for (let i = 0; i < width * height; i++) {
-            const expected = cockpit.mask[i] ? [87, 185, 255, 110]
-                : Math.floor(i / width) < 3 && track.mask[i] ? [55, 239, 172, 110] : [0, 0, 0, 0];
+            const showTrack = track.mask[i] && displayLabel !== 'car interior';
+            const showInterior = cockpit.mask[i] && displayLabel !== 'track';
+            const expected = showTrack && showInterior ? instances[0] === track ? [75, 205, 225, 173] : [67, 219, 202, 173]
+                : showInterior ? [87, 185, 255, 110] : showTrack ? [55, 239, 172, 110] : [0, 0, 0, 0];
             expect(Array.from(pixels.slice(i * 4, i * 4 + 4))).toEqual(expected);
         }
         expect(track.mask).toEqual(original);
+        expect(cockpit.mask).toEqual(originalInterior);
     }
+    expect(context.fillText).toHaveBeenCalledTimes(displayLabel ? 2 : 4);
+    if (displayLabel !== 'track') expect(context.fillText).toHaveBeenCalledWith('car interior · 60%', 4, 16);
 });

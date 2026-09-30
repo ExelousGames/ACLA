@@ -1,5 +1,5 @@
 import type { SegmentResult } from './track-vision-types';
-import { isTrackLabel } from './vision-labels';
+import { isCarInteriorLabel, isTrackLabel } from './vision-labels';
 
 const CAR_LABELS = ['car', 'cars', 'vehicle', 'vehicles', 'race car', 'racecar', 'opponent', 'opponent car'];
 const ROADSIDE_LABELS = ['curb', 'grass', 'sand', 'outfield asphalt road'];
@@ -7,13 +7,15 @@ type MaskKind = 'track' | 'car' | 'car pack' | 'excluded';
 const maskKind = (label: string | undefined): MaskKind => isTrackLabel(label) ? 'track'
     : label === 'car pack' ? 'car pack' : CAR_LABELS.includes(label ?? '') ? 'car' : 'excluded';
 
-/** Shared by the capture overlay and working map: traffic never erases track coverage. */
+/** Analysis layers keep traffic coverage separate from the track mask. */
 export function createSegmentationLayers(segment: SegmentResult & { classNames: string[] }, minimumConfidence = 0) {
     if (!Number.isInteger(segment.width) || !Number.isInteger(segment.height) || segment.width <= 0 || segment.height <= 0) return null;
     const size = segment.width * segment.height;
     const labels = segment.classNames.map((label) => label.trim().toLowerCase().replace(/\s+/g, ' '));
     const kinds = labels.map(maskKind);
-    const instances = segment.instances.filter((item) => item.confidence >= minimumConfidence && item.confidence <= 1)
+    // Interior masks already accepted by detection remain exclusions at stricter analysis thresholds.
+    const instances = segment.instances.filter((item) => item.confidence >= 0 && item.confidence <= 1
+        && (item.confidence >= minimumConfidence || isCarInteriorLabel(labels[item.classId])))
         .map((item) => ({ ...item, kind: kinds[item.classId] ?? 'excluded' }))
         .sort((a, b) => Number(b.kind === 'track') - Number(a.kind === 'track'));
     const trackMask = new Uint8Array(size), trafficMask = new Uint8Array(size), excludedMask = new Uint8Array(size);

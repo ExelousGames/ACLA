@@ -184,7 +184,10 @@ describe('segmentation and depth reconstruction', () => {
             expect(track.mask).toEqual(original);
         }
         cockpit.confidence = 0.64;
-        expect(reconstructTrack(frame)).toEqual(before);
+        const lowerConfidence = reconstructTrack(frame)!;
+        expect(lowerConfidence[missing]).toEqual([]);
+        expect(lowerConfidence[supported]).toEqual(before[supported]);
+        expect(lowerConfidence).not.toHaveProperty('masks');
     });
 
     it.each([[1600, 900, 320], [900, 1600, 160], [3440, 1440, 320]])
@@ -214,7 +217,7 @@ describe('segmentation and depth reconstruction', () => {
         }
     });
 
-    it('applies interior proximity to curb-constructed edges without suppressing distant track edges', () => {
+    it('applies interior proximity near curbs without suppressing distant track edges', () => {
         const frame = vision(0, { corner: 'straight', player: 'middle', cars: [],
             classNames: ['track', 'curb', 'car interior'], road: (x, y) => Math.abs(x) < 1 && y >= 1 && y < 59 });
         const before = reconstructTrack(frame)!;
@@ -229,11 +232,12 @@ describe('segmentation and depth reconstruction', () => {
             curb[offset + left - 1] = 1;
             near[offset + left - 3] = 1;
             distant[offset + left - 12] = 1;
-            track.mask[offset + left] = 0;
         }
         const cockpit = { ...track, classId: 2, mask: distant };
         segment.instances.push({ ...track, classId: 1, mask: curb }, cockpit);
-        expect(reconstructTrack(frame)).toEqual(before);
+        // Nearby curb coverage does not move the observed road edges.
+        expect(reconstructTrack(frame)).toMatchObject({ leftBoundary: before.leftBoundary,
+            rightBoundary: before.rightBoundary, geometry: before.geometry, cars: before.cars });
         cockpit.mask = near;
         const after = reconstructTrack(frame)!;
         expect(before.leftBoundary.length).toBeGreaterThan(8);
@@ -299,9 +303,10 @@ describe('segmentation and depth reconstruction', () => {
     });
 
     it.each([[1600, 900, 320], [900, 1600, 160], [3440, 1440, 320]])
-    ('uses nearby surface labels to recover incomplete track edges at %s × %s with a %s-pixel mask', (width, height, maskSize) => {
+    ('retains depth in unlabelled edge gaps at %s × %s with a %s-pixel mask', (width, height, maskSize) => {
         const frame = vision(0, { width, height, maskSize, classNames: MODEL_LABELS, cars: [], corner: 'straight', player: 'middle' });
         const before = reconstructTrack(frame)!;
+        expect(before.geometry?.trackWidthM).toBeCloseTo(10, 0);
         const segment = frame.detections.segment!;
         if (segment.task !== 'segment') throw new Error('Expected segmentation');
         const track = segment.instances[0], curb = new Uint8Array(track.mask.length), grass = new Uint8Array(track.mask.length);
@@ -320,9 +325,11 @@ describe('segmentation and depth reconstruction', () => {
         for (const instances of [segment.instances.slice(), segment.instances.slice().reverse()]) {
             segment.instances = instances;
             const after = reconstructTrack(frame)!;
-            expect(after.leftBoundary).toEqual(before.leftBoundary);
-            expect(after.rightBoundary).toEqual(before.rightBoundary);
+            expect(after.leftBoundary.length).toBeGreaterThan(0);
+            expect(after.rightBoundary.length).toBeGreaterThan(0);
             expect(after.geometry?.trackWidthM).toBeCloseTo(10, 0);
+            expect([...after.leftBoundary, ...after.rightBoundary].every(({ z }) => Math.abs(z) < 0.06)).toBe(true);
+            expect(after).not.toHaveProperty('roadPoints');
             expect(track.mask).toEqual(damaged);
         }
     });
