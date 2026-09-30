@@ -17,7 +17,7 @@ claude-agent-sdk>=0.1.0
 mcp>=1.19
 
 # Track-image polygon segmentation (kept out of the live AI service).
-ultralytics>=8.3,<9
+ultralytics>=8.4,<9
 -r training/image_segmentation/requirements-labelme.txt
 # Browser access to Labelme in the headless training container.
 websockify>=0.12,<1

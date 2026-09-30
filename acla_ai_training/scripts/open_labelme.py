@@ -1,6 +1,10 @@
 """Restart Labelme; headless Linux containers serve the editor at localhost:6080.
 
 Usage: python scripts/open_labelme.py [path/to/images] [--labels path/to/labels.txt] [--browser]
+Click Custom Annotate to add editable polygons from the newest backend model.
+Click YOLO26x Annotate to add all predicted polygons with their original labels.
+Relabel the generated polygons as needed using Edit Label.
+Both reuse local model weights before downloading; Custom checks the latest version.
 Use Ctrl+N to create region polygons.
 Use Ctrl+L to create polylines.
 Use Ctrl+Shift+L to initialize a polygon from a polyline.

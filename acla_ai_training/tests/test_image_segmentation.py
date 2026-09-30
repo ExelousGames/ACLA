@@ -246,7 +246,7 @@ def test_train_cli_passes_dataset_and_device_to_segmentation_model(tmp_path, mon
     ]) == 0
 
     factory.assert_called_once_with(
-        str(WORKSPACE_DIR / "storage/image_segmentation/pretrained/yolo11n-seg.pt"), task="segment",
+        str(WORKSPACE_DIR / "storage/image_segmentation/pretrained/yolo26n-seg.pt"), task="segment",
     )
     model.train.assert_called_once_with(
         data=str(data), epochs=2, imgsz=128, batch=2, device="0", workers=0,

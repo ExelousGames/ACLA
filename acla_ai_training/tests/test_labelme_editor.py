@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -76,7 +78,7 @@ def editor(tmp_path, monkeypatch):
         config_file=PACKAGE_DIR / "labelme.yaml", file_or_dir=str(image_path),
         config_overrides={"labels": ["track"]},
     )
-    monkeypatch.setattr(window._label_dialog, "popup", lambda *args: ("track", {}, None, ""))
+    monkeypatch.setattr(window._label_dialog, "popup", lambda *args, **kwargs: ("track", {}, None, ""))
     yield window, image_path.with_suffix(".json")
     window.close()
     window.deleteLater()
@@ -166,3 +168,109 @@ def test_switching_back_to_normal_polyline_preserves_linestrip(editor):
     assert json.loads(annotation.read_text())["shapes"][0]["shape_type"] == "linestrip"
     window.close_file()
     assert not dict(window._actions.draw)["polyline_polygon"].isEnabled()
+
+
+@pytest.mark.parametrize("provider,title", [("custom", "Custom Annotate"), ("yolo26x", "YOLO26x Annotate")])
+def test_auto_annotation_button_appends_saves_and_undoes_predictions(editor, provider, title):
+    from PyQt5 import QtCore, QtWidgets
+
+    window, annotation = editor
+    window._switch_canvas_mode(edit=False, create_mode="polyline_polygon")
+    canvas = finish_polyline(window, [(10, 20), (30, 20)])
+    original = json.loads(annotation.read_text())["shapes"]
+    predicted_label = "person" if provider == "yolo26x" else "track"
+
+    def predict(image, labels):
+        assert QtCore.QThread.currentThread() != window.thread()
+        assert image.mode == "RGB" and image.size == (100, 100)
+        assert labels == ["track"]
+        return [{"label": predicted_label, "points": [[10, 10], [90, 10], [50, 90]]}]
+
+    annotator_attribute = "_backend_annotator" if provider == "custom" else "_yolo26x_annotator"
+    setattr(window, annotator_attribute, SimpleNamespace(predict=predict, model_name="test-model"))
+    action = getattr(window, f"_{provider}_annotate_action")
+    assert action.text() == title
+    assert action.isEnabled()
+    assert action in window._menus.edit.actions()
+    assert any(action in toolbar.actions() for toolbar in window.findChildren(QtWidgets.QToolBar))
+    action.trigger()
+
+    saved = json.loads(annotation.read_text())["shapes"]
+    assert saved[:1] == original
+    assert saved[1]["label"] == predicted_label
+    assert saved[1]["shape_type"] == "polygon"
+    assert saved[1]["points"] == [[10, 10], [90, 10], [50, 90]]
+    assert len(canvas.shapes) == 2
+    assert window._actions.undo.isEnabled()
+    window.undo_shape_edit()
+    assert len(canvas.shapes) == 1
+    assert canvas.shapes[0].points == canvas.shape_backups[-1][0].points
+    window.close_file()
+    assert not action.isEnabled()
+
+
+def test_yolo26x_predictions_with_foreign_labels_can_be_manually_relabeled(editor):
+    window, annotation = editor
+    predictions = [
+        {"label": "person", "points": [[10, 10], [40, 10], [25, 40]]},
+        {"label": "car", "points": [[50, 50], [90, 50], [70, 90]]},
+    ]
+    window._yolo26x_annotator = SimpleNamespace(
+        predict=MagicMock(return_value=predictions), model_name="YOLO26x",
+    )
+
+    window._yolo26x_annotate_action.trigger()
+
+    saved = json.loads(annotation.read_text())["shapes"]
+    assert [shape["label"] for shape in saved] == ["person", "car"]
+    assert window._config["labels"] == ["track"]
+    assert window._docks.unique_label_list.find_label_item("person") is not None
+    assert window._docks.unique_label_list.find_label_item("car") is not None
+
+    canvas = window._canvas_widgets.canvas
+    canvas.select_shapes([canvas.shapes[0]])
+    window._edit_label()
+
+    relabeled = json.loads(annotation.read_text())["shapes"]
+    assert [shape["label"] for shape in relabeled] == ["track", "car"]
+    assert [shape["points"] for shape in relabeled] == [shape["points"] for shape in saved]
+
+
+@pytest.mark.parametrize("failure", [None, RuntimeError("Backend unavailable")])
+@pytest.mark.parametrize("provider,title", [("custom", "Custom Annotate"), ("yolo26x", "YOLO26x Annotate")])
+def test_empty_or_failed_prediction_preserves_annotations(editor, monkeypatch, failure, provider, title):
+    from PyQt5 import QtWidgets
+
+    window, annotation = editor
+    window._switch_canvas_mode(edit=False, create_mode="polyline_polygon")
+    canvas = finish_polyline(window, [(10, 20), (30, 20)])
+    saved = annotation.read_bytes()
+    backups = len(canvas.shape_backups)
+    warning = MagicMock()
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", warning)
+    annotator_attribute = "_backend_annotator" if provider == "custom" else "_yolo26x_annotator"
+    setattr(window, annotator_attribute, SimpleNamespace(
+        predict=MagicMock(return_value=[], side_effect=failure), model_name="test-model",
+    ))
+    getattr(window, f"_{provider}_annotate_action").trigger()
+
+    assert annotation.read_bytes() == saved
+    assert len(canvas.shape_backups) == backups
+    assert len(canvas.shapes) == 1
+    if failure:
+        warning.assert_called_once_with(window, f"{title} Failed", "Backend unavailable")
+    else:
+        warning.assert_not_called()
+
+
+@pytest.mark.parametrize("provider", ["custom", "yolo26x"])
+def test_auto_annotation_is_disabled_while_drawing(editor, provider):
+    window, _ = editor
+    action = getattr(window, f"_{provider}_annotate_action")
+    window._on_drawing_polygon_changed(True)
+    assert not action.isEnabled()
+    window._on_drawing_polygon_changed(False)
+    assert action.isEnabled()
+    window.close_file()
+    window._on_drawing_polygon_changed(False)
+    assert not action.isEnabled()

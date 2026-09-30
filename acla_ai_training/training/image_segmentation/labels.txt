@@ -10,3 +10,6 @@ Outfield asphalt road
 sky
 car interior
 racing track white line
+forest
+buildings
+overhead truss structure

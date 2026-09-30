@@ -19,7 +19,7 @@ def _print_validation_header(validator):
 def train_model(
     data: Path,
     *,
-    model: str = "yolo11n-seg.pt",
+    model: str = "yolo26n-seg.pt",
     epochs: int = 100,
     imgsz: int = 640,
     batch: int = 8,
@@ -41,7 +41,7 @@ def train_model(
         model = str(WORKSPACE_DIR / "storage/image_segmentation/pretrained" / model_path)
     network = YOLO(model, task="segment")
     if network.task != "segment":
-        raise ValueError("Use a segmentation checkpoint or model YAML, such as yolo11n-seg.pt.")
+        raise ValueError("Use a segmentation checkpoint or model YAML, such as yolo26n-seg.pt.")
     network.add_callback("on_val_start", _print_validation_header)
     names = yaml.safe_load(data.read_text(encoding="utf-8")).get("names", [])
     if isinstance(names, dict):

@@ -10,7 +10,7 @@ from training.image_segmentation import WORKSPACE_DIR, splits, trainer
 from training.image_segmentation.__main__ import main
 
 
-@pytest.mark.parametrize("command", ["train", "train-labelme"])
+@pytest.mark.parametrize("command", ["train", "train-labelme", "train_model"])
 def test_default_models_and_runs_stay_in_storage_from_any_cwd(tmp_path, monkeypatch, command):
     monkeypatch.chdir(tmp_path)
     data = tmp_path / "data.yaml"
@@ -23,10 +23,13 @@ def test_default_models_and_runs_stay_in_storage_from_any_cwd(tmp_path, monkeypa
     if command == "train":
         args += ["--data", str(data)]
 
-    assert main(args) == 0
+    if command == "train_model":
+        trainer.train_model(data, upload=False)
+    else:
+        assert main(args) == 0
 
     storage = WORKSPACE_DIR / "storage/image_segmentation"
-    factory.assert_called_once_with(str(storage / "pretrained/yolo11n-seg.pt"), task="segment")
+    factory.assert_called_once_with(str(storage / "pretrained/yolo26n-seg.pt"), task="segment")
     assert network.train.call_args.kwargs["project"] == str(storage / "runs")
     assert not list(tmp_path.glob("*.pt"))
 

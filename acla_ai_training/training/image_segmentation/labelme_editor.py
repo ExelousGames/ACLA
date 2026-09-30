@@ -4,6 +4,7 @@ import importlib.util
 import math
 import os
 from pathlib import Path
+import sys
 
 
 def polyline_polygon_points(points: list[tuple[float, float]], width: float) -> list[tuple[float, float]]:
@@ -42,6 +43,8 @@ def create_main_window(base_window):
     class PolylinePolygonMainWindow(base_window):
         _polygon_from_polyline = False
         _polygon_width = 3.0
+        _backend_annotator = None
+        _yolo26x_annotator = None
 
         def _setup_actions(self):
             from PyQt5 import QtWidgets
@@ -58,11 +61,125 @@ def create_main_window(base_window):
             )
             width = QtWidgets.QAction("Set Polyline Polygon Width…", self)
             width.triggered.connect(self._set_polygon_width)
+            self._custom_annotate_action = QtWidgets.QAction(
+                actions.create_mode.icon(), "Custom Annotate", self,
+            )
+            self._custom_annotate_action.setToolTip(
+                "Add polygons to this image using the newest trained model from the backend"
+            )
+            self._custom_annotate_action.setEnabled(False)
+            self._custom_annotate_action.triggered.connect(self._custom_annotate)
+            self._yolo26x_annotate_action = QtWidgets.QAction(
+                actions.create_mode.icon(), "YOLO26x Annotate", self,
+            )
+            self._yolo26x_annotate_action.setToolTip(
+                "Add all pretrained YOLO26x predictions with their original labels for manual relabeling"
+            )
+            self._yolo26x_annotate_action.setEnabled(False)
+            self._yolo26x_annotate_action.triggered.connect(self._yolo26x_annotate)
             actions.draw.insert(1, ("polyline_polygon", create))
             return actions._replace(
-                on_load_active=(*actions.on_load_active, create),
+                on_load_active=(
+                    *actions.on_load_active, create, self._custom_annotate_action, self._yolo26x_annotate_action,
+                ),
                 context_menu=(create, width, *actions.context_menu),
-                edit_menu=(width, None, *actions.edit_menu),
+                edit_menu=(self._custom_annotate_action, self._yolo26x_annotate_action, width, None, *actions.edit_menu),
+            )
+
+        def _setup_toolbars(self):
+            from PyQt5 import QtCore, QtWidgets
+
+            super()._setup_toolbars()
+            toolbar = QtWidgets.QToolBar("Annotation", self)
+            toolbar.setObjectName("Annotation")
+            toolbar.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+            toolbar.addAction(self._custom_annotate_action)
+            toolbar.addAction(self._yolo26x_annotate_action)
+            self.addToolBar(toolbar)
+
+        def _on_drawing_polygon_changed(self, drawing=True):
+            super()._on_drawing_polygon_changed(drawing)
+            self._custom_annotate_action.setEnabled(not drawing and self._image_path is not None)
+            self._yolo26x_annotate_action.setEnabled(not drawing and self._image_path is not None)
+
+        def _custom_annotate(self):
+            from training.image_segmentation.auto_annotation import BackendAutoAnnotator
+
+            if self._backend_annotator is None:
+                self._backend_annotator = BackendAutoAnnotator()
+            self._auto_annotate(
+                self._backend_annotator, "Custom Annotate",
+                "Checking the latest backend version and local weights, then predicting polygons…",
+            )
+
+        def _yolo26x_annotate(self):
+            from training.image_segmentation.auto_annotation import YOLO26xAutoAnnotator
+
+            if self._yolo26x_annotator is None:
+                self._yolo26x_annotator = YOLO26xAutoAnnotator()
+            self._auto_annotate(
+                self._yolo26x_annotator, "YOLO26x Annotate",
+                "Checking local YOLO26x weights, downloading if missing, then predicting polygons…",
+            )
+
+        def _auto_annotate(self, annotator, title, message):
+            from PyQt5 import QtCore, QtWidgets
+            from PIL import Image
+            from labelme import utils
+            from labelme._shape import Shape
+
+            if self._image_path is None or self._canvas_widgets.canvas.is_drawing:
+                return
+            # Use the displayed RGB image, including Labelme's orientation handling.
+            image = Image.fromarray(utils.img_qt_to_arr(self._image)[:, :, :3].copy())
+            labels = self._config["labels"]
+
+            class PredictionThread(QtCore.QThread):
+                polygons = None
+                error = None
+
+                def run(self):
+                    try:
+                        self.polygons = annotator.predict(image, labels)
+                    except Exception as exc:
+                        self.error = str(exc)
+
+            class PredictionDialog(QtWidgets.QDialog):
+                def reject(self):
+                    # Keep the image fixed and the worker alive until it finishes.
+                    pass
+
+            dialog = PredictionDialog(self)
+            dialog.setWindowTitle(title)
+            dialog.setWindowFlag(QtCore.Qt.WindowCloseButtonHint, False)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            layout.addWidget(QtWidgets.QLabel(message))
+            progress = QtWidgets.QProgressBar(dialog)
+            progress.setRange(0, 0)
+            layout.addWidget(progress)
+            worker = PredictionThread(dialog)
+            worker.finished.connect(dialog.accept)
+            QtCore.QTimer.singleShot(0, worker.start)
+            dialog.exec_()
+            worker.wait()
+            polygons, error = worker.polygons, worker.error
+            dialog.deleteLater()
+            if error is not None:
+                QtWidgets.QMessageBox.warning(self, f"{title} Failed", error)
+                return
+            shapes = []
+            for polygon in polygons:
+                shape = Shape(label=polygon["label"], shape_type="polygon")
+                for x, y in polygon["points"]:
+                    shape.add_point(QtCore.QPointF(x, y))
+                shape.close()
+                shapes.append(shape)
+            if shapes:
+                self._switch_canvas_mode(edit=True)
+                self._insert_shapes(shapes)
+            self.show_status_message(
+                f"Added {len(shapes)} polygons from {annotator.model_name}. Review and adjust the predictions.",
+                10000,
             )
 
         def _set_polygon_width(self):
@@ -139,4 +256,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     main()

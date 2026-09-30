@@ -77,6 +77,37 @@ In Labelme, press **Ctrl+N** (Create Polygons), click along the region boundary,
 and double-click to finish. Choose a label, then **Ctrl+S** to save. Use **D** / **A**
 for the next / previous image. JSON annotations are saved beside the images.
 
+Click **Custom Annotate** in the toolbar (or **Edit > Custom Annotate**) to add
+polygons for the current image using the newest segmentation checkpoint uploaded
+to the backend. Each click compares the latest model ID, size, and SHA-256 with
+the local cache before downloading. Matching weights are reused; missing or
+corrupt weights are downloaded, verified, and cached under
+`storage/image_segmentation/backend_models/`. Training
+must have uploaded a model first. This uses the same backend URL and AI service
+credentials as training uploads; for a local desktop, also set
+`PYTHONPATH=../acla_ai_service` so the shared backend client can be imported.
+Local installations need Ultralytics as well as Labelme.
+
+Click **YOLO26x Annotate** in the same toolbar or Edit menu to use pretrained
+`yolo26x-seg.pt` without the backend. It checks for local weights in
+`storage/image_segmentation/pretrained/`, the current working directory, and
+Ultralytics' configured weights directory before downloading to the pretrained
+cache. Subsequent clicks reuse the loaded model. All detected classes are added
+with their original model labels, including labels absent from the editor's
+labels file. Select a generated polygon and use **Edit Label** to relabel it.
+This pretrained model does not know custom track regions; use **Custom Annotate**
+for those.
+
+Generated contours are simplified with Douglas-Peucker using a two-pixel
+tolerance to reduce the number of editable points. If that would collapse a
+small or thin region, only collinear points are removed.
+
+Existing shapes are preserved, and predictions are added as one undoable edit.
+Review the generated polygons with **Edit Shapes**; the normal auto-save setting
+also applies to generated annotations. A custom model's labels must be present
+in the editor's labels file (use `--labels` when needed). Backend or prediction errors
+leave the current annotations unchanged.
+
 For an open polyline, press **Ctrl+L**, click along the line, then double-click to
 finish and choose its label. Polylines use Labelme's default display style.
 Polygons remain region annotations.
@@ -106,6 +137,9 @@ The class IDs follow the order in `labels.txt`:
 | 9 | sky | Full sky regions, including reasonably inferred parts hidden by cars or car packs |
 | 10 | car interior | Visible car interior regions |
 | 11 | racing track white line | Full white line markings, including reasonably inferred parts hidden by cars or car packs |
+| 12 | forest | Visible forest regions |
+| 13 | buildings | Visible building regions |
+| 14 | overhead truss structure | Visible overhead truss structures |
 
 For `track`, `grass`, `fence`, `curb`, `sand`, `sky`, and `racing track white line`,
 trace the continuous outer boundaries, including portions behind a `car` or
@@ -226,12 +260,16 @@ and its `/app` Docker mount.
 
 ## Train
 
+Both `train` and `train-labelme` default to pretrained YOLO26 nano segmentation
+(`yolo26n-seg.pt`). YOLO26 requires Ultralytics 8.4 or newer; rebuild an older
+training container or update its training dependencies before running.
+
 In the training Python environment:
 
 ```bash
 python -m training.image_segmentation train \
   --data storage/image_segmentation/yolo/data.yaml \
-  --model yolo11n-seg.pt --epochs 100 --imgsz 640 --batch 8 --device cpu
+  --model yolo26n-seg.pt --epochs 100 --imgsz 640 --batch 8 --device cpu
 ```
 
 Or use the rebuilt training container (GPU 0):
@@ -239,13 +277,13 @@ Or use the rebuilt training container (GPU 0):
 ```bash
 docker exec -it acla_ai_training_c python -m training.image_segmentation train \
   --data /app/storage/image_segmentation/yolo/data.yaml \
-  --model yolo11n-seg.pt --epochs 100 --imgsz 640 --batch 8 --device 0
+  --model yolo26n-seg.pt --epochs 100 --imgsz 640 --batch 8 --device 0
 ```
 
 The default is CPU; select `--device 0` for a configured NVIDIA/ROCm GPU or `mps`
 for Apple Silicon. Pretrained weights download on first use to
 `storage/image_segmentation/pretrained/`, independent of the working directory. Supply a local
-segmentation checkpoint to avoid that download, or `--model yolo11n-seg.yaml`
+segmentation checkpoint to avoid that download, or `--model yolo26n-seg.yaml`
 to initialize without pretrained weights.
 
 The trainer sets `overlap_mask=False` for all classes so region, car, and car pack
@@ -322,7 +360,7 @@ Save `model-metadata.json` with the class names from the trained dataset's
   "task": "segment",
   "classNames": ["track", "curb", "grass", "car", "other", "fence", "car pack", "sand", "Outfield asphalt road"],
   "metadata": {
-    "baseModel": "yolo11n-seg.pt",
+    "baseModel": "yolo26n-seg.pt",
     "epochs": 100,
     "trainingRunId": "train"
   }
