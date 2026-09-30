@@ -1,14 +1,17 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import { captureGameScreen, ScreenCaptureSource } from './screen-capture';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
 import { CameraCalibration, DETECTION_TASKS, DetectionTask, EnabledDetections, TrackVisionAnalysis, TrackVisionDetection, TrackVisionFrame, VISION_MAX_AGE_MS } from './track-vision-types';
-import { analyzeTrackPositions, reconstructTrack } from './track-position-analysis';
+import { analyzeTrackPositions } from './track-position-analysis';
+import { reconstructTrack } from './track-reconstruction';
 import { DEFAULT_CAMERA, validCalibration } from './camera-projection';
 import TrackCalibration, { CameraGroundGrid } from './TrackCalibration';
 import { drawVisionOverlay } from './vision-overlay';
-import LocalTrackView from './LocalTrackView';
-import { readSceneImage, RollingSceneMemory } from './scene-memory';
+import ReconstructedSceneView from './ReconstructedSceneView';
+import { reconstructScene } from './reconstructed-scene';
+import { drawLabelDepths, filteredFrame, filteredMasks, PIPELINE_STEPS, PipelineStep } from './pipeline-visuals';
+import PipelineDetails from './PipelineDetails';
 import './LiveTrackVision.css';
 
 export interface TrackVisionHandle extends NamedOperationComponentHandle {
@@ -25,8 +28,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const previewRef = useRef<HTMLDialogElement>(null);
     const previewFrameRef = useRef<HTMLCanvasElement | null>(null);
-    const motionCanvasRef = useRef<HTMLCanvasElement | null>(null);
-    const sceneMemory = useRef(new RollingSceneMemory());
     const streamRef = useRef<MediaStream | null>(null);
     const models = useRef<Partial<Record<DetectionTask, TrackVisionModel>>>({});
     const modelQueue = useRef<Promise<void>>(Promise.resolve());
@@ -51,6 +52,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const [status, setStatus] = useState('Share your game screen to run segmentation and depth estimation.');
     const [hasFrame, setHasFrame] = useState(false);
     const [previewExpanded, setPreviewExpanded] = useState(false);
+    const [step, setStep] = useState<PipelineStep>('capture');
+    const pipelineId = useId();
     const [confidence, setConfidence] = useState(0.5);
     const [displayLabel, setDisplayLabel] = useState('');
     const [cameraDraft, setCameraDraft] = useState(DEFAULT_CAMERA);
@@ -58,11 +61,11 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const [showCalibrationOnCapture, setShowCalibrationOnCapture] = useState(false);
     const cameraCalibration = useRef<CameraCalibration | undefined>(undefined);
     const [previewResult, setPreviewResult] = useState<TrackVisionDetection | null>(null);
+    const showFilteredMasks = step === 'filtering' || step === 'depth';
+    const masks = useMemo(() => showFilteredMasks ? filteredMasks(previewResult) : [], [previewResult, showFilteredMasks]);
     const previewWidth = previewFrameRef.current?.width ?? 0, previewHeight = previewFrameRef.current?.height ?? 0;
     const previewCamera = useMemo(() => ({ ...cameraDraft, imageWidth: previewWidth, imageHeight: previewHeight }),
         [cameraDraft, previewWidth, previewHeight]);
-    const previewScene = useMemo(() => previewResult ? reconstructTrack({ ...previewResult, calibration: previewCamera }) : null,
-        [previewResult, previewCamera]);
     const options = useRef({ confidence, enabled, allowCpuFallback, displayLabel });
     options.current = { confidence, enabled, allowCpuFallback, displayLabel };
 
@@ -76,21 +79,20 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         setPreviewExpanded((current) => !current);
     };
 
-    const redrawPreview = useCallback((result: TrackVisionFrame) => {
+    useEffect(() => {
         const frame = previewFrameRef.current;
         const canvas = canvasRef.current;
         if (!frame || !canvas) return;
         canvas.width = frame.width;
         canvas.height = frame.height;
         const preview = canvas.getContext('2d');
-        if (!preview) throw new Error('Screen preview is unavailable.');
+        if (!preview) return;
         preview.drawImage(frame, 0, 0);
-        drawVisionOverlay(preview, result, options.current.displayLabel);
-    }, []);
-
-    useEffect(() => {
-        if (latest.current) redrawPreview(latest.current);
-    }, [displayLabel, redrawPreview]);
+        if (!previewResult) return;
+        if (step === 'segmentation') drawVisionOverlay(preview, previewResult, displayLabel);
+        if (step === 'filtering') drawVisionOverlay(preview, filteredFrame(previewResult, masks));
+        if (step === 'depth') drawLabelDepths(preview, previewResult, masks);
+    }, [previewResult, step, displayLabel, masks]);
 
     useEffect(() => {
         if (detectors.segment.status === 'ready' && displayLabel && !detectors.segment.classNames?.includes(displayLabel)) {
@@ -101,13 +103,9 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const publish = useCallback((result: TrackVisionFrame | null) => {
         clearTimeout(analysisExpiry.current);
         const reconstruction = reconstructTrack(result);
-        const source = previewFrameRef.current;
-        const pixels = reconstruction && source ? readSceneImage(source,
-            motionCanvasRef.current ?? (motionCanvasRef.current = document.createElement('canvas'))) : null;
-        const memory = sceneMemory.current.update(result, reconstruction, pixels);
         const geometry = reconstruction?.geometry ?? null;
         const scene = result?.detections.segment?.task === 'segment' ? analyzeTrackPositions(result, reconstruction) : null;
-        latest.current = result ? { ...result, reconstruction, sceneMemory: memory, geometry, analysis: scene } : null;
+        latest.current = result ? { ...result, reconstruction, reconstructedScene: reconstructScene(result), geometry, analysis: scene } : null;
         setPreviewResult(latest.current);
         const remaining = result ? result.capturedAt + VISION_MAX_AGE_MS - Date.now() : 0;
         setAnalysis(remaining > 0 ? scene : null);
@@ -261,13 +259,24 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                         if (!context) throw new Error('Screen preview is unavailable.');
                         context.drawImage(video, 0, 0);
                         const stackVersion = modelVersion.current;
+                        const frameConfidence = options.current.confidence;
                         const result: TrackVisionFrame = { capturedAt: Date.now(), width: frame.width, height: frame.height, detections: {} };
+                        let waitingForMasks = false;
                         const inference = (async () => {
                             for (const { id } of DETECTION_TASKS) {
                                 if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
                                 const model = models.current[id];
                                 if (!options.current.enabled[id] || !model || (!options.current.allowCpuFallback && model.executionProvider === 'wasm')) continue;
-                                try { result.detections[id] = await model.detect(frame, options.current.confidence); }
+                                try {
+                                    if (id === 'depth') {
+                                        const segment = result.detections.segment;
+                                        // Preserve cockpit pixels for depth; their mask is used by downstream edge filtering.
+                                        const region = segment?.task === 'segment' && segment.width > 0 && segment.height > 0
+                                            ? { width: segment.width, height: segment.height, mask: new Uint8Array(segment.width * segment.height).fill(1) } : null;
+                                        if (!region?.mask.some(Boolean)) { waitingForMasks = true; continue; }
+                                        result.detections.depth = await model.detect(frame, frameConfidence, region);
+                                    } else result.detections[id] = await model.detect(frame, frameConfidence);
+                                }
                                 catch (reason) {
                                     if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
                                     delete models.current[id];
@@ -299,11 +308,11 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             setCalibration(undefined);
                         }
                         result.calibration = cameraCalibration.current;
-                        redrawPreview(result);
                         publish(result);
                         setHasFrame(true);
                         const completed = DETECTION_TASKS.filter(({ id }) => result.detections[id]);
-                        setStatus(completed.length ? completed.map(({ id, label }) => `${label} · ${Math.round(result.detections[id]!.inferenceMs)} ms`).join(' / ')
+                        setStatus(waitingForMasks ? 'Screen shared. Depth is waiting for segmentation masks.'
+                            : completed.length ? completed.map(({ id, label }) => `${label} · ${Math.round(result.detections[id]!.inferenceMs)} ms`).join(' / ')
                             : Object.values(options.current.enabled).some(Boolean) ? 'Screen shared. Waiting for enabled detectors.'
                                 : 'Screen shared. Enable a detection to analyze the scene.');
                     }
@@ -329,51 +338,19 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         </section>;
     }
 
+    const activeStep = PIPELINE_STEPS.find((item) => item.id === step)!;
+    const stepIndex = PIPELINE_STEPS.indexOf(activeStep);
+    const isSceneStep = step === 'scene';
+    const labels = previewResult?.detections.segment?.classNames ?? detectors.segment.classNames ?? [];
+
     return (
         <section className="track-vision" aria-label="Track Vision">
-            <fieldset className="track-vision__stack">
-                <legend>Track models <span>Ultralytics</span></legend>
-                <label className="track-vision__fallback">
-                    <input type="checkbox" checked={allowCpuFallback} onChange={(event) => {
-                        modelVersion.current++;
-                        publish(null);
-                        setHasFrame(false);
-                        setAllowCpuFallback(event.target.checked);
-                    }} />
-                    Allow CPU fallback
-                </label>
-                <p className="track-vision__hint">{allowCpuFallback
-                    ? 'Try GPU first, then use CPU if GPU inference is unavailable.'
-                    : 'CPU fallback is off. Failed GPU inference retries automatically every 3 seconds.'}</p>
-                {DETECTION_TASKS.map(({ id, label, description }) => <div className="track-vision__detector" key={id} data-enabled={enabled[id]}>
-                    <label>
-                        <input type="checkbox" aria-label={`Enable ${label}`} checked={enabled[id]} onChange={() => toggleDetection(id)} />
-                        <span><strong>{label}</strong><small>{description}</small></span>
-                    </label>
-                    <span className="track-vision__detector-state">{!enabled[id] ? 'Off' : detectors[id].status === 'ready'
-                        ? captureState === 'active' ? 'Running' : 'Ready' : detectors[id].status === 'retrying' ? 'Retrying GPU…'
-                            : detectors[id].status === 'error' ? 'Unavailable' : 'Loading…'}</span>
-                    {enabled[id] && detectors[id].modelName && <div className="track-vision__hint">Model: {detectors[id].modelName}</div>}
-                    {enabled[id] && !!detectors[id].classNames?.length && <div className="track-vision__hint" aria-label="Model labels">Labels: {detectors[id].classNames!.join(', ')}</div>}
-                    {enabled[id] && detectors[id].device && <div className="track-vision__hint" aria-label={`${label} inference device`}>{detectors[id].device}</div>}
-                    {enabled[id] && detectors[id].error && <div className="track-vision__error" role="alert">
-                        {detectors[id].error} <button type="button" onClick={() => setRetry((current) => current + 1)}>Retry {label}</button>
-                    </div>}
-                </div>)}
-            </fieldset>
-            <div className="track-vision__controls">
-                <label>Display label
-                    <select value={displayLabel} disabled={!enabled.segment || !detectors.segment.classNames?.length}
-                        onChange={(event) => setDisplayLabel(event.target.value)}>
-                        <option value="">All labels</option>
-                        {detectors.segment.classNames?.map((label, index) => <option key={index} value={label}>{label}</option>)}
-                    </select>
-                </label>
-                <label>Segmentation confidence {Math.round(confidence * 100)}%
-                    <input aria-label="Segmentation confidence" disabled={!enabled.segment} type="range" min="0.1" max="0.95" step="0.05" value={confidence}
-                        onChange={(event) => setConfidence(Number(event.target.value))} />
-                </label>
-            </div>
+            <header className="track-vision__header">
+                <div><span className="track-vision__eyebrow">VISION PIPELINE</span><h2>From capture to reconstructed scene</h2></div>
+                <span className="track-vision__capture-state" data-active={captureState === 'active'}>
+                    <i />{captureState === 'active' ? 'Capturing' : captureState === 'starting' ? 'Starting…' : 'Capture idle'}
+                </span>
+            </header>
             <div className="track-vision__controls">
                 <select aria-label="Game window or screen" value={sourceId} disabled={captureState !== 'idle'} onChange={(event) => setSourceId(event.target.value)}>
                     <option value="">Choose a window or screen</option>
@@ -384,41 +361,120 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     ? <button type="button" className="track-vision__start" disabled={!sourceId} onClick={() => void start()}>Share game screen</button>
                     : <button type="button" onClick={stop}>Stop capture</button>}
             </div>
-            <dialog ref={previewRef} open className={`track-vision__preview${hasFrame && showCalibrationOnCapture ? ' track-vision__preview--calibrated' : ''}`}
-                aria-label="Capture preview" onCancel={(event) => { event.preventDefault(); togglePreviewSize(); }}>
-                <video ref={videoRef} muted playsInline hidden />
-                <canvas ref={canvasRef} aria-label="Captured game frame with vision detections" hidden={!hasFrame} />
-                {hasFrame && showCalibrationOnCapture && previewFrameRef.current && validCalibration(previewCamera)
-                    && <CameraGroundGrid camera={previewCamera} applied={Boolean(calibration)} />}
-                {!hasFrame && <div className="track-vision__empty"><strong>See the full racing scene</strong><span>Share your simulator window and enable the detections you need.</span></div>}
-                <div className="track-vision__preview-controls">
-                    {previewExpanded && captureState !== 'idle' && <button type="button" onClick={stop}>Stop capture</button>}
-                    <button type="button" aria-expanded={previewExpanded} onClick={togglePreviewSize}>
-                        {previewExpanded ? 'Restore capture' : 'Expand capture'}
-                    </button>
+            <div className="track-vision__tabs" role="tablist" aria-label="Vision pipeline steps">
+                {PIPELINE_STEPS.map((item, index) => <button key={item.id} type="button" role="tab"
+                    id={`${pipelineId}-${item.id}`} aria-controls={`${pipelineId}-panel`} aria-selected={step === item.id}
+                    tabIndex={step === item.id ? 0 : -1} onClick={() => setStep(item.id)}
+                    onKeyDown={(event) => {
+                        const next = event.key === 'ArrowRight' ? (index + 1) % PIPELINE_STEPS.length
+                            : event.key === 'ArrowLeft' ? (index + PIPELINE_STEPS.length - 1) % PIPELINE_STEPS.length
+                                : event.key === 'Home' ? 0 : event.key === 'End' ? PIPELINE_STEPS.length - 1 : -1;
+                        if (next < 0) return;
+                        event.preventDefault();
+                        setStep(PIPELINE_STEPS[next].id);
+                        document.getElementById(`${pipelineId}-${PIPELINE_STEPS[next].id}`)?.focus();
+                    }}><span aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>{item.label}</button>)}
+            </div>
+            <div className="track-vision__stage" role="tabpanel" id={`${pipelineId}-panel`}
+                aria-labelledby={`${pipelineId}-${step}`} tabIndex={0}>
+                <div className="track-vision__stage-heading">
+                    <div><span className="track-vision__eyebrow">STEP {String(stepIndex + 1).padStart(2, '0')} / {String(PIPELINE_STEPS.length).padStart(2, '0')}</span>
+                        <h3>{activeStep.title}</h3><p>{activeStep.description}</p></div>
+                    {hasFrame && <span className="track-vision__frame-size">{previewWidth} × {previewHeight}</span>}
                 </div>
-            </dialog>
-            <TrackCalibration source={hasFrame ? previewFrameRef.current : null} draft={cameraDraft} applied={calibration}
-                showOnCapture={showCalibrationOnCapture} onToggleCapture={() => setShowCalibrationOnCapture((current) => !current)}
-                onChange={(draft) => { setCameraDraft(draft); updateCalibration(); }}
-                onApply={() => { const frame = previewFrameRef.current; if (frame) updateCalibration({ ...cameraDraft, imageWidth: frame.width, imageHeight: frame.height }); }}
-                onClear={() => updateCalibration()} />
-            <LocalTrackView frame={hasFrame ? previewResult : null} scene={previewScene} camera={previewCamera} applied={Boolean(calibration)}
-                memory={previewResult?.sceneMemory} />
-            <section className="track-vision__analysis" aria-label="Screen analysis">
-                <h3>Screen analysis</h3>
-                <dl>
-                    <div><dt>Visible corner</dt><dd aria-label="Visible corner">{analysis?.cornerDirection ? `${analysis.cornerDirection === 'left' ? 'Left' : 'Right'}-hand corner` : 'Unknown'}</dd></div>
-                    <div><dt>Driver position</dt><dd aria-label="Driver position">{analysis?.playerPosition ? analysis.playerPosition[0].toUpperCase() + analysis.playerPosition.slice(1) : 'Unknown'}</dd></div>
-                    <div><dt>Opponent position</dt><dd aria-label="Opponent position">{analysis?.opponentPosition ? analysis.opponentPosition[0].toUpperCase() + analysis.opponentPosition.slice(1) : analysis?.carAhead === 1 ? 'Individual position unresolved' : analysis?.carAhead === 0 ? 'No opponent detected' : 'Unknown'}</dd></div>
-                </dl>
-                <p className="track-vision__hint">Positions use segmentation, estimated depth and camera position: inside, middle, or outside of the corner. Unclear or stale frames show unknown positions.</p>
-                <p className="track-vision__hint">Track and car detections identify positions. The track mask defines the track edges. Car masks and depth reconstruct visible car surfaces. A car pack indicates grouped traffic; an individual car detection is needed for an opponent position.</p>
-                <p className="track-vision__hint">Curb, grass, other, fence, sand, and Outfield asphalt road are excluded from the track surface. Analysis uses detections with confidence ≥ 65%. Labels ignore case and surrounding spaces.</p>
-            </section>
+                <dialog ref={previewRef} open hidden={isSceneStep} className={`track-vision__preview${hasFrame && step === 'calibration' && showCalibrationOnCapture ? ' track-vision__preview--calibrated' : ''}`}
+                    aria-label="Capture preview" onCancel={(event) => { event.preventDefault(); togglePreviewSize(); }}>
+                    <video ref={videoRef} muted playsInline hidden />
+                    <canvas ref={canvasRef} aria-label="Captured game frame with vision detections" hidden={!hasFrame} />
+                    {hasFrame && step === 'calibration' && showCalibrationOnCapture && previewFrameRef.current && validCalibration(previewCamera)
+                        && <CameraGroundGrid camera={previewCamera} applied={Boolean(calibration)} />}
+                    {!hasFrame && <div className="track-vision__empty"><span className="track-vision__empty-icon" aria-hidden="true">▣</span><strong>No captured frame yet</strong><span>Choose your simulator window and share it to inspect this pipeline step.</span></div>}
+                    <div className="track-vision__preview-controls">
+                        {previewExpanded && captureState !== 'idle' && <button type="button" onClick={stop}>Stop capture</button>}
+                        <button type="button" aria-expanded={previewExpanded} onClick={togglePreviewSize}>
+                            {previewExpanded ? 'Restore capture' : 'Expand capture'}
+                        </button>
+                    </div>
+                </dialog>
+                <div hidden={step !== 'calibration'}>
+                    <TrackCalibration source={hasFrame ? previewFrameRef.current : null} draft={cameraDraft} applied={calibration}
+                        showOnCapture={showCalibrationOnCapture} onToggleCapture={() => setShowCalibrationOnCapture((current) => !current)}
+                        onChange={(draft) => { setCameraDraft(draft); updateCalibration(); }}
+                        onApply={() => { const frame = previewFrameRef.current; if (frame) updateCalibration({ ...cameraDraft, imageWidth: frame.width, imageHeight: frame.height }); }}
+                        onClear={() => updateCalibration()} />
+                </div>
+                <div hidden={step !== 'segmentation'}>
+                    <div className="track-vision__controls">
+                        <label>Display label
+                            <select value={displayLabel} disabled={!enabled.segment || !detectors.segment.classNames?.length}
+                                onChange={(event) => setDisplayLabel(event.target.value)}>
+                                <option value="">All labels</option>
+                                {detectors.segment.classNames?.map((label, index) => <option key={index} value={label}>{label}</option>)}
+                            </select>
+                        </label>
+                        <label>Segmentation confidence {Math.round(confidence * 100)}%
+                            <input aria-label="Segmentation confidence" disabled={!enabled.segment} type="range" min="0.1" max="0.95" step="0.05" value={confidence}
+                                onChange={(event) => setConfidence(Number(event.target.value))} />
+                        </label>
+                    </div>
+                    <p className="track-vision__hint">Display label only changes this preview. All labels continue through filtering and reconstruction.</p>
+                </div>
+                <PipelineDetails step={step} frame={previewResult} masks={masks} classNames={labels} confidence={confidence} />
+                <div hidden={!isSceneStep}>
+                    <ReconstructedSceneView scene={hasFrame ? previewResult?.reconstructedScene ?? null : null}
+                        source={hasFrame ? previewFrameRef.current : null} capturedAt={previewResult?.capturedAt} />
+                </div>
+                <div hidden={!isSceneStep}>
+                    <section className="track-vision__analysis" aria-label="Screen analysis">
+                        <h3>Screen analysis</h3>
+                        <dl>
+                            <div><dt>Visible corner</dt><dd aria-label="Visible corner">{analysis?.cornerDirection ? `${analysis.cornerDirection === 'left' ? 'Left' : 'Right'}-hand corner` : 'Unknown'}</dd></div>
+                            <div><dt>Driver position</dt><dd aria-label="Driver position">{analysis?.playerPosition ? analysis.playerPosition[0].toUpperCase() + analysis.playerPosition.slice(1) : 'Unknown'}</dd></div>
+                            <div><dt>Opponent position</dt><dd aria-label="Opponent position">{analysis?.opponentPosition ? analysis.opponentPosition[0].toUpperCase() + analysis.opponentPosition.slice(1) : analysis?.carAhead === 1 ? 'Individual position unresolved' : analysis?.carAhead === 0 ? 'No opponent detected' : 'Unknown'}</dd></div>
+                        </dl>
+                        <p className="track-vision__hint">Positions use segmentation, estimated depth and camera position: inside, middle, or outside of the corner. Unclear or stale frames show unknown positions.</p>
+                        <p className="track-vision__hint">The 2D scene uses segmentation without requiring depth or camera calibration. Car interior masks are retained upstream and suppress cockpit outlines at the track boundary.</p>
+                        <p className="track-vision__hint">Coaching positions use track and traffic detections with confidence ≥ 65%. Car interior and roadside labels are excluded from the drivable surface.</p>
+                    </section>
+                </div>
+            </div>
+            <details className="track-vision__model-settings" open={DETECTION_TASKS.some(({ id }) => enabled[id] && Boolean(detectors[id].error))}>
+                <summary>Model settings <span>{DETECTION_TASKS.map(({ id, label }) =>
+                    `${label}: ${enabled[id] ? detectors[id].status : 'off'}`).join(' · ')}</span></summary>
+                <fieldset className="track-vision__stack">
+                    <legend>Track models <span>Ultralytics</span></legend>
+                    <label className="track-vision__fallback">
+                        <input type="checkbox" checked={allowCpuFallback} onChange={(event) => {
+                            modelVersion.current++;
+                            publish(null);
+                            setHasFrame(false);
+                            setAllowCpuFallback(event.target.checked);
+                        }} />
+                        Allow CPU fallback
+                    </label>
+                    <p className="track-vision__hint">{allowCpuFallback
+                        ? 'Try GPU first, then use CPU if GPU inference is unavailable.'
+                        : 'CPU fallback is off. Failed GPU inference retries automatically every 3 seconds.'}</p>
+                    {DETECTION_TASKS.map(({ id, label, description }) => <div className="track-vision__detector" key={id} data-enabled={enabled[id]}>
+                        <label>
+                            <input type="checkbox" aria-label={`Enable ${label}`} checked={enabled[id]} onChange={() => toggleDetection(id)} />
+                            <span><strong>{label}</strong><small>{description}</small></span>
+                        </label>
+                        <span className="track-vision__detector-state">{!enabled[id] ? 'Off' : detectors[id].status === 'ready'
+                            ? captureState === 'active' ? 'Running' : 'Ready' : detectors[id].status === 'retrying' ? 'Retrying GPU…'
+                                : detectors[id].status === 'error' ? 'Unavailable' : 'Loading…'}</span>
+                        {enabled[id] && detectors[id].modelName && <div className="track-vision__hint">Model: {detectors[id].modelName}</div>}
+                        {enabled[id] && !!detectors[id].classNames?.length && <div className="track-vision__hint" aria-label="Model labels">Labels: {detectors[id].classNames!.join(', ')}</div>}
+                        {enabled[id] && detectors[id].device && <div className="track-vision__hint" aria-label={`${label} inference device`}>{detectors[id].device}</div>}
+                        {enabled[id] && detectors[id].error && <div className="track-vision__error" role="alert">
+                            {detectors[id].error} <button type="button" onClick={() => setRetry((current) => current + 1)}>Retry {label}</button>
+                        </div>}
+                    </div>)}
+                </fieldset>
+                <p className="track-vision__hint">Segmentation downloads from the backend and is saved on this device. Depth uses the bundled model. Frames and inference stay local.</p>
+            </details>
             <div className="track-vision__status" role="status">{status}</div>
             {error && <div className="track-vision__error" role="alert">{error}</div>}
-            <p className="track-vision__hint">Segmentation downloads from the backend and is saved on this device. Depth uses the bundled model. Frames and inference stay local.</p>
         </section>
     );
 });

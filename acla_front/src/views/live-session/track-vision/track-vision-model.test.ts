@@ -3,6 +3,7 @@ import * as cpuRuntime from 'onnxruntime-web/wasm';
 import { loadBackendVisionModel } from './backend-vision-model';
 import { readVisionModel } from './vision-assets';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
+import { createWorldMask } from './world-mask';
 
 jest.mock('onnxruntime-web/webgpu', () => ({
     env: { wasm: {}, webgpu: {} }, InferenceSession: { create: jest.fn() }, Tensor: jest.fn(),
@@ -123,7 +124,7 @@ it('rejects model outputs that do not match the backend label count', async () =
     expect(gpu.release).toHaveBeenCalledTimes(1);
 });
 
-it.each([false, true])('runs bundled depth independently with CPU fallback %s and retains copied distances', async (fallback) => {
+it.each([false, true])('preserves unlabelled depth input and output while excluding the interior with CPU fallback %s', async (fallback) => {
     const output = tensor([1, 1, 2, 2], new Float32Array([1, 5, 15, 50]));
     const depthSession = fallback ? cpu : gpu;
     if (fallback) gpu.run.mockRejectedValue(new Error('GPU device lost'));
@@ -131,17 +132,50 @@ it.each([false, true])('runs bundled depth independently with CPU fallback %s an
     cpu.outputNames = ['output0'];
     depthSession.run.mockResolvedValue({ output0: output });
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-        fillRect: jest.fn(), drawImage: jest.fn(), getImageData: () => ({ data: new Uint8ClampedArray(640 * 640 * 4) }),
+        fillRect: jest.fn(), drawImage: jest.fn(), getImageData: () => ({ data: new Uint8ClampedArray(640 * 640 * 4).fill(255) }),
     } as any);
     const model = await TrackVisionModel.loadBuiltin('depth', fallback);
     expect(model.executionProvider).toBe(fallback ? 'wasm' : 'webgpu');
     expect(readVisionModel).toHaveBeenCalledWith('http://localhost/vision-models/yolo26n-depth.onnx');
     expect(loadBackendVisionModel).not.toHaveBeenCalled();
     const frame = document.createElement('canvas');
-    const result = await model.detect(frame, 0.5);
+    frame.width = frame.height = 640;
+    await expect(model.detect(frame, 0.5)).rejects.toThrow('segmentation mask');
+    const region = createWorldMask({ task: 'segment', width: 2, height: 2, classNames: ['track', 'car interior', 'fence'], instances: [
+        { classId: 0, confidence: 0.9, box: [0, 0, 1, 1], mask: new Uint8Array([1, 1, 0, 0]) },
+        { classId: 1, confidence: 0.6, box: [0, 0, 1, 1], mask: new Uint8Array([0, 1, 0, 0]) },
+        { classId: 2, confidence: 0.9, box: [0, 0, 1, 1], mask: new Uint8Array([0, 0, 0, 1]) },
+    ] })!;
+    const result = await model.detect(frame, 0.5, region);
+    const input = depthSession.run.mock.calls[1][0].images.data;
+    for (const channel of [0, 1, 2]) {
+        const offset = channel * 640 * 640;
+        expect(input[offset + 160 * 640 + 160]).toBe(1);
+        expect(input[offset + 480 * 640 + 480]).toBe(1);
+        expect(input[offset + 160 * 640 + 480]).toBeCloseTo(114 / 255);
+        expect(input[offset + 480 * 640 + 160]).toBe(1);
+    }
+    expect(output.data).toEqual(new Float32Array([1, 5, 15, 50]));
     output.data.fill(0);
-    expect(result).toMatchObject({ task: 'depth', width: 2, height: 2, values: new Float32Array([1, 5, 15, 50]) });
+    expect(result).toMatchObject({ task: 'depth', width: 2, height: 2, values: new Float32Array([1, 0, 15, 50]) });
     expect(output.dispose).toHaveBeenCalledTimes(2);
     await model.dispose();
     expect(depthSession.release).toHaveBeenCalledTimes(1);
+});
+
+it.each([[1280, 640], [640, 1280]])('excludes letterbox padding from retained depth for a %i x %i capture', async (width, height) => {
+    gpu.outputNames = ['output0'];
+    gpu.run.mockResolvedValue({ output0: tensor([1, 1, 4, 4], new Float32Array(16).fill(10)) });
+    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+        fillRect: jest.fn(), drawImage: jest.fn(), getImageData: () => ({ data: new Uint8ClampedArray(640 * 640 * 4) }),
+    } as any);
+    const model = await TrackVisionModel.loadBuiltin('depth');
+    const frame = document.createElement('canvas');
+    frame.width = width; frame.height = height;
+    const result = await model.detect(frame, 0.5, { width: 2, height: 2, mask: new Uint8Array(4).fill(1) });
+    if (result.task !== 'depth') throw new Error('depth');
+    expect(Array.from(result.values)).toEqual(width > height
+        ? [0, 0, 0, 0, 10, 10, 10, 10, 10, 10, 10, 10, 0, 0, 0, 0]
+        : [0, 10, 10, 0, 0, 10, 10, 0, 0, 10, 10, 0, 0, 10, 10, 0]);
+    await model.dispose();
 });
