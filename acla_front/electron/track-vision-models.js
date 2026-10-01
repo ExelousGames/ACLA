@@ -4,7 +4,7 @@ const { createHash } = require('crypto');
 const { execFile } = require('child_process');
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2; // Re-export cached segmentation checkpoints at 768 x 768.
 
 function validateModel(model) {
   if (!model || typeof model.id !== 'string' || typeof model.sha256 !== 'string'

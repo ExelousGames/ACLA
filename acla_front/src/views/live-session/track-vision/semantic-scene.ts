@@ -1,3 +1,4 @@
+import { VISION_INPUT_SIZE } from './vision-config';
 import type { SegmentResult, TrackVisionFrame } from './track-vision-types';
 import { letterbox } from './yolo-segmentation';
 import { createSegmentationLayers } from './segmentation-layers';
@@ -12,11 +13,11 @@ export function createSemanticScene(vision: TrackVisionFrame, constructBoundarie
     if (segment?.task !== 'segment') return null;
     const layers = createSegmentationLayers(segment, VISION_CONFIDENCE);
     if (!layers) return null;
-    const { padX, padY, resizedWidth, resizedHeight } = letterbox(vision.width, vision.height, 640);
+    const { padX, padY, resizedWidth, resizedHeight } = letterbox(vision.width, vision.height, VISION_INPUT_SIZE);
     const traffic = layers.instances.filter((item) => item.kind === 'car' || item.kind === 'car pack')
         .map((item) => ({ ...item, pack: item.kind === 'car pack', box: [
-            (item.box[0] * 640 - padX) / resizedWidth, (item.box[1] * 640 - padY) / resizedHeight,
-            (item.box[2] * 640 - padX) / resizedWidth, (item.box[3] * 640 - padY) / resizedHeight,
+            (item.box[0] * VISION_INPUT_SIZE - padX) / resizedWidth, (item.box[1] * VISION_INPUT_SIZE - padY) / resizedHeight,
+            (item.box[2] * VISION_INPUT_SIZE - padX) / resizedWidth, (item.box[3] * VISION_INPUT_SIZE - padY) / resizedHeight,
         ] as Box }))
         .filter(({ box: [left, top, right, bottom], pack }) =>
             [left, top, right, bottom].every(Number.isFinite) && left >= 0.05 && right <= 0.95
@@ -24,8 +25,8 @@ export function createSemanticScene(vision: TrackVisionFrame, constructBoundarie
             && top >= 0.2 && bottom >= 0.35 && bottom <= 0.85 && bottom - top >= 0.025);
     const inMask = (mask: Uint8Array, u: number, v: number) => {
         if (u < 0 || u >= 1 || v < 0 || v >= 1 || mask.length !== segment.width * segment.height) return false;
-        const x = Math.floor((padX + u * resizedWidth) / 640 * segment.width);
-        const y = Math.floor((padY + v * resizedHeight) / 640 * segment.height);
+        const x = Math.floor((padX + u * resizedWidth) / VISION_INPUT_SIZE * segment.width);
+        const y = Math.floor((padY + v * resizedHeight) / VISION_INPUT_SIZE * segment.height);
         return mask[y * segment.width + x] === 1;
     };
     const road = (u: number, v: number) => inMask(layers.trackMask, u, v) && !inMask(layers.excludedMask, u, v);
@@ -36,11 +37,11 @@ export function createSemanticScene(vision: TrackVisionFrame, constructBoundarie
     return {
         traffic, road, inMask, width: segment.width, height: segment.height,
         sourcePixel(x: number, y: number) {
-            return { u: (x / segment.width * 640 - padX) / resizedWidth,
-                v: (y / segment.height * 640 - padY) / resizedHeight };
+            return { u: (x / segment.width * VISION_INPUT_SIZE - padX) / resizedWidth,
+                v: (y / segment.height * VISION_INPUT_SIZE - padY) / resizedHeight };
         },
-        pixelHeight: 640 / resizedHeight / segment.height,
-        pixelWidth: 640 / resizedWidth / segment.width,
+        pixelHeight: VISION_INPUT_SIZE / resizedHeight / segment.height,
+        pixelWidth: VISION_INPUT_SIZE / resizedWidth / segment.width,
         excluded: (u: number, v: number) => inMask(layers.excludedMask, u, v),
         occluded,
         hasCarLabels: layers.hasCarLabels,

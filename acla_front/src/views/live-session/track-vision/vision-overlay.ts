@@ -1,5 +1,5 @@
 import { letterbox } from './yolo-segmentation';
-import { VISION_INPUT_SIZE } from './track-vision-model';
+import { VISION_INPUT_SIZE } from './vision-config';
 import { SegmentResult, TrackVisionFrame } from './track-vision-types';
 import { VISION_LABEL_COLORS } from './vision-colors';
 

@@ -1,3 +1,4 @@
+import { VISION_INPUT_SIZE } from './vision-config';
 import { analyzeTrackPositions, reconstructTrack } from './track-position-analysis';
 import { MODEL_LABELS, vision } from './test-fixtures';
 import { evaluateRoad } from './road-polynomial';
@@ -40,9 +41,9 @@ describe('segmentation and depth reconstruction', () => {
         const segment = frame.detections.segment!;
         if (segment.task !== 'segment') throw new Error('Expected segmentation');
         const projection = createCameraProjection(frame.calibration!);
-        const { padY, resizedHeight } = letterbox(width, height, 640);
+        const { padY, resizedHeight } = letterbox(width, height, VISION_INPUT_SIZE);
         const rowOf = (point: { x: number; y: number; z: number }) =>
-            Math.floor((padY + projection.localToImage(point)!.v * resizedHeight) / 640 * segment.height);
+            Math.floor((padY + projection.localToImage(point)!.v * resizedHeight) / VISION_INPUT_SIZE * segment.height);
         const bonnetRow = rowOf(before.leftBoundary[Math.floor(before.leftBoundary.length * 0.3)]);
         const track = segment.instances[0].mask;
         for (let row = bonnetRow; row < segment.height; row++) {
@@ -199,9 +200,9 @@ describe('segmentation and depth reconstruction', () => {
         const segment = frame.detections.segment!;
         if (segment.task !== 'segment') throw new Error('Expected segmentation');
         const projection = createCameraProjection(frame.calibration!);
-        const { padY, resizedHeight } = letterbox(width, height, 640);
+        const { padY, resizedHeight } = letterbox(width, height, VISION_INPUT_SIZE);
         const rowOf = (point: { x: number; y: number; z: number }) =>
-            Math.floor((padY + projection.localToImage(point)!.v * resizedHeight) / 640 * segment.height);
+            Math.floor((padY + projection.localToImage(point)!.v * resizedHeight) / VISION_INPUT_SIZE * segment.height);
         const dashboardRow = rowOf(before.leftBoundary[Math.floor(before.leftBoundary.length / 2)]);
         const interior = new Uint8Array(segment.width * segment.height);
         interior.fill(1, dashboardRow * segment.width, (dashboardRow + 1) * segment.width);

@@ -53,6 +53,18 @@ it('rebuilds damaged ONNX from cached backend weights', async () => {
     expect(exporter).toHaveBeenCalledTimes(2);
 });
 
+it('re-exports legacy 640 ONNX from cached checkpoints without another download', async () => {
+    await makeCache().prepare(model, weights);
+    const manifestPath = path.join(folder(), 'manifest.json');
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, version: 1 }));
+    exporter.mockImplementationOnce(async (filename) => fs.writeFile(filename.replace('.pt', '.onnx'), Buffer.from([7, 8])));
+    await expect(makeCache().prepare(model)).resolves.toEqual(Buffer.from([7, 8]));
+    expect(exporter).toHaveBeenCalledTimes(2);
+    await expect(makeCache().prepare(model)).resolves.toEqual(Buffer.from([7, 8]));
+    expect(exporter).toHaveBeenCalledTimes(2);
+});
+
 it('retains downloaded weights after a failed export so retry does not download again', async () => {
     exporter.mockRejectedValueOnce(new Error('Export failed'));
     const cache = makeCache();

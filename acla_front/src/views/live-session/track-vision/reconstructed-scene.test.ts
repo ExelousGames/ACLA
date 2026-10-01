@@ -78,6 +78,19 @@ it('clears missing and rejected track masks and keeps disconnected rows separate
     expect(reconstructScene(frame)).toMatchObject({ leftBoundary: [], rightBoundary: [] });
 });
 
+it('maps 768 model boxes back to captures with rounded letterbox dimensions', () => {
+    const frame = fixture(), segment = frame.detections.segment!;
+    if (segment.task !== 'segment') throw new Error('segment');
+    frame.width = 1000; frame.height = 561;
+    segment.classNames = ['car'];
+    // At 768, this capture is resized to 768 x 431 with 168 pixels of top padding.
+    segment.instances = [{ ...segment.instances[0], box: [192 / 768, (168 + 431 * 0.4) / 768,
+        576 / 768, (168 + 431 * 0.6) / 768] }];
+    const scene = reconstructScene(frame)!;
+    expect(scene.cars).toHaveLength(1);
+    scene.cars[0].box.forEach((value, index) => expect(value).toBeCloseTo([250, 224.4, 750, 336.6][index]));
+});
+
 it('includes every accepted car and car pack without track, depth or calibration', () => {
     const frame = fixture(), segment = frame.detections.segment!;
     if (segment.task !== 'segment') throw new Error('segment');
@@ -89,10 +102,12 @@ it('includes every accepted car and car pack without track, depth or calibration
     const originals = segment.instances.map(({ box }) => [...box]);
     const scene = reconstructScene(frame)!;
     expect(scene).toMatchObject({ leftBoundary: [], rightBoundary: [], cars: [
-        { classId: 0, confidence: 0.9, pack: false, box: [80, 320, 160, 480] },
-        { classId: 1, confidence: 0.9, pack: true, box: [200, 320, 280, 480] },
-        { classId: 2, confidence: 0.9, pack: false, box: [320, 320, 400, 480] },
+        { classId: 0, confidence: 0.9, pack: false },
+        { classId: 1, confidence: 0.9, pack: true },
+        { classId: 2, confidence: 0.9, pack: false },
     ] });
+    const boxes = [[80, 320, 160, 480], [200, 320, 280, 480], [320, 320, 400, 480]];
+    scene.cars.forEach((car, i) => car.box.forEach((value, j) => expect(value).toBeCloseTo(boxes[i][j])));
     expect(segment.instances.map(({ box }) => box)).toEqual(originals);
 });
 

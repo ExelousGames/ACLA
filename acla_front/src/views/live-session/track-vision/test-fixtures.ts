@@ -1,3 +1,4 @@
+import { VISION_INPUT_SIZE } from './vision-config';
 import type { CameraParameters, CornerPosition, SegmentResult, TrackVisionFrame } from './track-vision-types';
 import { createCameraProjection, DEFAULT_CAMERA } from './camera-projection';
 import { letterbox } from './yolo-segmentation';
@@ -28,19 +29,19 @@ export function vision(capturedAt: number, options: {
     const contactLeft = projection.localToImage({ x: opponentX - 0.8, y: 18, z: 0 })!;
     const contactRight = projection.localToImage({ x: opponentX + 0.8, y: 18, z: 0 })!;
     const cars = options.cars ?? [[contactLeft.u, contactLeft.v - 0.07, contactRight.u, contactRight.v]];
-    const { padX, padY, resizedWidth, resizedHeight } = letterbox(width, height, 640);
+    const { padX, padY, resizedWidth, resizedHeight } = letterbox(width, height, VISION_INPUT_SIZE);
     const mask = (active: (x: number, y: number) => boolean) => Uint8Array.from({ length: size * size }, (_, index) => (
-        Number(active(((index % size + 0.5) / size * 640 - padX) / resizedWidth,
-            ((Math.floor(index / size) + 0.5) / size * 640 - padY) / resizedHeight))
+        Number(active(((index % size + 0.5) / size * VISION_INPUT_SIZE - padX) / resizedWidth,
+            ((Math.floor(index / size) + 0.5) / size * VISION_INPUT_SIZE - padY) / resizedHeight))
     ));
     const road = options.road ?? ((x, y) => y >= 1 && y < 59 && Math.abs(x - roadCenter(y)) <= 5);
     return {
         capturedAt, width, height, calibration,
         detections: { depth: {
-            task: 'depth', width: 640, height: 640, inferenceMs: 1, classNames: [],
-            values: Float32Array.from({ length: 640 * 640 }, (_, i) => {
-                const u = (i % 640 + 0.5 - padX) / resizedWidth;
-                const v = (Math.floor(i / 640) + 0.5 - padY) / resizedHeight;
+            task: 'depth', width: VISION_INPUT_SIZE, height: VISION_INPUT_SIZE, inferenceMs: 1, classNames: [],
+            values: Float32Array.from({ length: VISION_INPUT_SIZE * VISION_INPUT_SIZE }, (_, i) => {
+                const u = (i % VISION_INPUT_SIZE + 0.5 - padX) / resizedWidth;
+                const v = (Math.floor(i / VISION_INPUT_SIZE) + 0.5 - padY) / resizedHeight;
                 const car = cars.find(([left, top, right, bottom]) => u >= left && u <= right && v >= top && v <= bottom);
                 const ground = projection.imageToGround(u, car ? car[3] : v);
                 if (!ground) return NaN;
@@ -57,8 +58,8 @@ export function vision(capturedAt: number, options: {
                 }) },
                 ...cars.map(([left, top, right, bottom]) => ({
                     classId: classNames.indexOf('car'), confidence: 0.9,
-                    box: [(padX + left * resizedWidth) / 640, (padY + top * resizedHeight) / 640,
-                        (padX + right * resizedWidth) / 640, (padY + bottom * resizedHeight) / 640] as Box,
+                    box: [(padX + left * resizedWidth) / VISION_INPUT_SIZE, (padY + top * resizedHeight) / VISION_INPUT_SIZE,
+                        (padX + right * resizedWidth) / VISION_INPUT_SIZE, (padY + bottom * resizedHeight) / VISION_INPUT_SIZE] as Box,
                     mask: mask((x, y) => x >= left && x <= right && y >= top && y <= bottom),
                 })),
             ],

@@ -1,3 +1,4 @@
+import { VISION_INPUT_SIZE } from './vision-config';
 import { AmodalMask, predictAmodalMasks } from './amodal-masks';
 import { VISION_CONFIDENCE } from './semantic-scene';
 import type { TrackVisionFrame } from './track-vision-types';
@@ -84,18 +85,18 @@ export function drawLabelDepths(context: CanvasRenderingContext2D, frame: TrackV
         pixels.data.set([...color, 190], i * 4);
     });
     paint.putImageData(pixels, 0, 0);
-    const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, 640);
+    const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, VISION_INPUT_SIZE);
     context.save();
     context.imageSmoothingEnabled = false;
-    context.drawImage(layer, padX / 640 * layer.width, padY / 640 * layer.height,
-        resizedWidth / 640 * layer.width, resizedHeight / 640 * layer.height, 0, 0, frame.width, frame.height);
+    context.drawImage(layer, padX / VISION_INPUT_SIZE * layer.width, padY / VISION_INPUT_SIZE * layer.height,
+        resizedWidth / VISION_INPUT_SIZE * layer.width, resizedHeight / VISION_INPUT_SIZE * layer.height, 0, 0, frame.width, frame.height);
     const fontSize = Math.max(12, frame.width / 90);
     context.font = `${fontSize}px sans-serif`;
     labelDepths(masks).forEach((row) => {
         const mask = masks[row.maskIndex];
         if (!mask.bounds) return;
-        const x = Math.max(4, (mask.bounds[0] / segment.width * 640 - padX) / resizedWidth * frame.width + 4);
-        const y = Math.max(fontSize + 4, (mask.bounds[1] / segment.height * 640 - padY) / resizedHeight * frame.height + fontSize + 4);
+        const x = Math.max(4, (mask.bounds[0] / segment.width * VISION_INPUT_SIZE - padX) / resizedWidth * frame.width + 4);
+        const y = Math.max(fontSize + 4, (mask.bounds[1] / segment.height * VISION_INPUT_SIZE - padY) / resizedHeight * frame.height + fontSize + 4);
         const text = `${row.label} #${row.instance} · ${row.median === null ? 'No depth' : `${row.median.toFixed(1)} m`}`;
         context.fillStyle = '#090d13dd';
         context.fillRect(x - 3, y - fontSize - 2, context.measureText(text).width + 6, fontSize + 6);

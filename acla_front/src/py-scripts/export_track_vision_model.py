@@ -24,7 +24,7 @@ def export_model(weights: Path, labels: list[str]) -> Path:
         raise ValueError('Backend labels do not match the number of model classes.')
     model.model.names = dict(enumerate(labels))
     # nms=None selects the raw one-to-many head, including for YOLO26 exports.
-    exported = Path(model.export(format='onnx', imgsz=640, batch=1, dynamic=False,
+    exported = Path(model.export(format='onnx', imgsz=768, batch=1, dynamic=False,
                                  half=False, simplify=False, opset=17, nms=None, device='cpu'))
     import onnx
 

@@ -18,7 +18,7 @@ const tensor = (dims: number[], data: Float32Array | Uint8Array) => ({ dims, dat
 const session = () => ({
     inputNames: ['images'], outputNames: ['output0', 'output1'],
     run: jest.fn().mockResolvedValue({
-        output0: tensor([1, 7, 8400], new Float32Array(7 * 8400)),
+        output0: tensor([1, 7, 12096], new Float32Array(7 * 12096)),
         output1: tensor([1, 1, 2, 2], new Float32Array(4)),
     }),
     release: jest.fn().mockResolvedValue(undefined),
@@ -51,7 +51,7 @@ it('loads metadata and warms up the backend segmentation export before reporting
     expect(loadBackendVisionModel).toHaveBeenCalledTimes(1);
     expect(model.classNames).toEqual(['track', 'curb']);
     expect(model.executionProvider).toBe('webgpu');
-    expect(gpu.run).toHaveBeenCalledWith({ images: expect.objectContaining({ dims: [1, 3, 640, 640] }) });
+    expect(gpu.run).toHaveBeenCalledWith({ images: expect.objectContaining({ dims: [1, 3, 768, 768] }) });
     expect(cpuRuntime.InferenceSession.create).not.toHaveBeenCalled();
     await model.dispose();
     expect(gpu.release).toHaveBeenCalledTimes(1);
@@ -99,7 +99,7 @@ it('releases failed GPU warm-up and validates segmentation through the CPU worke
 
 it('loads both raw segment outputs and releases tensors', async () => {
     gpu.outputNames = ['output0', 'output1'];
-    const predictions = tensor([1, 7, 8400], new Float32Array(7 * 8400));
+    const predictions = tensor([1, 7, 12096], new Float32Array(7 * 12096));
     const prototypes = tensor([1, 1, 2, 2], new Float32Array(4));
     gpu.run.mockResolvedValue({ output0: predictions, output1: prototypes });
     const model = await TrackVisionModel.loadBackend();
@@ -117,7 +117,7 @@ it('reports backend loading failures without initializing a bundled model', asyn
 
 it('rejects model outputs that do not match the backend label count', async () => {
     gpu.run.mockResolvedValue({
-        output0: tensor([1, 8, 8400], new Float32Array(8 * 8400)),
+        output0: tensor([1, 8, 12096], new Float32Array(8 * 12096)),
         output1: tensor([1, 1, 2, 2], new Float32Array(4)),
     });
     await expect(TrackVisionModel.loadBackend()).rejects.toThrow('backend labels');
@@ -132,7 +132,7 @@ it.each([false, true])('preserves unlabelled depth input and output while exclud
     cpu.outputNames = ['output0'];
     depthSession.run.mockResolvedValue({ output0: output });
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-        fillRect: jest.fn(), drawImage: jest.fn(), getImageData: () => ({ data: new Uint8ClampedArray(640 * 640 * 4).fill(255) }),
+        fillRect: jest.fn(), drawImage: jest.fn(), getImageData: () => ({ data: new Uint8ClampedArray(768 * 768 * 4).fill(255) }),
     } as any);
     const model = await TrackVisionModel.loadBuiltin('depth', fallback);
     expect(model.executionProvider).toBe(fallback ? 'wasm' : 'webgpu');
@@ -147,13 +147,15 @@ it.each([false, true])('preserves unlabelled depth input and output while exclud
         { classId: 2, confidence: 0.9, box: [0, 0, 1, 1], mask: new Uint8Array([0, 0, 0, 1]) },
     ] })!;
     const result = await model.detect(frame, 0.5, region);
+    expect(depthSession.run).toHaveBeenLastCalledWith({ images: expect.objectContaining({ dims: [1, 3, 768, 768] }) });
     const input = depthSession.run.mock.calls[1][0].images.data;
+    expect(input).toHaveLength(3 * 768 * 768);
     for (const channel of [0, 1, 2]) {
-        const offset = channel * 640 * 640;
-        expect(input[offset + 160 * 640 + 160]).toBe(1);
-        expect(input[offset + 480 * 640 + 480]).toBe(1);
-        expect(input[offset + 160 * 640 + 480]).toBeCloseTo(114 / 255);
-        expect(input[offset + 480 * 640 + 160]).toBe(1);
+        const offset = channel * 768 * 768;
+        expect(input[offset + 192 * 768 + 192]).toBe(1);
+        expect(input[offset + 576 * 768 + 576]).toBe(1);
+        expect(input[offset + 192 * 768 + 576]).toBeCloseTo(114 / 255);
+        expect(input[offset + 576 * 768 + 192]).toBe(1);
     }
     expect(output.data).toEqual(new Float32Array([1, 5, 15, 50]));
     output.data.fill(0);
@@ -167,7 +169,7 @@ it.each([[1280, 640], [640, 1280]])('excludes letterbox padding from retained de
     gpu.outputNames = ['output0'];
     gpu.run.mockResolvedValue({ output0: tensor([1, 1, 4, 4], new Float32Array(16).fill(10)) });
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-        fillRect: jest.fn(), drawImage: jest.fn(), getImageData: () => ({ data: new Uint8ClampedArray(640 * 640 * 4) }),
+        fillRect: jest.fn(), drawImage: jest.fn(), getImageData: () => ({ data: new Uint8ClampedArray(768 * 768 * 4) }),
     } as any);
     const model = await TrackVisionModel.loadBuiltin('depth');
     const frame = document.createElement('canvas');

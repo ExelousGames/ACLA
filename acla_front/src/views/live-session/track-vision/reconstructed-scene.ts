@@ -1,3 +1,4 @@
+import { VISION_INPUT_SIZE } from './vision-config';
 import { createSegmentationLayers } from './segmentation-layers';
 import { VISION_CONFIDENCE } from './semantic-scene';
 import type { TrackVisionFrame } from './track-vision-types';
@@ -27,14 +28,14 @@ export function reconstructScene(frame: TrackVisionFrame | null): ReconstructedS
     if (!layers) return null;
     const { width, height } = segment;
     const { trackMask, carInteriorMask, excludedMask, trafficMask } = layers;
-    const box = letterbox(frame.width, frame.height, 640);
-    const firstColumn = Math.max(0, Math.ceil(box.padX / 640 * width - 0.5));
-    const endColumn = Math.min(width, Math.ceil((box.padX + box.resizedWidth) / 640 * width - 0.5));
-    const firstRow = Math.max(0, Math.ceil(box.padY / 640 * height - 0.5));
-    const endRow = Math.min(height, Math.ceil((box.padY + box.resizedHeight) / 640 * height - 0.5));
+    const box = letterbox(frame.width, frame.height, VISION_INPUT_SIZE);
+    const firstColumn = Math.max(0, Math.ceil(box.padX / VISION_INPUT_SIZE * width - 0.5));
+    const endColumn = Math.min(width, Math.ceil((box.padX + box.resizedWidth) / VISION_INPUT_SIZE * width - 0.5));
+    const firstRow = Math.max(0, Math.ceil(box.padY / VISION_INPUT_SIZE * height - 0.5));
+    const endRow = Math.min(height, Math.ceil((box.padY + box.resizedHeight) / VISION_INPUT_SIZE * height - 0.5));
     const imagePoint = (x: number, y: number): ImagePoint => ({
-        x: ((x + 0.5) / width * 640 - box.padX) / box.resizedWidth * frame.width,
-        y: ((y + 0.5) / height * 640 - box.padY) / box.resizedHeight * frame.height,
+        x: ((x + 0.5) / width * VISION_INPUT_SIZE - box.padX) / box.resizedWidth * frame.width,
+        y: ((y + 0.5) / height * VISION_INPUT_SIZE - box.padY) / box.resizedHeight * frame.height,
     });
     const margin = Math.max(2, Math.ceil(Math.max(width, height) * 0.01));
     const nearInterior = (x: number, y: number) => {
@@ -49,10 +50,10 @@ export function reconstructScene(frame: TrackVisionFrame | null): ReconstructedS
     const cars: ImageCar[] = layers.instances.flatMap((item) => {
         if ((item.kind !== 'car' && item.kind !== 'car pack') || !item.box.every(Number.isFinite)) return [];
         const [x1, y1, x2, y2] = item.box;
-        const left = Math.max(0, (x1 * 640 - box.padX) / box.resizedWidth * frame.width);
-        const top = Math.max(0, (y1 * 640 - box.padY) / box.resizedHeight * frame.height);
-        const right = Math.min(frame.width, (x2 * 640 - box.padX) / box.resizedWidth * frame.width);
-        const bottom = Math.min(frame.height, (y2 * 640 - box.padY) / box.resizedHeight * frame.height);
+        const left = Math.max(0, (x1 * VISION_INPUT_SIZE - box.padX) / box.resizedWidth * frame.width);
+        const top = Math.max(0, (y1 * VISION_INPUT_SIZE - box.padY) / box.resizedHeight * frame.height);
+        const right = Math.min(frame.width, (x2 * VISION_INPUT_SIZE - box.padX) / box.resizedWidth * frame.width);
+        const bottom = Math.min(frame.height, (y2 * VISION_INPUT_SIZE - box.padY) / box.resizedHeight * frame.height);
         return right > left && bottom > top ? [{ classId: item.classId, confidence: item.confidence,
             pack: item.kind === 'car pack', box: [left, top, right, bottom] as ImageCar['box'] }] : [];
     });

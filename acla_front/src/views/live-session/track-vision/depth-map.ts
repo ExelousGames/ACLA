@@ -1,3 +1,4 @@
+import { VISION_INPUT_SIZE } from './vision-config';
 import type { TrackVisionFrame } from './track-vision-types';
 import { VISION_DEPTH_COLORS } from './vision-colors';
 import { letterbox } from './yolo-segmentation';
@@ -9,9 +10,9 @@ const validDepth = (value: number) => Number.isFinite(value) && value > 0;
 export function createDepthMap(frame: TrackVisionFrame | null) {
     const depth = frame?.detections.depth;
     if (!frame || depth?.task !== 'depth' || !frame.width || !frame.height || !depth.width || !depth.height) return null;
-    const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, 640);
-    const crop = { x: padX / 640 * depth.width, y: padY / 640 * depth.height,
-        width: resizedWidth / 640 * depth.width, height: resizedHeight / 640 * depth.height };
+    const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, VISION_INPUT_SIZE);
+    const crop = { x: padX / VISION_INPUT_SIZE * depth.width, y: padY / VISION_INPUT_SIZE * depth.height,
+        width: resizedWidth / VISION_INPUT_SIZE * depth.width, height: resizedHeight / VISION_INPUT_SIZE * depth.height };
     let near = Infinity, far = -Infinity;
     depth.values.forEach((value, i) => {
         const x = i % depth.width + 0.5, y = Math.floor(i / depth.width) + 0.5;

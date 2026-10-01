@@ -1,3 +1,4 @@
+import { VISION_INPUT_SIZE } from './vision-config';
 import type { SegmentResult, TrackVisionFrame } from './track-vision-types';
 import { letterbox } from './yolo-segmentation';
 import { isCarInteriorLabel } from './vision-labels';
@@ -21,11 +22,11 @@ export function predictAmodalMasks(frame: TrackVisionFrame, minimumConfidence = 
     if (segment?.task !== 'segment' || !Number.isInteger(segment.width) || !Number.isInteger(segment.height)
         || segment.width <= 0 || segment.height <= 0 || frame.width <= 0 || frame.height <= 0) return [];
     const { width, height } = segment, size = width * height;
-    const box = letterbox(frame.width, frame.height, 640);
-    const inCapture = (x: number, y: number) => (x + 0.5) / width * 640 >= box.padX
-        && (x + 0.5) / width * 640 < box.padX + box.resizedWidth
-        && (y + 0.5) / height * 640 >= box.padY
-        && (y + 0.5) / height * 640 < box.padY + box.resizedHeight;
+    const box = letterbox(frame.width, frame.height, VISION_INPUT_SIZE);
+    const inCapture = (x: number, y: number) => (x + 0.5) / width * VISION_INPUT_SIZE >= box.padX
+        && (x + 0.5) / width * VISION_INPUT_SIZE < box.padX + box.resizedWidth
+        && (y + 0.5) / height * VISION_INPUT_SIZE >= box.padY
+        && (y + 0.5) / height * VISION_INPUT_SIZE < box.padY + box.resizedHeight;
     const observed = new Float32Array(size);
     const validDepth = depth?.task === 'depth' && Number.isInteger(depth.width) && Number.isInteger(depth.height)
         && depth.width > 0 && depth.height > 0 && depth.values.length === depth.width * depth.height;

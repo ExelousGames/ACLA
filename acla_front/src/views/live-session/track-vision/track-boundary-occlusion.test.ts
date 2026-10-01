@@ -1,3 +1,4 @@
+import { VISION_INPUT_SIZE } from './vision-config';
 import { createCameraProjection } from './camera-projection';
 import { reconstructTrack } from './track-position-analysis';
 import { fitRoadPolynomial } from './road-polynomial';
@@ -11,10 +12,10 @@ function hideEdge(frame: TrackVisionFrame, side: 'left' | 'right' | 'both', labe
     const camera = createCameraProjection(frame.calibration!);
     const bottom = camera.localToImage({ x: 0, y: near, z: 0 })!.v;
     const top = camera.localToImage({ x: 0, y: far, z: 0 })!.v;
-    const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, 640);
+    const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, VISION_INPUT_SIZE);
     const covered = (i: number, width: number, height: number) => {
-        const u = ((i % width + 0.5) / width * 640 - padX) / resizedWidth;
-        const v = ((Math.floor(i / width) + 0.5) / height * 640 - padY) / resizedHeight;
+        const u = ((i % width + 0.5) / width * VISION_INPUT_SIZE - padX) / resizedWidth;
+        const v = ((Math.floor(i / width) + 0.5) / height * VISION_INPUT_SIZE - padY) / resizedHeight;
         return v > top && v < bottom && (side === 'both' || (side === 'left' ? u < 0.5 : u >= 0.5));
     };
     const mask = Uint8Array.from(segment.instances[0].mask, (_, i) => Number(covered(i, segment.width, segment.height)));
@@ -96,13 +97,13 @@ it.each([[1600, 900, 320], [900, 1600, 160], [3440, 1440, 320]])
     const estimates = scene.leftBoundary.filter((point) => point.estimated);
     expect(estimates.length).toBeGreaterThan(0);
     const camera = createCameraProjection(frame.calibration!);
-    const { padY, resizedHeight } = letterbox(width, height, 640);
+    const { padY, resizedHeight } = letterbox(width, height, VISION_INPUT_SIZE);
     for (const point of estimates) {
         expect(point.z).toBeCloseTo(0.4, 1);
         const originalY = 1 + (point.y - 1) / 0.8;
         const expectedX = -0.4 + (-5 - 0.003 * (originalY - 8) ** 2 + 0.4) * 0.8;
         expect(Math.abs(point.x - expectedX)).toBeLessThan(0.35);
-        const maskY = (padY + camera.localToImage(point)!.v * resizedHeight) / 640 * maskSize;
+        const maskY = (padY + camera.localToImage(point)!.v * resizedHeight) / VISION_INPUT_SIZE * maskSize;
         expect(maskY - Math.floor(maskY)).toBeCloseTo(0.5, 5);
     }
 });

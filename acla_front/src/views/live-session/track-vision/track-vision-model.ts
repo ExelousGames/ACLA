@@ -6,8 +6,7 @@ import { readVisionModel, visionAssetUrl } from './vision-assets';
 import { loadBackendVisionModel } from './backend-vision-model';
 import { runWithVisionGpuQueue } from './vision-gpu-queue';
 import { MaskRegion, resizeMask } from './world-mask';
-
-export const VISION_INPUT_SIZE = 640;
+import { VISION_INPUT_SIZE } from './vision-config';
 
 export class GpuInferenceError extends Error {}
 

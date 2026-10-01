@@ -1,3 +1,4 @@
+import { VISION_INPUT_SIZE } from './vision-config';
 import { createCameraProjection, validCalibration } from './camera-projection';
 import { letterbox } from './yolo-segmentation';
 import type { CameraCalibration, GroundPoint, TrackVisionFrame } from './track-vision-types';
@@ -29,9 +30,9 @@ export function createDepthPointCloud(frame: TrackVisionFrame): DepthPointCloud 
         || !Number.isInteger(depth.width) || !Number.isInteger(depth.height) || depth.width <= 0 || depth.height <= 0
         || depth.values.length !== depth.width * depth.height) return null;
     const camera = createCameraProjection(frame.calibration);
-    const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, 640);
-    const columns = Float64Array.from({ length: depth.width }, (_, x) => ((x + 0.5) / depth.width * 640 - padX) / resizedWidth);
-    const rows = Float64Array.from({ length: depth.height }, (_, y) => ((y + 0.5) / depth.height * 640 - padY) / resizedHeight);
+    const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, VISION_INPUT_SIZE);
+    const columns = Float64Array.from({ length: depth.width }, (_, x) => ((x + 0.5) / depth.width * VISION_INPUT_SIZE - padX) / resizedWidth);
+    const rows = Float64Array.from({ length: depth.height }, (_, y) => ((y + 0.5) / depth.height * VISION_INPUT_SIZE - padY) / resizedHeight);
     const positions = new Float64Array(depth.values.length * 3);
     const depths = new Float32Array(depth.values.length);
     const segment = frame.detections.segment;
@@ -53,7 +54,7 @@ export function createDepthPointCloud(frame: TrackVisionFrame): DepthPointCloud 
         }
     }
     return { calibration: { ...frame.calibration }, width: depth.width, height: depth.height, positions, depths, columns, rows,
-        pixelWidth: 640 / depth.width / resizedWidth, pixelHeight: 640 / depth.height / resizedHeight };
+        pixelWidth: VISION_INPUT_SIZE / depth.width / resizedWidth, pixelHeight: VISION_INPUT_SIZE / depth.height / resizedHeight };
 }
 
 export function cloudPoint(cloud: DepthPointCloud, column: number, row: number): SurfacePoint | null {
