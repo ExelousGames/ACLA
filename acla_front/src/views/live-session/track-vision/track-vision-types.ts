@@ -1,6 +1,6 @@
 export const DETECTION_TASKS = [
     { id: 'segment', label: 'Segmentation', description: 'Detect track features using the model and labels uploaded to the backend.' },
-    { id: 'depth', label: 'Depth', description: 'Estimate label distances while preserving the car interior for downstream boundary filtering.', file: 'yolo26n-depth.onnx' },
+    { id: 'depth', label: 'Depth', description: 'Estimate label distances while preserving the car interior for downstream boundary filtering.', file: 'yolo26m-depth.onnx' },
 ] as const;
 
 export type DetectionTask = typeof DETECTION_TASKS[number]['id'];

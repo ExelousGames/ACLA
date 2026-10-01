@@ -1,14 +1,18 @@
 import { AmodalMask, predictAmodalMasks } from './amodal-masks';
 import { VISION_CONFIDENCE } from './semantic-scene';
 import type { TrackVisionFrame } from './track-vision-types';
+import { VISION_DEPTH_COLORS } from './vision-colors';
 import { letterbox } from './yolo-segmentation';
+
+const DEPTH_COLORS = VISION_DEPTH_COLORS.map((color) => [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16)));
 
 export const PIPELINE_STEPS = [
     { id: 'capture', label: 'Capture', title: 'Captured window', description: 'The original frame from your simulator window.' },
     { id: 'calibration', label: 'Camera position', title: 'Set the camera position', description: 'Align the reference grid with your driving view, then apply the camera settings.' },
     { id: 'segmentation', label: 'Segmentation', title: 'Every label in the camera view', description: 'Inspect the detected masks, label names and confidence over the captured frame.' },
     { id: 'filtering', label: 'Filtering', title: 'Masks after filtering', description: 'Inspect confidence filtering and depth ordering. Car interior masks are retained for downstream boundary filtering.' },
-    { id: 'depth', label: 'Label depths', title: 'Depth of each retained label', description: 'Compare estimated distances in the filtered masks. Empty areas have no supported label depth.' },
+    { id: 'depth-map', label: 'Depth map', title: 'Depth across the entire frame', description: 'Inspect the full depth map. Move the mouse over the image to read the estimated depth in meters.' },
+    { id: 'depth', label: 'Label depths', title: 'Depth of each retained mask', description: 'Compare estimated distances across all retained masks. Numbered mask labels match the individual rows in the table.' },
     { id: 'scene', label: 'Reconstructed scene', title: 'Reconstructed scene', description: 'Track boundaries, cars and car packs in 2D, with cockpit outlines removed using the car interior mask.' },
 ] as const;
 export type PipelineStep = typeof PIPELINE_STEPS[number]['id'];
@@ -28,47 +32,56 @@ export function filteredFrame(frame: TrackVisionFrame, masks: AmodalMask[]): Tra
 }
 
 export function labelDepths(masks: AmodalMask[]) {
-    const labels = new Map<number, { classId: number; label: string; instances: number; values: number[]; estimated: number }>();
-    for (const mask of masks) {
-        const row = labels.get(mask.classId) ?? { classId: mask.classId, label: mask.label, instances: 0, values: [], estimated: 0 };
-        row.instances++;
+    const instances = new Map<number, number>();
+    return masks.map((mask, maskIndex) => {
+        const instance = (instances.get(mask.classId) ?? 0) + 1;
+        instances.set(mask.classId, instance);
+        const values: number[] = [];
+        let estimated = 0;
         mask.depths.forEach((depth, i) => {
             if (!mask.mask[i] || !Number.isFinite(depth) || depth <= 0 || depth > 200) return;
-            if (mask.hiddenMask[i]) row.estimated++;
-            else if (mask.visibleMask[i]) row.values.push(depth);
+            if (mask.hiddenMask[i]) estimated++;
+            else if (mask.visibleMask[i]) values.push(depth);
         });
-        labels.set(mask.classId, row);
-    }
-    return Array.from(labels.values()).sort((a, b) => a.classId - b.classId).map(({ values, ...row }) => {
         values.sort((a, b) => a - b);
         const middle = Math.floor(values.length / 2);
-        return { ...row, samples: values.length, near: values[0] ?? null, far: values[values.length - 1] ?? null,
+        return { classId: mask.classId, label: mask.label, maskIndex, instance, estimated,
+            samples: values.length, near: values[0] ?? null, far: values[values.length - 1] ?? null,
             median: values.length ? values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2 : null };
-    });
+    }).sort((a, b) => a.classId - b.classId || a.instance - b.instance);
 }
 
-/** Paint only retained mask depths; camera-space meters share one scale across every label. */
+/** Include observed and predicted pixels in the shared depth color scale. */
+export function labelDepthRange(masks: AmodalMask[]) {
+    let near = Infinity, far = 0;
+    masks.forEach((mask) => mask.depths.forEach((depth, i) => {
+        if (!mask.mask[i] || !Number.isFinite(depth) || depth <= 0 || depth > 200) return;
+        near = Math.min(near, depth); far = Math.max(far, depth);
+    }));
+    return { near: far ? near : null, far: far || null };
+}
+
+/** Paint retained masks together, with per-mask names and depths matching the table. */
 export function drawLabelDepths(context: CanvasRenderingContext2D, frame: TrackVisionFrame, masks: AmodalMask[]) {
     const segment = frame.detections.segment;
     if (segment?.task !== 'segment' || !masks.length) return;
     const depths = new Float32Array(segment.width * segment.height);
     for (const mask of masks) mask.depths.forEach((depth, i) => {
-        if (mask.mask[i] && depth > 0 && depth <= 200 && (!depths[i] || depth < depths[i])) depths[i] = depth;
+        if (mask.mask[i] && Number.isFinite(depth) && depth > 0 && depth <= 200 && (!depths[i] || depth < depths[i])) depths[i] = depth;
     });
-    const values = depths.filter((value) => value > 0);
-    if (!values.length) return;
-    const rows = labelDepths(masks);
-    let near = Infinity, far = 0;
-    values.forEach((value) => { near = Math.min(near, value); far = Math.max(far, value); });
+    const { near, far } = labelDepthRange(masks);
     const layer = document.createElement('canvas');
     layer.width = segment.width; layer.height = segment.height;
     const paint = layer.getContext('2d');
     if (!paint) return;
     const pixels = paint.createImageData(layer.width, layer.height);
     depths.forEach((depth, i) => {
-        if (!depth) return;
-        const t = far > near ? (depth - near) / (far - near) : 0;
-        pixels.data.set([Math.round(255 - 168 * t), Math.round(190 - 5 * t), Math.round(87 + 168 * t), 190], i * 4);
+        if (!depth || near === null || far === null) return;
+        const t = far > near ? Math.max(0, Math.min(1, (depth - near) / (far - near))) : 0;
+        const position = t * (DEPTH_COLORS.length - 1), lower = Math.floor(position);
+        const start = DEPTH_COLORS[lower], end = DEPTH_COLORS[Math.min(lower + 1, DEPTH_COLORS.length - 1)];
+        const color = start.map((channel, index) => Math.round(channel + (end[index] - channel) * (position - lower)));
+        pixels.data.set([...color, 190], i * 4);
     });
     paint.putImageData(pixels, 0, 0);
     const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, 640);
@@ -78,12 +91,12 @@ export function drawLabelDepths(context: CanvasRenderingContext2D, frame: TrackV
         resizedWidth / 640 * layer.width, resizedHeight / 640 * layer.height, 0, 0, frame.width, frame.height);
     const fontSize = Math.max(12, frame.width / 90);
     context.font = `${fontSize}px sans-serif`;
-    masks.forEach((mask) => {
+    labelDepths(masks).forEach((row) => {
+        const mask = masks[row.maskIndex];
         if (!mask.bounds) return;
-        const row = rows.find((item) => item.classId === mask.classId)!;
         const x = Math.max(4, (mask.bounds[0] / segment.width * 640 - padX) / resizedWidth * frame.width + 4);
         const y = Math.max(fontSize + 4, (mask.bounds[1] / segment.height * 640 - padY) / resizedHeight * frame.height + fontSize + 4);
-        const text = `${mask.label} · ${row.median === null ? 'No depth' : `${row.median.toFixed(1)} m`}`;
+        const text = `${row.label} #${row.instance} · ${row.median === null ? 'No depth' : `${row.median.toFixed(1)} m`}`;
         context.fillStyle = '#090d13dd';
         context.fillRect(x - 3, y - fontSize - 2, context.measureText(text).width + 6, fontSize + 6);
         context.fillStyle = '#ffffff';

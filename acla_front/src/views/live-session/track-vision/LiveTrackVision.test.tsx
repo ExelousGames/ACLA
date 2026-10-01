@@ -60,12 +60,12 @@ beforeEach(() => {
     jest.spyOn(HTMLVideoElement.prototype, 'videoHeight', 'get').mockReturnValue(720);
     const contexts = new WeakMap<HTMLCanvasElement, CanvasRenderingContext2D>();
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
-        if (!contexts.has(this)) contexts.set(this, { drawImage: jest.fn(), clearRect: jest.fn(), save: jest.fn(), restore: jest.fn(), fillRect: jest.fn(), fillText: jest.fn(), measureText: jest.fn(() => ({ width: 80 })), getImageData: jest.fn((_x, _y, width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), createImageData: jest.fn((width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), putImageData: jest.fn() } as any);
+        if (!contexts.has(this)) contexts.set(this, { canvas: this, drawImage: jest.fn(), clearRect: jest.fn(), save: jest.fn(), restore: jest.fn(), fillRect: jest.fn(), fillText: jest.fn(), measureText: jest.fn(() => ({ width: 80 })), getImageData: jest.fn((_x, _y, width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), createImageData: jest.fn((width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), putImageData: jest.fn() } as any);
         return contexts.get(this)!;
     });
     model = { name: 'track-features-v2', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu' };
     (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue(model);
-    depthModel = { name: 'YOLO26n Depth', classNames: [], executionProvider: 'webgpu', dispose: jest.fn().mockResolvedValue(undefined),
+    depthModel = { name: 'YOLO26m Depth', classNames: [], executionProvider: 'webgpu', dispose: jest.fn().mockResolvedValue(undefined),
         detect: jest.fn().mockResolvedValue(vision(0).detections.depth) };
     (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depthModel);
     window.screenCapture = {
@@ -76,12 +76,51 @@ beforeEach(() => {
 
 afterEach(() => { jest.restoreAllMocks(); jest.clearAllTimers(); jest.useRealTimers(); delete window.screenCapture; });
 
+it('shows all masks in one depth preview with matching per-mask table names and refreshes them with capture', async () => {
+    const instances = [
+        { ...detection.instances[0], mask: new Uint8Array([1, 0, 1, 0]) },
+        { ...detection.instances[0], mask: new Uint8Array([0, 1, 0, 1]) },
+    ];
+    model.detect.mockResolvedValue({ ...detection, instances });
+    depthModel.detect.mockResolvedValue({ task: 'depth', width: 2, height: 2,
+        values: new Float32Array([10, 30, 20, 40]), classNames: [], inferenceMs: 1 });
+    render(<LiveTrackVision name="vision" />);
+    await flush();
+    await startCapture();
+    selectStep('Label depths');
+    const preview = screen.getByLabelText('Captured game frame with vision detections') as HTMLCanvasElement;
+    expect(preview).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Expand capture' })).toBeVisible();
+    expect(screen.queryByRole('list', { name: 'Individual mask depths' })).not.toBeInTheDocument();
+    const captions = preview.getContext('2d')!.fillText as jest.Mock;
+    expect(captions).toHaveBeenCalledWith('track #1 · 15.0 m', expect.any(Number), expect.any(Number));
+    expect(captions).toHaveBeenCalledWith('track #2 · 35.0 m', expect.any(Number), expect.any(Number));
+    const rows = within(screen.getByRole('table')).getAllByRole('row');
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveTextContent('track #1');
+    expect(rows[1]).toHaveTextContent('15.0 m');
+    expect(rows[2]).toHaveTextContent('track #2');
+    expect(rows[2]).toHaveTextContent('35.0 m');
+    selectStep('Filtering');
+    expect(within(screen.getByRole('tabpanel', { name: 'Filtering' })).getAllByRole('definition')[2]).toHaveTextContent('1');
+    selectStep('Label depths');
+    captions.mockClear();
+    model.detect.mockResolvedValue({ ...detection, instances: [instances[1]] });
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(within(screen.getByRole('table')).getAllByRole('row')).toHaveLength(2);
+    expect(captions).toHaveBeenCalledTimes(1);
+    expect(captions).toHaveBeenCalledWith('track #1 · 35.0 m', expect.any(Number), expect.any(Number));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+    expect(preview).not.toBeVisible();
+    expect(within(screen.getByRole('table')).getAllByRole('row')).toHaveLength(1);
+});
+
 it('walks the visual pipeline without restarting capture, reloading models or changing published detections', async () => {
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent?.slice(2))).toEqual([
-        'Capture', 'Camera position', 'Segmentation', 'Filtering', 'Label depths', 'Reconstructed scene',
+        'Capture', 'Camera position', 'Segmentation', 'Filtering', 'Depth map', 'Label depths', 'Reconstructed scene',
     ]);
     expect(screen.getByRole('tabpanel', { name: 'Capture' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Apply camera calibration' })).not.toBeInTheDocument();
@@ -94,6 +133,9 @@ it('walks the visual pipeline without restarting capture, reloading models or ch
     expect(screen.getByLabelText('Segmentation label legend')).toHaveTextContent('track');
     selectStep('Filtering');
     expect(screen.getByLabelText('Applied filters')).toHaveTextContent('Car interior retained');
+    selectStep('Depth map');
+    expect(screen.getByLabelText('Depth map color scale')).toBeVisible();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
     selectStep('Label depths');
     expect(screen.getByRole('table')).toHaveTextContent('track');
     expect(screen.getByLabelText('Label depth color scale')).toBeVisible();
@@ -113,6 +155,45 @@ it('walks the visual pipeline without restarting capture, reloading models or ch
     expect(getDisplayMedia).toHaveBeenCalledTimes(1);
     expect(track.stop).not.toHaveBeenCalled();
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+});
+
+it('inspects full-map depths at the mouse, refreshes stationary hover and clears unavailable readings', async () => {
+    model.detect.mockResolvedValue({ ...detection, instances: [] });
+    const depth = { task: 'depth', width: 4, height: 4, values: new Float32Array(16).fill(24.5), classNames: [], inferenceMs: 1 };
+    depthModel.detect.mockResolvedValue(depth);
+    render(<LiveTrackVision name="vision" />);
+    await flush();
+    selectStep('Depth map');
+    expect(screen.getByText('Waiting for depth. Enable Depth and Segmentation and share a driving view.')).toBeVisible();
+    await startCapture();
+    const canvas = screen.getByLabelText('Captured game frame with vision detections') as HTMLCanvasElement;
+    jest.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 20, width: 640, height: 480 } as DOMRect);
+    fireEvent.mouseMove(canvas, { clientX: 330, clientY: 260 });
+    expect(screen.getByLabelText('Depth at mouse')).toHaveTextContent('24.50 m');
+    expect(screen.getByLabelText('Depth map color scale')).toHaveTextContent('Near 24.5 m');
+    depthModel.detect.mockResolvedValue({ ...depth, values: new Float32Array(16).fill(37.25) });
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(screen.getByLabelText('Depth at mouse')).toHaveTextContent('37.25 m');
+    fireEvent.mouseMove(canvas, { clientX: 330, clientY: 25 });
+    expect(screen.queryByLabelText('Depth at mouse')).not.toBeInTheDocument();
+    fireEvent.mouseMove(canvas, { clientX: 330, clientY: 260 });
+    depthModel.detect.mockResolvedValue({ ...depth, values: new Float32Array(16) });
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(screen.getByLabelText('Depth at mouse')).toHaveTextContent('No valid depth');
+    fireEvent.mouseLeave(canvas);
+    expect(screen.queryByLabelText('Depth at mouse')).not.toBeInTheDocument();
+    fireEvent.mouseMove(canvas, { clientX: 330, clientY: 260 });
+    selectStep('Label depths');
+    expect(screen.queryByLabelText('Depth at mouse')).not.toBeInTheDocument();
+    selectStep('Depth map');
+    expect(screen.queryByLabelText('Depth at mouse')).not.toBeInTheDocument();
+    fireEvent.mouseMove(canvas, { clientX: 330, clientY: 260 });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
+    await flush();
+    expect(screen.queryByLabelText('Depth at mouse')).not.toBeInTheDocument();
+    expect(screen.getByText('Waiting for depth. Enable Depth and Segmentation and share a driving view.')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+    expect(canvas).not.toBeVisible();
 });
 
 it('keeps the captured window background synchronized with completed scene frames', async () => {
@@ -710,7 +791,7 @@ it('allows retrying a failed backend load', async () => {
 
 it('runs depth alongside backend segmentation and releases only depth when disabled', async () => {
     const depthResult = { task: 'depth', width: 2, height: 2, values: new Float32Array([1, 2, 3, 4]), inferenceMs: 20, classNames: [] };
-    const depth = { ...model, name: 'YOLO26n Depth', classNames: [], detect: jest.fn().mockResolvedValue(depthResult), dispose: jest.fn().mockResolvedValue(undefined) };
+    const depth = { ...model, name: 'YOLO26m Depth', classNames: [], detect: jest.fn().mockResolvedValue(depthResult), dispose: jest.fn().mockResolvedValue(undefined) };
     (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depth);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);

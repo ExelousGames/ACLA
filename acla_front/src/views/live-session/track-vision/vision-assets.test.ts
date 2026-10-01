@@ -8,11 +8,11 @@ beforeEach(() => {
 afterEach(() => jest.restoreAllMocks());
 
 it('resolves local HTTP assets and accepts packaged Electron file responses', async () => {
-    expect(visionAssetUrl('vision-models/yolo26n-depth.onnx')).toBe('http://localhost/vision-models/yolo26n-depth.onnx');
-    const http = readVisionModel('http://localhost/vision-models/yolo26n-depth.onnx');
+    expect(visionAssetUrl('vision-models/yolo26m-depth.onnx')).toBe('http://localhost/vision-models/yolo26m-depth.onnx');
+    const http = readVisionModel('http://localhost/vision-models/yolo26m-depth.onnx');
     request.onload();
     await expect(http).resolves.toBe(request.response);
-    const packaged = readVisionModel('file:///app/build/vision-models/yolo26n-depth.onnx');
+    const packaged = readVisionModel('file:///app/build/vision-models/yolo26m-depth.onnx');
     request.status = 0;
     request.onload();
     await expect(packaged).resolves.toBe(request.response);

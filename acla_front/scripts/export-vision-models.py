@@ -20,7 +20,7 @@ shutil.copyfile(distribution('ultralytics').locate_file('ultralytics-8.4.154.dis
                 TARGET / 'ULTRALYTICS-LICENSE.txt')
 
 os.chdir(CACHE)
-for task, checkpoint in [('depth', 'yolo26n-depth')]:
+for task, checkpoint in [('depth', 'yolo26m-depth')]:
     destination = TARGET / f'{checkpoint}.onnx'
     if destination.exists() and destination.with_suffix('.json').exists():
         print(f'Using cached {checkpoint}', flush=True)

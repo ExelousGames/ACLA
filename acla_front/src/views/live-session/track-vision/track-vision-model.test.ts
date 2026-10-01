@@ -136,7 +136,7 @@ it.each([false, true])('preserves unlabelled depth input and output while exclud
     } as any);
     const model = await TrackVisionModel.loadBuiltin('depth', fallback);
     expect(model.executionProvider).toBe(fallback ? 'wasm' : 'webgpu');
-    expect(readVisionModel).toHaveBeenCalledWith('http://localhost/vision-models/yolo26n-depth.onnx');
+    expect(readVisionModel).toHaveBeenCalledWith('http://localhost/vision-models/yolo26m-depth.onnx');
     expect(loadBackendVisionModel).not.toHaveBeenCalled();
     const frame = document.createElement('canvas');
     frame.width = frame.height = 640;

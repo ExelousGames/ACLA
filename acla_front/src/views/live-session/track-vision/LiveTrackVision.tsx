@@ -12,6 +12,7 @@ import ReconstructedSceneView from './ReconstructedSceneView';
 import { reconstructScene } from './reconstructed-scene';
 import { drawLabelDepths, filteredFrame, filteredMasks, PIPELINE_STEPS, PipelineStep } from './pipeline-visuals';
 import PipelineDetails from './PipelineDetails';
+import { createDepthMap, depthAtMouse, drawDepthMap } from './depth-map';
 import './LiveTrackVision.css';
 
 export interface TrackVisionHandle extends NamedOperationComponentHandle {
@@ -61,6 +62,11 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const [showCalibrationOnCapture, setShowCalibrationOnCapture] = useState(false);
     const cameraCalibration = useRef<CameraCalibration | undefined>(undefined);
     const [previewResult, setPreviewResult] = useState<TrackVisionDetection | null>(null);
+    const [depthPointer, setDepthPointer] = useState<{ clientX: number; clientY: number } | null>(null);
+    const depthMap = useMemo(() => step === 'depth-map' ? createDepthMap(previewResult) : null, [previewResult, step]);
+    const depthRect = depthMap && depthPointer ? canvasRef.current?.getBoundingClientRect() : null;
+    const hoveredDepth = depthMap && depthPointer && depthRect
+        ? depthAtMouse(depthMap, depthRect, depthPointer.clientX, depthPointer.clientY) : null;
     const showFilteredMasks = step === 'filtering' || step === 'depth';
     const masks = useMemo(() => showFilteredMasks ? filteredMasks(previewResult) : [], [previewResult, showFilteredMasks]);
     const previewWidth = previewFrameRef.current?.width ?? 0, previewHeight = previewFrameRef.current?.height ?? 0;
@@ -91,8 +97,11 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         if (!previewResult) return;
         if (step === 'segmentation') drawVisionOverlay(preview, previewResult, displayLabel);
         if (step === 'filtering') drawVisionOverlay(preview, filteredFrame(previewResult, masks));
+        if (step === 'depth-map' && depthMap) drawDepthMap(preview, depthMap);
         if (step === 'depth') drawLabelDepths(preview, previewResult, masks);
-    }, [previewResult, step, displayLabel, masks]);
+    }, [previewResult, step, displayLabel, masks, depthMap]);
+
+    useEffect(() => { setDepthPointer(null); }, [step, previewExpanded]);
 
     useEffect(() => {
         if (detectors.segment.status === 'ready' && displayLabel && !detectors.segment.classNames?.includes(displayLabel)) {
@@ -107,6 +116,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         const scene = result?.detections.segment?.task === 'segment' ? analyzeTrackPositions(result, reconstruction) : null;
         latest.current = result ? { ...result, reconstruction, reconstructedScene: reconstructScene(result), geometry, analysis: scene } : null;
         setPreviewResult(latest.current);
+        if (!result) setDepthPointer(null);
         const remaining = result ? result.capturedAt + VISION_MAX_AGE_MS - Date.now() : 0;
         setAnalysis(remaining > 0 ? scene : null);
         if (scene && remaining > 0) analysisExpiry.current = setTimeout(() => setAnalysis(null), remaining);
@@ -385,7 +395,15 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 <dialog ref={previewRef} open hidden={isSceneStep} className={`track-vision__preview${hasFrame && step === 'calibration' && showCalibrationOnCapture ? ' track-vision__preview--calibrated' : ''}`}
                     aria-label="Capture preview" onCancel={(event) => { event.preventDefault(); togglePreviewSize(); }}>
                     <video ref={videoRef} muted playsInline hidden />
-                    <canvas ref={canvasRef} aria-label="Captured game frame with vision detections" hidden={!hasFrame} />
+                    <canvas ref={canvasRef} aria-label="Captured game frame with vision detections" hidden={!hasFrame}
+                        className={step === 'depth-map' ? 'track-vision__depth-map' : undefined}
+                        onMouseMove={step === 'depth-map' ? (event) => setDepthPointer({ clientX: event.clientX, clientY: event.clientY }) : undefined}
+                        onMouseLeave={() => setDepthPointer(null)} />
+                    {hasFrame && hoveredDepth && depthRect && <span className="track-vision__depth-pointer" aria-label="Depth at mouse"
+                        style={{ left: hoveredDepth.x, top: hoveredDepth.y,
+                            transform: `translate(${hoveredDepth.x > depthRect.width / 2 ? 'calc(-100% - 12px)' : '12px'}, ${hoveredDepth.y > depthRect.height / 2 ? 'calc(-100% - 12px)' : '12px'})` }}>
+                        {hoveredDepth.depth === null ? 'No valid depth' : `${hoveredDepth.depth.toFixed(2)} m`}
+                    </span>}
                     {hasFrame && step === 'calibration' && showCalibrationOnCapture && previewFrameRef.current && validCalibration(previewCamera)
                         && <CameraGroundGrid camera={previewCamera} applied={Boolean(calibration)} />}
                     {!hasFrame && <div className="track-vision__empty"><span className="track-vision__empty-icon" aria-hidden="true">▣</span><strong>No captured frame yet</strong><span>Choose your simulator window and share it to inspect this pipeline step.</span></div>}
@@ -419,7 +437,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     </div>
                     <p className="track-vision__hint">Display label only changes this preview. All labels continue through filtering and reconstruction.</p>
                 </div>
-                <PipelineDetails step={step} frame={previewResult} masks={masks} classNames={labels} confidence={confidence} />
+                <PipelineDetails step={step} frame={previewResult} masks={masks} classNames={labels} confidence={confidence} depthMap={depthMap} />
                 <div hidden={!isSceneStep}>
                     <ReconstructedSceneView scene={hasFrame ? previewResult?.reconstructedScene ?? null : null}
                         source={hasFrame ? previewFrameRef.current : null} capturedAt={previewResult?.capturedAt} />

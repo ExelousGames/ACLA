@@ -40,7 +40,7 @@ export class TrackVisionModel {
     static async loadBuiltin(task: 'depth', allowCpuFallback = false): Promise<TrackVisionModel> {
         const definition = DETECTION_TASKS.find((definition): definition is Extract<typeof DETECTION_TASKS[number], { id: 'depth' }> => definition.id === task)!;
         const bytes = await readVisionModel(visionAssetUrl(`vision-models/${definition.file}`));
-        return TrackVisionModel.load(bytes, { task, name: 'YOLO26n Depth', classNames: [] }, allowCpuFallback);
+        return TrackVisionModel.load(bytes, { task, name: 'YOLO26m Depth', classNames: [] }, allowCpuFallback);
     }
 
     private static async load(bytes: ArrayBuffer, metadata: ModelMetadata, allowCpuFallback: boolean): Promise<TrackVisionModel> {
