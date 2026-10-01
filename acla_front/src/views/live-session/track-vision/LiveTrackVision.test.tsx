@@ -65,7 +65,7 @@ beforeEach(() => {
     });
     model = { name: 'track-features-v2', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu' };
     (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue(model);
-    depthModel = { name: 'YOLO26m Depth', classNames: [], executionProvider: 'webgpu', dispose: jest.fn().mockResolvedValue(undefined),
+    depthModel = { name: 'Depth-Anything-V2-Small', classNames: [], executionProvider: 'webgpu', dispose: jest.fn().mockResolvedValue(undefined),
         detect: jest.fn().mockResolvedValue(vision(0).detections.depth) };
     (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depthModel);
     window.screenCapture = {
@@ -194,6 +194,26 @@ it('inspects full-map depths at the mouse, refreshes stationary hover and clears
     expect(screen.getByText('Waiting for depth. Enable Depth and Segmentation and share a driving view.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(canvas).not.toBeVisible();
+});
+
+it('shows relative depth in the hover, legend, table and mask captions without meter units', async () => {
+    depthModel.detect.mockResolvedValue({ task: 'depth', scale: 'relative', width: 2, height: 2,
+        values: new Float32Array(4).fill(0.02), classNames: [], inferenceMs: 1 });
+    render(<LiveTrackVision name="vision" />);
+    await flush();
+    expect(screen.getByText('Model: Depth-Anything-V2-Small')).toBeVisible();
+    await startCapture();
+    selectStep('Depth map');
+    const canvas = screen.getByLabelText('Captured game frame with vision detections') as HTMLCanvasElement;
+    jest.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 640, height: 360 } as DOMRect);
+    fireEvent.mouseMove(canvas, { clientX: 320, clientY: 180 });
+    expect(screen.getByLabelText('Depth at mouse')).toHaveTextContent('0.0200 rel');
+    expect(screen.getByLabelText('Depth map color scale')).toHaveTextContent('Near 0.0200 rel');
+    expect(screen.getByText(/These values are unitless/)).toBeVisible();
+    selectStep('Label depths');
+    expect(screen.getByRole('table')).toHaveTextContent('relative depth (unitless)');
+    expect(screen.getByRole('table')).toHaveTextContent('0.0200 rel');
+    expect(canvas.getContext('2d')!.fillText).toHaveBeenCalledWith('track #1 · 0.0200 rel', expect.any(Number), expect.any(Number));
 });
 
 it('keeps the captured window background synchronized with completed scene frames', async () => {
@@ -791,7 +811,7 @@ it('allows retrying a failed backend load', async () => {
 
 it('runs depth alongside backend segmentation and releases only depth when disabled', async () => {
     const depthResult = { task: 'depth', width: 2, height: 2, values: new Float32Array([1, 2, 3, 4]), inferenceMs: 20, classNames: [] };
-    const depth = { ...model, name: 'YOLO26m Depth', classNames: [], detect: jest.fn().mockResolvedValue(depthResult), dispose: jest.fn().mockResolvedValue(undefined) };
+    const depth = { ...model, name: 'Depth-Anything-V2-Small', classNames: [], detect: jest.fn().mockResolvedValue(depthResult), dispose: jest.fn().mockResolvedValue(undefined) };
     (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depth);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);

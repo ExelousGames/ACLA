@@ -4,6 +4,7 @@ import { VISION_CONFIDENCE } from './semantic-scene';
 import type { TrackVisionFrame } from './track-vision-types';
 import { VISION_DEPTH_COLORS } from './vision-colors';
 import { letterbox } from './yolo-segmentation';
+import { formatDepth } from './depth-map';
 
 const DEPTH_COLORS = VISION_DEPTH_COLORS.map((color) => [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16)));
 
@@ -12,8 +13,8 @@ export const PIPELINE_STEPS = [
     { id: 'calibration', label: 'Camera position', title: 'Set the camera position', description: 'Align the reference grid with your driving view, then apply the camera settings.' },
     { id: 'segmentation', label: 'Segmentation', title: 'Every label in the camera view', description: 'Inspect the detected masks, label names and confidence over the captured frame.' },
     { id: 'filtering', label: 'Filtering', title: 'Masks after filtering', description: 'Inspect confidence filtering and depth ordering. Car interior masks are retained for downstream boundary filtering.' },
-    { id: 'depth-map', label: 'Depth map', title: 'Depth across the entire frame', description: 'Inspect the full depth map. Move the mouse over the image to read the estimated depth in meters.' },
-    { id: 'depth', label: 'Label depths', title: 'Depth of each retained mask', description: 'Compare estimated distances across all retained masks. Numbered mask labels match the individual rows in the table.' },
+    { id: 'depth-map', label: 'Depth map', title: 'Depth across the entire frame', description: 'Inspect the full depth map. Move the mouse over the image to read relative depth.' },
+    { id: 'depth', label: 'Label depths', title: 'Depth of each retained mask', description: 'Compare relative depths across all retained masks. Numbered mask labels match the individual rows in the table.' },
     { id: 'scene', label: 'Reconstructed scene', title: 'Reconstructed scene', description: 'Track boundaries, cars and car packs in 2D, with cockpit outlines removed using the car interior mask.' },
 ] as const;
 export type PipelineStep = typeof PIPELINE_STEPS[number]['id'];
@@ -97,7 +98,8 @@ export function drawLabelDepths(context: CanvasRenderingContext2D, frame: TrackV
         if (!mask.bounds) return;
         const x = Math.max(4, (mask.bounds[0] / segment.width * VISION_INPUT_SIZE - padX) / resizedWidth * frame.width + 4);
         const y = Math.max(fontSize + 4, (mask.bounds[1] / segment.height * VISION_INPUT_SIZE - padY) / resizedHeight * frame.height + fontSize + 4);
-        const text = `${row.label} #${row.instance} · ${row.median === null ? 'No depth' : `${row.median.toFixed(1)} m`}`;
+        const depth = frame.detections.depth;
+        const text = `${row.label} #${row.instance} · ${row.median === null ? 'No depth' : formatDepth(row.median, depth?.task === 'depth' ? depth.scale : undefined)}`;
         context.fillStyle = '#090d13dd';
         context.fillRect(x - 3, y - fontSize - 2, context.measureText(text).width + 6, fontSize + 6);
         context.fillStyle = '#ffffff';

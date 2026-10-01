@@ -12,7 +12,7 @@ import ReconstructedSceneView from './ReconstructedSceneView';
 import { reconstructScene } from './reconstructed-scene';
 import { drawLabelDepths, filteredFrame, filteredMasks, PIPELINE_STEPS, PipelineStep } from './pipeline-visuals';
 import PipelineDetails from './PipelineDetails';
-import { createDepthMap, depthAtMouse, drawDepthMap } from './depth-map';
+import { createDepthMap, depthAtMouse, drawDepthMap, formatDepth } from './depth-map';
 import './LiveTrackVision.css';
 
 export interface TrackVisionHandle extends NamedOperationComponentHandle {
@@ -402,7 +402,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     {hasFrame && hoveredDepth && depthRect && <span className="track-vision__depth-pointer" aria-label="Depth at mouse"
                         style={{ left: hoveredDepth.x, top: hoveredDepth.y,
                             transform: `translate(${hoveredDepth.x > depthRect.width / 2 ? 'calc(-100% - 12px)' : '12px'}, ${hoveredDepth.y > depthRect.height / 2 ? 'calc(-100% - 12px)' : '12px'})` }}>
-                        {hoveredDepth.depth === null ? 'No valid depth' : `${hoveredDepth.depth.toFixed(2)} m`}
+                        {hoveredDepth.depth === null ? 'No valid depth' : formatDepth(hoveredDepth.depth, depthMap?.depth.scale, 2)}
                     </span>}
                     {hasFrame && step === 'calibration' && showCalibrationOnCapture && previewFrameRef.current && validCalibration(previewCamera)
                         && <CameraGroundGrid camera={previewCamera} applied={Boolean(calibration)} />}

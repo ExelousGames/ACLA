@@ -26,7 +26,7 @@ export interface DepthPointCloud {
 export function createDepthPointCloud(frame: TrackVisionFrame): DepthPointCloud | null {
     const depth = frame.detections.depth;
     if (!validCalibration(frame.calibration) || frame.calibration.imageWidth !== frame.width
-        || frame.calibration.imageHeight !== frame.height || depth?.task !== 'depth'
+        || frame.calibration.imageHeight !== frame.height || depth?.task !== 'depth' || depth.scale === 'relative'
         || !Number.isInteger(depth.width) || !Number.isInteger(depth.height) || depth.width <= 0 || depth.height <= 0
         || depth.values.length !== depth.width * depth.height) return null;
     const camera = createCameraProjection(frame.calibration);

@@ -6,7 +6,7 @@ import { readVisionModel, visionAssetUrl } from './vision-assets';
 import { loadBackendVisionModel } from './backend-vision-model';
 import { runWithVisionGpuQueue } from './vision-gpu-queue';
 import { MaskRegion, resizeMask } from './world-mask';
-import { VISION_INPUT_SIZE } from './vision-config';
+import { DEPTH_INPUT_SIZE, VISION_INPUT_SIZE } from './vision-config';
 
 export class GpuInferenceError extends Error {}
 
@@ -17,6 +17,7 @@ export class TrackVisionModel {
     private disposed = false;
     private busy = false;
     private inputCanvas = document.createElement('canvas');
+    private readonly inputSize: number;
 
     private constructor(
         private runtime: typeof import('onnxruntime-web'),
@@ -27,8 +28,9 @@ export class TrackVisionModel {
         readonly executionProvider: 'webgpu' | 'wasm',
         readonly fallbackReason?: string,
     ) {
-        this.inputCanvas.width = VISION_INPUT_SIZE;
-        this.inputCanvas.height = VISION_INPUT_SIZE;
+        this.inputSize = task === 'depth' ? DEPTH_INPUT_SIZE : VISION_INPUT_SIZE;
+        this.inputCanvas.width = this.inputSize;
+        this.inputCanvas.height = this.inputSize;
     }
 
     static async loadBackend(allowCpuFallback = false): Promise<TrackVisionModel> {
@@ -39,7 +41,7 @@ export class TrackVisionModel {
     static async loadBuiltin(task: 'depth', allowCpuFallback = false): Promise<TrackVisionModel> {
         const definition = DETECTION_TASKS.find((definition): definition is Extract<typeof DETECTION_TASKS[number], { id: 'depth' }> => definition.id === task)!;
         const bytes = await readVisionModel(visionAssetUrl(`vision-models/${definition.file}`));
-        return TrackVisionModel.load(bytes, { task, name: 'YOLO26m Depth', classNames: [] }, allowCpuFallback);
+        return TrackVisionModel.load(bytes, { task, name: 'Depth-Anything-V2-Small', classNames: [] }, allowCpuFallback);
     }
 
     private static async load(bytes: ArrayBuffer, metadata: ModelMetadata, allowCpuFallback: boolean): Promise<TrackVisionModel> {
@@ -70,7 +72,7 @@ export class TrackVisionModel {
                         ? 'Unexpected depth model inputs or outputs. Re-export the bundled weights.'
                         : 'Unexpected segmentation model inputs or outputs. Upload compatible segmentation weights.');
                 }
-                await model.run(new Float32Array(3 * VISION_INPUT_SIZE ** 2), 0.5);
+                await model.run(new Float32Array(3 * model.inputSize ** 2), 0.5);
                 return model;
             } catch (error) {
                 // Initialization already owns the queue; clean up without re-entering it.
@@ -81,7 +83,7 @@ export class TrackVisionModel {
     }
 
     private async run(input: Float32Array, threshold: number) {
-        const tensor = new this.runtime.Tensor('float32', input, [1, 3, VISION_INPUT_SIZE, VISION_INPUT_SIZE]);
+        const tensor = new this.runtime.Tensor('float32', input, [1, 3, this.inputSize, this.inputSize]);
         let outputs: InferenceSession.ReturnType | undefined;
         try {
             outputs = await this.session.run({ [this.session.inputNames[0]]: tensor });
@@ -111,16 +113,23 @@ export class TrackVisionModel {
             const context = this.inputCanvas.getContext('2d', { willReadFrequently: true });
             if (!context) throw new Error('A canvas is required for vision detection.');
             const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, VISION_INPUT_SIZE);
+            // Scale the same letterbox geometry so depth stays aligned with segmentation.
+            const scale = this.inputSize / VISION_INPUT_SIZE;
             context.fillStyle = 'rgb(114, 114, 114)';
-            context.fillRect(0, 0, VISION_INPUT_SIZE, VISION_INPUT_SIZE);
-            context.drawImage(frame, padX, padY, resizedWidth, resizedHeight);
-            const input = rgbaToChw(context.getImageData(0, 0, VISION_INPUT_SIZE, VISION_INPUT_SIZE).data);
+            context.fillRect(0, 0, this.inputSize, this.inputSize);
+            context.drawImage(frame, padX * scale, padY * scale, resizedWidth * scale, resizedHeight * scale);
+            const input = rgbaToChw(context.getImageData(0, 0, this.inputSize, this.inputSize).data);
             if (this.task === 'depth' && region) {
-                const mask = resizeMask(region, VISION_INPUT_SIZE, VISION_INPUT_SIZE);
+                const mask = resizeMask(region, this.inputSize, this.inputSize);
                 for (let i = 0; i < mask.length; i++) {
                     if (mask[i]) continue;
                     // Neutralize excluded pixels without cropping or changing the camera's image coordinates.
                     input[i] = input[i + mask.length] = input[i + mask.length * 2] = 114 / 255;
+                }
+                const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
+                for (let channel = 0; channel < 3; channel++) {
+                    const offset = channel * mask.length;
+                    for (let i = 0; i < mask.length; i++) input[offset + i] = (input[offset + i] - mean[channel]) / std[channel];
                 }
             }
             const result = await runWithVisionGpuQueue(this.executionProvider, () => this.run(input, threshold));

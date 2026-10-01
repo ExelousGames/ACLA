@@ -14,11 +14,12 @@ export type AmodalMask = SegmentResult['instances'][number] & {
 };
 
 const median = (values: number[]) => values.sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? 0;
-const nearer = (observed: number, predicted: number) => observed > 0 && predicted - observed > Math.max(0.1, predicted * 0.02);
 
 /** Raw detections stay intact. The 2D pipeline retains cockpit masks for downstream edge filtering. */
 export function predictAmodalMasks(frame: TrackVisionFrame, minimumConfidence = 0): AmodalMask[] {
     const segment = frame.detections.segment, depth = frame.detections.depth;
+    const nearer = (observed: number, predicted: number) => observed > 0
+        && predicted - observed > Math.max(depth?.task === 'depth' && depth.scale === 'relative' ? 0 : 0.1, predicted * 0.02);
     if (segment?.task !== 'segment' || !Number.isInteger(segment.width) || !Number.isInteger(segment.height)
         || segment.width <= 0 || segment.height <= 0 || frame.width <= 0 || frame.height <= 0) return [];
     const { width, height } = segment, size = width * height;

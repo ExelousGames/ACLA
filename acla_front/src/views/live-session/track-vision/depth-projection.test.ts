@@ -16,6 +16,14 @@ it('removes depth letterboxing and excludes padded samples at image edges', () =
     expect(lift(0.5, 0.999, () => true)!.y).toBe(10);
 });
 
+it('does not interpret relative depth as metric geometry even with camera calibration', () => {
+    const source = frame();
+    const depth = source.detections.depth!;
+    if (depth.task !== 'depth') throw new Error('Expected depth');
+    depth.scale = 'relative';
+    expect(createDepthProjection(source)).toBeNull();
+});
+
 it('never blends other surfaces into an object at a depth discontinuity', () => {
     const source = frame();
     const depth = source.detections.depth!;

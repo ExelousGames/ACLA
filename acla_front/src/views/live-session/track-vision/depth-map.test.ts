@@ -22,7 +22,7 @@ it('paints full-frame depth without label masks and excludes model padding from 
     drawDepthMap(context, map);
     expect(context.drawImage).toHaveBeenCalledWith(expect.any(HTMLCanvasElement), 0, 1, 4, 2, 0, 0, 640, 320);
     expect(Array.from(pixels.slice(4 * 4, 5 * 4))).toEqual([239, 68, 68, 255]);
-    expect(Array.from(pixels.slice(11 * 4, 12 * 4))).toEqual([139, 92, 246, 255]);
+    expect(Array.from(pixels.slice(11 * 4, 12 * 4))).toEqual([59, 130, 246, 255]);
     for (let i = 4; i < 12; i++) expect(pixels[i * 4 + 3]).toBe(255);
     expect(map.depth.values).toEqual(original);
 });

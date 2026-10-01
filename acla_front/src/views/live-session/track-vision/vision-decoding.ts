@@ -7,10 +7,13 @@ export function decodeDepth(output: FloatTensor): DepthResult {
     const width = dims[dims.length - 1];
     if ((dims.length !== 3 && dims.length !== 4) || dims[0] !== 1 || (dims.length === 4 && dims[1] !== 1)
         || height < 1 || width < 1 || output.data.length !== width * height) {
-        throw new Error('Depth requires float32 [1, 1, height, width] distances.');
+        throw new Error('Depth requires float32 [1, height, width] or [1, 1, height, width] values.');
     }
+    // Depth Anything predicts relative disparity (larger is nearer). A bounded
+    // reciprocal preserves near-to-far ordering, including zero disparity, without claiming meters.
     // Copy before ONNX releases the output tensor.
-    return { task: 'depth', width, height, values: output.data.slice() };
+    const values = output.data.map((value) => Number.isFinite(value) && value >= 0 ? 1 / (1 + value) : 0);
+    return { task: 'depth', width, height, scale: 'relative', values };
 }
 
 interface Candidate { index: number; classId: number; confidence: number; box: [number, number, number, number] }

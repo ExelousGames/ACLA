@@ -1,6 +1,6 @@
 export const DETECTION_TASKS = [
     { id: 'segment', label: 'Segmentation', description: 'Detect track features using the model and labels uploaded to the backend.' },
-    { id: 'depth', label: 'Depth', description: 'Estimate label distances while preserving the car interior for downstream boundary filtering.', file: 'yolo26m-depth.onnx' },
+    { id: 'depth', label: 'Depth', description: 'Estimate relative depth with Depth-Anything-V2-Small while preserving the car interior for downstream boundary filtering.', file: 'depth-anything-v2-small.onnx' },
 ] as const;
 
 export type DetectionTask = typeof DETECTION_TASKS[number]['id'];
@@ -10,7 +10,9 @@ export interface DepthResult {
     task: 'depth';
     width: number;
     height: number;
-    /** Estimated optical-axis depth in meters in the letterboxed model input; excluded pixels are zero. */
+    /** Relative depth is unitless. Omitted scale denotes legacy optical-axis meters. */
+    scale?: 'metric' | 'relative';
+    /** Near-to-far depth in the shared letterbox coordinates; excluded pixels are zero. */
     values: Float32Array;
 }
 

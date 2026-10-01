@@ -42,6 +42,17 @@ it.each(['track', 'car', 'car pack', 'curb', 'grass', 'fence', 'sand', 'other', 
     },
 );
 
+it('completes supported hidden masks with unitless relative depths below the metric tolerance', () => {
+    const frame = fixture();
+    const depth = frame.detections.depth!;
+    if (depth.task !== 'depth') throw new Error('depth');
+    depth.scale = 'relative';
+    depth.values = depth.values.map((value) => value / 1000);
+    const prediction = predictAmodalMasks(frame).find((mask) => mask.classId === 0)!;
+    expect(prediction.hiddenMask.reduce((sum, active) => sum + active, 0)).toBe(32);
+    expect(prediction.depths[210]).toBeCloseTo(0.01);
+});
+
 it('handles overlapping amodal inputs independently of instance order', () => {
     const frame = fixture('car', true);
     const before = predictAmodalMasks(frame);

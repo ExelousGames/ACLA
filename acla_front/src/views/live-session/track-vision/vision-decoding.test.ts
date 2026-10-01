@@ -22,10 +22,16 @@ it('rejects mismatched class counts so output IDs cannot use the wrong labels', 
     )).toThrow('backend labels');
 });
 
-it('owns its depth data after tensors are released and rejects multichannel depth', () => {
+it.each([[1, 2, 2], [1, 1, 2, 2]])('decodes relative disparity in shape %j with near-to-far ordering and owned data', (...dims) => {
     const data = new Float32Array([1, 2, 3, 4]);
-    const result = decodeDepth({ dims: [1, 1, 2, 2], data });
+    const result = decodeDepth({ dims, data });
     data.fill(0);
-    expect(result.values).toEqual(new Float32Array([1, 2, 3, 4]));
+    expect(result.scale).toBe('relative');
+    expect(result.values).toEqual(new Float32Array([1 / 2, 1 / 3, 1 / 4, 1 / 5]));
     expect(() => decodeDepth({ dims: [1, 2, 1, 2], data })).toThrow('Depth requires');
+});
+
+it('retains zero disparity as far depth and excludes invalid predictions', () => {
+    const result = decodeDepth({ dims: [1, 1, 5], data: new Float32Array([0, -1, NaN, Infinity, 99]) });
+    expect(result.values).toEqual(new Float32Array([1, 0, 0, 0, 0.01]));
 });

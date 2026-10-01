@@ -1,39 +1,63 @@
-"""One-time Ultralytics export; packaged inference runs entirely in ONNX Runtime Web."""
-import json
-import os
+"""Prepare Depth Anything V2 Small; packaged inference uses ONNX Runtime Web."""
 from pathlib import Path
-import shutil
-from importlib.metadata import distribution
 
-ROOT = Path(__file__).resolve().parent.parent
-CACHE = ROOT / '.venv' / 'track-vision-models'
-TARGET = ROOT / 'public' / 'vision-models'
-CACHE.mkdir(parents=True, exist_ok=True)
-TARGET.mkdir(parents=True, exist_ok=True)
-(CACHE / 'config').mkdir(exist_ok=True)
-os.environ.setdefault('YOLO_CONFIG_DIR', str(CACHE / 'config'))
-os.environ.setdefault('YOLO_AUTOINSTALL', 'false')
-
-from ultralytics import YOLO
 import onnx
 
-INPUT_SIZE = 768
+ROOT = Path(__file__).resolve().parent.parent
+CACHE = ROOT / '.venv' / 'track-vision-models' / 'huggingface'
+TARGET = ROOT / 'public' / 'vision-models' / 'depth-anything-v2-small.onnx'
+MODEL_ID = 'depth-anything/Depth-Anything-V2-Small-hf'
+REVISION = '5426e4f0f36572d16453bbda7a8389317b1bef99'
+INPUT_SIZE = 518
 
-shutil.copyfile(distribution('ultralytics').locate_file('ultralytics-8.4.154.dist-info/licenses/LICENSE'),
-                TARGET / 'ULTRALYTICS-LICENSE.txt')
 
-os.chdir(CACHE)
-for task, checkpoint in [('depth', 'yolo26m-depth')]:
-    destination = TARGET / f'{checkpoint}.onnx'
-    if destination.exists() and destination.with_suffix('.json').exists():
-        graph = onnx.load(str(destination), load_external_data=False)
-        shape = [d.dim_value for d in graph.graph.input[0].type.tensor_type.shape.dim]
-        if shape == [1, 3, INPUT_SIZE, INPUT_SIZE]:
-            print(f'Using cached {checkpoint}', flush=True)
-            continue
-    model = YOLO(f'{checkpoint}.pt', task=task)
-    exported = Path(model.export(format='onnx', imgsz=INPUT_SIZE, batch=1, dynamic=False,
-                                 half=False, simplify=False, opset=17, nms=False, device='cpu'))
-    shutil.copyfile(exported, destination)
-    destination.with_suffix('.json').write_text(json.dumps({'task': task, 'names': model.names, 'imgsz': INPUT_SIZE}, indent=2))
-    print(f'Prepared {task}: {destination}', flush=True)
+def validate_export(path):
+    graph = onnx.load(str(path))
+    onnx.checker.check_model(graph)
+    inputs, outputs = graph.graph.input, graph.graph.output
+    shape = lambda value: [d.dim_value for d in value.type.tensor_type.shape.dim]
+    if (len(inputs) != 1 or len(outputs) != 1
+            or shape(inputs[0]) != [1, 3, INPUT_SIZE, INPUT_SIZE]
+            or shape(outputs[0]) != [1, INPUT_SIZE, INPUT_SIZE]
+            or inputs[0].type.tensor_type.elem_type != onnx.TensorProto.FLOAT
+            or outputs[0].type.tensor_type.elem_type != onnx.TensorProto.FLOAT):
+        raise ValueError('Expected float32 Depth Anything input [1, 3, 518, 518] and output [1, 518, 518].')
+
+
+def main():
+    if TARGET.exists():
+        try:
+            validate_export(TARGET)
+            print(f'Using cached Depth-Anything-V2-Small: {TARGET}', flush=True)
+            return
+        except Exception as error:
+            print(f'Rebuilding invalid depth export: {error}', flush=True)
+
+    import torch
+    from transformers import DepthAnythingForDepthEstimation
+
+    class DepthExport(torch.nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+
+        def forward(self, pixel_values):
+            return self.model(pixel_values=pixel_values).predicted_depth
+
+    CACHE.mkdir(parents=True, exist_ok=True)
+    TARGET.parent.mkdir(parents=True, exist_ok=True)
+    model = DepthExport(DepthAnythingForDepthEstimation.from_pretrained(
+        MODEL_ID, revision=REVISION, cache_dir=str(CACHE), attn_implementation='eager',
+    )).eval()
+    temporary = TARGET.with_suffix('.tmp')
+    with torch.no_grad():
+        torch.onnx.export(model, torch.zeros(1, 3, INPUT_SIZE, INPUT_SIZE), str(temporary),
+                          input_names=['pixel_values'], output_names=['predicted_depth'],
+                          opset_version=17, dynamo=False)
+    validate_export(temporary)
+    temporary.replace(TARGET)
+    print(f'Prepared Depth-Anything-V2-Small: {TARGET}', flush=True)
+
+
+if __name__ == '__main__':
+    main()

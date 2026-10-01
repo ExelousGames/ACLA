@@ -1,10 +1,13 @@
 import { VISION_INPUT_SIZE } from './vision-config';
-import type { TrackVisionFrame } from './track-vision-types';
+import type { DepthResult, TrackVisionFrame } from './track-vision-types';
 import { VISION_DEPTH_COLORS } from './vision-colors';
 import { letterbox } from './yolo-segmentation';
 
 const COLORS = VISION_DEPTH_COLORS.map((color) => [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16)));
 const validDepth = (value: number) => Number.isFinite(value) && value > 0;
+
+export const formatDepth = (value: number | null, scale?: DepthResult['scale'], metricDigits = 1) =>
+    value === null ? '—' : scale === 'relative' ? `${value.toPrecision(3)} rel` : `${value.toFixed(metricDigits)} m`;
 
 /** Full-frame depth, independent of retained labels. Padding never contributes to the color scale. */
 export function createDepthMap(frame: TrackVisionFrame | null) {
