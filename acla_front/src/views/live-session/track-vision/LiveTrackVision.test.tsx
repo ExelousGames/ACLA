@@ -20,7 +20,7 @@ const cameraButton = (name: string) => {
 };
 const render = (element: React.ReactElement) => {
     const view = renderComponent(element);
-    const settings = screen.queryByText('Model settings');
+    const settings = screen.queryByText('Setting');
     if (settings) fireEvent.click(settings);
     return view;
 };
@@ -43,7 +43,7 @@ let track: { stop: jest.Mock; onended: (() => void) | null };
 let stream: MediaStream;
 let getDisplayMedia: jest.Mock;
 let depthModel: { detect: jest.Mock; dispose: jest.Mock; executionProvider: string; name: string; classNames: string[] };
-let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu' | 'wasm'; fallbackReason?: string; name: string; classNames: string[] };
+let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu'; name: string; classNames: string[] };
 const detection = { task: 'segment' as const, width: 2, height: 2, instances: [{
     classId: 0, confidence: 0.9, box: [0, 0, 1, 1] as [number, number, number, number], mask: new Uint8Array(4).fill(1),
 }], classNames: ['track', 'curb'], inferenceMs: 50 };
@@ -164,7 +164,7 @@ it('inspects full-map depths at the mouse, refreshes stationary hover and clears
     render(<LiveTrackVision name="vision" />);
     await flush();
     selectStep('Depth map');
-    expect(screen.getByText('Waiting for depth. Enable Depth and Segmentation and share a driving view.')).toBeVisible();
+    expect(screen.getByText('Waiting for depth. Share a driving view with both models ready.')).toBeVisible();
     await startCapture();
     const canvas = screen.getByLabelText('Captured game frame with vision detections') as HTMLCanvasElement;
     jest.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 20, width: 640, height: 480 } as DOMRect);
@@ -188,10 +188,10 @@ it('inspects full-map depths at the mouse, refreshes stationary hover and clears
     selectStep('Depth map');
     expect(screen.queryByLabelText('Depth at mouse')).not.toBeInTheDocument();
     fireEvent.mouseMove(canvas, { clientX: 330, clientY: 260 });
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    await flush();
+    depthModel.detect.mockRejectedValueOnce(new Error('GPU device lost'));
+    await act(async () => { jest.advanceTimersByTime(200); });
     expect(screen.queryByLabelText('Depth at mouse')).not.toBeInTheDocument();
-    expect(screen.getByText('Waiting for depth. Enable Depth and Segmentation and share a driving view.')).toBeVisible();
+    expect(screen.getByText('Waiting for depth. Share a driving view with both models ready.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(canvas).not.toBeVisible();
 });
@@ -235,7 +235,7 @@ it('keeps the captured window background synchronized with completed scene frame
     const boundaries = screen.getByLabelText('2D reconstructed scene');
     expect(boundaries).toHaveAttribute('viewBox', '0 0 1280 720');
     const displayed = boundaries.innerHTML;
-    expect(screen.getByLabelText('Reconstructed cars').querySelectorAll('rect')).toHaveLength(1);
+    expect(within(screen.getByLabelText('Reconstructed cars')).getAllByLabelText(/^Car · \d+% confidence$/)).toHaveLength(1);
     const drawsBefore = draw.mock.calls.length;
 
     const pending = deferred<typeof detection>();
@@ -247,7 +247,9 @@ it('keeps the captured window background synchronized with completed scene frame
     expect(boundaries.innerHTML).toBe(displayed);
     await act(async () => { pending.resolve({ ...detection, instances: [] }); });
     expect(draw).toHaveBeenCalledTimes(drawsBefore + 1);
-    expect(boundaries.querySelector('polyline')).toBeNull();
+    for (const label of ['Left track boundary', 'Right track boundary', 'Track middle line']) {
+        expect(within(boundaries).getByLabelText(label)).toBeEmptyDOMElement();
+    }
     expect(screen.queryByLabelText('Reconstructed cars')).not.toBeInTheDocument();
 
     jest.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(1920);
@@ -261,7 +263,9 @@ it('keeps the captured window background synchronized with completed scene frame
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(background).not.toBeVisible();
     expect(context.clearRect).toHaveBeenLastCalledWith(0, 0, background.width, background.height);
-    expect(boundaries.querySelector('polyline')).toBeNull();
+    expect(within(boundaries).queryByLabelText('Left track boundary')).not.toBeInTheDocument();
+    expect(within(boundaries).queryByLabelText('Right track boundary')).not.toBeInTheDocument();
+    expect(within(boundaries).queryByLabelText('Track middle line')).not.toBeInTheDocument();
 });
 
 it('supports keyboard navigation and names the active pipeline panel', async () => {
@@ -272,9 +276,9 @@ it('supports keyboard navigation and names the active pipeline panel', async () 
     fireEvent.keyDown(captureTab, { key: 'ArrowRight' });
     expect(screen.getByRole('tab', { name: 'Camera position' })).toHaveFocus();
     expect(screen.getByRole('tabpanel', { name: 'Camera position' })).toBeVisible();
-    fireEvent.keyDown(document.activeElement!, { key: 'End' });
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Camera position' }), { key: 'End' });
     expect(screen.getByRole('tab', { name: 'Reconstructed scene' })).toHaveFocus();
-    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Reconstructed scene' }), { key: 'ArrowRight' });
     expect(captureTab).toHaveFocus();
     expect(captureTab).toHaveAttribute('aria-selected', 'true');
 });
@@ -321,14 +325,6 @@ it('publishes 2D boundaries without constructing display polygons or scene memor
     expect(screen.queryByLabelText('Perspective 3D masks')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Camera height (m)'), { target: { value: '1.8' } });
     expect(ref.current!.getLatestDetection()!.reconstructedScene).toEqual(scene);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    await flush();
-    await act(async () => { jest.advanceTimersByTime(200); });
-    expect(ref.current!.getLatestDetection()!.reconstructedScene).toEqual(scene);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    await flush();
-    await act(async () => { jest.advanceTimersByTime(200); });
-    expect(ref.current!.getLatestDetection()!.reconstructedScene).toEqual(scene);
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(ref.current!.getLatestDetection()).toBeNull();
     expect(screen.queryByLabelText('Rolling scene memory')).not.toBeInTheDocument();
@@ -345,7 +341,7 @@ it.each(['restore', 'escape'])('keeps capture and calibration running while expa
     const calibration = ref.current!.getLatestDetection()!.calibration;
     const preview = screen.getByLabelText('Capture preview');
     const canvas = screen.getByLabelText('Captured game frame with vision detections');
-    const video = preview.querySelector('video')!;
+    const video = (HTMLMediaElement.prototype.play as jest.Mock).mock.instances[0] as HTMLVideoElement;
     const showModal = jest.fn(() => preview.setAttribute('open', ''));
     const show = jest.fn(() => preview.setAttribute('open', ''));
     const close = jest.fn(() => preview.removeAttribute('open'));
@@ -368,7 +364,7 @@ it.each(['restore', 'escape'])('keeps capture and calibration running while expa
     expect(show).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: 'Expand capture' })).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByLabelText('Captured game frame with vision detections')).toBe(canvas);
-    expect(preview.querySelector('video')).toBe(video);
+    expect(preview).toContainElement(video);
     expect(video.srcObject).toBe(stream);
     expect(getDisplayMedia).toHaveBeenCalledTimes(1);
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
@@ -397,7 +393,11 @@ it('shows a 2D scene independent of the optional capture reference grid', async 
     expect(screen.getByLabelText('2D reconstructed scene')).toBeInTheDocument();
     expect(screen.queryByLabelText('Capture camera')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Camera field of view')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Left track boundary').querySelectorAll('polyline').length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('Left track boundary')).not.toBeEmptyDOMElement();
+    const scene = ref.current!.getLatestDetection()!.reconstructedScene!;
+    expect(scene.centerline.length).toBeGreaterThan(0);
+    scene.centerline.forEach((line) => expect(screen.getByLabelText('Track middle line')).toContainHTML(
+        `<polyline vector-effect="non-scaling-stroke" points="${line.map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ')}"></polyline>`));
     expect(ref.current!.getLatestDetection()?.reconstruction).toBeNull();
     fireEvent.click(cameraButton('Apply camera calibration'));
     const applied = ref.current!.getLatestDetection();
@@ -412,29 +412,6 @@ it('shows a 2D scene independent of the optional capture reference grid', async 
     expect(ref.current!.getLatestDetection()).toBe(applied);
     expect(model.detect).toHaveBeenCalledTimes(1);
     expect(track.stop).not.toHaveBeenCalled();
-});
-
-it('retains 2D boundaries and cars while positions clear when depth is disabled and recover when enabled', async () => {
-    model.detect.mockResolvedValue(vision(0).detections.segment);
-    const ref = React.createRef<TrackVisionHandle>();
-    render(<LiveTrackVision ref={ref} name="vision" />);
-    await flush();
-    await startCapture();
-    fireEvent.click(cameraButton('Apply camera calibration'));
-    expect(ref.current!.getLatestDetection()?.reconstruction?.cars).toHaveLength(1);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    await flush();
-    await act(async () => { jest.advanceTimersByTime(200); });
-    expect(ref.current!.getLatestDetection()?.reconstruction).toBeNull();
-    expect(ref.current!.getLatestDetection()?.geometry).toBeNull();
-    expect(screen.getByLabelText('Reconstructed cars').querySelectorAll('rect')).toHaveLength(1);
-    expect(screen.getByLabelText('Left track boundary').querySelectorAll('polyline').length).toBeGreaterThan(0);
-    expect(screen.getByLabelText('Reconstructed scene status')).toHaveTextContent('Visible track boundaries in 2D');
-    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    await flush();
-    await act(async () => { jest.advanceTimersByTime(200); });
-    expect(ref.current!.getLatestDetection()?.reconstruction?.cars).toHaveLength(1);
 });
 
 it('publishes metric geometry and positions only after camera calibration is applied', async () => {
@@ -478,7 +455,7 @@ it('keeps the reconstructed scene visible during pending inference while positio
     fireEvent.click(cameraButton('Apply camera calibration'));
     selectStep('Reconstructed scene');
     const edges = screen.getByLabelText('Left track boundary');
-    expect(edges.querySelectorAll('polyline').length).toBeGreaterThan(0);
+    expect(edges).not.toBeEmptyDOMElement();
     const displayed = edges.innerHTML;
     const displayedCars = screen.getByLabelText('Reconstructed cars').innerHTML;
     expect(screen.getByLabelText('Driver position')).not.toHaveTextContent('Unknown');
@@ -493,16 +470,15 @@ it('keeps the reconstructed scene visible during pending inference while positio
     fireEvent.click(cameraButton('Apply camera calibration'));
     expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
     expect(ref.current!.getLatestDetection()!.capturedAt).toBe(capturedAt);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     await act(async () => { pending.resolve(detection); });
     await act(async () => { jest.advanceTimersByTime(200); });
-    expect(ref.current!.getLatestDetection()?.analysis).toBeNull();
-    expect(ref.current!.getLatestDetection()?.geometry).toBeNull();
+    expect(ref.current!.getLatestDetection()).toBeNull();
     expect(screen.queryByLabelText('Left track boundary')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Reconstructed cars')).not.toBeInTheDocument();
 });
 
-it('shows all cars and car packs independently of track visibility, depth, calibration and the display label', async () => {
+it('shows all cars and car packs independently of track visibility, calibration and the display label', async () => {
     const frame = vision(0, { width: 1280, height: 720, classNames: MODEL_LABELS, road: () => false,
         cars: [[-0.04, 0.7, 0.12, 0.95], [0.3, 0.4, 0.5, 0.6], [0.6, 0.3, 0.95, 0.55]] });
     const segment = frame.detections.segment!;
@@ -515,25 +491,25 @@ it('shows all cars and car packs independently of track visibility, depth, calib
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    await flush();
     await startCapture();
     selectStep('Segmentation');
     fireEvent.change(screen.getByLabelText('Display label'), { target: { value: 'track' } });
     selectStep('Reconstructed scene');
     const cars = screen.getByLabelText('Reconstructed cars');
     expect(cars).toBeVisible();
-    expect(within(cars).getAllByLabelText('Car · 90% confidence')).toHaveLength(2);
-    expect(within(cars).getByLabelText('Car pack · 85% confidence').querySelector('rect')).toHaveAttribute('stroke-dasharray', '6 4');
-    const boxes = cars.querySelectorAll('rect');
-    expect(boxes).toHaveLength(3);
-    expect(boxes[0]).toHaveAttribute('x', '0');
-    expect(Number(boxes[0].getAttribute('y'))).toBeCloseTo(504);
-    expect(Number(boxes[0].getAttribute('width'))).toBeCloseTo(153.6);
+    const individualCars = within(cars).getAllByLabelText('Car · 90% confidence');
+    expect(individualCars).toHaveLength(2);
+    expect(within(cars).getAllByLabelText(/^Car(?: pack)? · \d+% confidence$/)).toHaveLength(3);
+    expect(within(cars).getByLabelText('Car pack · 85% confidence').innerHTML).toContain('stroke-dasharray="6 4"');
+    const [left, top, right] = ref.current!.getLatestDetection()!.reconstructedScene!.cars[0].box;
+    expect(left).toBe(0);
+    expect(top).toBeCloseTo(504);
+    expect(right - left).toBeCloseTo(153.6);
+    expect(individualCars[0].innerHTML).toContain(`<rect x="${left}" y="${top}" width="${right - left}"`);
     expect(screen.getByLabelText('Reconstructed scene status')).toHaveTextContent('Detected cars and car packs in 2D');
     expect(ref.current!.getLatestDetection()?.reconstruction).toBeNull();
     expect(ref.current!.getLatestDetection()?.reconstructedScene?.cars).toHaveLength(3);
-    expect(depthModel.detect).not.toHaveBeenCalled();
+    expect(depthModel.detect).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(screen.queryByLabelText('Reconstructed cars')).not.toBeInTheDocument();
 });
@@ -552,7 +528,7 @@ it('validates camera settings and previews height and angle changes without reru
     const originalGrid = screen.getByLabelText('Projected ground grid').innerHTML;
     const localView = screen.getByLabelText('2D reconstructed scene');
     const originalScene = localView.innerHTML;
-    expect(localView.querySelectorAll('polyline').length).toBeGreaterThan(0);
+    expect(within(localView).getByLabelText('Left track boundary')).not.toBeEmptyDOMElement();
     expect(localView).toHaveAttribute('viewBox', '0 0 1280 720');
     selectStep('Camera position');
     fireEvent.change(screen.getByLabelText('Camera height (m)'), { target: { value: '1.8' } });
@@ -708,12 +684,14 @@ it('shows model errors and keeps the screen preview available without weights', 
     expect(screen.getByRole('alert')).toHaveTextContent('Backend model unavailable');
     await startCapture();
     expect(screen.getByLabelText('Captured game frame with vision detections')).toBeVisible();
-    expect(screen.getByRole('status')).toHaveTextContent('Depth is waiting for segmentation masks');
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting for segmentation and depth');
     expect(depthModel.detect).not.toHaveBeenCalled();
     expect(model.detect).not.toHaveBeenCalled();
     selectStep('Reconstructed scene');
     expect(screen.getByLabelText('Captured window scene')).toBeVisible();
-    expect(screen.getByLabelText('2D reconstructed scene').querySelector('polyline')).toBeNull();
+    expect(screen.queryByLabelText('Left track boundary')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Right track boundary')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Track middle line')).not.toBeInTheDocument();
 });
 
 it('loads the backend model automatically and detects without a file upload', async () => {
@@ -721,12 +699,14 @@ it('loads the backend model automatically and detects without a file upload', as
     const { unmount } = render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
-    expect(TrackVisionModel.loadBackend).toHaveBeenCalledWith(false);
-    expect(screen.getByRole('checkbox', { name: 'Allow CPU fallback' })).not.toBeChecked();
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledWith();
+    expect(screen.queryByRole('checkbox', { name: 'Allow CPU fallback' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.getByLabelText('Model labels')).toHaveTextContent('track, curb');
-    expect(screen.getByRole('checkbox', { name: 'Enable Depth' })).toBeChecked();
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth', false);
+    expect(screen.queryByRole('checkbox', { name: 'Enable Depth' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Enable Segmentation' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Model settings')).not.toBeInTheDocument();
+    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth');
     expect(screen.queryByRole('checkbox', { name: 'Enable Semantic' })).not.toBeInTheDocument();
     await startCapture();
     expect(model.detect).toHaveBeenCalledTimes(1);
@@ -786,11 +766,11 @@ it('disables label selection without segmentation and resets labels missing from
     expect(selector).toBeEnabled();
     fireEvent.change(selector, { target: { value: 'curb' } });
     expect(selector).toHaveValue('curb');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
-    await flush();
+    model.detect.mockRejectedValueOnce(new Error('GPU device lost'));
+    await startCapture();
     expect(selector).toBeDisabled();
     (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue({ ...model, classNames: ['track', 'grass'] });
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Segmentation' }));
     await flush();
     expect(selector).toBeEnabled();
     expect(selector).toHaveValue('');
@@ -809,14 +789,14 @@ it('allows retrying a failed backend load', async () => {
     expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
 });
 
-it('runs depth alongside backend segmentation and releases only depth when disabled', async () => {
+it('runs depth alongside backend segmentation and releases both models on unmount', async () => {
     const depthResult = { task: 'depth', width: 2, height: 2, values: new Float32Array([1, 2, 3, 4]), inferenceMs: 20, classNames: [] };
     const depth = { ...model, name: 'Depth-Anything-V2-Small', classNames: [], detect: jest.fn().mockResolvedValue(depthResult), dispose: jest.fn().mockResolvedValue(undefined) };
     (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depth);
     const ref = React.createRef<TrackVisionHandle>();
-    render(<LiveTrackVision ref={ref} name="vision" />);
+    const { unmount } = render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth', false);
+    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth');
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText('Depth inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.queryByRole('group', { name: /Depth range/ })).not.toBeInTheDocument();
@@ -831,14 +811,11 @@ it('runs depth alongside backend segmentation and releases only depth when disab
         detections: { segment: detection, depth: depthResult },
     }), '');
     expect(depth.detect.mock.calls[0][0]).toBe(model.detect.mock.calls[0][0]);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    expect(ref.current!.getLatestDetection()).toBeNull();
-    await flush();
-    await act(async () => { jest.advanceTimersByTime(200); });
-    expect(ref.current!.getLatestDetection()?.detections).toEqual({ segment: detection });
+    unmount();
+    expect(ref.current).toBeNull();
     expect(depth.dispose).toHaveBeenCalledTimes(1);
-    expect(model.dispose).not.toHaveBeenCalled();
-    expect(track.stop).not.toHaveBeenCalled();
+    expect(model.dispose).toHaveBeenCalledTimes(1);
+    expect(track.stop).toHaveBeenCalledTimes(1);
 });
 
 it('loads depth but waits for masks when backend segmentation cannot load', async () => {
@@ -850,8 +827,7 @@ it('loads depth but waits for masks when backend segmentation cannot load', asyn
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     await startCapture();
-    expect(ref.current!.getLatestDetection()?.detections).toEqual({});
-    expect(ref.current!.getLatestDetection()?.reconstruction).toBeNull();
+    expect(ref.current!.getLatestDetection()).toBeNull();
     expect(depth.detect).not.toHaveBeenCalled();
     expect(screen.getByRole('alert')).toHaveTextContent('Backend unavailable');
     expect(track.stop).not.toHaveBeenCalled();
@@ -904,33 +880,32 @@ it.each(['empty', 'interior only', 'entire image is interior'])('runs depth on t
     expect(screen.getByRole('status')).not.toHaveTextContent('waiting');
 });
 
-it.each(['failure', 'disabled'])('does not reuse old masks for depth when the next segmentation is %s', async (reason) => {
+it('does not reuse old masks for depth after segmentation fails', async () => {
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     await startCapture();
     expect(depthModel.detect).toHaveBeenCalledTimes(1);
-    if (reason === 'failure') model.detect.mockRejectedValue(new Error('Segmentation failed'));
-    else if (reason === 'disabled') {
-        fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
-        await flush();
-    } else model.detect.mockResolvedValue({ ...detection, classNames: ['car interior'] });
+    model.detect.mockRejectedValue(new Error('Segmentation failed'));
     await act(async () => { jest.advanceTimersByTime(200); });
     expect(depthModel.detect).toHaveBeenCalledTimes(1);
     expect(ref.current!.getLatestDetection()?.detections.depth).toBeUndefined();
-    expect(ref.current!.getLatestDetection()?.reconstruction).toBeNull();
-    expect(screen.getByRole('status')).toHaveTextContent('Depth is waiting for segmentation masks');
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting for segmentation and depth');
     expect(track.stop).not.toHaveBeenCalled();
 });
 
-it('keeps segmentation running when depth inference fails', async () => {
+it('pauses analysis and further inference when depth inference fails', async () => {
     const depth = { ...model, detect: jest.fn().mockRejectedValue(new Error('Depth inference failed')), dispose: jest.fn().mockResolvedValue(undefined) };
     (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depth);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     await startCapture();
-    expect(ref.current!.getLatestDetection()?.detections).toEqual({ segment: detection });
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(model.detect).toHaveBeenCalledTimes(1);
+    expect(depth.detect).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('alert')).toHaveTextContent('Depth inference failed');
     expect(depth.dispose).toHaveBeenCalledTimes(1);
     expect(model.dispose).not.toHaveBeenCalled();
@@ -951,7 +926,7 @@ it('automatically retries GPU failures until loading succeeds', async () => {
     expect(screen.getByText('Retrying GPU…')).toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(3000); });
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(3);
-    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(false);
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith();
     expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(6000); });
@@ -967,65 +942,14 @@ it('leaves missing weights available for manual retry without automatic loading'
     expect(screen.getByRole('button', { name: 'Retry Segmentation' })).toBeEnabled();
 });
 
-it.each(['disable', 'unmount'])('cancels scheduled GPU retries on %s', async (action) => {
+it('cancels scheduled GPU retries on unmount', async () => {
     (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValue(new GpuInferenceError('GPU device lost'));
     const { unmount } = render(<LiveTrackVision name="vision" />);
     await flush();
-    if (action === 'unmount') unmount();
-    else fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
+    unmount();
     await flush();
     await act(async () => { jest.advanceTimersByTime(10000); });
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
-});
-
-it('allows CPU fallback on demand and reloads CPU models on GPU when turned off', async () => {
-    const cpu = { ...model, executionProvider: 'wasm', fallbackReason: 'GPU could not run this model; using CPU.', dispose: jest.fn().mockResolvedValue(undefined) };
-    (TrackVisionModel.loadBackend as jest.Mock).mockImplementation(async (allowCpuFallback) => {
-        if (allowCpuFallback) return cpu;
-        throw new GpuInferenceError('GPU device lost');
-    });
-    render(<LiveTrackVision name="vision" />);
-    await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Allow CPU fallback' }));
-    await flush();
-    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(true);
-    expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('CPU inference · GPU could not run this model; using CPU.');
-    await act(async () => { jest.advanceTimersByTime(6000); });
-    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(2);
-    (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue(model);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Allow CPU fallback' }));
-    await flush();
-    expect(cpu.dispose).toHaveBeenCalledTimes(1);
-    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(false);
-    expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
-});
-
-it('keeps healthy GPU sessions when CPU fallback is toggled', async () => {
-    render(<LiveTrackVision name="vision" />);
-    await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Allow CPU fallback' }));
-    await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Allow CPU fallback' }));
-    await flush();
-    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
-    expect(model.dispose).not.toHaveBeenCalled();
-});
-
-it('discards a pending CPU load when fallback is turned off', async () => {
-    const pending = deferred<any>();
-    const cpu = { ...model, executionProvider: 'wasm', dispose: jest.fn().mockResolvedValue(undefined) };
-    (TrackVisionModel.loadBackend as jest.Mock)
-        .mockRejectedValueOnce(new GpuInferenceError('GPU device lost'))
-        .mockReturnValueOnce(pending.promise);
-    render(<LiveTrackVision name="vision" />);
-    await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Allow CPU fallback' }));
-    await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Allow CPU fallback' }));
-    await act(async () => { pending.resolve(cpu); });
-    expect(cpu.dispose).toHaveBeenCalledTimes(1);
-    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(false);
-    expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
 });
 
 it('automatically recovers GPU inference during capture', async () => {
@@ -1040,50 +964,87 @@ it('automatically recovers GPU inference during capture', async () => {
     expect(screen.getByText('Retrying GPU…')).toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(3000); });
     await act(async () => { jest.advanceTimersByTime(200); });
-    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(false);
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith();
     expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(detection);
     expect(track.stop).not.toHaveBeenCalled();
 });
 
-it('allows all detectors to be disabled while capture continues', async () => {
+it('applies filtering confidence to current and pending frames, reconstruction and coaching without reloading models', async () => {
+    const fixture = vision(0, { width: 1280, height: 720 });
+    model.detect.mockResolvedValue(fixture.detections.segment);
+    depthModel.detect.mockResolvedValue(fixture.detections.depth);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    await flush();
+    const slider = screen.getByRole('slider', { name: 'Filtering confidence' });
+    expect(slider).toHaveValue('0.65');
     await startCapture();
-    expect(ref.current!.getLatestDetection()?.detections).toEqual({});
-    expect(model.detect).not.toHaveBeenCalled();
-    expect(screen.getByRole('status')).toHaveTextContent('Enable a detection');
-});
-
-it('discards a detector load that finishes after it is disabled', async () => {
-    const pending = deferred<any>();
-    (TrackVisionModel.loadBackend as jest.Mock).mockReturnValue(pending.promise);
-    render(<LiveTrackVision name="vision" />);
-    await flush();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
-    await act(async () => { pending.resolve(model); });
-    expect(model.dispose).toHaveBeenCalledTimes(1);
-    await startCapture();
-    expect(model.detect).not.toHaveBeenCalled();
-});
-
-it('does not republish a disabled detector when its pending inference finishes', async () => {
-    const pending = deferred<typeof detection>();
-    model.detect.mockReturnValue(pending.promise);
-    const ref = React.createRef<TrackVisionHandle>();
-    render(<LiveTrackVision ref={ref} name="vision" />);
-    await flush();
-    await startCapture();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Segmentation' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Depth' }));
-    await act(async () => { pending.resolve(detection); });
-    expect(ref.current!.getLatestDetection()).toBeNull();
+    fireEvent.click(cameraButton('Apply camera calibration'));
+    const initial = ref.current!.getLatestDetection()!;
+    expect(initial.geometry).not.toBeNull();
+    expect(initial.reconstructedScene!.cars).toHaveLength(1);
+    const listener = jest.fn();
+    ref.current!.subscribeDetection(listener);
+    const pending = deferred<typeof fixture.detections.segment>();
+    model.detect.mockReturnValueOnce(pending.promise);
     await act(async () => { jest.advanceTimersByTime(200); });
-    expect(ref.current!.getLatestDetection()?.detections).toEqual({});
+
+    fireEvent.change(slider, { target: { value: '0.95' } });
+    const filtered = ref.current!.getLatestDetection()!;
+    expect(filtered.filterConfidence).toBe(0.95);
+    expect(filtered.detections).toBe(initial.detections);
+    expect(filtered.capturedAt).toBe(initial.capturedAt);
+    expect(filtered.geometry).toBeNull();
+    expect(filtered.analysis).toEqual({});
+    expect(filtered.reconstructedScene).toMatchObject({ cars: [], leftBoundary: [], rightBoundary: [] });
+    expect(listener).toHaveBeenCalledTimes(1);
+    selectStep('Filtering');
+    expect(screen.getByLabelText('Applied filters')).toHaveTextContent('Confidence ≥ 95%');
+    expect(within(screen.getByRole('tabpanel')).getAllByRole('definition')[1]).toHaveTextContent('0');
+    await act(async () => { pending.resolve(fixture.detections.segment); });
+    expect(ref.current!.getLatestDetection()!.filterConfidence).toBe(0.95);
+    expect(ref.current!.getLatestDetection()!.reconstructedScene!.cars).toHaveLength(0);
+
+    fireEvent.change(slider, { target: { value: '0.65' } });
+    expect(ref.current!.getLatestDetection()!.geometry).toEqual(initial.geometry);
+    expect(ref.current!.getLatestDetection()!.analysis).toEqual(initial.analysis);
+    expect(ref.current!.getLatestDetection()!.reconstructedScene).toEqual(initial.reconstructedScene);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
+    expect(model.detect).toHaveBeenCalledTimes(2);
+    expect(depthModel.detect).toHaveBeenCalledTimes(2);
+    expect(track.stop).not.toHaveBeenCalled();
+}, 15000);
+
+it.each(['Segmentation', 'Depth'])('waits for %s to load before running either model and resumes after retry', async (label) => {
+    const loader = label === 'Segmentation' ? TrackVisionModel.loadBackend : TrackVisionModel.loadBuiltin;
+    (loader as jest.Mock).mockRejectedValueOnce(new Error('Weights unavailable'));
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    expect(model.detect).not.toHaveBeenCalled();
+    expect(depthModel.detect).not.toHaveBeenCalled();
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(screen.getByLabelText('Captured game frame with vision detections')).toBeVisible();
+    selectStep('Reconstructed scene');
+    const background = screen.getByLabelText('Captured window scene') as HTMLCanvasElement;
+    const preview = screen.getByLabelText('Captured game frame with vision detections') as HTMLCanvasElement;
+    const backgroundDraws = (background.getContext('2d')!.drawImage as jest.Mock).mock.calls.length;
+    const previewDraws = (preview.getContext('2d')!.drawImage as jest.Mock).mock.calls.length;
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(background.getContext('2d')!.drawImage).toHaveBeenCalledTimes(backgroundDraws + 1);
+    expect(preview.getContext('2d')!.drawImage).toHaveBeenCalledTimes(previewDraws + 1);
+    expect(model.detect).not.toHaveBeenCalled();
+    expect(depthModel.detect).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: `Retry ${label}` }));
+    await flush();
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.detections).toEqual({ segment: detection, depth: vision(0).detections.depth });
     expect(model.detect).toHaveBeenCalledTimes(1);
+    expect(depthModel.detect).toHaveBeenCalledTimes(1);
+    expect(model.dispose).not.toHaveBeenCalled();
+    expect(depthModel.dispose).not.toHaveBeenCalled();
 });
 
 it('requires the Electron bridge before loading models or offering capture', async () => {

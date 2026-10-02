@@ -1,8 +1,8 @@
 # Track Vision
 
-Track Vision runs locally in the Electron desktop app. Open **Live Session → Add Visualization → Track Vision**, select a simulator window, and share it. Segmentation and **Depth** start enabled. Segmentation shows the uploaded model name and its labels; depth uses the bundled Depth-Anything-V2-Small model. Each captured frame runs through segmentation and depth while retaining the car interior. The final **Reconstructed scene** shows left and right track boundaries plus all accepted cars and car packs in 2D camera image space. The Capture tab shows the clean source frame; filtered depth colors appear in Label depths.
+Track Vision runs locally in the Electron desktop app. Open **Live Session → Add Visualization → Track Vision**, select a simulator window, and share it. Segmentation and **Depth** are required and always run on the GPU. Segmentation shows the uploaded model name and its labels; depth uses the bundled Depth-Anything-V2-Small model. Each captured frame runs through segmentation and depth while retaining the car interior. The final **Reconstructed scene** shows left and right track boundaries plus all accepted cars and car packs in 2D camera image space. The Capture tab shows the clean source frame; filtered depth colors appear in Label depths.
 
-Car interior masks remain available through filtering and label-depth inspection, including detections accepted below the stricter track confidence threshold. They do not cut other masks upstream. Depth receives the full captured image, including cockpit and unlabelled pixels; only letterbox-padding output is discarded. The final scene uses the interior mask to suppress track-outline points on or near cockpit edges. If segmentation is disabled, unavailable or fails, depth waits for a new same-frame result; no previous-frame mask is reused. Empty or interior-only segmentation still permits depth inference.
+Car interior masks remain available through filtering and label-depth inspection, including detections accepted below the stricter track confidence threshold. They do not cut other masks upstream. Depth receives the full captured image, including cockpit and unlabelled pixels; only letterbox-padding output is discarded. The final scene uses the interior mask to suppress track-outline points on or near cockpit edges. If either model is unavailable or fails, analysis waits for both models to be ready; no partial result or previous-frame mask is published. Empty or interior-only segmentation still permits depth inference.
 
 Use **Expand capture** in the preview to fill most of the app window. Capture, detections, and the optional camera grid continue at the larger size. Choose **Restore capture** or press **Escape** to return to the panel; **Stop capture** is also available in the expanded view.
 
@@ -18,9 +18,9 @@ The numbered tabs follow one captured frame through seven views:
 4. **Filtering** — masks after confidence filtering, depth ordering and supported hidden-mask completion. Accepted car interior masks remain an independent downstream input. The panel explains the applied rules and shows retained counts.
 5. **Depth map** — the entire frame's depth as an opaque red-to-blue heatmap, including unlabeled areas and the car interior. The legend uses the full frame's finite positive relative depths, excluding model padding. Hover over the image to read unitless relative depth at the mouse; the reading follows new frames and accounts for resized or expanded previews. Values are comparable only within a frame, not distances in meters. Invalid pixels remain dark and report no valid depth.
 6. **Label depths** — all retained masks appear together over the captured frame. Each mask has a numbered label (such as `track #1` and `track #2`) that matches its own table row with median, near/far relative depth and observed depth-pixel count. Numbers identify masks within the current frame. The overlay and legend share one linear red → orange → yellow → green → cyan → blue scale in unitless relative depth, including supported hidden predictions. Hidden predictions are excluded from table statistics. Pixels without valid depth remain transparent, and masks without measured depth are labeled `No depth`.
-7. **Reconstructed scene** — the captured window with track boundaries and labeled car/car-pack boxes overlaid in 2D, with cockpit-adjacent edges removed, plus screen analysis. These overlays require segmentation only.
+7. **Reconstructed scene** — the captured window with track boundaries and labeled car/car-pack boxes overlaid in 2D, with cockpit-adjacent edges removed, plus screen analysis. These overlays use segmentation from the completed frame.
 
-Capture controls stay available above the tabs. Model settings are collapsible and open automatically on detector errors. Arrow keys, Home and End navigate the tabs. Switching tabs reuses the latest frame, keeps capture and models running, and preserves camera settings. The diagnostic views do not modify published detections or coaching analysis.
+Capture controls stay available above the tabs. **Setting** is collapsible and opens automatically on detector errors. Its **Filtering confidence** slider defaults to 65% and updates filtered masks, the reconstructed scene and coaching analysis for the current and future frames. The Segmentation tab's detection confidence still controls which masks the model returns; car interior masks accepted by detection are retained independently of the filtering threshold. Arrow keys, Home and End navigate the tabs. Switching tabs reuses the latest frame, keeps capture and models running, and preserves camera settings. The diagnostic views do not modify published detections or coaching analysis.
 
 ## Backend model contract
 
@@ -59,13 +59,13 @@ Desktop development and packaging install the conversion dependencies from `src/
 
 To prepare the bundled depth weights before development or packaging, install `scripts/vision-requirements.txt` in a Python environment and run `npm run setup:vision-models`. The script uses `.venv/track-vision` when present; `VISION_PYTHON` selects another interpreter. It exports the official `depth-anything/Depth-Anything-V2-Small-hf` checkpoint at a pinned revision, downloading on first use and validating/reusing prepared weights thereafter. The static float32 ONNX input is `[1, 3, 518, 518]`, with RGB ImageNet normalization; the output is `[1, 518, 518]` relative disparity. The generated ONNX file is ignored by Git and copied into the build with the public assets. Its Apache 2.0 license is included in `public/vision-models/DEPTH-ANYTHING-V2-LICENSE.txt`.
 
-Inference uses WebGPU by default. **Allow CPU fallback** permits either model to run in a CPU WASM worker if GPU initialization fails. GPU-only failures retry after three seconds. Model retrieval, export, and CPU errors offer a manual Retry button. Screen preview remains available when a model cannot load. Disabling a detector releases its inference session. Capture continues; segmentation can run without depth, while depth requires segmentation masks.
+Inference requires WebGPU for both models. GPU failures retry after three seconds. Model retrieval and export errors offer a manual Retry button. Screen preview remains available when a model cannot load, but inference and analysis wait for both models. Models cannot be disabled individually, and there is no CPU fallback.
 
 All frames and inference stay on this device. Captured frames run sequentially at up to 5 FPS. GPU initialization, inference, and disposal share one queue across Track Vision panels.
 
 ## Results
 
-`TrackVisionModel.loadBackend(allowCpuFallback = false)` loads segmentation through the desktop cache. `TrackVisionModel.loadBuiltin('depth', allowCpuFallback = false)` loads bundled depth weights. `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time, and ordered class names for segmentation. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. The 518px depth input scales the shared 768px letterbox coordinates to keep masks aligned. Call `dispose()` when finished.
+`TrackVisionModel.loadBackend()` loads segmentation through the desktop cache. `TrackVisionModel.loadBuiltin('depth')` loads bundled depth weights. `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time, and ordered class names for segmentation. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. The 518px depth input scales the shared 768px letterbox coordinates to keep masks aligned. Call `dispose()` when finished.
 
 `LiveTrackVision` registers a `TrackVisionHandle` as `visualization:track-vision`. Consumers use `getLatestDetection()` or `subscribeDetection(listener)`. Results include the source timestamp and dimensions, successful segmentation under `detections.segment`, and depth under `detections.depth`. Masks, boxes, and depth maps refer to the letterboxed model input; drawing segmentation removes its padding. Results clear on stop, configuration changes, and unmount. Depth values remain available to detection consumers; the Label depths tab visualizes retained label depths as a heatmap.
 
@@ -107,7 +107,7 @@ Legacy track aliases (`road`, `asphalt`, `tarmac`) and individual-car aliases
 remain supported, but are not required. `Outfield asphalt road` is never a track
 alias. The 2D scene requires segmentation; metric position analysis requires segmentation, metric depth and applied calibration. Depth-Anything-V2-Small supplies relative depth, so metric reconstruction and geometry remain unavailable even with camera calibration; 2D reconstruction and screen analysis remain available.
 Road geometry requires track labels; opponent analysis additionally requires car or car-pack masks. Position analysis
-requires detection confidence of at least 65%.
+uses the configured filtering confidence (65% by default), carried on each frame as `filterConfidence`.
 
 ## Camera position
 
@@ -129,18 +129,25 @@ model loading or failure. Reapply after changing the car, seat, camera or FOV.
 in camera image coordinates. It uses the original track coverage before any cockpit cutout,
 so a dashboard or pillar does not introduce a new road edge. Points inside or near an accepted
 car interior mask are omitted, using a margin scaled to segmentation resolution. Interior
-holes do not become track boundaries. Traffic, excluded labels and capture-clipped sides
-are not accepted as visible edges. Missing rows and abrupt jumps split the lines; hidden
-sections are never joined across a gap. Letterbox padding is removed when mapping to the
+holes do not become track boundaries. Overlapping traffic and other labels do not cut
+the original track outline, and sharp bends or width changes do not interrupt tracing.
+Capture-clipped sides and missing or cockpit-adjacent pixels leave gaps; tracing resumes
+where the outline is available again. Letterbox padding is removed when mapping to the
 source image. Raw detections are not modified.
 
+The middle line is the midpoint between the two usable boundary points on each image row.
+The farthest middle-line segment supported by both sides on consecutive rows sets the
+prediction endpoint for both boundaries; neither side extends beyond it. Isolated pairs
+do not establish an endpoint. There is no extrapolation beyond mask support, and no
+middle line or boundaries are published when no supported middle-line segment is available.
+
 The published `reconstructedScene` contains image dimensions and separate arrays of
-left/right polylines, plus `cars` with class ID, confidence, pack flag and boxes in image pixels.
-Every car or car-pack instance meeting the 65% reconstruction confidence threshold is shown,
+left/right polylines and `centerline` polylines, plus `cars` with class ID, confidence, pack flag and boxes in image pixels.
+Every car or car-pack instance meeting the configured filtering confidence threshold is shown,
 including traffic outside the coaching analysis region and frames without track boundaries.
 Boxes are mapped out of letterbox padding and clipped to the captured image; invalid or
 fully offscreen boxes are omitted. The Segmentation tab's display-label filter does not affect them.
-The view draws boundaries in green and blue, individual cars in amber and car packs with
+The view draws boundaries in green and blue, the middle line in dashed white, individual cars in amber and car packs with
 dashed purple boxes and confidence labels over the matching captured window frame,
 preserving its aspect ratio and alignment with the overlays. The captured
 frame remains visible even when segmentation is unavailable. There is no 3D projection,

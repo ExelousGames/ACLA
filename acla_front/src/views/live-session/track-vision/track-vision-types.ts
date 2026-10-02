@@ -4,7 +4,6 @@ export const DETECTION_TASKS = [
 ] as const;
 
 export type DetectionTask = typeof DETECTION_TASKS[number]['id'];
-export type EnabledDetections = Record<DetectionTask, boolean>;
 
 export interface DepthResult {
     task: 'depth';
@@ -107,6 +106,8 @@ export interface TrackVisionFrame {
     height: number;
     /** Explicitly applied calibration for this capture resolution. No implicit default. */
     calibration?: CameraCalibration;
+    /** Minimum confidence for filtering, scene reconstruction and coaching. */
+    filterConfidence?: number;
     detections: Partial<Record<DetectionTask, VisionResult>>;
 }
 

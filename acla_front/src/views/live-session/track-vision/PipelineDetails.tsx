@@ -1,15 +1,15 @@
 import React from 'react';
 import type { AmodalMask } from './amodal-masks';
 import { labelDepthRange, labelDepths, PipelineStep } from './pipeline-visuals';
-import { VISION_CONFIDENCE } from './semantic-scene';
 import type { TrackVisionFrame } from './track-vision-types';
 import { createDepthMap, formatDepth } from './depth-map';
 
 import { VISION_DEPTH_COLORS, VISION_LABEL_COLORS as COLORS } from './vision-colors';
 
-export default function PipelineDetails({ step, frame, masks, classNames, confidence, depthMap }: {
+export default function PipelineDetails({ step, frame, masks, classNames, confidence, filterConfidence, depthMap }: {
     step: PipelineStep; frame: TrackVisionFrame | null; masks: AmodalMask[]; classNames: string[]; confidence: number;
     depthMap: ReturnType<typeof createDepthMap>;
+    filterConfidence: number;
 }) {
     const segment = frame?.detections.segment;
     const depth = frame?.detections.depth;
@@ -34,7 +34,7 @@ export default function PipelineDetails({ step, frame, masks, classNames, confid
             <div><dt>Labels with depth</dt><dd>{frame ? new Set(measured.map((row) => row.classId)).size : '—'}</dd></div>
         </dl>
         <ul className="track-vision__filter-list" aria-label="Applied filters">
-            <li><strong>Confidence ≥ {Math.round(VISION_CONFIDENCE * 100)}%</strong><span>Reconstruction keeps accepted detections above this threshold. Detection is currently set to {Math.round(confidence * 100)}%.</span></li>
+            <li><strong>Confidence ≥ {Math.round(filterConfidence * 100)}%</strong><span>Reconstruction keeps accepted detections above this threshold. Detection is currently set to {Math.round(confidence * 100)}%.</span></li>
             <li><strong>Car interior retained</strong><span>Cockpit labels and depth stay available. The final scene uses this mask to remove false track outline edges.</span></li>
             <li><strong>Overlaps resolved by depth</strong><span>Visible pixels belong to the supported foreground mask. Only supported hidden sections are completed.</span></li>
             <li><strong>Valid depth only</strong><span>{relative ? 'Relative depths must be finite and greater than 0.' : 'Distances must be finite, greater than 0 and at most 200 m.'} Image padding and missing depth are excluded.</span></li>
@@ -47,7 +47,7 @@ export default function PipelineDetails({ step, frame, masks, classNames, confid
             <span>Near {reading(depthMap?.near ?? null)}</span><i style={{ background: `linear-gradient(90deg, ${VISION_DEPTH_COLORS.join(', ')})` }} /><span>Far {reading(depthMap?.far ?? null)}</span>
         </div>
         <p className="track-vision__hint">Move the mouse over the depth map to inspect {relative ? 'relative depth. These values are unitless and comparable only within this frame' : 'estimated camera-axis distance in meters'}. Colors run from red (near) to blue (far) across the entire frame, including unlabeled areas. Dark areas have no valid depth.</p>
-        {!depthMap && <p className="track-vision__hint">Waiting for depth. Enable Depth and Segmentation and share a driving view.</p>}
+        {!depthMap && <p className="track-vision__hint">Waiting for depth. Share a driving view with both models ready.</p>}
         {depthMap && depthMap.near === null && <p className="track-vision__hint">No valid depth in this frame.</p>}
     </div>;
     if (step !== 'depth') return null;
@@ -65,8 +65,8 @@ export default function PipelineDetails({ step, frame, masks, classNames, confid
                 </tr>)}</tbody>
             </table>
         </div>
-        {!rows.length && <p className="track-vision__hint">No retained masks yet. Enable segmentation and share a driving view.</p>}
-        {!frame?.detections.depth && <p className="track-vision__hint">Waiting for depth. Enable Depth to estimate distances for the retained labels.</p>}
+        {!rows.length && <p className="track-vision__hint">No retained masks yet. Share a driving view with both models ready.</p>}
+        {!frame?.detections.depth && <p className="track-vision__hint">Waiting for depth to estimate distances for the retained labels.</p>}
         <p className="track-vision__hint">Numbered mask labels in the preview match the table rows for the current frame. Medians and ranges use observed pixels after filtering; predicted hidden pixels are excluded from the table. Depth colors run from red (near) to blue (far).</p>
     </div>;
 }

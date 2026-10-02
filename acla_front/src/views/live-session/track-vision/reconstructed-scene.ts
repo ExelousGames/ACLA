@@ -17,6 +17,7 @@ export interface ReconstructedScene {
     height: number;
     leftBoundary: ImagePoint[][];
     rightBoundary: ImagePoint[][];
+    centerline: ImagePoint[][];
     cars: ImageCar[];
 }
 
@@ -24,10 +25,10 @@ export interface ReconstructedScene {
 export function reconstructScene(frame: TrackVisionFrame | null): ReconstructedScene | null {
     const segment = frame?.detections.segment;
     if (!frame || frame.width <= 0 || frame.height <= 0 || segment?.task !== 'segment') return null;
-    const layers = createSegmentationLayers(segment, VISION_CONFIDENCE);
+    const layers = createSegmentationLayers(segment, frame.filterConfidence ?? VISION_CONFIDENCE);
     if (!layers) return null;
     const { width, height } = segment;
-    const { trackMask, carInteriorMask, excludedMask, trafficMask } = layers;
+    const { trackMask, carInteriorMask } = layers;
     const box = letterbox(frame.width, frame.height, VISION_INPUT_SIZE);
     const firstColumn = Math.max(0, Math.ceil(box.padX / VISION_INPUT_SIZE * width - 0.5));
     const endColumn = Math.min(width, Math.ceil((box.padX + box.resizedWidth) / VISION_INPUT_SIZE * width - 0.5));
@@ -57,8 +58,10 @@ export function reconstructScene(frame: TrackVisionFrame | null): ReconstructedS
         return right > left && bottom > top ? [{ classId: item.classId, confidence: item.confidence,
             pack: item.kind === 'car pack', box: [left, top, right, bottom] as ImageCar['box'] }] : [];
     });
-    const result: ReconstructedScene = { width: frame.width, height: frame.height, leftBoundary: [], rightBoundary: [], cars };
-    const previous: Array<{ x: number; row: number } | null> = [null, null];
+    const result: ReconstructedScene = { width: frame.width, height: frame.height,
+        leftBoundary: [], rightBoundary: [], centerline: [], cars };
+    const lines = [result.leftBoundary, result.rightBoundary, result.centerline];
+    const previousRows = [-1, -1, -1];
     for (let row = firstRow; row < endRow; row++) {
         let left = -1, right = -1;
         for (let column = firstColumn; column < endColumn; column++) {
@@ -66,23 +69,31 @@ export function reconstructScene(frame: TrackVisionFrame | null): ReconstructedS
             if (left < 0) left = column;
             right = column;
         }
-        [left, right].forEach((column, side) => {
-            const point = imagePoint(column, row), outside = imagePoint(column + (side ? 1 : -1), row);
-            const index = row * width + column;
-            if (left < 0 || right <= left || outside.x < 0 || outside.x >= frame.width
-                || excludedMask[index] || trafficMask[index] || nearInterior(column, row)) {
-                previous[side] = null;
-                return;
-            }
-            const boundary = side ? result.rightBoundary : result.leftBoundary;
-            const last = previous[side];
-            // Keep gaps and disconnected fragments open instead of drawing an invented connecting edge.
-            if (!last || last.row !== row - 1 || Math.abs(column - last.x) > Math.max(2, width * 0.05)) boundary.push([]);
-            boundary[boundary.length - 1].push(point);
-            previous[side] = { x: column, row };
+        if (left < 0 || right <= left) continue;
+        // Trace the original mask, so removing bodywork never creates a new track edge.
+        const edges = [left, right].map((column, side) => {
+            const outside = imagePoint(column + (side ? 1 : -1), row);
+            return outside.x < 0 || outside.x >= frame.width || nearInterior(column, row)
+                ? null : imagePoint(column, row);
+        });
+        const [leftPoint, rightPoint] = edges;
+        const center = leftPoint && rightPoint ? { x: (leftPoint.x + rightPoint.x) / 2, y: leftPoint.y } : null;
+        [...edges, center].forEach((point, side) => {
+            if (!point) return;
+            const line = lines[side];
+            // Resume after missing/cockpit pixels, with no bend or width-change cutoff.
+            if (!line.length || previousRows[side] !== row - 1) line.push([]);
+            line[line.length - 1].push(point);
+            previousRows[side] = row;
         });
     }
-    result.leftBoundary = result.leftBoundary.filter((line) => line.length > 1);
-    result.rightBoundary = result.rightBoundary.filter((line) => line.length > 1);
+    result.centerline = result.centerline.filter((line) => line.length > 1);
+    // Trace the full outline first, then stop both sides at the farthest supported
+    // middle-line segment. An isolated pair cannot establish a prediction endpoint.
+    const endY = result.centerline[0]?.[0].y ?? Infinity;
+    const trim = (boundary: ImagePoint[][]) => boundary
+        .map((line) => line.filter(({ y }) => y >= endY)).filter((line) => line.length > 1);
+    result.leftBoundary = trim(result.leftBoundary);
+    result.rightBoundary = trim(result.rightBoundary);
     return result;
 }

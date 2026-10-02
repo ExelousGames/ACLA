@@ -20,7 +20,7 @@ export const PIPELINE_STEPS = [
 export type PipelineStep = typeof PIPELINE_STEPS[number]['id'];
 
 export function filteredMasks(frame: TrackVisionFrame | null) {
-    return frame ? predictAmodalMasks(frame, VISION_CONFIDENCE).filter((mask) => mask.bounds) : [];
+    return frame ? predictAmodalMasks(frame, frame.filterConfidence ?? VISION_CONFIDENCE).filter((mask) => mask.bounds) : [];
 }
 
 export function filteredFrame(frame: TrackVisionFrame, masks: AmodalMask[]): TrackVisionFrame {

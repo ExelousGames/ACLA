@@ -18,6 +18,7 @@ export class TrackVisionModel {
     private busy = false;
     private inputCanvas = document.createElement('canvas');
     private readonly inputSize: number;
+    readonly executionProvider = 'webgpu';
 
     private constructor(
         private runtime: typeof import('onnxruntime-web'),
@@ -25,47 +26,42 @@ export class TrackVisionModel {
         readonly task: DetectionTask,
         readonly name: string,
         readonly classNames: string[],
-        readonly executionProvider: 'webgpu' | 'wasm',
-        readonly fallbackReason?: string,
     ) {
         this.inputSize = task === 'depth' ? DEPTH_INPUT_SIZE : VISION_INPUT_SIZE;
         this.inputCanvas.width = this.inputSize;
         this.inputCanvas.height = this.inputSize;
     }
 
-    static async loadBackend(allowCpuFallback = false): Promise<TrackVisionModel> {
+    static async loadBackend(): Promise<TrackVisionModel> {
         const { bytes, metadata } = await loadBackendVisionModel();
-        return TrackVisionModel.load(bytes, { task: 'segment', name: metadata.name, classNames: metadata.classNames }, allowCpuFallback);
+        return TrackVisionModel.load(bytes, { task: 'segment', name: metadata.name, classNames: metadata.classNames });
     }
 
-    static async loadBuiltin(task: 'depth', allowCpuFallback = false): Promise<TrackVisionModel> {
+    static async loadBuiltin(task: 'depth'): Promise<TrackVisionModel> {
         const definition = DETECTION_TASKS.find((definition): definition is Extract<typeof DETECTION_TASKS[number], { id: 'depth' }> => definition.id === task)!;
         const bytes = await readVisionModel(visionAssetUrl(`vision-models/${definition.file}`));
-        return TrackVisionModel.load(bytes, { task, name: 'Depth-Anything-V2-Small', classNames: [] }, allowCpuFallback);
+        return TrackVisionModel.load(bytes, { task, name: 'Depth-Anything-V2-Small', classNames: [] });
     }
 
-    private static async load(bytes: ArrayBuffer, metadata: ModelMetadata, allowCpuFallback: boolean): Promise<TrackVisionModel> {
-        let fallbackReason = 'GPU acceleration is unavailable in the desktop app.';
-        if ('gpu' in navigator && navigator.gpu) {
-            try { return await TrackVisionModel.loadWithProvider(bytes, metadata, 'webgpu'); }
-            catch (error) {
-                if (!allowCpuFallback) throw new GpuInferenceError(`GPU inference failed. ${error instanceof Error ? error.message : String(error)}`);
-                fallbackReason = 'GPU could not run this model; using CPU.';
-            }
+    private static async load(bytes: ArrayBuffer, metadata: ModelMetadata): Promise<TrackVisionModel> {
+        if (!('gpu' in navigator) || !navigator.gpu) {
+            throw new GpuInferenceError('GPU acceleration is unavailable in the desktop app.');
         }
-        if (!allowCpuFallback) throw new GpuInferenceError(fallbackReason);
-        return TrackVisionModel.loadWithProvider(bytes, metadata, 'wasm', fallbackReason);
+        try { return await TrackVisionModel.loadOnGpu(bytes, metadata); }
+        catch (error) {
+            throw new GpuInferenceError(`GPU inference failed. ${error instanceof Error ? error.message : String(error)}`);
+        }
     }
 
-    private static async loadWithProvider(bytes: ArrayBuffer, metadata: ModelMetadata, provider: 'webgpu' | 'wasm', fallbackReason?: string) {
-        return runWithVisionGpuQueue(provider, async () => {
-            const runtime = provider === 'webgpu' ? await import('onnxruntime-web/webgpu') : await import('onnxruntime-web/wasm');
+    private static async loadOnGpu(bytes: ArrayBuffer, metadata: ModelMetadata) {
+        return runWithVisionGpuQueue(async () => {
+            const runtime = await import('onnxruntime-web/webgpu');
             runtime.env.wasm.wasmPaths = visionAssetUrl('vision-runtime/');
             runtime.env.wasm.numThreads = 1;
-            runtime.env.wasm.proxy = provider === 'wasm';
-            if (provider === 'webgpu') runtime.env.webgpu.powerPreference = 'high-performance';
-            const session = await runtime.InferenceSession.create(bytes, { executionProviders: [provider] });
-            const model = new TrackVisionModel(runtime, session, metadata.task, metadata.name, metadata.classNames, provider, fallbackReason);
+            runtime.env.wasm.proxy = false;
+            runtime.env.webgpu.powerPreference = 'high-performance';
+            const session = await runtime.InferenceSession.create(bytes, { executionProviders: ['webgpu'] });
+            const model = new TrackVisionModel(runtime, session, metadata.task, metadata.name, metadata.classNames);
             try {
                 if (session.inputNames.length !== 1 || session.outputNames.length !== (metadata.task === 'segment' ? 2 : 1)) {
                     throw new Error(metadata.task === 'depth'
@@ -132,7 +128,7 @@ export class TrackVisionModel {
                     for (let i = 0; i < mask.length; i++) input[offset + i] = (input[offset + i] - mean[channel]) / std[channel];
                 }
             }
-            const result = await runWithVisionGpuQueue(this.executionProvider, () => this.run(input, threshold));
+            const result = await runWithVisionGpuQueue(() => this.run(input, threshold));
             if (result.task === 'depth' && region) {
                 const mask = resizeMask(region, result.width, result.height);
                 for (let i = 0; i < mask.length; i++) {
@@ -151,6 +147,6 @@ export class TrackVisionModel {
         if (this.disposed) return;
         this.disposed = true;
         await this.pending.catch(() => undefined);
-        await runWithVisionGpuQueue(this.executionProvider, () => this.session.release());
+        await runWithVisionGpuQueue(() => this.session.release());
     }
 }

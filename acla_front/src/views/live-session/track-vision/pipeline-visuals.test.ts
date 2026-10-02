@@ -26,6 +26,14 @@ it('retains cockpit masks and their depth for downstream filtering without mutat
     expect(track.mask).toEqual(new Uint8Array(16).fill(1));
     expect(frame.detections.segment?.task === 'segment' && frame.detections.segment.instances).toHaveLength(3);
     expect(frame.detections.depth?.task === 'depth' && frame.detections.depth.values).toBe(depth);
+    const lowerConfidenceFrame: TrackVisionFrame = { ...frame, detections: { ...frame.detections,
+        segment: { task: 'segment', width: 4, height: 4, classNames: ['track', 'car interior', 'grass'],
+            inferenceMs: 1, instances: [interior, rejected] },
+    } };
+    expect(filteredMasks(lowerConfidenceFrame).map(({ label }) => label)).toEqual(['car interior']);
+    expect(filteredMasks({ ...lowerConfidenceFrame, filterConfidence: 0.6 }).map(({ label }) => label).sort())
+        .toEqual(['car interior', 'grass']);
+    expect(filteredMasks({ ...frame, filterConfidence: 0.95 }).map(({ label }) => label)).toEqual(['car interior']);
 });
 
 it('keeps masks with the same label separate and excludes hidden predictions from measured distances', () => {

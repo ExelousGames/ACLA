@@ -2,8 +2,7 @@
 let pending: Promise<unknown> = Promise.resolve();
 
 /** Queue a complete GPU operation, including cleanup. Callbacks must not enqueue more work. */
-export function runWithVisionGpuQueue<T>(provider: 'webgpu' | 'wasm', operation: () => Promise<T>): Promise<T> {
-    if (provider !== 'webgpu') return operation();
+export function runWithVisionGpuQueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = pending.then(operation);
     // Preserve the caller's error without blocking the next detector.
     pending = result.catch(() => undefined);

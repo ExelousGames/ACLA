@@ -30,6 +30,7 @@ export default function ReconstructedSceneView({ scene, source, capturedAt }: {
         <div className="track-vision__legend" aria-label="Reconstructed scene legend">
             <span><i style={{ background: '#37efac' }} />Left track boundary</span>
             <span><i style={{ background: '#57b9ff' }} />Right track boundary</span>
+            <span><i style={{ background: '#f4f7ff' }} />Track middle line</span>
             <span><i style={{ background: '#ffbe57' }} />Car</span>
             <span><i style={{ background: '#ce87ff' }} />Car pack</span>
         </div>
@@ -38,13 +39,18 @@ export default function ReconstructedSceneView({ scene, source, capturedAt }: {
                 aria-label="Captured window scene" />
             <svg viewBox={`0 0 ${width} ${height}`}
                 role="img" aria-label="2D reconstructed scene">
-                <title>Track boundaries, cars and car packs in camera image space</title>
+                <title>Track boundaries, middle line, cars and car packs in camera image space</title>
                 {scene && (['leftBoundary', 'rightBoundary'] as const).map((side) => <g key={side}
                     aria-label={side === 'leftBoundary' ? 'Left track boundary' : 'Right track boundary'}
                     fill="none" stroke={side === 'leftBoundary' ? '#37efac' : '#57b9ff'} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                     {scene[side].map((line, index) => <polyline key={index} vectorEffect="non-scaling-stroke"
                         points={line.map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ')} />)}
                 </g>)}
+                {scene && <g aria-label="Track middle line" fill="none" stroke="#f4f7ff" strokeWidth="2"
+                    strokeDasharray="6 4" strokeLinecap="round" strokeLinejoin="round">
+                    {scene.centerline.map((line, index) => <polyline key={index} vectorEffect="non-scaling-stroke"
+                        points={line.map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ')} />)}
+                </g>}
                 {scene && scene.cars.length > 0 && <g aria-label="Reconstructed cars">
                     {scene.cars.map(({ box: [left, top, right, bottom], pack, confidence }, index) => {
                         const color = pack ? '#ce87ff' : '#ffbe57';
@@ -65,10 +71,10 @@ export default function ReconstructedSceneView({ scene, source, capturedAt }: {
             </svg>
         </div>
         <p className="track-vision__hint" aria-label="Reconstructed scene status">{!scene
-            ? 'Share a driving view and enable segmentation to reconstruct the scene.'
+            ? 'Share a driving view with both models ready to reconstruct the scene.'
             : stale ? 'Showing last frame (stale). Waiting for a new segmentation result.'
                 : !hasEdges ? scene.cars.length ? 'Detected cars and car packs in 2D. No visible track boundaries after car interior edge filtering.'
                     : 'No visible track boundaries or traffic after filtering.'
-                    : 'Visible track boundaries in 2D, with detected cars and car packs. Gaps mark edges hidden by the car interior or outside the captured view.'}</p>
+                    : 'Visible track boundaries in 2D, with a middle line from both sides and detected cars and car packs. Both boundaries end at the last supported middle-line point. Gaps mark missing mask coverage, car interior or offscreen edges.'}</p>
     </section>;
 }

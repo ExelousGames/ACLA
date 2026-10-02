@@ -11,7 +11,7 @@ type Box = SegmentResult['instances'][number]['box'];
 export function createSemanticScene(vision: TrackVisionFrame, constructBoundaries = false) {
     const segment = vision.detections.segment;
     if (segment?.task !== 'segment') return null;
-    const layers = createSegmentationLayers(segment, VISION_CONFIDENCE);
+    const layers = createSegmentationLayers(segment, vision.filterConfidence ?? VISION_CONFIDENCE);
     if (!layers) return null;
     const { padX, padY, resizedWidth, resizedHeight } = letterbox(vision.width, vision.height, VISION_INPUT_SIZE);
     const traffic = layers.instances.filter((item) => item.kind === 'car' || item.kind === 'car pack')

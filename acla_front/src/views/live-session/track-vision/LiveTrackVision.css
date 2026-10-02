@@ -42,23 +42,18 @@
 .track-vision__depth-table thead th { color: var(--lp-gray, #a4adbb); font-weight: 400; }
 .track-vision__depth-table tbody th { font-weight: 500; }
 .track-vision__depth-table td:nth-child(2) { color: #37efac; }
-.track-vision__model-settings { flex-shrink: 0; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; padding: 10px; }
-.track-vision__model-settings summary { cursor: pointer; font-weight: 500; }
-.track-vision__model-settings summary span { margin-left: 8px; color: var(--lp-gray, #a4adbb); font-size: 10px; font-weight: 400; }
-.track-vision__model-settings[open] summary { margin-bottom: 12px; }
-.track-vision__model-settings summary:focus-visible { outline: 2px solid #37efac; outline-offset: 4px; }
+.track-vision__settings { flex-shrink: 0; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; padding: 10px; }
+.track-vision__settings summary { cursor: pointer; font-weight: 500; }
+.track-vision__settings summary span { margin-left: 8px; color: var(--lp-gray, #a4adbb); font-size: 10px; font-weight: 400; }
+.track-vision__settings[open] summary { margin-bottom: 12px; }
+.track-vision__settings summary:focus-visible { outline: 2px solid #37efac; outline-offset: 4px; }
 .track-vision__status { color: var(--lp-gray, #a4adbb); font-size: 11px; line-height: 1.5; }
 .track-vision__controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .track-vision__stack, .track-vision__alignment { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; }
 .track-vision__stack legend, .track-vision__alignment legend { padding: 0 6px; font-weight: 600; }
 .track-vision__stack legend span { margin-left: 8px; color: var(--lp-gray, #a4adbb); font-weight: 400; font-size: 11px; }
-.track-vision__detector { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 12px; padding: 8px; border-radius: 6px; background: var(--lp-bg, #10131a); }
-.track-vision__detector[data-enabled="true"] { background: #37efac0a; }
-.track-vision__detector label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
-.track-vision__detector input { accent-color: #37efac; }
-.track-vision__fallback { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.track-vision__fallback input { accent-color: #37efac; }
-.track-vision__detector label span { display: flex; flex-direction: column; gap: 3px; }
+.track-vision__detector { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 12px; padding: 8px; border-radius: 6px; background: #37efac0a; }
+.track-vision__detector-description { display: flex; flex-direction: column; gap: 3px; }
 .track-vision__detector small, .track-vision__detector-state { color: var(--lp-gray, #a4adbb); font-size: 11px; }
 .track-vision__detector .track-vision__hint, .track-vision__detector .track-vision__error { grid-column: 1 / -1; }
 .track-vision__controls label { display: flex; flex-direction: column; gap: 4px; color: var(--lp-gray, #a4adbb); }
