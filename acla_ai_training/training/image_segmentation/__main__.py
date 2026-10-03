@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     train = argparse.ArgumentParser(add_help=False)
     train.add_argument("--model", default="yolo26n-seg.pt")
     train.add_argument("--epochs", type=int, default=100)
-    train.add_argument("--imgsz", type=int, default=640)
+    train.add_argument("--imgsz", type=int, default=768)
     train.add_argument("--batch", type=int, default=8)
     train.add_argument("--device", default="cpu", help="cpu, 0 for the first GPU, or mps.")
     train.add_argument("--workers", type=int, default=0)

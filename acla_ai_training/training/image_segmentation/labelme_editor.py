@@ -8,7 +8,7 @@ import sys
 
 
 def polyline_polygon_points(points: list[tuple[float, float]], width: float) -> list[tuple[float, float]]:
-    """Offset each centerline point by half the width along its local normal."""
+    """Stroke a locally rounded centerline with a constant-width polygon."""
     if not math.isfinite(width) or width <= 0:
         raise ValueError("Polygon width must be positive and finite.")
     # Repeated clicks do not define a direction or need another vertex pair.
@@ -19,30 +19,55 @@ def polyline_polygon_points(points: list[tuple[float, float]], width: float) -> 
     if len(centers) < 2:
         raise ValueError("A polyline needs at least two distinct points.")
 
-    directions = []
+    import cv2
+    import numpy as np
+    from PyQt5 import QtCore, QtGui
+
+    directions, lengths = [], []
     for (x1, y1), (x2, y2) in zip(centers, centers[1:]):
         length = math.hypot(x2 - x1, y2 - y1)
+        lengths.append(length)
         directions.append(((x2 - x1) / length, (y2 - y1) / length))
 
-    left, right = [], []
-    for index, (x, y) in enumerate(centers):
-        before = directions[max(0, index - 1)]
-        after = directions[min(index, len(directions) - 1)]
-        dx, dy = before[0] + after[0], before[1] + after[1]
-        length = math.hypot(dx, dy)
-        if length < 1e-8:  # A reversal has no bisector; use the outgoing segment.
-            dx, dy = after
-            length = 1.0
-        ox, oy = -dy / length * width / 2, dx / length * width / 2
-        left.append((x + ox, y + oy))
-        right.append((x - ox, y - oy))
-    return left + right[::-1]
+    path = QtGui.QPainterPath(QtCore.QPointF(*centers[0]))
+    for index in range(1, len(centers) - 1):
+        x, y = centers[index]
+        before, after = directions[index - 1], directions[index]
+        # Sharper turns need longer transitions to leave room for the inner edge.
+        alignment = before[0] * after[0] + before[1] * after[1]
+        # Leave at least half of each segment for the neighboring corner.
+        trim = min(width / max(1e-8, 1 + alignment), lengths[index - 1] / 2, lengths[index] / 2)
+        path.lineTo(x - before[0] * trim, y - before[1] * trim)
+        path.quadTo(x, y, x + after[0] * trim, y + after[1] * trim)
+    path.lineTo(*centers[-1])
+
+    stroker = QtGui.QPainterPathStroker()
+    stroker.setWidth(width)
+    stroker.setCapStyle(QtCore.Qt.FlatCap)
+    stroker.setJoinStyle(QtCore.Qt.RoundJoin)
+    stroker.setCurveThreshold(0.02)
+    # Flatten at 4x resolution to keep both editable edges smooth to subpixels.
+    # Simplifying the filled stroke removes loops at tight bends and reversals.
+    scale = QtGui.QTransform.fromScale(4, 4)
+    outline = scale.map(stroker.createStroke(path)).simplified().toFillPolygon()
+    polygon = [(point.x() / 4, point.y() / 4) for point in outline]
+    if polygon and polygon[-1] == polygon[0]:
+        polygon.pop()
+    # Keep editable vertices only where they change the outline visibly.
+    # Scale the tolerance down for thin strokes and cap it at half a pixel.
+    contour = cv2.approxPolyDP(
+        np.asarray(polygon, dtype=np.float32), min(0.5, width * 0.025), closed=True,
+    ).reshape(-1, 2)
+    if len(contour) >= 3:
+        return [(float(x), float(y)) for x, y in contour]
+    # A very short, wide stroke can simplify to a line; retain its end caps.
+    return polygon
 
 
 def create_main_window(base_window):
     class PolylinePolygonMainWindow(base_window):
         _polygon_from_polyline = False
-        _polygon_width = 3.0
+        _polygon_width = 15.0
         _backend_annotator = None
         _yolo26x_annotator = None
 
@@ -73,7 +98,7 @@ def create_main_window(base_window):
                 actions.create_mode.icon(), "YOLO26x Annotate", self,
             )
             self._yolo26x_annotate_action.setToolTip(
-                "Add all pretrained YOLO26x predictions with their original labels for manual relabeling"
+                "Add polygon regions labeled 'other' from YOLO26x, then relabel with Edit Label"
             )
             self._yolo26x_annotate_action.setEnabled(False)
             self._yolo26x_annotate_action.triggered.connect(self._yolo26x_annotate)

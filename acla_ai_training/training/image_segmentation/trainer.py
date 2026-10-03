@@ -21,7 +21,7 @@ def train_model(
     *,
     model: str = "yolo26n-seg.pt",
     epochs: int = 100,
-    imgsz: int = 640,
+    imgsz: int = 768,
     batch: int = 8,
     device: str = "cpu",
     workers: int = 0,
@@ -46,17 +46,20 @@ def train_model(
     names = yaml.safe_load(data.read_text(encoding="utf-8")).get("names", [])
     if isinstance(names, dict):
         names = names.values()
-    boundary_options = {}
-    if {"left_boundary", "right_boundary"}.intersection(names):
-        # Flips keep class IDs, incorrectly turning left boundaries into right.
+    augmentation_options = {}
+    has_boundaries = bool({"left_boundary", "right_boundary"}.intersection(names))
+    if has_boundaries or any(label.endswith((" left", " right")) for label in names):
+        # Flips keep class IDs, incorrectly turning left regions into right.
+        augmentation_options = {"fliplr": 0.0, "flipud": 0.0, "copy_paste": 0.0}
+    if has_boundaries:
         # Avoid further downsampling thin targets after the input image resize.
-        boundary_options = {"fliplr": 0.0, "flipud": 0.0, "copy_paste": 0.0, "mask_ratio": 1}
+        augmentation_options["mask_ratio"] = 1
     results = network.train(
         data=str(data), epochs=epochs, imgsz=imgsz, batch=batch,
         device=device, workers=workers, project=str(project.resolve()), name=name,
         # Keep full region masks beneath overlapping car and car pack masks.
         overlap_mask=False,
-        **boundary_options,
+        **augmentation_options,
     )
     if upload:
         from .publication import upload_checkpoint

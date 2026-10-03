@@ -152,20 +152,20 @@ class YOLO26xAutoAnnotator:
                 raise ValueError("The YOLO26x checkpoint is not a segmentation model")
             self._network = network
 
-        # Preserve every predicted class so the user can relabel the polygons.
+        # Propose regions as "other" so the user can relabel them in the editor.
         result = self._network.predict(
             image, conf=0.25, retina_masks=True, verbose=False,
         )[0]
-        return _prediction_polygons(result)
+        return _prediction_polygons(result, label_override="other")
 
 
-def _prediction_polygons(result) -> list[dict]:
+def _prediction_polygons(result, *, label_override: str | None = None) -> list[dict]:
     import cv2
 
     if result.masks is None:
         return []
     polygons = []
-    for points, class_id in zip(result.masks.xy, result.boxes.cls.tolist()):
+    for index, points in enumerate(result.masks.xy):
         if len(points) < 3:
             continue
         contour = points.astype("float32")
@@ -177,7 +177,7 @@ def _prediction_polygons(result) -> list[dict]:
         if 3 <= len(simplified) < len(points):
             points = simplified
         polygons.append({
-            "label": result.names[int(class_id)],
+            "label": label_override if label_override is not None else result.names[int(result.boxes.cls[index])],
             "points": points.tolist(),
         })
     return polygons
