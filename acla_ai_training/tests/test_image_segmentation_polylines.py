@@ -48,6 +48,12 @@ def test_default_labels_contain_only_regions():
     assert read_labels() == [
         "track", "curb", "grass", "car", "other", "fence", "car pack", "sand",
         "Outfield asphalt road", "sky", "car interior",
+        "racing track white line", "forest", "buildings", "overhead truss structure",
+        "curb left", "curb right", "grass left", "grass right",
+        "fence left", "fence right", "sand left", "sand right",
+        "outfield asphalt road left", "outfield asphalt road right",
+        "racing track white line left", "racing track white line right",
+        "forest left", "forest right", "buildings left", "buildings right",
     ]
 
 
@@ -156,8 +162,14 @@ def test_line_with_more_than_two_points_is_rejected(tmp_path, boundary_labels):
     assert not (tmp_path / "out").exists()
 
 
-@pytest.mark.parametrize("names", [["track", "left_boundary"], {0: "right_boundary", 1: "track"}])
-def test_boundary_training_preserves_side_labels(tmp_path, monkeypatch, names):
+@pytest.mark.parametrize(("names", "mask_ratio"), [
+    (["track", "left_boundary"], 1),
+    ({0: "right_boundary", 1: "track"}, 1),
+    (["track", "curb left"], None),
+    ({0: "grass right", 1: "track"}, None),
+    (read_labels(), None),
+])
+def test_training_preserves_side_labels(tmp_path, monkeypatch, names, mask_ratio):
     import sys
 
     data = tmp_path / "data.yaml"
@@ -171,5 +183,5 @@ def test_boundary_training_preserves_side_labels(tmp_path, monkeypatch, names):
     assert options["fliplr"] == 0.0
     assert options["flipud"] == 0.0
     assert options["copy_paste"] == 0.0
-    assert options["mask_ratio"] == 1
+    assert options.get("mask_ratio") == mask_ratio
     assert options["overlap_mask"] is False

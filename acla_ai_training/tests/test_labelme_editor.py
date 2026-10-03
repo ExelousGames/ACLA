@@ -14,36 +14,94 @@ from training.image_segmentation.labelme_editor import create_main_window, polyl
 @pytest.mark.parametrize("points", [
     [(10, 20), (30, 20)],
     [(20, 10), (20, 30)],
-    [(10, 10), (30, 30), (50, 10)],
-    [(10, 10), (30, 10), (30, 50)],
-    [(10, 10), (30, 10), (10, 10)],
+    [(10, 10), (30, 30)],
+    [(10, 20), (10.01, 20)],
 ])
-def test_polygon_has_one_vertex_on_each_side_of_each_centerline_point(points):
+def test_straight_polygon_preserves_width_and_flat_end_caps(points):
     polygon = polyline_polygon_points(points, 6)
 
-    assert len(polygon) == 2 * len(points)
-    for center, left, right in zip(points, polygon[:len(points)], reversed(polygon[len(points):])):
-        assert ((left[0] + right[0]) / 2, (left[1] + right[1]) / 2) == pytest.approx(center)
-        assert math.dist(left, right) == pytest.approx(6)
+    assert len(polygon) == 4
+    for center in points:
+        cap = sorted(polygon, key=lambda point: math.dist(point, center))[:2]
+        assert ((cap[0][0] + cap[1][0]) / 2, (cap[0][1] + cap[1][1]) / 2) == pytest.approx(center)
+        assert math.dist(*cap) == pytest.approx(6)
 
 
 def test_straight_polygon_follows_both_sides_without_crossing_the_centerline():
-    assert polyline_polygon_points([(10, 20), (20, 20), (30, 20)], 8) == [
-        (10, 24), (20, 24), (30, 24), (30, 16), (20, 16), (10, 16),
-    ]
+    assert set(polyline_polygon_points([(10, 20), (20, 20), (30, 20)], 8)) == {
+        (10, 24), (30, 24), (30, 16), (10, 16),
+    }
 
 
-def test_bend_uses_the_average_direction():
-    polygon = polyline_polygon_points([(10, 10), (30, 10), (30, 50)], 8)
-    offset = 4 / math.sqrt(2)
-    assert polygon[1] == pytest.approx((30 - offset, 10 + offset))
-    assert polygon[-2] == pytest.approx((30 + offset, 10 - offset))
+def normal_crossings(polygon, center, tangent):
+    length = math.hypot(*tangent)
+    nx, ny = -tangent[1] / length, tangent[0] / length
+    distances = []
+    for start, end in zip(polygon, polygon[1:] + polygon[:1]):
+        ex, ey = end[0] - start[0], end[1] - start[1]
+        denominator = nx * ey - ny * ex
+        if abs(denominator) < 1e-8:
+            continue
+        dx, dy = start[0] - center[0], start[1] - center[1]
+        along_edge = (dx * ny - dy * nx) / denominator
+        if 0 <= along_edge < 1:
+            distances.append((dx * ey - dy * ex) / denominator)
+    # A normal through a sharp bend can also cross a distant part of the stroke.
+    return [max(distance for distance in distances if distance < 0),
+            min(distance for distance in distances if distance > 0)]
+
+
+@pytest.mark.parametrize("turn", [-1, 1])
+@pytest.mark.parametrize("width", [2, 8, 15, 32])
+def test_bends_add_smooth_inner_and_outer_edges_at_constant_width(turn, width):
+    polygon = polyline_polygon_points([(10, 60), (60, 60), (60, 60 + turn * 50)], width)
+    assert 8 <= len(polygon) <= 20
+
+    # Removing nearly collinear vertices must preserve straight-section width
+    # to subpixel precision as well as keeping the curved edges smooth.
+    assert normal_crossings(polygon, (20, 60), (1, 0)) == pytest.approx([-width / 2, width / 2], abs=0.1)
+    assert normal_crossings(polygon, (60, 60 + turn * 40), (0, turn)) == pytest.approx([-width / 2, width / 2], abs=0.1)
+
+    trim = min(width, 25)
+    tolerance = min(0.5, width * 0.025) + 0.1
+    for t in (0.1, 0.25, 0.5, 0.75, 0.9):
+        # Quadratic centerline from the incoming tangent through the click to
+        # the outgoing tangent. Measure each edge, not just a vertex-pair gap.
+        center = (60 - trim * (1 - t) ** 2, 60 + turn * trim * t ** 2)
+        tangent = (1 - t, turn * t)
+        assert normal_crossings(polygon, center, tangent) == pytest.approx([-width / 2, width / 2], abs=tolerance)
+
+
+@pytest.mark.parametrize("angle", [-135, -120, -45, 45, 120, 135])
+def test_sharp_and_gentle_bends_preserve_width(angle):
+    width = 15
+    dx, dy = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+    polygon = polyline_polygon_points([(-200, 0), (0, 0), (200 * dx, 200 * dy)], width)
+    trim = width / (1 + dx)
+    for t in (0.1, 0.25, 0.5, 0.75, 0.9):
+        center = (trim * (t * t * dx - (1 - t) ** 2), trim * t * t * dy)
+        tangent = (1 - t + t * dx, t * dy)
+        assert normal_crossings(polygon, center, tangent) == pytest.approx([-width / 2, width / 2], abs=0.5)
+
+
+@pytest.mark.parametrize("points", [
+    [(10, 10), (30, 10), (10, 10)],  # Reversal.
+    [(10, 10), (30, 10), (11, 11)],  # Almost a reversal.
+    [(10, 10), (12, 10), (12, 12)],  # Segments shorter than the width.
+    [(10, 10), (30, 10), (30, 30), (50, 30)],  # Opposing adjacent bends.
+])
+def test_tight_and_adjacent_bends_produce_finite_nonzero_edges(points):
+    polygon = polyline_polygon_points(points, 8)
+    assert len(polygon) >= 4
+    assert all(math.isfinite(value) for point in polygon for value in point)
+    assert all(math.dist(start, end) > 0 for start, end in zip(polygon, polygon[1:] + polygon[:1]))
+    assert all(6 <= x <= 54 and 6 <= y <= 34 for x, y in polygon)
 
 
 def test_repeated_clicks_do_not_add_degenerate_edges():
-    assert polyline_polygon_points([(10, 20), (10, 20), (30, 20)], 8) == [
-        (10, 24), (30, 24), (30, 16), (10, 16),
-    ]
+    assert polyline_polygon_points([(10, 20), (10, 20), (30, 20)], 8) == polyline_polygon_points(
+        [(10, 20), (30, 20)], 8,
+    )
 
 
 @pytest.mark.parametrize("width", [0, -1, float("nan"), float("inf")])
@@ -112,7 +170,7 @@ def test_polygon_tool_saves_polygon_and_keeps_undo_history(editor):
     assert len(saved) == 1
     assert saved[0]["shape_type"] == "polygon"
     assert saved[0]["label"] == "track"
-    assert len(saved[0]["points"]) == 6
+    assert len(saved[0]["points"]) > 6
     assert canvas.shape_backups[-1][-1].shape_type == "polygon"
 
     finish_polyline(window, [(10, 60), (30, 60)])
@@ -139,8 +197,8 @@ def test_width_setting_controls_new_polygon_and_clips_to_image(editor, monkeypat
     window._set_polygon_width()
     window._switch_canvas_mode(edit=False, create_mode="polyline_polygon")
     finish_polyline(window, [(10, 3), (90, 3)])
-    assert json.loads(annotation.read_text())["shapes"][0]["points"] == [
-        [10, 9], [90, 9], [90, 0], [10, 0],
+    assert sorted(json.loads(annotation.read_text())["shapes"][0]["points"]) == [
+        [10, 0], [10, 9], [90, 0], [90, 9],
     ]
 
 
@@ -178,7 +236,7 @@ def test_auto_annotation_button_appends_saves_and_undoes_predictions(editor, pro
     window._switch_canvas_mode(edit=False, create_mode="polyline_polygon")
     canvas = finish_polyline(window, [(10, 20), (30, 20)])
     original = json.loads(annotation.read_text())["shapes"]
-    predicted_label = "person" if provider == "yolo26x" else "track"
+    predicted_label = "other" if provider == "yolo26x" else "track"
 
     def predict(image, labels):
         assert QtCore.QThread.currentThread() != window.thread()
@@ -209,11 +267,11 @@ def test_auto_annotation_button_appends_saves_and_undoes_predictions(editor, pro
     assert not action.isEnabled()
 
 
-def test_yolo26x_predictions_with_foreign_labels_can_be_manually_relabeled(editor):
+def test_yolo26x_other_regions_can_be_reopened_and_manually_relabeled(editor):
     window, annotation = editor
     predictions = [
-        {"label": "person", "points": [[10, 10], [40, 10], [25, 40]]},
-        {"label": "car", "points": [[50, 50], [90, 50], [70, 90]]},
+        {"label": "other", "points": [[10, 10], [40, 10], [25, 40]]},
+        {"label": "other", "points": [[50, 50], [90, 50], [70, 90]]},
     ]
     window._yolo26x_annotator = SimpleNamespace(
         predict=MagicMock(return_value=predictions), model_name="YOLO26x",
@@ -222,17 +280,22 @@ def test_yolo26x_predictions_with_foreign_labels_can_be_manually_relabeled(edito
     window._yolo26x_annotate_action.trigger()
 
     saved = json.loads(annotation.read_text())["shapes"]
-    assert [shape["label"] for shape in saved] == ["person", "car"]
+    assert [shape["label"] for shape in saved] == ["other", "other"]
     assert window._config["labels"] == ["track"]
-    assert window._docks.unique_label_list.find_label_item("person") is not None
-    assert window._docks.unique_label_list.find_label_item("car") is not None
+    assert window._docks.unique_label_list.find_label_item("other") is not None
+    assert window._docks.unique_label_list.find_label_item("person") is None
+    assert window._docks.unique_label_list.find_label_item("car") is None
+
+    window.close_file()
+    window._load_file(str(annotation))
 
     canvas = window._canvas_widgets.canvas
+    assert [shape.label for shape in canvas.shapes] == ["other", "other"]
     canvas.select_shapes([canvas.shapes[0]])
     window._edit_label()
 
     relabeled = json.loads(annotation.read_text())["shapes"]
-    assert [shape["label"] for shape in relabeled] == ["track", "car"]
+    assert [shape["label"] for shape in relabeled] == ["track", "other"]
     assert [shape["points"] for shape in relabeled] == [shape["points"] for shape in saved]
 
 

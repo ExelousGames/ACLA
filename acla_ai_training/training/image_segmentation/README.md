@@ -92,9 +92,10 @@ Click **YOLO26x Annotate** in the same toolbar or Edit menu to use pretrained
 `yolo26x-seg.pt` without the backend. It checks for local weights in
 `storage/image_segmentation/pretrained/`, the current working directory, and
 Ultralytics' configured weights directory before downloading to the pretrained
-cache. Subsequent clicks reuse the loaded model. All detected classes are added
-with their original model labels, including labels absent from the editor's
-labels file. Select a generated polygon and use **Edit Label** to relabel it.
+cache. Subsequent clicks reuse the loaded model. Detected regions are added as
+polygons labeled `other`; YOLO's class names are not assigned. Select a generated
+polygon and use **Edit Label** to relabel it as needed before exporting or
+training. Regions can be saved and reopened to finish labeling later.
 This pretrained model does not know custom track regions; use **Custom Annotate**
 for those.
 
@@ -113,13 +114,15 @@ finish and choose its label. Polylines use Labelme's default display style.
 Polygons remain region annotations.
 
 To initialize a polygon from a centerline, choose **Polygon from Polyline**
-(**Ctrl+Shift+L**), click along the centerline, and double-click to finish. Each
-centerline point creates two polygon vertices, one on each side, which you can
-then move independently with **Edit Shapes**. Set the total distance between each
-vertex pair with **Edit > Set Polyline Polygon Width…** (default **5 image pixels**,
-independent of zoom). The offsets follow the average direction at bends and are
-clipped to the image edges. Consecutive duplicate points are ignored. Choose the
-label as usual; the saved annotation is a polygon.
+(**Ctrl+Shift+L**), click along the centerline, and double-click to finish. Bends
+are rounded locally, with multiple vertices along the inner and outer edges to
+preserve the stroke width. Redundant vertices are removed to keep the outline
+easy to edit. Move the generated vertices independently with
+**Edit Shapes**. Set the total width with **Edit > Set Polyline Polygon Width…**
+(default **15 image pixels**, independent of zoom). Rounding is limited by the
+adjacent segment lengths, and the polygon is clipped to the image edges.
+Consecutive duplicate points are ignored. Choose the label as usual; the saved
+annotation is a polygon.
 
 The class IDs follow the order in `labels.txt`:
 
@@ -140,6 +143,28 @@ The class IDs follow the order in `labels.txt`:
 | 12 | forest | Visible forest regions |
 | 13 | buildings | Visible building regions |
 | 14 | overhead truss structure | Visible overhead truss structures |
+| 15 | curb left | Left-side curb regions |
+| 16 | curb right | Right-side curb regions |
+| 17 | grass left | Left-side grass regions |
+| 18 | grass right | Right-side grass regions |
+| 19 | fence left | Left-side fence regions |
+| 20 | fence right | Right-side fence regions |
+| 21 | sand left | Left-side sand regions |
+| 22 | sand right | Right-side sand regions |
+| 23 | outfield asphalt road left | Left-side asphalt road regions outside the track |
+| 24 | outfield asphalt road right | Right-side asphalt road regions outside the track |
+| 25 | racing track white line left | Left-side white line markings |
+| 26 | racing track white line right | Right-side white line markings |
+| 27 | forest left | Left-side forest regions |
+| 28 | forest right | Right-side forest regions |
+| 29 | buildings left | Left-side building regions |
+| 30 | buildings right | Right-side building regions |
+
+The left/right variants are appended so existing labels keep their class IDs.
+Choose a side-specific label when annotating a particular side of the track from
+the driver's perspective. The original labels remain available for unsided regions
+and existing annotations. Side-specific variants follow the same visibility and
+occlusion policy as their original region class below.
 
 For `track`, `grass`, `fence`, `curb`, `sand`, `sky`, and `racing track white line`,
 trace the continuous outer boundaries, including portions behind a `car` or
@@ -269,7 +294,7 @@ In the training Python environment:
 ```bash
 python -m training.image_segmentation train \
   --data storage/image_segmentation/yolo/data.yaml \
-  --model yolo26n-seg.pt --epochs 100 --imgsz 640 --batch 8 --device cpu
+  --model yolo26n-seg.pt --epochs 100 --imgsz 768 --batch 8 --device cpu
 ```
 
 Or use the rebuilt training container (GPU 0):
@@ -277,7 +302,7 @@ Or use the rebuilt training container (GPU 0):
 ```bash
 docker exec -it acla_ai_training_c python -m training.image_segmentation train \
   --data /app/storage/image_segmentation/yolo/data.yaml \
-  --model yolo26n-seg.pt --epochs 100 --imgsz 640 --batch 8 --device 0
+  --model yolo26n-seg.pt --epochs 100 --imgsz 768 --batch 8 --device 0
 ```
 
 The default is CPU; select `--device 0` for a configured NVIDIA/ROCm GPU or `mps`
@@ -292,12 +317,14 @@ the training targets. Ultralytics' default merges masks with smaller masks on to
 which can remove those hidden regions.
 Keep this setting when training or validating these annotations outside this CLI.
 
-When a custom dataset contains `left_boundary` or `right_boundary`, the trainer also
+When a dataset contains labels ending in ` left` or ` right`, or the custom
+`left_boundary` or `right_boundary` labels, the trainer also
 sets `fliplr=0`, `flipud=0`, and `copy_paste=0` to preserve side labels. Horizontal
-flips otherwise mirror the edges without swapping their class IDs. It uses
-`mask_ratio=1` to avoid further downsampling thin mask targets after resizing the
-input image; this uses more mask memory. Preserve these settings when training
-boundary datasets outside this CLI.
+flips otherwise mirror the regions without swapping their class IDs. For custom
+`left_boundary` or `right_boundary` datasets, it also uses `mask_ratio=1` to avoid
+further downsampling thin mask targets after resizing the input image; this uses
+more mask memory. Preserve these settings when training side-specific datasets
+outside this CLI.
 
 Each validation pass prints the full box and mask metric header separately from
 the progress bar, so narrow terminals wrap the labels instead of cutting them off.

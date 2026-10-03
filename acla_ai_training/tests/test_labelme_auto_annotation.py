@@ -338,19 +338,31 @@ def yolo26x_predictor(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("labels", [["track", "car"], ["track", "grass"], []])
-def test_yolo26x_keeps_all_model_labels_and_reuses_loaded_model(yolo26x_predictor, labels):
+def test_yolo26x_labels_regions_other_and_reuses_loaded_model(yolo26x_predictor, labels):
     annotator, network, factory, resolve = yolo26x_predictor
     image = Image.new("RGB", (40, 20))
 
     for _ in range(2):
         assert annotator.predict(image, labels) == [
-            {"label": "car", "points": [[0, 0], [40, 0], [40, 20]]},
-            {"label": "person", "points": [[0, 10], [10, 20], [0, 20]]},
+            {"label": "other", "points": [[0, 0], [40, 0], [40, 20]]},
+            {"label": "other", "points": [[0, 10], [10, 20], [0, 20]]},
         ]
 
     resolve.assert_called_once()
     factory.assert_called_once_with(str(resolve.return_value))
     network.predict.assert_called_with(image, conf=0.25, retina_masks=True, verbose=False)
+
+
+def test_yolo26x_regions_do_not_require_class_predictions(yolo26x_predictor):
+    annotator, network, _, _ = yolo26x_predictor
+    result = network.predict.return_value[0]
+    del result.names
+    del result.boxes
+
+    assert annotator.predict(Image.new("RGB", (40, 20)), ["track"]) == [
+        {"label": "other", "points": [[0, 0], [40, 0], [40, 20]]},
+        {"label": "other", "points": [[0, 10], [10, 20], [0, 20]]},
+    ]
 
 
 def test_yolo26x_with_no_detections_returns_no_polygons(yolo26x_predictor):
