@@ -4,7 +4,8 @@ const { createHash } = require('crypto');
 const { execFile } = require('child_process');
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const CACHE_VERSION = 2; // Re-export cached segmentation checkpoints at 768 x 768.
+const CACHE_VERSION = 3; // Keep a separate static ONNX export for each input resolution.
+const INPUT_SIZES = [384, 640, 768];
 
 function validateModel(model) {
   if (!model || typeof model.id !== 'string' || typeof model.sha256 !== 'string'
@@ -30,16 +31,16 @@ async function writeFile(filename, bytes) {
 
 function createTrackVisionModelCache({ directory, exportModel }) {
   const pending = new Map();
-  async function prepare(model, download) {
+  async function prepare(model, download, inputSize) {
     const folder = path.join(directory(), `${model.id}-${model.sha256}`);
-    const manifestPath = path.join(folder, 'manifest.json');
+    const manifestPath = path.join(folder, `manifest-${inputSize}.json`);
     const weightsPath = path.join(folder, 'weights.pt');
-    const onnxPath = path.join(folder, 'weights.onnx');
+    const onnxPath = path.join(folder, `weights-${inputSize}.onnx`);
     const manifestBytes = await readFile(manifestPath);
     let manifest;
     try { manifest = manifestBytes ? JSON.parse(manifestBytes.toString()) : null; }
     catch (error) { if (!(error instanceof SyntaxError)) throw error; }
-    if (manifest?.version === CACHE_VERSION && manifest.model?.sha256 === model.sha256
+    if (manifest?.version === CACHE_VERSION && manifest.inputSize === inputSize && manifest.model?.sha256 === model.sha256
       && JSON.stringify(manifest.model.classNames) === JSON.stringify(model.classNames)) {
       const onnx = await readFile(onnxPath);
       if (onnx?.length && hash(onnx) === manifest.onnxSha256) return onnx;
@@ -58,19 +59,20 @@ function createTrackVisionModelCache({ directory, exportModel }) {
       await fs.mkdir(folder, { recursive: true });
       await writeFile(weightsPath, weights);
     }
-    await exportModel(weightsPath, model.classNames);
+    await exportModel(weightsPath, model.classNames, inputSize, onnxPath);
     const onnx = await readFile(onnxPath);
     if (!onnx?.length) throw new Error('Track Vision model export produced no ONNX weights.');
-    await writeFile(manifestPath, JSON.stringify({ version: CACHE_VERSION, model, onnxSha256: hash(onnx) }));
+    await writeFile(manifestPath, JSON.stringify({ version: CACHE_VERSION, model, inputSize, onnxSha256: hash(onnx) }));
     return onnx;
   }
   return {
-    async prepare(model, download) {
+    async prepare(model, download, inputSize = 768) {
       validateModel(model);
+      if (!INPUT_SIZES.includes(inputSize)) throw new Error('Invalid Track Vision input resolution.');
       const key = `${model.id}-${model.sha256}`;
       // Multiple panels share the cache; only one export may write a model at a time.
       const operation = (pending.get(key) || Promise.resolve()).catch(() => undefined)
-        .then(() => prepare(model, download));
+        .then(() => prepare(model, download, inputSize));
       pending.set(key, operation);
       try { return await operation; }
       finally { if (pending.get(key) === operation) pending.delete(key); }
@@ -81,11 +83,11 @@ function createTrackVisionModelCache({ directory, exportModel }) {
 function registerTrackVisionModels({ app, ipcMain, getMainWindow, getPythonExecutable }) {
   const cache = createTrackVisionModelCache({
     directory: () => path.join(app.getPath('userData'), 'track-vision', 'models'),
-    exportModel: (weights, labels) => new Promise((resolve, reject) => {
+    exportModel: (weights, labels, inputSize, output) => new Promise((resolve, reject) => {
       const script = app.isPackaged
         ? path.join(process.resourcesPath, 'py-scripts', 'export_track_vision_model.py')
         : path.join(app.getAppPath(), 'src', 'py-scripts', 'export_track_vision_model.py');
-      execFile(getPythonExecutable(), [script, '--weights', weights, '--labels', JSON.stringify(labels)], {
+      execFile(getPythonExecutable(), [script, '--weights', weights, '--labels', JSON.stringify(labels), '--input-size', String(inputSize), '--output', output], {
         windowsHide: true, timeout: 600000, maxBuffer: 8 * 1024 * 1024,
         env: { ...process.env, YOLO_OFFLINE: 'true', YOLO_AUTOINSTALL: 'false',
           YOLO_CONFIG_DIR: path.join(app.getPath('userData'), 'track-vision', 'config') },
@@ -95,13 +97,13 @@ function registerTrackVisionModels({ app, ipcMain, getMainWindow, getPythonExecu
       });
     }),
   });
-  ipcMain.handle('track-vision-model-prepare', (event, model, download) => {
+  ipcMain.handle('track-vision-model-prepare', (event, model, download, inputSize) => {
     const window = getMainWindow();
     if (!window || window.isDestroyed() || event.sender !== window.webContents
       || event.senderFrame !== window.webContents.mainFrame) {
       throw new Error('Track Vision models are available only in the main workspace.');
     }
-    return cache.prepare(model, download);
+    return cache.prepare(model, download, inputSize);
   });
 }
 

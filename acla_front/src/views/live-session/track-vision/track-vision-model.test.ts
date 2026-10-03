@@ -52,6 +52,28 @@ it('loads metadata and warms up the backend segmentation export before reporting
     expect(gpu.release).toHaveBeenCalledTimes(1);
 });
 
+it.each([384, 640, 768])('runs segmentation at %i pixels with normalized boxes and aligned letterboxing', async (inputSize) => {
+    gpu.run.mockResolvedValue({
+        output0: tensor([1, 7, 1], new Float32Array([inputSize / 2, inputSize / 2, inputSize / 2, inputSize / 2, 0.9, 0, 1])),
+        output1: tensor([1, 1, 4, 4], new Float32Array(16).fill(1)),
+    });
+    const drawImage = jest.fn();
+    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+        fillRect: jest.fn(), drawImage, getImageData: (_x: number, _y: number, width: number, height: number) => ({ data: new Uint8ClampedArray(width * height * 4) }),
+    } as any);
+    const model = await TrackVisionModel.loadBackend(inputSize);
+    expect(loadBackendVisionModel).toHaveBeenCalledWith(inputSize);
+    const frame = document.createElement('canvas');
+    frame.width = 1280; frame.height = 640;
+    const result = await model.detect(frame, 0.5);
+    expect(model.inputSize).toBe(inputSize);
+    expect(gpu.run).toHaveBeenLastCalledWith({ images: expect.objectContaining({ dims: [1, 3, inputSize, inputSize], data: expect.any(Float32Array) }) });
+    expect(gpu.run.mock.calls[1][0].images.data).toHaveLength(3 * inputSize ** 2);
+    expect(drawImage).toHaveBeenCalledWith(frame, 0, inputSize / 4, inputSize, inputSize / 2);
+    expect(result).toMatchObject({ task: 'segment', instances: [{ box: [0.25, 0.25, 0.75, 0.75], mask: new Uint8Array([0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0]) }] });
+    await model.dispose();
+});
+
 it('rejects GPU initialization failure without creating a CPU session', async () => {
     (gpuRuntime.InferenceSession.create as jest.Mock).mockRejectedValue(new Error('No GPU adapter'));
     await expect(TrackVisionModel.loadBackend()).rejects.toThrow('No GPU adapter');
@@ -141,16 +163,18 @@ it('preserves unlabelled depth input and output while excluding the interior', a
     expect(depthSession.release).toHaveBeenCalledTimes(1);
 });
 
-it.each([[1280, 640], [640, 1280]])('excludes letterbox padding from retained depth for a %i x %i capture', async (width, height) => {
+it.each([252, 392, 518].flatMap((inputSize) => [[1280, 640, inputSize], [640, 1280, inputSize]]))('excludes letterbox padding from retained depth for a %i x %i capture at %i pixels', async (width, height, inputSize) => {
     gpu.outputNames = ['output0'];
     gpu.run.mockResolvedValue({ output0: tensor([1, 1, 4, 4], new Float32Array(16).fill(10)) });
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-        fillRect: jest.fn(), drawImage: jest.fn(), getImageData: () => ({ data: new Uint8ClampedArray(518 * 518 * 4) }),
+        fillRect: jest.fn(), drawImage: jest.fn(), getImageData: () => ({ data: new Uint8ClampedArray(inputSize * inputSize * 4) }),
     } as any);
-    const model = await TrackVisionModel.loadBuiltin('depth');
+    const model = await TrackVisionModel.loadBuiltin('depth', inputSize);
+    expect(readVisionModel).toHaveBeenCalledWith(`http://localhost/vision-models/depth-anything-v2-small${inputSize === 518 ? '' : `-${inputSize}`}.onnx`);
     const frame = document.createElement('canvas');
     frame.width = width; frame.height = height;
     const result = await model.detect(frame, 0.5, { width: 2, height: 2, mask: new Uint8Array(4).fill(1) });
+    expect(gpu.run).toHaveBeenLastCalledWith({ images: expect.objectContaining({ dims: [1, 3, inputSize, inputSize] }) });
     if (result.task !== 'depth') throw new Error('depth');
     const expected = width > height
         ? [0, 0, 0, 0, 10, 10, 10, 10, 10, 10, 10, 10, 0, 0, 0, 0]

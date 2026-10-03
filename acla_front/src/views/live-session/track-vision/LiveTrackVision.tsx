@@ -2,6 +2,7 @@ import React, { forwardRef, useCallback, useEffect, useId, useImperativeHandle, 
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import { captureGameScreen, ScreenCaptureSource } from './screen-capture';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
+import { DEPTH_INPUT_SIZE, MODEL_INPUT_RESOLUTIONS, VISION_INPUT_SIZE } from './vision-config';
 import { CameraCalibration, DETECTION_TASKS, DetectionTask, TrackVisionAnalysis, TrackVisionDetection, TrackVisionFrame, VISION_MAX_AGE_MS } from './track-vision-types';
 import { VISION_CONFIDENCE } from './semantic-scene';
 import { analyzeTrackPositions } from './track-position-analysis';
@@ -23,7 +24,7 @@ export interface TrackVisionHandle extends NamedOperationComponentHandle {
 
 const message = (error: unknown) => error instanceof Error ? error.message : 'Vision detection failed.';
 const GPU_RETRY_DELAY_MS = 3000;
-type DetectorState = { status: 'loading' | 'ready' | 'retrying' | 'error'; error?: string; modelName?: string; classNames?: string[] };
+type DetectorState = { status: 'loading' | 'ready' | 'retrying' | 'error'; error?: string; classNames?: string[] };
 
 const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name }, forwardedRef) => {
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -44,6 +45,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const [sources, setSources] = useState<ScreenCaptureSource[]>([]);
     const [sourceId, setSourceId] = useState('');
     const [retry, setRetry] = useState(0);
+    const [inputSizes, setInputSizes] = useState({ segment: VISION_INPUT_SIZE, depth: DEPTH_INPUT_SIZE });
     const [detectors, setDetectors] = useState<Record<DetectionTask, DetectorState>>({
         segment: { status: 'loading' }, depth: { status: 'loading' },
     });
@@ -187,25 +189,34 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         if (!window.screenCapture) return;
         const version = ++modelVersion.current;
         publish(null);
+        const disposals: Promise<void>[] = [];
+        for (const { id } of DETECTION_TASKS) {
+            const model = models.current[id];
+            if (model && model.inputSize !== inputSizes[id]) {
+                delete models.current[id];
+                disposals.push(model.dispose().catch(() => undefined));
+            }
+        }
         setDetectors(Object.fromEntries(DETECTION_TASKS.map(({ id }) => {
             const model = models.current[id];
             return [id, model ? {
-                status: 'ready', modelName: model.name, classNames: model.classNames,
+                status: 'ready', classNames: model.classNames,
             } : { status: 'loading' }];
         })) as Record<DetectionTask, DetectorState>);
-        // Serialize retries so only one session per model is loaded.
+        // Serialize retries and resolution changes so only one session per model is loaded.
         modelQueue.current = modelQueue.current.then(async () => {
+            await Promise.all(disposals);
             for (const { id } of DETECTION_TASKS) {
                 if (version !== modelVersion.current) return;
                 if (models.current[id]) continue;
                 try {
                     const model = id === 'depth'
-                        ? await TrackVisionModel.loadBuiltin(id)
-                        : await TrackVisionModel.loadBackend();
+                        ? await TrackVisionModel.loadBuiltin(id, inputSizes[id])
+                        : await TrackVisionModel.loadBackend(inputSizes[id]);
                     if (version !== modelVersion.current) { await model.dispose().catch(() => undefined); return; }
                     models.current[id] = model;
                     setDetectors((current) => ({ ...current, [id]: {
-                        status: 'ready', modelName: model.name, classNames: model.classNames,
+                        status: 'ready', classNames: model.classNames,
                     } }));
                 } catch (reason) {
                     if (version === modelVersion.current) setDetectors((current) => ({ ...current, [id]: {
@@ -215,7 +226,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
             }
         });
         // Retrying increments the version above; unmount cleanup invalidates it too.
-    }, [retry, publish]);
+    }, [retry, publish, inputSizes]);
 
     useEffect(() => {
         const active = Object.values(detectors);
@@ -456,14 +467,20 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 </div>
                 <p className="track-vision__hint">Applies to filtering, reconstruction and coaching. Segmentation detection confidence also applies. Car interior masks are retained.</p>
                 <fieldset className="track-vision__stack">
-                    <legend>Track models <span>Ultralytics</span></legend>
+                    <legend>Track models</legend>
                     <p className="track-vision__hint">Both models require GPU acceleration. Failed GPU inference retries automatically every 3 seconds.</p>
                     {DETECTION_TASKS.map(({ id, label, description }) => <div className="track-vision__detector" key={id}>
                         <div className="track-vision__detector-description"><strong>{label}</strong><small>{description}</small></div>
                         <span className="track-vision__detector-state">{detectors[id].status === 'ready'
                             ? captureState === 'active' && DETECTION_TASKS.every(({ id }) => detectors[id].status === 'ready') ? 'Running' : 'Ready' : detectors[id].status === 'retrying' ? 'Retrying GPU…'
                                 : detectors[id].status === 'error' ? 'Unavailable' : 'Loading…'}</span>
-                        {detectors[id].modelName && <div className="track-vision__hint">Model: {detectors[id].modelName}</div>}
+                        <label className="track-vision__resolution">Input resolution
+                            <select aria-label={`${label} input resolution`} value={inputSizes[id]}
+                                onChange={(event) => setInputSizes((current) => ({ ...current, [id]: Number(event.target.value) }))}>
+                                {MODEL_INPUT_RESOLUTIONS[id].map(({ label, size }) =>
+                                    <option key={size} value={size}>{label} · {size} × {size}</option>)}
+                            </select>
+                        </label>
                         {!!detectors[id].classNames?.length && <div className="track-vision__hint" aria-label="Model labels">Labels: {detectors[id].classNames!.join(', ')}</div>}
                         {detectors[id].status === 'ready' && <div className="track-vision__hint" aria-label={`${label} inference device`}>GPU acceleration active</div>}
                         {detectors[id].error && <div className="track-vision__error" role="alert">
@@ -471,6 +488,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                         </div>}
                     </div>)}
                 </fieldset>
+                <p className="track-vision__hint">Lower resolutions use less GPU work; higher resolutions retain more detail. Changing resolution reloads that model while capture continues.</p>
                 <p className="track-vision__hint">Segmentation downloads from the backend and is saved on this device. Depth uses the bundled model. Frames and inference stay local.</p>
             </details>
             <div className="track-vision__status" role="status">{status}</div>

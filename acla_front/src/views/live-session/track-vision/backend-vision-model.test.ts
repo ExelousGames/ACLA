@@ -19,7 +19,7 @@ it('checks the backend version and reuses local weights without downloading', as
     prepare.mockResolvedValue(new Uint8Array([1, 2]));
     const result = await loadBackendVisionModel();
     expect(apiService.get).toHaveBeenCalledWith('/ai-model/ultralytics/track-vision');
-    expect(prepare).toHaveBeenCalledWith(metadata);
+    expect(prepare).toHaveBeenCalledWith(metadata, undefined, 768);
     expect(apiService.getBinary).not.toHaveBeenCalled();
     expect(result.metadata.classNames).toEqual(['curb', 'track']);
     expect(new Uint8Array(result.bytes)).toEqual(new Uint8Array([1, 2]));
@@ -29,7 +29,7 @@ it('downloads missing weights from the backend and saves them before inference',
     prepare.mockResolvedValueOnce(null).mockResolvedValueOnce(new Uint8Array([7]));
     await loadBackendVisionModel();
     expect(apiService.getBinary).toHaveBeenCalledWith(metadata.downloadPath, { timeoutMs: 300000 });
-    expect(prepare).toHaveBeenLastCalledWith(metadata, new ArrayBuffer(4));
+    expect(prepare).toHaveBeenLastCalledWith(metadata, new ArrayBuffer(4), 768);
 });
 
 it('coalesces simultaneous panel loads into one download and export', async () => {
@@ -38,6 +38,15 @@ it('coalesces simultaneous panel loads into one download and export', async () =
     expect(first).toBe(second);
     expect(apiService.getBinary).toHaveBeenCalledTimes(1);
     expect(prepare).toHaveBeenCalledTimes(2);
+});
+
+it('keeps concurrent loads at different resolutions separate', async () => {
+    prepare.mockImplementation(async (_metadata, _bytes, inputSize) => new Uint8Array([inputSize / 128]));
+    const [low, high] = await Promise.all([loadBackendVisionModel(384), loadBackendVisionModel(768)]);
+    expect(new Uint8Array(low.bytes)).toEqual(new Uint8Array([3]));
+    expect(new Uint8Array(high.bytes)).toEqual(new Uint8Array([6]));
+    expect(prepare).toHaveBeenCalledWith(metadata, undefined, 384);
+    expect(prepare).toHaveBeenCalledWith(metadata, undefined, 768);
 });
 
 it('rejects external download paths without fetching any weights', async () => {

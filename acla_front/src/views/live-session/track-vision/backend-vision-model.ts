@@ -1,4 +1,5 @@
 import apiService from 'services/api.service';
+import { VISION_INPUT_SIZE } from './vision-config';
 
 export interface BackendVisionModel {
     id: string;
@@ -13,14 +14,14 @@ export interface BackendVisionModel {
 declare global {
     interface Window {
         trackVisionModels?: {
-            prepare(model: BackendVisionModel, bytes?: ArrayBuffer): Promise<Uint8Array | null>;
+            prepare(model: BackendVisionModel, bytes?: ArrayBuffer, inputSize?: number): Promise<Uint8Array | null>;
         };
     }
 }
 
-let pending: Promise<{ bytes: ArrayBuffer; metadata: BackendVisionModel }> | undefined;
+const pending = new Map<number, Promise<{ bytes: ArrayBuffer; metadata: BackendVisionModel }>>();
 
-async function load() {
+async function load(inputSize: number) {
     const cache = window.trackVisionModels;
     if (!cache) throw new Error('Restart the Electron desktop app to enable local Track Vision models.');
     try {
@@ -31,10 +32,10 @@ async function load() {
             || metadata.downloadPath !== `/ai-model/ultralytics/${metadata.id}/file`) {
             throw new Error('The backend returned invalid Track Vision model metadata.');
         }
-        let bytes = await cache.prepare(metadata);
+        let bytes = await cache.prepare(metadata, undefined, inputSize);
         if (!bytes) {
             const weights = await apiService.getBinary(metadata.downloadPath, { timeoutMs: 300000 });
-            bytes = await cache.prepare(metadata, weights);
+            bytes = await cache.prepare(metadata, weights, inputSize);
         }
         if (!bytes?.byteLength) throw new Error('Track Vision model preparation produced no weights.');
         return { bytes: new Uint8Array(bytes).buffer, metadata };
@@ -45,7 +46,11 @@ async function load() {
     }
 }
 
-export function loadBackendVisionModel() {
-    if (!pending) pending = load().finally(() => { pending = undefined; });
-    return pending;
+export function loadBackendVisionModel(inputSize = VISION_INPUT_SIZE) {
+    let operation = pending.get(inputSize);
+    if (!operation) {
+        operation = load(inputSize).finally(() => { pending.delete(inputSize); });
+        pending.set(inputSize, operation);
+    }
+    return operation;
 }

@@ -1,6 +1,6 @@
 export const DETECTION_TASKS = [
     { id: 'segment', label: 'Segmentation', description: 'Detect track features using the model and labels uploaded to the backend.' },
-    { id: 'depth', label: 'Depth', description: 'Estimate relative depth with Depth-Anything-V2-Small while preserving the car interior for downstream boundary filtering.', file: 'depth-anything-v2-small.onnx' },
+    { id: 'depth', label: 'Depth', description: 'Estimate relative depth while preserving the car interior for downstream boundary filtering.', file: 'depth-anything-v2-small.onnx' },
 ] as const;
 
 export type DetectionTask = typeof DETECTION_TASKS[number]['id'];

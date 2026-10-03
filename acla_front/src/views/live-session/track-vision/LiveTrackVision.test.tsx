@@ -42,8 +42,8 @@ const deferred = <T,>() => {
 let track: { stop: jest.Mock; onended: (() => void) | null };
 let stream: MediaStream;
 let getDisplayMedia: jest.Mock;
-let depthModel: { detect: jest.Mock; dispose: jest.Mock; executionProvider: string; name: string; classNames: string[] };
-let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu'; name: string; classNames: string[] };
+let depthModel: { detect: jest.Mock; dispose: jest.Mock; executionProvider: string; name: string; classNames: string[]; inputSize: number };
+let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu'; name: string; classNames: string[]; inputSize: number };
 const detection = { task: 'segment' as const, width: 2, height: 2, instances: [{
     classId: 0, confidence: 0.9, box: [0, 0, 1, 1] as [number, number, number, number], mask: new Uint8Array(4).fill(1),
 }], classNames: ['track', 'curb'], inferenceMs: 50 };
@@ -63,9 +63,9 @@ beforeEach(() => {
         if (!contexts.has(this)) contexts.set(this, { canvas: this, drawImage: jest.fn(), clearRect: jest.fn(), save: jest.fn(), restore: jest.fn(), fillRect: jest.fn(), fillText: jest.fn(), measureText: jest.fn(() => ({ width: 80 })), getImageData: jest.fn((_x, _y, width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), createImageData: jest.fn((width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), putImageData: jest.fn() } as any);
         return contexts.get(this)!;
     });
-    model = { name: 'track-features-v2', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu' };
+    model = { name: 'track-features-v2', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu', inputSize: 768 };
     (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue(model);
-    depthModel = { name: 'Depth-Anything-V2-Small', classNames: [], executionProvider: 'webgpu', dispose: jest.fn().mockResolvedValue(undefined),
+    depthModel = { name: 'Depth-Anything-V2-Small', classNames: [], executionProvider: 'webgpu', inputSize: 518, dispose: jest.fn().mockResolvedValue(undefined),
         detect: jest.fn().mockResolvedValue(vision(0).detections.depth) };
     (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depthModel);
     window.screenCapture = {
@@ -75,6 +75,79 @@ beforeEach(() => {
 });
 
 afterEach(() => { jest.restoreAllMocks(); jest.clearAllTimers(); jest.useRealTimers(); delete window.screenCapture; });
+
+it.each([
+    ['Segmentation', ['384', '640', '768'], '768'],
+    ['Depth', ['252', '392', '518'], '518'],
+])('offers three input resolutions for %s with the original size selected', async (label, sizes, defaultSize) => {
+    render(<LiveTrackVision name="vision" />);
+    await flush();
+    const select = screen.getByRole('combobox', { name: `${label} input resolution` });
+    expect(select).toHaveValue(defaultSize);
+    const options = within(select).getAllByRole('option') as HTMLOptionElement[];
+    expect(options.map((option) => option.value)).toEqual(sizes);
+    expect(options.map((option) => option.textContent?.split(' · ')[0])).toEqual(['Low', 'Medium', 'High']);
+});
+
+it.each(['Segmentation', 'Depth'])('reloads only %s at its selected resolution while capture continues', async (label) => {
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    const original = label === 'Segmentation' ? model : depthModel;
+    const unchanged = label === 'Segmentation' ? depthModel : model;
+    const loader = label === 'Segmentation' ? TrackVisionModel.loadBackend : TrackVisionModel.loadBuiltin;
+    const inputSize = label === 'Segmentation' ? 384 : 252;
+    const replacement = { ...original, inputSize, dispose: jest.fn().mockResolvedValue(undefined) };
+    const pending = deferred<typeof replacement>();
+    (loader as jest.Mock).mockReturnValueOnce(pending.promise);
+    fireEvent.change(screen.getByRole('combobox', { name: `${label} input resolution` }), { target: { value: inputSize } });
+    await flush();
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(original.dispose).toHaveBeenCalledTimes(1);
+    expect(unchanged.dispose).not.toHaveBeenCalled();
+    if (label === 'Segmentation') expect(loader).toHaveBeenLastCalledWith(inputSize);
+    else expect(loader).toHaveBeenLastCalledWith('depth', inputSize);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    await act(async () => { pending.resolve(replacement); });
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.detections).toHaveProperty('depth');
+    expect(ref.current!.getLatestDetection()?.detections).toHaveProperty('segment');
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(label === 'Segmentation' ? 2 : 1);
+    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(label === 'Depth' ? 2 : 1);
+    expect(track.stop).not.toHaveBeenCalled();
+    expect(getDisplayMedia).toHaveBeenCalledTimes(1);
+});
+
+it('discards pending detections and superseded model loads after rapid resolution changes', async () => {
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    const inference = deferred<typeof detection>();
+    model.detect.mockReturnValueOnce(inference.promise);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    const low = { ...model, inputSize: 384, dispose: jest.fn().mockResolvedValue(undefined) };
+    const medium = { ...model, inputSize: 640, dispose: jest.fn().mockResolvedValue(undefined) };
+    const pending = deferred<typeof model>();
+    (TrackVisionModel.loadBackend as jest.Mock).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(medium);
+    const select = screen.getByRole('combobox', { name: 'Segmentation input resolution' });
+    fireEvent.change(select, { target: { value: 384 } });
+    await flush();
+    fireEvent.change(select, { target: { value: 640 } });
+    await act(async () => { inference.resolve(detection); });
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(depthModel.detect).toHaveBeenCalledTimes(1);
+    await act(async () => { pending.resolve(low); });
+    expect(low.dispose).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(640);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(detection);
+    expect(select).toHaveValue('640');
+    expect(depthModel.dispose).not.toHaveBeenCalled();
+    expect(track.stop).not.toHaveBeenCalled();
+});
 
 it('shows all masks in one depth preview with matching per-mask table names and refreshes them with capture', async () => {
     const instances = [
@@ -201,7 +274,7 @@ it('shows relative depth in the hover, legend, table and mask captions without m
         values: new Float32Array(4).fill(0.02), classNames: [], inferenceMs: 1 });
     render(<LiveTrackVision name="vision" />);
     await flush();
-    expect(screen.getByText('Model: Depth-Anything-V2-Small')).toBeVisible();
+    expect(screen.queryByText(/Depth-Anything-V2-Small|track-features-v2|Ultralytics/)).not.toBeInTheDocument();
     await startCapture();
     selectStep('Depth map');
     const canvas = screen.getByLabelText('Captured game frame with vision detections') as HTMLCanvasElement;
@@ -699,14 +772,14 @@ it('loads the backend model automatically and detects without a file upload', as
     const { unmount } = render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
-    expect(TrackVisionModel.loadBackend).toHaveBeenCalledWith();
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledWith(768);
     expect(screen.queryByRole('checkbox', { name: 'Allow CPU fallback' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.getByLabelText('Model labels')).toHaveTextContent('track, curb');
     expect(screen.queryByRole('checkbox', { name: 'Enable Depth' })).not.toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: 'Enable Segmentation' })).not.toBeInTheDocument();
     expect(screen.queryByText('Model settings')).not.toBeInTheDocument();
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth');
+    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth', 518);
     expect(screen.queryByRole('checkbox', { name: 'Enable Semantic' })).not.toBeInTheDocument();
     await startCapture();
     expect(model.detect).toHaveBeenCalledTimes(1);
@@ -796,7 +869,7 @@ it('runs depth alongside backend segmentation and releases both models on unmoun
     const ref = React.createRef<TrackVisionHandle>();
     const { unmount } = render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
-    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth');
+    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth', 518);
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText('Depth inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.queryByRole('group', { name: /Depth range/ })).not.toBeInTheDocument();
@@ -926,7 +999,7 @@ it('automatically retries GPU failures until loading succeeds', async () => {
     expect(screen.getByText('Retrying GPU…')).toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(3000); });
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(3);
-    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith();
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(768);
     expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(6000); });
@@ -964,7 +1037,7 @@ it('automatically recovers GPU inference during capture', async () => {
     expect(screen.getByText('Retrying GPU…')).toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(3000); });
     await act(async () => { jest.advanceTimersByTime(200); });
-    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith();
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(768);
     expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(detection);
     expect(track.stop).not.toHaveBeenCalled();
 });

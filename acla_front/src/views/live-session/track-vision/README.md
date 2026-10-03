@@ -8,6 +8,8 @@ Use **Expand capture** in the preview to fill most of the app window. Capture, d
 
 Use **Display label** in the Segmentation tab to show only one label's masks, boxes, and captions, or choose **All labels** (the default). Changing the selection updates the current preview immediately. Detection, screen analysis and scene reconstruction continue using every label.
 
+In **Setting → Track models**, each model has an **Input resolution** dropdown with Low, Medium and High presets. Segmentation uses 384 × 384, 640 × 640 and 768 × 768; depth uses 252 × 252, 392 × 392 and 518 × 518. Both default to High. Lower resolutions reduce GPU work. Changing a resolution clears old detections and reloads only that model while capture continues; analysis resumes when both models are ready.
+
 ## Visual pipeline
 
 The numbered tabs follow one captured frame through seven views:
@@ -47,17 +49,17 @@ Electron stores backend checkpoints, ONNX exports, and their metadata under:
 ```text
 <app userData>/track-vision/models/<model-id>-<sha256>/
   weights.pt
-  weights.onnx
-  manifest.json
+  weights-<input-size>.onnx
+  manifest-<input-size>.json
 ```
 
-Downloads are checked against the backend byte length and SHA-256 before saving. On first use, the desktop Python environment converts the verified checkpoint to a static, float32, 640px ONNX segmentation model. Export is offline and automatic package installation is disabled. The exporter validates the model task, class count, and output layout. Backend class names are applied in class-ID order and used by both the label list and overlays.
+Downloads are checked against the backend byte length and SHA-256 before saving. On first use of each resolution, the desktop Python environment converts the verified checkpoint to a static, float32 ONNX segmentation model at the selected size. Exports and manifests are cached separately per resolution and share the original checkpoint. Export is offline and automatic package installation is disabled. The exporter validates the model task, class count, input resolution and output layout. Backend class names are applied in class-ID order and used by both the label list and overlays.
 
 The original checkpoint is retained if conversion fails, so a retry can export it without another download. Verified ONNX exports survive app restarts; damaged exports are rebuilt from the saved checkpoint. Segmentation metadata is requested from the backend when loading, so segmentation requires a backend connection. Depth loads independently from the bundled `public/vision-models/depth-anything-v2-small.onnx` and needs no backend connection.
 
 Desktop development and packaging install the conversion dependencies from `src/py-scripts/requirements.txt` through the existing `setup:python` lifecycle. After updating an existing checkout, run `npm run setup:python` and restart Electron, or use `npm run start:electron`, which performs setup automatically. `npm run setup:vision` only copies the pinned ONNX Runtime Web assets from node_modules into the app; it never downloads models.
 
-To prepare the bundled depth weights before development or packaging, install `scripts/vision-requirements.txt` in a Python environment and run `npm run setup:vision-models`. The script uses `.venv/track-vision` when present; `VISION_PYTHON` selects another interpreter. It exports the official `depth-anything/Depth-Anything-V2-Small-hf` checkpoint at a pinned revision, downloading on first use and validating/reusing prepared weights thereafter. The static float32 ONNX input is `[1, 3, 518, 518]`, with RGB ImageNet normalization; the output is `[1, 518, 518]` relative disparity. The generated ONNX file is ignored by Git and copied into the build with the public assets. Its Apache 2.0 license is included in `public/vision-models/DEPTH-ANYTHING-V2-LICENSE.txt`.
+To prepare the bundled depth weights before development or packaging, install `scripts/vision-requirements.txt` in a Python environment and run `npm run setup:vision-models`. The script uses `.venv/track-vision` when present; `VISION_PYTHON` selects another interpreter. It exports the official `depth-anything/Depth-Anything-V2-Small-hf` checkpoint at a pinned revision, downloading on first use and validating/reusing prepared weights thereafter. Static float32 ONNX inputs are `[1, 3, size, size]` for sizes 252, 392 and 518, with RGB ImageNet normalization; outputs are `[1, size, size]` relative disparity. The default 518px export keeps the filename `depth-anything-v2-small.onnx`; the smaller exports use `depth-anything-v2-small-252.onnx` and `depth-anything-v2-small-392.onnx`. These generated files are ignored by Git and copied into the build with the public assets. Its Apache 2.0 license is included in `public/vision-models/DEPTH-ANYTHING-V2-LICENSE.txt`.
 
 Inference requires WebGPU for both models. GPU failures retry after three seconds. Model retrieval and export errors offer a manual Retry button. Screen preview remains available when a model cannot load, but inference and analysis wait for both models. Models cannot be disabled individually, and there is no CPU fallback.
 
@@ -65,7 +67,7 @@ All frames and inference stay on this device. Captured frames run sequentially a
 
 ## Results
 
-`TrackVisionModel.loadBackend()` loads segmentation through the desktop cache. `TrackVisionModel.loadBuiltin('depth')` loads bundled depth weights. `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time, and ordered class names for segmentation. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. The 518px depth input scales the shared 768px letterbox coordinates to keep masks aligned. Call `dispose()` when finished.
+`TrackVisionModel.loadBackend(inputSize = 768)` loads segmentation through the desktop cache. `TrackVisionModel.loadBuiltin('depth', inputSize = 518)` loads bundled depth weights. `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time, and ordered class names for segmentation. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. Both models scale the shared 768px letterbox coordinates to their selected input resolution to keep masks aligned. Segmentation boxes are normalized using the actual input size. Call `dispose()` when finished.
 
 `LiveTrackVision` registers a `TrackVisionHandle` as `visualization:track-vision`. Consumers use `getLatestDetection()` or `subscribeDetection(listener)`. Results include the source timestamp and dimensions, successful segmentation under `detections.segment`, and depth under `detections.depth`. Masks, boxes, and depth maps refer to the letterboxed model input; drawing segmentation removes its padding. Results clear on stop, configuration changes, and unmount. Depth values remain available to detection consumers; the Label depths tab visualizes retained label depths as a heatmap.
 
