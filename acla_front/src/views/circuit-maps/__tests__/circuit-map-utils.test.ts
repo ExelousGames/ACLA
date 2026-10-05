@@ -3,9 +3,11 @@ import {
     extractAccCaptureSample,
     getCircuitMapBin,
     getCircuitMapDrawSegments,
+    mergeIRacingCircuitMapSamples,
     upsertCircuitMapSample
 } from '../circuit-map-utils';
 import { CircuitMapBinSample } from '../circuit-map-types';
+import type { StandardTelemetrySample } from 'views/live-session/live-session-types';
 
 const makeTelemetryRow = (normalizedPosition: number) => ({
     Graphics_normalized_car_position: normalizedPosition,
@@ -19,6 +21,43 @@ const makeTelemetryRow = (normalizedPosition: number) => ({
 });
 
 describe('circuit map utilities', () => {
+    it('merges formatted iRacing player coordinates across chunks and preserves locked bins', () => {
+        const row = { ...makeTelemetryRow(0.25), Graphics_status: 2 };
+        const first = mergeIRacingCircuitMapSamples([], [row]);
+        const locked = { ...first.samples[0], bin: 500, locked: true };
+        const result = mergeIRacingCircuitMapSamples([...first.samples, locked], [
+            { ...row, Graphics_car_coordinates: [{ x: 20, y: 4, z: 60 }] },
+            { ...row, Graphics_normalized_car_position: 0.5 },
+            { ...row, Graphics_normalized_car_position: 1, Graphics_player_car_id: 63,
+                Graphics_car_id: [63, -1], Graphics_car_coordinates: [{ x: 0, y: 0, z: 0 }] },
+        ]);
+        expect(result.capturedRows).toBe(3);
+        expect(result.samples).toEqual([
+            expect.objectContaining({ bin: 250, x: 15, y: 3, z: 45, sample_count: 2 }),
+            locked,
+            expect.objectContaining({ bin: 999, x: 0, y: 0, z: 0, sample_count: 1 }),
+        ]);
+        expect(first.samples[0].sample_count).toBe(1);
+    });
+
+    it.each([
+        { Graphics_status: 0 },
+        { Graphics_normalized_car_position: null },
+        { Graphics_normalized_car_position: -1 },
+        { Graphics_normalized_car_position: 1.1 },
+        { Graphics_normalized_car_position: NaN },
+        { Graphics_player_car_id: -1 },
+        { Graphics_player_car_id: 63 },
+        { Graphics_car_coordinates: undefined },
+        { Graphics_car_coordinates: [null, { x: 1, y: 2, z: 3 }] },
+        { Graphics_car_coordinates: [{ x: NaN, y: 0, z: 0 }] },
+    ])('ignores unusable iRacing player samples without falling back to another car: %o', (fields) => {
+        const result = mergeIRacingCircuitMapSamples([], [
+            { ...makeTelemetryRow(0.25), Graphics_status: 2, ...fields } as unknown as StandardTelemetrySample,
+        ]);
+        expect(result).toEqual({ samples: [], capturedRows: 0 });
+    });
+
     it('bins normalized positions and clamps the finish line to the final bin', () => {
         expect(getCircuitMapBin(0)).toBe(0);
         expect(getCircuitMapBin(0.123)).toBe(123);
@@ -86,7 +125,7 @@ describe('circuit map utilities', () => {
         expect(next).toEqual([locked]);
     });
 
-    it('aligns boundary samples by bin index', () => {
+    it('aligns boundary, middle line, and pit lane samples by bin index', () => {
         const rows = alignCircuitMapSamples({
             left_boundary: [{
                 bin: 10,
@@ -106,6 +145,15 @@ describe('circuit map utilities', () => {
                 sample_count: 1,
                 updated_at: '2026-01-01T00:00:00.000Z'
             }],
+            middle_line: [{
+                bin: 10,
+                normalized_position: 0.01,
+                x: 2,
+                y: 0,
+                z: 2,
+                sample_count: 1,
+                updated_at: '2026-01-01T00:00:00.000Z'
+            }],
             pit_lane: [{
                 bin: 10,
                 normalized_position: 0.01,
@@ -121,6 +169,7 @@ describe('circuit map utilities', () => {
         expect(rows[0].bin).toBe(10);
         expect(rows[0].left_boundary?.x).toBe(1);
         expect(rows[0].right_boundary?.x).toBe(3);
+        expect(rows[0].middle_line?.x).toBe(2);
         expect(rows[0].pit_lane?.x).toBe(2);
     });
 

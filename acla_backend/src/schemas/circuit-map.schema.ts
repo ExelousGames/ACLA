@@ -1,7 +1,8 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 
-export type CircuitMapGame = 'acc' | 'other';
-export type CircuitMapCaptureMode = 'left_boundary' | 'right_boundary' | 'pit_lane';
+// Game identifiers are opaque metadata supplied by clients.
+export type CircuitMapGame = string;
+export type CircuitMapCaptureMode = 'left_boundary' | 'middle_line' | 'right_boundary' | 'pit_lane';
 
 export class CircuitMapBinSample {
     @Prop({ required: true })
@@ -34,6 +35,9 @@ export class CircuitMapSamplesByMode {
     left_boundary: CircuitMapBinSample[];
 
     @Prop({ type: [Object], default: [] })
+    middle_line: CircuitMapBinSample[];
+
+    @Prop({ type: [Object], default: [] })
     right_boundary: CircuitMapBinSample[];
 
     @Prop({ type: [Object], default: [] })
@@ -42,7 +46,7 @@ export class CircuitMapSamplesByMode {
 
 @Schema()
 export class CircuitMap {
-    @Prop({ type: String, required: true, enum: ['acc', 'other'], default: 'acc' })
+    @Prop({ type: String, required: true })
     game: CircuitMapGame;
 
     @Prop({ required: true })

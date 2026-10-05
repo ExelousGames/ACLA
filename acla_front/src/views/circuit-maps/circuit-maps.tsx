@@ -5,6 +5,7 @@ import apiService from 'services/api.service';
 import { fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 'services/circuitMapService';
 import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
+import { readLocalTelemetry } from 'views/recorded-session/local-iracing/read-local-telemetry';
 import {
     OPERATION_COMPONENT_NAMES,
     useOptionalOperationComponentSnapshot,
@@ -30,6 +31,7 @@ import {
     countCircuitMapSamples,
     extractAccCaptureSample,
     getCircuitMapDrawSegments,
+    mergeIRacingCircuitMapSamples,
     upsertCaptureModeSample
 } from './circuit-map-utils';
 import './circuit-maps.css';
@@ -41,12 +43,14 @@ type ProjectedPoint = { screenX: number; screenY: number; sample: CircuitMapBinS
 
 const MODE_COLORS: Record<CircuitMapCaptureMode, string> = {
     left_boundary: '#29b6f6',
+    middle_line: '#ce93d8',
     right_boundary: '#ffca28',
     pit_lane: '#66bb6a'
 };
 
 const EMPTY_SAMPLES: CircuitMapSamplesByMode = {
     left_boundary: [],
+    middle_line: [],
     right_boundary: [],
     pit_lane: []
 };
@@ -90,6 +94,7 @@ const CircuitMaps = () => {
     const lastCaptureSignatureRef = useRef('');
     const mapLoadRequestRef = useRef(0);
     const listLoadRequestRef = useRef(0);
+    const importRef = useRef<AbortController | null>(null);
 
     const [game, setGame] = useState<CircuitMapGame>('acc');
     const [mapList, setMapList] = useState<CircuitMapSummaryDto[]>([]);
@@ -111,8 +116,12 @@ const CircuitMaps = () => {
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
+    const [isImporting, setIsImporting] = useState(false);
+    const [importStatus, setImportStatus] = useState('');
 
     const isAcc = game === 'acc';
+    const isIRacing = game === 'iracing';
+    const canImportIRacing = Boolean(window.electronAPI?.importLocalIRacingTelemetry);
     const isAccLive = isAcc && telemetryStatus === ACC_STATUS.ACC_LIVE;
     const sampleCount = countCircuitMapSamples(samplesByMode);
     const currentAccTrackKey = getAccTrackKey(
@@ -141,7 +150,17 @@ const CircuitMaps = () => {
         }
     }, [game]);
 
+    const cancelImport = useCallback(() => {
+        importRef.current?.abort();
+        importRef.current = null;
+        setIsImporting(false);
+        setImportStatus('');
+    }, []);
+
+    useEffect(() => () => { importRef.current?.abort(); }, []);
+
     useEffect(() => {
+        cancelImport();
         mapLoadRequestRef.current += 1;
         setIsMapLoading(false);
         setSelectedMapId(null);
@@ -151,7 +170,7 @@ const CircuitMaps = () => {
         setSelectedPoint(null);
         setIsCapturing(false);
         void loadMapList(game);
-    }, [game, loadMapList]);
+    }, [cancelImport, game, loadMapList]);
 
     useEffect(() => {
         if (!isAcc || selectedMapId || circuitName) {
@@ -208,6 +227,7 @@ const CircuitMaps = () => {
     }, [captureMode, isAcc, isCapturing]);
 
     const loadMap = useCallback(async (mapId: string) => {
+        cancelImport();
         const requestId = ++mapLoadRequestRef.current;
         setIsMapLoading(true);
         setSelectedMapId(mapId);
@@ -228,9 +248,10 @@ const CircuitMaps = () => {
         } finally {
             if (requestId === mapLoadRequestRef.current) setIsMapLoading(false);
         }
-    }, [game, upsertCachedCircuitMap]);
+    }, [cancelImport, game, upsertCachedCircuitMap]);
 
     const resetForNewMap = useCallback(() => {
+        cancelImport();
         mapLoadRequestRef.current += 1;
         setIsMapLoading(false);
         setIsCapturing(false);
@@ -246,7 +267,60 @@ const CircuitMaps = () => {
             setCircuitName('');
             setSourceTrackKey(null);
         }
-    }, [currentAccTrackKey, isAcc]);
+    }, [cancelImport, currentAccTrackKey, isAcc]);
+
+    const importIRacingFile = async () => {
+        if (importRef.current || !isIRacing || isMapLoading || isSaving || isDeleting) return;
+        const controller = new AbortController();
+        importRef.current = controller;
+        setIsImporting(true);
+        setError(null);
+        setImportStatus('Opening and converting iRacing telemetry...');
+        dragStateRef.current = null;
+        setSelectedPoint(null);
+        let convertedPath: string | undefined;
+        try {
+            const imported = await window.electronAPI.importLocalIRacingTelemetry();
+            if (!imported) {
+                if (!controller.signal.aborted) setImportStatus('');
+                return;
+            }
+            convertedPath = imported.filePath;
+            if (controller.signal.aborted) return;
+            if (sampleCount > 0 && sourceTrackKey && imported.track !== sourceTrackKey) {
+                throw new Error('This recording is from a different circuit. Create a New Map to import it.');
+            }
+            let nextSamples = getSamplesForMode(samplesByMode, captureMode);
+            let capturedRows = 0;
+            const updatedAt = new Date().toISOString();
+            await readLocalTelemetry(imported.filePath, controller.signal, (count) => {
+                setImportStatus(`Reading telemetry: ${count.toLocaleString()} / ${imported.rowCount.toLocaleString()}`);
+            }, (rows) => {
+                const result = mergeIRacingCircuitMapSamples(nextSamples, rows, updatedAt);
+                nextSamples = result.samples;
+                capturedRows += result.capturedRows;
+            });
+            if (controller.signal.aborted) return;
+            if (!capturedRows) {
+                throw new Error('This .ibt file contains no usable driver coordinates and lap positions. Try a completed recording with GPS telemetry.');
+            }
+            setSamplesByMode((previous) => ({ ...previous, [captureMode]: nextSamples }));
+            setCircuitName((previous) => previous || imported.track);
+            setSourceTrackKey(imported.track || null);
+            setImportStatus(`${imported.fileName}: imported ${capturedRows.toLocaleString()} driver samples into ${formatModeLabel(captureMode)}.`);
+        } catch (cause) {
+            if (!controller.signal.aborted) {
+                setError(cause instanceof Error ? cause.message : 'Could not import the .ibt file.');
+                setImportStatus('');
+            }
+        } finally {
+            if (convertedPath) await window.electronAPI.deleteTempFile(convertedPath).catch(() => undefined);
+            if (importRef.current === controller) {
+                importRef.current = null;
+                if (!controller.signal.aborted) setIsImporting(false);
+            }
+        }
+    };
 
     const deleteMap = async () => {
         if (!selectedMapId || isDeleting || isSaving || isMapLoading || listState === 'loading') return;
@@ -282,7 +356,7 @@ const CircuitMaps = () => {
         const payload = {
             game,
             circuit_name: trimmedName,
-            source_track_key: isAcc ? sourceTrackKey : null,
+            source_track_key: game === 'other' ? null : sourceTrackKey,
             resolution: CIRCUIT_MAP_BIN_RESOLUTION,
             samples: samplesByMode
         };
@@ -321,7 +395,6 @@ const CircuitMaps = () => {
     }, [
         circuitName,
         game,
-        isAcc,
         loadMapList,
         refreshCircuitMaps,
         sampleCount,
@@ -545,6 +618,7 @@ const CircuitMaps = () => {
     }, []);
 
     const handlePointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+        if (isImporting) return;
         const pointer = getPointerPosition(event);
         const nearest = projectedPointsRef.current.reduce<{ point: ProjectedPoint | null; distance: number }>((closest, point) => {
             const distance = Math.hypot(point.screenX - pointer.screenX, point.screenY - pointer.screenY);
@@ -563,7 +637,7 @@ const CircuitMaps = () => {
         setSelectedPoint(nextSelection);
         dragStateRef.current = nextSelection;
         event.currentTarget.setPointerCapture(event.pointerId);
-    }, [getPointerPosition]);
+    }, [getPointerPosition, isImporting]);
 
     const handlePointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
         const dragState = dragStateRef.current;
@@ -675,7 +749,7 @@ const CircuitMaps = () => {
 
                 <div className="circuit-maps__section">
                     <Text className="circuit-maps__label">Capture Mode</Text>
-                    <Select.Root value={captureMode} onValueChange={(value) => setCaptureMode(value as CircuitMapCaptureMode)}>
+                    <Select.Root value={captureMode} disabled={isImporting} onValueChange={(value) => setCaptureMode(value as CircuitMapCaptureMode)}>
                         <Select.Trigger />
                         <Select.Content>
                             {CIRCUIT_MAP_CAPTURE_MODES.map((option) => (
@@ -689,6 +763,18 @@ const CircuitMaps = () => {
                             {captureButton}
                             <Badge color={isAccLive ? 'green' : 'gray'}>{isAccLive ? 'ACC Live' : 'ACC Offline'}</Badge>
                         </Flex>
+                    ) : isIRacing ? (
+                        <Flex direction="column" gap="2">
+                            <Text size="2" className="circuit-maps__muted">
+                                Import your recorded driving path into {formatModeLabel(captureMode)}. Exit the car in iRacing first to finish recording.
+                            </Text>
+                            <Button onClick={() => void importIRacingFile()} disabled={!canImportIRacing || isImporting || isMapLoading || isSaving || isDeleting}>
+                                {isImporting ? <Spinner size="1" /> : <PlusIcon />}
+                                {isImporting ? 'Importing...' : 'Open .ibt file'}
+                            </Button>
+                            {!canImportIRacing && <Text size="2">Open the desktop app to import local iRacing .ibt files.</Text>}
+                            {importStatus && <Text role="status" size="2">{importStatus}</Text>}
+                        </Flex>
                     ) : (
                         <Badge color="gray">Manual Edit</Badge>
                     )}
@@ -701,7 +787,7 @@ const CircuitMaps = () => {
                         <TextField.Root placeholder="X" value={manualX} onChange={(event) => setManualX(event.target.value)} />
                         <TextField.Root placeholder="Z" value={manualZ} onChange={(event) => setManualZ(event.target.value)} />
                     </div>
-                    <Button variant="soft" onClick={addManualPoint}>
+                    <Button variant="soft" onClick={addManualPoint} disabled={isImporting}>
                         <PlusIcon />
                         Add Point
                     </Button>
@@ -727,7 +813,7 @@ const CircuitMaps = () => {
 
                 {error ? (
                     <div className="circuit-maps__section">
-                        <Text size="2" className="circuit-maps__error">{error}</Text>
+                        <Text role="alert" size="2" className="circuit-maps__error">{error}</Text>
                     </div>
                 ) : null}
             </aside>
@@ -738,7 +824,7 @@ const CircuitMaps = () => {
                         <Text size="2" className="circuit-maps__title">{circuitName || 'Unsaved Circuit Map'}</Text>
                         <Text size="1" className="circuit-maps__muted">
                             {sampleCount.toLocaleString()} samples
-                            {isAcc && sourceTrackKey ? ` / ${sourceTrackKey}` : ''}
+                            {sourceTrackKey ? ` / ${sourceTrackKey}` : ''}
                         </Text>
                     </div>
 
@@ -757,7 +843,7 @@ const CircuitMaps = () => {
                             setDeleteError(null);
                         }}>
                             <AlertDialog.Trigger>
-                                <Button color="red" variant="soft" disabled={!selectedMapId || isMapLoading || listState === 'loading' || isSaving || isDeleting}>
+                                <Button color="red" variant="soft" disabled={!selectedMapId || isMapLoading || listState === 'loading' || isSaving || isDeleting || isImporting}>
                                     <TrashIcon />
                                     Remove Map
                                 </Button>
@@ -785,7 +871,7 @@ const CircuitMaps = () => {
                                 </Flex>
                             </AlertDialog.Content>
                         </AlertDialog.Root>
-                        <Button onClick={() => void saveMap()} disabled={isSaving || isMapLoading || isDeleting || !circuitName.trim()}>
+                        <Button onClick={() => void saveMap()} disabled={isSaving || isMapLoading || isDeleting || isImporting || !circuitName.trim()}>
                             {isSaving ? <Spinner size="1" /> : <CheckIcon />}
                             Save
                         </Button>

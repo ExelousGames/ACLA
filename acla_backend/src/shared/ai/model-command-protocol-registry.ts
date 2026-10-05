@@ -720,7 +720,7 @@ const MODEL_COMMAND_DEFINITIONS = [
             },
             source_track_key: {
                 type: 'string',
-                description: 'ACC source track key such as brands_hatch, monza, or spa.',
+                description: 'Source track identifier supplied by the client for this circuit map.',
             },
             map_name: {
                 type: 'string',

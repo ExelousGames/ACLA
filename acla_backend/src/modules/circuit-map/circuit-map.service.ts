@@ -17,7 +17,7 @@ type CircuitMapPayload = {
     samples?: Partial<Record<CircuitMapCaptureMode, CircuitMapBinSample[]>>;
 };
 
-const CAPTURE_MODES: CircuitMapCaptureMode[] = ['left_boundary', 'right_boundary', 'pit_lane'];
+const CAPTURE_MODES: CircuitMapCaptureMode[] = ['left_boundary', 'middle_line', 'right_boundary', 'pit_lane'];
 
 @Injectable()
 export class CircuitMapService {
@@ -27,7 +27,10 @@ export class CircuitMapService {
     ) { }
 
     async list(game?: CircuitMapGame) {
-        const query = game ? { game } : {};
+        if (game !== undefined && (typeof game !== 'string' || !game.trim())) {
+            throw new BadRequestException('game must be a non-empty string');
+        }
+        const query = game !== undefined ? { game } : {};
         const maps = await this.circuitMapModel
             .find(query)
             .sort({ updated_at: -1, circuit_name: 1 })
@@ -79,18 +82,21 @@ export class CircuitMapService {
         }
     }
 
-    private normalizePayload(payload: CircuitMapPayload, requireName: boolean) {
+    private normalizePayload(payload: CircuitMapPayload, isCreate: boolean) {
         const circuitName = payload.circuit_name?.trim();
-        if (requireName && !circuitName) {
+        if (isCreate && !circuitName) {
             throw new BadRequestException('circuit_name is required');
         }
 
-        const game = payload.game === 'other' ? 'other' : 'acc';
+        const game = payload.game;
+        if ((isCreate || game !== undefined) && (typeof game !== 'string' || !game.trim())) {
+            throw new BadRequestException('game must be a non-empty string');
+        }
         const samples = this.normalizeSamples(payload.samples);
         const sampleCount = this.countSamples(samples);
 
         return {
-            game,
+            ...(game !== undefined ? { game } : {}),
             ...(circuitName ? { circuit_name: circuitName } : {}),
             source_track_key: payload.source_track_key || null,
             resolution: Number.isFinite(Number(payload.resolution)) ? Number(payload.resolution) : 1000,
@@ -117,6 +123,7 @@ export class CircuitMapService {
                 : [],
         }), {
             left_boundary: [],
+            middle_line: [],
             right_boundary: [],
             pit_lane: [],
         } as CircuitMapSamplesByMode);

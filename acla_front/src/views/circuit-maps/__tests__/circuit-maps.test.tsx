@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import CircuitMaps from '../circuit-maps';
 import apiService from 'services/api.service';
-import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
+import type { LiveSessionRuntime, RecordedFileReadEvent } from 'views/live-session/live-session-types';
 import {
     OPERATION_COMPONENT_NAMES,
     OperationComponentRefProvider,
@@ -34,8 +34,8 @@ jest.mock('@radix-ui/themes', () => ({
         ),
     },
     Select: {
-        Root: ({ value, onValueChange, children }: any) => (
-            <select value={value} onChange={(event) => onValueChange(event.target.value)}>
+        Root: ({ value, onValueChange, children, disabled }: any) => (
+            <select value={value} disabled={disabled} onChange={(event) => onValueChange(event.target.value)}>
                 {children}
             </select>
         ),
@@ -74,6 +74,25 @@ jest.mock('contexts/CircuitMapsContext', () => ({
 }));
 
 const mockedApi = apiService as jest.Mocked<typeof apiService>;
+const imported = { filePath: 'C:\\temp\\circuit.jsonl', fileName: 'spa.ibt', rowCount: 2, track: 'spa - grandprix', car: 'GT3' };
+let readListener: (event: RecordedFileReadEvent) => void;
+const importedRow = {
+    Graphics_status: 2, Graphics_normalized_car_position: 0.25,
+    Graphics_player_car_id: 63, Graphics_car_id: [63, -1],
+    Graphics_car_coordinates: [{ x: 10, y: 2, z: 30 }, { x: 0, y: 0, z: 0 }],
+};
+const finishImportRead = (rows = [importedRow, importedRow]) => {
+    readListener({ type: 'chunk', readId: 'map-read', rows });
+    readListener({ type: 'complete', readId: 'map-read', game: 'iracing', format: 'standard-flat', rowCount: rows.length, totalBytes: 200 });
+};
+
+const openIRacingImport = async () => {
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'iracing');
+    await userEvent.click(screen.getByRole('button', { name: /open .ibt file/i }));
+    await waitFor(() => expect(window.electronAPI.startRecordedFileRead).toHaveBeenCalledWith({
+        filePath: imported.filePath, game: 'iracing', purpose: 'consume',
+    }));
+};
 
 const baseContext: LiveSessionRuntime = {
     sessionGame: null,
@@ -149,6 +168,13 @@ describe('CircuitMaps', () => {
         mockedApi.put.mockResolvedValue({ data: {}, status: 200 } as any);
         mockedApi.delete.mockReset().mockResolvedValue({ data: undefined, status: 204 } as any);
         mockRefreshCircuitMaps.mockResolvedValue([]);
+        window.electronAPI = {
+            importLocalIRacingTelemetry: jest.fn().mockResolvedValue(imported),
+            onRecordedFileReadEvent: jest.fn((callback) => { readListener = callback; return jest.fn(); }),
+            startRecordedFileRead: jest.fn().mockResolvedValue({ readId: 'map-read' }),
+            cancelRecordedFileRead: jest.fn().mockResolvedValue(undefined),
+            deleteTempFile: jest.fn().mockResolvedValue({ success: true }),
+        } as any;
 
         (global as any).ResizeObserver = class {
             observe = jest.fn();
@@ -169,6 +195,115 @@ describe('CircuitMaps', () => {
             fill: jest.fn(),
             fillText: jest.fn(),
         })) as any;
+    });
+
+    it.each(['left_boundary', 'middle_line', 'right_boundary', 'pit_lane'])('imports converted iRacing driver coordinates into %s and saves the game and track', async (mode) => {
+        renderCircuitMaps();
+        await userEvent.selectOptions(screen.getAllByRole('combobox')[1], mode);
+        await openIRacingImport();
+        expect(screen.getByRole('button', { name: /save/i })).toBeDisabled();
+        expect(screen.getByRole('button', { name: /add point/i })).toBeDisabled();
+        await act(async () => finishImportRead());
+        expect(screen.getByLabelText('Circuit name')).toHaveValue(imported.track);
+        expect(screen.getByRole('status')).toHaveTextContent('imported 2 driver samples');
+        expect(window.electronAPI.deleteTempFile).toHaveBeenCalledWith(imported.filePath);
+        await userEvent.click(screen.getByRole('button', { name: /save/i }));
+        await waitFor(() => expect(mockedApi.post).toHaveBeenCalledWith('/circuit-map', expect.objectContaining({
+            game: 'iracing', circuit_name: imported.track, source_track_key: imported.track,
+            samples: expect.objectContaining({ [mode]: [expect.objectContaining({ bin: 250, x: 10, y: 2, z: 30, sample_count: 2 })] }),
+        })));
+        expect(mockUpsertCachedCircuitMap).toHaveBeenCalledWith(expect.objectContaining({ game: 'iracing' }));
+        expect(mockRefreshCircuitMaps).toHaveBeenCalledWith('iracing');
+        expect(mockedApi.get).toHaveBeenCalledWith('/circuit-map/list', { game: 'iracing' });
+    });
+
+    it('leaves a draft unchanged when file selection is cancelled', async () => {
+        (window.electronAPI.importLocalIRacingTelemetry as jest.Mock).mockResolvedValue(null);
+        renderCircuitMaps();
+        await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'iracing');
+        await userEvent.type(screen.getByLabelText('Circuit name'), 'My draft');
+        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
+        await userEvent.click(screen.getByRole('button', { name: /open .ibt file/i }));
+        await waitFor(() => expect(screen.getByRole('button', { name: /open .ibt file/i })).toBeEnabled());
+        expect(screen.getByLabelText('Circuit name')).toHaveValue('My draft');
+        expect(screen.getByText(/1 samples/)).toBeInTheDocument();
+        expect(window.electronAPI.startRecordedFileRead).not.toHaveBeenCalled();
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('reports unusable coordinates and retains the existing draft', async () => {
+        renderCircuitMaps();
+        await openIRacingImport();
+        await act(async () => finishImportRead([{ ...importedRow, Graphics_player_car_id: -1 }]));
+        expect(screen.getByRole('alert')).toHaveTextContent('no usable driver coordinates');
+        expect(screen.getByText(/0 samples/)).toBeInTheDocument();
+        expect(window.electronAPI.deleteTempFile).toHaveBeenCalledWith(imported.filePath);
+        expect(screen.getByRole('button', { name: /open .ibt file/i })).toBeEnabled();
+    });
+
+    it('reports converter failures and allows retrying', async () => {
+        (window.electronAPI.importLocalIRacingTelemetry as jest.Mock).mockRejectedValue(new Error('Invalid iRacing .ibt header.'));
+        renderCircuitMaps();
+        await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'iracing');
+        await userEvent.click(screen.getByRole('button', { name: /open .ibt file/i }));
+        expect(await screen.findByRole('alert')).toHaveTextContent('Invalid iRacing .ibt header.');
+        expect(screen.getByRole('button', { name: /open .ibt file/i })).toBeEnabled();
+    });
+
+    it('discards partial samples if the telemetry reader fails', async () => {
+        renderCircuitMaps();
+        await openIRacingImport();
+        await act(async () => {
+            readListener({ type: 'chunk', readId: 'map-read', rows: [importedRow] });
+            readListener({ type: 'error', readId: 'map-read', message: 'Read failed' });
+        });
+        expect(screen.getByRole('alert')).toHaveTextContent('Read failed');
+        expect(screen.getByText(/0 samples/)).toBeInTheDocument();
+        expect(window.electronAPI.deleteTempFile).toHaveBeenCalledWith(imported.filePath);
+    });
+
+    it('rejects a recording from a different track without changing the map', async () => {
+        renderCircuitMaps();
+        await openIRacingImport();
+        await act(async () => finishImportRead());
+        (window.electronAPI.importLocalIRacingTelemetry as jest.Mock).mockResolvedValue({ ...imported, track: 'monza' });
+        await userEvent.click(screen.getByRole('button', { name: /open .ibt file/i }));
+        expect(await screen.findByRole('alert')).toHaveTextContent('different circuit');
+        expect(screen.getByLabelText('Circuit name')).toHaveValue(imported.track);
+        expect(window.electronAPI.startRecordedFileRead).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['game', 'new map', 'unmount'])('cancels an active import on %s', async (action) => {
+        const view = renderCircuitMaps();
+        await openIRacingImport();
+        if (action === 'game') await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'acc');
+        else if (action === 'new map') await userEvent.click(screen.getByRole('button', { name: /new map/i }));
+        else view.unmount();
+        await act(async () => finishImportRead());
+        expect(window.electronAPI.cancelRecordedFileRead).toHaveBeenCalledWith('map-read');
+        expect(window.electronAPI.deleteTempFile).toHaveBeenCalledWith(imported.filePath);
+        if (action !== 'unmount') expect(screen.getByText(/0 samples/)).toBeInTheDocument();
+    });
+
+    it('cleans up conversion that finishes after resetting the map', async () => {
+        let finishConversion!: (value: typeof imported) => void;
+        (window.electronAPI.importLocalIRacingTelemetry as jest.Mock).mockImplementation(() => new Promise((resolve) => { finishConversion = resolve; }));
+        renderCircuitMaps();
+        await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'iracing');
+        await userEvent.click(screen.getByRole('button', { name: /open .ibt file/i }));
+        await userEvent.click(screen.getByRole('button', { name: /new map/i }));
+        await act(async () => finishConversion(imported));
+        expect(window.electronAPI.startRecordedFileRead).not.toHaveBeenCalled();
+        expect(window.electronAPI.deleteTempFile).toHaveBeenCalledWith(imported.filePath);
+        expect(screen.getByLabelText('Circuit name')).toHaveValue('');
+    });
+
+    it('explains local import availability in a browser', async () => {
+        window.electronAPI = undefined as any;
+        renderCircuitMaps();
+        await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'iracing');
+        expect(screen.getByText('Open the desktop app to import local iRacing .ibt files.')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /open .ibt file/i })).toBeDisabled();
     });
 
     it('loads global maps without a user id and disables ACC capture when telemetry is offline', async () => {
@@ -242,11 +377,11 @@ describe('CircuitMaps', () => {
         expect(mockRefreshCircuitMaps).toHaveBeenCalledWith('acc');
     });
 
-    it('captures pit lane samples as an active circuit map mode', async () => {
+    it.each(['pit_lane', 'middle_line'])('adds and saves manual points in %s mode', async (mode) => {
         renderCircuitMaps();
 
-        await userEvent.type(screen.getByLabelText('Circuit name'), 'Pit Test Circuit');
-        await userEvent.selectOptions(screen.getAllByRole('combobox')[1], 'pit_lane');
+        await userEvent.type(screen.getByLabelText('Circuit name'), 'Capture Test Circuit');
+        await userEvent.selectOptions(screen.getAllByRole('combobox')[1], mode);
         await userEvent.clear(screen.getByLabelText('Normalized position 0-1'));
         await userEvent.type(screen.getByLabelText('Normalized position 0-1'), '0.42');
         await userEvent.clear(screen.getByLabelText('X'));
@@ -260,7 +395,7 @@ describe('CircuitMaps', () => {
         const [, payload] = mockedApi.post.mock.calls[0];
         expect(payload).toMatchObject({
             samples: {
-                pit_lane: [{
+                [mode]: [{
                     bin: 420,
                     normalized_position: 0.42,
                     x: 12,
@@ -269,11 +404,14 @@ describe('CircuitMaps', () => {
                 }],
             },
         });
+        await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
     });
 
-    it('processes all 120 live capture frames published in one React batch', async () => {
+    it.each(['left_boundary', 'middle_line'])('processes all 120 live capture frames in %s mode in one React batch', async (mode) => {
         renderCircuitMaps();
         await waitFor(() => expect(mockedApi.get).toHaveBeenCalledWith('/circuit-map/list', { game: 'acc' }));
+        await userEvent.type(screen.getByLabelText('Circuit name'), 'Live Test Circuit');
+        await userEvent.selectOptions(screen.getAllByRole('combobox')[1], mode);
         act(() => {
             liveTelemetryStore.publishFrame({
                 type: 'frame',
@@ -312,6 +450,56 @@ describe('CircuitMaps', () => {
         });
 
         expect(screen.getByText('120 samples')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: /pause capture/i }));
+        await userEvent.click(screen.getByRole('button', { name: /save/i }));
+        await waitFor(() => expect(mockedApi.post).toHaveBeenCalled());
+        const [, payload] = mockedApi.post.mock.calls[0];
+        expect((payload as any).samples[mode]).toHaveLength(120);
+        expect((payload as any).samples[mode === 'middle_line' ? 'left_boundary' : 'middle_line']).toEqual([]);
+        await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+    });
+
+    it('loads, edits, and saves a middle line without losing other captured paths', async () => {
+        const sample = {
+            bin: 420, normalized_position: 0.42, x: 12, y: 0, z: 34,
+            sample_count: 3, updated_at: '2026-01-01T00:00:00.000Z',
+        };
+        const savedMap = {
+            id: 'middle-map', game: 'acc', circuit_name: 'Middle Test Circuit', resolution: 1000,
+            samples: { middle_line: [sample], left_boundary: [{ ...sample, x: 2 }] },
+        };
+        mockedApi.get.mockImplementation(async (url: string) => ({
+            data: url === '/circuit-map/list' ? { list: [savedMap] } : savedMap,
+            status: 200,
+        } as any));
+        renderCircuitMaps();
+        await userEvent.click(await screen.findByRole('button', { name: 'Middle Test Circuit ACC' }));
+        expect(await screen.findByText('2 samples')).toBeInTheDocument();
+        await userEvent.selectOptions(screen.getAllByRole('combobox')[1], 'middle_line');
+        await userEvent.clear(screen.getByLabelText('Normalized position 0-1'));
+        await userEvent.type(screen.getByLabelText('Normalized position 0-1'), '0.5');
+        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
+        expect(screen.getByText('3 samples')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: /^close unlock$/i }));
+        await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+        await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/middle-map', expect.objectContaining({
+            samples: {
+                middle_line: [sample, expect.objectContaining({ bin: 500, locked: false })],
+                left_boundary: savedMap.samples.left_boundary,
+                right_boundary: [],
+                pit_lane: [],
+            },
+        })));
+        expect(mockUpsertCachedCircuitMap).toHaveBeenLastCalledWith(expect.objectContaining({
+            sample_count: 3,
+            samples: expect.objectContaining({ middle_line: [sample, expect.objectContaining({ bin: 500 })] }),
+        }));
+        await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+        await userEvent.click(screen.getByRole('button', { name: /^trash delete$/i }));
+        expect(screen.getByText('2 samples')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: /new map/i }));
+        expect(screen.getByText('0 samples')).toBeInTheDocument();
     });
 
     it('switches Other games into manual edit mode', async () => {

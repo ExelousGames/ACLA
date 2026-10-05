@@ -12,7 +12,6 @@ import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
-import { GAME_RECORDED_FROM_VALUES } from 'src/racing-session-game';
 
 @Controller('racing-session')
 export class RacingSessionController {
@@ -403,9 +402,9 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('upload/init')
     async initUpload(@Body() metadata: UploadReacingSessionInitDto) {
-        if (!GAME_RECORDED_FROM_VALUES.includes(metadata.game_recorded_from)) {
+        if (typeof metadata.game_recorded_from !== 'string' || !metadata.game_recorded_from.trim()) {
             throw new BadRequestException(
-                `game_recorded_from must be one of: ${GAME_RECORDED_FROM_VALUES.join(', ')}`,
+                'game_recorded_from must be a non-empty string',
             );
         }
 

@@ -12,7 +12,7 @@ const countSamples = (samplesByMode: CircuitMapSamplesByMode): number => (
 );
 
 const normalizeGame = (game: unknown, fallback: CircuitMapGame = 'acc'): CircuitMapGame => (
-    game === 'other' ? 'other' : fallback
+    game === 'acc' || game === 'iracing' || game === 'other' ? game : fallback
 );
 
 export const normalizeCircuitMapList = (data: any): CircuitMapSummaryDto[] => {
@@ -42,6 +42,7 @@ export const normalizeCircuitMap = (data: any, fallbackGame: CircuitMapGame = 'a
     const rawSamples = data?.samples || {};
     const samples: CircuitMapSamplesByMode = {
         left_boundary: Array.isArray(rawSamples.left_boundary) ? rawSamples.left_boundary : [],
+        middle_line: Array.isArray(rawSamples.middle_line) ? rawSamples.middle_line : [],
         right_boundary: Array.isArray(rawSamples.right_boundary) ? rawSamples.right_boundary : [],
         pit_lane: Array.isArray(rawSamples.pit_lane) ? rawSamples.pit_lane : []
     };

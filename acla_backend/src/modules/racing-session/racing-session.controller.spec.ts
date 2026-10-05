@@ -58,7 +58,7 @@ describe('RacingSessionController', () => {
     expect(racingSessionService.deleteSession).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, '', 'forza'])('rejects unsupported upload game %p before creating upload state', async (gameRecordedFrom) => {
+  it.each([undefined, null, '', '   ', 42, false, [], {}])('rejects invalid upload game %p before creating upload state', async (gameRecordedFrom) => {
     await expect(controller.initUpload({
       sessionName: 'Race 1',
       mapName: 'Monza',
@@ -70,7 +70,7 @@ describe('RacingSessionController', () => {
     expect((controller as any).uploadStates.size).toBe(0);
   });
 
-  it.each(['acc', 'ac', 'iracing', 'iracing_live', 'iracing_recorded'] as const)('accepts supported upload game %s', async (gameRecordedFrom) => {
+  it.each(['acc', 'ac', 'iracing', 'iracing_live', 'iracing_recorded', 'forza', 'custom-simulator'])('accepts client-supplied upload game %s', async (gameRecordedFrom) => {
     await expect(controller.initUpload({
       sessionName: 'Race 1',
       mapName: 'Monza',
@@ -80,7 +80,7 @@ describe('RacingSessionController', () => {
     })).resolves.toEqual({ uploadId: expect.any(String) });
   });
 
-  it.each(['acc', 'iracing_live', 'iracing_recorded'] as const)('persists %s metadata when completing a chunked session', async (gameRecordedFrom) => {
+  it.each(['acc', 'iracing_live', 'iracing_recorded', 'custom-simulator'])('persists %s metadata when completing a chunked session', async (gameRecordedFrom) => {
     racingSessionService.createRacingSessionFromChunks.mockResolvedValue({ _id: 'session-1' });
     const { uploadId } = await controller.initUpload({
       sessionName: 'Race 1',

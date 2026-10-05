@@ -116,7 +116,7 @@ describe('RacingSessionService', () => {
     });
   });
 
-  it('persists game metadata when creating a session from telemetry data', async () => {
+  it.each(['acc', 'iracing', 'custom-simulator'])('persists %s metadata when creating a session from telemetry data', async (game) => {
     gridfsService.uploadJSON.mockResolvedValue('507f1f77bcf86cd799439012');
     racingSessionModel.create.mockResolvedValue({ _id: 'session-1' });
 
@@ -125,7 +125,7 @@ describe('RacingSessionService', () => {
       'Monza',
       'GT3',
       'user-1',
-      'iracing',
+      game,
       [{ speed: 120 }],
     );
 
@@ -134,11 +134,11 @@ describe('RacingSessionService', () => {
       map: 'Monza',
       car_name: 'GT3',
       user_id: 'user-1',
-      game_recorded_from: 'iracing',
+      game_recorded_from: game,
     }));
   });
 
-  it('persists game metadata when creating a session from uploaded chunks', async () => {
+  it.each(['ac', 'iracing', 'custom-simulator'])('persists %s metadata when creating a session from uploaded chunks', async (game) => {
     racingSessionModel.create.mockResolvedValue({ _id: 'session-1' });
 
     await service.createRacingSessionFromChunks(
@@ -146,14 +146,14 @@ describe('RacingSessionService', () => {
       'Monza',
       'GT3',
       'user-1',
-      'ac',
+      game,
       ['507f1f77bcf86cd799439012'] as any,
       50,
       1000,
     );
 
     expect(racingSessionModel.create).toHaveBeenCalledWith(expect.objectContaining({
-      game_recorded_from: 'ac',
+      game_recorded_from: game,
       totalChunks: 1,
       totalDataPoints: 50,
     }));

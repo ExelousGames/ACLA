@@ -1,4 +1,5 @@
 import { parseTelemetryFrame, Vec3 } from 'views/session-shared/visualization/charts/mapTelemetry';
+import type { StandardTelemetrySample } from 'views/live-session/live-session-types';
 import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CircuitMapAlignedRow,
@@ -113,6 +114,39 @@ export const upsertCaptureModeSample = (
     [mode]: upsertCircuitMapSample(samplesByMode[mode] || [], capture, updatedAt)
 });
 
+// IBT conversion has already produced standard, track-referenced coordinates.
+// Require an identified player so missing GPS data never captures another car.
+export const mergeIRacingCircuitMapSamples = (
+    samples: CircuitMapBinSample[],
+    rows: StandardTelemetrySample[],
+    updatedAt = new Date().toISOString()
+): { samples: CircuitMapBinSample[]; capturedRows: number } => {
+    const bins = new Map(samples.map((sample) => [sample.bin, sample]));
+    let capturedRows = 0;
+    rows.forEach((row) => {
+        const normalizedPosition = row.Graphics_normalized_car_position;
+        const playerId = row.Graphics_player_car_id;
+        if (row.Graphics_status !== 2
+            || typeof normalizedPosition !== 'number' || !Number.isFinite(normalizedPosition)
+            || normalizedPosition < 0 || normalizedPosition > 1
+            || typeof playerId !== 'number' || !Number.isSafeInteger(playerId) || playerId < 0) return;
+
+        const slot = row.Graphics_car_id?.indexOf(playerId) ?? -1;
+        const position = slot >= 0 ? row.Graphics_car_coordinates?.[slot] : undefined;
+        if (!position || ![position.x, position.y, position.z].every((value) => (
+            typeof value === 'number' && Number.isFinite(value)
+        ))) return;
+
+        const bin = getCircuitMapBin(normalizedPosition)!;
+        const existing = bins.get(bin);
+        bins.set(bin, upsertCircuitMapSample(existing ? [existing] : [], {
+            bin, normalizedPosition, position,
+        }, updatedAt)[0]);
+        capturedRows += 1;
+    });
+    return { samples: Array.from(bins.values()).sort((a, b) => a.bin - b.bin), capturedRows };
+};
+
 export const alignCircuitMapSamples = (
     samplesByMode: CircuitMapSamplesByMode,
     resolution = CIRCUIT_MAP_BIN_RESOLUTION
@@ -187,6 +221,7 @@ export const countCircuitMapSamples = (samplesByMode: CircuitMapSamplesByMode): 
 
 export const cloneSamplesByMode = (samplesByMode: CircuitMapSamplesByMode): CircuitMapSamplesByMode => ({
     left_boundary: [...(samplesByMode.left_boundary || [])],
+    middle_line: [...(samplesByMode.middle_line || [])],
     right_boundary: [...(samplesByMode.right_boundary || [])],
     pit_lane: [...(samplesByMode.pit_lane || [])]
 });

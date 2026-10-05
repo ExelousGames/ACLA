@@ -110,3 +110,28 @@ it('cancels an active read when leaving local analysis', async () => {
     expect(window.electronAPI.cancelRecordedFileRead).toHaveBeenCalledWith('read-1');
     expect(unsubscribe).toHaveBeenCalledTimes(1);
 });
+
+it('streams chunks without retaining the full telemetry session', async () => {
+    const onChunk = jest.fn();
+    const onProgress = jest.fn();
+    const pending = readLocalTelemetry(imported.filePath, new AbortController().signal, onProgress, onChunk);
+    await Promise.resolve();
+    listener({ type: 'chunk', readId: 'read-1', rows });
+    completeRead();
+    await expect(pending).resolves.toEqual([]);
+    expect(onChunk).toHaveBeenCalledTimes(2);
+    expect(onChunk).toHaveBeenCalledWith(rows);
+    expect(onProgress.mock.calls).toEqual([[2], [4]]);
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+});
+
+it('cancels a stream when its chunk consumer fails', async () => {
+    const pending = readLocalTelemetry(imported.filePath, new AbortController().signal, jest.fn(), () => {
+        throw new Error('Invalid map samples');
+    });
+    await Promise.resolve();
+    completeRead();
+    await expect(pending).rejects.toThrow('Invalid map samples');
+    expect(window.electronAPI.cancelRecordedFileRead).toHaveBeenCalledWith('read-1');
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+});

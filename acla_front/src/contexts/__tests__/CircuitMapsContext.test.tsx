@@ -72,6 +72,26 @@ describe('CircuitMapsContext', () => {
         expect(latestContext?.mapSummaries.acc[0]).toMatchObject(mapSummary);
     });
 
+    it('loads, finds, and removes iRacing maps in their own cache', async () => {
+        const iracingMap = { ...fullMap, game: 'iracing' };
+        mockedApi.get.mockImplementation((url: string, params?: any) => Promise.resolve({
+            data: url === '/circuit-map/list' ? { list: params?.game === 'iracing' ? [iracingMap] : [] } : iracingMap,
+            status: 200,
+        } as any));
+        let latestContext!: ReturnType<typeof useCircuitMaps>;
+        renderProvider((context) => { latestContext = context; });
+        await waitFor(() => expect(latestContext.listLoading.acc).toBe(false));
+        expect(latestContext.mapSummaries.iracing).toEqual([]);
+        await act(async () => {
+            expect(await latestContext.getCircuitMapByTrack('iracing', iracingMap.source_track_key)).toMatchObject(iracingMap);
+        });
+        expect(latestContext.mapSummaries.iracing).toHaveLength(1);
+        expect(latestContext.mapSummaries.acc).toEqual([]);
+        act(() => latestContext.removeCachedCircuitMap(iracingMap.id));
+        expect(latestContext.mapSummaries.iracing).toEqual([]);
+        expect(latestContext.cachedMaps[iracingMap.id]).toBeUndefined();
+    });
+
     it('fetches a map by id once, then returns cached data until forced to refresh', async () => {
         mockedApi.get.mockImplementation((url: string) => {
             if (url === '/circuit-map/list') {

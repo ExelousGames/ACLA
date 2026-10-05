@@ -10,7 +10,7 @@ export class CircuitMapController {
     @UseGuards(AuthGuard('jwt'))
     @Get('list')
     list(@Request() req, @Query('game') game?: CircuitMapGame) {
-        return this.circuitMapService.list(game === 'other' ? 'other' : game === 'acc' ? 'acc' : undefined);
+        return this.circuitMapService.list(game);
     }
 
     @UseGuards(AuthGuard('jwt'))
