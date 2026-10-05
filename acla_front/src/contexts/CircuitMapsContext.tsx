@@ -29,6 +29,7 @@ interface CircuitMapsContextType {
         options?: CircuitMapRequestOptions
     ) => Promise<CircuitMapDto | null>;
     clearCircuitMapCache: (id?: string) => void;
+    removeCachedCircuitMap: (id: string) => void;
     upsertCachedCircuitMap: (map: CircuitMapDto) => void;
 }
 
@@ -91,9 +92,10 @@ const CircuitMapsProvider = ({ children }: { children: ReactNode }) => {
     const [error, setError] = useState<string | null>(null);
     const cachedMapsRef = useRef<Record<string, CircuitMapDto>>({});
     const pendingMapRequestsRef = useRef<Map<string, Promise<CircuitMapDto | null>>>(new Map());
+    const removedMapIdsRef = useRef(new Set<string>());
 
     const setCachedMap = useCallback((map: CircuitMapDto) => {
-        if (!map.id) return;
+        if (!map.id || removedMapIdsRef.current.has(map.id)) return;
 
         cachedMapsRef.current = {
             ...cachedMapsRef.current,
@@ -108,7 +110,8 @@ const CircuitMapsProvider = ({ children }: { children: ReactNode }) => {
         setError(null);
 
         try {
-            const nextSummaries = await fetchCircuitMapList(game);
+            const nextSummaries = (await fetchCircuitMapList(game))
+                .filter((map) => !removedMapIdsRef.current.has(map.id));
             setMapSummaries((previous) => ({
                 ...previous,
                 [game]: nextSummaries
@@ -126,7 +129,7 @@ const CircuitMapsProvider = ({ children }: { children: ReactNode }) => {
         id: string,
         options: CircuitMapRequestOptions = {}
     ): Promise<CircuitMapDto | null> => {
-        if (!id) return null;
+        if (!id || removedMapIdsRef.current.has(id)) return null;
 
         if (!options.forceRefresh && cachedMapsRef.current[id]) {
             return cachedMapsRef.current[id];
@@ -139,6 +142,7 @@ const CircuitMapsProvider = ({ children }: { children: ReactNode }) => {
         setError(null);
         const request = fetchCircuitMapById(id)
             .then((map) => {
+                if (removedMapIdsRef.current.has(id)) return null;
                 setCachedMap(map);
                 return map;
             })
@@ -190,6 +194,15 @@ const CircuitMapsProvider = ({ children }: { children: ReactNode }) => {
         setCachedMap(map);
     }, [setCachedMap]);
 
+    const removeCachedCircuitMap = useCallback((id: string) => {
+        removedMapIdsRef.current.add(id);
+        clearCircuitMapCache(id);
+        setMapSummaries((previous) => ({
+            acc: previous.acc.filter((map) => map.id !== id),
+            other: previous.other.filter((map) => map.id !== id)
+        }));
+    }, [clearCircuitMapCache]);
+
     useEffect(() => {
         void refreshCircuitMaps('acc');
     }, [refreshCircuitMaps]);
@@ -203,6 +216,7 @@ const CircuitMapsProvider = ({ children }: { children: ReactNode }) => {
         getCircuitMapById,
         getCircuitMapByTrack,
         clearCircuitMapCache,
+        removeCachedCircuitMap,
         upsertCachedCircuitMap
     }), [
         cachedMaps,
@@ -213,6 +227,7 @@ const CircuitMapsProvider = ({ children }: { children: ReactNode }) => {
         listLoading,
         mapSummaries,
         refreshCircuitMaps,
+        removeCachedCircuitMap,
         upsertCachedCircuitMap
     ]);
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Box, Button, Flex, Heading, Select, Spinner, Text, TextField } from '@radix-ui/themes';
+import { AlertDialog, Badge, Box, Button, Flex, Heading, Select, Spinner, Text, TextField } from '@radix-ui/themes';
 import { CheckIcon, Cross2Icon, PauseIcon, PlayIcon, PlusIcon, ReloadIcon, TrashIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
 import { fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 'services/circuitMapService';
@@ -81,13 +81,15 @@ const CircuitMaps = () => {
     );
     const currentTelemetry = useCurrentTelemetry();
     const telemetryStatus = useTelemetryStatus();
-    const { refreshCircuitMaps, upsertCachedCircuitMap } = useCircuitMaps();
+    const { refreshCircuitMaps, upsertCachedCircuitMap, removeCachedCircuitMap } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
     const projectedPointsRef = useRef<ProjectedPoint[]>([]);
     const dragStateRef = useRef<DragState>(null);
     const liveSequenceRef = useRef(0);
     const lastCaptureSignatureRef = useRef('');
+    const mapLoadRequestRef = useRef(0);
+    const listLoadRequestRef = useRef(0);
 
     const [game, setGame] = useState<CircuitMapGame>('acc');
     const [mapList, setMapList] = useState<CircuitMapSummaryDto[]>([]);
@@ -105,6 +107,10 @@ const CircuitMaps = () => {
     const [manualX, setManualX] = useState('0');
     const [manualZ, setManualZ] = useState('0');
     const [isSaving, setIsSaving] = useState(false);
+    const [isMapLoading, setIsMapLoading] = useState(false);
+    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
 
     const isAcc = game === 'acc';
     const isAccLive = isAcc && telemetryStatus === ACC_STATUS.ACC_LIVE;
@@ -118,13 +124,17 @@ const CircuitMaps = () => {
     ), [currentTelemetry, isAccLive]);
 
     const loadMapList = useCallback(async (nextGame: CircuitMapGame = game) => {
+        const requestId = ++listLoadRequestRef.current;
         setListState('loading');
         setError(null);
 
         try {
-            setMapList(await fetchCircuitMapList(nextGame));
+            const maps = await fetchCircuitMapList(nextGame);
+            if (requestId !== listLoadRequestRef.current) return;
+            setMapList(maps);
             setListState('ready');
         } catch (loadError: any) {
+            if (requestId !== listLoadRequestRef.current) return;
             setMapList([]);
             setListState('error');
             setError(loadError?.data?.message || loadError?.message || 'Unable to load circuit maps.');
@@ -132,6 +142,8 @@ const CircuitMaps = () => {
     }, [game]);
 
     useEffect(() => {
+        mapLoadRequestRef.current += 1;
+        setIsMapLoading(false);
         setSelectedMapId(null);
         setCircuitName('');
         setSourceTrackKey(null);
@@ -196,6 +208,8 @@ const CircuitMaps = () => {
     }, [captureMode, isAcc, isCapturing]);
 
     const loadMap = useCallback(async (mapId: string) => {
+        const requestId = ++mapLoadRequestRef.current;
+        setIsMapLoading(true);
         setSelectedMapId(mapId);
         setError(null);
         setIsCapturing(false);
@@ -203,16 +217,24 @@ const CircuitMaps = () => {
 
         try {
             const map = await fetchCircuitMapById(mapId, game);
+            if (requestId !== mapLoadRequestRef.current) return;
             setCircuitName(map.circuit_name);
             setSourceTrackKey(map.source_track_key || null);
             setSamplesByMode(cloneSamplesByMode(map.samples));
             upsertCachedCircuitMap(map);
         } catch (loadError: any) {
+            if (requestId !== mapLoadRequestRef.current) return;
             setError(loadError?.data?.message || loadError?.message || 'Unable to load circuit map.');
+        } finally {
+            if (requestId === mapLoadRequestRef.current) setIsMapLoading(false);
         }
     }, [game, upsertCachedCircuitMap]);
 
     const resetForNewMap = useCallback(() => {
+        mapLoadRequestRef.current += 1;
+        setIsMapLoading(false);
+        setIsCapturing(false);
+        dragStateRef.current = null;
         setSelectedMapId(null);
         setSamplesByMode(cloneSamplesByMode(EMPTY_SAMPLES));
         setSelectedPoint(null);
@@ -225,6 +247,30 @@ const CircuitMaps = () => {
             setSourceTrackKey(null);
         }
     }, [currentAccTrackKey, isAcc]);
+
+    const deleteMap = async () => {
+        if (!selectedMapId || isDeleting || isSaving || isMapLoading || listState === 'loading') return;
+        setIsDeleting(true);
+        setDeleteError(null);
+        try {
+            try {
+                await apiService.delete(`/circuit-map/${encodeURIComponent(selectedMapId)}`);
+            } catch (deleteError: any) {
+                if (deleteError?.status !== 404 || deleteError?.data?.message !== 'Circuit map not found') {
+                    throw deleteError;
+                }
+            }
+            removeCachedCircuitMap(selectedMapId);
+            setMapList((previous) => previous.filter((map) => map.id !== selectedMapId));
+            resetForNewMap();
+            setError(null);
+            setDeleteDialogOpen(false);
+        } catch {
+            setDeleteError('Could not remove this map. Please try again.');
+        } finally {
+            setIsDeleting(false);
+        }
+    };
 
     const saveMap = useCallback(async () => {
         const trimmedName = circuitName.trim();
@@ -705,7 +751,41 @@ const CircuitMaps = () => {
                                 </Text>
                             </div>
                         ) : null}
-                        <Button onClick={() => void saveMap()} disabled={isSaving || !circuitName.trim()}>
+                        <AlertDialog.Root open={deleteDialogOpen} onOpenChange={(open) => {
+                            if (isDeleting) return;
+                            setDeleteDialogOpen(open);
+                            setDeleteError(null);
+                        }}>
+                            <AlertDialog.Trigger>
+                                <Button color="red" variant="soft" disabled={!selectedMapId || isMapLoading || listState === 'loading' || isSaving || isDeleting}>
+                                    <TrashIcon />
+                                    Remove Map
+                                </Button>
+                            </AlertDialog.Trigger>
+                            <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(event) => {
+                                if (isDeleting) event.preventDefault();
+                            }}>
+                                <AlertDialog.Title>Remove circuit map?</AlertDialog.Title>
+                                <AlertDialog.Description size="2">
+                                    Permanently remove “{mapList.find((map) => map.id === selectedMapId)?.circuit_name || circuitName}” and all its samples?
+                                    {' '}This global map will be removed for everyone. This cannot be undone.
+                                </AlertDialog.Description>
+                                {deleteError && (
+                                    <Box mt="3">
+                                        <Text role="alert" size="2" color="red">{deleteError}</Text>
+                                    </Box>
+                                )}
+                                <Flex gap="3" mt="4" justify="end">
+                                    <AlertDialog.Cancel>
+                                        <Button variant="soft" color="gray" disabled={isDeleting}>Cancel</Button>
+                                    </AlertDialog.Cancel>
+                                    <Button color="red" disabled={isDeleting} onClick={() => void deleteMap()}>
+                                        {isDeleting ? 'Removing...' : 'Remove map'}
+                                    </Button>
+                                </Flex>
+                            </AlertDialog.Content>
+                        </AlertDialog.Root>
+                        <Button onClick={() => void saveMap()} disabled={isSaving || isMapLoading || isDeleting || !circuitName.trim()}>
                             {isSaving ? <Spinner size="1" /> : <CheckIcon />}
                             Save
                         </Button>

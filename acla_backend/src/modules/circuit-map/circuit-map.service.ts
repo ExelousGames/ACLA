@@ -71,6 +71,14 @@ export class CircuitMapService {
         return this.toDto(updated);
     }
 
+    async remove(id: string): Promise<void> {
+        this.assertObjectId(id);
+        const result = await this.circuitMapModel.deleteOne({ _id: id }).exec();
+        if (result.deletedCount === 0) {
+            throw new NotFoundException('Circuit map not found');
+        }
+    }
+
     private normalizePayload(payload: CircuitMapPayload, requireName: boolean) {
         const circuitName = payload.circuit_name?.trim();
         if (requireName && !circuitName) {

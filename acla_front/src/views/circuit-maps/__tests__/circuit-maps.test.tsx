@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CircuitMaps from '../circuit-maps';
 import apiService from 'services/api.service';
@@ -15,8 +15,12 @@ import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 
 const mockRefreshCircuitMaps = jest.fn();
 const mockUpsertCachedCircuitMap = jest.fn();
+const mockRemoveCachedCircuitMap = jest.fn();
+
+jest.mock('radix-ui/internal', () => jest.requireActual('radix-ui/dist/internal.js'), { virtual: true });
 
 jest.mock('@radix-ui/themes', () => ({
+    AlertDialog: jest.requireActual('@radix-ui/themes').AlertDialog,
     Badge: ({ children, ...props }: any) => <span {...props}>{children}</span>,
     Box: require('react').forwardRef(({ children, ...props }: any, ref: any) => <div ref={ref} {...props}>{children}</div>),
     Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
@@ -57,6 +61,7 @@ jest.mock('services/api.service', () => ({
         get: jest.fn(),
         post: jest.fn(),
         put: jest.fn(),
+        delete: jest.fn(),
     },
 }));
 
@@ -64,6 +69,7 @@ jest.mock('contexts/CircuitMapsContext', () => ({
     useCircuitMaps: () => ({
         refreshCircuitMaps: mockRefreshCircuitMaps,
         upsertCachedCircuitMap: mockUpsertCachedCircuitMap,
+        removeCachedCircuitMap: mockRemoveCachedCircuitMap,
     }),
 }));
 
@@ -141,6 +147,7 @@ describe('CircuitMaps', () => {
         mockedApi.get.mockResolvedValue({ data: { list: [] }, status: 200 } as any);
         mockedApi.post.mockResolvedValue({ data: { id: 'map-1' }, status: 201 } as any);
         mockedApi.put.mockResolvedValue({ data: {}, status: 200 } as any);
+        mockedApi.delete.mockReset().mockResolvedValue({ data: undefined, status: 204 } as any);
         mockRefreshCircuitMaps.mockResolvedValue([]);
 
         (global as any).ResizeObserver = class {
@@ -316,5 +323,146 @@ describe('CircuitMaps', () => {
         expect(await screen.findByText('Manual Edit')).toBeInTheDocument();
         await waitFor(() => expect(screen.queryByText('Loading maps')).not.toBeInTheDocument());
         expect(screen.queryByText('ACC Offline')).not.toBeInTheDocument();
+    });
+
+    describe('removing a saved map', () => {
+        const savedMap = {
+            id: 'map/1', game: 'acc', circuit_name: 'Test Circuit', resolution: 1000,
+            samples: {
+                left_boundary: [{ bin: 1, normalized_position: 0.001, x: 1, y: 0, z: 2, sample_count: 1 }],
+            },
+        };
+
+        const selectSavedMap = async () => {
+            mockedApi.get.mockImplementation(async (url: string) => ({
+                data: url === '/circuit-map/list' ? { list: [savedMap] } : savedMap,
+                status: 200,
+            } as any));
+            renderCircuitMaps();
+            await userEvent.click(await screen.findByRole('button', { name: 'Test Circuit ACC' }));
+            await waitFor(() => expect(screen.getByRole('button', { name: /remove map/i })).toBeEnabled());
+        };
+
+        const openDeleteDialog = async () => {
+            await userEvent.click(screen.getByRole('button', { name: /remove map/i }));
+            return screen.getByRole('alertdialog');
+        };
+
+        it('disables removal for an unsaved map', async () => {
+            renderCircuitMaps();
+            await screen.findByText('No global maps found.');
+            expect(screen.getByRole('button', { name: /remove map/i })).toBeDisabled();
+        });
+
+        it('requires confirmation and preserves the map and edits on cancel', async () => {
+            await selectSavedMap();
+            await userEvent.type(screen.getByLabelText('Circuit name'), ' edited');
+            const dialog = await openDeleteDialog();
+            expect(within(dialog).getByText(/Permanently remove “Test Circuit”/)).toHaveTextContent('removed for everyone');
+            expect(mockedApi.delete).not.toHaveBeenCalled();
+            await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+            expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Circuit name')).toHaveValue('Test Circuit edited');
+            expect(screen.getByText('1 samples')).toBeInTheDocument();
+            expect(mockRemoveCachedCircuitMap).not.toHaveBeenCalled();
+        });
+
+        it('removes the selected map after success, clears the editor, and prevents duplicate requests', async () => {
+            let resolveDelete!: (value: any) => void;
+            mockedApi.delete.mockReturnValue(new Promise((resolve) => { resolveDelete = resolve; }));
+            await selectSavedMap();
+            const dialog = await openDeleteDialog();
+            fireEvent.click(within(dialog).getByRole('button', { name: 'Remove map' }));
+            expect(mockedApi.delete).toHaveBeenCalledWith('/circuit-map/map%2F1');
+            expect(within(dialog).getByRole('button', { name: 'Removing...' })).toBeDisabled();
+            expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+            fireEvent.keyDown(dialog, { key: 'Escape' });
+            expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+            fireEvent.click(within(dialog).getByRole('button', { name: 'Removing...' }));
+            expect(mockedApi.delete).toHaveBeenCalledTimes(1);
+            expect(mockRemoveCachedCircuitMap).not.toHaveBeenCalled();
+
+            await act(async () => { resolveDelete({ status: 204 }); });
+
+            expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+            expect(screen.getByText('No global maps found.')).toBeInTheDocument();
+            expect(screen.getByLabelText('Circuit name')).toHaveValue('');
+            expect(screen.getByText('0 samples')).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: /remove map/i })).toBeDisabled();
+            expect(mockRemoveCachedCircuitMap).toHaveBeenCalledWith('map/1');
+
+            await userEvent.type(screen.getByLabelText('Circuit name'), 'New Circuit');
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.post).toHaveBeenCalledWith('/circuit-map', expect.objectContaining({ circuit_name: 'New Circuit' })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+            expect(mockedApi.put).not.toHaveBeenCalled();
+        });
+
+        it('ignores an older map load that finishes after the selected map is removed', async () => {
+            let resolveFirstMap!: (value: any) => void;
+            const firstMap = { ...savedMap, id: 'first-map', circuit_name: 'First Circuit' };
+            mockedApi.get.mockImplementation((url: string) => {
+                if (url === '/circuit-map/list') return Promise.resolve({ data: { list: [firstMap, savedMap] }, status: 200 } as any);
+                if (url === '/circuit-map/first-map') return new Promise((resolve) => { resolveFirstMap = resolve; });
+                return Promise.resolve({ data: savedMap, status: 200 } as any);
+            });
+            renderCircuitMaps();
+            await userEvent.click(await screen.findByRole('button', { name: 'First Circuit ACC' }));
+            expect(screen.getByRole('button', { name: /remove map/i })).toBeDisabled();
+            await userEvent.click(screen.getByRole('button', { name: 'Test Circuit ACC' }));
+            await waitFor(() => expect(screen.getByRole('button', { name: /remove map/i })).toBeEnabled());
+            const dialog = await openDeleteDialog();
+            fireEvent.click(within(dialog).getByRole('button', { name: 'Remove map' }));
+            await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+            await act(async () => { resolveFirstMap({ data: firstMap, status: 200 }); });
+            expect(screen.getByLabelText('Circuit name')).toHaveValue('');
+            expect(screen.getByText('0 samples')).toBeInTheDocument();
+            expect(screen.queryByRole('button', { name: 'Test Circuit ACC' })).not.toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'First Circuit ACC' })).toBeInTheDocument();
+        });
+
+        it('waits for an active list refresh before allowing removal', async () => {
+            await selectSavedMap();
+            let resolveList!: (value: any) => void;
+            mockedApi.get.mockReturnValueOnce(new Promise((resolve) => { resolveList = resolve; }));
+            await userEvent.click(screen.getByRole('button', { name: /refresh/i }));
+            expect(screen.getByRole('button', { name: /remove map/i })).toBeDisabled();
+            await act(async () => { resolveList({ data: { list: [savedMap] }, status: 200 }); });
+            expect(screen.getByRole('button', { name: /remove map/i })).toBeEnabled();
+        });
+
+        it('preserves the map on failure and allows retry', async () => {
+            mockedApi.delete.mockRejectedValueOnce(new Error('Network unavailable'));
+            await selectSavedMap();
+            const dialog = await openDeleteDialog();
+            fireEvent.click(within(dialog).getByRole('button', { name: 'Remove map' }));
+            expect(await within(dialog).findByRole('alert')).toHaveTextContent('Could not remove this map. Please try again.');
+            expect(screen.getByLabelText('Circuit name')).toHaveValue('Test Circuit');
+            expect(screen.getByText('1 samples')).toBeInTheDocument();
+            expect(mockRemoveCachedCircuitMap).not.toHaveBeenCalled();
+            fireEvent.click(within(dialog).getByRole('button', { name: 'Remove map' }));
+            await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+            expect(mockedApi.delete).toHaveBeenCalledTimes(2);
+            expect(screen.getByText('No global maps found.')).toBeInTheDocument();
+        });
+
+        it('clears a stale entry when the API confirms the map was already removed', async () => {
+            mockedApi.delete.mockRejectedValue({ status: 404, data: { message: 'Circuit map not found' } });
+            await selectSavedMap();
+            const dialog = await openDeleteDialog();
+            fireEvent.click(within(dialog).getByRole('button', { name: 'Remove map' }));
+            await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+            expect(mockRemoveCachedCircuitMap).toHaveBeenCalledWith('map/1');
+            expect(screen.getByText('No global maps found.')).toBeInTheDocument();
+        });
+
+        it('does not treat an unknown endpoint as a successful removal', async () => {
+            mockedApi.delete.mockRejectedValue({ status: 404, data: { message: 'Cannot DELETE /circuit-map/map%2F1' } });
+            await selectSavedMap();
+            const dialog = await openDeleteDialog();
+            fireEvent.click(within(dialog).getByRole('button', { name: 'Remove map' }));
+            expect(await within(dialog).findByRole('alert')).toBeInTheDocument();
+            expect(mockRemoveCachedCircuitMap).not.toHaveBeenCalled();
+        });
     });
 });

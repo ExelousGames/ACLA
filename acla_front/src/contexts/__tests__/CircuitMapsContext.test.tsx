@@ -205,4 +205,47 @@ describe('CircuitMapsContext', () => {
         expect(retriedMap).toMatchObject(fullMap);
         await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent(''));
     });
+
+    it('evicts a removed map from summaries and details while preserving other maps', async () => {
+        let latestContext: any = null;
+        renderProvider((context) => { latestContext = context; });
+        await waitFor(() => expect(latestContext.listLoading.acc).toBe(false));
+        act(() => {
+            latestContext.upsertCachedCircuitMap(fullMap);
+            latestContext.upsertCachedCircuitMap({ ...fullMap, id: 'map-2', source_track_key: 'spa' });
+            latestContext.upsertCachedCircuitMap({ ...fullMap, id: 'map-3', game: 'other' });
+        });
+        act(() => latestContext.removeCachedCircuitMap('map-1'));
+
+        expect(latestContext.mapSummaries.acc.map((map: any) => map.id)).toEqual(['map-2']);
+        expect(latestContext.mapSummaries.other.map((map: any) => map.id)).toEqual(['map-3']);
+        expect(Object.keys(latestContext.cachedMaps).sort()).toEqual(['map-2', 'map-3']);
+        const requestsBeforeLookup = mockedApi.get.mock.calls.length;
+        await act(async () => {
+            expect(await latestContext.getCircuitMapById('map-1')).toBeNull();
+            expect(await latestContext.getCircuitMapByTrack('acc', 'brands_hatch')).toBeNull();
+        });
+        expect(mockedApi.get).toHaveBeenCalledTimes(requestsBeforeLookup);
+    });
+
+    it('does not restore a removed map when an earlier detail or list request finishes', async () => {
+        let resolveList!: (value: any) => void;
+        let resolveDetail!: (value: any) => void;
+        mockedApi.get.mockImplementation((url: string) => new Promise((resolve) => {
+            if (url === '/circuit-map/list') resolveList = resolve;
+            else resolveDetail = resolve;
+        }));
+        let latestContext: any = null;
+        renderProvider((context) => { latestContext = context; });
+        let detailRequest!: Promise<any>;
+        act(() => { detailRequest = latestContext.getCircuitMapById('map-1'); });
+        act(() => latestContext.removeCachedCircuitMap('map-1'));
+        await act(async () => {
+            resolveList({ data: { list: [mapSummary] }, status: 200 });
+            resolveDetail({ data: fullMap, status: 200 });
+            expect(await detailRequest).toBeNull();
+        });
+        expect(latestContext.mapSummaries.acc).toEqual([]);
+        expect(latestContext.cachedMaps).toEqual({});
+    });
 });
