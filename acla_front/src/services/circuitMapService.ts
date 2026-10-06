@@ -55,13 +55,19 @@ export const normalizeCircuitMap = (data: any, fallbackGame: CircuitMapGame = 'a
         updated_at: data?.updated_at ?? null,
         sample_count: Number(data?.sample_count ?? countSamples(samples)),
         resolution: Number(data?.resolution ?? CIRCUIT_MAP_BIN_RESOLUTION),
-        samples
+        samples,
+        centerline_tags: Array.isArray(data?.centerline_tags) ? data.centerline_tags : []
     };
 };
 
 export const fetchCircuitMapList = async (game: CircuitMapGame): Promise<CircuitMapSummaryDto[]> => {
     const response = await apiService.get<any>('/circuit-map/list', { game });
     return normalizeCircuitMapList(response.data);
+};
+
+export const fetchCenterlineTagOptions = async (): Promise<string[]> => {
+    const response = await apiService.get<{ tags: string[] }>('/circuit-map/centerline-tags');
+    return Array.isArray(response.data.tags) ? response.data.tags : [];
 };
 
 export const fetchCircuitMapById = async (

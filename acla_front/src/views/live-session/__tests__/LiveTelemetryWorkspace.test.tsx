@@ -136,7 +136,7 @@ describe('LiveTelemetryWorkspace named manager', () => {
         expect(screen.getByRole('button', { name: 'Lap Results' })).toBeDisabled();
     });
 
-    it('adds and removes the live 2D telemetry trajectory', async () => {
+    it('adds and removes the live map', async () => {
         const ref = React.createRef<VisualizationManagerHandle>();
         render(<LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />);
 
@@ -144,13 +144,13 @@ describe('LiveTelemetryWorkspace named manager', () => {
         expect(ref.current!.getVisualizationCapabilities().availableCharts).toContainEqual(
             expect.objectContaining({
                 type: 'live-trajectory-map',
-                name: 'Live 2D Telemetry Trajectory',
+                name: 'Live Map',
                 openCount: 0,
                 canOpen: true,
             }),
         );
 
-        await userEvent.click(screen.getByRole('menuitem', { name: 'Live 2D Telemetry Trajectory' }));
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Live Map' }));
         expect(screen.getByText('Live trajectory map')).toBeInTheDocument();
         expect(ref.current!.getCurrentVisualizations()).toEqual([
             expect.objectContaining({
@@ -159,9 +159,9 @@ describe('LiveTelemetryWorkspace named manager', () => {
             }),
         ]);
 
-        await userEvent.click(screen.getByRole('button', { name: 'Remove Live 2D Telemetry Trajectory' }));
+        await userEvent.click(screen.getByRole('button', { name: 'Remove Live Map' }));
         expect(screen.queryByText('Live trajectory map')).not.toBeInTheDocument();
-        expect(screen.getByRole('menuitem', { name: 'Live 2D Telemetry Trajectory' })).toBeInTheDocument();
+        expect(screen.getByRole('menuitem', { name: 'Live Map' })).toBeInTheDocument();
         expect(ref.current!.getCurrentVisualizations()).toEqual([]);
     });
 

@@ -16,7 +16,7 @@ import LiveEventLog from './LiveEventLog';
 import BaselineCollection from './baseline-collection/BaselineCollection';
 
 const OPTIONAL_VISUALIZATIONS = {
-    'live-trajectory-map': { name: 'Live 2D Telemetry Trajectory' },
+    'live-trajectory-map': { name: 'Live Map' },
     'telemetry-overview': { name: 'Live Telemetry Overview' },
     'suspension': { name: 'Suspension' },
     'track-vision': { name: 'Track Vision' },
@@ -38,7 +38,7 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
     }
 
     protected getStaticMapTitle() {
-        return 'Live 2D Telemetry Trajectory';
+        return 'Live Map';
     }
 
     protected getManagerClassName() {

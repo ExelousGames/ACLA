@@ -3,19 +3,14 @@ import { Badge, Box, Button, Card, Flex, Text } from '@radix-ui/themes';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
 import { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
-import {
-    buildCircuitTrackLayout,
-    CircuitTrackLayout,
-    EMPTY_CIRCUIT_TRACK_LAYOUT,
-    getAccTelemetryTrackKey,
-} from 'views/session-shared/visualization/charts/circuitTrackLayout';
-import { parseTelemetryFrame, TelemetryFrame, Vec3 } from 'views/session-shared/visualization/charts/mapTelemetry';
+import { getAccTelemetryTrackKey } from 'views/session-shared/visualization/charts/circuitTrackLayout';
+import { Vec3 } from 'views/session-shared/visualization/charts/mapTelemetry';
 import { LiveSessionContext } from './LiveSessionContext';
-import { liveTelemetryStore, useTelemetryStatus } from './live-telemetry-store';
+import { useLiveTelemetrySelector } from './live-telemetry-store';
+import { getLiveMapCars, getLiveMapMiddleLine } from './live-map-data';
 import 'views/session-shared/visualization/charts/MapVisualization.css';
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 
-const LIVE_TRAIL_LIMIT = 900;
 const PLAYER_COLOR = '#00e676';
 const OPPONENT_COLORS = ['#29b6f6', '#ffca28', '#ef5350', '#ab47bc', '#ff8a65', '#26c6da'];
 
@@ -30,9 +25,7 @@ const getCarColor = (key: string, isPlayer: boolean): string => {
     return OPPONENT_COLORS[Math.abs(hash) % OPPONENT_COLORS.length];
 };
 
-const getBounds = (frames: TelemetryFrame[], track: CircuitTrackLayout) => {
-    const points = [...track.allPoints];
-    frames.forEach((frame) => frame.cars.forEach((car) => points.push(car.position)));
+const getBounds = (points: Vec3[]) => {
     if (points.length === 0) return { minX: -100, maxX: 100, minZ: -100, maxZ: 100, center: { x: 0, y: 0, z: 0 } };
     const xs = points.map((point) => point.x);
     const zs = points.map((point) => point.z);
@@ -87,15 +80,19 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     height = '100%',
 }, forwardedRef) => {
     const liveSession = useContext(LiveSessionContext);
-    const telemetryStatus = useTelemetryStatus();
+    const { currentTelemetry, telemetryStatus, game: telemetryGame } = useLiveTelemetrySelector((snapshot) => snapshot);
     const { getCircuitMapByTrack } = useCircuitMaps();
+    const mapLookupRef = useRef(getCircuitMapByTrack);
+    mapLookupRef.current = getCircuitMapByTrack;
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
-    const telemetrySequenceRef = useRef(0);
     const [canvasSize, setCanvasSize] = useState({ width: 800, height: 520 });
-    const [frames, setFrames] = useState<TelemetryFrame[]>([]);
-    const [circuitMap, setCircuitMap] = useState<CircuitMapDto | null>(null);
-    const [cameraMode, setCameraMode] = useState<CameraMode>('driver');
+    const [mapResult, setMapResult] = useState<{
+        key: string;
+        map: CircuitMapDto | null;
+        status: 'loading' | 'ready' | 'error';
+    } | null>(null);
+    const [cameraMode, setCameraMode] = useState<CameraMode>('fit');
     const [zoom, setZoom] = useState(1);
     const [flipX, setFlipX] = useState(false);
     const [flipZ, setFlipZ] = useState(false);
@@ -115,42 +112,33 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     registeredHandleRef.current = handle;
     useRegisterOperationComponentRef(registeredHandleRef);
 
-    const trackKey = useMemo(() => getAccTelemetryTrackKey(
-        liveSession.staticData.Static_track,
-    ), [liveSession.staticData.Static_track]);
-    const trackLayout = useMemo(() => circuitMap ? buildCircuitTrackLayout(circuitMap) : EMPTY_CIRCUIT_TRACK_LAYOUT, [circuitMap]);
-    const currentFrame = frames[frames.length - 1];
-    const bounds = useMemo(() => getBounds(frames, trackLayout), [frames, trackLayout]);
-
-    useEffect(() => {
-        return liveTelemetryStore.subscribeEvents((event) => {
-            if (event.type === 'session-reset') {
-                telemetrySequenceRef.current = 0;
-                setFrames([]);
-                return;
-            }
-            if (event.type !== 'frame' || event.telemetryStatus !== ACC_STATUS.ACC_LIVE) return;
-            const parsed = parseTelemetryFrame(event.sample, telemetrySequenceRef.current);
-            if (!parsed) return;
-            telemetrySequenceRef.current += 1;
-            setFrames((previous) => {
-                const next = [...previous, parsed];
-                return next.length > LIVE_TRAIL_LIMIT ? next.slice(-LIVE_TRAIL_LIMIT) : next;
-            });
-        }, { replayLatest: true });
-    }, []);
+    const game = liveSession.sessionGame ?? telemetryGame;
+    const track = liveSession.staticData.Static_track ?? currentTelemetry.Static_track;
+    const trackKey = game === 'acc' ? getAccTelemetryTrackKey(track) || track?.trim() : track?.trim();
+    const mapKey = `${game}:${trackKey}`;
+    const circuitMap = mapResult?.key === mapKey ? mapResult.map : null;
+    const mapStatus = mapResult?.key === mapKey ? mapResult.status : 'loading';
+    const middleLine = useMemo(() => getLiveMapMiddleLine(circuitMap), [circuitMap]);
+    const live = telemetryStatus === ACC_STATUS.ACC_LIVE;
+    const cars = useMemo(() => live ? getLiveMapCars(currentTelemetry, middleLine) : [], [currentTelemetry, live, middleLine]);
+    const bounds = useMemo(() => getBounds(middleLine), [middleLine]);
+    const playerPosition = cars.find((car) => car.isPlayer)?.position;
 
     useEffect(() => {
         let cancelled = false;
-        if (!trackKey) {
-            setCircuitMap(null);
+        if (!trackKey || (game !== 'acc' && game !== 'iracing')) {
+            setMapResult(null);
             return;
         }
-        void getCircuitMapByTrack('acc', trackKey).then((map) => {
-            if (!cancelled) setCircuitMap(map);
+        setMapResult({ key: mapKey, map: null, status: 'loading' });
+        // Cache/list updates change the provider callback, but must not restart this download.
+        void mapLookupRef.current(game, trackKey).then((map) => {
+            if (!cancelled) setMapResult({ key: mapKey, map, status: 'ready' });
+        }).catch(() => {
+            if (!cancelled) setMapResult({ key: mapKey, map: null, status: 'error' });
         });
         return () => { cancelled = true; };
-    }, [getCircuitMapByTrack, trackKey]);
+    }, [game, mapKey, trackKey]);
 
     useEffect(() => {
         const wrapper = wrapperRef.current;
@@ -167,7 +155,6 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     }, []);
 
     const project = useCallback((point: Vec3) => {
-        const playerPosition = currentFrame?.cars.find((car) => car.key === currentFrame.playerKey)?.position;
         const center = cameraMode === 'driver' && playerPosition ? playerPosition : bounds.center;
         const padding = Math.max(28, Math.min(canvasSize.width, canvasSize.height) * 0.08);
         const spanX = Math.max(bounds.maxX - bounds.minX, 1);
@@ -179,9 +166,9 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
         const scale = fitScale * (cameraMode === 'driver' ? 2.8 : 1) * zoom;
         return {
             x: canvasSize.width / 2 + (point.x - center.x) * scale * (flipX ? -1 : 1),
-            y: canvasSize.height / 2 + (point.z - center.z) * scale * (flipZ ? -1 : 1),
+            y: canvasSize.height / 2 + (point.z - center.z) * scale * (flipZ ? -1 : 1) * (game === 'iracing' ? -1 : 1),
         };
-    }, [bounds, cameraMode, canvasSize, currentFrame, flipX, flipZ, zoom]);
+    }, [bounds, cameraMode, canvasSize, playerPosition, flipX, flipZ, game, zoom]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -209,53 +196,44 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
         context.fillStyle = gradient;
         context.fillRect(0, 0, canvasSize.width, canvasSize.height);
 
-        trackLayout.surface.forEach((polygon) => {
-            if (polygon.length < 3) return;
-            context.beginPath();
-            polygon.forEach((point, index) => {
-                const projected = project(point);
-                if (index === 0) context.moveTo(projected.x, projected.y);
-                else context.lineTo(projected.x, projected.y);
-            });
-            context.closePath();
-            context.fillStyle = 'rgba(77, 82, 91, 0.42)';
-            context.fill();
-        });
-        trackLayout.leftBoundary.forEach((line) => drawPolyline(context, line, project, '#29b6f6', 2));
-        trackLayout.rightBoundary.forEach((line) => drawPolyline(context, line, project, '#ffca28', 2));
-        trackLayout.centerLine.forEach((line) => drawPolyline(context, line, project, 'rgba(255,255,255,.18)', 1));
-        trackLayout.pitLane.forEach((line) => drawPolyline(context, line, project, '#66bb6a', 2));
-
-        const trajectories = new Map<string, Vec3[]>();
-        frames.forEach((frame) => frame.cars.forEach((car) => {
-            const points = trajectories.get(car.key) || [];
-            points.push(car.position);
-            trajectories.set(car.key, points);
-        }));
-        const playerKey = currentFrame?.playerKey || 'slot:0';
-        trajectories.forEach((points, key) => drawPolyline(context, points, project, getCarColor(key, key === playerKey), key === playerKey ? 3 : 1.5));
-        currentFrame?.cars.forEach((car) => {
+        if (middleLine.length > 1) {
+            const loop = [...middleLine, middleLine[0]];
+            drawPolyline(context, loop, project, 'rgba(77, 82, 91, 0.7)', 12);
+            drawPolyline(context, loop, project, 'rgba(255,255,255,.7)', 2);
+        }
+        cars.forEach((car) => {
             const point = project(car.position);
             context.beginPath();
-            context.arc(point.x, point.y, car.key === playerKey ? 6 : 4, 0, Math.PI * 2);
-            context.fillStyle = getCarColor(car.key, car.key === playerKey);
+            context.arc(point.x, point.y, car.isPlayer ? 6 : 4, 0, Math.PI * 2);
+            context.fillStyle = getCarColor(car.key, car.isPlayer);
             context.shadowColor = context.fillStyle;
-            context.shadowBlur = car.key === playerKey ? 12 : 5;
+            context.shadowBlur = car.isPlayer ? 12 : 5;
             context.fill();
             context.shadowBlur = 0;
         });
-    }, [canvasSize, currentFrame, frames, project, trackLayout]);
+    }, [canvasSize, cars, middleLine, project]);
 
-    const live = telemetryStatus === ACC_STATUS.ACC_LIVE;
+    const stateMessage = !trackKey || !game
+        ? ['Waiting for circuit', 'Start live telemetry to load the circuit map.']
+        : mapStatus === 'loading'
+            ? ['Loading circuit map', 'Downloading the circuit middle line.']
+            : mapStatus === 'error'
+                ? ['Unable to load circuit map', 'The circuit map could not be downloaded.']
+                : middleLine.length < 2
+                    ? ['Circuit middle line unavailable', 'Add a middle line for this circuit in Circuit Maps.']
+                    : cars.length === 0
+                        ? ['Waiting for live positions', 'Car markers appear when normalized lap positions are available.']
+                        : null;
+
     return (
         <Card className="map-visualization-card live-trajectory-map" style={{ width, height }} data-testid="live-trajectory-map">
             <Box ref={wrapperRef} className="map-visualization">
-                <canvas ref={canvasRef} className="map-visualization__canvas" />
+                <canvas ref={canvasRef} className="map-visualization__canvas" role="img" aria-label="Live circuit map" />
                 <div className={`map-visualization__hud map-visualization__hud--top ${live ? 'map-visualization__hud--live' : 'map-visualization__hud--standby'}`}>
                     <Flex align="center" gap="2" wrap="wrap">
                         <Badge color={live ? 'green' : 'gray'} variant="soft">{live ? 'Live Telemetry' : 'Telemetry Standby'}</Badge>
-                        <Text size="1" className="map-visualization__metric">{frames.length.toLocaleString()} visible samples</Text>
-                        <Text size="1" className="map-visualization__metric">{Math.max(0, (currentFrame?.cars.length || 1) - 1)} opponents</Text>
+                        <Text size="1" className="map-visualization__metric">{circuitMap?.circuit_name || track || 'Live Map'}</Text>
+                        <Text size="1" className="map-visualization__metric">{cars.filter((car) => !car.isPlayer).length} opponents</Text>
                     </Flex>
                 </div>
                 <div className="map-visualization__hud map-visualization__hud--camera">
@@ -268,10 +246,10 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
                         <Button size="1" variant="soft" onClick={() => setZoom((value) => Math.max(0.35, value / 1.25))}>−</Button>
                     </Flex>
                 </div>
-                {frames.length === 0 ? (
+                {stateMessage ? (
                     <div className="map-visualization__state">
-                        <Text size="2" weight="bold">Waiting for current telemetry</Text>
-                        <Text size="1">Live trajectory data appears here when telemetry is available.</Text>
+                        <Text size="2" weight="bold">{stateMessage[0]}</Text>
+                        <Text size="1">{stateMessage[1]}</Text>
                     </div>
                 ) : null}
             </Box>

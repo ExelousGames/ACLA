@@ -13,8 +13,13 @@ import {
     createWorkflowToolDispatcher,
     startAgentRuntime,
 } from './ai-command-registry';
-import { getCornersForTrack } from 'views/live-session/session-intelligence/track-corners';
-import type { CornerDefinition } from 'views/session-shared/session-intelligence/types';
+import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
+import {
+    findTriggeredTrackGuideCorners,
+    getTrackGuideCorners,
+    isTrackGuidePosition,
+    type TrackGuideCorner,
+} from './track-guide-corners';
 import type {
     AgentSessionInfo,
     AgentSessionMode,
@@ -188,26 +193,6 @@ const OverlayIcon = ({ size = 14 }: { size?: number }) => (
     </svg>
 );
 
-const getNormalizedCarPos = (telemetry: Record<string, any> | null): number | undefined => {
-    if (!telemetry) return undefined;
-    const value = telemetry.Graphics_normalized_car_position;
-    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-};
-
-const crossedNormalizedPosition = (
-    lastPos: number,
-    currentPos: number,
-    targetPos: number,
-): boolean => {
-    if (currentPos >= lastPos) {
-        return lastPos < targetPos && currentPos >= targetPos;
-    }
-    return lastPos < targetPos || currentPos >= targetPos;
-};
-
-const normalizeCornerNameForKnowledge = (cornerName: string): string =>
-    cornerName.replace(/^T\d+\s+/i, '').trim();
-
 const getTrackNameForGuide = (
     liveData: Record<string, any>,
 ): string | undefined =>
@@ -224,13 +209,6 @@ const getAgentDisplayName = (agentMode?: AgentSessionMode | null): string => {
     if (agentMode === 'live_performance_analyst') return 'Live Analyst';
     return 'Agent';
 };
-
-const findTriggeredCorners = (
-    corners: CornerDefinition[],
-    lastPos: number,
-    currentPos: number,
-): CornerDefinition[] =>
-    corners.filter((corner) => crossedNormalizedPosition(lastPos, currentPos, corner.guideFrom ?? corner.from));
 
 const extractCornerKnowledgeMessage = (raw: any): string | null => {
     if (raw?.status === 'unsupported' && typeof raw.message === 'string') {
@@ -321,7 +299,10 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     const {
         getCircuitMapById,
         getCircuitMapByTrack,
+        cachedMaps,
     } = useCircuitMaps();
+    const trackGuideMapsRef = useRef({ getCircuitMapByTrack, cachedMaps });
+    trackGuideMapsRef.current = { getCircuitMapByTrack, cachedMaps };
     const opportunityForecastRowsRef = useRef<Record<string, any>[]>([]);
     const opportunityAgentStateRef = useRef<OpportunityAgentState>({
         intervalId: null,
@@ -1504,32 +1485,67 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     }, [analysisContext?.latestGuidanceMessage, generateUniqueId, mainClientSessionId, setMessages, TrackGuideEnabled]);
 
     useEffect(() => {
-        if (!TrackGuideEnabled) {
+        const resetTrackGuideProgress = () => {
             trackGuideRunTokenRef.current += 1;
             trackGuideLastPosRef.current = undefined;
             trackGuideTriggeredRef.current.clear();
+        };
+        if (!TrackGuideEnabled) {
+            resetTrackGuideProgress();
             return;
         }
-        return liveTelemetryStore.subscribeEvents((event) => {
-            if (event.type === 'session-reset') {
-                trackGuideRunTokenRef.current += 1;
-                trackGuideLastPosRef.current = undefined;
-                trackGuideTriggeredRef.current.clear();
+        let disposed = false;
+        let activeMap: { key: string; map: CircuitMapDto | null; corners: TrackGuideCorner[] } | null = null;
+        const unsubscribe = liveTelemetryStore.subscribeEvents((event) => {
+            if (event.type === 'session-reset' || event.type === 'stream-reset') {
+                resetTrackGuideProgress();
+                activeMap = null;
                 return;
             }
             if (event.type !== 'frame') return;
             const liveData = event.sample;
-            const currentPos = getNormalizedCarPos(liveData);
-            const lastPos = trackGuideLastPosRef.current;
-            if (currentPos === undefined) return;
-            trackGuideLastPosRef.current = currentPos;
-            if (lastPos === undefined) return;
-
+            const game = event.update.game;
+            const currentPos = liveData.Graphics_normalized_car_position;
             const trackName = getTrackNameForGuide(liveData);
-            if (!trackName) return;
+            const trackKey = game === 'acc' ? getAccTelemetryTrackKey(trackName) || trackName?.trim() : trackName?.trim();
+            if (!trackKey || (game !== 'acc' && game !== 'iracing')) {
+                resetTrackGuideProgress();
+                activeMap = null;
+                return;
+            }
+            const mapKey = `${game}:${trackKey}`;
+            if (activeMap?.key !== mapKey) {
+                resetTrackGuideProgress();
+                trackGuideLastPosRef.current = isTrackGuidePosition(currentPos) ? currentPos : undefined;
+                const request = { key: mapKey, map: null as CircuitMapDto | null, corners: [] as TrackGuideCorner[] };
+                activeMap = request;
+                void trackGuideMapsRef.current.getCircuitMapByTrack(game, trackKey).then((map) => {
+                    if (disposed || activeMap !== request) return;
+                    request.map = map;
+                    request.corners = getTrackGuideCorners(map);
+                    if (request.corners.length === 0) {
+                        addGuidanceMessage('Track guide needs a middleline map with corner tags for the current track.');
+                    }
+                }).catch((error) => {
+                    if (disposed || activeMap !== request) return;
+                    addGuidanceMessage('Track guide could not load the circuit map. Restart the guide to retry.');
+                    console.warn('Track guide circuit map request failed:', error);
+                });
+                return;
+            }
+            const cachedMap = activeMap.map && trackGuideMapsRef.current.cachedMaps?.[activeMap.map.id];
+            if (cachedMap && cachedMap !== activeMap.map) {
+                resetTrackGuideProgress();
+                activeMap.map = cachedMap;
+                activeMap.corners = getTrackGuideCorners(cachedMap);
+            }
+            const lastPos = trackGuideLastPosRef.current;
+            if (!isTrackGuidePosition(currentPos)) return;
+            trackGuideLastPosRef.current = currentPos;
+            if (lastPos === undefined || activeMap.corners.length === 0) return;
 
-            const triggeredCorners = findTriggeredCorners(
-                getCornersForTrack(trackName),
+            const triggeredCorners = findTriggeredTrackGuideCorners(
+                activeMap.corners,
                 lastPos,
                 currentPos,
             );
@@ -1540,16 +1556,19 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 ?? 0
             );
             triggeredCorners.forEach((triggeredCorner) => {
-                const triggerPosition = triggeredCorner.guideFrom ?? triggeredCorner.from;
-                const triggerKey = `${lap}:${triggerPosition}:${triggeredCorner.name}`;
+                const triggerPosition = triggeredCorner.from;
+                const triggerLap = currentPos < lastPos && triggerPosition > lastPos ? lap - 1 : lap;
+                const triggerKey = `${triggerLap}:${triggeredCorner.id}`;
                 if (trackGuideTriggeredRef.current.has(triggerKey)) return;
 
                 trackGuideTriggeredRef.current.add(triggerKey);
                 const guideToken = trackGuideRunTokenRef.current;
 
                 apiService.post('/racing-session/track-corner-knowledge', {
-                    track_name: trackName,
-                    corner_name: normalizeCornerNameForKnowledge(triggeredCorner.name),
+                    track_name: trackKey,
+                    corner_number: triggeredCorner.number,
+                    corner_name: `T${triggeredCorner.number}`,
+                    corner_type: triggeredCorner.type,
                     normalized_position: triggerPosition,
                     trigger_position: triggerPosition,
                     current_telemetry: liveData,
@@ -1577,6 +1596,11 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 });
             });
         }, { replayLatest: true });
+        return () => {
+            disposed = true;
+            resetTrackGuideProgress();
+            unsubscribe();
+        };
     }, [addGuidanceMessage, TrackGuideEnabled]);
 
     // Auto-manage imitation guidance chart visibility

@@ -38,6 +38,14 @@ export type CircuitMapBinSample = {
 
 export type CircuitMapSamplesByMode = Partial<Record<CircuitMapCaptureMode, CircuitMapBinSample[]>>;
 
+export type CircuitMapCenterlineTag = {
+    id: string;
+    label: string;
+    // Ordered in lap direction; start > end crosses the start/finish line.
+    start_position: number;
+    end_position: number;
+};
+
 export type CircuitMapSummaryDto = {
     id: string;
     game: CircuitMapGame;
@@ -50,6 +58,7 @@ export type CircuitMapSummaryDto = {
 export type CircuitMapDto = CircuitMapSummaryDto & {
     resolution: number;
     samples: CircuitMapSamplesByMode;
+    centerline_tags?: CircuitMapCenterlineTag[];
 };
 
 export type CircuitMapAlignedRow = {

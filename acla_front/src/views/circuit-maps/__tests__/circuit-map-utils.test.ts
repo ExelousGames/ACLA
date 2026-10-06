@@ -1,6 +1,7 @@
 import {
     alignCircuitMapSamples,
     extractCircuitMapCaptureSample,
+    getCenterlineRangeSamples,
     getCircuitMapBin,
     getCircuitMapDrawSegments,
     getCircuitMapName,
@@ -24,6 +25,19 @@ const makeTelemetryRow = (normalizedPosition: number) => ({
 });
 
 describe('circuit map utilities', () => {
+    it('orders centerline ranges in lap direction, including across start/finish', () => {
+        const samples = [0.5, 0, 0.75, 0.25, 1].map((position) => ({
+            bin: position * 1000, normalized_position: position, x: position, y: 0, z: 0,
+            sample_count: 1, updated_at: '2026-10-06',
+        }));
+        const positions = (start: number, end: number) => getCenterlineRangeSamples(samples, start, end).map((sample) => sample.normalized_position);
+        expect(positions(0, 0.5)).toEqual([0, 0.25, 0.5]);
+        expect(positions(0.75, 0.25)).toEqual([0.75, 1, 0, 0.25]);
+        expect(positions(0, 0)).toEqual([0]);
+        expect(positions(0.1, 0.2)).toEqual([]);
+        expect(samples.map((sample) => sample.normalized_position)).toEqual([0.5, 0, 0.75, 0.25, 1]);
+    });
+
     it('merges standard player coordinates across chunks and preserves locked bins', () => {
         const row = { ...makeTelemetryRow(0.25), Graphics_status: 2 };
         const first = mergeCircuitMapSamples([], [row]);

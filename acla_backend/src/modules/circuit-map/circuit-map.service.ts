@@ -4,6 +4,7 @@ import { Model, Types } from 'mongoose';
 import {
     CircuitMap,
     CircuitMapBinSample,
+    CircuitMapCenterlineTag,
     CircuitMapCaptureMode,
     CircuitMapGame,
     CircuitMapSamplesByMode,
@@ -15,6 +16,7 @@ type CircuitMapPayload = {
     source_track_key?: string | null;
     resolution?: number;
     samples?: Partial<Record<CircuitMapCaptureMode, CircuitMapBinSample[]>>;
+    centerline_tags?: CircuitMapCenterlineTag[];
 };
 
 const CAPTURE_MODES: CircuitMapCaptureMode[] = ['left_boundary', 'middle_line', 'right_boundary', 'pit_lane'];
@@ -25,6 +27,10 @@ export class CircuitMapService {
         @InjectModel(CircuitMap.name)
         private readonly circuitMapModel: Model<CircuitMap>,
     ) { }
+
+    listCenterlineTags() {
+        return { tags: ['corner', 'slow', 'fast', 'long straight'] };
+    }
 
     async list(game?: CircuitMapGame) {
         if (game !== undefined && game !== 'acc' && game !== 'iracing') {
@@ -101,9 +107,36 @@ export class CircuitMapService {
             source_track_key: payload.source_track_key || null,
             resolution: Number.isFinite(Number(payload.resolution)) ? Number(payload.resolution) : 1000,
             samples,
+            ...(isCreate || payload.centerline_tags !== undefined
+                ? { centerline_tags: this.normalizeCenterlineTags(payload.centerline_tags === undefined ? [] : payload.centerline_tags) }
+                : {}),
             sample_count: sampleCount,
             updated_at: new Date().toISOString(),
         };
+    }
+
+    private normalizeCenterlineTags(tags: CircuitMapCenterlineTag[]): CircuitMapCenterlineTag[] {
+        if (!Array.isArray(tags)) {
+            throw new BadRequestException('centerline_tags must be an array');
+        }
+        const ids = new Set<string>();
+        return tags.map((tag) => {
+            if (!tag || typeof tag.id !== 'string' || !tag.id.trim() || tag.id.length > 120
+                || typeof tag.label !== 'string' || !tag.label.trim() || tag.label.trim().length > 120
+                || typeof tag.start_position !== 'number' || !Number.isFinite(tag.start_position)
+                || typeof tag.end_position !== 'number' || !Number.isFinite(tag.end_position)
+                || tag.start_position < 0 || tag.start_position > 1
+                || tag.end_position < 0 || tag.end_position > 1
+                || tag.start_position === tag.end_position) {
+                throw new BadRequestException('Each centerline tag requires an id, a label of 1–120 characters, and distinct start/end positions from 0 to 1');
+            }
+            const id = tag.id.trim();
+            if (ids.has(id)) {
+                throw new BadRequestException('Centerline tag ids must be unique');
+            }
+            ids.add(id);
+            return { id, label: tag.label.trim(), start_position: tag.start_position, end_position: tag.end_position };
+        });
     }
 
     private normalizeSamples(samples?: CircuitMapPayload['samples']): CircuitMapSamplesByMode {
@@ -149,6 +182,7 @@ export class CircuitMapService {
             ...this.toSummaryDto(map),
             resolution: Number(map.resolution ?? 1000),
             samples: this.normalizeSamples(map.samples),
+            centerline_tags: map.centerline_tags ?? [],
         };
     }
 

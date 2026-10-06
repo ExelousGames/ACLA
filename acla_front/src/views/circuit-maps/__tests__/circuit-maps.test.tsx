@@ -21,6 +21,7 @@ jest.mock('radix-ui/internal', () => jest.requireActual('radix-ui/dist/internal.
 
 jest.mock('@radix-ui/themes', () => ({
     AlertDialog: jest.requireActual('@radix-ui/themes').AlertDialog,
+    CheckboxGroup: jest.requireActual('@radix-ui/themes').CheckboxGroup,
     Tabs: jest.requireActual('radix-ui').Tabs,
     Badge: ({ children, ...props }: any) => <span {...props}>{children}</span>,
     Box: require('react').forwardRef(({ children, ...props }: any, ref: any) => <div ref={ref} {...props}>{children}</div>),
@@ -36,11 +37,12 @@ jest.mock('@radix-ui/themes', () => ({
     },
     Select: {
         Root: ({ value, onValueChange, children, disabled }: any) => (
-            <select value={value} disabled={disabled} onChange={(event) => onValueChange(event.target.value)}>
+            <select value={value} disabled={disabled} onChange={(event) => onValueChange(event.target.value)}
+                aria-label={require('react').Children.toArray(children).find((child: any) => child.props['aria-label'])?.props['aria-label']}>
                 {children}
             </select>
         ),
-        Trigger: () => null,
+        Trigger: ({ placeholder }: any) => placeholder ? <option value="" disabled>{placeholder}</option> : null,
         Content: ({ children }: any) => <>{children}</>,
         Item: ({ value, children }: any) => <option value={value}>{children}</option>,
     },
@@ -166,6 +168,23 @@ const renderCircuitMaps = (context: Partial<LiveSessionRuntime> = {}) => (
     )
 );
 
+const canvasPointer = (canvas: HTMLElement, type: string, clientX: number, clientY: number, pointerId = 1, button = 0) => {
+    const event = new MouseEvent(type, { bubbles: true, clientX, clientY, button });
+    Object.defineProperty(event, 'pointerId', { value: pointerId });
+    fireEvent(canvas, event);
+};
+
+const clickCanvas = (canvas: HTMLElement, clientX: number, clientY: number) => {
+    canvasPointer(canvas, 'pointerdown', clientX, clientY);
+    canvasPointer(canvas, 'pointerup', clientX, clientY);
+};
+
+const dragCanvas = (canvas: HTMLElement, startX: number, startY: number, endX: number, endY: number) => {
+    canvasPointer(canvas, 'pointerdown', startX, startY);
+    canvasPointer(canvas, 'pointermove', endX, endY);
+    canvasPointer(canvas, 'pointerup', endX, endY);
+};
+
 describe('CircuitMaps', () => {
     beforeEach(() => {
         liveTelemetryStore.resetSession();
@@ -185,8 +204,13 @@ describe('CircuitMaps', () => {
 
         (global as any).ResizeObserver = class {
             observe = jest.fn();
+            unobserve = jest.fn();
             disconnect = jest.fn();
         };
+
+        HTMLCanvasElement.prototype.setPointerCapture = jest.fn();
+        HTMLCanvasElement.prototype.hasPointerCapture = jest.fn(() => true);
+        HTMLCanvasElement.prototype.releasePointerCapture = jest.fn();
 
         HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
             setTransform: jest.fn(),
@@ -209,7 +233,6 @@ describe('CircuitMaps', () => {
         await selectCaptureMode(mode);
         await openIRacingImport();
         expect(screen.getByRole('button', { name: /save/i })).toBeDisabled();
-        expect(screen.getByRole('button', { name: /add point/i })).toBeDisabled();
         expect(screen.getByRole('tab', { name: 'Bounded Map' })).toBeDisabled();
         expect(screen.getByRole('tab', { name: 'Centerline Map' })).toBeDisabled();
         await act(async () => finishImportRead());
@@ -227,16 +250,17 @@ describe('CircuitMaps', () => {
     });
 
     it('leaves a draft unchanged when file selection is cancelled', async () => {
-        (window.electronAPI.importLocalIRacingTelemetry as jest.Mock).mockResolvedValue(null);
         renderCircuitMaps();
-        await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'iracing');
+        await openIRacingImport();
+        await act(async () => finishImportRead());
+        (window.electronAPI.importLocalIRacingTelemetry as jest.Mock).mockResolvedValue(null);
+        await userEvent.clear(screen.getByLabelText('Circuit name'));
         await userEvent.type(screen.getByLabelText('Circuit name'), 'My draft');
-        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
         await userEvent.click(screen.getByRole('button', { name: /open .ibt file/i }));
         await waitFor(() => expect(screen.getByRole('button', { name: /open .ibt file/i })).toBeEnabled());
         expect(screen.getByLabelText('Circuit name')).toHaveValue('My draft');
         expect(screen.getByText(/1 samples/)).toBeInTheDocument();
-        expect(window.electronAPI.startRecordedFileRead).not.toHaveBeenCalled();
+        expect(window.electronAPI.startRecordedFileRead).toHaveBeenCalledTimes(1);
         expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     });
 
@@ -466,36 +490,6 @@ describe('CircuitMaps', () => {
         expect(mockRefreshCircuitMaps).toHaveBeenCalledWith('acc');
     });
 
-    it.each(['pit_lane', 'middle_line'])('adds and saves manual points in %s mode', async (mode) => {
-        renderCircuitMaps();
-
-        await userEvent.type(screen.getByLabelText('Circuit name'), 'Capture Test Circuit');
-        await selectCaptureMode(mode);
-        await userEvent.clear(screen.getByLabelText('Normalized position 0-1'));
-        await userEvent.type(screen.getByLabelText('Normalized position 0-1'), '0.42');
-        await userEvent.clear(screen.getByLabelText('X'));
-        await userEvent.type(screen.getByLabelText('X'), '12');
-        await userEvent.clear(screen.getByLabelText('Z'));
-        await userEvent.type(screen.getByLabelText('Z'), '34');
-        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
-        await userEvent.click(screen.getByRole('button', { name: /save/i }));
-
-        await waitFor(() => expect(mockedApi.post).toHaveBeenCalled());
-        const [, payload] = mockedApi.post.mock.calls[0];
-        expect(payload).toMatchObject({
-            samples: {
-                [mode]: [{
-                    bin: 420,
-                    normalized_position: 0.42,
-                    x: 12,
-                    z: 34,
-                    locked: true,
-                }],
-            },
-        });
-        await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
-    });
-
     it.each(['left_boundary', 'middle_line'])('processes all 120 live capture frames in %s mode in one React batch', async (mode) => {
         renderCircuitMaps();
         await waitFor(() => expect(mockedApi.get).toHaveBeenCalledWith('/circuit-map/list', { game: 'acc' }));
@@ -569,29 +563,27 @@ describe('CircuitMaps', () => {
         await userEvent.click(await screen.findByRole('button', { name: 'Middle Test Circuit ACC' }));
         expect(await screen.findByText('1 samples')).toBeInTheDocument();
         await selectCaptureMode('middle_line');
-        await userEvent.clear(screen.getByLabelText('Normalized position 0-1'));
-        await userEvent.type(screen.getByLabelText('Normalized position 0-1'), '0.5');
-        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
-        expect(screen.getByText('2 samples')).toBeInTheDocument();
-        expect(screen.getByText('Normalized position 0.5')).toBeInTheDocument();
+        clickCanvas(screen.getByLabelText('Centerline map'), 450, 310);
+        expect(screen.getByText('Normalized position 0.42')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: /^check lock$/i }));
         await userEvent.click(screen.getByRole('button', { name: /^close unlock$/i }));
         await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
         await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/middle-map', expect.objectContaining({
             samples: {
-                middle_line: [sample, expect.objectContaining({ bin: 500, locked: false })],
+                middle_line: [expect.objectContaining({ ...sample, locked: false, updated_at: expect.any(String) })],
                 left_boundary: savedMap.samples.left_boundary,
                 right_boundary: [],
                 pit_lane: [],
             },
         })));
         expect(mockUpsertCachedCircuitMap).toHaveBeenLastCalledWith(expect.objectContaining({
-            sample_count: 3,
-            samples: expect.objectContaining({ middle_line: [sample, expect.objectContaining({ bin: 500 })] }),
+            sample_count: 2,
+            samples: expect.objectContaining({ middle_line: [expect.objectContaining({ bin: 420, locked: false })] }),
         }));
         await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
         await userEvent.click(screen.getByRole('button', { name: /^trash delete$/i }));
-        expect(screen.getByText('1 samples')).toBeInTheDocument();
+        expect(screen.getByText('0 samples')).toBeInTheDocument();
         await userEvent.click(screen.getByRole('button', { name: /new map/i }));
         expect(screen.getByText('0 samples')).toBeInTheDocument();
     });
@@ -645,10 +637,11 @@ describe('CircuitMaps', () => {
         expect(centerlineContext.fillText).toHaveBeenCalledWith('START', 182, startY - 18);
 
         const centerlineCanvas = screen.getByLabelText('Centerline map');
-        fireEvent(centerlineCanvas, new MouseEvent('pointerdown', { bubbles: true, clientX: 182, clientY: startY }));
+        clickCanvas(centerlineCanvas, 182, startY);
         expect(screen.getByText('Normalized position 0')).toBeInTheDocument();
-        fireEvent(centerlineCanvas, new MouseEvent('pointermove', { bubbles: true, clientX: 450, clientY: 310 }));
-        fireEvent.pointerUp(centerlineCanvas);
+        canvasPointer(centerlineCanvas, 'pointerdown', 182, startY);
+        canvasPointer(centerlineCanvas, 'pointermove', 450, 310);
+        canvasPointer(centerlineCanvas, 'pointerup', 450, 310);
 
         await userEvent.click(screen.getByRole('tab', { name: 'Bounded Map' }));
         expect(screen.getByText('3 samples')).toBeInTheDocument();
@@ -657,10 +650,11 @@ describe('CircuitMaps', () => {
         await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
 
         const canvas = screen.getByLabelText('Bounded map');
-        fireEvent(canvas, new MouseEvent('pointerdown', { bubbles: true, clientX: 450, clientY: 310 }));
+        clickCanvas(canvas, 450, 310);
         expect(screen.getByText('Bin 0')).toBeInTheDocument();
-        fireEvent(canvas, new MouseEvent('pointermove', { bubbles: true, clientX: 450, clientY: 444 }));
-        fireEvent.pointerUp(canvas);
+        canvasPointer(canvas, 'pointerdown', 450, 310);
+        canvasPointer(canvas, 'pointermove', 450, 444);
+        canvasPointer(canvas, 'pointerup', 450, 444);
         await userEvent.click(screen.getByRole('button', { name: /save/i }));
         await waitFor(() => expect(mockedApi.put).toHaveBeenLastCalledWith('/circuit-map/two-maps', expect.objectContaining({
             samples: savedMap.samples,
@@ -669,44 +663,38 @@ describe('CircuitMaps', () => {
     });
 
     it('keeps edits in both maps and clears the selection when switching tabs', async () => {
+        const sample = { bin: 0, normalized_position: 0, x: 0, y: 0, z: 0, sample_count: 1 };
+        const savedMap = {
+            id: 'both-maps', game: 'acc', circuit_name: 'Both Maps', resolution: 1000,
+            samples: { left_boundary: [sample], middle_line: [sample] },
+        };
+        mockedApi.get.mockImplementation(async (url: string) => ({
+            data: url === '/circuit-map/list' ? { list: [savedMap] } : savedMap,
+            status: 200,
+        } as any));
         renderCircuitMaps();
-        await userEvent.type(screen.getByLabelText('Circuit name'), 'Both Maps');
-        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
+        await userEvent.click(await screen.findByRole('button', { name: 'Both Maps ACC' }));
+        expect(await screen.findByText('1 samples')).toBeInTheDocument();
+        clickCanvas(screen.getByLabelText('Bounded map'), 450, 310);
+        await userEvent.click(screen.getByRole('button', { name: /^check lock$/i }));
         expect(screen.getByRole('button', { name: /^trash delete$/i })).toBeInTheDocument();
         await userEvent.click(screen.getByRole('tab', { name: 'Centerline Map' }));
         expect(screen.queryByRole('button', { name: /^trash delete$/i })).not.toBeInTheDocument();
-        expect(screen.getByText('0 samples')).toBeInTheDocument();
-        const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
-        expect(contexts[contexts.length - 1].value.fillText).toHaveBeenCalledWith('NO CENTERLINE SAMPLES', 450, 310);
-        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
+        expect(screen.getByText('1 samples')).toBeInTheDocument();
+        clickCanvas(screen.getByLabelText('Centerline map'), 450, 310);
+        await userEvent.click(screen.getByRole('button', { name: /^check lock$/i }));
         await userEvent.click(screen.getByRole('tab', { name: 'Bounded Map' }));
         expect(screen.queryByRole('button', { name: /^trash delete$/i })).not.toBeInTheDocument();
         expect(screen.getByText('1 samples')).toBeInTheDocument();
         await userEvent.click(screen.getByRole('button', { name: /save/i }));
-        await waitFor(() => expect(mockedApi.post).toHaveBeenCalledWith('/circuit-map', expect.objectContaining({
+        await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/both-maps', expect.objectContaining({
             samples: {
-                left_boundary: [expect.objectContaining({ bin: 0 })],
-                middle_line: [expect.objectContaining({ bin: 0, normalized_position: 0 })],
+                left_boundary: [expect.objectContaining({ bin: 0, locked: true })],
+                middle_line: [expect.objectContaining({ bin: 0, normalized_position: 0, locked: true })],
                 right_boundary: [], pit_lane: [],
             },
         })));
         await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
-    });
-
-    it.each(['', '-0.1', '1.1', 'bad'])('requires a valid normalized position for centerline points: %s', async (position) => {
-        renderCircuitMaps();
-        await userEvent.click(screen.getByRole('tab', { name: 'Centerline Map' }));
-        const input = screen.getByLabelText('Normalized position 0-1');
-        expect(input).toBeRequired();
-        fireEvent.change(input, { target: { value: position } });
-        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
-        expect(screen.getByRole('alert')).toHaveTextContent('Normalized position is required and must be a number from 0 to 1.');
-        expect(screen.getByText('0 samples')).toBeInTheDocument();
-        fireEvent.change(input, { target: { value: '1' } });
-        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
-        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-        expect(screen.getByText('Normalized position 1')).toBeInTheDocument();
-        expect(screen.getByText('Bin 999')).toBeInTheDocument();
     });
 
     it('pauses live capture on a tab change and can capture the same position into the centerline', async () => {
@@ -749,6 +737,367 @@ describe('CircuitMaps', () => {
 
         expect(within(screen.getAllByRole('combobox')[0]).getAllByRole('option').map((option) => option.textContent))
             .toEqual(['ACC', 'iRacing']);
+    });
+
+    describe('map navigation', () => {
+        const samples = [
+            { bin: 0, normalized_position: 0, x: 0, y: 0, z: 0, sample_count: 1 },
+            { bin: 500, normalized_position: 0.5, x: 100, y: 0, z: 100, sample_count: 1 },
+        ];
+        const openZoomMap = async (game = 'acc') => {
+            const map = {
+                id: 'zoom-map', game, circuit_name: 'Zoom Circuit', resolution: 1000,
+                samples: { left_boundary: samples, middle_line: samples, right_boundary: [], pit_lane: [] },
+            };
+            mockedApi.get.mockImplementation(async (url: string) => ({
+                data: url === '/circuit-map/list' ? { list: [map] } : map, status: 200,
+            } as any));
+            renderCircuitMaps();
+            await userEvent.selectOptions(screen.getAllByRole('combobox')[0], game);
+            await userEvent.click(await screen.findByRole('button', { name: `Zoom Circuit ${game.toUpperCase()}` }));
+            expect(await screen.findByText('2 samples')).toBeInTheDocument();
+            return map;
+        };
+        const expectFirstPointAt = (x: number, y: number) => {
+            const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
+            const [screenX, screenY] = contexts[contexts.length - 1].value.arc.mock.calls[0];
+            expect(screenX).toBeCloseTo(x);
+            expect(screenY).toBeCloseTo(y);
+        };
+
+        it.each([
+            { game: 'acc', tab: 'Bounded Map', canvas: 'Bounded map', direction: 1 },
+            { game: 'acc', tab: 'Centerline Map', canvas: 'Centerline map', direction: 1 },
+            { game: 'iracing', tab: 'Bounded Map', canvas: 'Bounded map', direction: -1 },
+            { game: 'iracing', tab: 'Centerline Map', canvas: 'Centerline map', direction: -1 },
+        ])('zooms $game $tab and selects projected points without changing saved coordinates', async ({ game, tab, canvas, direction }) => {
+            const map = await openZoomMap(game);
+            await userEvent.click(screen.getByRole('tab', { name: tab }));
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('100%');
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('125%');
+            expectFirstPointAt(115, 310 - 335 * direction);
+
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('80%');
+            expectFirstPointAt(235.6, 310 - 214.4 * direction);
+            clickCanvas(screen.getByLabelText(canvas), 235.6, 310 - 214.4 * direction);
+            expect(screen.getByText('Bin 0')).toBeInTheDocument();
+
+            await userEvent.click(screen.getByRole('button', { name: 'Fit map' }));
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('100%');
+            expectFirstPointAt(182, 310 - 268 * direction);
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/zoom-map', expect.objectContaining({ samples: map.samples })));
+        });
+
+        it.each([
+            { game: 'acc', tab: 'Bounded Map', canvas: 'Bounded map', direction: 1 },
+            { game: 'acc', tab: 'Centerline Map', canvas: 'Centerline map', direction: 1 },
+            { game: 'iracing', tab: 'Bounded Map', canvas: 'Bounded map', direction: -1 },
+            { game: 'iracing', tab: 'Centerline Map', canvas: 'Centerline map', direction: -1 },
+        ])('pans the zoomed $game $tab and selects points without changing saved coordinates', async ({ game, tab, canvas: canvasLabel, direction }) => {
+            const map = await openZoomMap(game);
+            await userEvent.click(screen.getByRole('tab', { name: tab }));
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+            const canvas = screen.getByLabelText(canvasLabel);
+            dragCanvas(canvas, 450, 310, 500, 310 + 80 * direction);
+            expectFirstPointAt(165, 310 - 255 * direction);
+            expect(screen.queryByText('Bin 0')).not.toBeInTheDocument();
+            expect(canvas.setPointerCapture).toHaveBeenCalledWith(1);
+            expect(canvas.releasePointerCapture).toHaveBeenCalledWith(1);
+            expect(canvas).not.toHaveClass('circuit-maps__canvas--panning');
+            clickCanvas(canvas, 165, 310 - 255 * direction);
+            expect(screen.getByText('Bin 0')).toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/zoom-map', expect.objectContaining({ samples: map.samples })));
+
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
+            expectFirstPointAt(232, 310 - 188 * direction);
+            await userEvent.click(screen.getByRole('button', { name: 'Fit map' }));
+            expectFirstPointAt(182, 310 - 268 * direction);
+        });
+
+        it('tolerates click jitter and preserves the selection when dragging a different point', async () => {
+            await openZoomMap();
+            const canvas = screen.getByLabelText('Bounded map');
+            dragCanvas(canvas, 182, 42, 184, 43);
+            expectFirstPointAt(182, 42);
+            expect(screen.getByText('Bin 0')).toBeInTheDocument();
+
+            canvasPointer(canvas, 'pointerdown', 718, 578);
+            expect(canvas).toHaveClass('circuit-maps__canvas--panning');
+            canvasPointer(canvas, 'pointerdown', 400, 300, 2);
+            canvasPointer(canvas, 'pointermove', 900, 700, 2);
+            canvasPointer(canvas, 'pointerup', 900, 700, 2);
+            expectFirstPointAt(182, 42);
+            canvasPointer(canvas, 'pointermove', 1000, 700);
+            expectFirstPointAt(464, 164);
+            canvasPointer(canvas, 'pointerup', 1000, 700);
+            expect(screen.getByText('Bin 0')).toBeInTheDocument();
+            expect(screen.queryByText('Bin 500')).not.toBeInTheDocument();
+        });
+
+        it.each(['pointercancel', 'lostpointercapture'])('stops panning after %s without selecting a point', async (eventType) => {
+            await openZoomMap();
+            const canvas = screen.getByLabelText('Bounded map');
+            canvasPointer(canvas, 'pointerdown', 182, 42);
+            canvasPointer(canvas, 'pointermove', 232, 62);
+            canvasPointer(canvas, eventType, 232, 62);
+            canvasPointer(canvas, 'pointermove', 450, 310);
+            canvasPointer(canvas, 'pointerup', 450, 310);
+            expectFirstPointAt(232, 62);
+            expect(canvas).not.toHaveClass('circuit-maps__canvas--panning');
+            expect(screen.queryByText('Bin 0')).not.toBeInTheDocument();
+            dragCanvas(canvas, 450, 310, 500, 330);
+            expectFirstPointAt(282, 82);
+        });
+
+        it('bounds the zoom and restores fit when switching tabs, maps, drafts, or games', async () => {
+            await openZoomMap();
+            for (let index = 0; index < 12; index += 1) fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('600%');
+            expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled();
+            for (let index = 0; index < 20; index += 1) fireEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('35%');
+            expect(screen.getByRole('button', { name: 'Zoom out' })).toBeDisabled();
+
+            dragCanvas(screen.getByLabelText('Bounded map'), 450, 310, 500, 330);
+            await userEvent.click(screen.getByRole('tab', { name: 'Centerline Map' }));
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('100%');
+            expectFirstPointAt(182, 42);
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+            dragCanvas(screen.getByLabelText('Centerline map'), 450, 310, 500, 330);
+            await userEvent.click(screen.getByRole('button', { name: /new map/i }));
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('100%');
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+            dragCanvas(screen.getByLabelText('Centerline map'), 450, 310, 500, 330);
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom Circuit ACC' }));
+            expect(await screen.findByText('2 samples')).toBeInTheDocument();
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('100%');
+            expectFirstPointAt(182, 42);
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+            await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'iracing');
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('100%');
+        });
+    });
+
+    describe('centerline range tags', () => {
+        const tagOptions = ['corner', 'slow', 'fast', 'long straight'];
+        const samples = [
+            { bin: 0, normalized_position: 0, x: 0, z: 0 },
+            { bin: 250, normalized_position: 0.25, x: 100, z: 0 },
+            { bin: 500, normalized_position: 0.5, x: 100, z: 100 },
+            { bin: 750, normalized_position: 0.75, x: 0, z: 100 },
+        ].map((sample) => ({ ...sample, y: 0, sample_count: 1, updated_at: '2026-10-06' }));
+        const tag = { id: 'saved-tag', label: 'Final corner', start_position: 0.5, end_position: 0.75 };
+        const openTaggedMap = async (
+            tags: typeof tag[] = [],
+            loadTagOptions = async (): Promise<any> => ({ data: { tags: tagOptions }, status: 200 }),
+        ) => {
+            let savedMap = {
+                id: 'tagged-map', game: 'acc', circuit_name: 'Tagged Circuit', resolution: 1000,
+                samples: { middle_line: samples, left_boundary: [samples[0]], right_boundary: [], pit_lane: [] },
+                centerline_tags: tags,
+            };
+            mockedApi.get.mockImplementation(async (url: string) => url === '/circuit-map/centerline-tags'
+                ? loadTagOptions()
+                : { data: url === '/circuit-map/list' ? { list: [savedMap] } : savedMap, status: 200 } as any);
+            mockedApi.put.mockImplementation(async (_url, payload: any) => {
+                savedMap = { ...savedMap, ...payload };
+                return { data: savedMap, status: 200 } as any;
+            });
+            renderCircuitMaps();
+            await userEvent.click(await screen.findByRole('button', { name: 'Tagged Circuit ACC' }));
+            expect(await screen.findByText('1 samples')).toBeInTheDocument();
+            await userEvent.click(screen.getByRole('tab', { name: 'Centerline Map' }));
+        };
+        const clickMap = (clientX: number, clientY: number) => {
+            clickCanvas(screen.getByLabelText('Centerline map'), clientX, clientY);
+        };
+
+        it('pans while selecting a range and highlights it at zoomed and panned coordinates', async () => {
+            await openTaggedMap();
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            dragCanvas(screen.getByLabelText('Centerline map'), 235.6, 95.6, 285.6, 115.6);
+            expect(screen.getByRole('status')).toHaveTextContent('Click the range start');
+            clickMap(285.6, 115.6);
+            clickMap(714.4, 544.4);
+            expect(screen.getByRole('status')).toHaveTextContent('0.0% → 50.0%');
+            await userEvent.click(screen.getByRole('checkbox', { name: 'corner' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
+            expect(screen.getByRole('button', { name: 'corner 0.0% → 50.0%' })).toBeInTheDocument();
+            const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
+            const labelCall = contexts[contexts.length - 1].value.fillText.mock.calls.find(([label]: [string]) => label === 'corner');
+            expect(labelCall[1]).toBeCloseTo(714.4);
+            expect(labelCall[2]).toBeCloseTo(97.6);
+        });
+
+        it.each(tagOptions)('selects a range, highlights it, and saves/reloads %s without changing samples', async (label) => {
+            await openTaggedMap();
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            clickMap(450, 310);
+            expect(screen.getByRole('status')).toHaveTextContent('Click the range start');
+            clickMap(182, 42);
+            expect(screen.getByRole('status')).toHaveTextContent('Click a different point');
+            clickMap(182, 42);
+            expect(screen.queryByRole('button', { name: 'Add tags' })).not.toBeInTheDocument();
+            clickMap(718, 578);
+            expect(screen.getByRole('status')).toHaveTextContent('0.0% → 50.0%');
+            expect(screen.queryByText('Bin 0')).not.toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'Add tags' })).toBeDisabled();
+            const tagSelect = screen.getByRole('group', { name: 'Range tags' });
+            expect(within(tagSelect).getAllByRole('checkbox').map((option) => option.getAttribute('value'))).toEqual(tagOptions);
+            expect(mockedApi.get).toHaveBeenCalledWith('/circuit-map/centerline-tags');
+            await userEvent.click(within(tagSelect).getByRole('checkbox', { name: label }));
+            await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
+            expect(screen.getByRole('button', { name: `${label} 0.0% → 50.0%` })).toHaveAttribute('aria-pressed', 'true');
+            const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
+            expect(contexts[contexts.length - 1].value.fillText).toHaveBeenCalledWith(label, 718, 24, 240);
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            const expectedTag = expect.objectContaining({ id: expect.any(String), label, start_position: 0, end_position: 0.5 });
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                samples: { middle_line: samples, left_boundary: [samples[0]], right_boundary: [], pit_lane: [] },
+                centerline_tags: [expectedTag],
+            })));
+            expect(mockUpsertCachedCircuitMap).toHaveBeenLastCalledWith(expect.objectContaining({ centerline_tags: [expectedTag] }));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: /new map/i }));
+            expect(screen.queryByText(label)).not.toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: 'Tagged Circuit ACC' }));
+            expect(await screen.findByText(label)).toBeInTheDocument();
+        });
+
+        it('adds multiple checked tags to one range and saves/reloads them independently', async () => {
+            await openTaggedMap([tag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            clickMap(182, 42);
+            clickMap(718, 578);
+            await userEvent.click(screen.getByRole('checkbox', { name: 'corner' }));
+            await userEvent.click(screen.getByRole('checkbox', { name: 'slow' }));
+            await userEvent.click(screen.getByRole('checkbox', { name: 'fast' }));
+            await userEvent.click(screen.getByRole('checkbox', { name: 'fast' }));
+            expect(screen.getByRole('checkbox', { name: 'corner' })).toBeChecked();
+            expect(screen.getByRole('checkbox', { name: 'slow' })).toBeChecked();
+            expect(screen.getByRole('checkbox', { name: 'fast' })).not.toBeChecked();
+            await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
+            expect(screen.getByRole('button', { name: 'corner 0.0% → 50.0%' })).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'slow 0.0% → 50.0%' })).toBeInTheDocument();
+
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            clickMap(182, 42);
+            clickMap(718, 578);
+            screen.getAllByRole('checkbox').forEach((checkbox) => expect(checkbox).not.toBeChecked());
+            expect(screen.getByRole('button', { name: 'Add tags' })).toBeDisabled();
+            await userEvent.click(screen.getByRole('checkbox', { name: 'fast' }));
+            await userEvent.click(screen.getByRole('checkbox', { name: 'fast' }));
+            expect(screen.getByRole('button', { name: 'Add tags' })).toBeDisabled();
+            await userEvent.click(screen.getByRole('button', { name: 'Cancel selection' }));
+
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            const expectedTags = [tag, ...['corner', 'slow'].map((label) => expect.objectContaining({
+                id: expect.any(String), label, start_position: 0, end_position: 0.5,
+            }))];
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                samples: { middle_line: samples, left_boundary: [samples[0]], right_boundary: [], pit_lane: [] },
+                centerline_tags: expectedTags,
+            })));
+            const savedTags = (mockedApi.put.mock.calls[0][1] as any).centerline_tags;
+            expect(new Set(savedTags.map((savedTag: typeof tag) => savedTag.id)).size).toBe(3);
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: /new map/i }));
+            await userEvent.click(screen.getByRole('button', { name: 'Tagged Circuit ACC' }));
+            expect(await screen.findByRole('button', { name: 'corner 0.0% → 50.0%' })).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'slow 0.0% → 50.0%' })).toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: 'Remove tag slow' }));
+            expect(screen.getByRole('button', { name: 'corner 0.0% → 50.0%' })).toBeInTheDocument();
+            expect(screen.queryByRole('button', { name: 'slow 0.0% → 50.0%' })).not.toBeInTheDocument();
+        });
+
+        it('waits for the backend list and displays the options it returns', async () => {
+            let resolveOptions!: (value: any) => void;
+            await openTaggedMap([], () => new Promise((resolve) => { resolveOptions = resolve; }));
+            expect(screen.getByText('Loading tags...')).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'Select range' })).toBeDisabled();
+            await act(async () => resolveOptions({ data: { tags: ['backend tag'] }, status: 200 }));
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            clickMap(182, 42);
+            clickMap(718, 578);
+            const tagSelect = screen.getByRole('group', { name: 'Range tags' });
+            expect(within(tagSelect).getAllByRole('checkbox')).toHaveLength(1);
+            expect(within(tagSelect).getByRole('checkbox', { name: 'backend tag' })).toBeInTheDocument();
+        });
+
+        it('allows retrying a failed tag list request while preserving existing tags', async () => {
+            const loadOptions = jest.fn().mockRejectedValueOnce(new Error('Offline'))
+                .mockResolvedValue({ data: { tags: tagOptions }, status: 200 });
+            await openTaggedMap([tag], loadOptions);
+            expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load centerline tags.');
+            expect(screen.getByRole('button', { name: 'Select range' })).toBeDisabled();
+            expect(screen.getByText('Final corner')).toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: 'Retry loading tags' }));
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+            expect(loadOptions).toHaveBeenCalledTimes(2);
+        });
+
+        it('disables new range tags when the backend list is empty', async () => {
+            await openTaggedMap([], async () => ({ data: { tags: [] }, status: 200 }));
+            expect(await screen.findByText('No centerline tags available.')).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'Select range' })).toBeDisabled();
+        });
+
+        it('selects ranges across start/finish, swaps their direction, and keeps tags when saving the bounded map', async () => {
+            await openTaggedMap([tag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            clickMap(182, 578);
+            clickMap(718, 42);
+            expect(screen.getByRole('status')).toHaveTextContent('75.0% → 25.0% (across start/finish)');
+            await userEvent.click(screen.getByRole('button', { name: 'Swap start/end' }));
+            expect(screen.getByRole('status')).toHaveTextContent('25.0% → 75.0%');
+            await userEvent.click(screen.getByRole('button', { name: 'Swap start/end' }));
+            await userEvent.click(screen.getByRole('checkbox', { name: 'long straight' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
+            await userEvent.click(screen.getByRole('tab', { name: 'Bounded Map' }));
+            expect(screen.queryByRole('button', { name: 'Select range' })).not.toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                centerline_tags: [tag, expect.objectContaining({ label: 'long straight', start_position: 0.75, end_position: 0.25 })],
+            })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+        });
+
+        it('cancels unfinished selections on tab changes and saves tag removal', async () => {
+            await openTaggedMap([tag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: /Final corner 50.0%/ }));
+            expect(screen.getByRole('button', { name: /Final corner 50.0%/ })).toHaveAttribute('aria-pressed', 'true');
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            clickMap(182, 42);
+            clickMap(718, 578);
+            await userEvent.click(screen.getByRole('checkbox', { name: 'corner' }));
+            await userEvent.click(screen.getByRole('tab', { name: 'Bounded Map' }));
+            await userEvent.click(screen.getByRole('tab', { name: 'Centerline Map' }));
+            expect(screen.queryByRole('button', { name: 'Cancel selection' })).not.toBeInTheDocument();
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            clickMap(182, 42);
+            clickMap(718, 578);
+            screen.getAllByRole('checkbox').forEach((checkbox) => expect(checkbox).not.toBeChecked());
+            expect(screen.getByRole('button', { name: 'Add tags' })).toBeDisabled();
+            await userEvent.click(screen.getByRole('button', { name: 'Cancel selection' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Remove tag Final corner' }));
+            expect(screen.getByText('No range tags yet.')).toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({ centerline_tags: [] })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+        });
     });
 
     describe('removing a saved map', () => {

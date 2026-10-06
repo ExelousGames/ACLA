@@ -5,6 +5,24 @@ import { AuthGuard } from '@nestjs/passport';
 import { CircuitMapController } from './circuit-map.controller';
 import { CircuitMapService } from './circuit-map.service';
 
+describe('CircuitMapController centerline tag options', () => {
+    it('exposes the backend tag list through an authenticated static GET route before the map id route', () => {
+        const handler = CircuitMapController.prototype.listCenterlineTags;
+        expect(Reflect.getMetadata(PATH_METADATA, CircuitMapController)).toBe('circuit-map');
+        expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe('centerline-tags');
+        expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(RequestMethod.GET);
+        expect(Reflect.getMetadata(GUARDS_METADATA, handler)).toContain(AuthGuard('jwt'));
+        const methods = Object.getOwnPropertyNames(CircuitMapController.prototype);
+        expect(methods.indexOf('listCenterlineTags')).toBeLessThan(methods.indexOf('get'));
+
+        const service = new CircuitMapService({} as any);
+        const controller = new CircuitMapController(service);
+        expect(controller.listCenterlineTags()).toEqual({
+            tags: ['corner', 'slow', 'fast', 'long straight'],
+        });
+    });
+});
+
 describe('CircuitMapController removal', () => {
     it('exposes an authenticated DELETE endpoint returning no content', () => {
         const handler = CircuitMapController.prototype.remove;

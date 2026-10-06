@@ -14,6 +14,12 @@ export class CircuitMapController {
     }
 
     @UseGuards(AuthGuard('jwt'))
+    @Get('centerline-tags')
+    listCenterlineTags() {
+        return this.circuitMapService.listCenterlineTags();
+    }
+
+    @UseGuards(AuthGuard('jwt'))
     @Get(':id')
     get(@Request() req, @Param('id') id: string) {
         return this.circuitMapService.get(id);

@@ -209,6 +209,21 @@ export const countCircuitMapSamples = (samplesByMode: CircuitMapSamplesByMode): 
     Object.values(samplesByMode).reduce((sum, samples) => sum + (samples?.length || 0), 0)
 );
 
+export const getCenterlineRangeSamples = (
+    samples: CircuitMapBinSample[],
+    startPosition: number,
+    endPosition: number
+): CircuitMapBinSample[] => {
+    const sorted = [...samples].sort((a, b) => a.normalized_position - b.normalized_position);
+    if (startPosition <= endPosition) {
+        return sorted.filter((sample) => sample.normalized_position >= startPosition && sample.normalized_position <= endPosition);
+    }
+    return [
+        ...sorted.filter((sample) => sample.normalized_position >= startPosition),
+        ...sorted.filter((sample) => sample.normalized_position <= endPosition)
+    ];
+};
+
 export const cloneSamplesByMode = (samplesByMode: CircuitMapSamplesByMode): CircuitMapSamplesByMode => ({
     left_boundary: [...(samplesByMode.left_boundary || [])],
     middle_line: [...(samplesByMode.middle_line || [])],

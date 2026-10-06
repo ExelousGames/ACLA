@@ -9,6 +9,9 @@ import {
     type OperationExecutionOutput,
 } from 'components/ai-operations';
 import { createAiCommandRegistry, createWorkflowToolDispatcher } from '../ai-command-registry';
+import apiService from 'services/api.service';
+import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
+import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 
 const mockVoiceCleanup = jest.fn();
 const mockVoiceStop = jest.fn();
@@ -31,6 +34,8 @@ const mockComponentDirectory = {
     unregisterComponentRef: mockUnregisterComponentRef,
 };
 const mockGetCircuitMapById = jest.fn(() => Promise.resolve(null));
+const mockGetCircuitMapByTrack = jest.fn<Promise<CircuitMapDto | null>, [string, string]>(() => Promise.resolve(null));
+let mockCachedMaps: Record<string, CircuitMapDto> = {};
 const mockRepeatablePlanRender = jest.fn();
 const mockProcedurePlanRender = jest.fn();
 let mockRegisteredAiChatHandle: any;
@@ -67,7 +72,8 @@ jest.mock('contexts/UserSummaryContext', () => ({
 jest.mock('contexts/CircuitMapsContext', () => ({
     useCircuitMaps: () => ({
         getCircuitMapById: mockGetCircuitMapById,
-        getCircuitMapByTrack: jest.fn(() => Promise.resolve(null)),
+        getCircuitMapByTrack: mockGetCircuitMapByTrack,
+        cachedMaps: mockCachedMaps,
     }),
 }));
 
@@ -184,8 +190,36 @@ const lifecycleProcedurePlan = () => ({
 
 const operationWithValue = (value: OperationExecutionOutput) => asTool(createOperation(value, 'complete'));
 
+const guideMap: CircuitMapDto = {
+    id: 'guide-map', game: 'acc', source_track_key: 'brands_hatch',
+    circuit_name: 'Brands Hatch', resolution: 1000,
+    samples: { middle_line: [0, 0.5, 0.99].map((position) => ({
+        bin: position * 1000, normalized_position: position,
+        x: position * 100, y: 0, z: 0, sample_count: 1, updated_at: 'now',
+    })) },
+    centerline_tags: [
+        { id: 'fast', label: 'fast corner', start_position: 0.6, end_position: 0.7 },
+        { id: 'straight', label: 'long straight', start_position: 0.4, end_position: 0.5 },
+        { id: 'slow', label: 'slow corner', start_position: 0.2, end_position: 0.3 },
+    ],
+};
+
+const publishGuideFrame = async (position: number, lap = 0, track = 'Brands Hatch Circuit', game: 'acc' | 'iracing' = 'acc') => {
+    await act(async () => {
+        expect(liveTelemetryStore.publishFrame({
+            type: 'frame', game, sequence: liveTelemetryStore.getSnapshot().sampleIndex + 2,
+            committedCount: 0, committedSequence: 0,
+            sample: { Static_track: track, Graphics_normalized_car_position: position, Graphics_completed_lap: lap },
+        })).toBe(true);
+    });
+};
+
 describe('AiChat conversation lifecycle', () => {
     beforeEach(() => {
+        liveTelemetryStore.resetSession();
+        (apiService.post as jest.Mock).mockReset().mockResolvedValue({ data: {} });
+        mockGetCircuitMapByTrack.mockReset().mockResolvedValue(null);
+        mockCachedMaps = {};
         localStorage.clear();
         HTMLElement.prototype.scrollIntoView = jest.fn();
         mockVoiceCleanup.mockClear();
@@ -247,6 +281,114 @@ describe('AiChat conversation lifecycle', () => {
         expect(container.querySelector('.ai-chat__transcript-head')).toBeNull();
         expect(container.querySelector('.ai-chat__transcript-time')).toBeNull();
     });
+
+    it('uses middleline tag numbers for guide knowledge, once per corner per lap', async () => {
+        mockGetCircuitMapByTrack.mockResolvedValue(guideMap);
+        (apiService.post as jest.Mock).mockResolvedValue({ data: { track_knowledge: { corner_detail: 'Brake for corner one.' } } });
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={{ assistantMode: 'live', label: 'Live Session' }} />);
+        act(() => mockRegisteredAiChatHandle.startTrackGuide());
+        await publishGuideFrame(0.15);
+        await publishGuideFrame(0.21);
+
+        expect(mockGetCircuitMapByTrack).toHaveBeenCalledWith('acc', 'brands_hatch');
+        expect(apiService.post).toHaveBeenCalledWith('/racing-session/track-corner-knowledge', expect.objectContaining({
+            track_name: 'brands_hatch', corner_number: 1, corner_name: 'T1', corner_type: 'slow corner',
+            normalized_position: 0.2, trigger_position: 0.2,
+            current_telemetry: expect.objectContaining({ Graphics_normalized_car_position: 0.21 }),
+        }));
+        expect(screen.getByText('Brake for corner one.')).toBeInTheDocument();
+        await publishGuideFrame(0.19);
+        await publishGuideFrame(0.21);
+        expect(apiService.post).toHaveBeenCalledTimes(1);
+        await publishGuideFrame(0.55);
+        expect(apiService.post).toHaveBeenCalledTimes(1);
+        await publishGuideFrame(0.61);
+        expect(apiService.post).toHaveBeenLastCalledWith('/racing-session/track-corner-knowledge', expect.objectContaining({
+            corner_number: 2, corner_name: 'T2', corner_type: 'fast corner', trigger_position: 0.6,
+        }));
+        view.rerender(<AiChat name="dashboard-assistant" activeScreen={{ assistantMode: 'live', label: 'Live Session' }} />);
+        await publishGuideFrame(0.99);
+        await publishGuideFrame(0.21, 1);
+        expect(apiService.post).toHaveBeenCalledTimes(3);
+        expect(apiService.post).toHaveBeenLastCalledWith('/racing-session/track-corner-knowledge', expect.objectContaining({ corner_number: 1 }));
+        expect(mockGetCircuitMapByTrack).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not use hardcoded corners when the saved middleline or tags are missing', async () => {
+        render(<AiChat name="dashboard-assistant" activeScreen={{ assistantMode: 'live', label: 'Live Session' }} />);
+        act(() => mockRegisteredAiChatHandle.startTrackGuide());
+        await publishGuideFrame(0.01, 0, 'monza');
+        await publishGuideFrame(0.03, 0, 'monza');
+        await publishGuideFrame(0.05, 0, 'monza');
+        expect(apiService.post).not.toHaveBeenCalled();
+        expect(screen.getByText('Track guide needs a middleline map with corner tags for the current track.')).toBeInTheDocument();
+    });
+
+    it('uses updated middleline tags from the shared circuit map cache', async () => {
+        mockGetCircuitMapByTrack.mockResolvedValue(guideMap);
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={{ assistantMode: 'live', label: 'Live Session' }} />);
+        act(() => mockRegisteredAiChatHandle.startTrackGuide());
+        await publishGuideFrame(0.1);
+        mockCachedMaps = { [guideMap.id]: { ...guideMap, centerline_tags: [
+            { id: 'new-corner', label: 'corner', start_position: 0.4, end_position: 0.5 },
+            { id: 'speed', label: 'fast', start_position: 0.4, end_position: 0.5 },
+        ] } };
+        view.rerender(<AiChat name="dashboard-assistant" activeScreen={{ assistantMode: 'live', label: 'Live Session' }} />);
+        await publishGuideFrame(0.15);
+        await publishGuideFrame(0.21);
+        expect(apiService.post).not.toHaveBeenCalled();
+        await publishGuideFrame(0.41);
+        expect(apiService.post).toHaveBeenCalledWith('/racing-session/track-corner-knowledge', expect.objectContaining({
+            corner_number: 1, corner_type: 'corner', trigger_position: 0.4,
+        }));
+        expect(mockGetCircuitMapByTrack).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores a pending map after changing sessions and loads the new game and track', async () => {
+        let resolveOldMap!: (map: CircuitMapDto) => void;
+        mockGetCircuitMapByTrack.mockImplementationOnce(() => new Promise((resolve) => { resolveOldMap = resolve; }));
+        mockGetCircuitMapByTrack.mockResolvedValue({ ...guideMap, game: 'iracing', source_track_key: 'new-layout' });
+        render(<AiChat name="dashboard-assistant" activeScreen={{ assistantMode: 'live', label: 'Live Session' }} />);
+        act(() => mockRegisteredAiChatHandle.startTrackGuide());
+        await publishGuideFrame(0.15);
+        act(() => liveTelemetryStore.resetSession());
+        await publishGuideFrame(0.1, 0, 'new-layout', 'iracing');
+        await act(async () => resolveOldMap({ ...guideMap, centerline_tags: [] }));
+        await publishGuideFrame(0.15, 0, 'new-layout', 'iracing');
+        await publishGuideFrame(0.21, 0, 'new-layout', 'iracing');
+        expect(mockGetCircuitMapByTrack).toHaveBeenLastCalledWith('iracing', 'new-layout');
+        expect(apiService.post).toHaveBeenCalledTimes(1);
+        expect(apiService.post).toHaveBeenLastCalledWith('/racing-session/track-corner-knowledge', expect.objectContaining({
+            track_name: 'new-layout', corner_number: 1,
+        }));
+        expect(screen.queryByText(/Track guide needs a middleline/)).not.toBeInTheDocument();
+    });
+
+    it.each(['stop', 'session-reset', 'stream-reset', 'game-change', 'unmount'])(
+        'discards pending corner knowledge on %s', async (action) => {
+            let resolveKnowledge!: (response: unknown) => void;
+            mockGetCircuitMapByTrack.mockResolvedValue(guideMap);
+            (apiService.post as jest.Mock).mockImplementation(() => new Promise((resolve) => { resolveKnowledge = resolve; }));
+            const view = render(<AiChat name="dashboard-assistant" activeScreen={{ assistantMode: 'live', label: 'Live Session' }} />);
+            act(() => mockRegisteredAiChatHandle.startTrackGuide());
+            await publishGuideFrame(0.15);
+            await publishGuideFrame(0.16);
+            await publishGuideFrame(0.21);
+            expect(apiService.post).toHaveBeenCalledTimes(1);
+            if (action === 'game-change') {
+                await publishGuideFrame(0.4, 0, 'Brands Hatch', 'iracing');
+            } else {
+                act(() => {
+                    if (action === 'stop') mockRegisteredAiChatHandle.setTrackGuideEnabled(false);
+                    if (action === 'session-reset') liveTelemetryStore.resetSession();
+                    if (action === 'stream-reset') liveTelemetryStore.beginStream();
+                    if (action === 'unmount') view.unmount();
+                });
+            }
+            await act(async () => resolveKnowledge({ data: { track_knowledge: { corner_detail: 'Old track knowledge' } } }));
+            expect(screen.queryByText('Old track knowledge')).not.toBeInTheDocument();
+        },
+    );
 
     it('serializes only the canonical mode fields for main and agent contexts', async () => {
         const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);

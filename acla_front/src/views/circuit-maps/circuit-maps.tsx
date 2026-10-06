@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertDialog, Badge, Box, Button, Flex, Heading, Select, Spinner, Tabs, Text, TextField } from '@radix-ui/themes';
+import { AlertDialog, Badge, Box, Button, CheckboxGroup, Flex, Heading, Select, Spinner, Tabs, Text, TextField } from '@radix-ui/themes';
 import { CheckIcon, Cross2Icon, PauseIcon, PlayIcon, PlusIcon, ReloadIcon, TrashIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
-import { fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 'services/circuitMapService';
+import { fetchCenterlineTagOptions, fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 'services/circuitMapService';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
 import { readLocalTelemetry } from 'views/session-shared/read-local-telemetry';
@@ -21,6 +21,7 @@ import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CIRCUIT_MAP_GAMES,
     CircuitMapBinSample,
+    CircuitMapCenterlineTag,
     CircuitMapCaptureMode,
     CircuitMapGame,
     CircuitMapSamplesByMode,
@@ -31,7 +32,7 @@ import {
     cloneSamplesByMode,
     countCircuitMapSamples,
     extractCircuitMapCaptureSample,
-    getCircuitMapBin,
+    getCenterlineRangeSamples,
     getCircuitMapDrawSegments,
     getCircuitMapName,
     getCircuitMapTrackKey,
@@ -44,6 +45,8 @@ type LoadState = 'idle' | 'loading' | 'ready' | 'error';
 type CircuitMapView = 'bounded' | 'centerline';
 type SelectedPoint = { mode: CircuitMapCaptureMode; bin: number } | null;
 type ProjectedPoint = { screenX: number; screenY: number; sample: CircuitMapBinSample; mode: CircuitMapCaptureMode };
+type SelectedRange = { start_position: number; end_position: number | null };
+type MapDrag = { pointerId: number; startX: number; startY: number; panX: number; panY: number; moved: boolean };
 
 const VIEW_CAPTURE_MODES = {
     bounded: CIRCUIT_MAP_CAPTURE_MODES.filter(({ value }) => value !== 'middle_line'),
@@ -64,17 +67,21 @@ const EMPTY_SAMPLES: CircuitMapSamplesByMode = {
     pit_lane: []
 };
 
+const MIN_ZOOM = 0.35;
+const MAX_ZOOM = 6;
+const ZOOM_STEP = 1.25;
+const PAN_THRESHOLD = 4;
+
 const formatModeLabel = (mode: CircuitMapCaptureMode): string => (
     CIRCUIT_MAP_CAPTURE_MODES.find((option) => option.value === mode)?.label || mode
 );
 
-const toNumber = (value: string, fallback: number): number => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-};
-
 const getSamplesForMode = (samplesByMode: CircuitMapSamplesByMode, mode: CircuitMapCaptureMode): CircuitMapBinSample[] => (
     samplesByMode[mode] || []
+);
+
+const formatRange = (start: number, end: number): string => (
+    `${(start * 100).toFixed(1)}% → ${(end * 100).toFixed(1)}%${start > end ? ' (across start/finish)' : ''}`
 );
 
 const CircuitMaps = () => {
@@ -88,6 +95,7 @@ const CircuitMaps = () => {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
     const projectedPointsRef = useRef<ProjectedPoint[]>([]);
+    const mapDragRef = useRef<MapDrag | null>(null);
     const lastCaptureSignatureRef = useRef('');
     const mapLoadRequestRef = useRef(0);
     const listLoadRequestRef = useRef(0);
@@ -101,14 +109,22 @@ const CircuitMaps = () => {
     const [circuitName, setCircuitName] = useState('');
     const [sourceTrackKey, setSourceTrackKey] = useState<string | null>(null);
     const [samplesByMode, setSamplesByMode] = useState<CircuitMapSamplesByMode>(EMPTY_SAMPLES);
+    const [centerlineTags, setCenterlineTags] = useState<CircuitMapCenterlineTag[]>([]);
+    const [isSelectingRange, setIsSelectingRange] = useState(false);
+    const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(null);
+    const [tagLabels, setTagLabels] = useState<string[]>([]);
+    const [tagOptions, setTagOptions] = useState<string[]>([]);
+    const [tagOptionsState, setTagOptionsState] = useState<LoadState>('idle');
+    const [tagOptionsRetry, setTagOptionsRetry] = useState(0);
+    const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
     const [mapView, setMapView] = useState<CircuitMapView>('bounded');
     const [captureMode, setCaptureMode] = useState<CircuitMapCaptureMode>('left_boundary');
     const [isCapturing, setIsCapturing] = useState(false);
     const [selectedPoint, setSelectedPoint] = useState<SelectedPoint>(null);
     const [canvasSize, setCanvasSize] = useState({ width: 900, height: 620 });
-    const [manualNormalized, setManualNormalized] = useState('0');
-    const [manualX, setManualX] = useState('0');
-    const [manualZ, setManualZ] = useState('0');
+    const [zoom, setZoom] = useState(1);
+    const [pan, setPan] = useState({ x: 0, y: 0 });
+    const [isPanning, setIsPanning] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [isMapLoading, setIsMapLoading] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -116,6 +132,29 @@ const CircuitMaps = () => {
     const [deleteError, setDeleteError] = useState<string | null>(null);
     const [isImporting, setIsImporting] = useState(false);
     const [importStatus, setImportStatus] = useState('');
+    const isTagEditingDisabled = isImporting || isMapLoading || isSaving || isDeleting;
+
+    const stopPanning = useCallback(() => {
+        const drag = mapDragRef.current;
+        mapDragRef.current = null;
+        setIsPanning(false);
+        if (drag && canvasRef.current?.hasPointerCapture(drag.pointerId)) {
+            canvasRef.current.releasePointerCapture(drag.pointerId);
+        }
+    }, []);
+
+    const resetViewport = useCallback(() => {
+        stopPanning();
+        setZoom(1);
+        setPan({ x: 0, y: 0 });
+    }, [stopPanning]);
+
+    const clearRangeSelection = useCallback(() => {
+        setIsSelectingRange(false);
+        setSelectedRange(null);
+        setTagLabels([]);
+        setSelectedTagId(null);
+    }, []);
 
     const isAcc = game === 'acc';
     const isIRacing = game === 'iracing';
@@ -157,6 +196,22 @@ const CircuitMaps = () => {
 
     useEffect(() => () => { importRef.current?.abort(); }, []);
 
+    useEffect(() => {
+        if (mapView !== 'centerline') return;
+        let cancelled = false;
+        setTagOptionsState('loading');
+        fetchCenterlineTagOptions().then((options) => {
+            if (cancelled) return;
+            setTagOptions(options);
+            setTagOptionsState('ready');
+        }).catch(() => {
+            if (cancelled) return;
+            setTagOptions([]);
+            setTagOptionsState('error');
+        });
+        return () => { cancelled = true; };
+    }, [mapView, tagOptionsRetry]);
+
     const changeMapView = (value: string) => {
         if (isImporting) return;
         const nextView = value as CircuitMapView;
@@ -164,7 +219,9 @@ const CircuitMaps = () => {
         lastCaptureSignatureRef.current = '';
         setSelectedPoint(null);
         setImportStatus('');
+        clearRangeSelection();
         setMapView(nextView);
+        resetViewport();
         setCaptureMode(nextView === 'centerline' ? 'middle_line' : 'left_boundary');
     };
 
@@ -174,12 +231,15 @@ const CircuitMaps = () => {
         setIsMapLoading(false);
         setSelectedMapId(null);
         setCircuitName('');
+        resetViewport();
         setSourceTrackKey(null);
         setSamplesByMode(cloneSamplesByMode(EMPTY_SAMPLES));
+        setCenterlineTags([]);
+        clearRangeSelection();
         setSelectedPoint(null);
         setIsCapturing(false);
         void loadMapList(game);
-    }, [cancelImport, game, loadMapList]);
+    }, [cancelImport, clearRangeSelection, game, loadMapList, resetViewport]);
 
     useEffect(() => {
         if (!isAcc || selectedMapId || circuitName) {
@@ -236,9 +296,11 @@ const CircuitMaps = () => {
 
     const loadMap = useCallback(async (mapId: string) => {
         cancelImport();
+        clearRangeSelection();
         const requestId = ++mapLoadRequestRef.current;
         setIsMapLoading(true);
         setSelectedMapId(mapId);
+        resetViewport();
         setError(null);
         setIsCapturing(false);
         setSelectedPoint(null);
@@ -249,6 +311,7 @@ const CircuitMaps = () => {
             setCircuitName(map.circuit_name);
             setSourceTrackKey(map.source_track_key || null);
             setSamplesByMode(cloneSamplesByMode(map.samples));
+            setCenterlineTags(map.centerline_tags || []);
             upsertCachedCircuitMap(map);
         } catch (loadError: any) {
             if (requestId !== mapLoadRequestRef.current) return;
@@ -256,7 +319,7 @@ const CircuitMaps = () => {
         } finally {
             if (requestId === mapLoadRequestRef.current) setIsMapLoading(false);
         }
-    }, [cancelImport, game, upsertCachedCircuitMap]);
+    }, [cancelImport, clearRangeSelection, game, resetViewport, upsertCachedCircuitMap]);
 
     const resetForNewMap = useCallback(() => {
         cancelImport();
@@ -264,7 +327,10 @@ const CircuitMaps = () => {
         setIsMapLoading(false);
         setIsCapturing(false);
         setSelectedMapId(null);
+        resetViewport();
         setSamplesByMode(cloneSamplesByMode(EMPTY_SAMPLES));
+        setCenterlineTags([]);
+        clearRangeSelection();
         setSelectedPoint(null);
         if (isAcc) {
             setCircuitName(getCircuitMapName(currentTrackKey, game));
@@ -273,7 +339,7 @@ const CircuitMaps = () => {
             setCircuitName('');
             setSourceTrackKey(null);
         }
-    }, [cancelImport, currentTrackKey, game, isAcc]);
+    }, [cancelImport, clearRangeSelection, currentTrackKey, game, isAcc, resetViewport]);
 
     const importIRacingFile = async () => {
         if (importRef.current || !isIRacing || isMapLoading || isSaving || isDeleting) return;
@@ -283,6 +349,7 @@ const CircuitMaps = () => {
         setError(null);
         setImportStatus('Opening and converting iRacing telemetry...');
         setSelectedPoint(null);
+        clearRangeSelection();
         let convertedPath: string | undefined;
         try {
             const imported = await window.electronAPI.importLocalIRacingTelemetry();
@@ -373,7 +440,8 @@ const CircuitMaps = () => {
             circuit_name: trimmedName,
             source_track_key: sourceTrackKey,
             resolution: CIRCUIT_MAP_BIN_RESOLUTION,
-            samples: samplesByMode
+            samples: samplesByMode,
+            centerline_tags: centerlineTags
         };
 
         setIsSaving(true);
@@ -408,6 +476,7 @@ const CircuitMaps = () => {
             setIsSaving(false);
         }
     }, [
+        centerlineTags,
         circuitName,
         game,
         loadMapList,
@@ -453,35 +522,6 @@ const CircuitMaps = () => {
         setSelectedPoint(null);
     }, [selectedPoint]);
 
-    const addManualPoint = useCallback(() => {
-        const normalizedPosition = Number(manualNormalized);
-        const bin = getCircuitMapBin(normalizedPosition);
-        if (!manualNormalized.trim() || bin === null) {
-            setError('Normalized position is required and must be a number from 0 to 1.');
-            return;
-        }
-        setError(null);
-        const sample: CircuitMapBinSample = {
-            bin,
-            normalized_position: normalizedPosition,
-            x: toNumber(manualX, 0),
-            y: 0,
-            z: toNumber(manualZ, 0),
-            sample_count: 1,
-            updated_at: new Date().toISOString(),
-            locked: true
-        };
-
-        setSamplesByMode((previous) => {
-            const samples = getSamplesForMode(previous, captureMode).filter((item) => item.bin !== bin);
-            return {
-                ...previous,
-                [captureMode]: [...samples, sample].sort((a, b) => a.bin - b.bin)
-            };
-        });
-        setSelectedPoint({ mode: captureMode, bin });
-    }, [captureMode, manualNormalized, manualX, manualZ]);
-
     const getCanvasProjection = useCallback(() => {
         const points: { x: number; z: number }[] = [];
         visibleModes.forEach(({ value }) => {
@@ -512,7 +552,7 @@ const CircuitMaps = () => {
         const spanZ = Math.max(1, maxZ - minZ);
         const usableWidth = Math.max(1, canvasSize.width - padding * 2);
         const usableHeight = Math.max(1, canvasSize.height - padding * 2);
-        const scale = Math.min(usableWidth / spanX, usableHeight / spanZ);
+        const scale = Math.min(usableWidth / spanX, usableHeight / spanZ) * zoom;
         const centerX = (minX + maxX) / 2;
         const centerZ = (minZ + maxZ) / 2;
         // Canvas Y grows downward: keep that Z flip for ACC and undo it for iRacing.
@@ -520,11 +560,11 @@ const CircuitMaps = () => {
 
         return {
             project: (x: number, z: number) => ({
-                screenX: canvasSize.width / 2 + (x - centerX) * scale,
-                screenY: canvasSize.height / 2 + (z - centerZ) * scale * zDirection
+                screenX: canvasSize.width / 2 + pan.x + (x - centerX) * scale,
+                screenY: canvasSize.height / 2 + pan.y + (z - centerZ) * scale * zDirection
             })
         };
-    }, [canvasSize, isIRacing, liveCapture, samplesByMode, visibleModes]);
+    }, [canvasSize, isIRacing, liveCapture, pan, samplesByMode, visibleModes, zoom]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -603,6 +643,46 @@ const CircuitMaps = () => {
         });
 
         if (mapView === 'centerline') {
+            const drawRange = (range: SelectedRange, color: string, label?: string) => {
+                const samples = getCenterlineRangeSamples(
+                    getSamplesForMode(samplesByMode, 'middle_line'),
+                    range.start_position,
+                    range.end_position ?? range.start_position
+                );
+                if (!samples.length) return;
+                context.save();
+                context.strokeStyle = color;
+                context.fillStyle = color;
+                context.lineWidth = 7;
+                context.lineJoin = 'round';
+                context.lineCap = 'round';
+                context.beginPath();
+                samples.forEach((sample, index) => {
+                    const point = project(sample.x, sample.z);
+                    if (index === 0) context.moveTo(point.screenX, point.screenY);
+                    else context.lineTo(point.screenX, point.screenY);
+                });
+                context.stroke();
+                [samples[0], samples[samples.length - 1]].forEach((sample) => {
+                    const point = project(sample.x, sample.z);
+                    context.beginPath();
+                    context.arc(point.screenX, point.screenY, 8, 0, Math.PI * 2);
+                    context.stroke();
+                });
+                if (label) {
+                    const middle = samples[Math.floor(samples.length / 2)];
+                    const point = project(middle.x, middle.z);
+                    context.font = 'bold 13px monospace';
+                    context.textAlign = 'center';
+                    context.fillText(label, point.screenX, point.screenY - 18, 240);
+                }
+                context.restore();
+            };
+            centerlineTags.forEach((tag) => drawRange(tag, '#ffca28', tag.label));
+            const selectedTag = centerlineTags.find((tag) => tag.id === selectedTagId);
+            if (selectedTag) drawRange(selectedTag, '#4dd0e1', selectedTag.label);
+            if (selectedRange) drawRange(selectedRange, '#4dd0e1');
+
             const startPoint = projectedPoints.reduce<ProjectedPoint | null>((closest, point) => (
                 !closest || point.sample.normalized_position < closest.sample.normalized_position ? point : closest
             ), null);
@@ -645,7 +725,7 @@ const CircuitMaps = () => {
         }
 
         projectedPointsRef.current = projectedPoints;
-    }, [canvasSize, getCanvasProjection, liveCapture, mapView, visibleSampleCount, samplesByMode, selectedPoint, visibleModes]);
+    }, [canvasSize, centerlineTags, getCanvasProjection, liveCapture, mapView, visibleSampleCount, samplesByMode, selectedPoint, selectedRange, selectedTagId, visibleModes]);
 
     const getPointerPosition = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
         const rect = event.currentTarget.getBoundingClientRect();
@@ -656,7 +736,40 @@ const CircuitMaps = () => {
     }, []);
 
     const handlePointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
-        if (isImporting) return;
+        if (isTagEditingDisabled || event.button !== 0 || mapDragRef.current) return;
+        event.preventDefault();
+        mapDragRef.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            panX: pan.x,
+            panY: pan.y,
+            moved: false
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setIsPanning(true);
+    }, [isTagEditingDisabled, pan]);
+
+    const handlePointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+        const drag = mapDragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const deltaX = event.clientX - drag.startX;
+        const deltaY = event.clientY - drag.startY;
+        if (!drag.moved && Math.hypot(deltaX, deltaY) < PAN_THRESHOLD) return;
+        drag.moved = true;
+        setPan({ x: drag.panX + deltaX, y: drag.panY + deltaY });
+    }, []);
+
+    const handlePointerCancel = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+        if (mapDragRef.current?.pointerId === event.pointerId) stopPanning();
+    }, [stopPanning]);
+
+    const handlePointerUp = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+        const drag = mapDragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        stopPanning();
+        if (isTagEditingDisabled || drag.moved
+            || Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= PAN_THRESHOLD) return;
         const pointer = getPointerPosition(event);
         const nearest = projectedPointsRef.current.reduce<{ point: ProjectedPoint | null; distance: number }>((closest, point) => {
             const distance = Math.hypot(point.screenX - pointer.screenX, point.screenY - pointer.screenY);
@@ -666,13 +779,40 @@ const CircuitMaps = () => {
             return closest;
         }, { point: null, distance: 12 }).point;
 
+        if (isSelectingRange && mapView === 'centerline') {
+            if (!nearest || nearest.mode !== 'middle_line') return;
+            const position = nearest.sample.normalized_position;
+            setSelectedRange((previous) => !previous || previous.end_position !== null
+                ? { start_position: position, end_position: null }
+                : { ...previous, end_position: position === previous.start_position ? null : position });
+            return;
+        }
+
         if (!nearest) {
             setSelectedPoint(null);
             return;
         }
 
+        setSelectedTagId(null);
         setSelectedPoint({ mode: nearest.mode, bin: nearest.sample.bin });
-    }, [getPointerPosition, isImporting]);
+    }, [getPointerPosition, isSelectingRange, isTagEditingDisabled, mapView, stopPanning]);
+
+    const addRangeTags = (event: React.FormEvent) => {
+        event.preventDefault();
+        if (isTagEditingDisabled || tagOptionsState !== 'ready' || !selectedRange
+            || selectedRange.end_position === null || tagLabels.length === 0
+            || tagLabels.some((label) => !tagOptions.includes(label))) return;
+        const { start_position, end_position } = selectedRange;
+        const tags: CircuitMapCenterlineTag[] = tagLabels.map((label) => ({
+            id: window.crypto?.randomUUID?.() ?? `tag-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            label,
+            start_position,
+            end_position
+        }));
+        setCenterlineTags((previous) => [...previous, ...tags]);
+        clearRangeSelection();
+        setSelectedTagId(tags[tags.length - 1].id);
+    };
 
     const selectedSample = useMemo(() => {
         if (!selectedPoint) return null;
@@ -788,29 +928,6 @@ const CircuitMaps = () => {
                 </div>
 
                 <div className="circuit-maps__section">
-                    <Text className="circuit-maps__label">Manual Point</Text>
-                    <div className="circuit-maps__manual-grid">
-                        <TextField.Root
-                            aria-label="Normalized position 0-1"
-                            placeholder="Normalized position 0-1"
-                            type="number"
-                            min="0"
-                            max="1"
-                            step="any"
-                            required
-                            value={manualNormalized}
-                            onChange={(event) => setManualNormalized(event.target.value)}
-                        />
-                        <TextField.Root placeholder="X" value={manualX} onChange={(event) => setManualX(event.target.value)} />
-                        <TextField.Root placeholder="Z" value={manualZ} onChange={(event) => setManualZ(event.target.value)} />
-                    </div>
-                    <Button variant="soft" onClick={addManualPoint} disabled={isImporting}>
-                        <PlusIcon />
-                        Add Point
-                    </Button>
-                </div>
-
-                <div className="circuit-maps__section">
                     <Text className="circuit-maps__label">Samples</Text>
                     <div className="circuit-maps__mode-grid">
                         {visibleModes.map((mode) => (
@@ -827,6 +944,85 @@ const CircuitMaps = () => {
                         ))}
                     </div>
                 </div>
+
+                {mapView === 'centerline' && (
+                    <div className="circuit-maps__section">
+                        <Text className="circuit-maps__label">Range Tags</Text>
+                        <Text size="2" className="circuit-maps__muted">
+                            Select a start and end point on the map in lap direction, then choose one or more tags. Tags are saved with the map when you press Save.
+                        </Text>
+                        {tagOptionsState === 'loading' && <Text size="2">Loading tags...</Text>}
+                        {tagOptionsState === 'error' && (
+                            <>
+                                <Text role="alert" size="2" className="circuit-maps__error">Unable to load centerline tags.</Text>
+                                <Button variant="soft" onClick={() => setTagOptionsRetry((previous) => previous + 1)}>Retry loading tags</Button>
+                            </>
+                        )}
+                        {tagOptionsState === 'ready' && tagOptions.length === 0 && <Text size="2">No centerline tags available.</Text>}
+                        <Button
+                            variant="soft"
+                            disabled={isTagEditingDisabled || tagOptionsState !== 'ready' || tagOptions.length === 0 || getSamplesForMode(samplesByMode, 'middle_line').length < 2}
+                            onClick={() => {
+                                clearRangeSelection();
+                                setSelectedPoint(null);
+                                setIsSelectingRange(true);
+                            }}
+                        >
+                            Select range
+                        </Button>
+                        {isSelectingRange && (
+                            <form className="circuit-maps__tag-form" onSubmit={addRangeTags}>
+                                <Text role="status" size="2">
+                                    {!selectedRange ? 'Click the range start on the centerline.'
+                                        : selectedRange.end_position === null ? 'Click a different point for the range end.'
+                                            : formatRange(selectedRange.start_position, selectedRange.end_position)}
+                                </Text>
+                                {selectedRange?.end_position != null && (
+                                    <>
+                                        <Button type="button" size="1" variant="outline" disabled={isTagEditingDisabled} onClick={() => {
+                                            setSelectedRange({ start_position: selectedRange.end_position!, end_position: selectedRange.start_position });
+                                        }}>Swap start/end</Button>
+                                        <CheckboxGroup.Root
+                                            aria-label="Range tags"
+                                            value={tagLabels}
+                                            disabled={isTagEditingDisabled || tagOptionsState !== 'ready'}
+                                            onValueChange={setTagLabels}
+                                        >
+                                            {tagOptions.map((label) => <CheckboxGroup.Item key={label} value={label}>{label}</CheckboxGroup.Item>)}
+                                        </CheckboxGroup.Root>
+                                        <Button type="submit" disabled={isTagEditingDisabled || tagOptionsState !== 'ready' || tagLabels.length === 0 || tagLabels.some((label) => !tagOptions.includes(label))}>Add tags</Button>
+                                    </>
+                                )}
+                                <Button type="button" variant="soft" color="gray" onClick={clearRangeSelection}>Cancel selection</Button>
+                            </form>
+                        )}
+                        <div className="circuit-maps__tag-list" aria-label="Centerline range tags">
+                            {centerlineTags.length === 0 && <Text size="2" className="circuit-maps__muted">No range tags yet.</Text>}
+                            {centerlineTags.map((tag) => (
+                                <div key={tag.id} className="circuit-maps__tag-row">
+                                    <button
+                                        type="button"
+                                        className={`circuit-maps__tag-button${selectedTagId === tag.id ? ' circuit-maps__tag-button--active' : ''}`}
+                                        aria-pressed={selectedTagId === tag.id}
+                                        disabled={isTagEditingDisabled}
+                                        onClick={() => {
+                                            clearRangeSelection();
+                                            setSelectedPoint(null);
+                                            setSelectedTagId(tag.id);
+                                        }}
+                                    >
+                                        <span>{tag.label}</span>
+                                        <span className="circuit-maps__muted">{formatRange(tag.start_position, tag.end_position)}</span>
+                                    </button>
+                                    <Button size="1" color="red" variant="soft" aria-label={`Remove tag ${tag.label}`} disabled={isTagEditingDisabled} onClick={() => {
+                                        setCenterlineTags((previous) => previous.filter((item) => item.id !== tag.id));
+                                        if (selectedTagId === tag.id) setSelectedTagId(null);
+                                    }}><TrashIcon /></Button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
                 {error ? (
                     <div className="circuit-maps__section">
@@ -907,10 +1103,30 @@ const CircuitMaps = () => {
                 <Tabs.Content value={mapView} ref={canvasWrapRef} className="circuit-maps__canvas-wrap">
                     <canvas
                         ref={canvasRef}
-                        className="circuit-maps__canvas"
+                        className={`circuit-maps__canvas${isPanning ? ' circuit-maps__canvas--panning' : ''}`}
                         aria-label={mapView === 'centerline' ? 'Centerline map' : 'Bounded map'}
+                        title="Drag to move the map. Click a point to select it."
                         onPointerDown={handlePointerDown}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                        onPointerCancel={handlePointerCancel}
+                        onLostPointerCapture={handlePointerCancel}
                     />
+
+                    <div className="circuit-maps__zoom" role="group" aria-label="Map zoom">
+                        <Button size="1" variant="soft" aria-label="Zoom out" title="Zoom out"
+                            disabled={zoom <= MIN_ZOOM} onClick={() => setZoom((value) => Math.max(MIN_ZOOM, value / ZOOM_STEP))}>
+                            −
+                        </Button>
+                        <Text size="1" className="circuit-maps__zoom-level" aria-label="Zoom level">{Math.round(zoom * 100)}%</Text>
+                        <Button size="1" variant="soft" aria-label="Zoom in" title="Zoom in"
+                            disabled={zoom >= MAX_ZOOM} onClick={() => setZoom((value) => Math.min(MAX_ZOOM, value * ZOOM_STEP))}>
+                            +
+                        </Button>
+                        <Button size="1" variant="soft" aria-label="Fit map" title="Reset zoom and position to fit the map" onClick={resetViewport}>
+                            Fit
+                        </Button>
+                    </div>
 
                     {selectedSample && selectedPoint ? (
                         <div className="circuit-maps__selection">
