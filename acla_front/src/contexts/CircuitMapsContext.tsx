@@ -35,14 +35,12 @@ interface CircuitMapsContextType {
 
 const DEFAULT_SUMMARIES: CircuitMapSummaryState = {
     acc: [],
-    iracing: [],
-    other: []
+    iracing: []
 };
 
 const DEFAULT_LOADING: CircuitMapLoadingState = {
     acc: false,
-    iracing: false,
-    other: false
+    iracing: false
 };
 
 const CircuitMapsContext = createContext<CircuitMapsContextType | undefined>(undefined);
@@ -201,8 +199,7 @@ const CircuitMapsProvider = ({ children }: { children: ReactNode }) => {
         clearCircuitMapCache(id);
         setMapSummaries((previous) => ({
             acc: previous.acc.filter((map) => map.id !== id),
-            iracing: previous.iracing.filter((map) => map.id !== id),
-            other: previous.other.filter((map) => map.id !== id)
+            iracing: previous.iracing.filter((map) => map.id !== id)
         }));
     }, [clearCircuitMapCache]);
 

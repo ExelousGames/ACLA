@@ -3,7 +3,7 @@ import { Box, Button, Flex, Heading, Text } from '@radix-ui/themes';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import { AnalysisContext } from '../analysis-context';
 import SessionAnalysisSplit from '../sessionAnalysis/session-analysis-split';
-import { readLocalTelemetry } from './read-local-telemetry';
+import { readLocalTelemetry } from 'views/session-shared/read-local-telemetry';
 
 export default function LocalIRacingTelemetry() {
     const environment = useEnvironment();
@@ -31,7 +31,7 @@ export default function LocalIRacingTelemetry() {
             convertedPath = imported.filePath;
             if (controller.signal.aborted) return;
             setProgress('Loading telemetry samples...');
-            const rows = await readLocalTelemetry(imported.filePath, controller.signal, (count) => {
+            const rows = await readLocalTelemetry(imported.filePath, 'iracing', controller.signal, (count) => {
                 setProgress(`Loading telemetry samples: ${count.toLocaleString()} / ${imported.rowCount.toLocaleString()}`);
             });
             if (controller.signal.aborted) return;

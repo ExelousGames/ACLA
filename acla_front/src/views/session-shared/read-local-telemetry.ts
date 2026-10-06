@@ -1,7 +1,10 @@
+import type { DesktopGame } from 'contexts/DesktopGameContext';
 import type { RecordedFileReadEvent, StandardTelemetrySample } from 'views/live-session/live-session-types';
 
+// All games reach this reader in the standard format; native conversion happens upstream.
 export function readLocalTelemetry(
     filePath: string,
+    game: DesktopGame,
     signal: AbortSignal,
     onProgress: (rows: number) => void,
     onChunk?: (rows: StandardTelemetrySample[]) => void,
@@ -51,7 +54,7 @@ export function readLocalTelemetry(
         if (signal.aborted) { abort(); return; }
         removeListener = api.onRecordedFileReadEvent(handleEvent);
         signal.addEventListener('abort', abort, { once: true });
-        void api.startRecordedFileRead({ filePath, game: 'iracing', purpose: 'consume' }).then((result) => {
+        void api.startRecordedFileRead({ filePath, game, purpose: 'consume' }).then((result) => {
             readId = result.readId;
             if (settled) {
                 void api.cancelRecordedFileRead(readId).catch(() => undefined);

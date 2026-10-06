@@ -27,8 +27,8 @@ export class CircuitMapService {
     ) { }
 
     async list(game?: CircuitMapGame) {
-        if (game !== undefined && (typeof game !== 'string' || !game.trim())) {
-            throw new BadRequestException('game must be a non-empty string');
+        if (game !== undefined && game !== 'acc' && game !== 'iracing') {
+            throw new BadRequestException('game must be acc or iracing');
         }
         const query = game !== undefined ? { game } : {};
         const maps = await this.circuitMapModel
@@ -89,8 +89,8 @@ export class CircuitMapService {
         }
 
         const game = payload.game;
-        if ((isCreate || game !== undefined) && (typeof game !== 'string' || !game.trim())) {
-            throw new BadRequestException('game must be a non-empty string');
+        if ((isCreate || game !== undefined) && game !== 'acc' && game !== 'iracing') {
+            throw new BadRequestException('game must be acc or iracing');
         }
         const samples = this.normalizeSamples(payload.samples);
         const sampleCount = this.countSamples(samples);

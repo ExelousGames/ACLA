@@ -233,12 +233,12 @@ describe('CircuitMapsContext', () => {
         act(() => {
             latestContext.upsertCachedCircuitMap(fullMap);
             latestContext.upsertCachedCircuitMap({ ...fullMap, id: 'map-2', source_track_key: 'spa' });
-            latestContext.upsertCachedCircuitMap({ ...fullMap, id: 'map-3', game: 'other' });
+            latestContext.upsertCachedCircuitMap({ ...fullMap, id: 'map-3', game: 'iracing' });
         });
         act(() => latestContext.removeCachedCircuitMap('map-1'));
 
         expect(latestContext.mapSummaries.acc.map((map: any) => map.id)).toEqual(['map-2']);
-        expect(latestContext.mapSummaries.other.map((map: any) => map.id)).toEqual(['map-3']);
+        expect(latestContext.mapSummaries.iracing.map((map: any) => map.id)).toEqual(['map-3']);
         expect(Object.keys(latestContext.cachedMaps).sort()).toEqual(['map-2', 'map-3']);
         const requestsBeforeLookup = mockedApi.get.mock.calls.length;
         await act(async () => {

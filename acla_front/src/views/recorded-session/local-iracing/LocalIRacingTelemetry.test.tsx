@@ -5,7 +5,7 @@ import { AnalysisContext } from '../analysis-context';
 import type { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import type { RecordedFileReadEvent } from 'views/live-session/live-session-types';
 import LocalIRacingTelemetry from './LocalIRacingTelemetry';
-import { readLocalTelemetry } from './read-local-telemetry';
+import { readLocalTelemetry } from 'views/session-shared/read-local-telemetry';
 
 jest.mock('radix-ui/internal', () => jest.requireActual('radix-ui/dist/internal.js'), { virtual: true });
 const mockEnvironment = jest.fn(() => 'electron');
@@ -91,19 +91,20 @@ it('cleans up an import that finishes after leaving the subsection', async () =>
     expect(window.electronAPI.deleteTempFile).toHaveBeenCalledWith(imported.filePath);
 });
 
-it('accepts early read events and ignores unrelated reads', async () => {
+it.each(['acc', 'ac', 'iracing'] as const)('reads standard %s telemetry, accepting early events and ignoring unrelated reads', async (game) => {
     (window.electronAPI.startRecordedFileRead as jest.Mock).mockImplementation(async () => {
         listener({ type: 'chunk', readId: 'unrelated', rows: [{ Physics_speed_kmh: 1 }] });
         completeRead();
         return { readId: 'read-1' };
     });
-    await expect(readLocalTelemetry(imported.filePath, new AbortController().signal, jest.fn())).resolves.toEqual(rows);
+    await expect(readLocalTelemetry(imported.filePath, game, new AbortController().signal, jest.fn())).resolves.toEqual(rows);
+    expect(window.electronAPI.startRecordedFileRead).toHaveBeenCalledWith({ filePath: imported.filePath, game, purpose: 'consume' });
     expect(unsubscribe).toHaveBeenCalledTimes(1);
 });
 
 it('cancels an active read when leaving local analysis', async () => {
     const controller = new AbortController();
-    const pending = readLocalTelemetry(imported.filePath, controller.signal, jest.fn());
+    const pending = readLocalTelemetry(imported.filePath, 'iracing', controller.signal, jest.fn());
     await Promise.resolve();
     controller.abort();
     await expect(pending).rejects.toThrow('cancelled');
@@ -114,7 +115,7 @@ it('cancels an active read when leaving local analysis', async () => {
 it('streams chunks without retaining the full telemetry session', async () => {
     const onChunk = jest.fn();
     const onProgress = jest.fn();
-    const pending = readLocalTelemetry(imported.filePath, new AbortController().signal, onProgress, onChunk);
+    const pending = readLocalTelemetry(imported.filePath, 'iracing', new AbortController().signal, onProgress, onChunk);
     await Promise.resolve();
     listener({ type: 'chunk', readId: 'read-1', rows });
     completeRead();
@@ -126,7 +127,7 @@ it('streams chunks without retaining the full telemetry session', async () => {
 });
 
 it('cancels a stream when its chunk consumer fails', async () => {
-    const pending = readLocalTelemetry(imported.filePath, new AbortController().signal, jest.fn(), () => {
+    const pending = readLocalTelemetry(imported.filePath, 'iracing', new AbortController().signal, jest.fn(), () => {
         throw new Error('Invalid map samples');
     });
     await Promise.resolve();

@@ -21,6 +21,7 @@ jest.mock('radix-ui/internal', () => jest.requireActual('radix-ui/dist/internal.
 
 jest.mock('@radix-ui/themes', () => ({
     AlertDialog: jest.requireActual('@radix-ui/themes').AlertDialog,
+    Tabs: jest.requireActual('radix-ui').Tabs,
     Badge: ({ children, ...props }: any) => <span {...props}>{children}</span>,
     Box: require('react').forwardRef(({ children, ...props }: any, ref: any) => <div ref={ref} {...props}>{children}</div>),
     Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
@@ -77,6 +78,7 @@ const mockedApi = apiService as jest.Mocked<typeof apiService>;
 const imported = { filePath: 'C:\\temp\\circuit.jsonl', fileName: 'spa.ibt', rowCount: 2, track: 'spa - grandprix', car: 'GT3' };
 let readListener: (event: RecordedFileReadEvent) => void;
 const importedRow = {
+    Static_track: imported.track,
     Graphics_status: 2, Graphics_normalized_car_position: 0.25,
     Graphics_player_car_id: 63, Graphics_car_id: [63, -1],
     Graphics_car_coordinates: [{ x: 10, y: 2, z: 30 }, { x: 0, y: 0, z: 0 }],
@@ -92,6 +94,11 @@ const openIRacingImport = async () => {
     await waitFor(() => expect(window.electronAPI.startRecordedFileRead).toHaveBeenCalledWith({
         filePath: imported.filePath, game: 'iracing', purpose: 'consume',
     }));
+};
+
+const selectCaptureMode = async (mode: string) => {
+    await userEvent.click(screen.getByRole('tab', { name: mode === 'middle_line' ? 'Centerline Map' : 'Bounded Map' }));
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[1], mode);
 };
 
 const baseContext: LiveSessionRuntime = {
@@ -199,10 +206,12 @@ describe('CircuitMaps', () => {
 
     it.each(['left_boundary', 'middle_line', 'right_boundary', 'pit_lane'])('imports converted iRacing driver coordinates into %s and saves the game and track', async (mode) => {
         renderCircuitMaps();
-        await userEvent.selectOptions(screen.getAllByRole('combobox')[1], mode);
+        await selectCaptureMode(mode);
         await openIRacingImport();
         expect(screen.getByRole('button', { name: /save/i })).toBeDisabled();
         expect(screen.getByRole('button', { name: /add point/i })).toBeDisabled();
+        expect(screen.getByRole('tab', { name: 'Bounded Map' })).toBeDisabled();
+        expect(screen.getByRole('tab', { name: 'Centerline Map' })).toBeDisabled();
         await act(async () => finishImportRead());
         expect(screen.getByLabelText('Circuit name')).toHaveValue(imported.track);
         expect(screen.getByRole('status')).toHaveTextContent('imported 2 driver samples');
@@ -210,7 +219,7 @@ describe('CircuitMaps', () => {
         await userEvent.click(screen.getByRole('button', { name: /save/i }));
         await waitFor(() => expect(mockedApi.post).toHaveBeenCalledWith('/circuit-map', expect.objectContaining({
             game: 'iracing', circuit_name: imported.track, source_track_key: imported.track,
-            samples: expect.objectContaining({ [mode]: [expect.objectContaining({ bin: 250, x: 10, y: 2, z: 30, sample_count: 2 })] }),
+            samples: expect.objectContaining({ [mode]: [expect.objectContaining({ bin: 250, normalized_position: 0.25, x: 10, y: 2, z: 30, sample_count: 2 })] }),
         })));
         expect(mockUpsertCachedCircuitMap).toHaveBeenCalledWith(expect.objectContaining({ game: 'iracing' }));
         expect(mockRefreshCircuitMaps).toHaveBeenCalledWith('iracing');
@@ -266,11 +275,57 @@ describe('CircuitMaps', () => {
         renderCircuitMaps();
         await openIRacingImport();
         await act(async () => finishImportRead());
-        (window.electronAPI.importLocalIRacingTelemetry as jest.Mock).mockResolvedValue({ ...imported, track: 'monza' });
         await userEvent.click(screen.getByRole('button', { name: /open .ibt file/i }));
+        await waitFor(() => expect(window.electronAPI.startRecordedFileRead).toHaveBeenCalledTimes(2));
+        await act(async () => finishImportRead([{ ...importedRow, Static_track: 'monza' }]));
         expect(await screen.findByRole('alert')).toHaveTextContent('different circuit');
         expect(screen.getByLabelText('Circuit name')).toHaveValue(imported.track);
-        expect(window.electronAPI.startRecordedFileRead).toHaveBeenCalledTimes(1);
+        expect(screen.getByText(`1 samples / ${imported.track}`)).toBeInTheDocument();
+        expect(window.electronAPI.cancelRecordedFileRead).toHaveBeenCalledWith('map-read');
+    });
+
+    it('uses converted telemetry track fields even when import metadata disagrees', async () => {
+        (window.electronAPI.importLocalIRacingTelemetry as jest.Mock).mockResolvedValue({ ...imported, track: 'Metadata Track' });
+        renderCircuitMaps();
+        await openIRacingImport();
+        await act(async () => finishImportRead());
+        expect(screen.getByLabelText('Circuit name')).toHaveValue(importedRow.Static_track);
+        await userEvent.click(screen.getByRole('button', { name: /save/i }));
+        await waitFor(() => expect(mockedApi.post).toHaveBeenCalledWith('/circuit-map', expect.objectContaining({
+            circuit_name: importedRow.Static_track, source_track_key: importedRow.Static_track,
+        })));
+    });
+
+    it('retains the track from the first chunk when later rows omit static fields', async () => {
+        renderCircuitMaps();
+        await openIRacingImport();
+        await act(async () => {
+            readListener({ type: 'chunk', readId: 'map-read', rows: [importedRow] });
+            finishImportRead([{ ...importedRow, Static_track: '' }]);
+        });
+        expect(screen.getByLabelText('Circuit name')).toHaveValue(importedRow.Static_track);
+        expect(screen.getByRole('status')).toHaveTextContent('imported 2 driver samples');
+    });
+
+    it('rejects telemetry without a track name instead of falling back to import metadata', async () => {
+        renderCircuitMaps();
+        await openIRacingImport();
+        await act(async () => finishImportRead([{ ...importedRow, Static_track: '' }]));
+        expect(screen.getByRole('alert')).toHaveTextContent('no track name in its telemetry');
+        expect(screen.getByText('0 samples')).toBeInTheDocument();
+        expect(window.electronAPI.deleteTempFile).toHaveBeenCalledWith(imported.filePath);
+    });
+
+    it('discards the whole import when the track changes between chunks', async () => {
+        renderCircuitMaps();
+        await openIRacingImport();
+        await act(async () => {
+            readListener({ type: 'chunk', readId: 'map-read', rows: [importedRow] });
+            finishImportRead([{ ...importedRow, Static_track: 'monza' }]);
+        });
+        expect(screen.getByRole('alert')).toHaveTextContent('different circuit');
+        expect(screen.getByText('0 samples')).toBeInTheDocument();
+        expect(screen.getByLabelText('Circuit name')).toHaveValue('');
     });
 
     it.each(['game', 'new map', 'unmount'])('cancels an active import on %s', async (action) => {
@@ -326,13 +381,47 @@ describe('CircuitMaps', () => {
         expect(screen.getByLabelText('Circuit name')).toHaveValue('Canonical Circuit');
     });
 
+    it('does not label or capture an ACC map using iRacing live telemetry', async () => {
+        renderCircuitMaps({ sessionGame: 'iracing', staticData: { Static_track: imported.track } });
+        act(() => liveTelemetryStore.publishFrame({
+            type: 'frame', game: 'iracing', sequence: 1, committedSequence: 1, committedCount: 1,
+            sample: {
+                ...importedRow,
+                Graphics_car_id: Array.from({ length: 60 }, (_, slot) => slot === 0 ? 63 : -1),
+                Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
+                    ? { x: 10, y: 2, z: 30 } : { x: 0, y: 0, z: 0 }),
+            },
+        }));
+        await screen.findByText('No global maps found.');
+        expect(screen.getByLabelText('Circuit name')).toHaveValue('');
+        expect(screen.getByRole('button', { name: /start capture/i })).toBeDisabled();
+        expect(screen.getByText('0 samples')).toBeInTheDocument();
+    });
+
+    it('does not label or capture an ACC map using iRacing live telemetry', async () => {
+        renderCircuitMaps({ sessionGame: 'iracing', staticData: { Static_track: imported.track } });
+        act(() => liveTelemetryStore.publishFrame({
+            type: 'frame', game: 'iracing', sequence: 1, committedSequence: 1, committedCount: 1,
+            sample: {
+                ...importedRow,
+                Graphics_car_id: Array.from({ length: 60 }, (_, slot) => slot === 0 ? 63 : -1),
+                Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
+                    ? { x: 10, y: 2, z: 30 } : { x: 0, y: 0, z: 0 }),
+            },
+        }));
+        await screen.findByText('No global maps found.');
+        expect(screen.getByLabelText('Circuit name')).toHaveValue('');
+        expect(screen.getByRole('button', { name: /start capture/i })).toBeDisabled();
+        expect(screen.getByText('0 samples')).toBeInTheDocument();
+    });
+
     it.each([
         [{ Static_track: 'Canonical Circuit' }, 'Canonical Circuit'],
         [{ track: 'Legacy Circuit' }, ''],
         [{ Static: { track: 'Legacy Circuit' } }, ''],
         [{ Statics: { track: 'Legacy Circuit' } }, ''],
     ])('uses only canonical static fields from the session: %o', async (staticData, expectedName) => {
-        renderCircuitMaps({ staticData });
+        renderCircuitMaps({ staticData, sessionGame: 'acc' });
 
         await waitFor(() => expect(mockedApi.get).toHaveBeenCalled());
         expect(screen.getByLabelText('Circuit name')).toHaveValue(expectedName);
@@ -381,7 +470,7 @@ describe('CircuitMaps', () => {
         renderCircuitMaps();
 
         await userEvent.type(screen.getByLabelText('Circuit name'), 'Capture Test Circuit');
-        await userEvent.selectOptions(screen.getAllByRole('combobox')[1], mode);
+        await selectCaptureMode(mode);
         await userEvent.clear(screen.getByLabelText('Normalized position 0-1'));
         await userEvent.type(screen.getByLabelText('Normalized position 0-1'), '0.42');
         await userEvent.clear(screen.getByLabelText('X'));
@@ -411,7 +500,7 @@ describe('CircuitMaps', () => {
         renderCircuitMaps();
         await waitFor(() => expect(mockedApi.get).toHaveBeenCalledWith('/circuit-map/list', { game: 'acc' }));
         await userEvent.type(screen.getByLabelText('Circuit name'), 'Live Test Circuit');
-        await userEvent.selectOptions(screen.getAllByRole('combobox')[1], mode);
+        await selectCaptureMode(mode);
         act(() => {
             liveTelemetryStore.publishFrame({
                 type: 'frame',
@@ -419,6 +508,8 @@ describe('CircuitMaps', () => {
                 sample: {
                     Graphics_status: ACC_STATUS.ACC_LIVE,
                     Graphics_normalized_car_position: 0,
+                    Graphics_player_car_id: 42,
+                    Graphics_car_id: Array.from({ length: 60 }, (_, slot) => slot === 0 ? 42 : -1),
                     Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
                         ? { x: 1, y: 1, z: 2 } : { x: 0, y: 0, z: 0 }),
                 },
@@ -438,6 +529,8 @@ describe('CircuitMaps', () => {
                     sample: {
                         Graphics_status: ACC_STATUS.ACC_LIVE,
                         Graphics_normalized_car_position: (sequence - 1) / 1000,
+                        Graphics_player_car_id: 42,
+                        Graphics_car_id: Array.from({ length: 60 }, (_, slot) => slot === 0 ? 42 : -1),
                         Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
                             ? { x: sequence + 1, y: 1, z: sequence + 2 }
                             : { x: 0, y: 0, z: 0 }),
@@ -474,12 +567,13 @@ describe('CircuitMaps', () => {
         } as any));
         renderCircuitMaps();
         await userEvent.click(await screen.findByRole('button', { name: 'Middle Test Circuit ACC' }));
-        expect(await screen.findByText('2 samples')).toBeInTheDocument();
-        await userEvent.selectOptions(screen.getAllByRole('combobox')[1], 'middle_line');
+        expect(await screen.findByText('1 samples')).toBeInTheDocument();
+        await selectCaptureMode('middle_line');
         await userEvent.clear(screen.getByLabelText('Normalized position 0-1'));
         await userEvent.type(screen.getByLabelText('Normalized position 0-1'), '0.5');
         await userEvent.click(screen.getByRole('button', { name: /add point/i }));
-        expect(screen.getByText('3 samples')).toBeInTheDocument();
+        expect(screen.getByText('2 samples')).toBeInTheDocument();
+        expect(screen.getByText('Normalized position 0.5')).toBeInTheDocument();
         await userEvent.click(screen.getByRole('button', { name: /^close unlock$/i }));
         await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
@@ -497,20 +591,164 @@ describe('CircuitMaps', () => {
         }));
         await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
         await userEvent.click(screen.getByRole('button', { name: /^trash delete$/i }));
-        expect(screen.getByText('2 samples')).toBeInTheDocument();
+        expect(screen.getByText('1 samples')).toBeInTheDocument();
         await userEvent.click(screen.getByRole('button', { name: /new map/i }));
         expect(screen.getByText('0 samples')).toBeInTheDocument();
     });
 
-    it('switches Other games into manual edit mode', async () => {
+    it.each([
+        { game: 'acc', startY: 42, endY: 578 },
+        { game: 'iracing', startY: 578, endY: 42 },
+    ])('renders $game paths with the correct Z orientation and keeps points fixed in each map tab', async ({ game, startY, endY }) => {
+        const sample = { bin: 0, normalized_position: 0, x: 0, y: 0, z: 0, sample_count: 1 };
+        const savedMap = {
+            id: 'two-maps', game, circuit_name: 'Two Maps', resolution: 1000,
+            samples: {
+                left_boundary: [sample],
+                right_boundary: [{ ...sample, x: 100, z: 100 }],
+                pit_lane: [{ ...sample, x: 50, z: 50 }],
+                middle_line: [
+                    { ...sample, x: 10000, z: 10000 },
+                    { ...sample, bin: 500, normalized_position: 0.5, x: 10020, z: 10020 },
+                ],
+            },
+        };
+        mockedApi.get.mockImplementation(async (url: string) => ({
+            data: url === '/circuit-map/list' ? { list: [savedMap] } : savedMap,
+            status: 200,
+        } as any));
+        renderCircuitMaps();
+        await userEvent.selectOptions(screen.getAllByRole('combobox')[0], game);
+        await userEvent.click(await screen.findByRole('button', { name: `Two Maps ${game.toUpperCase()}` }));
+        expect(await screen.findByText('3 samples')).toBeInTheDocument();
+        expect(screen.getByRole('tab', { name: 'Bounded Map' })).toHaveAttribute('aria-selected', 'true');
+        expect(screen.getByRole('tabpanel', { name: 'Bounded Map' })).toBeInTheDocument();
+        expect(within(screen.getAllByRole('combobox')[1]).getAllByRole('option').map((option) => option.textContent))
+            .toEqual(['Left Boundary', 'Right Boundary', 'Pit Lane']);
+        const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
+        const boundedContext = contexts[contexts.length - 1].value;
+        expect(boundedContext.arc).toHaveBeenCalledTimes(3);
+        expect(boundedContext.arc).toHaveBeenNthCalledWith(1, 182, startY, 4, 0, Math.PI * 2);
+        expect(boundedContext.arc).toHaveBeenNthCalledWith(2, 718, endY, 4, 0, Math.PI * 2);
+
+        await userEvent.click(screen.getByRole('tab', { name: 'Centerline Map' }));
+        expect(screen.getByRole('tabpanel', { name: 'Centerline Map' })).toBeInTheDocument();
+        expect(screen.getByText('2 samples')).toBeInTheDocument();
+        expect(screen.getAllByRole('combobox')[1]).toHaveValue('middle_line');
+        expect(within(screen.getAllByRole('combobox')[1]).getAllByRole('option').map((option) => option.textContent))
+            .toEqual(['Middle Line']);
+        const centerlineContext = contexts[contexts.length - 1].value;
+        expect(centerlineContext.arc).toHaveBeenCalledTimes(3);
+        expect(centerlineContext.arc).toHaveBeenNthCalledWith(1, 182, startY, 4, 0, Math.PI * 2);
+        expect(centerlineContext.arc).toHaveBeenNthCalledWith(2, 718, endY, 4, 0, Math.PI * 2);
+        expect(centerlineContext.arc).toHaveBeenNthCalledWith(3, 182, startY, 10, 0, Math.PI * 2);
+        expect(centerlineContext.fillText).toHaveBeenCalledWith('START', 182, startY - 18);
+
+        const centerlineCanvas = screen.getByLabelText('Centerline map');
+        fireEvent(centerlineCanvas, new MouseEvent('pointerdown', { bubbles: true, clientX: 182, clientY: startY }));
+        expect(screen.getByText('Normalized position 0')).toBeInTheDocument();
+        fireEvent(centerlineCanvas, new MouseEvent('pointermove', { bubbles: true, clientX: 450, clientY: 310 }));
+        fireEvent.pointerUp(centerlineCanvas);
+
+        await userEvent.click(screen.getByRole('tab', { name: 'Bounded Map' }));
+        expect(screen.getByText('3 samples')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: /save/i }));
+        await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/two-maps', expect.objectContaining({ samples: savedMap.samples })));
+        await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+
+        const canvas = screen.getByLabelText('Bounded map');
+        fireEvent(canvas, new MouseEvent('pointerdown', { bubbles: true, clientX: 450, clientY: 310 }));
+        expect(screen.getByText('Bin 0')).toBeInTheDocument();
+        fireEvent(canvas, new MouseEvent('pointermove', { bubbles: true, clientX: 450, clientY: 444 }));
+        fireEvent.pointerUp(canvas);
+        await userEvent.click(screen.getByRole('button', { name: /save/i }));
+        await waitFor(() => expect(mockedApi.put).toHaveBeenLastCalledWith('/circuit-map/two-maps', expect.objectContaining({
+            samples: savedMap.samples,
+        })));
+        await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+    });
+
+    it('keeps edits in both maps and clears the selection when switching tabs', async () => {
+        renderCircuitMaps();
+        await userEvent.type(screen.getByLabelText('Circuit name'), 'Both Maps');
+        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
+        expect(screen.getByRole('button', { name: /^trash delete$/i })).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('tab', { name: 'Centerline Map' }));
+        expect(screen.queryByRole('button', { name: /^trash delete$/i })).not.toBeInTheDocument();
+        expect(screen.getByText('0 samples')).toBeInTheDocument();
+        const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
+        expect(contexts[contexts.length - 1].value.fillText).toHaveBeenCalledWith('NO CENTERLINE SAMPLES', 450, 310);
+        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
+        await userEvent.click(screen.getByRole('tab', { name: 'Bounded Map' }));
+        expect(screen.queryByRole('button', { name: /^trash delete$/i })).not.toBeInTheDocument();
+        expect(screen.getByText('1 samples')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: /save/i }));
+        await waitFor(() => expect(mockedApi.post).toHaveBeenCalledWith('/circuit-map', expect.objectContaining({
+            samples: {
+                left_boundary: [expect.objectContaining({ bin: 0 })],
+                middle_line: [expect.objectContaining({ bin: 0, normalized_position: 0 })],
+                right_boundary: [], pit_lane: [],
+            },
+        })));
+        await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+    });
+
+    it.each(['', '-0.1', '1.1', 'bad'])('requires a valid normalized position for centerline points: %s', async (position) => {
+        renderCircuitMaps();
+        await userEvent.click(screen.getByRole('tab', { name: 'Centerline Map' }));
+        const input = screen.getByLabelText('Normalized position 0-1');
+        expect(input).toBeRequired();
+        fireEvent.change(input, { target: { value: position } });
+        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
+        expect(screen.getByRole('alert')).toHaveTextContent('Normalized position is required and must be a number from 0 to 1.');
+        expect(screen.getByText('0 samples')).toBeInTheDocument();
+        fireEvent.change(input, { target: { value: '1' } });
+        await userEvent.click(screen.getByRole('button', { name: /add point/i }));
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        expect(screen.getByText('Normalized position 1')).toBeInTheDocument();
+        expect(screen.getByText('Bin 999')).toBeInTheDocument();
+    });
+
+    it('pauses live capture on a tab change and can capture the same position into the centerline', async () => {
+        renderCircuitMaps();
+        await screen.findByText('No global maps found.');
+        act(() => liveTelemetryStore.publishFrame({
+            type: 'frame', game: 'acc', sequence: 1, committedSequence: 1, committedCount: 1,
+            sample: {
+                Graphics_status: ACC_STATUS.ACC_LIVE,
+                Graphics_normalized_car_position: 0.25,
+                Graphics_player_car_id: 42,
+                Graphics_car_id: Array.from({ length: 60 }, (_, slot) => slot === 0 ? 42 : -1),
+                Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
+                    ? { x: 10, y: 2, z: 30 } : { x: 0, y: 0, z: 0 }),
+                Static_track: 'Live Circuit',
+            },
+        }));
+        await userEvent.click(screen.getByRole('button', { name: /start capture/i }));
+        expect(screen.getByText('1 samples / Live Circuit')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('tab', { name: 'Centerline Map' }));
+        expect(screen.queryByRole('button', { name: /pause capture/i })).not.toBeInTheDocument();
+        expect(screen.getByText('0 samples / Live Circuit')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: /start capture/i }));
+        expect(screen.getByText('1 samples / Live Circuit')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: /pause capture/i }));
+        await userEvent.click(screen.getByRole('button', { name: /save/i }));
+        await waitFor(() => expect(mockedApi.post).toHaveBeenCalledWith('/circuit-map', expect.objectContaining({
+            samples: {
+                left_boundary: [expect.objectContaining({ normalized_position: 0.25 })],
+                middle_line: [expect.objectContaining({ normalized_position: 0.25 })],
+                right_boundary: [], pit_lane: [],
+            },
+        })));
+        await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+    });
+
+    it('offers only ACC and iRacing games', async () => {
         renderCircuitMaps();
         await screen.findByText('No global maps found.');
 
-        await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'other');
-
-        expect(await screen.findByText('Manual Edit')).toBeInTheDocument();
-        await waitFor(() => expect(screen.queryByText('Loading maps')).not.toBeInTheDocument());
-        expect(screen.queryByText('ACC Offline')).not.toBeInTheDocument();
+        expect(within(screen.getAllByRole('combobox')[0]).getAllByRole('option').map((option) => option.textContent))
+            .toEqual(['ACC', 'iRacing']);
     });
 
     describe('removing a saved map', () => {

@@ -4,11 +4,11 @@ import { CircuitMapController } from './circuit-map.controller';
 import { CircuitMapService } from './circuit-map.service';
 import { CircuitMapSchema } from 'src/schemas/circuit-map.schema';
 
-describe('Game-neutral circuit maps', () => {
+describe('Circuit map games', () => {
     const id = '507f1f77bcf86cd799439011';
-    const games = ['acc', 'ac', 'iracing', 'other', 'custom-simulator'];
+    const games = ['acc', 'iracing'] as const;
     const payload = {
-        game: 'custom-simulator',
+        game: 'acc' as const,
         circuit_name: 'Test Circuit',
         source_track_key: 'track - layout',
         samples: { middle_line: [{
@@ -16,7 +16,7 @@ describe('Game-neutral circuit maps', () => {
             sample_count: 2, updated_at: '2026-10-05T00:00:00.000Z',
         }] },
     };
-    const MapModel = model('GameNeutralCircuitMap', CircuitMapSchema);
+    const MapModel = model('CircuitMapGames', CircuitMapSchema);
 
     it.each(games)('preserves %s metadata and coordinates on create and update', async (game) => {
         const data = { ...payload, game };
@@ -52,6 +52,11 @@ describe('Game-neutral circuit maps', () => {
         expect(document.game).toBe(game);
     });
 
+    it.each(['other', 'ac', 'custom-simulator'])('rejects unsupported game %s in the persisted schema', (game) => {
+        const document = new MapModel({ ...payload, game });
+        expect(document.validateSync()?.errors.game).toBeDefined();
+    });
+
     it('requires an explicit game instead of assigning a default', async () => {
         const { game, ...withoutGame } = payload;
         const storage = { create: jest.fn() };
@@ -72,7 +77,7 @@ describe('Game-neutral circuit maps', () => {
         expect(storage.findByIdAndUpdate.mock.calls[0][1]).not.toHaveProperty('game');
     });
 
-    it.each([null, '', '   ', 42, false, [], { $ne: null }])('rejects invalid game metadata and filters %p before accessing storage', async (game) => {
+    it.each(['other', 'ac', 'custom-simulator', null, '', '   ', 42, false, [], { $ne: null }])('rejects invalid game metadata and filters %p before accessing storage', async (game) => {
         const storage = { create: jest.fn(), findByIdAndUpdate: jest.fn(), find: jest.fn() };
         const service = new CircuitMapService(storage as any);
         const data = { ...payload, game: game as any };

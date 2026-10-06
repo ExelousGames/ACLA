@@ -21,6 +21,17 @@ const frame = (
 });
 
 describe('live telemetry store', () => {
+    it.each(['acc', 'ac', 'iracing'] as const)('keeps the %s source identity with its telemetry until the session resets', (game) => {
+        const store = createLiveTelemetryStore();
+        expect(store.getSnapshot().game).toBeNull();
+        store.publishFrame({ ...frame(1, { Static_track: 'Circuit' }), game });
+        expect(store.getSnapshot()).toMatchObject({ game, currentTelemetry: { Static_track: 'Circuit' } });
+        store.beginStream();
+        expect(store.getSnapshot().game).toBe(game);
+        store.resetSession();
+        expect(store.getSnapshot().game).toBeNull();
+    });
+
     it.each([
         { Physics_speed_kmh: 100, speedKph: 200 },
         { Graphics_status: '2' },

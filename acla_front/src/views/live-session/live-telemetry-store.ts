@@ -8,6 +8,7 @@ import type {
 } from './live-session-types';
 
 export interface LiveTelemetrySnapshot {
+    game: RecordingViewUpdate['game'] | null;
     graphicsTelemetry: StandardTelemetrySample;
     physicsTelemetry: StandardTelemetrySample;
     currentTelemetry: StandardTelemetrySample;
@@ -86,6 +87,7 @@ const selectFields = (sample: StandardTelemetrySample, prefix: 'Graphics_' | 'Ph
 };
 
 const getInitialSnapshot = (sessionGeneration = 0, streamGeneration = 0): LiveTelemetrySnapshot => ({
+    game: null,
     graphicsTelemetry: EMPTY_SAMPLE,
     physicsTelemetry: EMPTY_SAMPLE,
     currentTelemetry: EMPTY_SAMPLE,
@@ -186,6 +188,7 @@ export const createLiveTelemetryStore = (): LiveTelemetryStore => {
             });
             const telemetryStatus = normalizeStatus(graphicsTelemetry.Graphics_status);
             snapshot = {
+                game: update.game,
                 graphicsTelemetry,
                 physicsTelemetry,
                 currentTelemetry,

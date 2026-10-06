@@ -1,4 +1,4 @@
-export type CircuitMapGame = 'acc' | 'iracing' | 'other';
+export type CircuitMapGame = 'acc' | 'iracing';
 
 export type CircuitMapCaptureMode = 'left_boundary' | 'middle_line' | 'right_boundary' | 'pit_lane';
 
@@ -9,8 +9,7 @@ export type FutureCircuitMapCaptureMode =
 
 export const CIRCUIT_MAP_GAMES: { value: CircuitMapGame; label: string }[] = [
     { value: 'acc', label: 'ACC' },
-    { value: 'iracing', label: 'iRacing' },
-    { value: 'other', label: 'Other' }
+    { value: 'iracing', label: 'iRacing' }
 ];
 
 export const CIRCUIT_MAP_CAPTURE_MODES: { value: CircuitMapCaptureMode; label: string }[] = [

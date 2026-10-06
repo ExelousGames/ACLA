@@ -1,15 +1,18 @@
 import {
     alignCircuitMapSamples,
-    extractAccCaptureSample,
+    extractCircuitMapCaptureSample,
     getCircuitMapBin,
     getCircuitMapDrawSegments,
-    mergeIRacingCircuitMapSamples,
+    getCircuitMapName,
+    getCircuitMapTrackKey,
+    mergeCircuitMapSamples,
     upsertCircuitMapSample
 } from '../circuit-map-utils';
 import { CircuitMapBinSample } from '../circuit-map-types';
 import type { StandardTelemetrySample } from 'views/live-session/live-session-types';
 
 const makeTelemetryRow = (normalizedPosition: number) => ({
+    Graphics_status: 2,
     Graphics_normalized_car_position: normalizedPosition,
     Graphics_current_time: 1000,
     Graphics_car_coordinates: [
@@ -21,11 +24,11 @@ const makeTelemetryRow = (normalizedPosition: number) => ({
 });
 
 describe('circuit map utilities', () => {
-    it('merges formatted iRacing player coordinates across chunks and preserves locked bins', () => {
+    it('merges standard player coordinates across chunks and preserves locked bins', () => {
         const row = { ...makeTelemetryRow(0.25), Graphics_status: 2 };
-        const first = mergeIRacingCircuitMapSamples([], [row]);
+        const first = mergeCircuitMapSamples([], [row]);
         const locked = { ...first.samples[0], bin: 500, locked: true };
-        const result = mergeIRacingCircuitMapSamples([...first.samples, locked], [
+        const result = mergeCircuitMapSamples([...first.samples, locked], [
             { ...row, Graphics_car_coordinates: [{ x: 20, y: 4, z: 60 }] },
             { ...row, Graphics_normalized_car_position: 0.5 },
             { ...row, Graphics_normalized_car_position: 1, Graphics_player_car_id: 63,
@@ -42,19 +45,22 @@ describe('circuit map utilities', () => {
 
     it.each([
         { Graphics_status: 0 },
+        { Graphics_status: undefined },
         { Graphics_normalized_car_position: null },
         { Graphics_normalized_car_position: -1 },
         { Graphics_normalized_car_position: 1.1 },
         { Graphics_normalized_car_position: NaN },
+        { Graphics_normalized_car_position: '0.25' },
         { Graphics_player_car_id: -1 },
+        { Graphics_player_car_id: undefined },
         { Graphics_player_car_id: 63 },
         { Graphics_car_coordinates: undefined },
         { Graphics_car_coordinates: [null, { x: 1, y: 2, z: 3 }] },
         { Graphics_car_coordinates: [{ x: NaN, y: 0, z: 0 }] },
-    ])('ignores unusable iRacing player samples without falling back to another car: %o', (fields) => {
-        const result = mergeIRacingCircuitMapSamples([], [
-            { ...makeTelemetryRow(0.25), Graphics_status: 2, ...fields } as unknown as StandardTelemetrySample,
-        ]);
+    ])('rejects unusable player samples in both live and file capture: %o', (fields) => {
+        const row = { ...makeTelemetryRow(0.25), ...fields } as unknown as StandardTelemetrySample;
+        expect(extractCircuitMapCaptureSample(row)).toBeNull();
+        const result = mergeCircuitMapSamples([], [row]);
         expect(result).toEqual({ samples: [], capturedRows: 0 });
     });
 
@@ -63,10 +69,11 @@ describe('circuit map utilities', () => {
         expect(getCircuitMapBin(0.123)).toBe(123);
         expect(getCircuitMapBin(1)).toBe(999);
         expect(getCircuitMapBin(-0.1)).toBeNull();
+        expect(getCircuitMapBin(1.1)).toBeNull();
     });
 
-    it('extracts the ACC player coordinate for a valid capture sample', () => {
-        const capture = extractAccCaptureSample(makeTelemetryRow(0.25));
+    it('extracts the standard player coordinate for a valid capture sample', () => {
+        const capture = extractCircuitMapCaptureSample(makeTelemetryRow(0.25));
 
         expect(capture).toEqual({
             bin: 250,
@@ -75,10 +82,19 @@ describe('circuit map utilities', () => {
         });
     });
 
-    it('ignores invalid ACC samples', () => {
-        expect(extractAccCaptureSample({ Graphics_car_coordinates: '[]' })).toBeNull();
-        expect(extractAccCaptureSample({ Graphics_normalized_car_position: 'bad' })).toBeNull();
+    it('reads track identity only from standard telemetry and keeps ACC display aliases', () => {
+        expect(getCircuitMapTrackKey({ Static_track: 'spa - grandprix' })).toBe('spa - grandprix');
+        expect(getCircuitMapTrackKey({})).toBeNull();
+        expect(getCircuitMapTrackKey({ Static_track: ' ' })).toBeNull();
+        expect(getCircuitMapName('monza', 'acc')).toBe('Autodromo Nazionale Monza');
+        expect(getCircuitMapName('monza', 'iracing')).toBe('monza');
     });
+
+    it.each([undefined, null, '', ' ', false, true, 'bad', NaN, Infinity, -0.1, 1.1])(
+        'rejects capture without a valid normalized position: %s', (position) => {
+            expect(extractCircuitMapCaptureSample({ ...makeTelemetryRow(0.25), Graphics_normalized_car_position: position } as unknown as StandardTelemetrySample)).toBeNull();
+        }
+    );
 
     it('averages repeated live samples in the same bin', () => {
         const first = upsertCircuitMapSample([], {

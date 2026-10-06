@@ -12,7 +12,7 @@ const countSamples = (samplesByMode: CircuitMapSamplesByMode): number => (
 );
 
 const normalizeGame = (game: unknown, fallback: CircuitMapGame = 'acc'): CircuitMapGame => (
-    game === 'acc' || game === 'iracing' || game === 'other' ? game : fallback
+    game === 'acc' || game === 'iracing' ? game : fallback
 );
 
 export const normalizeCircuitMapList = (data: any): CircuitMapSummaryDto[] => {

@@ -376,6 +376,7 @@ describe('iRacing .ibt import', () => {
       expect(result).toMatchObject({ type: 'complete', filePath: outputPath, rowCount: 2, track: 'spa', car: 'GT3' });
       const rows = fs.readFileSync(outputPath, 'utf8').trim().split('\n').map(JSON.parse);
       expect(rows.every((row) => validateLiveTelemetryRow(row).ok)).toBe(true);
+      expect(rows[0].Static_track).toBe('spa');
       expect(rows[0].Graphics_car_coordinates[0].x).toBeCloseTo(-189013.869, 3);
       expect(rows[0].Physics_speed_kmh).toBe(180);
       expect(fs.readFileSync(sourcePath)).toEqual(original);

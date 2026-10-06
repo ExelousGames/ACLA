@@ -8,7 +8,7 @@ describe('CircuitMapService middle line capture', () => {
         sample_count: 3, updated_at: '2026-01-01T00:00:00.000Z', locked: true,
     };
     const payload = {
-        game: 'custom-simulator',
+        game: 'acc' as const,
         circuit_name: 'Middle Test Circuit',
         samples: { middle_line: [sample], left_boundary: [{ ...sample, x: 2 }] },
     };

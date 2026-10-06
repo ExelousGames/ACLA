@@ -1,7 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 
-// Game identifiers are opaque metadata supplied by clients.
-export type CircuitMapGame = string;
+export type CircuitMapGame = 'acc' | 'iracing';
 export type CircuitMapCaptureMode = 'left_boundary' | 'middle_line' | 'right_boundary' | 'pit_lane';
 
 export class CircuitMapBinSample {
@@ -46,7 +45,7 @@ export class CircuitMapSamplesByMode {
 
 @Schema()
 export class CircuitMap {
-    @Prop({ type: String, required: true })
+    @Prop({ type: String, required: true, enum: ['acc', 'iracing'] })
     game: CircuitMapGame;
 
     @Prop({ required: true })
