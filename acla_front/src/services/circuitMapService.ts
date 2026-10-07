@@ -6,6 +6,7 @@ import {
     CircuitMapSummaryDto
 } from 'views/circuit-maps/circuit-map-types';
 import { CIRCUIT_MAP_BIN_RESOLUTION } from 'views/circuit-maps/circuit-map-utils';
+import { getCircuitMapCenterlineSegments } from 'views/circuit-maps/centerline-segments';
 
 const countSamples = (samplesByMode: CircuitMapSamplesByMode): number => (
     Object.values(samplesByMode).reduce((sum, samples) => sum + (samples?.length || 0), 0)
@@ -56,7 +57,10 @@ export const normalizeCircuitMap = (data: any, fallbackGame: CircuitMapGame = 'a
         sample_count: Number(data?.sample_count ?? countSamples(samples)),
         resolution: Number(data?.resolution ?? CIRCUIT_MAP_BIN_RESOLUTION),
         samples,
-        centerline_tags: Array.isArray(data?.centerline_tags) ? data.centerline_tags : []
+        centerline_segments: getCircuitMapCenterlineSegments({
+            centerline_segments: data?.centerline_segments,
+            centerline_tags: Array.isArray(data?.centerline_tags) ? data.centerline_tags : []
+        })
     };
 };
 

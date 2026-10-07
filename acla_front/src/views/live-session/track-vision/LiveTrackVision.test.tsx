@@ -3,7 +3,7 @@ import { act, fireEvent, render as renderComponent, screen, within } from '@test
 import LiveTrackVision, { TrackVisionHandle } from './LiveTrackVision';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
 import { drawVisionOverlay } from './vision-overlay';
-import { MODEL_LABELS, vision } from './test-fixtures';
+import { MODEL_LABELS, multipleCarVision, vision } from './test-fixtures';
 import { VISION_MAX_AGE_MS } from './track-vision-types';
 import { reconstructTrack } from './track-position-analysis';
 
@@ -237,7 +237,7 @@ it('inspects full-map depths at the mouse, refreshes stationary hover and clears
     render(<LiveTrackVision name="vision" />);
     await flush();
     selectStep('Depth map');
-    expect(screen.getByText('Waiting for depth. Share a driving view with both models ready.')).toBeVisible();
+    expect(screen.getByText('Waiting for depth.')).toBeVisible();
     await startCapture();
     const canvas = screen.getByLabelText('Captured game frame with vision detections') as HTMLCanvasElement;
     jest.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 20, width: 640, height: 480 } as DOMRect);
@@ -264,7 +264,7 @@ it('inspects full-map depths at the mouse, refreshes stationary hover and clears
     depthModel.detect.mockRejectedValueOnce(new Error('GPU device lost'));
     await act(async () => { jest.advanceTimersByTime(200); });
     expect(screen.queryByLabelText('Depth at mouse')).not.toBeInTheDocument();
-    expect(screen.getByText('Waiting for depth. Share a driving view with both models ready.')).toBeVisible();
+    expect(screen.getByText('Waiting for depth.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(canvas).not.toBeVisible();
 });
@@ -282,7 +282,6 @@ it('shows relative depth in the hover, legend, table and mask captions without m
     fireEvent.mouseMove(canvas, { clientX: 320, clientY: 180 });
     expect(screen.getByLabelText('Depth at mouse')).toHaveTextContent('0.0200 rel');
     expect(screen.getByLabelText('Depth map color scale')).toHaveTextContent('Near 0.0200 rel');
-    expect(screen.getByText(/These values are unitless/)).toBeVisible();
     selectStep('Label depths');
     expect(screen.getByRole('table')).toHaveTextContent('relative depth (unitless)');
     expect(screen.getByRole('table')).toHaveTextContent('0.0200 rel');
@@ -501,21 +500,46 @@ it('publishes metric geometry and positions only after camera calibration is app
     ref.current!.subscribeDetection(listener);
     fireEvent.click(cameraButton('Apply camera calibration'));
     expect(ref.current!.getLatestDetection()).toMatchObject({ capturedAt, analysis: {
-        cornerDirection: 'left', playerPosition: 'inside', carAhead: 1, opponentPosition: 'outside',
+        driverPosition: { leftBoundaryDistanceM: expect.any(Number), rightBoundaryDistanceM: expect.any(Number) },
+        carAhead: 1, opponents: [expect.objectContaining({ longitudinalOffsetM: expect.any(Number), lateralOffsetM: expect.any(Number) })],
     } });
     expect(ref.current!.getLatestDetection()!.geometry!.trackWidthM).toBeCloseTo(10, 0);
     expect(listener).toHaveBeenCalled();
-    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Inside');
-    expect(screen.getByLabelText('Opponent position')).toHaveTextContent('Outside');
+    expect(screen.getByLabelText('Driver position')).toHaveTextContent(/Left boundary: [\d.]+ mRight boundary: [\d.]+ m/);
+    expect(screen.getByLabelText('Opponent positions')).toHaveTextContent(/m ahead · [\d.]+ m right/);
+    expect(screen.queryByLabelText('Visible corner')).not.toBeInTheDocument();
+    expect(ref.current!.getLatestDetection()!.analysis).not.toHaveProperty('cornerDirection');
     fireEvent.change(screen.getByLabelText('Camera right of car center (m)'), { target: { value: '-2.5' } });
     expect(ref.current!.getLatestDetection()!.analysis).toEqual({});
     expect(ref.current!.getLatestDetection()!.geometry).toBeNull();
     fireEvent.click(cameraButton('Apply camera calibration'));
-    expect(ref.current!.getLatestDetection()).toMatchObject({ capturedAt, analysis: { playerPosition: 'middle' } });
+    expect(ref.current!.getLatestDetection()!.capturedAt).toBe(capturedAt);
+    expect(ref.current!.getLatestDetection()!.analysis!.driverPosition!.leftBoundaryDistanceM).toBeCloseTo(5, 0);
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(ref.current!.getLatestDetection()).toBeNull();
     expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
     expect(screen.queryByLabelText('Perspective 3D masks')).not.toBeInTheDocument();
+});
+
+it('shows a list of opponents relative to the driver and clears it when capture stops', async () => {
+    const frame = multipleCarVision();
+    model.detect.mockResolvedValue(frame.detections.segment);
+    depthModel.detect.mockResolvedValue(frame.detections.depth);
+    render(<LiveTrackVision name="vision" />);
+    await flush();
+    await startCapture();
+    fireEvent.click(cameraButton('Apply camera calibration'));
+    selectStep('Reconstructed scene');
+    const opponents = screen.getByLabelText('Opponent positions');
+    const items = within(opponents).getAllByRole('listitem');
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveTextContent(/m ahead · [\d.]+ m left/);
+    expect(items[1]).toHaveTextContent(/m ahead · [\d.]+ m right/);
+    expect(items[2]).toHaveTextContent('Aligned with driver');
+    expect(screen.queryByText('Visible corner')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+    expect(within(opponents).queryByRole('list')).not.toBeInTheDocument();
+    expect(opponents).toHaveTextContent('Unknown');
 });
 
 it('keeps the reconstructed scene visible during pending inference while positions expire', async () => {
@@ -538,6 +562,7 @@ it('keeps the reconstructed scene visible during pending inference while positio
     await act(async () => { jest.advanceTimersByTime(VISION_MAX_AGE_MS + 1); });
     expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
     expect(screen.getByLabelText('Reconstructed scene status')).toHaveTextContent('Showing last frame (stale)');
+    expect(screen.getByLabelText('Opponent positions')).toHaveTextContent('Unknown');
     expect(screen.getByLabelText('Reconstructed cars').innerHTML).toBe(displayedCars);
     expect(edges.innerHTML).toBe(displayed);
     fireEvent.click(cameraButton('Apply camera calibration'));

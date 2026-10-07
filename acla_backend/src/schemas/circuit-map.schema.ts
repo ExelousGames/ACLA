@@ -3,13 +3,15 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 export type CircuitMapGame = 'acc' | 'iracing';
 export type CircuitMapCaptureMode = 'left_boundary' | 'middle_line' | 'right_boundary' | 'pit_lane';
 
-export type CircuitMapCenterlineTag = {
+export type CircuitMapCenterlineSegment = {
     id: string;
-    label: string;
+    tags: string[];
     // Ordered in lap direction; start > end crosses the start/finish line.
     start_position: number;
     end_position: number;
 };
+
+export type CircuitMapCenterlineTag = Omit<CircuitMapCenterlineSegment, 'tags'> & { label: string };
 
 export class CircuitMapBinSample {
     @Prop({ required: true })
@@ -68,8 +70,12 @@ export class CircuitMap {
     @Prop({ type: Object, default: {} })
     samples: CircuitMapSamplesByMode;
 
-    @Prop({ type: [Object], default: [] })
-    centerline_tags: CircuitMapCenterlineTag[];
+    // Undefined distinguishes legacy documents from an explicitly cleared list.
+    @Prop({ type: [Object], default: undefined })
+    centerline_segments?: CircuitMapCenterlineSegment[];
+
+    @Prop({ type: [Object], default: undefined })
+    centerline_tags?: CircuitMapCenterlineTag[];
 
     @Prop({ required: true, default: 0 })
     sample_count: number;

@@ -31,6 +31,9 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         const updateVision = () => publish(engine.receiveVision(root.getTrackVisionDetection(), Date.now()));
         const unsubscribeVision = root.subscribeTrackVision(updateVision);
         updateVision();
+        const updateMap = () => publish(engine.receiveMap(root.getLiveCircuitMap(), Date.now()));
+        const unsubscribeMap = root.subscribeLiveCircuitMap(updateMap);
+        updateMap();
         const unsubscribeTelemetry = root.subscribeTelemetry((event) => {
             publish(engine.receiveTelemetry(event, Date.now()));
         });
@@ -39,6 +42,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         return () => {
             clearInterval(timer);
             unsubscribeVision();
+            unsubscribeMap();
             unsubscribeTelemetry();
         };
     }, [root]);
@@ -57,16 +61,21 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         <section className="live-phrases" aria-label="Live phrases">
             <header>
                 <h2>Live phrases <span>Local rules</span></h2>
-                <p>Live Phrases selects sentences from the driver and opponent positions reported by Track Vision.</p>
+                <p>Overtaking guidance combines Track Vision positions with Live Map corner shapes, consecutive corners and your progress through the corner.</p>
             </header>
             <div className="live-phrases__sources" role="status">
                 <span data-ready={snapshot.telemetryReady}>Telemetry: {snapshot.telemetryReady ? 'Live' : 'Waiting for live data'}</span>
                 <span data-ready={snapshot.visionReady}>Track Vision: {snapshot.visionReady ? 'Live' : 'Unavailable or stale'}</span>
+                <span data-ready={snapshot.mapReady}>Live Map: {snapshot.mapReady ? 'Ready' : 'Waiting for a tagged circuit map'}</span>
+                {snapshot.mapContext.phase && <span>Current section: {snapshot.mapContext.cornerSpeed ? `${snapshot.mapContext.cornerSpeed} corner · ` : ''}{snapshot.mapContext.phase}</span>}
+                {snapshot.mapContext.cornerShape && <span>Corner shape: {snapshot.mapContext.cornerShape}</span>}
+                {snapshot.mapContext.sequenceId && <span>Corner sequence: {snapshot.mapContext.sequenceShape ?? 'Shape unavailable'} · {snapshot.mapContext.sequenceCornerIndex ? `${snapshot.mapContext.sequenceCornerIndex} of ` : ''}{snapshot.mapContext.sequenceCornerCount} corners</span>}
             </div>
-            {!snapshot.visionReady && <p className="live-phrases__hint">Open Track Vision in Add Visualization, share your forward-facing driving view, and apply the camera calibration to enable corner-position phrases.</p>}
+            {!snapshot.visionReady && <p className="live-phrases__hint">Open Track Vision in Add Visualization, share your forward-facing driving view, and apply the camera calibration to enable overtaking guidance.</p>}
+            {!snapshot.mapReady && <p className="live-phrases__hint">Open Live Map in Add Visualization. In Circuit Maps, tag corners with corner and slow or fast, and tag straights with straight or long straight.</p>}
             <section aria-label="Sentence catalog">
                 <h3>All possible sentences <span>({PHRASE_RULES.length})</span></h3>
-                <p className="live-phrases__hint">Every possible sentence is listed below, including inactive rules. All conditions must hold for the listed duration. A phrase appears once per match, with an 8 s cooldown and 0.5 s clear period before repeating.</p>
+                <p className="live-phrases__hint">All {PHRASE_RULES.length} guides are listed below. The first matching guide takes priority; its conditions must hold for 0.8 s. Each guide has an 8 s cooldown and requires a 0.5 s clear period before repeating.</p>
                 <ol className="live-phrases__catalog">
                     {PHRASE_RULES.map((rule, index) => {
                         const state = snapshot.rules[index];
@@ -79,12 +88,12 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         </li>;
                     })}
                 </ol>
-                <p className="live-phrases__hint">Track Vision analyzes the screen and reports positions. Telemetry confirms live driving and speed; G-forces are not used. Telemetry must be at most 1.5 s old and Track Vision results at most 2 s old. Unknown positions produce no position phrase.</p>
+                <p className="live-phrases__hint">Live Map tags identify slow and fast corners; centerline geometry estimates their shapes. Tag an enclosing area with consecutive corners to link the corner segments inside it. Lap position estimates entry, middle and exit. Track Vision reports visible positions, but cannot confirm overlap, a clear passing lane or an opponent’s intent. Guidance depends on those conditions being met. Telemetry expires after 1.5 s and vision after 2 s; missing inputs withhold the affected guides.</p>
             </section>
             <section aria-label="Triggered sentences" className="live-phrases__output">
                 <h3>Triggered sentences</h3>
                 {snapshot.events.length === 0
-                    ? <p>No phrases yet. Waiting for a visible corner, track edges, an opponent ahead, and live driving data.</p>
+                    ? <p>No phrases yet. Waiting for an opponent ahead, a tagged Live Map section, and live driving data.</p>
                     : <ol>{snapshot.events.slice().reverse().map((event) => (
                         <li key={event.id}><time dateTime={new Date(event.timestamp).toISOString()}>{new Date(event.timestamp).toLocaleTimeString()}</time><span>{event.sentence}</span></li>
                     ))}</ol>}

@@ -2,46 +2,152 @@ import { createLiveTelemetryStore, LiveTelemetryFrameEvent } from '../live-telem
 import type { StandardTelemetrySample } from '../live-session-types';
 import { COOLDOWN_MS, PHRASE_RULES, PhraseEngine, TELEMETRY_MAX_AGE_MS, describeConditions } from './phrase-engine';
 import { VISION_MAX_AGE_MS } from '../track-vision/track-vision-types';
-import type { CornerPosition } from '../track-vision/track-vision-types';
-import { vision } from './test-fixtures';
+import { circuitMap, shapedCornerMap, vision } from './test-fixtures';
 
 const frame = (sample: StandardTelemetrySample, status = 2): LiveTelemetryFrameEvent => ({
     type: 'frame', sample, sampleIndex: 0, telemetryStatus: status,
     committedSampleCount: 0, sessionGeneration: 0, streamGeneration: 0,
     update: { type: 'frame', game: 'acc', sample, sequence: 1, committedSequence: 0, committedCount: 0 },
 });
-const driving = { Physics_speed_kmh: 100 };
-const defaultRule = 'corner-left-player-inside-opponent-outside';
+const driving = { Physics_speed_kmh: 100, Graphics_normalized_car_position: 0.11 };
+const map = circuitMap();
+const defaultRule = 'inside-outbraking';
 const ids = (engine: PhraseEngine, now: number) => engine.evaluate(now).events.map((event) => event.ruleId);
 const update = (engine: PhraseEngine, now: number, sample: StandardTelemetrySample = driving) => {
     engine.receiveVision(vision(now), now);
     return engine.receiveTelemetry(frame(sample), now);
 };
 
-describe('visual corner position phrase rules', () => {
+describe('vision and Live Map overtaking guides', () => {
     it('uses published analysis without accessing raw screen detections', () => {
         const engine = new PhraseEngine();
-        const result = vision(0, { corner: 'right', player: 'outside', opponent: 'inside' });
+        engine.receiveMap(map, 0);
+        const result = vision(0, { corner: 'right' });
         Object.defineProperty(result, 'detections', { get: () => { throw new Error('Phrase rules must not read screen detections'); } });
         engine.receiveVision(result, 0);
         engine.receiveTelemetry(frame(driving), 0);
         engine.receiveTelemetry(frame(driving), 800);
-        expect(ids(engine, 800)).toEqual(['corner-right-player-outside-opponent-inside']);
+        expect(ids(engine, 800)).toEqual([defaultRule]);
     });
 
-    it('describes both cars in every rule without passing advice or G-force conditions', () => {
-        expect(PHRASE_RULES).toHaveLength(18);
-        expect(PHRASE_RULES.every((rule) => rule.category === 'Corner position'
-            && ['cornerDirection', 'playerPosition', 'opponentPosition'].every((input) => rule.conditions.some((condition) => condition.input === input)))).toBe(true);
+    it('lists shape-specific guides before general overtaking guides', () => {
+        expect(PHRASE_RULES.map((rule) => rule.id)).toEqual([
+            'next-corner', 'same-direction', 'sequence-exit', 's-bend',
+            'tightening-corner', 'opening-corner', 'hairpin-exit',
+            'inside-outbraking', 'around-outside', 'switchback',
+            'better-exit', 'slipstream', 'pressure-feint',
+        ]);
         PHRASE_RULES.forEach((rule) => {
-            expect(rule.sentence).toMatch(/you are .+; the opponent ahead is/);
-            expect(rule.sentence).not.toMatch(/\b(?:pass|opening|exit|brake)\b/i);
-            expect(describeConditions(rule)).not.toMatch(/force|acceleration|brake/i);
+            expect(rule.sentence).not.toMatch(/you are .+; the opponent ahead is/);
+            expect(describeConditions(rule)).toContain('Live Map section');
         });
+    });
+
+    it.each([
+        { shape: 's-bend', position: 0.12, tactic: 's-bend' },
+        { shape: 'tightening', position: 0.12, tactic: 'tightening-corner' },
+        { shape: 'opening', position: 0.2, tactic: 'opening-corner' },
+        { shape: 'hairpin', position: 0.2, tactic: 'hairpin-exit' },
+    ] as const)('selects $tactic from centerline geometry', ({ shape, position, tactic }) => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(shapedCornerMap(shape), 0);
+        const sample = { ...driving, Graphics_normalized_car_position: position };
+        update(engine, 0, sample);
+        update(engine, 800, sample);
+        expect(ids(engine, 800)).toEqual([tactic]);
+    });
+
+    it.each(['opposite', 'same'] as const)('uses the %s direction sequence guide and reserves exit guidance for the last corner', (direction) => {
+        const sequence = circuitMap('slow', true);
+        if (direction === 'same') sequence.samples.middle_line!.find((point) => point.normalized_position === 0.31)!.x = 1100;
+        sequence.centerline_tags!.push({ id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.31 });
+        for (const [position, tactic] of [
+            [0.11, direction === 'opposite' ? 'next-corner' : 'same-direction'],
+            [0.18, 'sequence-exit'],
+            [0.29, direction === 'same' ? 'hairpin-exit' : 'better-exit'],
+        ] as const) {
+            const engine = new PhraseEngine();
+            engine.receiveMap(sequence, 0);
+            const sample = { ...driving, Graphics_normalized_car_position: position };
+            engine.receiveVision(vision(0, { player: 'outside', opponent: 'inside' }), 0);
+            engine.receiveTelemetry(frame(sample), 0);
+            engine.receiveTelemetry(frame(sample), 800);
+            expect(ids(engine, 800)).toEqual([tactic]);
+        }
+    });
+
+    it('does not inherit a partly confirmed phrase when moving to another corner in the same area', () => {
+        const sequence = shapedCornerMap('hairpin');
+        sequence.centerline_segments = [
+            { id: 'area', tags: ['consecutive corners'], start_position: 0.1, end_position: 0.3 },
+            { id: 'first', tags: ['corner', 'slow'], start_position: 0.1, end_position: 0.2 },
+            { id: 'second', tags: ['corner', 'slow'], start_position: 0.2, end_position: 0.3 },
+        ];
+        const engine = new PhraseEngine();
+        engine.receiveMap(sequence, 0);
+        const first = { ...driving, Graphics_normalized_car_position: 0.11 };
+        const second = { ...driving, Graphics_normalized_car_position: 0.21 };
+        update(engine, 0, first);
+        update(engine, 700, second);
+        update(engine, 800, second);
+        expect(ids(engine, 800)).toEqual([]);
+        update(engine, 1500, second);
+        expect(ids(engine, 1500)).toEqual(['inside-outbraking']);
+    });
+
+    it.each([
+        { tactic: 'inside-outbraking', speed: 'slow', position: 0.11, player: 'inside', opponent: 'outside' },
+        { tactic: 'around-outside', speed: 'fast', position: 0.11, player: 'outside', opponent: 'inside' },
+        { tactic: 'switchback', speed: 'slow', position: 0.15, player: 'outside', opponent: 'inside' },
+        { tactic: 'better-exit', speed: 'slow', position: 0.18, player: 'middle', opponent: 'inside' },
+        { tactic: 'better-exit', speed: 'fast', position: 0.18, player: 'middle', opponent: 'inside' },
+        { tactic: 'next-corner', speed: 'fast', position: 0.11, player: 'outside', opponent: 'inside', linked: true },
+        { tactic: 'next-corner', speed: 'slow', position: 0.15, player: 'outside', opponent: 'inside', linked: true },
+        { tactic: 'pressure-feint', speed: 'slow', position: 0.11, player: 'middle', opponent: 'outside' },
+        { tactic: 'slipstream', speed: 'slow', position: 0.5, player: 'middle', opponent: 'middle', straight: true },
+    ] as const)('selects only $tactic for $speed at $position', (scenario) => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(circuitMap(scenario.speed, 'linked' in scenario), 0);
+        const sample = { ...driving, Graphics_normalized_car_position: scenario.position };
+        engine.receiveVision(vision(0, { corner: 'straight' in scenario ? 'straight' : 'left', player: scenario.player, opponent: scenario.opponent }), 0);
+        engine.receiveTelemetry(frame(sample), 0);
+        engine.receiveTelemetry(frame(sample), 800);
+        expect(ids(engine, 800)).toEqual([scenario.tactic]);
+    });
+
+    it.each([null, { ...map, centerline_tags: [] }, circuitMap('fast')])('withholds inside outbraking without a mapped slow corner', (input) => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(input, 0);
+        update(engine, 0);
+        update(engine, 800);
+        expect(ids(engine, 800)).toEqual([]);
+    });
+
+    it.each([undefined, NaN, -0.1, 1.1])('withholds guidance for invalid lap position %s', (position) => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        const sample = { ...driving, Graphics_normalized_car_position: position };
+        update(engine, 0, sample);
+        update(engine, 800, sample);
+        expect(ids(engine, 800)).toEqual([]);
+    });
+
+    it('restarts confirmation when the map is removed or replaced', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        update(engine, 0);
+        engine.receiveMap(null, 500);
+        update(engine, 800);
+        expect(ids(engine, 800)).toEqual([]);
+        engine.receiveMap(circuitMap(), 900);
+        update(engine, 1000);
+        update(engine, 1700);
+        expect(ids(engine, 1700)).toEqual([defaultRule]);
     });
 
     it('emits once after a sustained match, only on a fresh telemetry frame', () => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         update(engine, 0);
         update(engine, 799);
         engine.receiveVision(vision(800), 800);
@@ -51,15 +157,53 @@ describe('visual corner position phrase rules', () => {
         expect(ids(engine, 1000)).toEqual([defaultRule]);
     });
 
-    const positions: CornerPosition[] = ['inside', 'middle', 'outside'];
-    it.each((['left', 'right'] as const).flatMap((corner) => positions.flatMap((player) => positions.map((opponent) => (
-        { corner, player, opponent }
-    )))))('emits one accurate phrase for $corner / $player / $opponent', ({ corner, player, opponent }) => {
+    it.each(['other-track', 'other-game'])('withholds an old map after switching to %s', (change) => {
         const engine = new PhraseEngine();
-        engine.receiveVision(vision(0, { corner, player, opponent }), 0);
-        engine.receiveTelemetry(frame(driving), 0);
-        engine.receiveTelemetry(frame(driving), 800);
-        expect(ids(engine, 800)).toEqual([`corner-${corner}-player-${player}-opponent-${opponent}`]);
+        engine.receiveMap(map, 0);
+        update(engine, 0);
+        const event = frame({ ...driving, Static_track: change === 'other-track' ? 'spa' : 'test' });
+        if (change === 'other-game') event.update.game = 'iracing';
+        engine.receiveTelemetry(event, 800);
+        const result = engine.receiveTelemetry(event, 1600);
+        expect(result.mapReady).toBe(false);
+        expect(result.events).toEqual([]);
+    });
+
+    it('normalizes ACC display names when matching the current map', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap({ ...map, source_track_key: 'brands_hatch' }, 0);
+        update(engine, 0, { ...driving, Static_track: 'Brands Hatch Circuit' });
+        update(engine, 800, { ...driving, Static_track: 'Brands Hatch Circuit' });
+        expect(ids(engine, 800)).toEqual([defaultRule]);
+    });
+
+    it('preserves the cooldown across map reloads', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        update(engine, 0);
+        update(engine, 800);
+        engine.receiveMap(null, 900);
+        engine.receiveMap(circuitMap(), 1500);
+        update(engine, 1600);
+        update(engine, 2400);
+        expect(ids(engine, 2400)).toEqual([defaultRule]);
+        expect(engine.evaluate(2400).rules.find((rule) => rule.id === defaultRule)?.status).toBe('Cooldown');
+    });
+
+    it('restarts the hold when moving straight into another tagged section', () => {
+        const engine = new PhraseEngine();
+        const split = circuitMap();
+        split.centerline_tags = [
+            { id: 'first', label: 'straight', start_position: 0.4, end_position: 0.5 },
+            { id: 'second', label: 'straight', start_position: 0.5, end_position: 0.8 },
+        ];
+        engine.receiveMap(split, 0);
+        update(engine, 0, { ...driving, Graphics_normalized_car_position: 0.49 });
+        update(engine, 700, { ...driving, Graphics_normalized_car_position: 0.51 });
+        update(engine, 800, { ...driving, Graphics_normalized_car_position: 0.52 });
+        expect(ids(engine, 800)).toEqual([]);
+        update(engine, 1500, { ...driving, Graphics_normalized_car_position: 0.53 });
+        expect(ids(engine, 1500)).toEqual(['slipstream']);
     });
 
     it.each([
@@ -69,6 +213,7 @@ describe('visual corner position phrase rules', () => {
         { ...driving, Physics_brake: 1 },
     ])('uses the same visual positions regardless of G-forces or brake data: %s', (sample) => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         update(engine, 0, sample);
         update(engine, 800, sample);
         expect(ids(engine, 800)).toEqual([defaultRule]);
@@ -76,6 +221,7 @@ describe('visual corner position phrase rules', () => {
 
     it('requires a clear period and cooldown before repeating a suggestion', () => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         update(engine, 0);
         update(engine, 800);
         update(engine, 900, { ...driving, Physics_speed_kmh: 0 });
@@ -98,6 +244,7 @@ describe('visual corner position phrase rules', () => {
         { ...driving, Physics_speed_kmh: 29 },
     ])('does not fill absent or invalid driving inputs with zero: %s', (sample) => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         engine.receiveVision(vision(0), 0);
         engine.receiveTelemetry(frame(sample), 0);
         engine.receiveTelemetry(frame(sample), 1000);
@@ -107,7 +254,7 @@ describe('visual corner position phrase rules', () => {
     it.each([
         ['missing vision', null],
         ['missing published analysis', { ...vision(0), analysis: null }],
-        ['car pack without an individual position', { ...vision(0), analysis: { cornerDirection: 'left' as const, playerPosition: 'inside' as const, carAhead: 1 as const } }],
+        ['car pack without an individual position', { ...vision(0), analysis: { ...vision(0).analysis, opponents: [] } }],
         ['missing camera calibration', vision(0, { cameraOffset: null })],
         ['no car ahead', vision(0, { carAhead: false })],
         ['straight road', vision(0, { corner: 'straight' })],
@@ -117,6 +264,7 @@ describe('visual corner position phrase rules', () => {
         } } }],
     ])('withholds every suggestion with %s', (_label, detection) => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         engine.receiveVision(detection, 0);
         engine.receiveTelemetry(frame(driving), 0);
         engine.receiveTelemetry(frame(driving), 1000);
@@ -125,6 +273,7 @@ describe('visual corner position phrase rules', () => {
 
     it('expires vision while telemetry remains live', () => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         engine.receiveVision(vision(0), 0);
         engine.receiveTelemetry(frame(driving), 1300);
         const snapshot = engine.receiveTelemetry(frame(driving), VISION_MAX_AGE_MS + 1);
@@ -135,6 +284,7 @@ describe('visual corner position phrase rules', () => {
 
     it('restarts the hold when vision stops or capture resumes after a gap', () => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         update(engine, 0);
         engine.receiveVision(null, 500);
         update(engine, 700);
@@ -144,6 +294,7 @@ describe('visual corner position phrase rules', () => {
         expect(ids(engine, 1500)).toEqual([defaultRule]);
 
         const gap = new PhraseEngine();
+        gap.receiveMap(map, 0);
         gap.receiveVision(vision(0), 0);
         gap.receiveTelemetry(frame(driving), 1400);
         update(gap, 2100);
@@ -154,16 +305,18 @@ describe('visual corner position phrase rules', () => {
 
     it('restarts the hold when visual positions change', () => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         update(engine, 0);
-        engine.receiveVision(vision(500, { player: 'outside', opponent: 'inside' }), 500);
+        engine.receiveVision(vision(500, { player: 'middle', opponent: 'outside' }), 500);
         engine.receiveTelemetry(frame(driving), 800);
         expect(ids(engine, 800)).toEqual([]);
         engine.receiveTelemetry(frame(driving), 1300);
-        expect(ids(engine, 1300)).toEqual(['corner-left-player-outside-opponent-inside']);
+        expect(ids(engine, 1300)).toEqual(['pressure-feint']);
     });
 
     it('restarts the hold when the camera alignment changes even within the same position band', () => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         update(engine, 0);
         engine.receiveVision(vision(500, { cameraOffset: -0.35 }), 500);
         engine.receiveTelemetry(frame(driving), 800);
@@ -173,13 +326,15 @@ describe('visual corner position phrase rules', () => {
     });
 
     it('uses all velocity components as a speed fallback without position data', () => {
-        const sample = { Physics_velocity_x: 6, Physics_velocity_y: 0, Physics_velocity_z: 8 };
+        const sample = { Graphics_normalized_car_position: 0.11, Physics_velocity_x: 6, Physics_velocity_y: 0, Physics_velocity_z: 8 };
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         engine.receiveVision(vision(0), 0);
         engine.receiveTelemetry(frame(sample), 0);
         engine.receiveTelemetry(frame(sample), 800);
         expect(ids(engine, 800)).toEqual([defaultRule]);
         const other = new PhraseEngine();
+        other.receiveMap(map, 0);
         other.receiveVision(vision(0), 0);
         other.receiveTelemetry(frame({ ...sample, Physics_velocity_y: undefined }), 0);
         other.receiveTelemetry(frame({ ...sample, Physics_velocity_y: undefined }), 800);
@@ -188,6 +343,7 @@ describe('visual corner position phrase rules', () => {
 
     it.each([0, 1, 3])('suppresses output for simulator status %s', (status) => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         engine.receiveVision(vision(0), 0);
         engine.receiveTelemetry(frame(driving, status), 0);
         engine.receiveTelemetry(frame(driving, status), 1000);
@@ -197,6 +353,7 @@ describe('visual corner position phrase rules', () => {
 
     it('expires telemetry and does not count a silent gap toward the hold', () => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         update(engine, 0);
         update(engine, TELEMETRY_MAX_AGE_MS + 1);
         expect(ids(engine, TELEMETRY_MAX_AGE_MS + 1)).toEqual([]);
@@ -207,6 +364,7 @@ describe('visual corner position phrase rules', () => {
 
     it.each(['session-reset', 'stream-reset'] as const)('clears history, holds and old vision on %s', (type) => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         update(engine, 0);
         update(engine, 800);
         engine.receiveTelemetry({ type, snapshot: createLiveTelemetryStore().getSnapshot() }, 900);
@@ -221,6 +379,7 @@ describe('visual corner position phrase rules', () => {
 
     it('bounds session history', () => {
         const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
         for (let index = 0; index < 60; index++) {
             const now = index * (COOLDOWN_MS + 1000);
             update(engine, now);

@@ -64,6 +64,8 @@ import { liveTelemetryStore } from './live-telemetry-store';
 import type { LiveTelemetryEventListener } from './live-telemetry-store';
 import type { TrackVisionHandle } from './track-vision/LiveTrackVision';
 import type { TrackVisionDetection } from './track-vision/track-vision-types';
+import type { LiveTrajectoryMapHandle } from './LiveTrajectoryMap';
+import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import {
     createControlledOperation,
     createOperationFrom,
@@ -137,6 +139,8 @@ export interface LiveSessionHandle extends ObservableOperationComponentHandle<Li
     subscribeTelemetry(listener: LiveTelemetryEventListener): () => void;
     getTrackVisionDetection(): TrackVisionDetection | null;
     subscribeTrackVision(listener: () => void): () => void;
+    getLiveCircuitMap(): CircuitMapDto | null;
+    subscribeLiveCircuitMap(listener: () => void): () => void;
     queryTelemetryMetric<TReduce extends ReduceOp>(args: TelemetryQuery<TReduce>): Promise<QueryResult<TReduce>>;
     getTelemetryForScope(scope: QueryScope): Promise<Record<string, any>[]>;
     getEventLog(args: Record<string, any>): any[];
@@ -324,12 +328,24 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
     liveSessionRef.current = liveSession;
     const assistantSnapshotListenersRef = useRef(new Set<() => void>());
     const trackVisionListenersRef = useRef(new Set<() => void>());
+    const circuitMapListenersRef = useRef(new Set<() => void>());
     const componentRef = useRef<LiveSessionHandle | null>(null);
     const trackVision = componentRefs?.findComponentRef<TrackVisionHandle>(
         getVisualizationComponentName('track-vision'),
     )?.current ?? null;
     const trackVisionRef = useRef(trackVision);
     trackVisionRef.current = trackVision;
+    const liveMap = componentRefs?.findComponentRef<LiveTrajectoryMapHandle>(
+        getVisualizationComponentName('live-trajectory-map'),
+    )?.current ?? null;
+    const liveMapRef = useRef(liveMap);
+    liveMapRef.current = liveMap;
+
+    useEffect(() => {
+        const notify = () => circuitMapListenersRef.current.forEach((listener) => listener());
+        notify();
+        return liveMap?.subscribeCircuitMap(notify);
+    }, [liveMap]);
 
     useEffect(() => {
         const notify = () => trackVisionListenersRef.current.forEach((listener) => listener());
@@ -394,6 +410,11 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
             subscribeTrackVision: (listener) => {
                 trackVisionListenersRef.current.add(listener);
                 return () => { trackVisionListenersRef.current.delete(listener); };
+            },
+            getLiveCircuitMap: () => liveMapRef.current?.getCircuitMap() ?? null,
+            subscribeLiveCircuitMap: (listener) => {
+                circuitMapListenersRef.current.add(listener);
+                return () => { circuitMapListenersRef.current.delete(listener); };
             },
             queryTelemetryMetric: (args) => queryLiveTelemetry(args),
             getTelemetryForScope: (scope) => getTelemetryForLiveScope(scope),

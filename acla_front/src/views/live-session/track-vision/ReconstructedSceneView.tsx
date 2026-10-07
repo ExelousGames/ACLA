@@ -71,10 +71,10 @@ export default function ReconstructedSceneView({ scene, source, capturedAt }: {
             </svg>
         </div>
         <p className="track-vision__hint" aria-label="Reconstructed scene status">{!scene
-            ? 'Share a driving view with both models ready to reconstruct the scene.'
-            : stale ? 'Showing last frame (stale). Waiting for a new segmentation result.'
-                : !hasEdges ? scene.cars.length ? 'Detected cars and car packs in 2D. No visible track boundaries after car interior edge filtering.'
-                    : 'No visible track boundaries or traffic after filtering.'
-                    : 'Visible track boundaries in 2D, with a middle line from both sides and detected cars and car packs. Both boundaries end at the last supported middle-line point. Gaps mark missing mask coverage, car interior or offscreen edges.'}</p>
+            ? 'Waiting for scene.'
+            : stale ? 'Showing last frame (stale).'
+                : !hasEdges ? scene.cars.length ? 'Detected cars and car packs in 2D.'
+                    : 'No visible track boundaries or traffic.'
+                    : 'Visible track boundaries in 2D.'}</p>
     </section>;
 }

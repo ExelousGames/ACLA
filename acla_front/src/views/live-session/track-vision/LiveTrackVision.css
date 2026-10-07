@@ -18,7 +18,6 @@
 .track-vision__stage:focus-visible { outline: 2px solid #37efac; outline-offset: -2px; }
 .track-vision__stage-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .track-vision__stage-heading h3 { margin: 5px 0; font-size: 16px; font-weight: 500; }
-.track-vision__stage-heading p { margin: 0; color: var(--lp-gray, #a4adbb); line-height: 1.5; }
 .track-vision__frame-size { flex-shrink: 0; color: var(--lp-gray, #a4adbb); font-size: 10px; font-variant-numeric: tabular-nums; }
 .track-vision__legend { display: flex; flex-wrap: wrap; gap: 6px; }
 .track-vision__legend > span { display: inline-flex; align-items: center; gap: 7px; padding: 6px 8px; border: 1px solid var(--lp-border, #343b46); border-radius: 5px; }
@@ -32,7 +31,6 @@
 .track-vision__filter-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; list-style: none; padding: 0; margin: 0; }
 .track-vision__filter-list li { display: flex; flex-direction: column; gap: 4px; padding-left: 10px; border-left: 2px solid #37efac50; }
 .track-vision__filter-list strong { font-size: 11px; font-weight: 500; }
-.track-vision__filter-list span { color: var(--lp-gray, #a4adbb); font-size: 11px; line-height: 1.5; }
 .track-vision__depth-scale { display: flex; align-items: center; gap: 10px; color: var(--lp-gray, #a4adbb); font-size: 11px; }
 .track-vision__depth-scale i { flex: 1; height: 6px; border-radius: 3px; }
 .track-vision__table-wrap { overflow-x: auto; }
@@ -52,10 +50,9 @@
 .track-vision__stack, .track-vision__alignment { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; }
 .track-vision__stack legend, .track-vision__alignment legend { padding: 0 6px; font-weight: 600; }
 .track-vision__detector { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 12px; padding: 8px; border-radius: 6px; background: #37efac0a; }
-.track-vision__detector-description { display: flex; flex-direction: column; gap: 3px; }
 .track-vision__resolution { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--lp-gray, #a4adbb); }
 .track-vision__resolution select { flex: 0 1 220px; }
-.track-vision__detector small, .track-vision__detector-state { color: var(--lp-gray, #a4adbb); font-size: 11px; }
+.track-vision__detector-state { color: var(--lp-gray, #a4adbb); font-size: 11px; }
 .track-vision__detector .track-vision__hint, .track-vision__detector .track-vision__error { grid-column: 1 / -1; }
 .track-vision__controls label { display: flex; flex-direction: column; gap: 4px; color: var(--lp-gray, #a4adbb); }
 .track-vision select { flex: 1 1 160px; min-width: 0; max-width: 100%; }
@@ -86,6 +83,7 @@
 .track-vision__analysis dl { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0; }
 .track-vision__analysis dt { color: var(--lp-gray, #a4adbb); font-size: 11px; }
 .track-vision__analysis dd { margin: 4px 0 0; font-weight: 600; }
+.track-vision__opponents { margin: 0; padding-left: 20px; }
 .track-vision__empty { min-height: inherit; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 50px 20px; text-align: center; color: var(--lp-gray, #a4adbb); }
 .track-vision__empty-icon { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid #37efac40; border-radius: 10px; color: #37efac; font-size: 22px; }
 .track-vision__empty strong { color: var(--lp-white, #e7ecf2); font-weight: 500; font-size: 15px; }

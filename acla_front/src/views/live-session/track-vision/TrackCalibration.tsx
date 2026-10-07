@@ -41,7 +41,6 @@ export default function TrackCalibration({ source, draft, applied, showOnCapture
     const valid = validCalibration(camera);
     return <fieldset className="track-vision__alignment">
         <legend>Camera position</legend>
-        <p className="track-vision__hint">Enter camera height, angles, horizontal FOV and position relative to your car. A left-seat camera has a negative right offset. Apply these settings for depth-based coaching positions. The 2D scene does not need calibration.</p>
         <div className="track-vision__camera-controls">
             {controls.map(({ key, label, ...bounds }) => <label key={key}>{label}
                 <input aria-label={label} type="number" {...bounds} value={Number.isFinite(draft[key]) ? draft[key] : ''}
@@ -55,9 +54,8 @@ export default function TrackCalibration({ source, draft, applied, showOnCapture
             </button>
             <button type="button" disabled={!source || !valid} onClick={onApply}>Apply camera calibration</button>
             <button type="button" disabled={!applied} onClick={onClear}>Clear calibration</button>
-            <span>{applied ? 'Calibration applied for this capture.' : 'Draft preview · apply calibration to enable positions.'}</span>
+            <span>{applied ? 'Calibration applied' : 'Draft preview'}</span>
         </div>
         {source && !valid && <p className="track-vision__error">Enter valid camera values within the displayed input limits.</p>}
-        <p className="track-vision__hint">Enable on capture shows a reference ground grid. Use a fixed camera with zero roll. Reapply after changing capture, resolution, camera or FOV.</p>
     </fieldset>;
 }

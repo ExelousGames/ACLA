@@ -5,6 +5,7 @@ import {
     CircuitMap,
     CircuitMapBinSample,
     CircuitMapCenterlineTag,
+    CircuitMapCenterlineSegment,
     CircuitMapCaptureMode,
     CircuitMapGame,
     CircuitMapSamplesByMode,
@@ -17,6 +18,7 @@ type CircuitMapPayload = {
     resolution?: number;
     samples?: Partial<Record<CircuitMapCaptureMode, CircuitMapBinSample[]>>;
     centerline_tags?: CircuitMapCenterlineTag[];
+    centerline_segments?: CircuitMapCenterlineSegment[];
 };
 
 const CAPTURE_MODES: CircuitMapCaptureMode[] = ['left_boundary', 'middle_line', 'right_boundary', 'pit_lane'];
@@ -29,7 +31,7 @@ export class CircuitMapService {
     ) { }
 
     listCenterlineTags() {
-        return { tags: ['corner', 'slow', 'fast', 'long straight'] };
+        return { tags: ['corner', 'slow', 'fast', 'long straight', 'consecutive corners'] };
     }
 
     async list(game?: CircuitMapGame) {
@@ -107,36 +109,60 @@ export class CircuitMapService {
             source_track_key: payload.source_track_key || null,
             resolution: Number.isFinite(Number(payload.resolution)) ? Number(payload.resolution) : 1000,
             samples,
-            ...(isCreate || payload.centerline_tags !== undefined
-                ? { centerline_tags: this.normalizeCenterlineTags(payload.centerline_tags === undefined ? [] : payload.centerline_tags) }
+            ...(isCreate || payload.centerline_segments !== undefined || payload.centerline_tags !== undefined
+                ? { centerline_segments: payload.centerline_segments !== undefined
+                    ? this.normalizeCenterlineSegments(payload.centerline_segments)
+                    : this.migrateCenterlineTags(payload.centerline_tags === undefined ? [] : payload.centerline_tags) }
                 : {}),
             sample_count: sampleCount,
             updated_at: new Date().toISOString(),
         };
     }
 
-    private normalizeCenterlineTags(tags: CircuitMapCenterlineTag[]): CircuitMapCenterlineTag[] {
-        if (!Array.isArray(tags)) {
-            throw new BadRequestException('centerline_tags must be an array');
+    private normalizeCenterlineSegments(segments: CircuitMapCenterlineSegment[]): CircuitMapCenterlineSegment[] {
+        if (!Array.isArray(segments)) {
+            throw new BadRequestException('centerline_segments must be an array');
         }
         const ids = new Set<string>();
-        return tags.map((tag) => {
+        return segments.map((tag) => {
             if (!tag || typeof tag.id !== 'string' || !tag.id.trim() || tag.id.length > 120
-                || typeof tag.label !== 'string' || !tag.label.trim() || tag.label.trim().length > 120
+                || !Array.isArray(tag.tags) || tag.tags.length === 0
+                || tag.tags.some((label) => typeof label !== 'string' || !label.trim() || label.trim().length > 120)
                 || typeof tag.start_position !== 'number' || !Number.isFinite(tag.start_position)
                 || typeof tag.end_position !== 'number' || !Number.isFinite(tag.end_position)
                 || tag.start_position < 0 || tag.start_position > 1
                 || tag.end_position < 0 || tag.end_position > 1
                 || tag.start_position === tag.end_position) {
-                throw new BadRequestException('Each centerline tag requires an id, a label of 1–120 characters, and distinct start/end positions from 0 to 1');
+                throw new BadRequestException('Each centerline segment requires an id, one or more tags of 1–120 characters, and distinct start/end positions from 0 to 1');
             }
             const id = tag.id.trim();
             if (ids.has(id)) {
-                throw new BadRequestException('Centerline tag ids must be unique');
+                throw new BadRequestException('Centerline segment ids must be unique');
             }
             ids.add(id);
-            return { id, label: tag.label.trim(), start_position: tag.start_position, end_position: tag.end_position };
+            return { id, tags: Array.from(new Set(tag.tags.map((label) => label.trim()))), start_position: tag.start_position, end_position: tag.end_position };
         });
+    }
+
+    private migrateCenterlineTags(tags: CircuitMapCenterlineTag[]): CircuitMapCenterlineSegment[] {
+        if (!Array.isArray(tags)) throw new BadRequestException('centerline_tags must be an array');
+        const converted = this.normalizeCenterlineSegments(tags.map((tag) => ({
+            id: tag?.id, tags: [tag?.label], start_position: tag?.start_position, end_position: tag?.end_position,
+        })));
+        const segments: CircuitMapCenterlineSegment[] = [];
+        const isCorner = (label: string) => ['corner', 'slow corner', 'fast corner'].includes(label.toLowerCase());
+        for (const tag of converted) {
+            const existing = segments.find((segment) => segment.start_position === tag.start_position
+                && segment.end_position === tag.end_position);
+            if (existing) {
+                // Keep the corner identity used by track guides and live coaching.
+                if (tag.tags.some(isCorner) && !existing.tags.some(isCorner)) existing.id = tag.id;
+                existing.tags = Array.from(new Set([...existing.tags, ...tag.tags]));
+            } else {
+                segments.push(tag);
+            }
+        }
+        return segments;
     }
 
     private normalizeSamples(samples?: CircuitMapPayload['samples']): CircuitMapSamplesByMode {
@@ -182,7 +208,7 @@ export class CircuitMapService {
             ...this.toSummaryDto(map),
             resolution: Number(map.resolution ?? 1000),
             samples: this.normalizeSamples(map.samples),
-            centerline_tags: map.centerline_tags ?? [],
+            centerline_segments: map.centerline_segments ?? this.migrateCenterlineTags(map.centerline_tags ?? []),
         };
     }
 

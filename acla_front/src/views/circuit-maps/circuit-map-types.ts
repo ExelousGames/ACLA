@@ -38,13 +38,16 @@ export type CircuitMapBinSample = {
 
 export type CircuitMapSamplesByMode = Partial<Record<CircuitMapCaptureMode, CircuitMapBinSample[]>>;
 
-export type CircuitMapCenterlineTag = {
+export type CircuitMapCenterlineSegment = {
     id: string;
-    label: string;
+    tags: string[];
     // Ordered in lap direction; start > end crosses the start/finish line.
     start_position: number;
     end_position: number;
 };
+
+// Read compatibility for maps saved before tags belonged to segments.
+export type CircuitMapCenterlineTag = Omit<CircuitMapCenterlineSegment, 'tags'> & { label: string };
 
 export type CircuitMapSummaryDto = {
     id: string;
@@ -58,6 +61,8 @@ export type CircuitMapSummaryDto = {
 export type CircuitMapDto = CircuitMapSummaryDto & {
     resolution: number;
     samples: CircuitMapSamplesByMode;
+    centerline_segments?: CircuitMapCenterlineSegment[];
+    /** @deprecated Read only; save centerline_segments instead. */
     centerline_tags?: CircuitMapCenterlineTag[];
 };
 

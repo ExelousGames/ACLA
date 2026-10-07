@@ -84,12 +84,23 @@ independently without cutting other labels. Raw masks and published depth stay u
 
 ## Screen analysis
 
-The **Screen analysis** panel in the Reconstructed scene tab shows the visible corner, driver position, and
-closest supported opponent position. Analysis runs here even when Live Phrases
+The **Screen analysis** panel in the Reconstructed scene tab shows the driver's lateral distance
+to the left and right track boundaries and a list of supported individual opponents relative to
+the driver, nearest first. Each opponent shows its distance ahead/behind and left/right offset.
+Driver boundary distances are measured at the displayed visible-road reference distance ahead,
+not extrapolated to the unseen vehicle footprint. Positions are available on straights as well as bends.
+Car packs establish traffic ahead but do not become individual opponents or hide farther individuals.
+Analysis runs here even when Live Phrases
 is closed and no telemetry is available. Each published `TrackVisionDetection`
 includes `calibration`, `reconstructedScene`, `reconstruction`, `geometry`, and `analysis` alongside the raw detector results. `analysis` is null without
-segmentation; uncertain fields remain unset. Live Phrases consumes these fields
-only to select sentences. Displayed positions clear when the frame is more than
+segmentation; uncertain fields remain unset. `analysis.driverPosition` contains
+`leftBoundaryDistanceM`, `rightBoundaryDistanceM` and `referenceDistanceM`.
+`analysis.opponents` contains every supported individual's `lateralOffsetM` (positive right),
+`longitudinalOffsetM` (positive forward). Opponents require road support but can be measured
+beyond the range where both boundaries can be fitted; Live Phrases leaves their corner position unknown there.
+Screen analysis does not detect or label corners. Live Phrases interprets published road geometry
+and measurements to determine corner-relative positions and select sentences.
+Displayed positions clear when the frame is more than
 2 s old, capture stops, or detector configuration changes.
 
 Track Vision must run with a **fixed, forward-facing driving view**. The uploaded
@@ -107,7 +118,7 @@ Label matching ignores case and normalizes whitespace.
 
 Legacy track aliases (`road`, `asphalt`, `tarmac`) and individual-car aliases
 remain supported, but are not required. `Outfield asphalt road` is never a track
-alias. The 2D scene requires segmentation; metric position analysis requires segmentation, metric depth and applied calibration. Depth-Anything-V2-Small supplies relative depth, so metric reconstruction and geometry remain unavailable even with camera calibration; 2D reconstruction and screen analysis remain available.
+alias. The 2D scene requires segmentation; metric position analysis requires segmentation, metric depth and applied calibration. Depth-Anything-V2-Small supplies relative depth, so metric reconstruction, geometry and screen position measurements remain unavailable even with camera calibration; 2D reconstruction remains available.
 Road geometry requires track labels; opponent analysis additionally requires car or car-pack masks. Position analysis
 uses the configured filtering confidence (65% by default), carried on each frame as `filterConfidence`.
 

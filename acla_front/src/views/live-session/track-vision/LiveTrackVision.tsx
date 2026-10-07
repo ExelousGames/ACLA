@@ -51,7 +51,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     });
     const [captureState, setCaptureState] = useState<'idle' | 'starting' | 'active'>('idle');
     const [error, setError] = useState('');
-    const [status, setStatus] = useState('Share your game screen to run segmentation and depth estimation.');
+    const [status, setStatus] = useState('Capture idle');
     const [hasFrame, setHasFrame] = useState(false);
     const [previewCapturedAt, setPreviewCapturedAt] = useState<number>();
     const [previewExpanded, setPreviewExpanded] = useState(false);
@@ -384,7 +384,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 aria-labelledby={`${pipelineId}-${step}`} tabIndex={0}>
                 <div className="track-vision__stage-heading">
                     <div><span className="track-vision__eyebrow">STEP {String(stepIndex + 1).padStart(2, '0')} / {String(PIPELINE_STEPS.length).padStart(2, '0')}</span>
-                        <h3>{activeStep.title}</h3><p>{activeStep.description}</p></div>
+                        <h3>{activeStep.title}</h3></div>
                     {hasFrame && <span className="track-vision__frame-size">{previewWidth} × {previewHeight}</span>}
                 </div>
                 <dialog ref={previewRef} open hidden={isSceneStep} className={`track-vision__preview${hasFrame && step === 'calibration' && showCalibrationOnCapture ? ' track-vision__preview--calibrated' : ''}`}
@@ -401,7 +401,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     </span>}
                     {hasFrame && step === 'calibration' && showCalibrationOnCapture && previewFrameRef.current && validCalibration(previewCamera)
                         && <CameraGroundGrid camera={previewCamera} applied={Boolean(calibration)} />}
-                    {!hasFrame && <div className="track-vision__empty"><span className="track-vision__empty-icon" aria-hidden="true">▣</span><strong>No captured frame yet</strong><span>Choose your simulator window and share it to inspect this pipeline step.</span></div>}
+                    {!hasFrame && <div className="track-vision__empty"><span className="track-vision__empty-icon" aria-hidden="true">▣</span><strong>No captured frame yet</strong></div>}
                     <div className="track-vision__preview-controls">
                         {previewExpanded && captureState !== 'idle' && <button type="button" onClick={stop}>Stop capture</button>}
                         <button type="button" aria-expanded={previewExpanded} onClick={togglePreviewSize}>
@@ -430,9 +430,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                                 onChange={(event) => setConfidence(Number(event.target.value))} />
                         </label>
                     </div>
-                    <p className="track-vision__hint">Display label only changes this preview. All labels continue through filtering and reconstruction.</p>
                 </div>
-                <PipelineDetails step={step} frame={previewResult} masks={masks} classNames={labels} confidence={confidence} filterConfidence={filterConfidence} depthMap={depthMap} />
+                <PipelineDetails step={step} frame={previewResult} masks={masks} classNames={labels} filterConfidence={filterConfidence} depthMap={depthMap} />
                 <div hidden={!isSceneStep}>
                     <ReconstructedSceneView scene={hasFrame ? previewResult?.reconstructedScene ?? null : null}
                         source={hasFrame ? previewFrameRef.current : null} capturedAt={previewCapturedAt} />
@@ -441,13 +440,21 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     <section className="track-vision__analysis" aria-label="Screen analysis">
                         <h3>Screen analysis</h3>
                         <dl>
-                            <div><dt>Visible corner</dt><dd aria-label="Visible corner">{analysis?.cornerDirection ? `${analysis.cornerDirection === 'left' ? 'Left' : 'Right'}-hand corner` : 'Unknown'}</dd></div>
-                            <div><dt>Driver position</dt><dd aria-label="Driver position">{analysis?.playerPosition ? analysis.playerPosition[0].toUpperCase() + analysis.playerPosition.slice(1) : 'Unknown'}</dd></div>
-                            <div><dt>Opponent position</dt><dd aria-label="Opponent position">{analysis?.opponentPosition ? analysis.opponentPosition[0].toUpperCase() + analysis.opponentPosition.slice(1) : analysis?.carAhead === 1 ? 'Individual position unresolved' : analysis?.carAhead === 0 ? 'No opponent detected' : 'Unknown'}</dd></div>
+                            <div><dt>Driver position</dt><dd aria-label="Driver position">{analysis?.driverPosition ? <>
+                                <div>Left boundary: {analysis.driverPosition.leftBoundaryDistanceM.toFixed(1)} m</div>
+                                <div>Right boundary: {analysis.driverPosition.rightBoundaryDistanceM.toFixed(1)} m</div>
+                            </> : 'Unknown'}</dd>
+                                {analysis?.driverPosition && <p className="track-vision__hint">Measured at visible track {analysis.driverPosition.referenceDistanceM.toFixed(1)} m ahead.</p>}
+                            </div>
+                            <div><dt>Opponents relative to driver</dt><dd aria-label="Opponent positions">{analysis?.opponents?.length
+                                ? <ol className="track-vision__opponents">{analysis.opponents.map((opponent, index) => <li key={index}>
+                                    {Math.abs(opponent.longitudinalOffsetM).toFixed(1)} m {opponent.longitudinalOffsetM >= 0 ? 'ahead' : 'behind'}
+                                    {' · '}{Math.abs(opponent.lateralOffsetM) < 0.05 ? 'Aligned with driver'
+                                        : `${Math.abs(opponent.lateralOffsetM).toFixed(1)} m ${opponent.lateralOffsetM < 0 ? 'left' : 'right'}`}
+                                </li>)}</ol>
+                                : analysis?.carAhead === 1 ? 'Individual positions unresolved'
+                                    : analysis?.carAhead === 0 ? 'No opponent detected' : 'Unknown'}</dd></div>
                         </dl>
-                        <p className="track-vision__hint">Positions use segmentation, estimated depth and camera position: inside, middle, or outside of the corner. Unclear or stale frames show unknown positions.</p>
-                        <p className="track-vision__hint">The 2D scene uses segmentation in camera image space. Car interior masks are retained upstream and suppress cockpit outlines at the track boundary.</p>
-                        <p className="track-vision__hint">Coaching positions use track and traffic detections with confidence ≥ {Math.round(filterConfidence * 100)}%. Car interior and roadside labels are excluded from the drivable surface.</p>
                     </section>
                 </div>
             </div>
@@ -465,12 +472,10 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             }} />
                     </label>
                 </div>
-                <p className="track-vision__hint">Applies to filtering, reconstruction and coaching. Segmentation detection confidence also applies. Car interior masks are retained.</p>
                 <fieldset className="track-vision__stack">
                     <legend>Track models</legend>
-                    <p className="track-vision__hint">Both models require GPU acceleration. Failed GPU inference retries automatically every 3 seconds.</p>
-                    {DETECTION_TASKS.map(({ id, label, description }) => <div className="track-vision__detector" key={id}>
-                        <div className="track-vision__detector-description"><strong>{label}</strong><small>{description}</small></div>
+                    {DETECTION_TASKS.map(({ id, label }) => <div className="track-vision__detector" key={id}>
+                        <strong>{label}</strong>
                         <span className="track-vision__detector-state">{detectors[id].status === 'ready'
                             ? captureState === 'active' && DETECTION_TASKS.every(({ id }) => detectors[id].status === 'ready') ? 'Running' : 'Ready' : detectors[id].status === 'retrying' ? 'Retrying GPU…'
                                 : detectors[id].status === 'error' ? 'Unavailable' : 'Loading…'}</span>
@@ -488,8 +493,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                         </div>}
                     </div>)}
                 </fieldset>
-                <p className="track-vision__hint">Lower resolutions use less GPU work; higher resolutions retain more detail. Changing resolution reloads that model while capture continues.</p>
-                <p className="track-vision__hint">Segmentation downloads from the backend and is saved on this device. Depth uses the bundled model. Frames and inference stay local.</p>
             </details>
             <div className="track-vision__status" role="status">{status}</div>
             {error && <div className="track-vision__error" role="alert">{error}</div>}

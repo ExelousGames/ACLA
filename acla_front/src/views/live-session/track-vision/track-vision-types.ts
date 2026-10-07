@@ -1,6 +1,6 @@
 export const DETECTION_TASKS = [
-    { id: 'segment', label: 'Segmentation', description: 'Detect track features using the model and labels uploaded to the backend.' },
-    { id: 'depth', label: 'Depth', description: 'Estimate relative depth while preserving the car interior for downstream boundary filtering.', file: 'depth-anything-v2-small.onnx' },
+    { id: 'segment', label: 'Segmentation' },
+    { id: 'depth', label: 'Depth', file: 'depth-anything-v2-small.onnx' },
 ] as const;
 
 export type DetectionTask = typeof DETECTION_TASKS[number]['id'];
@@ -90,14 +90,26 @@ export interface TrackGeometry {
     curvaturePerM: number;
 }
 export const VISION_MAX_AGE_MS = 2000;
-export type CornerDirection = 'left' | 'right';
-export type CornerPosition = 'inside' | 'middle' | 'outside';
+export interface TrackBoundaryPosition {
+    /** Lateral distance from the vehicle center to each edge at the observed road slice. */
+    leftBoundaryDistanceM: number;
+    rightBoundaryDistanceM: number;
+}
+export interface DriverTrackPosition extends TrackBoundaryPosition {
+    /** Distance ahead where both boundaries are observed; not extrapolated to the driver. */
+    referenceDistanceM: number;
+}
+export interface OpponentTrackPosition {
+    /** Vehicle coordinates relative to the driver: positive right and forward. */
+    lateralOffsetM: number;
+    longitudinalOffsetM: number;
+}
 /** Scene interpretation produced by Track Vision, independent of phrase rules. */
 export interface TrackVisionAnalysis {
     carAhead?: 0 | 1;
-    cornerDirection?: CornerDirection;
-    playerPosition?: CornerPosition;
-    opponentPosition?: CornerPosition;
+    driverPosition?: DriverTrackPosition;
+    /** Supported individual opponents, nearest first. Packs do not identify individuals. */
+    opponents?: OpponentTrackPosition[];
 }
 
 export interface TrackVisionFrame {

@@ -18,6 +18,18 @@ const map: CircuitMapDto = {
 };
 
 describe('middleline track guide corners', () => {
+    it('numbers a segment once when it contains several corner and speed tags', () => {
+        expect(getTrackGuideCorners({ ...map, centerline_segments: [
+            { id: 'turn', tags: ['slow', 'corner', 'slow corner'], start_position: 0.1, end_position: 0.2 },
+            { id: 'speed', tags: ['fast'], start_position: 0.3, end_position: 0.4 },
+            { id: 'wrap', tags: ['corner', 'fast'], start_position: 0.95, end_position: 0.05 },
+        ] })).toEqual([
+            { id: 'turn', number: 1, type: 'corner', from: 0.1, to: 0.2 },
+            { id: 'wrap', number: 2, type: 'corner', from: 0.95, to: 0.05 },
+        ]);
+        expect(getTrackGuideCorners({ ...map, centerline_segments: [] })).toEqual([]);
+    });
+
     it('numbers legacy slow and fast corner tags together without changing the saved map', () => {
         expect(getTrackGuideCorners(map)).toEqual([
             { id: 'slow', number: 1, type: 'slow corner', from: 0.1, to: 0.2 },

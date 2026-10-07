@@ -21,7 +21,7 @@ import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CIRCUIT_MAP_GAMES,
     CircuitMapBinSample,
-    CircuitMapCenterlineTag,
+    CircuitMapCenterlineSegment,
     CircuitMapCaptureMode,
     CircuitMapGame,
     CircuitMapSamplesByMode,
@@ -109,14 +109,14 @@ const CircuitMaps = () => {
     const [circuitName, setCircuitName] = useState('');
     const [sourceTrackKey, setSourceTrackKey] = useState<string | null>(null);
     const [samplesByMode, setSamplesByMode] = useState<CircuitMapSamplesByMode>(EMPTY_SAMPLES);
-    const [centerlineTags, setCenterlineTags] = useState<CircuitMapCenterlineTag[]>([]);
+    const [centerlineSegments, setCenterlineSegments] = useState<CircuitMapCenterlineSegment[]>([]);
     const [isSelectingRange, setIsSelectingRange] = useState(false);
     const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(null);
     const [tagLabels, setTagLabels] = useState<string[]>([]);
     const [tagOptions, setTagOptions] = useState<string[]>([]);
     const [tagOptionsState, setTagOptionsState] = useState<LoadState>('idle');
     const [tagOptionsRetry, setTagOptionsRetry] = useState(0);
-    const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
+    const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
     const [mapView, setMapView] = useState<CircuitMapView>('bounded');
     const [captureMode, setCaptureMode] = useState<CircuitMapCaptureMode>('left_boundary');
     const [isCapturing, setIsCapturing] = useState(false);
@@ -153,7 +153,7 @@ const CircuitMaps = () => {
         setIsSelectingRange(false);
         setSelectedRange(null);
         setTagLabels([]);
-        setSelectedTagId(null);
+        setSelectedSegmentId(null);
     }, []);
 
     const isAcc = game === 'acc';
@@ -234,7 +234,7 @@ const CircuitMaps = () => {
         resetViewport();
         setSourceTrackKey(null);
         setSamplesByMode(cloneSamplesByMode(EMPTY_SAMPLES));
-        setCenterlineTags([]);
+        setCenterlineSegments([]);
         clearRangeSelection();
         setSelectedPoint(null);
         setIsCapturing(false);
@@ -311,7 +311,7 @@ const CircuitMaps = () => {
             setCircuitName(map.circuit_name);
             setSourceTrackKey(map.source_track_key || null);
             setSamplesByMode(cloneSamplesByMode(map.samples));
-            setCenterlineTags(map.centerline_tags || []);
+            setCenterlineSegments(map.centerline_segments || []);
             upsertCachedCircuitMap(map);
         } catch (loadError: any) {
             if (requestId !== mapLoadRequestRef.current) return;
@@ -329,7 +329,7 @@ const CircuitMaps = () => {
         setSelectedMapId(null);
         resetViewport();
         setSamplesByMode(cloneSamplesByMode(EMPTY_SAMPLES));
-        setCenterlineTags([]);
+        setCenterlineSegments([]);
         clearRangeSelection();
         setSelectedPoint(null);
         if (isAcc) {
@@ -441,7 +441,7 @@ const CircuitMaps = () => {
             source_track_key: sourceTrackKey,
             resolution: CIRCUIT_MAP_BIN_RESOLUTION,
             samples: samplesByMode,
-            centerline_tags: centerlineTags
+            centerline_segments: centerlineSegments
         };
 
         setIsSaving(true);
@@ -476,7 +476,7 @@ const CircuitMaps = () => {
             setIsSaving(false);
         }
     }, [
-        centerlineTags,
+        centerlineSegments,
         circuitName,
         game,
         loadMapList,
@@ -678,9 +678,9 @@ const CircuitMaps = () => {
                 }
                 context.restore();
             };
-            centerlineTags.forEach((tag) => drawRange(tag, '#ffca28', tag.label));
-            const selectedTag = centerlineTags.find((tag) => tag.id === selectedTagId);
-            if (selectedTag) drawRange(selectedTag, '#4dd0e1', selectedTag.label);
+            centerlineSegments.forEach((segment) => drawRange(segment, '#ffca28', segment.tags.join(', ')));
+            const selectedTag = centerlineSegments.find((tag) => tag.id === selectedSegmentId);
+            if (selectedTag) drawRange(selectedTag, '#4dd0e1', selectedTag.tags.join(', '));
             if (selectedRange) drawRange(selectedRange, '#4dd0e1');
 
             const startPoint = projectedPoints.reduce<ProjectedPoint | null>((closest, point) => (
@@ -725,7 +725,7 @@ const CircuitMaps = () => {
         }
 
         projectedPointsRef.current = projectedPoints;
-    }, [canvasSize, centerlineTags, getCanvasProjection, liveCapture, mapView, visibleSampleCount, samplesByMode, selectedPoint, selectedRange, selectedTagId, visibleModes]);
+    }, [canvasSize, centerlineSegments, getCanvasProjection, liveCapture, mapView, visibleSampleCount, samplesByMode, selectedPoint, selectedRange, selectedSegmentId, visibleModes]);
 
     const getPointerPosition = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
         const rect = event.currentTarget.getBoundingClientRect();
@@ -793,26 +793,31 @@ const CircuitMaps = () => {
             return;
         }
 
-        setSelectedTagId(null);
+        setSelectedSegmentId(null);
         setSelectedPoint({ mode: nearest.mode, bin: nearest.sample.bin });
     }, [getPointerPosition, isSelectingRange, isTagEditingDisabled, mapView, stopPanning]);
 
-    const addRangeTags = (event: React.FormEvent) => {
+    const saveSegment = (event: React.FormEvent) => {
         event.preventDefault();
         if (isTagEditingDisabled || tagOptionsState !== 'ready' || !selectedRange
             || selectedRange.end_position === null || tagLabels.length === 0
-            || tagLabels.some((label) => !tagOptions.includes(label))) return;
+            || tagLabels.some((label) => !editableTagOptions.includes(label))) return;
         const { start_position, end_position } = selectedRange;
-        const tags: CircuitMapCenterlineTag[] = tagLabels.map((label) => ({
-            id: window.crypto?.randomUUID?.() ?? `tag-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-            label,
+        const segment: CircuitMapCenterlineSegment = {
+            id: selectedSegmentId ?? window.crypto?.randomUUID?.() ?? `segment-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            tags: tagLabels,
             start_position,
             end_position
-        }));
-        setCenterlineTags((previous) => [...previous, ...tags]);
+        };
+        setCenterlineSegments((previous) => selectedSegmentId
+            ? previous.map((item) => item.id === selectedSegmentId ? segment : item)
+            : [...previous, segment]);
         clearRangeSelection();
-        setSelectedTagId(tags[tags.length - 1].id);
+        setSelectedSegmentId(segment.id);
     };
+
+    const selectedSegment = centerlineSegments.find((segment) => segment.id === selectedSegmentId);
+    const editableTagOptions = Array.from(new Set([...tagOptions, ...(selectedSegment?.tags ?? [])]));
 
     const selectedSample = useMemo(() => {
         if (!selectedPoint) return null;
@@ -947,9 +952,9 @@ const CircuitMaps = () => {
 
                 {mapView === 'centerline' && (
                     <div className="circuit-maps__section">
-                        <Text className="circuit-maps__label">Range Tags</Text>
+                        <Text className="circuit-maps__label">Segments</Text>
                         <Text size="2" className="circuit-maps__muted">
-                            Select a start and end point on the map in lap direction, then choose one or more tags. Tags are saved with the map when you press Save.
+                            Each segment has one range and one or more tags. Select its start and end in lap direction, then choose tags. Click a segment to edit it. Changes are saved with the map when you press Save.
                         </Text>
                         {tagOptionsState === 'loading' && <Text size="2">Loading tags...</Text>}
                         {tagOptionsState === 'error' && (
@@ -971,7 +976,7 @@ const CircuitMaps = () => {
                             Select range
                         </Button>
                         {isSelectingRange && (
-                            <form className="circuit-maps__tag-form" onSubmit={addRangeTags}>
+                            <form className="circuit-maps__tag-form" onSubmit={saveSegment}>
                                 <Text role="status" size="2">
                                     {!selectedRange ? 'Click the range start on the centerline.'
                                         : selectedRange.end_position === null ? 'Click a different point for the range end.'
@@ -983,40 +988,43 @@ const CircuitMaps = () => {
                                             setSelectedRange({ start_position: selectedRange.end_position!, end_position: selectedRange.start_position });
                                         }}>Swap start/end</Button>
                                         <CheckboxGroup.Root
-                                            aria-label="Range tags"
+                                            aria-label="Segment tags"
                                             value={tagLabels}
                                             disabled={isTagEditingDisabled || tagOptionsState !== 'ready'}
                                             onValueChange={setTagLabels}
                                         >
-                                            {tagOptions.map((label) => <CheckboxGroup.Item key={label} value={label}>{label}</CheckboxGroup.Item>)}
+                                            {editableTagOptions.map((label) => <CheckboxGroup.Item key={label} value={label}>{label}</CheckboxGroup.Item>)}
                                         </CheckboxGroup.Root>
-                                        <Button type="submit" disabled={isTagEditingDisabled || tagOptionsState !== 'ready' || tagLabels.length === 0 || tagLabels.some((label) => !tagOptions.includes(label))}>Add tags</Button>
+                                        <Button type="submit" disabled={isTagEditingDisabled || tagOptionsState !== 'ready' || tagLabels.length === 0 || tagLabels.some((label) => !editableTagOptions.includes(label))}>{selectedSegmentId ? 'Update segment' : 'Add segment'}</Button>
                                     </>
                                 )}
                                 <Button type="button" variant="soft" color="gray" onClick={clearRangeSelection}>Cancel selection</Button>
                             </form>
                         )}
-                        <div className="circuit-maps__tag-list" aria-label="Centerline range tags">
-                            {centerlineTags.length === 0 && <Text size="2" className="circuit-maps__muted">No range tags yet.</Text>}
-                            {centerlineTags.map((tag) => (
-                                <div key={tag.id} className="circuit-maps__tag-row">
+                        <div className="circuit-maps__tag-list" aria-label="Centerline segments">
+                            {centerlineSegments.length === 0 && <Text size="2" className="circuit-maps__muted">No segments yet.</Text>}
+                            {centerlineSegments.map((segment) => (
+                                <div key={segment.id} className="circuit-maps__tag-row">
                                     <button
                                         type="button"
-                                        className={`circuit-maps__tag-button${selectedTagId === tag.id ? ' circuit-maps__tag-button--active' : ''}`}
-                                        aria-pressed={selectedTagId === tag.id}
+                                        className={`circuit-maps__tag-button${selectedSegmentId === segment.id ? ' circuit-maps__tag-button--active' : ''}`}
+                                        aria-pressed={selectedSegmentId === segment.id}
                                         disabled={isTagEditingDisabled}
                                         onClick={() => {
                                             clearRangeSelection();
                                             setSelectedPoint(null);
-                                            setSelectedTagId(tag.id);
+                                            setSelectedSegmentId(segment.id);
+                                            setSelectedRange({ start_position: segment.start_position, end_position: segment.end_position });
+                                            setTagLabels(segment.tags);
+                                            setIsSelectingRange(true);
                                         }}
                                     >
-                                        <span>{tag.label}</span>
-                                        <span className="circuit-maps__muted">{formatRange(tag.start_position, tag.end_position)}</span>
+                                        <span>{segment.tags.join(', ')}</span>
+                                        <span className="circuit-maps__muted">{formatRange(segment.start_position, segment.end_position)}</span>
                                     </button>
-                                    <Button size="1" color="red" variant="soft" aria-label={`Remove tag ${tag.label}`} disabled={isTagEditingDisabled} onClick={() => {
-                                        setCenterlineTags((previous) => previous.filter((item) => item.id !== tag.id));
-                                        if (selectedTagId === tag.id) setSelectedTagId(null);
+                                    <Button size="1" color="red" variant="soft" aria-label={`Remove segment ${segment.tags.join(', ')}`} disabled={isTagEditingDisabled} onClick={() => {
+                                        setCenterlineSegments((previous) => previous.filter((item) => item.id !== segment.id));
+                                        if (selectedSegmentId === segment.id) clearRangeSelection();
                                     }}><TrashIcon /></Button>
                                 </div>
                             ))}

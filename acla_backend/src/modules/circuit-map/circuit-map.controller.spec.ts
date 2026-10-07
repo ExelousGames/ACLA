@@ -18,7 +18,7 @@ describe('CircuitMapController centerline tag options', () => {
         const service = new CircuitMapService({} as any);
         const controller = new CircuitMapController(service);
         expect(controller.listCenterlineTags()).toEqual({
-            tags: ['corner', 'slow', 'fast', 'long straight'],
+            tags: ['corner', 'slow', 'fast', 'long straight', 'consecutive corners'],
         });
     });
 });

@@ -9,13 +9,13 @@ import { formatDepth } from './depth-map';
 const DEPTH_COLORS = VISION_DEPTH_COLORS.map((color) => [1, 3, 5].map((offset) => parseInt(color.slice(offset, offset + 2), 16)));
 
 export const PIPELINE_STEPS = [
-    { id: 'capture', label: 'Capture', title: 'Captured window', description: 'The original frame from your simulator window.' },
-    { id: 'calibration', label: 'Camera position', title: 'Set the camera position', description: 'Align the reference grid with your driving view, then apply the camera settings.' },
-    { id: 'segmentation', label: 'Segmentation', title: 'Every label in the camera view', description: 'Inspect the detected masks, label names and confidence over the captured frame.' },
-    { id: 'filtering', label: 'Filtering', title: 'Masks after filtering', description: 'Inspect confidence filtering and depth ordering. Car interior masks are retained for downstream boundary filtering.' },
-    { id: 'depth-map', label: 'Depth map', title: 'Depth across the entire frame', description: 'Inspect the full depth map. Move the mouse over the image to read relative depth.' },
-    { id: 'depth', label: 'Label depths', title: 'Depth of each retained mask', description: 'Compare relative depths across all retained masks. Numbered mask labels match the individual rows in the table.' },
-    { id: 'scene', label: 'Reconstructed scene', title: 'Reconstructed scene', description: 'Track boundaries, cars and car packs in 2D, with cockpit outlines removed using the car interior mask.' },
+    { id: 'capture', label: 'Capture', title: 'Captured window' },
+    { id: 'calibration', label: 'Camera position', title: 'Set the camera position' },
+    { id: 'segmentation', label: 'Segmentation', title: 'Every label in the camera view' },
+    { id: 'filtering', label: 'Filtering', title: 'Masks after filtering' },
+    { id: 'depth-map', label: 'Depth map', title: 'Depth across the entire frame' },
+    { id: 'depth', label: 'Label depths', title: 'Depth of each retained mask' },
+    { id: 'scene', label: 'Reconstructed scene', title: 'Reconstructed scene' },
 ] as const;
 export type PipelineStep = typeof PIPELINE_STEPS[number]['id'];
 

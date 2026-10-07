@@ -66,6 +66,8 @@ const drawPolyline = (
 export interface LiveTrajectoryMapHandle extends NamedOperationComponentHandle {
     focusDriver(): void;
     fitTrack(): void;
+    getCircuitMap(): CircuitMapDto | null;
+    subscribeCircuitMap(listener: () => void): () => void;
 }
 
 interface LiveTrajectoryMapProps {
@@ -96,8 +98,15 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     const [zoom, setZoom] = useState(1);
     const [flipX, setFlipX] = useState(false);
     const [flipZ, setFlipZ] = useState(false);
+    const circuitMapRef = useRef<CircuitMapDto | null>(null);
+    const mapListenersRef = useRef(new Set<() => void>());
     const handle = useMemo<LiveTrajectoryMapHandle>(() => ({
         getComponentName: () => name,
+        getCircuitMap: () => circuitMapRef.current,
+        subscribeCircuitMap: (listener) => {
+            mapListenersRef.current.add(listener);
+            return () => { mapListenersRef.current.delete(listener); };
+        },
         focusDriver: () => {
             setCameraMode('driver');
             setZoom(1);
@@ -117,12 +126,15 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     const trackKey = game === 'acc' ? getAccTelemetryTrackKey(track) || track?.trim() : track?.trim();
     const mapKey = `${game}:${trackKey}`;
     const circuitMap = mapResult?.key === mapKey ? mapResult.map : null;
+    circuitMapRef.current = circuitMap;
     const mapStatus = mapResult?.key === mapKey ? mapResult.status : 'loading';
     const middleLine = useMemo(() => getLiveMapMiddleLine(circuitMap), [circuitMap]);
     const live = telemetryStatus === ACC_STATUS.ACC_LIVE;
     const cars = useMemo(() => live ? getLiveMapCars(currentTelemetry, middleLine) : [], [currentTelemetry, live, middleLine]);
     const bounds = useMemo(() => getBounds(middleLine), [middleLine]);
     const playerPosition = cars.find((car) => car.isPlayer)?.position;
+
+    useEffect(() => { mapListenersRef.current.forEach((listener) => listener()); }, [circuitMap]);
 
     useEffect(() => {
         let cancelled = false;

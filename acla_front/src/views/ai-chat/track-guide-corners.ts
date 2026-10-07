@@ -1,4 +1,5 @@
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
+import { getCircuitMapCenterlineSegments } from 'views/circuit-maps/centerline-segments';
 import { getLiveMapMiddleLine } from 'views/live-session/live-map-data';
 
 export interface TrackGuideCorner {
@@ -18,8 +19,8 @@ export const getTrackGuideCorners = (map: CircuitMapDto | null): TrackGuideCorne
 
     // Corner tags, including legacy combined labels, share one sequence by entry.
     // A range spanning start/finish keeps its entry near the end of the lap.
-    return (map?.centerline_tags ?? [])
-        .filter((tag) => (tag.label === 'corner' || tag.label === 'slow corner' || tag.label === 'fast corner')
+    return getCircuitMapCenterlineSegments(map)
+        .filter((tag) => tag.tags.some((label) => label === 'corner' || label === 'slow corner' || label === 'fast corner')
             && isTrackGuidePosition(tag.start_position)
             && isTrackGuidePosition(tag.end_position)
             && tag.start_position !== tag.end_position)
@@ -28,7 +29,7 @@ export const getTrackGuideCorners = (map: CircuitMapDto | null): TrackGuideCorne
         .map((tag, index) => ({
             id: tag.id,
             number: index + 1,
-            type: tag.label as TrackGuideCorner['type'],
+            type: tag.tags.find((label) => label === 'corner' || label === 'slow corner' || label === 'fast corner') as TrackGuideCorner['type'],
             from: tag.start_position,
             to: tag.end_position,
         }));

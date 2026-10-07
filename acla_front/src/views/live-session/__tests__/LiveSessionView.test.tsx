@@ -215,7 +215,10 @@ describe('LiveSessionView', () => {
 
         const onVision = jest.fn();
         const unsubscribeVision = view.subscribeTrackVision(onVision);
-        const detection = { capturedAt: Date.now(), width: 10, height: 10, detections: {}, analysis: { cornerDirection: 'left' as const, playerPosition: 'inside' as const, opponentPosition: 'outside' as const, carAhead: 1 as const } };
+        const detection = { capturedAt: Date.now(), width: 10, height: 10, detections: {}, analysis: {
+            driverPosition: { leftBoundaryDistanceM: 2, rightBoundaryDistanceM: 8, referenceDistanceM: 10 },
+            opponents: [{ lateralOffsetM: 3, longitudinalOffsetM: 18 }], carAhead: 1 as const,
+        } };
         const stopVision = jest.fn();
         let notifyVision!: () => void;
         const visionRef = { current: {
@@ -235,6 +238,31 @@ describe('LiveSessionView', () => {
         expect(view.getTrackVisionDetection()).toBeNull();
         expect(onVision).toHaveBeenCalledTimes(2);
         unsubscribeVision();
+    });
+
+    it('bridges late-mounted Live Map data, updates and removal through the live root', () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const view = renderRegisteredView(createRuntime('acc'));
+        const listener = jest.fn(), stop = jest.fn();
+        const unsubscribe = view.subscribeLiveCircuitMap(listener);
+        const map = { id: 'map', game: 'acc', circuit_name: 'test', samples: {}, resolution: 100 };
+        let notify!: () => void;
+        const mapRef = { current: {
+            getComponentName: () => 'visualization:live-trajectory-map',
+            getCircuitMap: () => map,
+            subscribeCircuitMap: (callback: () => void) => { notify = callback; return stop; },
+        } };
+        expect(view.getLiveCircuitMap()).toBeNull();
+        act(() => { componentDirectory!.registerComponentRef(mapRef); });
+        expect(view.getLiveCircuitMap()).toBe(map);
+        listener.mockClear();
+        act(() => { notify(); });
+        expect(listener).toHaveBeenCalledTimes(1);
+        act(() => { componentDirectory!.unregisterComponentRef(mapRef); });
+        expect(view.getLiveCircuitMap()).toBeNull();
+        expect(stop).toHaveBeenCalledTimes(1);
+        expect(listener).toHaveBeenCalledTimes(2);
+        unsubscribe();
     });
 
     it('registers current live operations under the exact component name', () => {

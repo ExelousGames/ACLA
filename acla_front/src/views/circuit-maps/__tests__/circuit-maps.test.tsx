@@ -883,15 +883,15 @@ describe('CircuitMaps', () => {
         });
     });
 
-    describe('centerline range tags', () => {
-        const tagOptions = ['corner', 'slow', 'fast', 'long straight'];
+    describe('centerline segments', () => {
+        const tagOptions = ['corner', 'slow', 'fast', 'long straight', 'consecutive corners'];
         const samples = [
             { bin: 0, normalized_position: 0, x: 0, z: 0 },
             { bin: 250, normalized_position: 0.25, x: 100, z: 0 },
             { bin: 500, normalized_position: 0.5, x: 100, z: 100 },
             { bin: 750, normalized_position: 0.75, x: 0, z: 100 },
         ].map((sample) => ({ ...sample, y: 0, sample_count: 1, updated_at: '2026-10-06' }));
-        const tag = { id: 'saved-tag', label: 'Final corner', start_position: 0.5, end_position: 0.75 };
+        const tag = { id: 'saved-tag', tags: ['Final corner'], start_position: 0.5, end_position: 0.75 };
         const openTaggedMap = async (
             tags: typeof tag[] = [],
             loadTagOptions = async (): Promise<any> => ({ data: { tags: tagOptions }, status: 200 }),
@@ -899,7 +899,7 @@ describe('CircuitMaps', () => {
             let savedMap = {
                 id: 'tagged-map', game: 'acc', circuit_name: 'Tagged Circuit', resolution: 1000,
                 samples: { middle_line: samples, left_boundary: [samples[0]], right_boundary: [], pit_lane: [] },
-                centerline_tags: tags,
+                centerline_segments: tags,
             };
             mockedApi.get.mockImplementation(async (url: string) => url === '/circuit-map/centerline-tags'
                 ? loadTagOptions()
@@ -928,7 +928,7 @@ describe('CircuitMaps', () => {
             clickMap(714.4, 544.4);
             expect(screen.getByRole('status')).toHaveTextContent('0.0% → 50.0%');
             await userEvent.click(screen.getByRole('checkbox', { name: 'corner' }));
-            await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Add segment' }));
             expect(screen.getByRole('button', { name: 'corner 0.0% → 50.0%' })).toBeInTheDocument();
             const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
             const labelCall = contexts[contexts.length - 1].value.fillText.mock.calls.find(([label]: [string]) => label === 'corner');
@@ -945,26 +945,26 @@ describe('CircuitMaps', () => {
             clickMap(182, 42);
             expect(screen.getByRole('status')).toHaveTextContent('Click a different point');
             clickMap(182, 42);
-            expect(screen.queryByRole('button', { name: 'Add tags' })).not.toBeInTheDocument();
+            expect(screen.queryByRole('button', { name: 'Add segment' })).not.toBeInTheDocument();
             clickMap(718, 578);
             expect(screen.getByRole('status')).toHaveTextContent('0.0% → 50.0%');
             expect(screen.queryByText('Bin 0')).not.toBeInTheDocument();
-            expect(screen.getByRole('button', { name: 'Add tags' })).toBeDisabled();
-            const tagSelect = screen.getByRole('group', { name: 'Range tags' });
+            expect(screen.getByRole('button', { name: 'Add segment' })).toBeDisabled();
+            const tagSelect = screen.getByRole('group', { name: 'Segment tags' });
             expect(within(tagSelect).getAllByRole('checkbox').map((option) => option.getAttribute('value'))).toEqual(tagOptions);
             expect(mockedApi.get).toHaveBeenCalledWith('/circuit-map/centerline-tags');
             await userEvent.click(within(tagSelect).getByRole('checkbox', { name: label }));
-            await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Add segment' }));
             expect(screen.getByRole('button', { name: `${label} 0.0% → 50.0%` })).toHaveAttribute('aria-pressed', 'true');
             const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
             expect(contexts[contexts.length - 1].value.fillText).toHaveBeenCalledWith(label, 718, 24, 240);
             await userEvent.click(screen.getByRole('button', { name: /save/i }));
-            const expectedTag = expect.objectContaining({ id: expect.any(String), label, start_position: 0, end_position: 0.5 });
+            const expectedTag = expect.objectContaining({ id: expect.any(String), tags: [label], start_position: 0, end_position: 0.5 });
             await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
                 samples: { middle_line: samples, left_boundary: [samples[0]], right_boundary: [], pit_lane: [] },
-                centerline_tags: [expectedTag],
+                centerline_segments: [expectedTag],
             })));
-            expect(mockUpsertCachedCircuitMap).toHaveBeenLastCalledWith(expect.objectContaining({ centerline_tags: [expectedTag] }));
+            expect(mockUpsertCachedCircuitMap).toHaveBeenLastCalledWith(expect.objectContaining({ centerline_segments: [expectedTag] }));
             await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
             await userEvent.click(screen.getByRole('button', { name: /new map/i }));
             expect(screen.queryByText(label)).not.toBeInTheDocument();
@@ -972,7 +972,7 @@ describe('CircuitMaps', () => {
             expect(await screen.findByText(label)).toBeInTheDocument();
         });
 
-        it('adds multiple checked tags to one range and saves/reloads them independently', async () => {
+        it('saves multiple tags as one segment and edits them without changing its identity', async () => {
             await openTaggedMap([tag]);
             await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
             await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
@@ -985,38 +985,55 @@ describe('CircuitMaps', () => {
             expect(screen.getByRole('checkbox', { name: 'corner' })).toBeChecked();
             expect(screen.getByRole('checkbox', { name: 'slow' })).toBeChecked();
             expect(screen.getByRole('checkbox', { name: 'fast' })).not.toBeChecked();
-            await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
-            expect(screen.getByRole('button', { name: 'corner 0.0% → 50.0%' })).toBeInTheDocument();
-            expect(screen.getByRole('button', { name: 'slow 0.0% → 50.0%' })).toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: 'Add segment' }));
+            expect(screen.getByRole('button', { name: 'corner, slow 0.0% → 50.0%' })).toBeInTheDocument();
+            expect(screen.queryByRole('button', { name: 'slow 0.0% → 50.0%' })).not.toBeInTheDocument();
 
             await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
             clickMap(182, 42);
             clickMap(718, 578);
             screen.getAllByRole('checkbox').forEach((checkbox) => expect(checkbox).not.toBeChecked());
-            expect(screen.getByRole('button', { name: 'Add tags' })).toBeDisabled();
+            expect(screen.getByRole('button', { name: 'Add segment' })).toBeDisabled();
             await userEvent.click(screen.getByRole('checkbox', { name: 'fast' }));
             await userEvent.click(screen.getByRole('checkbox', { name: 'fast' }));
-            expect(screen.getByRole('button', { name: 'Add tags' })).toBeDisabled();
+            expect(screen.getByRole('button', { name: 'Add segment' })).toBeDisabled();
             await userEvent.click(screen.getByRole('button', { name: 'Cancel selection' }));
 
             await userEvent.click(screen.getByRole('button', { name: /save/i }));
-            const expectedTags = [tag, ...['corner', 'slow'].map((label) => expect.objectContaining({
-                id: expect.any(String), label, start_position: 0, end_position: 0.5,
-            }))];
+            const expectedTags = [tag, expect.objectContaining({
+                id: expect.any(String), tags: ['corner', 'slow'], start_position: 0, end_position: 0.5,
+            })];
             await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
                 samples: { middle_line: samples, left_boundary: [samples[0]], right_boundary: [], pit_lane: [] },
-                centerline_tags: expectedTags,
+                centerline_segments: expectedTags,
             })));
-            const savedTags = (mockedApi.put.mock.calls[0][1] as any).centerline_tags;
-            expect(new Set(savedTags.map((savedTag: typeof tag) => savedTag.id)).size).toBe(3);
+            const savedTags = (mockedApi.put.mock.calls[0][1] as any).centerline_segments;
+            expect(savedTags).toHaveLength(2);
+            expect(new Set(savedTags.map((savedTag: typeof tag) => savedTag.id)).size).toBe(2);
+            expect(mockedApi.put.mock.calls[0][1]).not.toHaveProperty('centerline_tags');
             await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
             await userEvent.click(screen.getByRole('button', { name: /new map/i }));
             await userEvent.click(screen.getByRole('button', { name: 'Tagged Circuit ACC' }));
-            expect(await screen.findByRole('button', { name: 'corner 0.0% → 50.0%' })).toBeInTheDocument();
-            expect(screen.getByRole('button', { name: 'slow 0.0% → 50.0%' })).toBeInTheDocument();
-            await userEvent.click(screen.getByRole('button', { name: 'Remove tag slow' }));
-            expect(screen.getByRole('button', { name: 'corner 0.0% → 50.0%' })).toBeInTheDocument();
-            expect(screen.queryByRole('button', { name: 'slow 0.0% → 50.0%' })).not.toBeInTheDocument();
+            await userEvent.click(await screen.findByRole('button', { name: 'corner, slow 0.0% → 50.0%' }));
+            expect(screen.getByRole('checkbox', { name: 'corner' })).toBeChecked();
+            expect(screen.getByRole('checkbox', { name: 'slow' })).toBeChecked();
+            await userEvent.click(screen.getByRole('checkbox', { name: 'slow' }));
+            await userEvent.click(screen.getByRole('checkbox', { name: 'fast' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Swap start/end' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Update segment' }));
+            expect(screen.getByRole('button', { name: 'corner, fast 50.0% → 0.0% (across start/finish)' })).toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenLastCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                centerline_segments: [tag, { id: savedTags[1].id, tags: ['corner', 'fast'], start_position: 0.5, end_position: 0 }],
+            })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Remove segment corner, fast' }));
+            expect(screen.queryByRole('button', { name: /corner, fast 50.0%/ })).not.toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenLastCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                centerline_segments: [tag],
+            })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
         });
 
         it('waits for the backend list and displays the options it returns', async () => {
@@ -1028,7 +1045,7 @@ describe('CircuitMaps', () => {
             await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
             clickMap(182, 42);
             clickMap(718, 578);
-            const tagSelect = screen.getByRole('group', { name: 'Range tags' });
+            const tagSelect = screen.getByRole('group', { name: 'Segment tags' });
             expect(within(tagSelect).getAllByRole('checkbox')).toHaveLength(1);
             expect(within(tagSelect).getByRole('checkbox', { name: 'backend tag' })).toBeInTheDocument();
         });
@@ -1063,12 +1080,12 @@ describe('CircuitMaps', () => {
             expect(screen.getByRole('status')).toHaveTextContent('25.0% → 75.0%');
             await userEvent.click(screen.getByRole('button', { name: 'Swap start/end' }));
             await userEvent.click(screen.getByRole('checkbox', { name: 'long straight' }));
-            await userEvent.click(screen.getByRole('button', { name: 'Add tags' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Add segment' }));
             await userEvent.click(screen.getByRole('tab', { name: 'Bounded Map' }));
             expect(screen.queryByRole('button', { name: 'Select range' })).not.toBeInTheDocument();
             await userEvent.click(screen.getByRole('button', { name: /save/i }));
             await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
-                centerline_tags: [tag, expect.objectContaining({ label: 'long straight', start_position: 0.75, end_position: 0.25 })],
+                centerline_segments: [tag, expect.objectContaining({ tags: ['long straight'], start_position: 0.75, end_position: 0.25 })],
             })));
             await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
         });
@@ -1090,12 +1107,12 @@ describe('CircuitMaps', () => {
             clickMap(182, 42);
             clickMap(718, 578);
             screen.getAllByRole('checkbox').forEach((checkbox) => expect(checkbox).not.toBeChecked());
-            expect(screen.getByRole('button', { name: 'Add tags' })).toBeDisabled();
+            expect(screen.getByRole('button', { name: 'Add segment' })).toBeDisabled();
             await userEvent.click(screen.getByRole('button', { name: 'Cancel selection' }));
-            await userEvent.click(screen.getByRole('button', { name: 'Remove tag Final corner' }));
-            expect(screen.getByText('No range tags yet.')).toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: 'Remove segment Final corner' }));
+            expect(screen.getByText('No segments yet.')).toBeInTheDocument();
             await userEvent.click(screen.getByRole('button', { name: /save/i }));
-            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({ centerline_tags: [] })));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({ centerline_segments: [] })));
             await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
         });
     });
