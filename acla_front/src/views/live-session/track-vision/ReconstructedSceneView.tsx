@@ -28,6 +28,7 @@ export default function ReconstructedSceneView({ scene, source, capturedAt }: {
     const stale = capturedAt !== undefined && now >= capturedAt + VISION_MAX_AGE_MS;
     return <section className="track-vision__reconstruction" aria-label="Reconstructed scene">
         <div className="track-vision__legend" aria-label="Reconstructed scene legend">
+            <span><i style={{ background: '#37efac55' }} />Track ribbon</span>
             <span><i style={{ background: '#37efac' }} />Left track boundary</span>
             <span><i style={{ background: '#57b9ff' }} />Right track boundary</span>
             <span><i style={{ background: '#f4f7ff' }} />Track middle line</span>
@@ -39,7 +40,20 @@ export default function ReconstructedSceneView({ scene, source, capturedAt }: {
                 aria-label="Captured window scene" />
             <svg viewBox={`0 0 ${width} ${height}`}
                 role="img" aria-label="2D reconstructed scene">
-                <title>Track boundaries, middle line, cars and car packs in camera image space</title>
+                <title>Fitted track ribbons, boundaries, middle line, cars and car packs in camera image space</title>
+                {scene && <g aria-label="Track ribbons">
+                    {scene.ribbons.map(({ pairs }, index) => <g key={index} aria-label={`Track ribbon ${index + 1}`}>
+                        <polygon fill="#37efac" fillOpacity="0.08" points={[
+                            ...pairs.map(({ left }) => left), ...pairs.map(({ right }) => right).reverse(),
+                        ].map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ')} />
+                        {pairs.map(({ left, right }, pairIndex) => <g key={pairIndex}>
+                            <line x1={left.x} y1={left.y} x2={right.x} y2={right.y}
+                                stroke="#b8ffdf" strokeOpacity="0.25" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+                            <circle cx={left.x} cy={left.y} r={width / 500} fill="#37efac" />
+                            <circle cx={right.x} cy={right.y} r={width / 500} fill="#57b9ff" />
+                        </g>)}
+                    </g>)}
+                </g>}
                 {scene && (['leftBoundary', 'rightBoundary'] as const).map((side) => <g key={side}
                     aria-label={side === 'leftBoundary' ? 'Left track boundary' : 'Right track boundary'}
                     fill="none" stroke={side === 'leftBoundary' ? '#37efac' : '#57b9ff'} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
@@ -75,6 +89,6 @@ export default function ReconstructedSceneView({ scene, source, capturedAt }: {
             : stale ? 'Showing last frame (stale).'
                 : !hasEdges ? scene.cars.length ? 'Detected cars and car packs in 2D.'
                     : 'No visible track boundaries or traffic.'
-                    : 'Visible track boundaries in 2D.'}</p>
+                    : 'Track ribbons fitted to detected edges · 50 point pairs per section.'}</p>
     </section>;
 }

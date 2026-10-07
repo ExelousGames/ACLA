@@ -19,8 +19,12 @@ function fixture({ interior = () => false, track = (x, y) => x >= 20 && x <= 60 
     return frame;
 }
 
-it('reconstructs both sides without depth or calibration and leaves the track outline open', () => {
+it('fits both sides to a 50-pair ribbon without depth or calibration', () => {
     const scene = reconstructScene(fixture())!;
+    expect(scene.ribbons).toHaveLength(1);
+    expect(scene.ribbons[0].pairs).toHaveLength(50);
+    expect(scene.ribbons[0].pairs.map(({ left }) => left)).toEqual(scene.leftBoundary[0]);
+    expect(scene.ribbons[0].pairs.map(({ right }) => right)).toEqual(scene.rightBoundary[0]);
     expect(scene.leftBoundary).toHaveLength(1);
     expect(scene.rightBoundary).toHaveLength(1);
     expect(scene.leftBoundary[0]).toHaveLength(50);
@@ -32,7 +36,7 @@ it('reconstructs both sides without depth or calibration and leaves the track ou
     })));
 });
 
-it('traces sharp bends and width changes without cutting either outline', () => {
+it('fits sharp bends and width changes without cutting either outline', () => {
     const frame = fixture({ track: (x, y) => {
         const left = y < 25 ? 5 : 25, right = y < 25 ? 35 : 70;
         return y >= 5 && y < 55 && x >= left && x <= right;
@@ -42,10 +46,12 @@ it('traces sharp bends and width changes without cutting either outline', () => 
         expect(lines).toHaveLength(1);
         expect(lines[0]).toHaveLength(50);
     }
-    expect(scene.leftBoundary[0][19].x).toBeCloseTo(55);
-    expect(scene.leftBoundary[0][20].x).toBeCloseTo(255);
-    expect(scene.centerline[0][19].x).toBeCloseTo(205);
-    expect(scene.centerline[0][20].x).toBeCloseTo(480);
+    expect(scene.leftBoundary[0][16].x).toBeCloseTo(55);
+    expect(scene.leftBoundary[0][23].x).toBeCloseTo(255);
+    expect(scene.leftBoundary[0][19].x).toBeGreaterThan(55);
+    expect(scene.leftBoundary[0][20].x).toBeLessThan(255);
+    expect(scene.centerline[0][16].x).toBeCloseTo(205);
+    expect(scene.centerline[0][23].x).toBeCloseTo(480);
 });
 
 it.each(['car', 'car pack', 'grass', 'other'])('keeps the track outline under overlapping %s labels', (label) => {
@@ -68,7 +74,7 @@ it.each(['left', 'right'])('ends both boundaries at the centerline endpoint when
     const scene = reconstructScene(frame)!;
     for (const lines of [scene.leftBoundary, scene.rightBoundary, scene.centerline]) {
         expect(lines).toHaveLength(1);
-        expect(lines[0]).toHaveLength(35);
+        expect(lines[0]).toHaveLength(50);
         expect(lines[0][0].y).toBeCloseTo(20.5 / 60 * 800);
     }
 });
@@ -99,8 +105,7 @@ it('does not let an isolated distant pair extend a boundary past the middle line
 });
 
 it.each(['left', 'right'].flatMap((side) => [-3, 0, 2].map((gap) => ({ side, gap }))))
-('removes the $side cockpit outline with a $gap-pixel gap and preserves the other edge', ({ side, gap }) => {
-    const before = reconstructScene(fixture())!;
+('splits the ribbon around the $side cockpit outline with a $gap-pixel gap', ({ side, gap }) => {
     const frame = fixture({ interior: (x, y) => y >= 20 && y <= 35 && (side === 'left' ? x <= 20 - gap : x >= 60 + gap) });
     const segment = frame.detections.segment;
     const originals = segment.instances.map(({ mask }) => mask.slice());
@@ -110,7 +115,11 @@ it.each(['left', 'right'].flatMap((side) => [-3, 0, 2].map((gap) => ({ side, gap
     expect(scene.centerline).toHaveLength(2);
     expect(scene.centerline.flat().map(({ y }) => y)).toEqual(changed.flat().map(({ y }) => y));
     expect(changed.flat().every(({ y }) => y < 18 / 60 * 800 || y > 38 / 60 * 800)).toBe(true);
-    expect(side === 'left' ? scene.rightBoundary : scene.leftBoundary).toEqual(side === 'left' ? before.rightBoundary : before.leftBoundary);
+    expect(scene.ribbons).toHaveLength(2);
+    expect(scene.ribbons.every(({ pairs }) => pairs.length === 50)).toBe(true);
+    const other = side === 'left' ? scene.rightBoundary : scene.leftBoundary;
+    expect(other.flat().map(({ y }) => y)).toEqual(changed.flat().map(({ y }) => y));
+    other.flat().forEach(({ x }) => expect(x).toBeCloseTo(side === 'left' ? 605 : 205));
     expect(segment.instances.map(({ mask }) => mask)).toEqual(originals);
     segment.instances.reverse();
     expect(reconstructScene(frame)).toEqual(scene);

@@ -3,8 +3,10 @@ import { createSegmentationLayers } from './segmentation-layers';
 import { VISION_CONFIDENCE } from './semantic-scene';
 import type { TrackVisionFrame } from './track-vision-types';
 import { letterbox } from './yolo-segmentation';
+import { fitTrackRibbon } from './track-ribbon';
+import type { ImagePoint, TrackRibbon, TrackRibbonPair } from './track-ribbon';
 
-export interface ImagePoint { x: number; y: number }
+export type { ImagePoint } from './track-ribbon';
 export interface ImageCar {
     classId: number;
     confidence: number;
@@ -15,13 +17,14 @@ export interface ImageCar {
 export interface ReconstructedScene {
     width: number;
     height: number;
+    ribbons: TrackRibbon[];
     leftBoundary: ImagePoint[][];
     rightBoundary: ImagePoint[][];
     centerline: ImagePoint[][];
     cars: ImageCar[];
 }
 
-/** Reconstruct visible track sides and traffic in image space, independent of coaching geometry. */
+/** Fit visible track edges to ribbons in image space, independent of coaching geometry. */
 export function reconstructScene(frame: TrackVisionFrame | null): ReconstructedScene | null {
     const segment = frame?.detections.segment;
     if (!frame || frame.width <= 0 || frame.height <= 0 || segment?.task !== 'segment') return null;
@@ -59,9 +62,9 @@ export function reconstructScene(frame: TrackVisionFrame | null): ReconstructedS
             pack: item.kind === 'car pack', box: [left, top, right, bottom] as ImageCar['box'] }] : [];
     });
     const result: ReconstructedScene = { width: frame.width, height: frame.height,
-        leftBoundary: [], rightBoundary: [], centerline: [], cars };
-    const lines = [result.leftBoundary, result.rightBoundary, result.centerline];
-    const previousRows = [-1, -1, -1];
+        ribbons: [], leftBoundary: [], rightBoundary: [], centerline: [], cars };
+    const sections: TrackRibbonPair[][] = [];
+    let previousRow = -1;
     for (let row = firstRow; row < endRow; row++) {
         let left = -1, right = -1;
         for (let column = firstColumn; column < endColumn; column++) {
@@ -77,23 +80,20 @@ export function reconstructScene(frame: TrackVisionFrame | null): ReconstructedS
                 ? null : imagePoint(column, row);
         });
         const [leftPoint, rightPoint] = edges;
-        const center = leftPoint && rightPoint ? { x: (leftPoint.x + rightPoint.x) / 2, y: leftPoint.y } : null;
-        [...edges, center].forEach((point, side) => {
-            if (!point) return;
-            const line = lines[side];
-            // Resume after missing/cockpit pixels, with no bend or width-change cutoff.
-            if (!line.length || previousRows[side] !== row - 1) line.push([]);
-            line[line.length - 1].push(point);
-            previousRows[side] = row;
-        });
+        if (!leftPoint || !rightPoint) continue;
+        // Each section needs both edges; never fit through a cockpit or missing row.
+        if (!sections.length || previousRow !== row - 1) sections.push([]);
+        sections[sections.length - 1].push({ left: leftPoint, right: rightPoint });
+        previousRow = row;
     }
-    result.centerline = result.centerline.filter((line) => line.length > 1);
-    // Trace the full outline first, then stop both sides at the farthest supported
-    // middle-line segment. An isolated pair cannot establish a prediction endpoint.
-    const endY = result.centerline[0]?.[0].y ?? Infinity;
-    const trim = (boundary: ImagePoint[][]) => boundary
-        .map((line) => line.filter(({ y }) => y >= endY)).filter((line) => line.length > 1);
-    result.leftBoundary = trim(result.leftBoundary);
-    result.rightBoundary = trim(result.rightBoundary);
+    result.ribbons = sections.flatMap((observations) => {
+        const ribbon = fitTrackRibbon(observations);
+        return ribbon ? [ribbon] : [];
+    });
+    result.leftBoundary = result.ribbons.map(({ pairs }) => pairs.map(({ left }) => left));
+    result.rightBoundary = result.ribbons.map(({ pairs }) => pairs.map(({ right }) => right));
+    result.centerline = result.ribbons.map(({ pairs }) => pairs.map(({ left, right }) => ({
+        x: (left.x + right.x) / 2, y: left.y,
+    })));
     return result;
 }

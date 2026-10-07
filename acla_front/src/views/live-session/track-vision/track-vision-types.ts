@@ -125,7 +125,7 @@ export interface TrackVisionFrame {
 
 export interface TrackVisionDetection extends TrackVisionFrame {
     reconstruction: LocalTrackScene | null;
-    /** Track edges and all accepted car/car-pack boxes in the captured image, independent of depth and calibration. */
+    /** Fitted 50-pair track ribbons and accepted traffic boxes in the capture, independent of depth and calibration. */
     reconstructedScene?: import('./reconstructed-scene').ReconstructedScene | null;
     geometry: TrackGeometry | null;
     /** Null without segmentation; unknown scene properties remain unset. */

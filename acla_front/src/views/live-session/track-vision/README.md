@@ -20,7 +20,7 @@ The numbered tabs follow one captured frame through eight views:
 4. **Filtering** — masks after confidence filtering, depth ordering and supported hidden-mask completion. Accepted car interior masks remain an independent downstream input. The panel explains the applied rules and shows retained counts.
 5. **Depth map** — the entire frame's depth as an opaque red-to-blue heatmap, including unlabeled areas and the car interior. The legend uses the full frame's finite positive relative depths, excluding model padding. Hover over the image to read unitless relative depth at the mouse; the reading follows new frames and accounts for resized or expanded previews. Values are comparable only within a frame, not distances in meters. Invalid pixels remain dark and report no valid depth.
 6. **Label depths** — all retained masks appear together over the captured frame. Each mask has a numbered label (such as `track #1` and `track #2`) that matches its own table row with median, near/far relative depth and observed depth-pixel count. Numbers identify masks within the current frame. The overlay and legend share one linear red → orange → yellow → green → cyan → blue scale in unitless relative depth, including supported hidden predictions. Hidden predictions are excluded from table statistics. Pixels without valid depth remain transparent, and masks without measured depth are labeled `No depth`.
-7. **Reconstructed scene** — the captured window with track boundaries and labeled car/car-pack boxes overlaid in 2D, with cockpit-adjacent edges removed, plus screen analysis. These overlays use segmentation from the completed frame.
+7. **Reconstructed scene** — the captured window with track ribbons fitted to segmentation edges and labeled car/car-pack boxes overlaid in 2D, plus screen analysis. Each visible ribbon section has 50 left/right point pairs, with crossbars and a translucent surface. Missing or cockpit-adjacent edges split the ribbon.
 8. **Bird's-eye view** — projects the previous reconstructed scene onto a flat road using the applied camera calibration. Left/right boundaries and the middle line retain their gaps. Your car stays at the origin with forward pointing up; detected cars and car packs are placed using their box-bottom centers. The grid and positions are approximate, and traffic marker sizes are schematic. Apply calibration in Camera position first. This display works with relative depth and does not supply metric coaching measurements.
 
 The bird's-eye view updates with completed frames, retains the latest frame with a stale label after 2 seconds, and clears when calibration or capture is cleared. Rays above the horizon or beyond 200 m are omitted. Traffic whose ground contact cannot be projected (including boxes clipped at the bottom of the capture) is counted as unplaced. Traffic markers describe the current frame, without assuming opponent headings or tracking identities across frames.
@@ -141,29 +141,33 @@ model loading or failure. Reapply after changing the car, seat, camera or FOV.
 
 ## Reconstructed scene
 
-`reconstructed-scene.ts` traces the outer left and right extents of accepted track masks
-in camera image coordinates. It uses the original track coverage before any cockpit cutout,
+`reconstructed-scene.ts` collects the outer left and right extents of accepted track masks
+as fitting observations in camera image coordinates. It uses the original track coverage before any cockpit cutout,
 so a dashboard or pillar does not introduce a new road edge. Points inside or near an accepted
 car interior mask are omitted, using a margin scaled to segmentation resolution. Interior
 holes do not become track boundaries. Overlapping traffic and other labels do not cut
 the original track outline, and sharp bends or width changes do not interrupt tracing.
-Capture-clipped sides and missing or cockpit-adjacent pixels leave gaps; tracing resumes
-where the outline is available again. Letterbox padding is removed when mapping to the
+Capture-clipped sides and missing or cockpit-adjacent pixels split the paired observations;
+a new section begins where both edges are available again. Letterbox padding is removed when mapping to the
 source image. Raw detections are not modified.
 
-The middle line is the midpoint between the two usable boundary points on each image row.
-The farthest middle-line segment supported by both sides on consecutive rows sets the
-prediction endpoint for both boundaries; neither side extends beyond it. Isolated pairs
-do not establish an endpoint. There is no extrapolation beyond mask support, and no
-middle line or boundaries are published when no supported middle-line segment is available.
+`track-ribbon.ts` constructs exactly 50 paired stations per continuous supported section,
+spaced evenly along image height from the farthest to the nearest observed row. Both edges
+are fitted at those shared stations with weighted local linear regression. This smooths
+mask jaggedness while following perspective taper, multiple bends and changing width.
+The middle line is the midpoint of each fitted pair. Isolated rows cannot establish a
+ribbon, and fitting never extends beyond a section's observed range or bridges its gaps.
+The bird's-eye view projects these fitted edges and middle lines.
 
-The published `reconstructedScene` contains image dimensions and separate arrays of
-left/right polylines and `centerline` polylines, plus `cars` with class ID, confidence, pack flag and boxes in image pixels.
+The published `reconstructedScene` contains image dimensions, `ribbons` with 50 `pairs`
+of `left`/`right` points each, and derived left/right and `centerline` polylines, plus `cars`
+with class ID, confidence, pack flag and boxes in image pixels.
 Every car or car-pack instance meeting the configured filtering confidence threshold is shown,
 including traffic outside the coaching analysis region and frames without track boundaries.
 Boxes are mapped out of letterbox padding and clipped to the captured image; invalid or
 fully offscreen boxes are omitted. The Segmentation tab's display-label filter does not affect them.
-The view draws boundaries in green and blue, the middle line in dashed white, individual cars in amber and car packs with
+The view draws a translucent ribbon with paired points and crossbars, boundaries in green
+and blue, the middle line in dashed white, individual cars in amber and car packs with
 dashed purple boxes and confidence labels over the matching captured window frame,
 preserving its aspect ratio and alignment with the overlays. The captured
 frame remains visible even when segmentation is unavailable. There is no 3D projection,

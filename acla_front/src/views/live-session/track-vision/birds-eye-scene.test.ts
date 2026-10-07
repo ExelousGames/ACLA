@@ -4,7 +4,7 @@ import type { ImageCar, ReconstructedScene } from './reconstructed-scene';
 
 const calibration = { ...DEFAULT_CAMERA, heightM: 2, pitchDeg: 0, imageWidth: 1600, imageHeight: 900 };
 const scene = (patch: Partial<ReconstructedScene> = {}): ReconstructedScene => ({
-    width: 1600, height: 900, leftBoundary: [], rightBoundary: [], centerline: [], cars: [], ...patch,
+    width: 1600, height: 900, ribbons: [], leftBoundary: [], rightBoundary: [], centerline: [], cars: [], ...patch,
 });
 const car = (box: ImageCar['box'], pack = false): ImageCar => ({ classId: pack ? 6 : 3, confidence: 0.85, pack, box });
 

@@ -313,6 +313,7 @@ it('keeps the captured window background synchronized with completed scene frame
     expect(background).toHaveAttribute('height', '720');
     const boundaries = screen.getByLabelText('2D reconstructed scene');
     expect(boundaries).toHaveAttribute('viewBox', '0 0 1280 720');
+    expect(within(boundaries).getAllByLabelText(/^Track ribbon \d+$/).length).toBeGreaterThan(0);
     const displayed = boundaries.innerHTML;
     expect(within(screen.getByLabelText('Reconstructed cars')).getAllByLabelText(/^Car · \d+% confidence$/)).toHaveLength(1);
     const drawsBefore = draw.mock.calls.length;
@@ -326,7 +327,7 @@ it('keeps the captured window background synchronized with completed scene frame
     expect(boundaries.innerHTML).toBe(displayed);
     await act(async () => { pending.resolve({ ...detection, instances: [] }); });
     expect(draw).toHaveBeenCalledTimes(drawsBefore + 1);
-    for (const label of ['Left track boundary', 'Right track boundary', 'Track middle line']) {
+    for (const label of ['Track ribbons', 'Left track boundary', 'Right track boundary', 'Track middle line']) {
         expect(within(boundaries).getByLabelText(label)).toBeEmptyDOMElement();
     }
     expect(screen.queryByLabelText('Reconstructed cars')).not.toBeInTheDocument();
@@ -548,7 +549,7 @@ it('publishes metric geometry and positions only after camera calibration is app
     await startCapture();
     expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
     expect(ref.current!.getLatestDetection()!.geometry).toBeNull();
-    expect(screen.getByLabelText('Reconstructed scene status')).toHaveTextContent('Visible track boundaries in 2D');
+    expect(screen.getByLabelText('Reconstructed scene status')).toHaveTextContent('Track ribbons fitted to detected edges · 50 point pairs per section');
     const capturedAt = ref.current!.getLatestDetection()!.capturedAt;
     const listener = jest.fn();
     ref.current!.subscribeDetection(listener);
