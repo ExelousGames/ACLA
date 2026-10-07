@@ -16,6 +16,7 @@ export const PIPELINE_STEPS = [
     { id: 'depth-map', label: 'Depth map', title: 'Depth across the entire frame' },
     { id: 'depth', label: 'Label depths', title: 'Depth of each retained mask' },
     { id: 'scene', label: 'Reconstructed scene', title: 'Reconstructed scene' },
+    { id: 'birds-eye', label: "Bird's-eye view", title: 'Top-down track boundaries and cars' },
 ] as const;
 export type PipelineStep = typeof PIPELINE_STEPS[number]['id'];
 

@@ -194,6 +194,7 @@ it('walks the visual pipeline without restarting capture, reloading models or ch
     await flush();
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent?.slice(2))).toEqual([
         'Capture', 'Camera position', 'Segmentation', 'Filtering', 'Depth map', 'Label depths', 'Reconstructed scene',
+        "Bird's-eye view",
     ]);
     expect(screen.getByRole('tabpanel', { name: 'Capture' })).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Apply camera calibration' })).not.toBeInTheDocument();
@@ -219,6 +220,12 @@ it('walks the visual pipeline without restarting capture, reloading models or ch
     expect(screen.queryByRole('tab', { name: '3D overview' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Camera view' })).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Screen analysis' })).toBeVisible();
+    selectStep("Bird's-eye view");
+    expect(screen.getByRole('tabpanel', { name: "Bird's-eye view" })).toBeVisible();
+    expect(screen.getByText('STEP 08 / 08')).toBeVisible();
+    expect(screen.getByLabelText("Bird's-eye view status")).toHaveTextContent('Set and apply the camera position');
+    expect(screen.getByLabelText('2D reconstructed scene')).not.toBeVisible();
+    expect(canvas).not.toBeVisible();
     selectStep('Capture');
     expect(screen.getByLabelText('Captured game frame with vision detections')).toBe(canvas);
     expect(canvas).toBeVisible();
@@ -349,10 +356,57 @@ it('supports keyboard navigation and names the active pipeline panel', async () 
     expect(screen.getByRole('tab', { name: 'Camera position' })).toHaveFocus();
     expect(screen.getByRole('tabpanel', { name: 'Camera position' })).toBeVisible();
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Camera position' }), { key: 'End' });
-    expect(screen.getByRole('tab', { name: 'Reconstructed scene' })).toHaveFocus();
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Reconstructed scene' }), { key: 'ArrowRight' });
+    expect(screen.getByRole('tab', { name: "Bird's-eye view" })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('tab', { name: "Bird's-eye view" }), { key: 'ArrowRight' });
     expect(captureTab).toHaveFocus();
     expect(captureTab).toHaveAttribute('aria-selected', 'true');
+});
+
+it('projects the previous scene and its cars with relative depth, updates live, and clears with calibration or capture', async () => {
+    const fixture = vision(0, { width: 1280, height: 720, corner: 'straight', player: 'middle' });
+    model.detect.mockResolvedValue(fixture.detections.segment);
+    depthModel.detect.mockResolvedValue({ ...fixture.detections.depth, scale: 'relative' });
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    selectStep("Bird's-eye view");
+    expect(screen.getByLabelText("Bird's-eye view status")).toHaveTextContent('Waiting for scene');
+    await startCapture();
+    expect(screen.queryByLabelText('Your car at the origin')).not.toBeInTheDocument();
+    fireEvent.click(cameraButton('Apply camera calibration'));
+    const detection = ref.current!.getLatestDetection()!;
+    selectStep("Bird's-eye view");
+    expect(screen.getByRole('img', { name: 'Top-down track boundaries and cars' })).toBeVisible();
+    expect(screen.getByLabelText('Your car at the origin')).toBeVisible();
+    expect(screen.getByLabelText('Top-down left boundary')).toBeVisible();
+    expect(detection.reconstructedScene!.leftBoundary.length).toBeGreaterThan(0);
+    expect(within(screen.getByLabelText('Top-down traffic')).getAllByLabelText(/^Car \d+$/)).toHaveLength(detection.reconstructedScene!.cars.length);
+    expect(screen.getByLabelText('Top-down traffic')).toHaveTextContent('Car 1');
+    expect(ref.current!.getLatestDetection()).toBe(detection);
+    expect(detection.reconstruction).toBeNull();
+    expect(detection.geometry).toBeNull();
+    expect(detection.analysis?.opponents).toBeUndefined();
+    expect(screen.getByText(/Flat-road estimate/)).toBeVisible();
+
+    const segment = fixture.detections.segment!;
+    if (segment.task !== 'segment') throw new Error('Expected segmentation');
+    model.detect.mockResolvedValue({ ...segment, instances: [segment.instances[0]] });
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(within(screen.getByLabelText('Top-down traffic')).queryAllByLabelText(/^Car \d+$/)).toHaveLength(0);
+    expect(screen.getByLabelText('Your car at the origin')).toBeVisible();
+    model.detect.mockReturnValue(deferred<typeof segment>().promise);
+    await act(async () => { jest.advanceTimersByTime(VISION_MAX_AGE_MS); });
+    expect(screen.getByLabelText("Bird's-eye view status")).toHaveTextContent('Showing last frame (stale)');
+    fireEvent.click(cameraButton('Clear calibration'));
+    selectStep("Bird's-eye view");
+    expect(screen.queryByRole('img', { name: 'Top-down track boundaries and cars' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Bird's-eye view status")).toHaveTextContent('Set and apply the camera position');
+    fireEvent.click(cameraButton('Apply camera calibration'));
+    selectStep("Bird's-eye view");
+    expect(screen.getByLabelText('Your car at the origin')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+    expect(screen.queryByLabelText('Your car at the origin')).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Bird's-eye view status")).toHaveTextContent('Waiting for scene');
 });
 
 it('reconstructs the full capture without boundary start controls', async () => {

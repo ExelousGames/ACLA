@@ -47,7 +47,7 @@ export function createCameraProjection(camera: CameraCalibration) {
                 y: camera.forwardOffsetM + depthM * (-sy * right + cy * along),
                 z: camera.heightM - depthM * (sp + down * cp) };
         },
-        /** Calibration grid and synthetic fixtures only; reconstruction uses measured depth. */
+        /** Flat-road display estimates and calibration grid; coaching reconstruction uses measured depth. */
         imageToGround(u: number, v: number): GroundPoint | null {
             if (![u, v].every(Number.isFinite) || u < 0 || u > 1 || v < 0 || v > 1) return null;
             const right = (u - 0.5) / fx, down = (v - 0.5) / fy;

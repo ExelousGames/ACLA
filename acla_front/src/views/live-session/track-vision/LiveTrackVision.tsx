@@ -11,6 +11,7 @@ import { DEFAULT_CAMERA, validCalibration } from './camera-projection';
 import TrackCalibration, { CameraGroundGrid } from './TrackCalibration';
 import { drawVisionOverlay } from './vision-overlay';
 import ReconstructedSceneView from './ReconstructedSceneView';
+import BirdsEyeView from './BirdsEyeView';
 import { reconstructScene } from './reconstructed-scene';
 import { drawLabelDepths, filteredFrame, filteredMasks, PIPELINE_STEPS, PipelineStep } from './pipeline-visuals';
 import PipelineDetails from './PipelineDetails';
@@ -351,7 +352,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     return (
         <section className="track-vision" aria-label="Track Vision">
             <header className="track-vision__header">
-                <div><span className="track-vision__eyebrow">VISION PIPELINE</span><h2>From capture to reconstructed scene</h2></div>
+                <div><span className="track-vision__eyebrow">VISION PIPELINE</span><h2>From capture to bird's-eye view</h2></div>
                 <span className="track-vision__capture-state" data-active={captureState === 'active'}>
                     <i />{captureState === 'active' ? 'Capturing' : captureState === 'starting' ? 'Starting…' : 'Capture idle'}
                 </span>
@@ -387,7 +388,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                         <h3>{activeStep.title}</h3></div>
                     {hasFrame && <span className="track-vision__frame-size">{previewWidth} × {previewHeight}</span>}
                 </div>
-                <dialog ref={previewRef} open hidden={isSceneStep} className={`track-vision__preview${hasFrame && step === 'calibration' && showCalibrationOnCapture ? ' track-vision__preview--calibrated' : ''}`}
+                <dialog ref={previewRef} open hidden={isSceneStep || step === 'birds-eye'} className={`track-vision__preview${hasFrame && step === 'calibration' && showCalibrationOnCapture ? ' track-vision__preview--calibrated' : ''}`}
                     aria-label="Capture preview" onCancel={(event) => { event.preventDefault(); togglePreviewSize(); }}>
                     <video ref={videoRef} muted playsInline hidden />
                     <canvas ref={canvasRef} aria-label="Captured game frame with vision detections" hidden={!hasFrame}
@@ -436,6 +437,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     <ReconstructedSceneView scene={hasFrame ? previewResult?.reconstructedScene ?? null : null}
                         source={hasFrame ? previewFrameRef.current : null} capturedAt={previewCapturedAt} />
                 </div>
+                {step === 'birds-eye' && <BirdsEyeView scene={hasFrame ? previewResult?.reconstructedScene ?? null : null}
+                    calibration={previewResult?.calibration} capturedAt={previewResult?.capturedAt} />}
                 <div hidden={!isSceneStep}>
                     <section className="track-vision__analysis" aria-label="Screen analysis">
                         <h3>Screen analysis</h3>
