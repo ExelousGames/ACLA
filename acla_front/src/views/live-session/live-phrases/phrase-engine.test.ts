@@ -19,6 +19,21 @@ const update = (engine: PhraseEngine, now: number, sample: StandardTelemetrySamp
 };
 
 describe('vision and Live Map overtaking guides', () => {
+    it('uses the published BEV when depth-based analysis and geometry are unavailable', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        const detection = { ...vision(0), analysis: null, geometry: null };
+        engine.receiveVision(detection, 0);
+        const snapshot = engine.receiveTelemetry(frame(driving), 0);
+        expect(snapshot.visionReady).toBe(true);
+        const conditions = snapshot.rules.find((rule) => rule.id === defaultRule)!.conditions;
+        for (const input of ['carAhead', 'playerPosition', 'opponentPosition']) {
+            expect(conditions.find((condition) => condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
+        }
+        engine.receiveTelemetry(frame(driving), 800);
+        expect(ids(engine, 800)).toEqual([defaultRule]);
+    });
+
     it('reports individual fits even when another condition fails or has missing input', () => {
         const engine = new PhraseEngine();
         engine.receiveMap(map, 0);
@@ -62,11 +77,13 @@ describe('vision and Live Map overtaking guides', () => {
         expect(PHRASE_RULES.every((rule) => rule.conditions.every((condition) => !condition.conditionFit))).toBe(true);
     });
 
-    it('uses published analysis without accessing raw screen detections', () => {
+    it('uses only the published BEV without accessing raw detections or depth-based measurements', () => {
         const engine = new PhraseEngine();
         engine.receiveMap(map, 0);
         const result = vision(0, { corner: 'right' });
-        Object.defineProperty(result, 'detections', { get: () => { throw new Error('Phrase rules must not read screen detections'); } });
+        for (const property of ['detections', 'analysis', 'geometry', 'reconstructedScene']) {
+            Object.defineProperty(result, property, { get: () => { throw new Error('Phrase rules must only read the BEV'); } });
+        }
         engine.receiveVision(result, 0);
         engine.receiveTelemetry(frame(driving), 0);
         engine.receiveTelemetry(frame(driving), 800);
@@ -296,8 +313,10 @@ describe('vision and Live Map overtaking guides', () => {
 
     it.each([
         ['missing vision', null],
-        ['missing published analysis', { ...vision(0), analysis: null }],
-        ['car pack without an individual position', { ...vision(0), analysis: { ...vision(0).analysis, opponents: [] } }],
+        ['missing published BEV', { ...vision(0), birdsEyeScene: null }],
+        ['car pack without an individual position', { ...vision(0), birdsEyeScene: {
+            ...vision(0).birdsEyeScene!, cars: vision(0).birdsEyeScene!.cars.map((car) => ({ ...car, pack: true })),
+        } }],
         ['missing camera calibration', vision(0, { cameraOffset: null })],
         ['no car ahead', vision(0, { carAhead: false })],
         ['straight road', vision(0, { corner: 'straight' })],

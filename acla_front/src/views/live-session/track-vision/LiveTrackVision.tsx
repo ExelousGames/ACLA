@@ -13,6 +13,7 @@ import { drawVisionOverlay } from './vision-overlay';
 import ReconstructedSceneView from './ReconstructedSceneView';
 import BirdsEyeView from './BirdsEyeView';
 import { reconstructScene } from './reconstructed-scene';
+import { projectBirdsEyeScene } from './birds-eye-scene';
 import { drawLabelDepths, filteredFrame, filteredMasks, PIPELINE_STEPS, PipelineStep } from './pipeline-visuals';
 import PipelineDetails from './PipelineDetails';
 import { createDepthMap, depthAtMouse, drawDepthMap, formatDepth } from './depth-map';
@@ -119,7 +120,9 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         const reconstruction = reconstructTrack(result);
         const geometry = reconstruction?.geometry ?? null;
         const scene = result?.detections.segment?.task === 'segment' ? analyzeTrackPositions(result, reconstruction) : null;
-        latest.current = result ? { ...result, reconstruction, reconstructedScene: reconstructScene(result), geometry, analysis: scene } : null;
+        const reconstructedScene = reconstructScene(result);
+        const birdsEyeScene = projectBirdsEyeScene(reconstructedScene, result?.calibration);
+        latest.current = result ? { ...result, reconstruction, reconstructedScene, birdsEyeScene, geometry, analysis: scene } : null;
         setPreviewResult(latest.current);
         if (!result) setDepthPointer(null);
         const remaining = result ? result.capturedAt + VISION_MAX_AGE_MS - Date.now() : 0;
@@ -437,8 +440,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     <ReconstructedSceneView scene={hasFrame ? previewResult?.reconstructedScene ?? null : null}
                         source={hasFrame ? previewFrameRef.current : null} capturedAt={previewCapturedAt} />
                 </div>
-                {step === 'birds-eye' && <BirdsEyeView scene={hasFrame ? previewResult?.reconstructedScene ?? null : null}
-                    calibration={previewResult?.calibration} capturedAt={previewResult?.capturedAt} />}
+                {step === 'birds-eye' && <BirdsEyeView scene={hasFrame ? previewResult?.birdsEyeScene ?? null : null}
+                    hasReconstructedScene={hasFrame && Boolean(previewResult?.reconstructedScene)} capturedAt={previewResult?.capturedAt} />}
                 <div hidden={!isSceneStep}>
                     <section className="track-vision__analysis" aria-label="Screen analysis">
                         <h3>Screen analysis</h3>

@@ -3,6 +3,7 @@ import type { CornerPosition } from './phrase-positions';
 import { DEFAULT_CAMERA } from '../track-vision/camera-projection';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import type { PhraseCornerGeometry } from './phrase-corner-geometry';
+import { evaluateRoad } from '../track-vision/road-polynomial';
 
 export const circuitMap = (speed: 'slow' | 'fast' = 'slow', linked = false): CircuitMapDto => ({
     id: 'test-map', game: 'acc', circuit_name: 'test', source_track_key: 'test', resolution: 1000,
@@ -61,8 +62,18 @@ export function vision(capturedAt: number, options: {
     const road = { coefficients: [0, 0, curve] as [number, number, number], minY: 8, maxY: 50, rmseM: 0 };
     const driver = distances(player), other = distances(opponent);
     const edge = (x: number) => ({ ...road, coefficients: [x + 64 * curve, -16 * curve, curve] as [number, number, number] });
+    const boundary = (x: number) => Array.from({ length: 43 }, (_, index) => ({
+        x: evaluateRoad(edge(x), index + 8), y: index + 8, z: 0,
+    }));
     return {
         capturedAt, width: 1600, height: 900, detections: {},
+        birdsEyeScene: options.cameraOffset === null ? null : {
+            leftBoundary: [boundary(-driver.leftBoundaryDistanceM)], rightBoundary: [boundary(driver.rightBoundaryDistanceM)],
+            centerline: [boundary(5 - driver.leftBoundaryDistanceM)], unplacedCars: 0,
+            cars: carAhead ? [{ classId: 3, confidence: 0.9, pack: false, position: {
+                x: other.leftBoundaryDistanceM - driver.leftBoundaryDistanceM + curve * 100, y: 18, z: 0,
+            } }] : [],
+        },
         geometry: options.cameraOffset === null ? null : {
             leftBoundary: [], rightBoundary: [], left: edge(-driver.leftBoundaryDistanceM),
             right: edge(driver.rightBoundaryDistanceM), center: edge(5 - driver.leftBoundaryDistanceM),

@@ -21,7 +21,7 @@ The numbered tabs follow one captured frame through eight views:
 5. **Depth map** — the entire frame's depth as an opaque red-to-blue heatmap, including unlabeled areas and the car interior. The legend uses the full frame's finite positive relative depths, excluding model padding. Hover over the image to read unitless relative depth at the mouse; the reading follows new frames and accounts for resized or expanded previews. Values are comparable only within a frame, not distances in meters. Invalid pixels remain dark and report no valid depth.
 6. **Label depths** — all retained masks appear together over the captured frame. Each mask has a numbered label (such as `track #1` and `track #2`) that matches its own table row with median, near/far relative depth and observed depth-pixel count. Numbers identify masks within the current frame. The overlay and legend share one linear red → orange → yellow → green → cyan → blue scale in unitless relative depth, including supported hidden predictions. Hidden predictions are excluded from table statistics. Pixels without valid depth remain transparent, and masks without measured depth are labeled `No depth`.
 7. **Reconstructed scene** — the captured window with track ribbons fitted to segmentation edges and labeled car/car-pack boxes overlaid in 2D, plus screen analysis. Each visible ribbon section has 50 left/right point pairs, with crossbars and a translucent surface. Missing or cockpit-adjacent edges split the ribbon.
-8. **Bird's-eye view** — projects the previous reconstructed scene onto a flat road using the applied camera calibration. Left/right boundaries and the middle line retain their gaps. Your car stays at the origin with forward pointing up; detected cars and car packs are placed using their box-bottom centers. The grid and positions are approximate, and traffic marker sizes are schematic. Apply calibration in Camera position first. This display works with relative depth and does not supply metric coaching measurements.
+8. **Bird's-eye view** — projects the previous reconstructed scene onto a flat road using the applied camera calibration. Left/right boundaries and the middle line retain their gaps. Your car stays at the origin with forward pointing up; detected cars and car packs are placed using their box-bottom centers. The grid and positions are approximate, and traffic marker sizes are schematic. Apply calibration in Camera position first. This projection works with relative depth and is shared with Live Phrases for traffic and corner-relative position inputs.
 
 The bird's-eye view updates with completed frames, retains the latest frame with a stale label after 2 seconds, and clears when calibration or capture is cleared. Rays above the horizon or beyond 200 m are omitted. Traffic whose ground contact cannot be projected (including boxes clipped at the bottom of the capture) is counted as unplaced. Traffic markers describe the current frame, without assuming opponent headings or tracking identities across frames.
 
@@ -95,14 +95,17 @@ not extrapolated to the unseen vehicle footprint. Positions are available on str
 Car packs establish traffic ahead but do not become individual opponents or hide farther individuals.
 Analysis runs here even when Live Phrases
 is closed and no telemetry is available. Each published `TrackVisionDetection`
-includes `calibration`, `reconstructedScene`, `reconstruction`, `geometry`, and `analysis` alongside the raw detector results. `analysis` is null without
+includes `calibration`, `reconstructedScene`, `birdsEyeScene`, `reconstruction`, `geometry`, and `analysis` alongside the raw detector results. `analysis` is null without
 segmentation; uncertain fields remain unset. `analysis.driverPosition` contains
 `leftBoundaryDistanceM`, `rightBoundaryDistanceM` and `referenceDistanceM`.
 `analysis.opponents` contains every supported individual's `lateralOffsetM` (positive right),
 `longitudinalOffsetM` (positive forward). Opponents require road support but can be measured
-beyond the range where both boundaries can be fitted; Live Phrases leaves their corner position unknown there.
-Screen analysis does not detect or label corners. Live Phrases interprets published road geometry
-and measurements to determine corner-relative positions and select sentences.
+beyond the range where both boundaries can be fitted.
+Screen analysis does not detect or label corners. Live Phrases instead reads `birdsEyeScene`,
+the same projection rendered in the BEV tab, so unavailable metric depth does not withhold its
+inputs. It interprets BEV boundaries and traffic to determine corner-relative positions and
+select sentences. The BEV is published on every completed frame regardless of the selected tab;
+clearing calibration or capture clears it, and Live Phrases expires it after 2 s.
 Displayed positions clear when the frame is more than
 2 s old, capture stops, or detector configuration changes.
 
@@ -121,7 +124,7 @@ Label matching ignores case and normalizes whitespace.
 
 Legacy track aliases (`road`, `asphalt`, `tarmac`) and individual-car aliases
 remain supported, but are not required. `Outfield asphalt road` is never a track
-alias. The 2D scene requires segmentation; metric position analysis requires segmentation, metric depth and applied calibration. Depth-Anything-V2-Small supplies relative depth, so metric reconstruction, geometry and screen position measurements remain unavailable even with camera calibration; 2D reconstruction remains available.
+alias. The 2D scene requires segmentation; metric position analysis requires segmentation, metric depth and applied calibration. Depth-Anything-V2-Small supplies relative depth, so metric reconstruction, geometry and screen position measurements remain unavailable even with camera calibration; 2D reconstruction and the calibrated BEV remain available.
 Road geometry requires track labels; opponent analysis additionally requires car or car-pack masks. Position analysis
 uses the configured filtering confidence (65% by default), carried on each frame as `filterConfidence`.
 
@@ -131,7 +134,7 @@ Enter camera height above the road in meters, pitch (positive down), yaw (positi
 right), horizontal field of view, and lateral/forward offsets relative to the car
 origin. A left-seat camera has a negative lateral offset. The centered pinhole
 camera assumes square pixels and zero roll. Initial values are a draft; select
-**Apply camera calibration** to publish metric geometry and positions. The 2D scene is independent of camera settings.
+**Apply camera calibration** to publish the BEV used by Live Phrases. Metric geometry and screen analysis additionally require metric depth. The 2D scene is independent of camera settings.
 
 **Enable on capture** shows a reference ground grid on the source image for
 checking camera placement. The grid is a calibration aid and supplies no reconstructed geometry.

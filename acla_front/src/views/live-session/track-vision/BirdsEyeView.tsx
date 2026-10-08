@@ -1,14 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { projectBirdsEyeScene } from './birds-eye-scene';
-import type { ReconstructedScene } from './reconstructed-scene';
-import { CameraCalibration, GroundPoint, VISION_MAX_AGE_MS } from './track-vision-types';
+import React, { useEffect, useState } from 'react';
+import type { BirdsEyeScene } from './birds-eye-scene';
+import { GroundPoint, VISION_MAX_AGE_MS } from './track-vision-types';
 
-export default function BirdsEyeView({ scene, calibration, capturedAt }: {
-    scene: ReconstructedScene | null;
-    calibration?: CameraCalibration;
+export default function BirdsEyeView({ scene: ground, hasReconstructedScene, capturedAt }: {
+    scene: BirdsEyeScene | null;
+    hasReconstructedScene: boolean;
     capturedAt?: number;
 }) {
-    const ground = useMemo(() => projectBirdsEyeScene(scene, calibration), [scene, calibration]);
     const [now, setNow] = useState(Date.now);
     useEffect(() => {
         setNow(Date.now());
@@ -78,9 +76,9 @@ export default function BirdsEyeView({ scene, calibration, capturedAt }: {
                         fill="#f4f7ff" fontSize="12" stroke="#090d13" strokeWidth="3" paintOrder="stroke">Your car</text>
                 </g>
                 <text x="704" y="24" textAnchor="end" fill="#a4adbb" fontSize="12">↑ Forward</text>
-            </svg> : <div className="track-vision__empty"><strong>{scene ? 'Apply camera calibration in Camera position' : 'Waiting for reconstructed scene'}</strong></div>}
+            </svg> : <div className="track-vision__empty"><strong>{hasReconstructedScene ? 'Apply camera calibration in Camera position' : 'Waiting for reconstructed scene'}</strong></div>}
         </div>
-        <p className="track-vision__hint" aria-label="Bird's-eye view status">{!scene ? 'Waiting for scene.' : !ground
+        <p className="track-vision__hint" aria-label="Bird's-eye view status">{!hasReconstructedScene ? 'Waiting for scene.' : !ground
             ? 'Set and apply the camera position to construct the top-down view.'
             : stale ? 'Showing last frame (stale).'
                 : hasEdges ? 'Track boundaries and cars from the reconstructed scene.'

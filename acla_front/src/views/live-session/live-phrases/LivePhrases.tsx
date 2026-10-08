@@ -61,7 +61,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         <section className="live-phrases" aria-label="Live phrases">
             <header>
                 <h2>Live phrases <span>Local rules</span></h2>
-                <p>Overtaking guidance combines Track Vision positions with Live Map corner shapes, consecutive corners and your progress through the corner.</p>
+                <p>Overtaking guidance combines Track Vision BEV positions with Live Map corner shapes, consecutive corners and your progress through the corner.</p>
             </header>
             <div className="live-phrases__sources" role="status">
                 <span data-ready={snapshot.telemetryReady}>Telemetry: {snapshot.telemetryReady ? 'Live' : 'Waiting for live data'}</span>
@@ -95,7 +95,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         </li>;
                     })}
                 </ol>
-                <p className="live-phrases__hint">Live Map tags identify slow and fast corners; centerline geometry estimates their shapes. Tag an enclosing area with consecutive corners to link the corner segments inside it. Lap position estimates entry, middle and exit. Track Vision reports visible positions, but cannot confirm overlap, a clear passing lane or an opponent’s intent. Guidance depends on those conditions being met. Telemetry expires after 1.5 s and vision after 2 s; missing inputs withhold the affected guides.</p>
+                <p className="live-phrases__hint">Live Map tags identify slow and fast corners; centerline geometry estimates their shapes. Tag an enclosing area with consecutive corners to link the corner segments inside it. Lap position estimates entry, middle and exit. Track Vision BEV estimates visible positions using camera calibration and a flat road, but cannot confirm overlap, a clear passing lane or an opponent’s intent. Guidance depends on those conditions being met. Telemetry expires after 1.5 s and vision after 2 s; missing inputs withhold the affected guides.</p>
             </section>
             <section aria-label="Triggered sentences" className="live-phrases__output">
                 <h3>Triggered sentences</h3>

@@ -59,7 +59,7 @@ describe('LivePhrases root connection', () => {
             sample: { Graphics_status: 2, Physics_speed_kmh: speed, Graphics_normalized_car_position: 0.11 },
         });
         act(() => {
-            detection = vision(Date.now());
+            detection = { ...vision(Date.now()), analysis: {}, geometry: null };
             listeners.forEach((listener) => listener());
             map = circuitMap();
             notifyMap();

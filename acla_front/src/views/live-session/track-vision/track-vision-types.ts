@@ -127,6 +127,8 @@ export interface TrackVisionDetection extends TrackVisionFrame {
     reconstruction: LocalTrackScene | null;
     /** Fitted 50-pair track ribbons and accepted traffic boxes in the capture, independent of depth and calibration. */
     reconstructedScene?: import('./reconstructed-scene').ReconstructedScene | null;
+    /** Shared flat-road projection for the BEV display and Live Phrases, independent of metric depth. */
+    birdsEyeScene?: import('./birds-eye-scene').BirdsEyeScene | null;
     geometry: TrackGeometry | null;
     /** Null without segmentation; unknown scene properties remain unset. */
     analysis: TrackVisionAnalysis | null;

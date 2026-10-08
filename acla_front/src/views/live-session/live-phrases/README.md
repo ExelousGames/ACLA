@@ -54,13 +54,17 @@ resets without treating retained frames as fresh. `getTrackVisionDetection` /
 `visualization:live-trajectory-map`, including late mounts, map loads and removal.
 
 `PhraseEngine` is deterministic and local, with no chat, API or speech calls.
-It reads published Track Vision `analysis` and `geometry`, never raw masks or image boxes.
-Track Vision supplies driver boundary distances and a list of driver-relative opponent measurements;
-it does not classify corners or inside/outside positions. Live Phrases determines the visible bend
-from consistent road-edge curvature, then converts boundary distances into inside/middle/outside
-positions for the driver and the nearest supported individual opponent ahead. Missing, straight or
-conflicting geometry leaves these corner-relative positions unknown. Car packs do not supply an
-individual position. These measurements still require calibrated metric depth.
+It reads the published Track Vision `birdsEyeScene`, the same calibrated flat-road projection
+rendered in the BEV tab, never raw masks, image boxes or depth-based `analysis`/`geometry`.
+It works with relative depth. Live Phrases determines the visible bend from consistent BEV
+road-edge curvature, then converts boundary distances into inside/middle/outside positions.
+The driver origin is compared with the nearest visible road slice, and the nearest individual
+opponent ahead is compared with the boundaries at its projected distance. Interpolation stays
+within visible boundary sections, without bridging gaps or extrapolating unseen edges.
+Missing, straight or conflicting curvature leaves corner-relative positions unknown.
+Traffic must lie between visible boundaries; car packs establish traffic ahead but do not
+supply an individual position. Unplaced traffic cannot establish an empty road. These are
+flat-road estimates from applied camera calibration, not metric depth measurements.
 The map resolver uses normalized lap position, map tags and centerline geometry.
 Entry includes the approach within 150 m (capped at 3% of the lap) and the first
 35% of the tagged corner. The middle extends to 70%, followed by the exit.

@@ -6,6 +6,8 @@ import { drawVisionOverlay } from './vision-overlay';
 import { MODEL_LABELS, multipleCarVision, vision } from './test-fixtures';
 import { VISION_MAX_AGE_MS } from './track-vision-types';
 import { reconstructTrack } from './track-position-analysis';
+import { PhraseEngine } from '../live-phrases/phrase-engine';
+import { circuitMap } from '../live-phrases/test-fixtures';
 
 jest.mock('./vision-overlay', () => ({ drawVisionOverlay: jest.fn() }));
 
@@ -363,6 +365,36 @@ it('supports keyboard navigation and names the active pipeline panel', async () 
     expect(captureTab).toHaveAttribute('aria-selected', 'true');
 });
 
+it.each(['left', 'right'] as const)('publishes the displayed BEV for Live Phrases on a %s bend with relative depth', async (corner) => {
+    const fixture = vision(0, { width: 1280, height: 720, corner });
+    model.detect.mockResolvedValue(fixture.detections.segment);
+    depthModel.detect.mockResolvedValue({ ...fixture.detections.depth, scale: 'relative' });
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    expect(ref.current!.getLatestDetection()!.birdsEyeScene).toBeNull();
+    fireEvent.click(cameraButton('Apply camera calibration'));
+    const detection = ref.current!.getLatestDetection()!;
+    expect(detection.geometry).toBeNull();
+    expect(detection.analysis).toEqual({});
+    expect(detection.birdsEyeScene!.cars).toHaveLength(1);
+    selectStep("Bird's-eye view");
+    expect(screen.getByLabelText('Top-down traffic')).toHaveTextContent('Car 1');
+
+    const engine = new PhraseEngine();
+    engine.receiveMap(circuitMap(), Date.now());
+    engine.receiveVision(detection, Date.now());
+    const snapshot = engine.evaluate(Date.now());
+    expect(snapshot.visionReady).toBe(true);
+    const conditions = snapshot.rules.find(({ id }) => id === 'inside-outbraking')!.conditions;
+    for (const input of ['carAhead', 'playerPosition', 'opponentPosition', 'insideLine']) {
+        expect(conditions.find((condition) => condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
+    }
+    fireEvent.click(cameraButton('Clear calibration'));
+    expect(ref.current!.getLatestDetection()!.birdsEyeScene).toBeNull();
+});
+
 it('projects the previous scene and its cars with relative depth, updates live, and clears with calibration or capture', async () => {
     const fixture = vision(0, { width: 1280, height: 720, corner: 'straight', player: 'middle' });
     model.detect.mockResolvedValue(fixture.detections.segment);
@@ -381,7 +413,8 @@ it('projects the previous scene and its cars with relative depth, updates live, 
     expect(screen.getByLabelText('Your car at the origin')).toBeVisible();
     expect(screen.getByLabelText('Top-down left boundary')).toBeVisible();
     expect(detection.reconstructedScene!.leftBoundary.length).toBeGreaterThan(0);
-    expect(within(screen.getByLabelText('Top-down traffic')).getAllByLabelText(/^Car \d+$/)).toHaveLength(detection.reconstructedScene!.cars.length);
+    expect(detection.birdsEyeScene!.leftBoundary.length).toBeGreaterThan(0);
+    expect(within(screen.getByLabelText('Top-down traffic')).getAllByLabelText(/^Car \d+$/)).toHaveLength(detection.birdsEyeScene!.cars.length);
     expect(screen.getByLabelText('Top-down traffic')).toHaveTextContent('Car 1');
     expect(ref.current!.getLatestDetection()).toBe(detection);
     expect(detection.reconstruction).toBeNull();
@@ -1150,6 +1183,7 @@ it('applies filtering confidence to current and pending frames, reconstruction a
     expect(filtered.geometry).toBeNull();
     expect(filtered.analysis).toEqual({});
     expect(filtered.reconstructedScene).toMatchObject({ cars: [], leftBoundary: [], rightBoundary: [] });
+    expect(filtered.birdsEyeScene).toMatchObject({ cars: [], leftBoundary: [], rightBoundary: [] });
     expect(listener).toHaveBeenCalledTimes(1);
     selectStep('Filtering');
     expect(screen.getByLabelText('Applied filters')).toHaveTextContent('Confidence ≥ 95%');
@@ -1162,6 +1196,7 @@ it('applies filtering confidence to current and pending frames, reconstruction a
     expect(ref.current!.getLatestDetection()!.geometry).toEqual(initial.geometry);
     expect(ref.current!.getLatestDetection()!.analysis).toEqual(initial.analysis);
     expect(ref.current!.getLatestDetection()!.reconstructedScene).toEqual(initial.reconstructedScene);
+    expect(ref.current!.getLatestDetection()!.birdsEyeScene).toEqual(initial.birdsEyeScene);
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
     expect(model.detect).toHaveBeenCalledTimes(2);

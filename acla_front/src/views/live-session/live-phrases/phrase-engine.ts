@@ -1,6 +1,6 @@
 import type { StandardTelemetrySample } from '../live-session-types';
 import type { LiveTelemetryEvent } from '../live-telemetry-store';
-import type { TrackVisionAnalysis, TrackVisionDetection } from '../track-vision/track-vision-types';
+import type { TrackVisionDetection } from '../track-vision/track-vision-types';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { getAccTelemetryTrackKey } from 'views/session-shared/visualization/charts/circuitTrackLayout';
 import { createPhraseMapContext, PhraseMapContext } from './phrase-map-context';
@@ -23,7 +23,7 @@ const INPUT_LABELS = {
 type Input = keyof typeof INPUT_LABELS;
 type Inputs = PhraseMapContext & { carAhead?: 0 | 1; playerPosition?: CornerPosition; opponentPosition?: CornerPosition;
     speed?: number; insideLine?: 0 | 1; outsideLine?: 0 | 1 };
-type PhraseVisionInput = Pick<TrackVisionDetection, 'capturedAt' | 'calibration' | 'analysis'> & Partial<Pick<TrackVisionDetection, 'geometry'>>;
+type PhraseVisionInput = Pick<TrackVisionDetection, 'capturedAt' | 'calibration' | 'birdsEyeScene'>;
 export class PhraseCondition {
     readonly conditionFit: boolean;
     readonly inputMissing: boolean;
@@ -148,14 +148,13 @@ const nonnegative = (value: unknown): number | undefined => {
     return number !== undefined && number >= 0 ? number : undefined;
 };
 
-function readInputs(sample: StandardTelemetrySample, vision: TrackVisionAnalysis, map: PhraseMapContext, geometry?: TrackVisionDetection['geometry']): Inputs {
+function readInputs(sample: StandardTelemetrySample, scene: TrackVisionDetection['birdsEyeScene'], map: PhraseMapContext): Inputs {
     const velocity = [sample.Physics_velocity_x, sample.Physics_velocity_y, sample.Physics_velocity_z];
-    const { playerPosition, opponentPosition } = getPhrasePositions(vision, geometry);
+    const { carAhead, playerPosition, opponentPosition } = getPhrasePositions(scene);
     return {
         speed: nonnegative(sample.Physics_speed_kmh) ?? (velocity.every((v) => finite(v) !== undefined)
             ? Math.hypot(...velocity as number[]) * 3.6 : undefined),
-        carAhead: vision.carAhead,
-        playerPosition, opponentPosition,
+        carAhead, playerPosition, opponentPosition,
         ...map,
         insideLine: playerPosition && opponentPosition
             ? Number(playerPosition === 'inside' && opponentPosition !== 'inside') as 0 | 1 : undefined,
@@ -229,7 +228,7 @@ export class PhraseEngine {
         const telemetryReady = now >= this.receivedAt && now - this.receivedAt <= TELEMETRY_MAX_AGE_MS;
         const visionReady = Boolean(this.vision && this.vision.capturedAt >= this.visionAfter
             && now >= this.vision.capturedAt && now - this.vision.capturedAt <= VISION_MAX_AGE_MS
-            && this.vision.analysis);
+            && this.vision.birdsEyeScene);
         const trackKey = (track: string) => this.game === 'acc' ? getAccTelemetryTrackKey(track) ?? track.trim() : track.trim();
         const sameMap = Boolean(this.map && (!this.game || this.map.game === this.game)
             && (!this.sample.Static_track || trackKey(this.sample.Static_track) === trackKey(this.map.source_track_key || this.map.circuit_name)));
@@ -238,8 +237,7 @@ export class PhraseEngine {
             this.memory.forEach((memory) => { memory.since = undefined; });
             this.sectionId = mapContext.sectionId;
         }
-        const inputs = readInputs(telemetryReady ? this.sample : {}, visionReady ? this.vision!.analysis! : {}, mapContext,
-            visionReady ? this.vision!.geometry : null);
+        const inputs = readInputs(telemetryReady ? this.sample : {}, visionReady ? this.vision!.birdsEyeScene : null, mapContext);
         let selected = false;
         const rules = PHRASE_RULES.map((rule) => {
             const memory = this.memory.get(rule.id) ?? { fired: false };

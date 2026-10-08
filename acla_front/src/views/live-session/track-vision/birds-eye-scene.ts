@@ -10,7 +10,7 @@ export interface BirdsEyeScene {
     unplacedCars: number;
 }
 
-/** Display-only flat-road projection of the previous step; never supplies coaching measurements. */
+/** Shared flat-road estimate for the BEV display and Live Phrases. */
 export function projectBirdsEyeScene(scene: ReconstructedScene | null, calibration?: CameraCalibration): BirdsEyeScene | null {
     if (!scene || !validCalibration(calibration)
         || calibration.imageWidth !== scene.width || calibration.imageHeight !== scene.height) return null;
