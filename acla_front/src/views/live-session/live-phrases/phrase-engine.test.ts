@@ -1,6 +1,6 @@
 import { createLiveTelemetryStore, LiveTelemetryFrameEvent } from '../live-telemetry-store';
 import type { StandardTelemetrySample } from '../live-session-types';
-import { COOLDOWN_MS, PHRASE_RULES, PhraseEngine, TELEMETRY_MAX_AGE_MS, describeConditions } from './phrase-engine';
+import { COOLDOWN_MS, PHRASE_RULES, PhraseCondition, PhraseEngine, TELEMETRY_MAX_AGE_MS } from './phrase-engine';
 import { VISION_MAX_AGE_MS } from '../track-vision/track-vision-types';
 import { circuitMap, shapedCornerMap, vision } from './test-fixtures';
 
@@ -19,6 +19,49 @@ const update = (engine: PhraseEngine, now: number, sample: StandardTelemetrySamp
 };
 
 describe('vision and Live Map overtaking guides', () => {
+    it('reports individual fits even when another condition fails or has missing input', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        const belowThreshold = update(engine, 0, { ...driving, Physics_speed_kmh: 29 });
+        const conditions = belowThreshold.rules.find((rule) => rule.id === defaultRule)!.conditions;
+        expect(conditions.find((condition) => condition.input === 'speed')).toMatchObject({ conditionFit: false, inputMissing: false });
+        expect(conditions.filter((condition) => condition.input !== 'speed').every((condition) => condition.conditionFit)).toBe(true);
+
+        engine.receiveVision(null, 100);
+        const missingVision = engine.receiveTelemetry(frame({ ...driving, Physics_speed_kmh: 30 }), 100);
+        const current = missingVision.rules.find((rule) => rule.id === defaultRule)!;
+        expect(current.status).toBe('Missing input');
+        expect(current.conditions.find((condition) => condition.input === 'speed')).toMatchObject({ conditionFit: true, inputMissing: false });
+        expect(current.conditions.find((condition) => condition.input === 'carAhead')).toMatchObject({ conditionFit: false, inputMissing: true });
+        expect(current.conditions.find((condition) => condition.input === 'phase')).toMatchObject({ conditionFit: true, inputMissing: false });
+    });
+
+    it('evaluates all conditions in guides suppressed by a higher-priority match', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(circuitMap('slow', true), 0);
+        engine.receiveVision(vision(0, { player: 'outside', opponent: 'inside' }), 0);
+        const snapshot = engine.receiveTelemetry(frame(driving), 0);
+        expect(snapshot.rules.find((rule) => rule.id === 'next-corner')?.status).toBe('Confirming');
+        const switchback = snapshot.rules.find((rule) => rule.id === 'switchback')!;
+        expect(switchback.status).toBe('Not matched');
+        expect(switchback.conditions.every((condition) => condition.conditionFit)).toBe(true);
+    });
+
+    it('keeps evaluated condition instances independent of past snapshots, other engines and the catalog', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        const before = update(engine, 0);
+        const after = update(engine, 100, { ...driving, Physics_speed_kmh: 0 });
+        const other = new PhraseEngine().evaluate(100);
+        expect(before.rules.find((rule) => rule.id === defaultRule)!.conditions.every((condition) => condition.conditionFit)).toBe(true);
+        expect(after.rules.find((rule) => rule.id === defaultRule)!.conditions.find((condition) => condition.input === 'speed')?.conditionFit).toBe(false);
+        expect(other.rules.every((rule) => rule.conditions.every((condition) => !condition.conditionFit))).toBe(true);
+        for (const rule of [...PHRASE_RULES, ...before.rules, ...after.rules]) {
+            rule.conditions.forEach((condition) => expect(condition).toBeInstanceOf(PhraseCondition));
+        }
+        expect(PHRASE_RULES.every((rule) => rule.conditions.every((condition) => !condition.conditionFit))).toBe(true);
+    });
+
     it('uses published analysis without accessing raw screen detections', () => {
         const engine = new PhraseEngine();
         engine.receiveMap(map, 0);
@@ -39,7 +82,7 @@ describe('vision and Live Map overtaking guides', () => {
         ]);
         PHRASE_RULES.forEach((rule) => {
             expect(rule.sentence).not.toMatch(/you are .+; the opponent ahead is/);
-            expect(describeConditions(rule)).toContain('Live Map section');
+            expect(rule.conditions.find((condition) => condition.input === 'phase')?.description).toContain('Live Map section');
         });
     });
 
@@ -280,6 +323,9 @@ describe('vision and Live Map overtaking guides', () => {
         expect(snapshot.telemetryReady).toBe(true);
         expect(snapshot.visionReady).toBe(false);
         expect(snapshot.events).toEqual([]);
+        const conditions = snapshot.rules.find((rule) => rule.id === defaultRule)!.conditions;
+        expect(conditions.find((condition) => condition.input === 'speed')).toMatchObject({ conditionFit: true, inputMissing: false });
+        expect(conditions.find((condition) => condition.input === 'carAhead')).toMatchObject({ conditionFit: false, inputMissing: true });
     });
 
     it('restarts the hold when vision stops or capture resumes after a gap', () => {
@@ -360,6 +406,10 @@ describe('vision and Live Map overtaking guides', () => {
         const expired = engine.evaluate(TELEMETRY_MAX_AGE_MS * 2 + 2);
         expect(expired.telemetryReady).toBe(false);
         expect(expired.events).toEqual([]);
+        const conditions = expired.rules.find((rule) => rule.id === defaultRule)!.conditions;
+        expect(conditions.find((condition) => condition.input === 'speed')).toMatchObject({ conditionFit: false, inputMissing: true });
+        expect(conditions.find((condition) => condition.input === 'phase')).toMatchObject({ conditionFit: false, inputMissing: true });
+        expect(conditions.find((condition) => condition.input === 'carAhead')).toMatchObject({ conditionFit: true, inputMissing: false });
     });
 
     it.each(['session-reset', 'stream-reset'] as const)('clears history, holds and old vision on %s', (type) => {
@@ -367,7 +417,8 @@ describe('vision and Live Map overtaking guides', () => {
         engine.receiveMap(map, 0);
         update(engine, 0);
         update(engine, 800);
-        engine.receiveTelemetry({ type, snapshot: createLiveTelemetryStore().getSnapshot() }, 900);
+        const reset = engine.receiveTelemetry({ type, snapshot: createLiveTelemetryStore().getSnapshot() }, 900);
+        expect(reset.rules.every((rule) => rule.conditions.every((condition) => !condition.conditionFit && condition.inputMissing))).toBe(true);
         engine.receiveVision(vision(800), 900);
         engine.receiveTelemetry(frame(driving), 1000);
         engine.receiveTelemetry(frame(driving), 1800);

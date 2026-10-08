@@ -5,6 +5,12 @@ panel lists all overtaking guides and their conditions, including inactive
 rules, above the latest 50 triggered sentences. It keeps listening while the
 sidebar is folded or the Assistant tab is selected.
 
+Each condition is a `PhraseCondition` instance with a boolean `conditionFit`.
+The panel shows **Met**, **Not met**, or **Missing input** for every condition.
+Each engine snapshot includes freshly evaluated condition instances, including
+conditions in lower-priority guides; priority, hold and cooldown affect the
+guide's status separately. Missing or expired inputs never count as a fit.
+
 Open **Track Vision** and **Live Map** in Add Visualization. Apply Track Vision's
 camera calibration and use a saved circuit map with a middle line and centerline
 tags: `corner` plus `slow` or `fast`, and `straight` or `long straight`.

@@ -14,8 +14,13 @@ describe('LivePhrases root connection', () => {
     it('lists the entire catalog before the live root is available', () => {
         render(<LivePhrases name="live-phrases" />);
         const catalog = within(screen.getByRole('region', { name: 'Sentence catalog' }));
-        PHRASE_RULES.forEach((rule) => expect(catalog.getByText(rule.sentence)).toBeVisible());
-        expect(catalog.getAllByRole('listitem')).toHaveLength(PHRASE_RULES.length);
+        PHRASE_RULES.forEach((rule) => {
+            expect(catalog.getByText(rule.sentence)).toBeVisible();
+            const conditions = within(catalog.getByRole('list', { name: `${rule.category} conditions` }));
+            expect(conditions.getAllByRole('listitem')).toHaveLength(rule.conditions.length);
+            expect(conditions.getAllByText('Missing input')).toHaveLength(rule.conditions.length);
+            conditions.getAllByRole('listitem').forEach((condition) => expect(condition).toHaveAttribute('data-condition-fit', 'false'));
+        });
         expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
         expect(screen.getByText('Live Map: Waiting for a tagged circuit map')).toBeInTheDocument();
     });
@@ -49,9 +54,9 @@ describe('LivePhrases root connection', () => {
             return null;
         };
         const view = render(<OperationComponentRefProvider><Root /><LivePhrases name="live-phrases" /></OperationComponentRefProvider>);
-        const publish = (sequence: number) => telemetry.publishFrame({
+        const publish = (sequence: number, speed = 100) => telemetry.publishFrame({
             type: 'frame', game: 'acc', sequence, committedCount: 0, committedSequence: 0,
-            sample: { Graphics_status: 2, Physics_speed_kmh: 100, Graphics_normalized_car_position: 0.11 },
+            sample: { Graphics_status: 2, Physics_speed_kmh: speed, Graphics_normalized_car_position: 0.11 },
         });
         act(() => {
             detection = vision(Date.now());
@@ -69,6 +74,16 @@ describe('LivePhrases root connection', () => {
         expect(screen.getByText('Live Map: Ready')).toBeInTheDocument();
         expect(screen.getByText('Current section: slow corner · entry')).toBeInTheDocument();
         expect(screen.getByText('Corner shape: bend')).toBeInTheDocument();
+        const conditions = within(screen.getByRole('list', { name: 'Outbraking on the inside conditions' }));
+        const conditionCount = PHRASE_RULES.find((rule) => rule.id === 'inside-outbraking')!.conditions.length;
+        expect(conditions.getAllByText('Met')).toHaveLength(conditionCount);
+        conditions.getAllByRole('listitem').forEach((condition) => expect(condition).toHaveAttribute('data-condition-fit', 'true'));
+        act(() => { publish(3, 0); });
+        const speedCondition = within(conditions.getByText('Speed (km/h) >= 30').closest('li')!);
+        expect(speedCondition.getByText('Not met')).toBeVisible();
+        expect(conditions.getAllByText('Met')).toHaveLength(conditionCount - 1);
+        act(() => { publish(4); });
+        expect(speedCondition.getByText('Met')).toBeVisible();
         act(() => {
             map = circuitMap('slow', true);
             map.centerline_tags!.push({ id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.31 });
@@ -80,6 +95,8 @@ describe('LivePhrases root connection', () => {
         act(() => { jest.advanceTimersByTime(2250); });
         expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
         expect(screen.getByText('Track Vision: Unavailable or stale')).toBeInTheDocument();
+        expect(conditions.getAllByText('Missing input')).toHaveLength(conditionCount);
+        conditions.getAllByRole('listitem').forEach((condition) => expect(condition).toHaveAttribute('data-condition-fit', 'false'));
         act(() => { telemetry.resetSession(); });
         expect(output.queryByText(sentence)).not.toBeInTheDocument();
         act(() => { map = null; notifyMap(); });

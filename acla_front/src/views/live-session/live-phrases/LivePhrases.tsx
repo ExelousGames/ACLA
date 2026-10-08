@@ -6,7 +6,7 @@ import {
     useRegisterOperationComponentRef,
 } from 'contexts/OperationComponentRefContext';
 import type { LiveSessionHandle } from '../LiveSessionView';
-import { describeConditions, PHRASE_RULES, PhraseEngine, PhraseSnapshot } from './phrase-engine';
+import { PHRASE_RULES, PhraseEngine, PhraseSnapshot } from './phrase-engine';
 import './LivePhrases.css';
 
 export interface LivePhrasesHandle extends NamedOperationComponentHandle {
@@ -82,7 +82,14 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         return <li key={rule.id}>
                             <div className="live-phrases__rule-heading"><span>{rule.category}</span><span data-active={state.status === 'Active'}>{state.status}</span></div>
                             <strong>{rule.sentence}</strong>
-                            <p>{describeConditions(rule)}</p>
+                            <ul className="live-phrases__conditions" aria-label={`${rule.category} conditions`}>
+                                {state.conditions.map((condition, conditionIndex) => (
+                                    <li key={conditionIndex} className="live-phrases__condition" data-condition-fit={condition.conditionFit} data-input-missing={condition.inputMissing}>
+                                        <span>{condition.description}</span>
+                                        <span className="live-phrases__condition-status">{condition.inputMissing ? 'Missing input' : condition.conditionFit ? 'Met' : 'Not met'}</span>
+                                    </li>
+                                ))}
+                            </ul>
                             <small>Hold for {rule.holdMs / 1000} s · Cooldown 8 s</small>
                             {state.missing.length > 0 && <small className="live-phrases__missing">Waiting for: {state.missing.join(', ')}</small>}
                         </li>;

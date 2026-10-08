@@ -24,15 +24,40 @@ type Input = keyof typeof INPUT_LABELS;
 type Inputs = PhraseMapContext & { carAhead?: 0 | 1; playerPosition?: CornerPosition; opponentPosition?: CornerPosition;
     speed?: number; insideLine?: 0 | 1; outsideLine?: 0 | 1 };
 type PhraseVisionInput = Pick<TrackVisionDetection, 'capturedAt' | 'calibration' | 'analysis'> & Partial<Pick<TrackVisionDetection, 'geometry'>>;
-type Condition = { input: Input; operator: '>=' | '=' | 'in'; value: number | string | readonly string[] };
+export class PhraseCondition {
+    readonly conditionFit: boolean;
+    readonly inputMissing: boolean;
+
+    constructor(
+        readonly input: Input,
+        readonly operator: '>=' | '=' | 'in',
+        readonly value: number | string | readonly string[],
+        actual?: Inputs[Input],
+    ) {
+        this.inputMissing = actual === undefined;
+        this.conditionFit = actual !== undefined && (operator === '>='
+            ? typeof actual === 'number' && typeof value === 'number' && actual >= value
+            : operator === 'in' ? Array.isArray(value) && value.includes(actual) : actual === value);
+    }
+
+    get description(): string {
+        return `${INPUT_LABELS[this.input]} ${this.operator} ${Array.isArray(this.value) ? this.value.join(' / ') : this.value}`;
+    }
+
+    evaluate(inputs: Inputs): PhraseCondition {
+        // Keep the catalog and previously published snapshots independent of live updates.
+        return new PhraseCondition(this.input, this.operator, this.value, inputs[this.input]);
+    }
+}
+
 export interface PhraseRule {
     id: string;
     sentence: string;
     category: string;
     holdMs: number;
-    conditions: readonly Condition[];
+    conditions: readonly PhraseCondition[];
 }
-const condition = (input: Input, operator: Condition['operator'], value: Condition['value']): Condition => ({ input, operator, value });
+const condition = (input: Input, operator: PhraseCondition['operator'], value: PhraseCondition['value']): PhraseCondition => new PhraseCondition(input, operator, value);
 const following = [condition('speed', '>=', 30), condition('carAhead', '=', 1)];
 const positioned = [condition('playerPosition', 'in', ['inside', 'middle', 'outside']), condition('opponentPosition', 'in', ['inside', 'middle', 'outside'])];
 
@@ -106,10 +131,6 @@ export const PHRASE_RULES: readonly PhraseRule[] = [
     },
 ];
 
-export const describeConditions = (rule: PhraseRule): string => rule.conditions.map(({ input, operator, value }) => (
-    `${INPUT_LABELS[input]} ${operator} ${Array.isArray(value) ? value.join(' / ') : value}`
-)).join(' AND ');
-
 export type RuleStatus = 'Missing input' | 'Not matched' | 'Confirming' | 'Active' | 'Cooldown';
 export interface PhraseEvent { id: number; ruleId: string; sentence: string; timestamp: number }
 export interface PhraseSnapshot {
@@ -117,7 +138,7 @@ export interface PhraseSnapshot {
     visionReady: boolean;
     mapReady: boolean;
     mapContext: PhraseMapContext;
-    rules: Array<{ id: string; status: RuleStatus; missing: string[] }>;
+    rules: Array<{ id: string; status: RuleStatus; missing: string[]; conditions: readonly PhraseCondition[] }>;
     events: PhraseEvent[];
 }
 interface RuleMemory { since?: number; clearSince?: number; fired: boolean; lastEmitted?: number }
@@ -223,12 +244,9 @@ export class PhraseEngine {
         const rules = PHRASE_RULES.map((rule) => {
             const memory = this.memory.get(rule.id) ?? { fired: false };
             this.memory.set(rule.id, memory);
-            const missing = rule.conditions.filter(({ input }) => inputs[input] === undefined).map(({ input }) => INPUT_LABELS[input]);
-            const matched = !selected && telemetryReady && missing.length === 0 && rule.conditions.every(({ input, operator, value }) => {
-                const actual = inputs[input]!;
-                return operator === '>=' ? typeof actual === 'number' && typeof value === 'number' && actual >= value
-                    : operator === 'in' ? Array.isArray(value) && value.includes(actual) : actual === value;
-            });
+            const conditions = rule.conditions.map((condition) => condition.evaluate(inputs));
+            const missing = conditions.filter((condition) => condition.inputMissing).map(({ input }) => INPUT_LABELS[input]);
+            const matched = !selected && telemetryReady && conditions.every((condition) => condition.conditionFit);
             if (matched) selected = true;
             let status: RuleStatus;
             if (!matched) {
@@ -250,7 +268,7 @@ export class PhraseEngine {
                     status = 'Active';
                 }
             }
-            return { id: rule.id, status, missing };
+            return { id: rule.id, status, missing, conditions };
         });
         return { telemetryReady, visionReady, mapReady: sameMap && this.mapContext.ready, mapContext, rules, events: this.events };
     }
