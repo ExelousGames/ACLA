@@ -6,16 +6,6 @@ import { letterbox } from './yolo-segmentation';
 type Box = SegmentResult['instances'][number]['box'];
 export type CornerPosition = 'inside' | 'middle' | 'outside';
 export const MODEL_LABELS = ['track', 'curb', 'grass', 'car', 'other', 'fence', 'car pack', 'sand', 'Outfield asphalt road'];
-export function multipleCarVision() {
-    const projection = createCameraProjection({ ...DEFAULT_CAMERA, imageWidth: 1600, imageHeight: 900 });
-    // Deliberately supply far-to-near detections to exercise distance ordering.
-    const cars: Box[] = [[0, 35], [2.5, 22], [-2.5, 14]].map(([x, y]) => {
-        const left = projection.localToImage({ x: x - 0.8, y, z: 0 })!;
-        const right = projection.localToImage({ x: x + 0.8, y, z: 0 })!;
-        return [left.u, left.v - 0.04, right.u, right.v];
-    });
-    return vision(0, { cars, corner: 'straight', player: 'middle', classNames: MODEL_LABELS });
-}
 /** Render known metric roads through a calibrated camera into letterboxed model masks. */
 export function vision(capturedAt: number, options: {
     corner?: 'left' | 'right' | 'straight';

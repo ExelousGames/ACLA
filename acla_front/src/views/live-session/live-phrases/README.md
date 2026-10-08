@@ -2,14 +2,113 @@
 
 Open Live Session, expand the right sidebar, and select **Live phrases**. The
 panel lists all overtaking guides and their conditions, including inactive
-rules, above the latest 50 triggered sentences. It keeps listening while the
-sidebar is folded or the Assistant tab is selected.
+rules, above the latest 50 triggered sentences. Detection starts disabled; click
+**Enable detection** at the top of the panel to start listening. While enabled,
+it keeps listening when the sidebar is folded or the Assistant tab is selected.
+**Disable detection** stops listening and clears triggered sentences and active
+phrase cards. Enabling again starts fresh with new telemetry.
 
-Each condition is a `PhraseCondition` instance with a boolean `conditionFit`.
-The panel shows **Met**, **Not met**, or **Missing input** for every condition.
+Enabling detection also prepares every catalog sentence through the system TTS
+service, one request at a time. Completed clips stay cached while the panel is
+mounted. The Speech indicator shows **Preparing** until all requests finish,
+then turns green with **Ready** only when every catalog sentence has received
+its audio. Failed requests leave it **Incomplete**; disabling detection shows
+**Disabled**. Enabling again reuses cached clips and retries missing ones.
+Each new phrase event attempts playback once through `audioManager`,
+using type `voice` and priority 25, below live chat's default priority 50. Live
+chat can interrupt or suppress a phrase; discarded phrases are not queued for
+replay. Speech works independently of overlay visibility.
+
+If a triggered clip is still being prepared, only the latest event can play once
+ready, while its rule remains active and it is less than eight seconds old.
+Session/stream resets stop phrase speech and discard pending events. Disabling
+detection or unmounting also aborts preparation and stops owned playback. Speech
+errors appear in the panel without stopping rule detection or overlay cards.
+
+Every triggered phrase also publishes an eight-second pop-out card through the
+existing overlay addon contract. Enable the overlay in the Assistant to see it.
+Live phrases reuse an active live overlay presentation, or create a local live
+presentation on the first trigger when none exists; no AI conversation is needed.
+The shared overlay visibility setting is respected. Other session modes do not
+receive live phrase cards.
+
+`LivePhraseOverlay` owns one registered `MutableAiOverlayComponent` handle per
+catalog rule, event deduplication, presentation scoping and cleanup. Session/stream
+resets clear the cards, and unmounting releases all handles and any locally owned
+presentation. Expired events never replay when a presentation changes.
+All phrase display components, styles and future overlay graphs belong in
+`live-phrases/graphs/`. `graphs/LivePhraseDisplay` implements the renderer and its
+snapshot validation; the floating overlay only registers and displays it.
+
+Each leaf condition is a `PhraseCondition` instance with a boolean `conditionFit`.
+The panel shows **Met**, **Not met**, or **Missing input** for every condition and group.
 Each engine snapshot includes freshly evaluated condition instances, including
 conditions in lower-priority guides; priority, hold and cooldown affect the
 guide's status separately. Missing or expired inputs never count as a fit.
+
+Configure the connector before each condition in `PHRASE_RULES` using the fourth
+argument of `condition(input, operator, value, connector)`. It accepts `'and'`
+(the default) or `'or'`; the first condition's connector is ignored. The panel
+displays **AND** or **OR** between conditions using the same configuration as the
+engine. AND is evaluated before OR, so this example means `(A AND B) OR (C AND D)`:
+
+```ts
+conditions: [
+    condition('speed', '>=', 80),                         // A
+    condition('phase', '=', 'straight', 'and'),           // B
+    condition('speed', '>=', 30, 'or'),                   // C
+    condition('phase', '=', 'entry', 'and'),              // D
+],
+```
+
+For direct construction, pass the connector as the fifth argument:
+`new PhraseCondition('phase', '=', 'entry', undefined, 'or')`.
+
+Use `conditionGroup(conditions, connector)` to add parentheses. A group can contain
+conditions and other groups at any depth. Its connector joins the **whole group**
+to the previous condition or group; it defaults to `'and'`. The first connector
+inside every group is ignored, just like the first connector at the rule level.
+Groups are evaluated first, with AND before OR within each group. For example,
+`(A OR (B AND C))` is:
+
+```ts
+conditions: [
+    conditionGroup([
+        condition('speed', '>=', 80),                    // A
+        conditionGroup([
+            condition('speed', '>=', 30),                // B
+            condition('phase', '=', 'entry'),            // C
+        ], 'or'),
+    ]),
+],
+```
+
+To express `(A OR B) AND C`, group A and B instead:
+
+```ts
+conditions: [
+    conditionGroup([
+        condition('phase', '=', 'entry'),                // A
+        condition('phase', '=', 'middle', 'or'),          // B
+    ]),
+    condition('speed', '>=', 30),                        // C
+],
+```
+
+For direct construction, use `new PhraseConditionGroup(conditions, connector)`.
+Both rule definitions and evaluated snapshots retain the recursive
+`PhraseConditionNode` tree, with `PhraseCondition` leaves and `PhraseConditionGroup`
+nodes. Each group has its own `conditionFit` and `inputMissing`; an empty group
+never matches. Every descendant is evaluated, even when an OR alternative already
+matches. The panel displays indented, parenthesized groups with their own status
+and each leaf's status. Missing inputs inside a satisfied group remain visible on
+their leaves but do not add a **Waiting for** message.
+
+Evaluated snapshots retain each connector. A matching OR alternative can satisfy
+a rule even if another alternative has missing inputs; individual missing
+conditions remain visible, but a satisfied rule does not show **Waiting for**.
+Live telemetry is always required, and priority, hold and cooldown still apply.
+Existing catalog rules keep their AND behavior unless their connectors change.
 
 Open **Track Vision** and **Live Map** in Add Visualization. Apply Track Vision's
 camera calibration and use a saved circuit map with a middle line and centerline
@@ -22,7 +121,9 @@ describe a linked sequence. The enclosing region is not itself a corner.
 
 The catalog includes:
 
-- **Slipstream:** a visible opponent on a tagged straight, at least 80 km/h.
+- **Slipstream:** an individual visible opponent within an estimated 10 m on a
+  tagged straight, at least 80 km/h, with a steady or increasing gap and the
+  player laterally offset rather than already tucked directly behind.
 - **Outbraking on the inside:** a slow corner entry, player inside and opponent
   off the inside.
 - **Around the outside:** a fast corner entry, player outside and opponent inside.
@@ -56,15 +157,29 @@ resets without treating retained frames as fresh. `getTrackVisionDetection` /
 `PhraseEngine` is deterministic and local, with no chat, API or speech calls.
 It reads the published Track Vision `birdsEyeScene`, the same calibrated flat-road projection
 rendered in the BEV tab, never raw masks, image boxes or depth-based `analysis`/`geometry`.
-It works with relative depth. Live Phrases determines the visible bend from consistent BEV
-road-edge curvature, then converts boundary distances into inside/middle/outside positions.
+It works with relative depth. Live Phrases keeps two separate conditions for each car:
+whether it is in a left or right turn corner, and whether it is near the left edge,
+middle of the track, or right edge. Left and right follow the direction of travel.
+Turn direction comes from consistent BEV road-edge curvature at each car's road slice;
+track position comes from boundary distances independently of that curvature.
 The driver origin is compared with the nearest visible road slice, and the nearest individual
 opponent ahead is compared with the boundaries at its projected distance. Interpolation stays
 within visible boundary sections, without bridging gaps or extrapolating unseen edges.
-Missing, straight or conflicting curvature leaves corner-relative positions unknown.
+Missing, straight or conflicting curvature leaves turn direction unknown while supported
+track positions remain available. Inside/outside tactics combine the two conditions:
+left is inside a left turn and right is inside a right turn. These tactics require
+both cars to have the same turn direction.
 Traffic must lie between visible boundaries; car packs establish traffic ahead but do not
 supply an individual position. Unplaced traffic cannot establish an empty road. These are
 flat-road estimates from applied camera calibration, not metric depth measurements.
+Slipstream uses the nearest on-track individual opponent's planar distance from
+the vehicle origin. A lateral offset of at most 1 m in either direction counts
+as directly behind. Closing is estimated by comparing the distance in successive
+fresh captures; a decreasing distance withholds the suggestion. A single capture,
+missing individual opponent, capture gap, calibration change or session reset
+withholds motion-dependent advice until new distance comparisons are available.
+Repeated or out-of-order captures do not count as new motion evidence. The
+comparison estimates the nearest opponent's gap and does not track car identity.
 The map resolver uses normalized lap position, map tags and centerline geometry.
 Entry includes the approach within 150 m (capped at 3% of the lap) and the first
 35% of the tagged corner. The middle extends to 70%, followed by the exit.
@@ -94,7 +209,7 @@ supersedes an outside pass or switchback, and intermediate sequence exits
 supersede final-exit attacks. Rules require a visible opponent and
 at least 30 km/h (80 for slipstream). All corner guides require known individual
 positions. The wording does not claim that vision confirms overlap, passing
-clearance, relative speed or the opponent's intent.
+clearance or the opponent's intent; the slipstream gap trend is a visual estimate.
 
 Only new live telemetry frames emit. Timers and map/vision updates only evaluate
 or expire inputs. Telemetry expires after 1.5 s and Track Vision after 2 s.

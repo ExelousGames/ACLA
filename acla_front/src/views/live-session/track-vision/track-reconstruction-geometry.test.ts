@@ -1,40 +1,11 @@
 import { VISION_INPUT_SIZE } from './vision-config';
-import { analyzeTrackPositions, reconstructTrack } from './track-position-analysis';
-import { CornerPosition, MODEL_LABELS, multipleCarVision, vision } from './test-fixtures';
+import { reconstructTrack } from './track-reconstruction';
+import { MODEL_LABELS, vision } from './test-fixtures';
 import { evaluateRoad } from './road-polynomial';
 import { createCameraProjection } from './camera-projection';
 import { letterbox } from './yolo-segmentation';
 
-describe('segmentation and depth reconstruction', () => {
-    it('lists every supported opponent relative to the driver, nearest first, on a straight', () => {
-        const frame = multipleCarVision();
-        const reconstruction = reconstructTrack(frame)!;
-        const analysis = analyzeTrackPositions(frame, reconstruction);
-        expect(analysis.driverPosition!.leftBoundaryDistanceM).toBeCloseTo(5, 0);
-        expect(analysis.driverPosition!.rightBoundaryDistanceM).toBeCloseTo(5, 0);
-        expect(analysis.carAhead).toBe(1);
-        expect(analysis.opponents).toHaveLength(3);
-        [[-2.5, 14], [2.5, 22], [0, 35]].forEach(([x, y], index) => {
-            expect(analysis.opponents![index].lateralOffsetM).toBeCloseTo(x, 0);
-            expect(analysis.opponents![index].longitudinalOffsetM).toBeCloseTo(y, 0);
-        });
-        expect(analyzeTrackPositions(frame, { ...reconstruction, geometry: null })).toEqual({
-            carAhead: 1, opponents: analysis.opponents,
-        });
-    });
-
-    it('keeps individual opponents after a nearer car pack', () => {
-        const frame = multipleCarVision();
-        const segment = frame.detections.segment!;
-        if (segment.task !== 'segment') throw new Error('Expected segmentation');
-        segment.instances[3].classId = MODEL_LABELS.indexOf('car pack');
-        const analysis = analyzeTrackPositions(frame);
-        expect(analysis.carAhead).toBe(1);
-        expect(analysis.opponents).toHaveLength(2);
-        expect(analysis.opponents![0].longitudinalOffsetM).toBeCloseTo(22, 0);
-        expect(analysis.opponents![1].longitudinalOffsetM).toBeCloseTo(35, 0);
-    });
-
+describe('segmentation and depth geometry reconstruction', () => {
     it.each([[1600, 900], [900, 1600], [1000, 1000], [3440, 1440]])
     ('reconstructs supported edges throughout the capture at %s × %s', (width, height) => {
         const frame = vision(0, { width, height, corner: 'straight', player: 'middle', cars: [],
@@ -94,7 +65,6 @@ describe('segmentation and depth reconstruction', () => {
         const frame = vision(0);
         delete frame.detections[task];
         expect(reconstructTrack(frame)).toBeNull();
-        expect(analyzeTrackPositions(frame)).toEqual({});
     });
 
     it('changes local geometry and car distance when only depth changes', () => {
@@ -129,7 +99,6 @@ describe('segmentation and depth reconstruction', () => {
         if (depth.task !== 'depth') throw new Error('Expected depth');
         depth.values.fill(value);
         expect(reconstructTrack(frame)).toMatchObject({ leftBoundary: [], rightBoundary: [], cars: [], geometry: null });
-        expect(analyzeTrackPositions(frame)).toEqual({});
     });
 
     it.each((['left', 'right'] as const).flatMap((side) =>
@@ -296,32 +265,13 @@ describe('segmentation and depth reconstruction', () => {
         }
     });
 
-    it('keeps traffic unknown when a detected car has no usable depth', () => {
+    it('omits a detected car with no usable depth from the reconstruction', () => {
         const frame = vision(0);
         const segment = frame.detections.segment!;
         if (segment.task !== 'segment') throw new Error('Expected segmentation');
         segment.instances[1].mask.fill(0);
         expect(reconstructTrack(frame)?.geometry).not.toBeNull();
         expect(reconstructTrack(frame)?.cars).toHaveLength(0);
-        expect(analyzeTrackPositions(frame).carAhead).toBeUndefined();
-        expect(analyzeTrackPositions(frame).opponents).toBeUndefined();
-    });
-
-    it.each((['left', 'right'] as const).flatMap((corner) => (['inside', 'middle', 'outside'] as CornerPosition[]).flatMap((player) =>
-        (['inside', 'middle', 'outside'] as CornerPosition[]).map((opponent) => ({ corner, player, opponent })))))
-    ('measures both boundary distances on a $corner road: $player / $opponent', ({ corner, player, opponent }) => {
-        const analysis = analyzeTrackPositions(vision(0, { corner, player, opponent }));
-        const distance = { inside: 2.5, middle: 5, outside: 7.5 };
-        const expectedLeft = (lane: CornerPosition) => corner === 'right' ? 10 - distance[lane] : distance[lane];
-        expect(analysis.driverPosition!.leftBoundaryDistanceM).toBeCloseTo(expectedLeft(player), 0);
-        expect(analysis.driverPosition!.rightBoundaryDistanceM).toBeCloseTo(10 - expectedLeft(player), 0);
-        expect(analysis.carAhead).toBe(1);
-        expect(analysis.opponents).toHaveLength(1);
-        expect(analysis.opponents![0].lateralOffsetM).toBeCloseTo(expectedLeft(opponent) - expectedLeft(player) + (corner === 'left' ? -0.3 : 0.3), 0);
-        expect(analysis.opponents![0].longitudinalOffsetM).toBeCloseTo(18, 0);
-        expect(analysis).not.toHaveProperty('cornerDirection');
-        expect(analysis).not.toHaveProperty('playerPosition');
-        expect(analysis).not.toHaveProperty('opponentPosition');
     });
 
     it.each([[1600, 900], [900, 1600], [1000, 1000], [3440, 1440]])('removes letterboxing and recovers metric geometry at %s × %s', (width, height) => {
@@ -331,7 +281,6 @@ describe('segmentation and depth reconstruction', () => {
         expect(geometry.trackWidthM).toBeCloseTo(10, 0);
         expect(evaluateRoad(geometry.center, 20)).toBeCloseTo(-0.003 * 12 ** 2, 0);
         expect(geometry.leftBoundary.every(({ z }) => Math.abs(z) < 0.06)).toBe(true);
-        expect(analyzeTrackPositions(frame).driverPosition!.leftBoundaryDistanceM).toBeCloseTo(5, 0);
     });
 
     it.each([160, 320])('fits the road from a %s-pixel segmentation mask', (maskSize) => {
@@ -372,23 +321,9 @@ describe('segmentation and depth reconstruction', () => {
         }
     });
 
-    it.each([MODEL_LABELS, [...MODEL_LABELS].reverse()])('resolves semantic classes by normalized labels: %j', (...classNames) => {
-        const frame = vision(0, { classNames });
-        frame.detections.segment!.classNames = classNames.map((label) => ` ${label.toUpperCase().replace(/ /g, ' \t ')} `);
-        const analysis = analyzeTrackPositions(frame);
-        expect(analysis.driverPosition!.leftBoundaryDistanceM).toBeCloseTo(2.5, 0);
-        expect(analysis.carAhead).toBe(1);
-        expect(analysis.opponents).toHaveLength(1);
-        expect(analysis.opponents![0].lateralOffsetM).toBeCloseTo(4.7, 0);
-    });
-
     it('recovers road geometry without requiring car labels', () => {
         const frame = vision(0, { classNames: ['track'], cars: [] });
         expect(reconstructTrack(frame)?.geometry).not.toBeNull();
-        const analysis = analyzeTrackPositions(frame);
-        expect(analysis.driverPosition!.leftBoundaryDistanceM).toBeCloseTo(2.5, 0);
-        expect(analysis.carAhead).toBeUndefined();
-        expect(analysis.opponents).toBeUndefined();
     });
 
     it.each(['missing calibration', 'bad height', 'wrong resolution', 'missing mask', 'low confidence', 'outfield', 'clipped edges'])
@@ -404,7 +339,6 @@ describe('segmentation and depth reconstruction', () => {
         if (scenario === 'outfield') segment.instances[0].classId = MODEL_LABELS.indexOf('Outfield asphalt road');
         if (scenario === 'clipped edges') segment.instances[0].mask.fill(1);
         expect(reconstructTrack(frame)?.geometry ?? null).toBeNull();
-        expect(analyzeTrackPositions(frame).driverPosition).toBeUndefined();
     });
 
     it.each(['curb', 'grass', 'other', 'fence', 'sand', 'Outfield asphalt road'])('excludes %s even over a road mask', (label) => {
@@ -431,25 +365,6 @@ describe('segmentation and depth reconstruction', () => {
         expect(reconstructTrack(frame)).toEqual(reconstruction);
     });
 
-    it('bridges car occlusion using observed road on both sides and recognizes packs without an individual position', () => {
-        const frame = vision(0, { classNames: MODEL_LABELS, opponent: 'middle' });
-        const segment = frame.detections.segment!;
-        if (segment.task !== 'segment') throw new Error('Expected segmentation');
-        segment.instances[0].mask.forEach((_, i) => { if (segment.instances[1].mask[i]) segment.instances[0].mask[i] = 0; });
-        expect(analyzeTrackPositions(frame).opponents).toHaveLength(1);
-        expect(analyzeTrackPositions(frame).opponents![0].lateralOffsetM).toBeCloseTo(2.2, 0);
-        segment.instances[1].classId = MODEL_LABELS.indexOf('car pack');
-        expect(analyzeTrackPositions(frame)).toMatchObject({ carAhead: 1, opponents: [] });
-    });
-
-    it('prefers an individual at the same contact distance as a pack', () => {
-        const frame = vision(0, { classNames: MODEL_LABELS, opponent: 'middle' });
-        const segment = frame.detections.segment!;
-        if (segment.task !== 'segment') throw new Error('Expected segmentation');
-        segment.instances.unshift({ ...segment.instances[1], classId: MODEL_LABELS.indexOf('car pack') });
-        expect(analyzeTrackPositions(frame)).toMatchObject({ carAhead: 1, opponents: [expect.any(Object)] });
-    });
-
     it('preserves road support beneath a car overlapping a car pack', () => {
         const frame = vision(0, { classNames: MODEL_LABELS, opponent: 'middle' });
         const segment = frame.detections.segment!;
@@ -473,36 +388,6 @@ describe('segmentation and depth reconstruction', () => {
         }
     });
 
-    it('does not invent a car pack from an empty mask', () => {
-        const frame = vision(0, { classNames: MODEL_LABELS, opponent: 'middle' });
-        const segment = frame.detections.segment!;
-        if (segment.task !== 'segment') throw new Error('Expected segmentation');
-        const car = segment.instances[1];
-        segment.instances.push({ ...car, classId: MODEL_LABELS.indexOf('car pack'), mask: new Uint8Array(car.mask.length),
-            box: [car.box[0], car.box[1], car.box[2], car.box[3] + 0.02] });
-        expect(analyzeTrackPositions(frame)).toMatchObject({ carAhead: 1, opponents: [expect.any(Object)] });
-    });
-
-    it.each([
-        [0.05, 0.05, 0.15, 0.15], // Mirror / HUD.
-        [0.01, 0.45, 0.11, 0.65], // Edge of capture.
-        [0.2, 0.65, 0.8, 1], // Own bodywork.
-        [0.1, 0.4, 0.15, 0.5], // Outside the fitted road.
-    ])('ignores unsupported opponent boxes: %s, %s, %s, %s', (...box) => {
-        expect(analyzeTrackPositions(vision(0, { cars: [box as [number, number, number, number]] })).carAhead).toBe(0);
-    });
-
-    it.each([0, 0.15, -0.15])('reports boundary proximity on straight roads with heading %s', (slope) => {
-        const frame = vision(0, { cars: [], road: (x, y) => y < 59 && Math.abs(x - (1 + slope * y)) < 5 });
-        expect(reconstructTrack(frame)?.geometry).not.toBeNull();
-        const analysis = analyzeTrackPositions(frame);
-        expect(analysis).toMatchObject({ carAhead: 0, opponents: [], driverPosition: {
-            leftBoundaryDistanceM: expect.any(Number), rightBoundaryDistanceM: expect.any(Number),
-        } });
-        expect(analysis.driverPosition!.leftBoundaryDistanceM + analysis.driverPosition!.rightBoundaryDistanceM).toBeCloseTo(10, 0);
-        expect(analysis).not.toHaveProperty('cornerDirection');
-    });
-
     it('continues scanning beyond gaps in the road mask', () => {
         const road = (x: number, y: number) => Math.abs(x) < 5 && (y < 12 || y > 30) && y < 59;
         const scene = reconstructTrack(vision(0, { road, cars: [] }))!;
@@ -520,7 +405,6 @@ describe('segmentation and depth reconstruction', () => {
 
     it('uses the camera offset to locate the car independently of the image center', () => {
         const frame = vision(0, { player: 'middle', camera: { lateralOffsetM: -0.4 } });
-        expect(analyzeTrackPositions(frame).driverPosition!.leftBoundaryDistanceM).toBeCloseTo(5, 0);
         const geometry = reconstructTrack(frame)!.geometry!;
         const shifted = reconstructTrack({ ...frame, calibration: { ...frame.calibration!, lateralOffsetM: 0.6 } })!.geometry!;
         expect(shifted.lateralOffsetM - geometry.lateralOffsetM).toBeCloseTo(-1, 1);

@@ -3,9 +3,8 @@ import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 
 import { captureGameScreen, ScreenCaptureSource } from './screen-capture';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
 import { DEPTH_INPUT_SIZE, MODEL_INPUT_RESOLUTIONS, VISION_INPUT_SIZE } from './vision-config';
-import { CameraCalibration, DETECTION_TASKS, DetectionTask, TrackVisionAnalysis, TrackVisionDetection, TrackVisionFrame, VISION_MAX_AGE_MS } from './track-vision-types';
+import { CameraCalibration, DETECTION_TASKS, DetectionTask, TrackVisionDetection, TrackVisionFrame } from './track-vision-types';
 import { VISION_CONFIDENCE } from './semantic-scene';
-import { analyzeTrackPositions } from './track-position-analysis';
 import { reconstructTrack } from './track-reconstruction';
 import { DEFAULT_CAMERA, validCalibration } from './camera-projection';
 import TrackCalibration, { CameraGroundGrid } from './TrackCalibration';
@@ -14,6 +13,8 @@ import ReconstructedSceneView from './ReconstructedSceneView';
 import BirdsEyeView from './BirdsEyeView';
 import { reconstructScene } from './reconstructed-scene';
 import { projectBirdsEyeScene } from './birds-eye-scene';
+import { readVisionMotion, TrackHistory, VisionMotion } from './track-history';
+import { liveTelemetryStore } from '../live-telemetry-store';
 import { drawLabelDepths, filteredFrame, filteredMasks, PIPELINE_STEPS, PipelineStep } from './pipeline-visuals';
 import PipelineDetails from './PipelineDetails';
 import { createDepthMap, depthAtMouse, drawDepthMap, formatDepth } from './depth-map';
@@ -41,8 +42,9 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const modelVersion = useRef(0);
     const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const latest = useRef<TrackVisionDetection | null>(null);
-    const analysisExpiry = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-    const [analysis, setAnalysis] = useState<TrackVisionAnalysis | null>(null);
+    const trackHistory = useRef(new TrackHistory());
+    const motion = useRef<VisionMotion | undefined>(undefined);
+    const motionGeneration = useRef(0);
     const listeners = useRef(new Set<() => void>());
     const [sources, setSources] = useState<ScreenCaptureSource[]>([]);
     const [sourceId, setSourceId] = useState('');
@@ -115,21 +117,26 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     }, [detectors.segment, displayLabel]);
 
     const publish = useCallback((result: TrackVisionFrame | null) => {
-        clearTimeout(analysisExpiry.current);
-        if (result) result = { ...result, filterConfidence: options.current.filterConfidence };
+        if (result) result = { ...result, filterConfidence: options.current.filterConfidence,
+            motion: motion.current && result.motion?.generation === motionGeneration.current ? result.motion : undefined };
         const reconstruction = reconstructTrack(result);
         const geometry = reconstruction?.geometry ?? null;
-        const scene = result?.detections.segment?.task === 'segment' ? analyzeTrackPositions(result, reconstruction) : null;
         const reconstructedScene = reconstructScene(result);
-        const birdsEyeScene = projectBirdsEyeScene(reconstructedScene, result?.calibration);
-        latest.current = result ? { ...result, reconstruction, reconstructedScene, birdsEyeScene, geometry, analysis: scene } : null;
+        const birdsEyeScene = trackHistory.current.update(result, projectBirdsEyeScene(reconstructedScene, result?.calibration));
+        latest.current = result ? { ...result, reconstruction, reconstructedScene, birdsEyeScene, geometry } : null;
         setPreviewResult(latest.current);
         if (!result) setDepthPointer(null);
-        const remaining = result ? result.capturedAt + VISION_MAX_AGE_MS - Date.now() : 0;
-        setAnalysis(remaining > 0 ? scene : null);
-        if (scene && remaining > 0) analysisExpiry.current = setTimeout(() => setAnalysis(null), remaining);
         listeners.current.forEach((listener) => listener());
     }, []);
+    useEffect(() => liveTelemetryStore.subscribeEvents((event) => {
+        const next = event.type === 'frame' ? readVisionMotion(event.sample, Date.now(), motionGeneration.current) : undefined;
+        if (!next && (motion.current || event.type !== 'frame')) {
+            motionGeneration.current++;
+            motion.current = undefined;
+            trackHistory.current.reset();
+            if (latest.current) publish({ ...latest.current, motion: undefined });
+        } else motion.current = next;
+    }), [publish]);
     const updateCalibration = (camera?: CameraCalibration) => {
         const frame = previewFrameRef.current;
         const result = latest.current;
@@ -270,7 +277,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                         context.drawImage(video, 0, 0);
                         const stackVersion = modelVersion.current;
                         const frameConfidence = options.current.confidence;
-                        const result: TrackVisionFrame = { capturedAt: Date.now(), width: frame.width, height: frame.height, detections: {} };
+                        const result: TrackVisionFrame = { capturedAt: Date.now(), motion: motion.current,
+                            width: frame.width, height: frame.height, detections: {} };
                         const inference = (async () => {
                             if (!models.current.segment || !models.current.depth) return;
                             for (const { id } of DETECTION_TASKS) {
@@ -442,27 +450,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 </div>
                 {step === 'birds-eye' && <BirdsEyeView scene={hasFrame ? previewResult?.birdsEyeScene ?? null : null}
                     hasReconstructedScene={hasFrame && Boolean(previewResult?.reconstructedScene)} capturedAt={previewResult?.capturedAt} />}
-                <div hidden={!isSceneStep}>
-                    <section className="track-vision__analysis" aria-label="Screen analysis">
-                        <h3>Screen analysis</h3>
-                        <dl>
-                            <div><dt>Driver position</dt><dd aria-label="Driver position">{analysis?.driverPosition ? <>
-                                <div>Left boundary: {analysis.driverPosition.leftBoundaryDistanceM.toFixed(1)} m</div>
-                                <div>Right boundary: {analysis.driverPosition.rightBoundaryDistanceM.toFixed(1)} m</div>
-                            </> : 'Unknown'}</dd>
-                                {analysis?.driverPosition && <p className="track-vision__hint">Measured at visible track {analysis.driverPosition.referenceDistanceM.toFixed(1)} m ahead.</p>}
-                            </div>
-                            <div><dt>Opponents relative to driver</dt><dd aria-label="Opponent positions">{analysis?.opponents?.length
-                                ? <ol className="track-vision__opponents">{analysis.opponents.map((opponent, index) => <li key={index}>
-                                    {Math.abs(opponent.longitudinalOffsetM).toFixed(1)} m {opponent.longitudinalOffsetM >= 0 ? 'ahead' : 'behind'}
-                                    {' · '}{Math.abs(opponent.lateralOffsetM) < 0.05 ? 'Aligned with driver'
-                                        : `${Math.abs(opponent.lateralOffsetM).toFixed(1)} m ${opponent.lateralOffsetM < 0 ? 'left' : 'right'}`}
-                                </li>)}</ol>
-                                : analysis?.carAhead === 1 ? 'Individual positions unresolved'
-                                    : analysis?.carAhead === 0 ? 'No opponent detected' : 'Unknown'}</dd></div>
-                        </dl>
-                    </section>
-                </div>
             </div>
             <details className="track-vision__settings" open={DETECTION_TASKS.some(({ id }) => Boolean(detectors[id].error))}>
                 <summary>Setting <span>{DETECTION_TASKS.map(({ id, label }) =>

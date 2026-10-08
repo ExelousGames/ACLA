@@ -1,6 +1,6 @@
 import { createLiveTelemetryStore, LiveTelemetryFrameEvent } from '../live-telemetry-store';
 import type { StandardTelemetrySample } from '../live-session-types';
-import { COOLDOWN_MS, PHRASE_RULES, PhraseCondition, PhraseEngine, TELEMETRY_MAX_AGE_MS } from './phrase-engine';
+import { COOLDOWN_MS, PHRASE_RULES, PhraseCondition, PhraseConditionGroup, PhraseEngine, TELEMETRY_MAX_AGE_MS, conditionGroup, type PhraseConditionConnector, type PhraseConditionNode } from './phrase-engine';
 import { VISION_MAX_AGE_MS } from '../track-vision/track-vision-types';
 import { circuitMap, shapedCornerMap, vision } from './test-fixtures';
 
@@ -17,18 +17,310 @@ const update = (engine: PhraseEngine, now: number, sample: StandardTelemetrySamp
     engine.receiveVision(vision(now), now);
     return engine.receiveTelemetry(frame(sample), now);
 };
+const straightDriving = { ...driving, Graphics_normalized_car_position: 0.5 };
+const slipstreamVision = (capturedAt: number, x = 2, y = 9) => {
+    const detection = vision(capturedAt, { corner: 'straight' });
+    detection.birdsEyeScene!.cars[0].position = { x, y, z: 0 };
+    return detection;
+};
 
-describe('vision and Live Map overtaking guides', () => {
-    it('uses the published BEV when depth-based analysis and geometry are unavailable', () => {
+describe('condition connectors', () => {
+    const ruleWith = (conditions: readonly PhraseCondition[]) => ({ ...PHRASE_RULES[0], conditions });
+
+    describe.each([
+        { expression: 'A AND B AND C', connectors: ['and', 'and'], matches: (a: boolean, b: boolean, c: boolean) => a && b && c },
+        { expression: 'A OR B OR C', connectors: ['or', 'or'], matches: (a: boolean, b: boolean, c: boolean) => a || b || c },
+        { expression: 'A AND B OR C', connectors: ['and', 'or'], matches: (a: boolean, b: boolean, c: boolean) => (a && b) || c },
+        { expression: 'A OR B AND C', connectors: ['or', 'and'], matches: (a: boolean, b: boolean, c: boolean) => a || (b && c) },
+    ] as const)('$expression', ({ connectors, matches }) => {
+        it.each([
+            [false, false, false], [false, false, true], [false, true, false], [false, true, true],
+            [true, false, false], [true, false, true], [true, true, false], [true, true, true],
+        ])('evaluates A=%s B=%s C=%s with the configured hold', (a, b, c) => {
+            const conditions = [a, b, c].map((met, index) => new PhraseCondition(
+                'speed', '>=', met ? 30 : 120, undefined, index === 0 ? 'and' : connectors[index - 1],
+            ));
+            const rule = ruleWith(conditions);
+            const engine = new PhraseEngine([rule]);
+            const started = engine.receiveTelemetry(frame(driving), 0);
+            expect(started.rules[0].status).toBe(matches(a, b, c) ? 'Confirming' : 'Not matched');
+            expect(engine.receiveTelemetry(frame(driving), 799).events).toEqual([]);
+            expect(engine.receiveTelemetry(frame(driving), 800).events.map((event) => event.ruleId))
+                .toEqual(matches(a, b, c) ? [rule.id] : []);
+            expect(started.rules[0].conditions.map((condition) => condition.connector)).toEqual(['and', ...connectors]);
+        });
+    });
+
+    it.each(['and', 'or'] as const)('handles a missing alternative joined by %s', (connector: PhraseConditionConnector) => {
+        const engine = new PhraseEngine([ruleWith([
+            new PhraseCondition('carAhead', '=', 1),
+            new PhraseCondition('speed', '>=', 30, undefined, connector),
+        ])]);
+        const before = engine.receiveTelemetry(frame(driving), 0);
+        const after = engine.receiveTelemetry(frame(driving), 800);
+        expect(after.rules[0].status).toBe(connector === 'or' ? 'Active' : 'Missing input');
+        expect(after.rules[0].missing).toEqual(connector === 'or' ? [] : ['Opponent ahead on visible track']);
+        expect(after.rules[0].conditions[0]).toMatchObject({ inputMissing: true, conditionFit: false });
+        expect(before.rules[0].conditions[1].connector).toBe(connector);
+        const unmatched = engine.receiveTelemetry(frame({ Physics_speed_kmh: 0 }), 900);
+        expect(unmatched.rules[0].status).toBe('Missing input');
+        expect(before.rules[0].conditions[1].conditionFit).toBe(true);
+    });
+
+    it('keeps a later missing OR alternative visible without blocking a matching rule', () => {
+        const engine = new PhraseEngine([ruleWith([
+            new PhraseCondition('speed', '>=', 30),
+            new PhraseCondition('carAhead', '=', 1, undefined, 'or'),
+        ])]);
+        engine.receiveTelemetry(frame(driving), 0);
+        const snapshot = engine.receiveTelemetry(frame(driving), 800);
+        expect(snapshot.rules[0]).toMatchObject({ status: 'Active', missing: [] });
+        expect(snapshot.rules[0].conditions[1]).toMatchObject({ inputMissing: true, conditionFit: false, connector: 'or' });
+    });
+
+    it.each(['and', 'or'] as const)('ignores the first connector (%s) and requires live telemetry', (connector) => {
+        const engine = new PhraseEngine([ruleWith([new PhraseCondition('carAhead', '=', 1, undefined, connector)])]);
+        engine.receiveVision(vision(0), 0);
+        expect(engine.evaluate(0, true).events).toEqual([]);
+        engine.receiveTelemetry(frame(driving), 0);
+        expect(engine.receiveTelemetry(frame(driving), 800).rules[0].status).toBe('Active');
+        const expired = engine.receiveVision(vision(2400), 2400);
+        expect(expired.rules[0].conditions[0].conditionFit).toBe(true);
+        expect(expired.rules[0].status).toBe('Missing input');
+        expect(engine.receiveTelemetry(frame(driving, 1), 2500).rules[0].status).toBe('Missing input');
+    });
+
+    it('requires at least one condition to match', () => {
+        const engine = new PhraseEngine([ruleWith([])]);
+        engine.receiveTelemetry(frame(driving), 0);
+        expect(engine.receiveTelemetry(frame(driving), 800).events).toEqual([]);
+    });
+});
+
+describe('nested condition groups', () => {
+    const leaf = (met: boolean, connector: PhraseConditionConnector = 'and') => new PhraseCondition('speed', '>=', met ? 30 : 120, undefined, connector);
+    const ruleWith = (conditions: readonly PhraseConditionNode[]) => ({ ...PHRASE_RULES[0], conditions });
+
+    describe.each([
+        {
+            expression: 'A OR (B AND C)',
+            conditions: (a: boolean, b: boolean, c: boolean) => [leaf(a), conditionGroup([leaf(b), leaf(c)], 'or')],
+            matches: (a: boolean, b: boolean, c: boolean) => a || (b && c),
+        },
+        {
+            expression: '(A OR B) AND C',
+            conditions: (a: boolean, b: boolean, c: boolean) => [conditionGroup([leaf(a), leaf(b, 'or')]), leaf(c)],
+            matches: (a: boolean, b: boolean, c: boolean) => (a || b) && c,
+        },
+        {
+            expression: 'A AND (B OR C)',
+            conditions: (a: boolean, b: boolean, c: boolean) => [leaf(a), conditionGroup([leaf(b), leaf(c, 'or')])],
+            matches: (a: boolean, b: boolean, c: boolean) => a && (b || c),
+        },
+        {
+            expression: '(A OR (B AND C))',
+            conditions: (a: boolean, b: boolean, c: boolean) => [conditionGroup([leaf(a), conditionGroup([leaf(b), leaf(c)], 'or')])],
+            matches: (a: boolean, b: boolean, c: boolean) => a || (b && c),
+        },
+        {
+            expression: 'A AND (B OR (C AND true))',
+            conditions: (a: boolean, b: boolean, c: boolean) => [leaf(a), conditionGroup([leaf(b), conditionGroup([leaf(c), leaf(true)], 'or')])],
+            matches: (a: boolean, b: boolean, c: boolean) => a && (b || c),
+        },
+        {
+            expression: '(A OR B AND C)',
+            conditions: (a: boolean, b: boolean, c: boolean) => [conditionGroup([leaf(a), leaf(b, 'or'), leaf(c)])],
+            matches: (a: boolean, b: boolean, c: boolean) => a || (b && c),
+        },
+    ])('$expression', ({ conditions, matches }) => {
+        it.each([
+            [false, false, false], [false, false, true], [false, true, false], [false, true, true],
+            [true, false, false], [true, false, true], [true, true, false], [true, true, true],
+        ])('evaluates A=%s B=%s C=%s before applying hold and emitting', (a, b, c) => {
+            const rule = ruleWith(conditions(a, b, c));
+            const engine = new PhraseEngine([rule]);
+            expect(engine.receiveTelemetry(frame(driving), 0).rules[0].status).toBe(matches(a, b, c) ? 'Confirming' : 'Not matched');
+            expect(engine.receiveTelemetry(frame(driving), 799).events).toEqual([]);
+            expect(engine.receiveTelemetry(frame(driving), 800).events.map((event) => event.ruleId)).toEqual(matches(a, b, c) ? [rule.id] : []);
+        });
+    });
+
+    it('ignores the first connector independently at every nesting level', () => {
+        const engine = new PhraseEngine([ruleWith([
+            conditionGroup([conditionGroup([leaf(true, 'or')], 'or'), leaf(false)], 'or'),
+        ])]);
+        expect(engine.receiveTelemetry(frame(driving), 0).rules[0].status).toBe('Not matched');
+        expect(engine.receiveTelemetry(frame(driving), 800).events).toEqual([]);
+    });
+
+    it('never treats empty groups as matching', () => {
+        const engine = new PhraseEngine([ruleWith([conditionGroup([conditionGroup([])])])]);
+        expect(engine.receiveTelemetry(frame(driving), 0).rules[0].status).toBe('Not matched');
+        expect(engine.receiveTelemetry(frame(driving), 800).events).toEqual([]);
+    });
+
+    it.each(['and', 'or'] as const)('handles nested missing inputs joined by %s', (connector) => {
+        const engine = new PhraseEngine([ruleWith([conditionGroup([
+            new PhraseCondition('carAhead', '=', 1),
+            conditionGroup([leaf(true)], connector),
+        ])])]);
+        engine.receiveTelemetry(frame(driving), 0);
+        const snapshot = engine.receiveTelemetry(frame(driving), 800);
+        expect(snapshot.rules[0]).toMatchObject({
+            status: connector === 'or' ? 'Active' : 'Missing input',
+            missing: connector === 'or' ? [] : ['Opponent ahead on visible track'],
+            conditions: [{ conditionFit: connector === 'or', inputMissing: connector === 'and', conditions: [
+                { conditionFit: false, inputMissing: true },
+                { connector, conditionFit: true, inputMissing: false },
+            ] }],
+        });
+    });
+
+    it('does not report missing inputs from a satisfied group when a sibling fails', () => {
+        const engine = new PhraseEngine([ruleWith([
+            conditionGroup([new PhraseCondition('carAhead', '=', 1), leaf(true, 'or')]),
+            leaf(false),
+        ])]);
+        expect(engine.receiveTelemetry(frame(driving), 0).rules[0]).toMatchObject({ status: 'Not matched', missing: [] });
+    });
+
+    it('evaluates every descendant and preserves past snapshots and the catalog', () => {
+        const group = conditionGroup([leaf(true), conditionGroup([leaf(true), leaf(false)], 'or')]);
+        const rule = ruleWith([group]);
+        const engine = new PhraseEngine([rule]);
+        const before = engine.receiveTelemetry(frame(driving), 0);
+        const after = engine.receiveTelemetry(frame({ Physics_speed_kmh: 0 }), 100);
+        const evaluated = before.rules[0].conditions[0] as PhraseConditionGroup;
+        expect(evaluated).toBeInstanceOf(PhraseConditionGroup);
+        expect(evaluated).not.toBe(group);
+        expect(evaluated.conditions[0]).toBeInstanceOf(PhraseCondition);
+        expect(evaluated.conditions[0]).not.toBe(group.conditions[0]);
+        expect(evaluated.conditions[1]).toBeInstanceOf(PhraseConditionGroup);
+        expect(evaluated).toMatchObject({ conditionFit: true, conditions: [
+            { conditionFit: true },
+            { connector: 'or', conditionFit: false, conditions: [{ conditionFit: true }, { conditionFit: false }] },
+        ] });
+        expect(after.rules[0].conditions[0]).toMatchObject({ conditionFit: false });
+        expect(new PhraseEngine([rule]).evaluate(100).rules[0].conditions[0]).toMatchObject({ conditionFit: false, inputMissing: true });
+        expect(group).toMatchObject({ conditionFit: false, inputMissing: true, conditions: [
+            { conditionFit: false }, { conditionFit: false, conditions: [{ conditionFit: false }, { conditionFit: false }] },
+        ] });
+    });
+
+    it('requires live telemetry even when nested vision conditions remain met', () => {
+        const engine = new PhraseEngine([ruleWith([conditionGroup([conditionGroup([new PhraseCondition('carAhead', '=', 1)])])])]);
+        engine.receiveVision(vision(0), 0);
+        expect(engine.evaluate(0, true).events).toEqual([]);
+        engine.receiveTelemetry(frame(driving), 0);
+        expect(engine.receiveTelemetry(frame(driving), 800).rules[0].status).toBe('Active');
+        const expired = engine.receiveVision(vision(2400), 2400);
+        expect(expired.rules[0].conditions[0].conditionFit).toBe(true);
+        expect(expired.rules[0].status).toBe('Missing input');
+    });
+});
+
+describe('slipstream distance, motion and alignment', () => {
+    it.each([
+        { name: 'steady gap within 10 m', x: 2, distances: [9, 9, 9], emits: true },
+        { name: 'exactly 10 m away', x: 6, distances: [8, 8, 8], emits: true },
+        { name: 'offset to the left', x: -2, distances: [9, 9, 9], emits: true },
+        { name: 'increasing gap', x: 2, distances: [8, 8.5, 9], emits: true },
+        { name: 'more than 10 m away', x: 6, distances: [8.01, 8.01, 8.01], emits: false },
+        { name: 'closing gap', x: 2, distances: [9.6, 9.4, 9.2], emits: false },
+        { name: 'directly behind', x: 0, distances: [9, 9, 9], emits: false },
+        { name: 'right alignment boundary', x: 1, distances: [9, 9, 9], emits: false },
+        { name: 'left alignment boundary', x: -1, distances: [9, 9, 9], emits: false },
+    ])('$name', ({ x, distances, emits }) => {
         const engine = new PhraseEngine();
         engine.receiveMap(map, 0);
-        const detection = { ...vision(0), analysis: null, geometry: null };
+        [0, 100, 900].forEach((now, index) => {
+            engine.receiveVision(slipstreamVision(now, x, distances[index]), now);
+            engine.receiveTelemetry(frame(straightDriving), now);
+            expect(ids(engine, now)).toEqual(emits && now === 900 ? ['slipstream'] : []);
+        });
+    });
+
+    it('requires two distinct captures before starting the hold, and only telemetry emits', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        const first = slipstreamVision(0);
+        engine.receiveVision(first, 0);
+        engine.receiveTelemetry(frame(straightDriving), 0);
+        engine.receiveVision(first, 800);
+        const waiting = engine.receiveTelemetry(frame(straightDriving), 800);
+        expect(waiting.events).toEqual([]);
+        expect(waiting.rules.find((rule) => rule.id === 'slipstream')!.conditions
+            .find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'closingOnOpponent')).toMatchObject({ inputMissing: true, conditionFit: false });
+        engine.receiveVision(slipstreamVision(900), 900);
+        engine.receiveTelemetry(frame(straightDriving), 900);
+        engine.receiveVision(slipstreamVision(1699), 1699);
+        engine.receiveTelemetry(frame(straightDriving), 1699);
+        expect(ids(engine, 1699)).toEqual([]);
+        engine.receiveVision(slipstreamVision(1700), 1700);
+        expect(ids(engine, 1700)).toEqual([]);
+        engine.receiveTelemetry(frame(straightDriving), 1700);
+        expect(ids(engine, 1700)).toEqual(['slipstream']);
+    });
+
+    it('does not turn duplicate or out-of-order captures into evidence of a steady gap', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        engine.receiveVision(slipstreamVision(0, 2, 9.5), 0);
+        engine.receiveTelemetry(frame(straightDriving), 0);
+        engine.receiveVision(slipstreamVision(100, 2, 9), 100);
+        engine.receiveTelemetry(frame(straightDriving), 100);
+        engine.receiveVision(slipstreamVision(100, 2, 9), 200);
+        engine.receiveVision(slipstreamVision(50, 2, 8.5), 300);
+        const snapshot = engine.receiveTelemetry(frame(straightDriving), 1000);
+        expect(snapshot.events).toEqual([]);
+        expect(snapshot.rules.find((rule) => rule.id === 'slipstream')!.conditions
+            .find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'closingOnOpponent')).toMatchObject({ inputMissing: false, conditionFit: false });
+    });
+
+    it.each(['stopped', 'missing scene', 'missing opponent', 'pack', 'calibration', 'expired', 'future timestamp', 'reset'])
+    ('requires new motion evidence after %s', (change) => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        engine.receiveVision(slipstreamVision(0), 0);
+        engine.receiveTelemetry(frame(straightDriving), 0);
+        engine.receiveVision(slipstreamVision(100), 100);
+        engine.receiveTelemetry(frame(straightDriving), 100);
+        const interrupted = slipstreamVision(200);
+        if (change === 'missing scene') interrupted.birdsEyeScene = null;
+        if (change === 'missing opponent') interrupted.birdsEyeScene!.cars = [];
+        if (change === 'pack') interrupted.birdsEyeScene!.cars[0].pack = true;
+        if (change === 'calibration') interrupted.calibration = { ...interrupted.calibration!, lateralOffsetM: 0.5 };
+        if (change === 'future timestamp') interrupted.capturedAt = 5000;
+        if (change === 'reset') engine.reset(200);
+        else if (change !== 'expired') engine.receiveVision(change === 'stopped' ? null : interrupted, 200);
+        const now = change === 'expired' ? VISION_MAX_AGE_MS + 200 : 300;
+        engine.receiveVision(slipstreamVision(now), now);
+        const waiting = engine.receiveTelemetry(frame(straightDriving), now);
+        expect(waiting.rules.find((rule) => rule.id === 'slipstream')!.conditions
+            .find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'closingOnOpponent')).toMatchObject({ inputMissing: true });
+        expect(ids(engine, now)).toEqual([]);
+        engine.receiveVision(slipstreamVision(now + 100), now + 100);
+        engine.receiveTelemetry(frame(straightDriving), now + 100);
+        engine.receiveVision(slipstreamVision(now + 899), now + 899);
+        engine.receiveTelemetry(frame(straightDriving), now + 899);
+        expect(ids(engine, now + 899)).toEqual([]);
+        engine.receiveVision(slipstreamVision(now + 900), now + 900);
+        engine.receiveTelemetry(frame(straightDriving), now + 900);
+        expect(ids(engine, now + 900)).toEqual(['slipstream']);
+    });
+});
+
+describe('vision and Live Map overtaking guides', () => {
+    it('uses the published BEV when depth-based geometry is unavailable', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        const detection = { ...vision(0), geometry: null };
         engine.receiveVision(detection, 0);
         const snapshot = engine.receiveTelemetry(frame(driving), 0);
         expect(snapshot.visionReady).toBe(true);
         const conditions = snapshot.rules.find((rule) => rule.id === defaultRule)!.conditions;
-        for (const input of ['carAhead', 'playerPosition', 'opponentPosition']) {
-            expect(conditions.find((condition) => condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
+        for (const input of ['carAhead', 'playerCorner', 'playerPosition', 'opponentCorner', 'opponentPosition']) {
+            expect(conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
         }
         engine.receiveTelemetry(frame(driving), 800);
         expect(ids(engine, 800)).toEqual([defaultRule]);
@@ -39,16 +331,33 @@ describe('vision and Live Map overtaking guides', () => {
         engine.receiveMap(map, 0);
         const belowThreshold = update(engine, 0, { ...driving, Physics_speed_kmh: 29 });
         const conditions = belowThreshold.rules.find((rule) => rule.id === defaultRule)!.conditions;
-        expect(conditions.find((condition) => condition.input === 'speed')).toMatchObject({ conditionFit: false, inputMissing: false });
-        expect(conditions.filter((condition) => condition.input !== 'speed').every((condition) => condition.conditionFit)).toBe(true);
+        expect(conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'speed')).toMatchObject({ conditionFit: false, inputMissing: false });
+        expect(conditions.filter((condition) => condition instanceof PhraseCondition && condition.input !== 'speed').every((condition) => condition.conditionFit)).toBe(true);
 
         engine.receiveVision(null, 100);
         const missingVision = engine.receiveTelemetry(frame({ ...driving, Physics_speed_kmh: 30 }), 100);
         const current = missingVision.rules.find((rule) => rule.id === defaultRule)!;
         expect(current.status).toBe('Missing input');
-        expect(current.conditions.find((condition) => condition.input === 'speed')).toMatchObject({ conditionFit: true, inputMissing: false });
-        expect(current.conditions.find((condition) => condition.input === 'carAhead')).toMatchObject({ conditionFit: false, inputMissing: true });
-        expect(current.conditions.find((condition) => condition.input === 'phase')).toMatchObject({ conditionFit: true, inputMissing: false });
+        expect(current.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'speed')).toMatchObject({ conditionFit: true, inputMissing: false });
+        expect(current.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'carAhead')).toMatchObject({ conditionFit: false, inputMissing: true });
+        expect(current.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'phase')).toMatchObject({ conditionFit: true, inputMissing: false });
+    });
+
+    it('reports known track positions separately from missing turn directions', () => {
+        const engine = new PhraseEngine();
+        engine.receiveMap(map, 0);
+        engine.receiveVision(vision(0, { corner: 'straight' }), 0);
+        engine.receiveTelemetry(frame(driving), 0);
+        const snapshot = engine.receiveTelemetry(frame(driving), 800);
+        expect(snapshot.events).toEqual([]);
+        const rule = snapshot.rules.find((rule) => rule.id === defaultRule)!;
+        expect(rule.missing).toEqual(['Player turn corner', 'Opponent turn corner', 'Player inside, opponent off the inside']);
+        for (const input of ['playerPosition', 'opponentPosition']) {
+            expect(rule.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
+        }
+        for (const input of ['playerCorner', 'opponentCorner']) {
+            expect(rule.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === input)).toMatchObject({ conditionFit: false, inputMissing: true });
+        }
     });
 
     it('evaluates all conditions in guides suppressed by a higher-priority match', () => {
@@ -69,7 +378,7 @@ describe('vision and Live Map overtaking guides', () => {
         const after = update(engine, 100, { ...driving, Physics_speed_kmh: 0 });
         const other = new PhraseEngine().evaluate(100);
         expect(before.rules.find((rule) => rule.id === defaultRule)!.conditions.every((condition) => condition.conditionFit)).toBe(true);
-        expect(after.rules.find((rule) => rule.id === defaultRule)!.conditions.find((condition) => condition.input === 'speed')?.conditionFit).toBe(false);
+        expect(after.rules.find((rule) => rule.id === defaultRule)!.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'speed')?.conditionFit).toBe(false);
         expect(other.rules.every((rule) => rule.conditions.every((condition) => !condition.conditionFit))).toBe(true);
         for (const rule of [...PHRASE_RULES, ...before.rules, ...after.rules]) {
             rule.conditions.forEach((condition) => expect(condition).toBeInstanceOf(PhraseCondition));
@@ -99,7 +408,7 @@ describe('vision and Live Map overtaking guides', () => {
         ]);
         PHRASE_RULES.forEach((rule) => {
             expect(rule.sentence).not.toMatch(/you are .+; the opponent ahead is/);
-            expect(rule.conditions.find((condition) => condition.input === 'phase')?.description).toContain('Live Map section');
+            expect(rule.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'phase')?.description).toContain('Live Map section');
         });
     });
 
@@ -164,15 +473,16 @@ describe('vision and Live Map overtaking guides', () => {
         { tactic: 'next-corner', speed: 'fast', position: 0.11, player: 'outside', opponent: 'inside', linked: true },
         { tactic: 'next-corner', speed: 'slow', position: 0.15, player: 'outside', opponent: 'inside', linked: true },
         { tactic: 'pressure-feint', speed: 'slow', position: 0.11, player: 'middle', opponent: 'outside' },
-        { tactic: 'slipstream', speed: 'slow', position: 0.5, player: 'middle', opponent: 'middle', straight: true },
     ] as const)('selects only $tactic for $speed at $position', (scenario) => {
-        const engine = new PhraseEngine();
-        engine.receiveMap(circuitMap(scenario.speed, 'linked' in scenario), 0);
-        const sample = { ...driving, Graphics_normalized_car_position: scenario.position };
-        engine.receiveVision(vision(0, { corner: 'straight' in scenario ? 'straight' : 'left', player: scenario.player, opponent: scenario.opponent }), 0);
-        engine.receiveTelemetry(frame(sample), 0);
-        engine.receiveTelemetry(frame(sample), 800);
-        expect(ids(engine, 800)).toEqual([scenario.tactic]);
+        for (const corner of ['left', 'right'] as const) {
+            const engine = new PhraseEngine();
+            engine.receiveMap(circuitMap(scenario.speed, 'linked' in scenario), 0);
+            const sample = { ...driving, Graphics_normalized_car_position: scenario.position };
+            engine.receiveVision(vision(0, { corner, player: scenario.player, opponent: scenario.opponent }), 0);
+            engine.receiveTelemetry(frame(sample), 0);
+            engine.receiveTelemetry(frame(sample), 800);
+            expect(ids(engine, 800)).toEqual([scenario.tactic]);
+        }
     });
 
     it.each([null, { ...map, centerline_tags: [] }, circuitMap('fast')])('withholds inside outbraking without a mapped slow corner', (input) => {
@@ -258,12 +568,12 @@ describe('vision and Live Map overtaking guides', () => {
             { id: 'second', label: 'straight', start_position: 0.5, end_position: 0.8 },
         ];
         engine.receiveMap(split, 0);
-        update(engine, 0, { ...driving, Graphics_normalized_car_position: 0.49 });
-        update(engine, 700, { ...driving, Graphics_normalized_car_position: 0.51 });
-        update(engine, 800, { ...driving, Graphics_normalized_car_position: 0.52 });
-        expect(ids(engine, 800)).toEqual([]);
-        update(engine, 1500, { ...driving, Graphics_normalized_car_position: 0.53 });
-        expect(ids(engine, 1500)).toEqual(['slipstream']);
+        engine.receiveVision(slipstreamVision(0), 0);
+        for (const [now, position] of [[100, 0.49], [700, 0.51], [800, 0.52], [1500, 0.53]]) {
+            engine.receiveVision(slipstreamVision(now), now);
+            engine.receiveTelemetry(frame({ ...driving, Graphics_normalized_car_position: position }), now);
+            expect(ids(engine, now)).toEqual(now < 1500 ? [] : ['slipstream']);
+        }
     });
 
     it.each([
@@ -321,7 +631,7 @@ describe('vision and Live Map overtaking guides', () => {
         ['no car ahead', vision(0, { carAhead: false })],
         ['straight road', vision(0, { corner: 'straight' })],
         ['future timestamp', vision(5000)],
-        ['depth only', { capturedAt: 0, analysis: null, width: 100, height: 100, detections: { depth: {
+        ['depth only', { capturedAt: 0, width: 100, height: 100, detections: { depth: {
             task: 'depth' as const, width: 1, height: 1, values: new Float32Array([10]), inferenceMs: 1, classNames: [],
         } } }],
     ])('withholds every suggestion with %s', (_label, detection) => {
@@ -343,8 +653,8 @@ describe('vision and Live Map overtaking guides', () => {
         expect(snapshot.visionReady).toBe(false);
         expect(snapshot.events).toEqual([]);
         const conditions = snapshot.rules.find((rule) => rule.id === defaultRule)!.conditions;
-        expect(conditions.find((condition) => condition.input === 'speed')).toMatchObject({ conditionFit: true, inputMissing: false });
-        expect(conditions.find((condition) => condition.input === 'carAhead')).toMatchObject({ conditionFit: false, inputMissing: true });
+        expect(conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'speed')).toMatchObject({ conditionFit: true, inputMissing: false });
+        expect(conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'carAhead')).toMatchObject({ conditionFit: false, inputMissing: true });
     });
 
     it('restarts the hold when vision stops or capture resumes after a gap', () => {
@@ -426,9 +736,9 @@ describe('vision and Live Map overtaking guides', () => {
         expect(expired.telemetryReady).toBe(false);
         expect(expired.events).toEqual([]);
         const conditions = expired.rules.find((rule) => rule.id === defaultRule)!.conditions;
-        expect(conditions.find((condition) => condition.input === 'speed')).toMatchObject({ conditionFit: false, inputMissing: true });
-        expect(conditions.find((condition) => condition.input === 'phase')).toMatchObject({ conditionFit: false, inputMissing: true });
-        expect(conditions.find((condition) => condition.input === 'carAhead')).toMatchObject({ conditionFit: true, inputMissing: false });
+        expect(conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'speed')).toMatchObject({ conditionFit: false, inputMissing: true });
+        expect(conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'phase')).toMatchObject({ conditionFit: false, inputMissing: true });
+        expect(conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'carAhead')).toMatchObject({ conditionFit: true, inputMissing: false });
     });
 
     it.each(['session-reset', 'stream-reset'] as const)('clears history, holds and old vision on %s', (type) => {

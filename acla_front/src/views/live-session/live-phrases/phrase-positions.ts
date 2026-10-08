@@ -2,7 +2,8 @@ import type { BirdsEyeScene } from '../track-vision/birds-eye-scene';
 import type { GroundPoint } from '../track-vision/track-vision-types';
 import { fitRoadPolynomial, roadCurvature } from '../track-vision/road-polynomial';
 
-export type CornerPosition = 'inside' | 'middle' | 'outside';
+export type CornerDirection = 'left' | 'right';
+export type TrackPosition = 'left' | 'middle' | 'right';
 
 /** Interpolate within a displayed boundary section, never across gaps or beyond its ends. */
 function boundaryX(points: GroundPoint[], y: number): number | undefined {
@@ -16,14 +17,16 @@ function boundaryX(points: GroundPoint[], y: number): number | undefined {
 
 /** Interpret the same calibrated flat-road scene shown in Track Vision's BEV. */
 export function getPhrasePositions(scene?: BirdsEyeScene | null): {
-    carAhead?: 0 | 1; playerPosition?: CornerPosition; opponentPosition?: CornerPosition;
+    carAhead?: 0 | 1; playerCorner?: CornerDirection; opponentCorner?: CornerDirection;
+    playerPosition?: TrackPosition; opponentPosition?: TrackPosition;
+    opponentDistanceM?: number; opponentLateralOffsetM?: number;
 } {
     if (!scene) return {};
     const boundary = (points: GroundPoint[]) => ({ points, curve: fitRoadPolynomial(points),
         minY: Math.min(...points.map(({ y }) => y)), maxY: Math.max(...points.map(({ y }) => y)) });
     const left = scene.leftBoundary.map(boundary), right = scene.rightBoundary.map(boundary);
     const roads = left.flatMap((left) => right.flatMap((right) => {
-        const minY = Math.max(left.minY, right.minY), maxY = Math.min(left.maxY, right.maxY);
+        const minY = Math.max(0, left.minY, right.minY), maxY = Math.min(left.maxY, right.maxY);
         return minY < maxY ? [{ left, right, minY, maxY }] : [];
     })).sort((a, b) => a.minY - b.minY);
     const sliceAt = (y: number) => {
@@ -41,23 +44,35 @@ export function getPhrasePositions(scene?: BirdsEyeScene | null): {
         .sort((a, b) => a.car.position.y - b.car.position.y);
     const carAhead = onTrack.length ? 1 : reference && !scene.unplacedCars && traffic.every(({ slice }) => slice) ? 0 : undefined;
     const result: ReturnType<typeof getPhrasePositions> = { carAhead };
-    if (!reference?.slice) return result;
-    const { road } = reference.slice;
-    if (!road.left.curve || !road.right.curve) return result;
-    const leftCurvature = roadCurvature(road.left.curve, reference.y);
-    const rightCurvature = roadCurvature(road.right.curve, reference.y);
-    const curvature = (leftCurvature + rightCurvature) / 2;
-    if (!Number.isFinite(curvature) || Math.abs(curvature) < 0.0015
-        || leftCurvature * Math.sign(curvature) <= -0.0015
-        || rightCurvature * Math.sign(curvature) <= -0.0015) return result;
-    const position = (x: number, slice: ReturnType<typeof sliceAt>): CornerPosition | undefined => {
-        if (!slice || x < slice.leftX || x > slice.rightX) return undefined;
-        const inside = (curvature < 0 ? x - slice.leftX : slice.rightX - x) / (slice.rightX - slice.leftX);
-        return inside < 0.4 ? 'inside' : inside > 0.6 ? 'outside' : 'middle';
-    };
-    // The origin is compared with the nearest visible road slice, without extrapolating unseen edges.
-    result.playerPosition = position(0, reference.slice);
     const opponent = onTrack.find(({ car }) => !car.pack);
-    if (opponent) result.opponentPosition = position(opponent.car.position.x, opponent.slice);
+    if (opponent) {
+        const { x, y } = opponent.car.position;
+        result.opponentDistanceM = Math.hypot(x, y);
+        result.opponentLateralOffsetM = x;
+    }
+    const position = (x: number, slice: ReturnType<typeof sliceAt>): TrackPosition | undefined => {
+        if (!slice || x < slice.leftX || x > slice.rightX) return undefined;
+        const across = (x - slice.leftX) / (slice.rightX - slice.leftX);
+        return across < 0.4 ? 'left' : across > 0.6 ? 'right' : 'middle';
+    };
+    const corner = (y: number, slice: ReturnType<typeof sliceAt>): CornerDirection | undefined => {
+        if (!slice?.road.left.curve || !slice.road.right.curve) return undefined;
+        const leftCurvature = roadCurvature(slice.road.left.curve, y);
+        const rightCurvature = roadCurvature(slice.road.right.curve, y);
+        const curvature = (leftCurvature + rightCurvature) / 2;
+        if (!Number.isFinite(curvature) || Math.abs(curvature) < 0.0015
+            || leftCurvature * Math.sign(curvature) <= -0.0015
+            || rightCurvature * Math.sign(curvature) <= -0.0015) return undefined;
+        return curvature < 0 ? 'left' : 'right';
+    };
+    // Prefer the origin when recent motion-aligned observations support it; never extrapolate edges.
+    if (reference) {
+        result.playerPosition = position(0, reference.slice);
+        if (result.playerPosition) result.playerCorner = corner(reference.y, reference.slice);
+    }
+    if (opponent) {
+        result.opponentPosition = position(opponent.car.position.x, opponent.slice);
+        result.opponentCorner = corner(opponent.car.position.y, opponent.slice);
+    }
     return result;
 }

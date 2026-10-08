@@ -1,0 +1,5 @@
+.live-phrase-display { box-sizing: border-box; padding: 16px; color: #e7ecf2; border-left: 3px solid #37efac; border-radius: 6px; background: #10131a; overflow-wrap: anywhere; }
+.live-phrase-display__header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: #a4adbb; font-size: 10px; }
+.live-phrase-display__header > span { color: #37efac; }
+.live-phrase-display h3 { margin: 0 0 10px; font-size: 16px; line-height: 1.4; }
+.live-phrase-display p { margin: 0; font-size: 14px; line-height: 1.6; }

@@ -3,11 +3,12 @@ import { act, fireEvent, render as renderComponent, screen, within } from '@test
 import LiveTrackVision, { TrackVisionHandle } from './LiveTrackVision';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
 import { drawVisionOverlay } from './vision-overlay';
-import { MODEL_LABELS, multipleCarVision, vision } from './test-fixtures';
+import { MODEL_LABELS, vision } from './test-fixtures';
 import { VISION_MAX_AGE_MS } from './track-vision-types';
-import { reconstructTrack } from './track-position-analysis';
+import { reconstructTrack } from './track-reconstruction';
 import { PhraseEngine } from '../live-phrases/phrase-engine';
 import { circuitMap } from '../live-phrases/test-fixtures';
+import { liveTelemetryStore } from '../live-telemetry-store';
 
 jest.mock('./vision-overlay', () => ({ drawVisionOverlay: jest.fn() }));
 
@@ -52,6 +53,7 @@ const detection = { task: 'segment' as const, width: 2, height: 2, instances: [{
 
 beforeEach(() => {
     jest.useFakeTimers();
+    liveTelemetryStore.resetSession();
     track = { stop: jest.fn(), onended: null };
     stream = { getTracks: () => [track], getVideoTracks: () => [track] } as unknown as MediaStream;
     getDisplayMedia = jest.fn().mockResolvedValue(stream);
@@ -221,7 +223,8 @@ it('walks the visual pipeline without restarting capture, reloading models or ch
     expect(screen.queryByRole('button', { name: 'Reset view' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: '3D overview' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Camera view' })).not.toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Screen analysis' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: 'Screen analysis', hidden: true })).not.toBeInTheDocument();
+    expect(result).not.toHaveProperty('analysis');
     selectStep("Bird's-eye view");
     expect(screen.getByRole('tabpanel', { name: "Bird's-eye view" })).toBeVisible();
     expect(screen.getByText('STEP 08 / 08')).toBeVisible();
@@ -377,7 +380,7 @@ it.each(['left', 'right'] as const)('publishes the displayed BEV for Live Phrase
     fireEvent.click(cameraButton('Apply camera calibration'));
     const detection = ref.current!.getLatestDetection()!;
     expect(detection.geometry).toBeNull();
-    expect(detection.analysis).toEqual({});
+    expect(detection).not.toHaveProperty('analysis');
     expect(detection.birdsEyeScene!.cars).toHaveLength(1);
     selectStep("Bird's-eye view");
     expect(screen.getByLabelText('Top-down traffic')).toHaveTextContent('Car 1');
@@ -389,7 +392,7 @@ it.each(['left', 'right'] as const)('publishes the displayed BEV for Live Phrase
     expect(snapshot.visionReady).toBe(true);
     const conditions = snapshot.rules.find(({ id }) => id === 'inside-outbraking')!.conditions;
     for (const input of ['carAhead', 'playerPosition', 'opponentPosition', 'insideLine']) {
-        expect(conditions.find((condition) => condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
+        expect(conditions.find((condition) => 'input' in condition && condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
     }
     fireEvent.click(cameraButton('Clear calibration'));
     expect(ref.current!.getLatestDetection()!.birdsEyeScene).toBeNull();
@@ -419,7 +422,6 @@ it('projects the previous scene and its cars with relative depth, updates live, 
     expect(ref.current!.getLatestDetection()).toBe(detection);
     expect(detection.reconstruction).toBeNull();
     expect(detection.geometry).toBeNull();
-    expect(detection.analysis?.opponents).toBeUndefined();
     expect(screen.getByText(/Flat-road estimate/)).toBeVisible();
 
     const segment = fixture.detections.segment!;
@@ -441,6 +443,54 @@ it('projects the previous scene and its cars with relative depth, updates live, 
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(screen.queryByLabelText('Your car at the origin')).not.toBeInTheDocument();
     expect(screen.getByLabelText("Bird's-eye view status")).toHaveTextContent('Waiting for scene');
+});
+
+it('remembers the road beside the driver using capture-time motion and clears it on a telemetry reset', async () => {
+    const fixture = vision(0, { width: 1280, height: 720, corner: 'straight', player: 'middle', cars: [],
+        road: (x, y) => Math.abs(x) <= 5 && y >= 8 && y <= 40 });
+    model.detect.mockResolvedValue(fixture.detections.segment);
+    depthModel.detect.mockResolvedValue({ ...fixture.detections.depth, scale: 'relative' });
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    let sequence = 0;
+    const telemetry = (heading = 0) => act(() => {
+        sequence++;
+        liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence, committedSequence: sequence,
+            committedCount: sequence, sample: { Graphics_status: 2, Physics_speed_kmh: 72, Physics_gear: 3, Physics_heading: heading } });
+    });
+    telemetry();
+    await startCapture();
+    fireEvent.click(cameraButton('Apply camera calibration'));
+    expect(ref.current!.getLatestDetection()!.birdsEyeScene!.leftBoundary.flat().every((point) => point.observedAt === undefined)).toBe(true);
+    for (let i = 0; i < 3; i++) {
+        telemetry();
+        await act(async () => { jest.advanceTimersByTime(200); });
+    }
+    const result = ref.current!.getLatestDetection()!;
+    expect(result.birdsEyeScene!.leftBoundary.flat().some((point) => point.observedAt !== undefined && point.y <= 0)).toBe(true);
+    selectStep("Bird's-eye view");
+    expect(screen.getByLabelText("Bird's-eye view status")).toHaveTextContent('Nearby track estimated from recent frames');
+    expect(within(screen.getByLabelText('Top-down left boundary')).getAllByText('Estimated from a previous frame').length).toBeGreaterThan(0);
+
+    const pending = deferred<typeof fixture.detections.segment>();
+    model.detect.mockReturnValueOnce(pending.promise);
+    telemetry();
+    await act(async () => { jest.advanceTimersByTime(200); });
+    telemetry(0.6);
+    await act(async () => { pending.resolve(fixture.detections.segment); });
+    expect(ref.current!.getLatestDetection()!.motion?.headingRad).toBe(0);
+    expect(ref.current!.getLatestDetection()!.birdsEyeScene!.leftBoundary.flat().some((point) => point.observedAt !== undefined)).toBe(true);
+
+    // A pending frame from the previous stream must not restore its motion/history after reset.
+    const resetPending = deferred<typeof fixture.detections.segment>();
+    model.detect.mockReturnValueOnce(resetPending.promise);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    act(() => { liveTelemetryStore.beginStream(); });
+    expect(ref.current!.getLatestDetection()!.birdsEyeScene!.leftBoundary.flat().every((point) => point.observedAt === undefined)).toBe(true);
+    await act(async () => { resetPending.resolve(fixture.detections.segment); });
+    expect(ref.current!.getLatestDetection()!.motion).toBeUndefined();
+    expect(ref.current!.getLatestDetection()!.birdsEyeScene!.leftBoundary.flat().every((point) => point.observedAt === undefined)).toBe(true);
 });
 
 it('reconstructs the full capture without boundary start controls', async () => {
@@ -574,63 +624,34 @@ it('shows a 2D scene independent of the optional capture reference grid', async 
     expect(track.stop).not.toHaveBeenCalled();
 });
 
-it('publishes metric geometry and positions only after camera calibration is applied', async () => {
+it('publishes metric geometry only after camera calibration is applied', async () => {
     model.detect.mockResolvedValue(vision(0, { classNames: MODEL_LABELS }).detections.segment);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     await startCapture();
-    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
     expect(ref.current!.getLatestDetection()!.geometry).toBeNull();
     expect(screen.getByLabelText('Reconstructed scene status')).toHaveTextContent('Track ribbons fitted to detected edges · 50 point pairs per section');
     const capturedAt = ref.current!.getLatestDetection()!.capturedAt;
     const listener = jest.fn();
     ref.current!.subscribeDetection(listener);
     fireEvent.click(cameraButton('Apply camera calibration'));
-    expect(ref.current!.getLatestDetection()).toMatchObject({ capturedAt, analysis: {
-        driverPosition: { leftBoundaryDistanceM: expect.any(Number), rightBoundaryDistanceM: expect.any(Number) },
-        carAhead: 1, opponents: [expect.objectContaining({ longitudinalOffsetM: expect.any(Number), lateralOffsetM: expect.any(Number) })],
-    } });
+    expect(ref.current!.getLatestDetection()).toMatchObject({ capturedAt });
+    expect(ref.current!.getLatestDetection()).not.toHaveProperty('analysis');
     expect(ref.current!.getLatestDetection()!.geometry!.trackWidthM).toBeCloseTo(10, 0);
     expect(listener).toHaveBeenCalled();
-    expect(screen.getByLabelText('Driver position')).toHaveTextContent(/Left boundary: [\d.]+ mRight boundary: [\d.]+ m/);
-    expect(screen.getByLabelText('Opponent positions')).toHaveTextContent(/m ahead · [\d.]+ m right/);
     expect(screen.queryByLabelText('Visible corner')).not.toBeInTheDocument();
-    expect(ref.current!.getLatestDetection()!.analysis).not.toHaveProperty('cornerDirection');
     fireEvent.change(screen.getByLabelText('Camera right of car center (m)'), { target: { value: '-2.5' } });
-    expect(ref.current!.getLatestDetection()!.analysis).toEqual({});
     expect(ref.current!.getLatestDetection()!.geometry).toBeNull();
     fireEvent.click(cameraButton('Apply camera calibration'));
     expect(ref.current!.getLatestDetection()!.capturedAt).toBe(capturedAt);
-    expect(ref.current!.getLatestDetection()!.analysis!.driverPosition!.leftBoundaryDistanceM).toBeCloseTo(5, 0);
+    expect(ref.current!.getLatestDetection()!.geometry!.trackWidthM).toBeCloseTo(10, 0);
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     expect(ref.current!.getLatestDetection()).toBeNull();
-    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
     expect(screen.queryByLabelText('Perspective 3D masks')).not.toBeInTheDocument();
 });
 
-it('shows a list of opponents relative to the driver and clears it when capture stops', async () => {
-    const frame = multipleCarVision();
-    model.detect.mockResolvedValue(frame.detections.segment);
-    depthModel.detect.mockResolvedValue(frame.detections.depth);
-    render(<LiveTrackVision name="vision" />);
-    await flush();
-    await startCapture();
-    fireEvent.click(cameraButton('Apply camera calibration'));
-    selectStep('Reconstructed scene');
-    const opponents = screen.getByLabelText('Opponent positions');
-    const items = within(opponents).getAllByRole('listitem');
-    expect(items).toHaveLength(3);
-    expect(items[0]).toHaveTextContent(/m ahead · [\d.]+ m left/);
-    expect(items[1]).toHaveTextContent(/m ahead · [\d.]+ m right/);
-    expect(items[2]).toHaveTextContent('Aligned with driver');
-    expect(screen.queryByText('Visible corner')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
-    expect(within(opponents).queryByRole('list')).not.toBeInTheDocument();
-    expect(opponents).toHaveTextContent('Unknown');
-});
-
-it('keeps the reconstructed scene visible during pending inference while positions expire', async () => {
+it('keeps the reconstructed scene visible and marks it stale during pending inference', async () => {
     model.detect.mockResolvedValue(vision(0).detections.segment);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
@@ -643,18 +664,14 @@ it('keeps the reconstructed scene visible during pending inference while positio
     expect(edges).not.toBeEmptyDOMElement();
     const displayed = edges.innerHTML;
     const displayedCars = screen.getByLabelText('Reconstructed cars').innerHTML;
-    expect(screen.getByLabelText('Driver position')).not.toHaveTextContent('Unknown');
     const capturedAt = ref.current!.getLatestDetection()!.capturedAt;
     const pending = deferred<typeof detection>();
     model.detect.mockReturnValueOnce(pending.promise);
     await act(async () => { jest.advanceTimersByTime(VISION_MAX_AGE_MS + 1); });
-    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
     expect(screen.getByLabelText('Reconstructed scene status')).toHaveTextContent('Showing last frame (stale)');
-    expect(screen.getByLabelText('Opponent positions')).toHaveTextContent('Unknown');
     expect(screen.getByLabelText('Reconstructed cars').innerHTML).toBe(displayedCars);
     expect(edges.innerHTML).toBe(displayed);
     fireEvent.click(cameraButton('Apply camera calibration'));
-    expect(screen.getByLabelText('Driver position')).toHaveTextContent('Unknown');
     expect(ref.current!.getLatestDetection()!.capturedAt).toBe(capturedAt);
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     await act(async () => { pending.resolve(detection); });
@@ -901,7 +918,7 @@ it('loads the backend model automatically and detects without a file upload', as
     expect(model.dispose).toHaveBeenCalledTimes(1);
 });
 
-it('filters the current and future preview frames without changing detection or analysis', async () => {
+it('filters the current and future preview frames without changing detection or scene reconstruction', async () => {
     const fixture = vision(0, { classNames: MODEL_LABELS });
     model.classNames = MODEL_LABELS;
     model.detect.mockResolvedValue(fixture.detections.segment);
@@ -934,7 +951,7 @@ it('filters the current and future preview frames without changing detection or 
 
     await act(async () => { jest.advanceTimersByTime(200); });
     expect(drawVisionOverlay).toHaveBeenLastCalledWith(context, expect.objectContaining({ detections: result.detections }), 'car');
-    expect(ref.current!.getLatestDetection()!.analysis).toEqual(result.analysis);
+    expect(ref.current!.getLatestDetection()!.reconstructedScene).toEqual(result.reconstructedScene);
     expect(selector).toHaveValue('car');
     fireEvent.change(selector, { target: { value: '' } });
     expect(drawVisionOverlay).toHaveBeenLastCalledWith(context, ref.current!.getLatestDetection(), '');
@@ -1081,7 +1098,7 @@ it('does not reuse old masks for depth after segmentation fails', async () => {
     expect(track.stop).not.toHaveBeenCalled();
 });
 
-it('pauses analysis and further inference when depth inference fails', async () => {
+it('pauses scene updates and further inference when depth inference fails', async () => {
     const depth = { ...model, detect: jest.fn().mockRejectedValue(new Error('Depth inference failed')), dispose: jest.fn().mockResolvedValue(undefined) };
     (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depth);
     const ref = React.createRef<TrackVisionHandle>();
@@ -1181,7 +1198,6 @@ it('applies filtering confidence to current and pending frames, reconstruction a
     expect(filtered.detections).toBe(initial.detections);
     expect(filtered.capturedAt).toBe(initial.capturedAt);
     expect(filtered.geometry).toBeNull();
-    expect(filtered.analysis).toEqual({});
     expect(filtered.reconstructedScene).toMatchObject({ cars: [], leftBoundary: [], rightBoundary: [] });
     expect(filtered.birdsEyeScene).toMatchObject({ cars: [], leftBoundary: [], rightBoundary: [] });
     expect(listener).toHaveBeenCalledTimes(1);
@@ -1194,7 +1210,6 @@ it('applies filtering confidence to current and pending frames, reconstruction a
 
     fireEvent.change(slider, { target: { value: '0.65' } });
     expect(ref.current!.getLatestDetection()!.geometry).toEqual(initial.geometry);
-    expect(ref.current!.getLatestDetection()!.analysis).toEqual(initial.analysis);
     expect(ref.current!.getLatestDetection()!.reconstructedScene).toEqual(initial.reconstructedScene);
     expect(ref.current!.getLatestDetection()!.birdsEyeScene).toEqual(initial.birdsEyeScene);
     expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);

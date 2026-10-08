@@ -5,7 +5,7 @@ import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { getAccTelemetryTrackKey } from 'views/session-shared/visualization/charts/circuitTrackLayout';
 import { createPhraseMapContext, PhraseMapContext } from './phrase-map-context';
 import { VISION_MAX_AGE_MS } from '../track-vision/track-vision-types';
-import { getPhrasePositions, CornerPosition } from './phrase-positions';
+import { getPhrasePositions } from './phrase-positions';
 
 export const TELEMETRY_MAX_AGE_MS = 1500;
 export const REARM_MS = 500;
@@ -14,40 +14,98 @@ const HISTORY_LIMIT = 50;
 
 const INPUT_LABELS = {
     speed: 'Speed (km/h)', carAhead: 'Opponent ahead on visible track',
-    playerPosition: 'Player position', opponentPosition: 'Opponent position',
+    playerCorner: 'Player turn corner', opponentCorner: 'Opponent turn corner',
+    playerPosition: 'Player track position', opponentPosition: 'Opponent track position',
     phase: 'Live Map section', cornerSpeed: 'Mapped corner speed', cornerShape: 'Mapped corner shape',
     linkedOpposite: 'Next linked corner turns the opposite way', linkedSameDirection: 'Next linked corner turns the same way',
     sequenceRemaining: 'Corners remaining in the mapped sequence',
     insideLine: 'Player inside, opponent off the inside', outsideLine: 'Player outside, opponent inside',
+    opponentDistanceM: 'Estimated opponent distance (m)', closingOnOpponent: 'Closing on opponent',
+    directlyBehindOpponent: 'Directly behind opponent',
 } as const;
 type Input = keyof typeof INPUT_LABELS;
-type Inputs = PhraseMapContext & { carAhead?: 0 | 1; playerPosition?: CornerPosition; opponentPosition?: CornerPosition;
-    speed?: number; insideLine?: 0 | 1; outsideLine?: 0 | 1 };
+type Inputs = PhraseMapContext & ReturnType<typeof getPhrasePositions> & {
+    speed?: number; insideLine?: 0 | 1; outsideLine?: 0 | 1; opponentDistanceM?: number;
+    closingOnOpponent?: 0 | 1; directlyBehindOpponent?: 0 | 1 };
 type PhraseVisionInput = Pick<TrackVisionDetection, 'capturedAt' | 'calibration' | 'birdsEyeScene'>;
+export type PhraseConditionConnector = 'and' | 'or';
 export class PhraseCondition {
     readonly conditionFit: boolean;
     readonly inputMissing: boolean;
 
     constructor(
         readonly input: Input,
-        readonly operator: '>=' | '=' | 'in',
+        readonly operator: '>=' | '<=' | '=' | 'in',
         readonly value: number | string | readonly string[],
         actual?: Inputs[Input],
+        // Joins this condition to the previous one; ignored for the first condition.
+        readonly connector: PhraseConditionConnector = 'and',
     ) {
         this.inputMissing = actual === undefined;
-        this.conditionFit = actual !== undefined && (operator === '>='
-            ? typeof actual === 'number' && typeof value === 'number' && actual >= value
+        this.conditionFit = actual !== undefined && (operator === '>=' || operator === '<='
+            ? typeof actual === 'number' && typeof value === 'number' && (operator === '>=' ? actual >= value : actual <= value)
             : operator === 'in' ? Array.isArray(value) && value.includes(actual) : actual === value);
     }
 
     get description(): string {
+        if (this.operator === 'in' || this.operator === '=') {
+            const values = Array.isArray(this.value) ? this.value : [this.value];
+            const subject = this.input.startsWith('player') ? 'Player' : 'Opponent';
+            if (this.input === 'playerCorner' || this.input === 'opponentCorner') {
+                return `${subject} in a ${values.join(' or ')} turn corner`;
+            }
+            if (this.input === 'playerPosition' || this.input === 'opponentPosition') {
+                return `${subject} near the ${values.map((value) => value === 'middle' ? 'middle of the track' : `${value} edge`).join(' or ')}`;
+            }
+        }
         return `${INPUT_LABELS[this.input]} ${this.operator} ${Array.isArray(this.value) ? this.value.join(' / ') : this.value}`;
     }
 
     evaluate(inputs: Inputs): PhraseCondition {
         // Keep the catalog and previously published snapshots independent of live updates.
-        return new PhraseCondition(this.input, this.operator, this.value, inputs[this.input]);
+        return new PhraseCondition(this.input, this.operator, this.value, inputs[this.input], this.connector);
     }
+}
+
+export type PhraseConditionNode = PhraseCondition | PhraseConditionGroup;
+
+/** A parenthesized expression; its connector joins the whole group to its previous sibling. */
+export class PhraseConditionGroup {
+    readonly conditionFit: boolean;
+    readonly inputMissing: boolean;
+
+    constructor(
+        readonly conditions: readonly PhraseConditionNode[],
+        readonly connector: PhraseConditionConnector = 'and',
+    ) {
+        this.conditionFit = conditionsMatch(conditions);
+        this.inputMissing = !this.conditionFit && conditions.some((condition) => condition.inputMissing);
+    }
+
+    evaluate(inputs: Inputs): PhraseConditionGroup {
+        return new PhraseConditionGroup(this.conditions.map((condition) => condition.evaluate(inputs)), this.connector);
+    }
+}
+
+function conditionsMatch(conditions: readonly PhraseConditionNode[]): boolean {
+    // AND binds more tightly than OR: A OR B AND C means A OR (B AND C).
+    let previousGroupMatched = false;
+    let groupMatched = conditions[0]?.conditionFit ?? false;
+    for (const condition of conditions.slice(1)) {
+        if (condition.connector === 'or') {
+            previousGroupMatched ||= groupMatched;
+            groupMatched = condition.conditionFit;
+        } else {
+            groupMatched = groupMatched && condition.conditionFit;
+        }
+    }
+    return previousGroupMatched || groupMatched;
+}
+
+function missingConditionInputs(conditions: readonly PhraseConditionNode[]): string[] {
+    return conditions.flatMap((condition) => condition instanceof PhraseConditionGroup
+        ? condition.conditionFit ? [] : missingConditionInputs(condition.conditions)
+        : condition.inputMissing ? [INPUT_LABELS[condition.input]] : []);
 }
 
 export interface PhraseRule {
@@ -55,11 +113,15 @@ export interface PhraseRule {
     sentence: string;
     category: string;
     holdMs: number;
-    conditions: readonly PhraseCondition[];
+    conditions: readonly PhraseConditionNode[];
 }
-const condition = (input: Input, operator: PhraseCondition['operator'], value: PhraseCondition['value']): PhraseCondition => new PhraseCondition(input, operator, value);
+const condition = (input: Input, operator: PhraseCondition['operator'], value: PhraseCondition['value'], connector: PhraseConditionConnector = 'and'): PhraseCondition => new PhraseCondition(input, operator, value, undefined, connector);
+export const conditionGroup = (conditions: readonly PhraseConditionNode[], connector: PhraseConditionConnector = 'and'): PhraseConditionGroup => new PhraseConditionGroup(conditions, connector);
 const following = [condition('speed', '>=', 30), condition('carAhead', '=', 1)];
-const positioned = [condition('playerPosition', 'in', ['inside', 'middle', 'outside']), condition('opponentPosition', 'in', ['inside', 'middle', 'outside'])];
+const positioned = [
+    condition('playerCorner', 'in', ['left', 'right']), condition('playerPosition', 'in', ['left', 'middle', 'right']),
+    condition('opponentCorner', 'in', ['left', 'right']), condition('opponentPosition', 'in', ['left', 'middle', 'right']),
+];
 
 // The catalog drives both evaluation and the displayed conditions.
 // More specific tactics take priority when conditions overlap.
@@ -122,7 +184,8 @@ export const PHRASE_RULES: readonly PhraseRule[] = [
     {
         id: 'slipstream', category: 'Slipstream', holdMs: 800,
         sentence: 'Use the slipstream on this straight: tuck in behind to build a run, then pull out when you are closing and there is clear space before braking.',
-        conditions: [condition('speed', '>=', 80), condition('carAhead', '=', 1), condition('phase', '=', 'straight')],
+        conditions: [condition('speed', '>=', 80), condition('carAhead', '=', 1), condition('phase', '=', 'straight'),
+            condition('opponentDistanceM', '<=', 10), condition('closingOnOpponent', '=', 0), condition('directlyBehindOpponent', '=', 0)],
     },
     {
         id: 'pressure-feint', category: 'Pressure and a feint', holdMs: 800,
@@ -138,7 +201,7 @@ export interface PhraseSnapshot {
     visionReady: boolean;
     mapReady: boolean;
     mapContext: PhraseMapContext;
-    rules: Array<{ id: string; status: RuleStatus; missing: string[]; conditions: readonly PhraseCondition[] }>;
+    rules: Array<{ id: string; status: RuleStatus; missing: string[]; conditions: readonly PhraseConditionNode[] }>;
     events: PhraseEvent[];
 }
 interface RuleMemory { since?: number; clearSince?: number; fired: boolean; lastEmitted?: number }
@@ -150,16 +213,21 @@ const nonnegative = (value: unknown): number | undefined => {
 
 function readInputs(sample: StandardTelemetrySample, scene: TrackVisionDetection['birdsEyeScene'], map: PhraseMapContext): Inputs {
     const velocity = [sample.Physics_velocity_x, sample.Physics_velocity_y, sample.Physics_velocity_z];
-    const { carAhead, playerPosition, opponentPosition } = getPhrasePositions(scene);
+    const { carAhead, playerCorner, opponentCorner, playerPosition, opponentPosition,
+        opponentDistanceM, opponentLateralOffsetM } = getPhrasePositions(scene);
+    const sameCorner = playerCorner && playerCorner === opponentCorner && playerPosition && opponentPosition;
     return {
         speed: nonnegative(sample.Physics_speed_kmh) ?? (velocity.every((v) => finite(v) !== undefined)
             ? Math.hypot(...velocity as number[]) * 3.6 : undefined),
-        carAhead, playerPosition, opponentPosition,
+        carAhead, playerCorner, opponentCorner, playerPosition, opponentPosition, opponentDistanceM,
+        // A one-meter lateral tolerance represents being tucked directly behind.
+        directlyBehindOpponent: opponentLateralOffsetM === undefined ? undefined : Number(Math.abs(opponentLateralOffsetM) <= 1) as 0 | 1,
         ...map,
-        insideLine: playerPosition && opponentPosition
-            ? Number(playerPosition === 'inside' && opponentPosition !== 'inside') as 0 | 1 : undefined,
-        outsideLine: playerPosition && opponentPosition
-            ? Number(playerPosition === 'outside' && opponentPosition === 'inside') as 0 | 1 : undefined,
+        // The inside edge is left in a left turn and right in a right turn.
+        insideLine: sameCorner
+            ? Number(playerPosition === playerCorner && opponentPosition !== opponentCorner) as 0 | 1 : undefined,
+        outsideLine: sameCorner
+            ? Number(playerPosition !== 'middle' && playerPosition !== playerCorner && opponentPosition === opponentCorner) as 0 | 1 : undefined,
     };
 }
 
@@ -169,6 +237,8 @@ export class PhraseEngine {
     private receivedAt = -Infinity;
     private vision: PhraseVisionInput | null = null;
     private visionAfter = -Infinity;
+    private opponentDistanceM?: number;
+    private closingOnOpponent?: 0 | 1;
     private memory = new Map<string, RuleMemory>();
     private events: PhraseEvent[] = [];
     private nextId = 0;
@@ -176,6 +246,8 @@ export class PhraseEngine {
     private mapContext = createPhraseMapContext(null);
     private sectionId?: string;
     private game?: string;
+
+    constructor(private readonly rules: readonly PhraseRule[] = PHRASE_RULES) {}
 
     receiveMap(map: CircuitMapDto | null, now: number): PhraseSnapshot {
         if (map !== this.map) {
@@ -192,6 +264,8 @@ export class PhraseEngine {
         this.receivedAt = -Infinity;
         this.vision = null;
         this.visionAfter = now;
+        this.opponentDistanceM = undefined;
+        this.closingOnOpponent = undefined;
         this.memory.clear();
         this.events = [];
         this.sectionId = undefined;
@@ -215,11 +289,22 @@ export class PhraseEngine {
     }
 
     receiveVision(vision: PhraseVisionInput | null, now: number): PhraseSnapshot {
+        const sameCalibration = JSON.stringify(vision?.calibration) === JSON.stringify(this.vision?.calibration);
+        // Repeated or out-of-order captures cannot establish a new relative-motion sample.
+        if (vision && this.vision && sameCalibration && this.vision.capturedAt <= now
+            && vision.capturedAt <= this.vision.capturedAt) return this.evaluate(now);
         // A fresh result cannot retroactively fill a capture gap when no timer ran.
         if (!this.vision || now - this.vision.capturedAt > VISION_MAX_AGE_MS
-            || JSON.stringify(vision?.calibration) !== JSON.stringify(this.vision.calibration)) {
+            || !sameCalibration) {
             this.memory.forEach((memory) => { memory.since = undefined; });
+            this.opponentDistanceM = undefined;
         }
+        const fresh = vision && vision.capturedAt >= this.visionAfter && vision.capturedAt <= now
+            && now - vision.capturedAt <= VISION_MAX_AGE_MS;
+        const distance = fresh ? getPhrasePositions(vision.birdsEyeScene).opponentDistanceM : undefined;
+        this.closingOnOpponent = distance !== undefined && this.opponentDistanceM !== undefined
+            ? Number(distance < this.opponentDistanceM) as 0 | 1 : undefined;
+        this.opponentDistanceM = distance;
         this.vision = vision;
         return this.evaluate(now);
     }
@@ -238,13 +323,15 @@ export class PhraseEngine {
             this.sectionId = mapContext.sectionId;
         }
         const inputs = readInputs(telemetryReady ? this.sample : {}, visionReady ? this.vision!.birdsEyeScene : null, mapContext);
+        inputs.closingOnOpponent = visionReady ? this.closingOnOpponent : undefined;
         let selected = false;
-        const rules = PHRASE_RULES.map((rule) => {
+        const rules = this.rules.map((rule) => {
             const memory = this.memory.get(rule.id) ?? { fired: false };
             this.memory.set(rule.id, memory);
             const conditions = rule.conditions.map((condition) => condition.evaluate(inputs));
-            const missing = conditions.filter((condition) => condition.inputMissing).map(({ input }) => INPUT_LABELS[input]);
-            const matched = !selected && telemetryReady && conditions.every((condition) => condition.conditionFit);
+            const conditionFit = conditionsMatch(conditions);
+            const missing = conditionFit ? [] : missingConditionInputs(conditions);
+            const matched = !selected && telemetryReady && conditionFit;
             if (matched) selected = true;
             let status: RuleStatus;
             if (!matched) {

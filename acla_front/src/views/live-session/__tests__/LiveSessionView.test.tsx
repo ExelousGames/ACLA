@@ -215,9 +215,8 @@ describe('LiveSessionView', () => {
 
         const onVision = jest.fn();
         const unsubscribeVision = view.subscribeTrackVision(onVision);
-        const detection = { capturedAt: Date.now(), width: 10, height: 10, detections: {}, analysis: {
-            driverPosition: { leftBoundaryDistanceM: 2, rightBoundaryDistanceM: 8, referenceDistanceM: 10 },
-            opponents: [{ lateralOffsetM: 3, longitudinalOffsetM: 18 }], carAhead: 1 as const,
+        const detection = { capturedAt: Date.now(), width: 10, height: 10, detections: {}, birdsEyeScene: {
+            leftBoundary: [], rightBoundary: [], centerline: [], cars: [], unplacedCars: 0,
         } };
         const stopVision = jest.fn();
         let notifyVision!: () => void;
@@ -229,7 +228,7 @@ describe('LiveSessionView', () => {
         expect(view.getTrackVisionDetection()).toBeNull();
         act(() => { componentDirectory!.registerComponentRef(visionRef); });
         expect(view.getTrackVisionDetection()).toBe(detection);
-        expect(view.getTrackVisionDetection()?.analysis).toBe(detection.analysis);
+        expect(view.getTrackVisionDetection()?.birdsEyeScene).toBe(detection.birdsEyeScene);
         onVision.mockClear();
         act(() => { notifyVision(); });
         expect(onVision).toHaveBeenCalledTimes(1);

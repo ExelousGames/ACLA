@@ -1,9 +1,10 @@
 import type { TrackVisionDetection } from '../track-vision/track-vision-types';
-import type { CornerPosition } from './phrase-positions';
 import { DEFAULT_CAMERA } from '../track-vision/camera-projection';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import type { PhraseCornerGeometry } from './phrase-corner-geometry';
 import { evaluateRoad } from '../track-vision/road-polynomial';
+
+type CornerPosition = 'inside' | 'middle' | 'outside';
 
 export const circuitMap = (speed: 'slow' | 'fast' = 'slow', linked = false): CircuitMapDto => ({
     id: 'test-map', game: 'acc', circuit_name: 'test', source_track_key: 'test', resolution: 1000,
@@ -80,11 +81,5 @@ export function vision(capturedAt: number, options: {
             referenceY: 8, trackWidthM: 10, lateralOffsetM: 0, headingDeg: 0, curvaturePerM: 2 * curve,
         }, reconstruction: null,
         calibration: options.cameraOffset === null ? undefined : { ...DEFAULT_CAMERA, imageWidth: 1600, imageHeight: 900, lateralOffsetM: options.cameraOffset ?? 0 },
-        analysis: options.cameraOffset === null ? {} : {
-            driverPosition: { ...driver, referenceDistanceM: 8 },
-            carAhead: carAhead ? 1 : 0,
-            opponents: carAhead ? [{ lateralOffsetM: other.leftBoundaryDistanceM - driver.leftBoundaryDistanceM + curve * 100,
-                longitudinalOffsetM: 18 }] : [],
-        },
     };
 }

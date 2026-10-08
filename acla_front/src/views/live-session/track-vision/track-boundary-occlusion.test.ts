@@ -1,6 +1,6 @@
 import { VISION_INPUT_SIZE } from './vision-config';
 import { createCameraProjection } from './camera-projection';
-import { reconstructTrack } from './track-position-analysis';
+import { reconstructTrack } from './track-reconstruction';
 import { fitRoadPolynomial } from './road-polynomial';
 import { MODEL_LABELS, vision } from './test-fixtures';
 import type { TrackVisionFrame } from './track-vision-types';

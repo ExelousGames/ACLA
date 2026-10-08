@@ -2,10 +2,14 @@ import { createCameraProjection, validCalibration } from './camera-projection';
 import type { ImageCar, ImagePoint, ReconstructedScene } from './reconstructed-scene';
 import type { CameraCalibration, GroundPoint } from './track-vision-types';
 
+export interface BirdsEyePoint extends GroundPoint {
+    /** Original capture time for an edge carried forward from an earlier frame. */
+    observedAt?: number;
+}
 export interface BirdsEyeScene {
-    leftBoundary: GroundPoint[][];
-    rightBoundary: GroundPoint[][];
-    centerline: GroundPoint[][];
+    leftBoundary: BirdsEyePoint[][];
+    rightBoundary: BirdsEyePoint[][];
+    centerline: BirdsEyePoint[][];
     cars: Array<Omit<ImageCar, 'box'> & { position: GroundPoint }>;
     unplacedCars: number;
 }

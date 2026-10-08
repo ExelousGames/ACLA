@@ -90,30 +90,11 @@ export interface TrackGeometry {
     curvaturePerM: number;
 }
 export const VISION_MAX_AGE_MS = 2000;
-export interface TrackBoundaryPosition {
-    /** Lateral distance from the vehicle center to each edge at the observed road slice. */
-    leftBoundaryDistanceM: number;
-    rightBoundaryDistanceM: number;
-}
-export interface DriverTrackPosition extends TrackBoundaryPosition {
-    /** Distance ahead where both boundaries are observed; not extrapolated to the driver. */
-    referenceDistanceM: number;
-}
-export interface OpponentTrackPosition {
-    /** Vehicle coordinates relative to the driver: positive right and forward. */
-    lateralOffsetM: number;
-    longitudinalOffsetM: number;
-}
-/** Scene interpretation produced by Track Vision, independent of phrase rules. */
-export interface TrackVisionAnalysis {
-    carAhead?: 0 | 1;
-    driverPosition?: DriverTrackPosition;
-    /** Supported individual opponents, nearest first. Packs do not identify individuals. */
-    opponents?: OpponentTrackPosition[];
-}
 
 export interface TrackVisionFrame {
     capturedAt: number;
+    /** Motion sampled at capture time, before inference; contains no simulator position. */
+    motion?: import('./track-history').VisionMotion;
     width: number;
     height: number;
     /** Explicitly applied calibration for this capture resolution. No implicit default. */
@@ -130,6 +111,4 @@ export interface TrackVisionDetection extends TrackVisionFrame {
     /** Shared flat-road projection for the BEV display and Live Phrases, independent of metric depth. */
     birdsEyeScene?: import('./birds-eye-scene').BirdsEyeScene | null;
     geometry: TrackGeometry | null;
-    /** Null without segmentation; unknown scene properties remain unset. */
-    analysis: TrackVisionAnalysis | null;
 }
