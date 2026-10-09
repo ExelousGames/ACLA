@@ -6,22 +6,22 @@ Car interior masks remain available through filtering and label-depth inspection
 
 Use **Expand capture** in the preview to fill most of the app window. Capture, detections, and the optional camera grid continue at the larger size. Choose **Restore capture** or press **Escape** to return to the panel; **Stop capture** is also available in the expanded view.
 
-Use **Display label** in the Segmentation tab to show only one label's masks, boxes, and captions, or choose **All labels** (the default). Changing the selection updates the current preview immediately. Detection and scene reconstruction continue using every label.
+Use **Display label** in the bottom **Settings** section to show only one label's masks, boxes, and captions, or choose **All labels** (the default). Changing the selection updates the current preview immediately. Detection and scene reconstruction continue using every label.
 
-In **Setting → Track models**, each model has an **Input resolution** dropdown with Low, Medium and High presets. Segmentation uses 384 × 384, 640 × 640 and 768 × 768; depth uses 252 × 252, 392 × 392 and 518 × 518. Both default to High. Lower resolutions reduce GPU work. Changing a resolution clears old detections and reloads only that model while capture continues; scene reconstruction resumes when both models are ready.
+In **Settings → Track models**, each model has an **Input resolution** dropdown with Low, Medium and High presets. Segmentation uses 384 × 384, 640 × 640 and 768 × 768; depth uses 252 × 252, 392 × 392 and 518 × 518. Both default to High. Lower resolutions reduce GPU work. Changing a resolution clears old detections and reloads only that model while capture continues; scene reconstruction resumes when both models are ready.
 
 ## Visual pipeline
 
 The numbered tabs follow one captured frame through eight views:
 
 1. **Capture** — the original shared window, without detection overlays.
-2. **Camera position** — camera height, angles, FOV and offsets beside the captured frame, with an optional reference ground grid.
-3. **Segmentation** — all returned labels over the camera image, a color legend with instance counts, and optional display-label selection.
+2. **Camera position** — the captured frame with an optional reference ground grid; adjust camera height, angles, FOV and offsets in the bottom **Settings** section.
+3. **Segmentation** — all returned labels over the camera image and a color legend with instance counts. Use **Settings → Display label** to limit the preview to one label.
 4. **Filtering** — masks after confidence filtering, depth ordering and supported hidden-mask completion. Accepted car interior masks remain an independent downstream input. The panel explains the applied rules and shows retained counts.
 5. **Depth map** — the entire frame's depth as an opaque red-to-blue heatmap, including unlabeled areas and the car interior. The legend uses the full frame's finite positive relative depths, excluding model padding. Hover over the image to read unitless relative depth at the mouse; the reading follows new frames and accounts for resized or expanded previews. Values are comparable only within a frame, not distances in meters. Invalid pixels remain dark and report no valid depth.
 6. **Label depths** — all retained masks appear together over the captured frame. Each mask has a numbered label (such as `track #1` and `track #2`) that matches its own table row with median, near/far relative depth and observed depth-pixel count. Numbers identify masks within the current frame. The overlay and legend share one linear red → orange → yellow → green → cyan → blue scale in unitless relative depth, including supported hidden predictions. Hidden predictions are excluded from table statistics. Pixels without valid depth remain transparent, and masks without measured depth are labeled `No depth`.
 7. **Reconstructed scene** — the captured window with track ribbons fitted to segmentation edges and labeled car/car-pack boxes overlaid in 2D. Each visible ribbon section has 50 left/right point pairs, with crossbars and a translucent surface. Missing or cockpit-adjacent edges split the ribbon.
-8. **Bird's-eye view** — projects the previous reconstructed scene onto a flat road using the applied camera calibration. Left/right boundaries and the middle line retain their gaps. Your car stays at the origin with forward pointing up; detected cars and car packs are placed using their box-bottom centers. The grid and positions are approximate, and traffic marker sizes are schematic. Apply calibration in Camera position first. This projection works with relative depth and is shared with Live Phrases for traffic and corner-relative position inputs.
+8. **Bird's-eye view** — projects the previous reconstructed scene onto a flat road using the applied camera calibration. Left/right boundaries and the middle line retain their gaps. Your car stays at the origin with forward pointing up; detected cars and car packs are placed using their box-bottom centers. The grid and positions are approximate, and traffic marker sizes are schematic. Apply calibration in **Settings → Camera position** first. This projection works with relative depth and is shared with Live Phrases for traffic and corner-relative position inputs.
 
 The bird's-eye view updates with completed frames, retains the latest frame with a stale label after 2 seconds, and clears when calibration or capture is cleared. Rays above the horizon or beyond 200 m are omitted. Traffic whose ground contact cannot be projected (including boxes clipped at the bottom of the capture) is counted as unplaced. Traffic markers describe the current frame, without assuming opponent headings or tracking identities across frames.
 
@@ -29,7 +29,7 @@ With live motion telemetry, the bird's-eye view also remembers recently visible 
 
 History covers the nearby road (up to 20 m ahead and 5 m behind), keeps at most 24 captures, and expires original observations after 4 seconds. New visible edges take precedence, missing sections remain separate, and moving traffic is never retained. History clears on capture/model reset, calibration/filter changes, telemetry pause/replay/reset, stale motion (over 500 ms), capture gaps (over 1 second), or abrupt heading changes. Without usable motion, the current-frame view remains available. A fixed driving camera and applied calibration are required; motion alignment and flat-road distances remain approximate.
 
-Capture controls stay available above the tabs. **Setting** is collapsible and opens automatically on detector errors. Its **Filtering confidence** slider defaults to 65% and updates filtered masks, the reconstructed scene and coaching inputs for the current and future frames. The Segmentation tab's detection confidence still controls which masks the model returns; car interior masks accepted by detection are retained independently of the filtering threshold. Arrow keys, Home and End navigate the tabs. Switching tabs reuses the latest frame, keeps capture and models running, and preserves camera settings. The diagnostic views do not modify published detections or coaching inputs.
+Capture controls stay available above the tabs. **Settings** is the single configuration section at the bottom of the window. It is collapsible and opens automatically on detector errors. Camera parameters, applied calibration, the reference-grid toggle, display label, both confidence thresholds and model input resolutions are saved automatically in local storage and restored when Track Vision is reopened. Capture sources must still be selected for each new window-sharing session. Its **Filtering confidence** slider defaults to 65% and updates filtered masks, the reconstructed scene and coaching inputs for the current and future frames. The **Segmentation confidence** slider controls which masks the model returns; car interior masks accepted by detection are retained independently of the filtering threshold. Arrow keys, Home and End navigate the tabs. Switching tabs reuses the latest frame, keeps capture and models running, and preserves camera settings. The diagnostic views do not modify published detections or coaching inputs.
 
 ## Backend model contract
 
@@ -131,9 +131,10 @@ camera assumes square pixels and zero roll. Initial values are a draft; select
 
 **Enable on capture** shows a reference ground grid on the source image for
 checking camera placement. The grid is a calibration aid and supplies no reconstructed geometry.
-Editing camera parameters clears applied calibration and coaching geometry. Stopping/restarting
-capture or changing its dimensions clears calibration too. Calibration remains available during
-model loading or failure. Reapply after changing the car, seat, camera or FOV.
+Editing camera parameters, clearing calibration or changing capture dimensions clears applied
+calibration and coaching geometry, including the saved calibration. Stopping capture clears live
+results while retaining settings. Applied calibration is restored for captures with matching
+dimensions and remains available during model loading or failure. Reapply after changing the car, seat, camera or FOV.
 
 ## Reconstructed scene
 

@@ -2,11 +2,11 @@ import React, { forwardRef, useCallback, useEffect, useId, useImperativeHandle, 
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import { captureGameScreen, ScreenCaptureSource } from './screen-capture';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
-import { DEPTH_INPUT_SIZE, MODEL_INPUT_RESOLUTIONS, VISION_INPUT_SIZE } from './vision-config';
+import { MODEL_INPUT_RESOLUTIONS } from './vision-config';
 import { CameraCalibration, DETECTION_TASKS, DetectionTask, TrackVisionDetection, TrackVisionFrame } from './track-vision-types';
-import { VISION_CONFIDENCE } from './semantic-scene';
 import { reconstructTrack } from './track-reconstruction';
-import { DEFAULT_CAMERA, validCalibration } from './camera-projection';
+import { validCalibration } from './camera-projection';
+import { readTrackVisionSettings, saveTrackVisionSettings } from './track-vision-settings';
 import TrackCalibration, { CameraGroundGrid } from './TrackCalibration';
 import { drawVisionOverlay } from './vision-overlay';
 import ReconstructedSceneView from './ReconstructedSceneView';
@@ -49,7 +49,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const [sources, setSources] = useState<ScreenCaptureSource[]>([]);
     const [sourceId, setSourceId] = useState('');
     const [retry, setRetry] = useState(0);
-    const [inputSizes, setInputSizes] = useState({ segment: VISION_INPUT_SIZE, depth: DEPTH_INPUT_SIZE });
+    const [savedSettings] = useState(readTrackVisionSettings);
+    const [inputSizes, setInputSizes] = useState(savedSettings.inputSizes);
     const [detectors, setDetectors] = useState<Record<DetectionTask, DetectorState>>({
         segment: { status: 'loading' }, depth: { status: 'loading' },
     });
@@ -61,13 +62,13 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const [previewExpanded, setPreviewExpanded] = useState(false);
     const [step, setStep] = useState<PipelineStep>('capture');
     const pipelineId = useId();
-    const [confidence, setConfidence] = useState(0.5);
-    const [filterConfidence, setFilterConfidence] = useState(VISION_CONFIDENCE);
-    const [displayLabel, setDisplayLabel] = useState('');
-    const [cameraDraft, setCameraDraft] = useState(DEFAULT_CAMERA);
-    const [calibration, setCalibration] = useState<CameraCalibration>();
-    const [showCalibrationOnCapture, setShowCalibrationOnCapture] = useState(false);
-    const cameraCalibration = useRef<CameraCalibration | undefined>(undefined);
+    const [confidence, setConfidence] = useState(savedSettings.confidence);
+    const [filterConfidence, setFilterConfidence] = useState(savedSettings.filterConfidence);
+    const [displayLabel, setDisplayLabel] = useState(savedSettings.displayLabel);
+    const [cameraDraft, setCameraDraft] = useState(savedSettings.cameraDraft);
+    const [calibration, setCalibration] = useState(savedSettings.calibration);
+    const [showCalibrationOnCapture, setShowCalibrationOnCapture] = useState(savedSettings.showCalibrationOnCapture);
+    const cameraCalibration = useRef(savedSettings.calibration);
     const [previewResult, setPreviewResult] = useState<TrackVisionDetection | null>(null);
     const [depthPointer, setDepthPointer] = useState<{ clientX: number; clientY: number } | null>(null);
     const depthMap = useMemo(() => step === 'depth-map' ? createDepthMap(previewResult) : null, [previewResult, step]);
@@ -81,6 +82,12 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         [cameraDraft, previewWidth, previewHeight]);
     const options = useRef({ confidence, filterConfidence });
     options.current = { confidence, filterConfidence };
+
+    useEffect(() => {
+        if (window.screenCapture) saveTrackVisionSettings({
+            inputSizes, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture,
+        });
+    }, [inputSizes, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture]);
 
     const togglePreviewSize = () => {
         const preview = previewRef.current;
@@ -164,9 +171,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         streamRef.current = null;
         previewFrameRef.current = null;
         setPreviewCapturedAt(undefined);
-        cameraCalibration.current = undefined;
-        setCalibration(undefined);
-        setShowCalibrationOnCapture(false);
         if (videoRef.current) videoRef.current.srcObject = null;
         publish(null);
     }, [publish]);
@@ -421,28 +425,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                         </button>
                     </div>
                 </dialog>
-                <div hidden={step !== 'calibration'}>
-                    <TrackCalibration source={hasFrame ? previewFrameRef.current : null} draft={cameraDraft} applied={calibration}
-                        showOnCapture={showCalibrationOnCapture} onToggleCapture={() => setShowCalibrationOnCapture((current) => !current)}
-                        onChange={(draft) => { setCameraDraft(draft); updateCalibration(); }}
-                        onApply={() => { const frame = previewFrameRef.current; if (frame) updateCalibration({ ...cameraDraft, imageWidth: frame.width, imageHeight: frame.height }); }}
-                        onClear={() => updateCalibration()} />
-                </div>
-                <div hidden={step !== 'segmentation'}>
-                    <div className="track-vision__controls">
-                        <label>Display label
-                            <select value={displayLabel} disabled={!detectors.segment.classNames?.length}
-                                onChange={(event) => setDisplayLabel(event.target.value)}>
-                                <option value="">All labels</option>
-                                {detectors.segment.classNames?.map((label, index) => <option key={index} value={label}>{label}</option>)}
-                            </select>
-                        </label>
-                        <label>Segmentation confidence {Math.round(confidence * 100)}%
-                            <input aria-label="Segmentation confidence" type="range" min="0.1" max="0.95" step="0.05" value={confidence}
-                                onChange={(event) => setConfidence(Number(event.target.value))} />
-                        </label>
-                    </div>
-                </div>
                 <PipelineDetails step={step} frame={previewResult} masks={masks} classNames={labels} filterConfidence={filterConfidence} depthMap={depthMap} />
                 <div hidden={!isSceneStep}>
                     <ReconstructedSceneView scene={hasFrame ? previewResult?.reconstructedScene ?? null : null}
@@ -451,10 +433,28 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 {step === 'birds-eye' && <BirdsEyeView scene={hasFrame ? previewResult?.birdsEyeScene ?? null : null}
                     hasReconstructedScene={hasFrame && Boolean(previewResult?.reconstructedScene)} capturedAt={previewResult?.capturedAt} />}
             </div>
-            <details className="track-vision__settings" open={DETECTION_TASKS.some(({ id }) => Boolean(detectors[id].error))}>
-                <summary>Setting <span>{DETECTION_TASKS.map(({ id, label }) =>
+            <div className="track-vision__status" role="status">{status}</div>
+            {error && <div className="track-vision__error" role="alert">{error}</div>}
+            <details className="track-vision__settings" aria-label="Track Vision settings" open={DETECTION_TASKS.some(({ id }) => Boolean(detectors[id].error))}>
+                <summary>Settings <span>{DETECTION_TASKS.map(({ id, label }) =>
                     `${label}: ${detectors[id].status}`).join(' · ')}</span></summary>
+                <TrackCalibration source={hasFrame ? previewFrameRef.current : null} draft={cameraDraft} applied={calibration}
+                    showOnCapture={showCalibrationOnCapture} onToggleCapture={() => setShowCalibrationOnCapture((current) => !current)}
+                    onChange={(draft) => { setCameraDraft(draft); updateCalibration(); }}
+                    onApply={() => { const frame = previewFrameRef.current; if (frame) updateCalibration({ ...cameraDraft, imageWidth: frame.width, imageHeight: frame.height }); }}
+                    onClear={() => updateCalibration()} />
                 <div className="track-vision__controls">
+                    <label>Display label
+                        <select value={displayLabel} disabled={!detectors.segment.classNames?.length}
+                            onChange={(event) => setDisplayLabel(event.target.value)}>
+                            <option value="">All labels</option>
+                            {detectors.segment.classNames?.map((label, index) => <option key={index} value={label}>{label}</option>)}
+                        </select>
+                    </label>
+                    <label>Segmentation confidence {Math.round(confidence * 100)}%
+                        <input aria-label="Segmentation confidence" type="range" min="0.1" max="0.95" step="0.05" value={confidence}
+                            onChange={(event) => setConfidence(Number(event.target.value))} />
+                    </label>
                     <label>Filtering confidence {Math.round(filterConfidence * 100)}%
                         <input aria-label="Filtering confidence" type="range" min="0.1" max="0.95" step="0.05" value={filterConfidence}
                             onChange={(event) => {
@@ -487,8 +487,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     </div>)}
                 </fieldset>
             </details>
-            <div className="track-vision__status" role="status">{status}</div>
-            {error && <div className="track-vision__error" role="alert">{error}</div>}
         </section>
     );
 });

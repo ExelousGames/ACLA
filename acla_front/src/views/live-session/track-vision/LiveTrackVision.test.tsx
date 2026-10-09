@@ -23,7 +23,7 @@ const cameraButton = (name: string) => {
 };
 const render = (element: React.ReactElement) => {
     const view = renderComponent(element);
-    const settings = screen.queryByText('Setting');
+    const settings = screen.queryByText('Settings');
     if (settings) fireEvent.click(settings);
     return view;
 };
@@ -53,6 +53,7 @@ const detection = { task: 'segment' as const, width: 2, height: 2, instances: [{
 
 beforeEach(() => {
     jest.useFakeTimers();
+    window.localStorage.clear();
     liveTelemetryStore.resetSession();
     track = { stop: jest.fn(), onended: null };
     stream = { getTracks: () => [track], getVideoTracks: () => [track] } as unknown as MediaStream;
@@ -79,6 +80,99 @@ beforeEach(() => {
 });
 
 afterEach(() => { jest.restoreAllMocks(); jest.clearAllTimers(); jest.useRealTimers(); delete window.screenCapture; });
+
+it('keeps all settings together below every pipeline step', async () => {
+    render(<LiveTrackVision name="vision" />);
+    await flush();
+    const settings = screen.getByRole('group', { name: 'Track Vision settings' });
+    for (const tab of screen.getAllByRole('tab')) {
+        fireEvent.click(tab);
+        const panel = screen.getByRole('tabpanel');
+        expect(within(panel).queryByRole('spinbutton')).not.toBeInTheDocument();
+        expect(within(panel).queryByRole('slider')).not.toBeInTheDocument();
+        expect(within(panel).queryByRole('combobox')).not.toBeInTheDocument();
+        expect(within(settings).getByRole('group', { name: 'Camera position' })).toBeVisible();
+        expect(within(settings).getByRole('slider', { name: 'Segmentation confidence' })).toBeVisible();
+        expect(within(settings).getByRole('slider', { name: 'Filtering confidence' })).toBeVisible();
+        expect(within(settings).getByRole('combobox', { name: 'Display label' })).toBeVisible();
+        expect(within(settings).getByRole('group', { name: 'Track models' })).toBeVisible();
+        expect(settings.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    }
+    expect(settings.compareDocumentPosition(screen.getByRole('status')) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+});
+
+it('restores local settings and applied calibration when Track Vision is reopened', async () => {
+    const ref = React.createRef<TrackVisionHandle>();
+    const { unmount } = render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    selectStep('Segmentation');
+    fireEvent.change(screen.getByRole('slider', { name: 'Segmentation confidence' }), { target: { value: '0.7' } });
+    fireEvent.change(screen.getByRole('slider', { name: 'Filtering confidence' }), { target: { value: '0.8' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Display label' }), { target: { value: 'curb' } });
+    (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue({ ...model, inputSize: 384 });
+    (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue({ ...depthModel, inputSize: 252 });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Segmentation input resolution' }), { target: { value: '384' } });
+    await flush();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Depth input resolution' }), { target: { value: '252' } });
+    await flush();
+    await startCapture();
+    selectStep('Camera position');
+    const cameraValues: Record<string, number> = {
+        'Camera height (m)': 1.8, 'Pitch down (°)': 8, 'Horizontal field of view (°)': 100,
+        'Yaw right (°)': 2, 'Camera right of car center (m)': -0.5, 'Camera ahead of car origin (m)': 0.5,
+    };
+    for (const [label, value] of Object.entries(cameraValues)) {
+        fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    }
+    fireEvent.click(cameraButton('Enable on capture'));
+    fireEvent.click(cameraButton('Apply camera calibration'));
+    const calibration = ref.current!.getLatestDetection()!.calibration;
+    unmount();
+
+    render(<LiveTrackVision ref={ref} name="reopened-vision" />);
+    await flush();
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(screen.getByRole('button', { name: 'Share game screen' })).toBeDisabled();
+    expect(getDisplayMedia).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith(384);
+    expect(TrackVisionModel.loadBuiltin).toHaveBeenLastCalledWith('depth', 252);
+    expect(screen.getByRole('combobox', { name: 'Segmentation input resolution' })).toHaveValue('384');
+    expect(screen.getByRole('combobox', { name: 'Depth input resolution' })).toHaveValue('252');
+    selectStep('Segmentation');
+    expect(screen.getByRole('slider', { name: 'Segmentation confidence' })).toHaveValue('0.7');
+    expect(screen.getByRole('slider', { name: 'Filtering confidence' })).toHaveValue('0.8');
+    expect(screen.getByRole('combobox', { name: 'Display label' })).toHaveValue('curb');
+    selectStep('Camera position');
+    for (const [label, value] of Object.entries(cameraValues)) expect(screen.getByLabelText(label)).toHaveValue(value);
+    expect(cameraButton('Disable on capture')).toHaveAttribute('aria-pressed', 'true');
+    await startCapture();
+    expect(ref.current!.getLatestDetection()).toMatchObject({ calibration, filterConfidence: 0.8 });
+    expect(model.detect).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), 0.7);
+    expect(screen.getByLabelText('Projected ground grid')).toBeVisible();
+});
+
+it.each(['edit', 'clear', 'resize'])('does not restore invalidated calibration after %s and reopening', async (action) => {
+    const ref = React.createRef<TrackVisionHandle>();
+    const { unmount } = render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    fireEvent.click(cameraButton('Apply camera calibration'));
+    expect(ref.current!.getLatestDetection()?.calibration).toBeDefined();
+    if (action === 'edit') fireEvent.change(screen.getByLabelText('Camera height (m)'), { target: { value: '1.8' } });
+    if (action === 'clear') fireEvent.click(cameraButton('Clear calibration'));
+    if (action === 'resize') {
+        jest.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(1920);
+        await act(async () => { jest.advanceTimersByTime(200); });
+    }
+    expect(ref.current!.getLatestDetection()?.calibration).toBeUndefined();
+    unmount();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    expect(ref.current!.getLatestDetection()?.calibration).toBeUndefined();
+    expect(cameraButton('Clear calibration')).toBeDisabled();
+    expect(screen.getByLabelText('Camera height (m)')).toHaveValue(action === 'edit' ? 1.8 : 1.2);
+});
 
 it.each([
     ['Segmentation', ['384', '640', '768'], '768'],
@@ -201,7 +295,7 @@ it('walks the visual pipeline without restarting capture, reloading models or ch
         "Bird's-eye view",
     ]);
     expect(screen.getByRole('tabpanel', { name: 'Capture' })).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'Apply camera calibration' })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('tabpanel')).queryByRole('button', { name: 'Apply camera calibration' })).not.toBeInTheDocument();
     await startCapture();
     const canvas = screen.getByLabelText('Captured game frame with vision detections');
     const result = ref.current!.getLatestDetection();
@@ -760,7 +854,7 @@ it('validates camera settings and previews height and angle changes without reru
     expect(ref.current!.getLatestDetection()?.calibration).toBeUndefined();
 });
 
-it('uses the newest calibration after pending inference and clears it on resized or restarted capture', async () => {
+it('uses the newest calibration after pending inference, clears it on resize and retains it on restart', async () => {
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
@@ -779,7 +873,7 @@ it('uses the newest calibration after pending inference and clears it on resized
     expect(ref.current!.getLatestDetection()?.calibration?.imageWidth).toBe(1920);
     fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
     await startCapture();
-    expect(ref.current!.getLatestDetection()?.calibration).toBeUndefined();
+    expect(ref.current!.getLatestDetection()?.calibration).toMatchObject({ heightM: 1.8, imageWidth: 1920 });
 });
 
 it('keeps calibration available during detector retry without reviving cleared results', async () => {

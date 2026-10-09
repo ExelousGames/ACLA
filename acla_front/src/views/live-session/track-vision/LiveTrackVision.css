@@ -44,6 +44,7 @@
 .track-vision__settings summary { cursor: pointer; font-weight: 500; }
 .track-vision__settings summary span { margin-left: 8px; color: var(--lp-gray, #a4adbb); font-size: 10px; font-weight: 400; }
 .track-vision__settings[open] summary { margin-bottom: 12px; }
+.track-vision__settings > .track-vision__controls { margin: 12px 0; }
 .track-vision__settings summary:focus-visible { outline: 2px solid #37efac; outline-offset: 4px; }
 .track-vision__status { color: var(--lp-gray, #a4adbb); font-size: 11px; line-height: 1.5; }
 .track-vision__controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
