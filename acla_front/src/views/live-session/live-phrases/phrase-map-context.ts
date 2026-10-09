@@ -11,6 +11,7 @@ export interface PhraseMapContext {
     linkedSameDirection?: 0 | 1;
     cornerShape?: PhraseCornerGeometry['shape'];
     cornerGeometry?: PhraseCornerGeometry;
+    cornerDirection?: 'left' | 'right';
     sequenceId?: string;
     sequenceShape?: 'alternating' | 'same-direction' | 'mixed';
     sequenceCornerCount?: number;
@@ -55,6 +56,12 @@ export function createPhraseMapContext(map: CircuitMapDto | null) {
     }).sort((a, b) => segmentSpan(a.area) - segmentSpan(b.area) || a.area.id.localeCompare(b.area.id));
     return {
         ready: line.length >= 2 && tags.length > 0,
+        approaching(position: unknown): (PhraseMapContext & { cornerStartPosition: number }) | undefined {
+            if (line.length < 2 || !normalized(position) || corners.some((corner) => contains(corner, position))) return undefined;
+            // Time-based guidance must not inherit the fixed-distance lookahead used by at().
+            const next = corners.slice().sort((a, b) => distance(position, a.start_position) - distance(position, b.start_position))[0];
+            return next ? { ...this.at(next.start_position), cornerStartPosition: next.start_position } : undefined;
+        },
         at(position: unknown): PhraseMapContext {
             if (line.length < 2 || !normalized(position)) return {};
             // Resolve overlapping corners by the smallest range, then the latest entry.
@@ -104,6 +111,9 @@ export function createPhraseMapContext(map: CircuitMapDto | null) {
                 cornerSpeed: slow !== fast ? slow ? 'slow' : 'fast' : undefined,
                 cornerShape: geometry.get(corner)?.shape,
                 cornerGeometry: geometry.get(corner),
+                // Match the game-specific X/Z orientation used by LiveTrajectoryMap.
+                cornerDirection: turn === undefined ? undefined
+                    : turn * (map?.game === 'iracing' ? -1 : 1) > 0 ? 'right' : 'left',
                 linkedOpposite: linked && turn !== followingTurn ? 1 : 0,
                 linkedSameDirection: linked && turn === followingTurn ? 1 : 0,
                 ...(sequence && {

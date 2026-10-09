@@ -26,6 +26,41 @@ describe('Live Map phrase context', () => {
         expect(context.at(0.35)).toEqual({});
     });
 
+    it('resolves the next corner for time-based arrival beyond the fixed-distance lookahead', () => {
+        const map = circuitMap('slow', true);
+        map.centerline_tags!.push({ id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.31 });
+        const context = createPhraseMapContext(map);
+        expect(context.at(0.05)).toEqual({});
+        expect(context.approaching(0.05)).toMatchObject({
+            sectionId: 'turn-1', cornerStartPosition: 0.1, cornerSpeed: 'slow',
+            sequenceId: 'sequence', sequenceRemaining: 1, linkedOpposite: 1,
+        });
+        expect(context.approaching(0.1)).toBeUndefined();
+        expect(context.approaching(0.15)).toBeUndefined();
+        expect(context.approaching(NaN)).toBeUndefined();
+        expect(context.approaching(undefined)).toBeUndefined();
+    });
+
+    it.each([
+        ['acc', 1, 'right'], ['acc', -1, 'left'],
+        ['iracing', -1, 'right'], ['iracing', 1, 'left'],
+    ] as const)('resolves the upcoming corner direction in %s with Z scale %s as %s', (game, zScale, direction) => {
+        const map = circuitMap('slow', true);
+        map.game = game;
+        map.samples.middle_line!.forEach((point) => { point.z *= zScale; });
+        const context = createPhraseMapContext(map);
+        expect(context.approaching(0.05)).toMatchObject({
+            sectionId: 'turn-1', cornerStartPosition: 0.1, cornerDirection: direction,
+        });
+        expect(context.approaching(0.205)?.cornerDirection).toBe(direction === 'left' ? 'right' : 'left');
+    });
+
+    it('leaves upcoming direction unknown when the mapped corner has no geometry', () => {
+        const map = circuitMap();
+        map.samples.middle_line!.forEach((point) => { point.z = 0; });
+        expect(createPhraseMapContext(map).approaching(0.05)?.cornerDirection).toBeUndefined();
+    });
+
     it.each(['slow corner', 'fast corner'])('supports the legacy %s tag without a separate speed tag', (label) => {
         const map = circuitMap();
         map.centerline_tags = [{ id: 'legacy', label, start_position: 0.1, end_position: 0.2 }];

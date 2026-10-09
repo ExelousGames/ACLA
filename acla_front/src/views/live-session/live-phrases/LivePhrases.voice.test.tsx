@@ -6,12 +6,13 @@ import { audioManager, type PlaybackHandle } from 'services/audio';
 import { installAudioDoubles } from 'services/audio/test-audio';
 import { createLiveTelemetryStore } from '../live-telemetry-store';
 import LivePhrases from './LivePhrases';
-import { PHRASE_RULES } from './phrase-engine';
+import { PHRASE_DEFINITIONS, PhraseEngine } from './phrase-engine';
 import { circuitMap, vision } from './test-fixtures';
 
 jest.mock('components/tts', () => ({ synthesizeTts: jest.fn() }));
 const synthesize = synthesizeTts as jest.MockedFunction<typeof synthesizeTts>;
-const sentence = PHRASE_RULES.find((rule) => rule.id === 'inside-outbraking')!.sentence;
+const sentence = PHRASE_DEFINITIONS.find((rule) => rule.id === 'inside-outbraking')!.sentence;
+const sentences = PHRASE_DEFINITIONS.flatMap((rule) => [rule.sentence, ...(rule.additionalActions ?? []).map((action) => action.sentence)]);
 const pack = (text: string): TtsPack => ({ text, audioDataUrl: `data:audio/wav;base64,${btoa(text)}`, durationMs: 3000 });
 let audio: ReturnType<typeof installAudioDoubles>;
 let otherPlayback: PlaybackHandle | undefined;
@@ -74,7 +75,7 @@ it('prepares on enable, speaks each trigger once without an overlay, and reuses 
     expect(synthesize).not.toHaveBeenCalled();
     expect(screen.getByText('Speech: Disabled')).toHaveAttribute('data-ready', 'false');
     await view.enable();
-    expect(synthesize.mock.calls.map(([request]) => request.text)).toEqual(PHRASE_RULES.map((rule) => rule.sentence));
+    expect(synthesize.mock.calls.map(([request]) => request.text)).toEqual(sentences);
     expect(screen.getByText('Speech: Ready')).toHaveAttribute('data-ready', 'true');
     expect(play).not.toHaveBeenCalled();
     await view.trigger();
@@ -88,7 +89,7 @@ it('prepares on enable, speaks each trigger once without an overlay, and reuses 
     expect(signal.aborted).toBe(true);
     expect(play.mock.results[0].value.outcome).toEqual({ status: 'cancelled' });
     await view.enable();
-    expect(synthesize).toHaveBeenCalledTimes(PHRASE_RULES.length);
+    expect(synthesize).toHaveBeenCalledTimes(sentences.length);
     expect(screen.getByText('Speech: Ready')).toHaveAttribute('data-ready', 'true');
     await view.trigger();
     expect(play).toHaveBeenCalledTimes(2);
@@ -96,14 +97,36 @@ it('prepares on enable, speaks each trigger once without an overlay, and reuses 
     expect(play.mock.results[1].value.outcome).toEqual({ status: 'cancelled' });
 });
 
+it('plays the additional chicane action using its own prepared sentence', async () => {
+    const snapshot = new PhraseEngine().evaluate(Date.now());
+    snapshot.telemetryReady = true;
+    snapshot.closures.find((rule) => rule.id === 'second-apex')!.status = 'Active';
+    snapshot.events = [{ id: 1, ruleId: 'second-apex', sentence: 'brake early, Hold inside', timestamp: Date.now() }];
+    const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
+    const play = jest.spyOn(audioManager, 'play');
+    try {
+        const view = mount();
+        await view.enable();
+        expect(synthesize).toHaveBeenCalledWith({ text: 'brake early, Hold inside', speed: 1.5 }, expect.any(AbortSignal));
+        await act(async () => { view.frame(); });
+        expect(play).toHaveBeenCalledTimes(1);
+        expect(play).toHaveBeenLastCalledWith(expect.objectContaining({
+            url: pack('brake early, Hold inside').audioDataUrl, type: 'voice', priority: 25,
+        }));
+        expect(screen.getByRole('region', { name: 'Triggered sentences' })).toHaveTextContent('brake early, Hold inside');
+    } finally {
+        receive.mockRestore();
+    }
+});
+
 it('shows speech as ready only after the final TTS clip is received', async () => {
-    const lastSentence = PHRASE_RULES[PHRASE_RULES.length - 1].sentence;
+    const lastSentence = sentences[sentences.length - 1];
     let resolve!: (value: TtsPack) => void;
     const pending = new Promise<TtsPack>((done) => { resolve = done; });
     synthesize.mockImplementation(async ({ text }) => text === lastSentence ? pending : pack(text));
     const view = mount();
     await view.enable();
-    expect(synthesize).toHaveBeenCalledTimes(PHRASE_RULES.length);
+    expect(synthesize).toHaveBeenCalledTimes(sentences.length);
     expect(screen.getByText('Speech: Preparing')).toHaveAttribute('data-ready', 'false');
     expect(screen.queryByText('Speech: Ready')).not.toBeInTheDocument();
     await act(async () => { resolve(pack(lastSentence)); });
@@ -144,7 +167,7 @@ it.each(['ready', 'disable', 'reset', 'expired', 'condition cleared', 'unmount']
         const view = mount();
         await view.enable();
         // Preparation is sequential; later sentences wait for this request.
-        expect(synthesize).toHaveBeenCalledTimes(PHRASE_RULES.findIndex((rule) => rule.sentence === sentence) + 1);
+        expect(synthesize).toHaveBeenCalledTimes(sentences.indexOf(sentence) + 1);
         await view.trigger();
         expect(audio.play).not.toHaveBeenCalled();
         if (state === 'disable') fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
@@ -169,7 +192,7 @@ it('keeps preparing other sentences after a synthesis failure and reports playba
     synthesize.mockRejectedValueOnce(new Error('Speech service unavailable'));
     const view = mount();
     await view.enable();
-    expect(synthesize).toHaveBeenCalledTimes(PHRASE_RULES.length);
+    expect(synthesize).toHaveBeenCalledTimes(sentences.length);
     expect(screen.getByRole('alert')).toHaveTextContent('Speech service unavailable');
     expect(screen.getByText('Speech: Incomplete')).toHaveAttribute('data-ready', 'false');
     audio.play.mockRejectedValueOnce(new Error('Audio blocked'));
@@ -178,6 +201,6 @@ it('keeps preparing other sentences after a synthesis failure and reports playba
     expect(screen.getByRole('region', { name: 'Triggered sentences' })).toHaveTextContent(sentence);
     fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
     await view.enable();
-    expect(synthesize).toHaveBeenCalledTimes(PHRASE_RULES.length + 1);
+    expect(synthesize).toHaveBeenCalledTimes(sentences.length + 1);
     expect(screen.getByText('Speech: Ready')).toHaveAttribute('data-ready', 'true');
 });

@@ -6,14 +6,14 @@ import './LivePhraseDisplay.css';
 
 // Keep phrase visuals here; the overlay shell only invokes this renderer.
 export const LivePhraseDisplay = ({ snapshot }: { snapshot: LivePhraseOverlaySnapshot }) => (
-    <section className="live-phrase-display" aria-label={`Live phrase: ${snapshot.category}`}>
+    <section className="live-phrase-display" aria-label={`Live phrase: ${snapshot.name}`}>
         <header className="live-phrase-display__header">
             <span>Live phrase</span>
             <time dateTime={new Date(snapshot.timestamp).toISOString()}>
                 {new Date(snapshot.timestamp).toLocaleTimeString()}
             </time>
         </header>
-        <h3>{snapshot.category}</h3>
+        <h3>{snapshot.name}</h3>
         <p>{snapshot.sentence}</p>
     </section>
 );
@@ -24,12 +24,12 @@ export const livePhraseOverlayRenderer: AiOverlayRenderer<LivePhraseOverlaySnaps
         isOverlayRecord(snapshot)
         && typeof snapshot.eventId === 'number' && Number.isInteger(snapshot.eventId) && snapshot.eventId > 0
         && isOverlayNonEmptyString(snapshot.ruleId)
-        && isOverlayNonEmptyString(snapshot.category)
+        && isOverlayNonEmptyString(snapshot.name)
         && isOverlayNonEmptyString(snapshot.sentence)
         && typeof snapshot.timestamp === 'number' && Number.isFinite(new Date(snapshot.timestamp).getTime())
     ),
     renderOverlay: (snapshot, status) => status === 'folded'
-        ? snapshot.category
+        ? snapshot.name
         : <LivePhraseDisplay snapshot={snapshot} />,
     dimensions: {
         expanded: { width: 420, height: 240 },

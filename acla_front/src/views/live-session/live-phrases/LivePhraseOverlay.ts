@@ -2,14 +2,14 @@ import type { OperationComponentRefDirectory } from 'contexts/OperationComponent
 import { MutableAiOverlayComponent } from 'views/floating-chat/MutableAiOverlayComponent';
 import { overlaySessionClient } from 'views/floating-chat/overlay-display-client';
 import type { AiOverlayPresentationSession } from 'views/floating-chat/ai-overlay-types';
-import { PHRASE_RULES, type PhraseEvent, type PhraseSnapshot } from './phrase-engine';
+import { PHRASE_DEFINITIONS, type PhraseEvent, type PhraseSnapshot } from './phrase-engine';
 
 export const LIVE_PHRASE_DISPLAY_MS = 8_000;
 
 export interface LivePhraseOverlaySnapshot {
     eventId: number;
     ruleId: string;
-    category: string;
+    name: string;
     sentence: string;
     timestamp: number;
 }
@@ -46,7 +46,7 @@ export class LivePhraseOverlay {
         private readonly name: string,
         private readonly onError: (error: unknown) => void,
     ) {
-        this.sources = PHRASE_RULES.map((rule) => ({
+        this.sources = PHRASE_DEFINITIONS.map((rule) => ({
             rule,
             ref: { current: createLivePhraseOverlayComponent(`${name}:${rule.id}`) },
         }));
@@ -107,7 +107,7 @@ export class LivePhraseOverlay {
         source.ref.current.publish({
             eventId: event.id,
             ruleId: event.ruleId,
-            category: source.rule.category,
+            name: source.rule.name,
             sentence: event.sentence,
             timestamp: event.timestamp,
         }, { presentationId: presentation.presentationId });

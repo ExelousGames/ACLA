@@ -8,7 +8,7 @@ import { isAiOverlayComponentHandle, isJsonSafe } from 'views/floating-chat/ai-o
 import { overlaySessionClient } from 'views/floating-chat/overlay-display-client';
 import { LivePhraseOverlay, LIVE_PHRASE_DISPLAY_MS, type LivePhraseOverlaySnapshot } from './LivePhraseOverlay';
 import { livePhraseOverlayRenderer } from './graphs/LivePhraseDisplay';
-import { PHRASE_RULES, PhraseEngine, type PhraseEvent } from './phrase-engine';
+import { PHRASE_DEFINITIONS, PhraseEngine, type PhraseEvent } from './phrase-engine';
 import LivePhrases from './LivePhrases';
 import { createLiveTelemetryStore } from '../live-telemetry-store';
 import { circuitMap, vision } from './test-fixtures';
@@ -20,7 +20,7 @@ const session = {
     displayIdentity: { name: 'Kestrel' },
 };
 const phraseEvent = (index = 0, id = index + 1): PhraseEvent => ({
-    id, ruleId: PHRASE_RULES[index].id, sentence: PHRASE_RULES[index].sentence, timestamp: Date.now(),
+    id, ruleId: PHRASE_DEFINITIONS[index].id, sentence: PHRASE_DEFINITIONS[index].sentence, timestamp: Date.now(),
 });
 const snapshot = (...events: PhraseEvent[]) => ({ ...new PhraseEngine().evaluate(Date.now()), events });
 
@@ -71,11 +71,11 @@ describe('Live phrase overlay addons', () => {
 
     it('registers every phrase as an addon and renders its JSON-safe snapshot in all supported states', async () => {
         await overlaySessionClient.create(session);
-        expect(directory.getComponentNames()).toHaveLength(PHRASE_RULES.length);
+        expect(directory.getComponentNames()).toHaveLength(PHRASE_DEFINITIONS.length);
         expect(directory.getComponentRefs().every((ref) => isAiOverlayComponentHandle(ref.current))).toBe(true);
-        PHRASE_RULES.forEach((_rule, index) => overlay.update(snapshot(phraseEvent(index))));
+        PHRASE_DEFINITIONS.forEach((_rule, index) => overlay.update(snapshot(phraseEvent(index))));
         const cards = manager.getPresentationSnapshot()!.cards;
-        expect(cards).toHaveLength(PHRASE_RULES.length);
+        expect(cards).toHaveLength(PHRASE_DEFINITIONS.length);
         cards.forEach((card) => {
             expect(card.componentName).toBe(`live-phrases:${(card.snapshot as PhraseEvent).ruleId}`);
             expect(card.componentType).toBe('live_phrase');
@@ -86,7 +86,7 @@ describe('Live phrase overlay addons', () => {
                 const view = render(<>{livePhraseOverlayRenderer.renderOverlay(data, status, {
                     componentName: card.componentName, revision: card.revision, emitRendererEvent: jest.fn(),
                 })}</>);
-                expect(screen.getByText(data.category)).toBeVisible();
+                expect(screen.getByText(data.name)).toBeVisible();
                 expect(Boolean(screen.queryByText(data.sentence))).toBe(status !== 'folded');
                 view.unmount();
             }
@@ -170,8 +170,8 @@ describe('Live phrase overlay addons', () => {
 
     it('rejects invalid display data before rendering', () => {
         expect(livePhraseOverlayRenderer.validateSnapshot(null)).toBe(false);
-        expect(livePhraseOverlayRenderer.validateSnapshot({ ...phraseEvent(), category: 'Test', eventId: 1, timestamp: 1e20 })).toBe(false);
-        expect(livePhraseOverlayRenderer.validateSnapshot({ ...phraseEvent(), category: 'Test', eventId: 1, sentence: '' })).toBe(false);
+        expect(livePhraseOverlayRenderer.validateSnapshot({ ...phraseEvent(), name: 'Test', eventId: 1, timestamp: 1e20 })).toBe(false);
+        expect(livePhraseOverlayRenderer.validateSnapshot({ ...phraseEvent(), name: 'Test', eventId: 1, sentence: '' })).toBe(false);
     });
 
     it('automatically sends a real rule trigger through the registered manager under StrictMode', async () => {
@@ -214,7 +214,7 @@ describe('Live phrase overlay addons', () => {
         expect(cards).toHaveLength(1);
         expect(cards[0]).toMatchObject({
             componentName: 'live-phrases:inside-outbraking', componentType: 'live_phrase', status: 'focus',
-            snapshot: { ruleId: 'inside-outbraking', sentence: PHRASE_RULES.find((rule) => rule.id === 'inside-outbraking')!.sentence },
+            snapshot: { ruleId: 'inside-outbraking', sentence: PHRASE_DEFINITIONS.find((rule) => rule.id === 'inside-outbraking')!.sentence },
         });
         await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Disable detection' })); });
         expect(submit.mock.calls[submit.mock.calls.length - 1][0].cards).toEqual([]);
