@@ -1,4 +1,5 @@
 export type EventType = 'CORNER' | 'STRAIGHT' | 'CRASHED' | 'OVERTAKE';
+export type LiveEventType = 'STRAIGHT';
 
 export interface SessionEvent {
     id: string;
@@ -9,6 +10,10 @@ export interface SessionEvent {
     trackPosition: number; // normalized 0.0–1.0 at event start
     timestamp: number;     // ms since session start
     metadata?: Record<string, any>;
+}
+
+export interface LiveSessionEvent extends SessionEvent {
+    type: LiveEventType;
 }
 
 export interface TelemetrySample {
@@ -29,7 +34,7 @@ export type ReduceOp = 'raw' | 'avg' | 'min' | 'max' | 'stats';
 export type QueryScope =
     | { type: 'now' }
     | { type: 'last_seconds'; seconds: number }
-    | { type: 'event'; eventType: EventType; which: 'last' | 'current' }
+    | { type: 'event'; eventType: LiveEventType; which: 'last' | 'current' }
     | { type: 'lap'; lap: 'current' | 'last' | number }
     | { type: 'range'; start: number; end: number };
 

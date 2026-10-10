@@ -9,34 +9,33 @@ import React, {
 } from 'react';
 import { Badge, Box, Flex, Table, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
-import { EventType, SessionEvent } from 'views/session-shared/session-intelligence/types';
-import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import { LiveSessionEvent } from 'views/session-shared/session-intelligence/types';
+import { NamedOperationComponentHandle, useOptionalOperationComponentRefDirectory, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import { runVisualizationBooleanCallback } from 'views/session-shared/visualization/visualization-component-callbacks';
 import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
-import { getTelemetryLap, getTelemetryTrack } from 'views/live-session/session-intelligence/live-performance-analyst';
+import { getTelemetryLap } from 'views/live-session/session-intelligence/live-performance-analyst';
 import { EventLog, EventSearchParams } from './event-log/EventLog';
-import { SensorManager } from './event-log/SensorManager';
 import { liveTelemetryStore } from './live-telemetry-store';
+import type { LiveTrajectoryMapHandle } from './LiveTrajectoryMap';
+import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
+import { CornerRecorder, DriverCornerRecord, formatCornerTime } from './event-log/CornerRecorder';
+import { DriverCornerSummary, summarizeDriverCorners } from './event-log/corner-summary';
+import './LiveEventLog.css';
 
-const EVENT_COLORS: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
-    CORNER: 'blue',
-    STRAIGHT: 'green',
-    CRASHED: 'red',
-    OVERTAKE: 'amber',
-};
-const EMPTY_EVENTS: SessionEvent[] = [];
+const EMPTY_EVENTS: LiveSessionEvent[] = [];
 
 export interface LiveEventLogHandle extends NamedOperationComponentHandle {
-    updateLiveEvents(events: SessionEvent[]): true;
+    updateLiveEvents(events: LiveSessionEvent[]): true;
     disableLiveEventLog(): true;
-    findEvents(params: EventSearchParams): SessionEvent[];
-    getAllEvents(): SessionEvent[];
+    findEvents(params: EventSearchParams): LiveSessionEvent[];
+    getAllEvents(): LiveSessionEvent[];
+    getCornerRecords(): DriverCornerRecord[];
 }
 
 interface LiveEventLogProps {
     name: string;
-    initialEvents?: SessionEvent[];
-    onUpdate?: (events: SessionEvent[]) => boolean;
+    initialEvents?: LiveSessionEvent[];
+    onUpdate?: (events: LiveSessionEvent[]) => boolean;
     onDisable?: () => boolean;
 }
 
@@ -46,23 +45,36 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
     onUpdate,
     onDisable,
 }, forwardedRef) => {
+    const directory = useOptionalOperationComponentRefDirectory();
+    const liveMap = directory?.findComponentRef<LiveTrajectoryMapHandle>(getVisualizationComponentName('live-trajectory-map'))?.current ?? null;
     const [search, setSearch] = useState('');
-    const [events, setEvents] = useState<SessionEvent[]>(() => initialEvents.slice());
+    const cornerRecorderRef = useRef(new CornerRecorder());
+    const cornerRecordsRef = useRef<DriverCornerRecord[]>([]);
+    const [cornerRecords, setCornerRecords] = useState<DriverCornerRecord[]>([]);
+    const [mappedCornerCount, setMappedCornerCount] = useState(0);
     const eventLogRef = useRef(new EventLog(initialEvents));
-    const sensorManagerRef = useRef(new SensorManager());
-    const trackRef = useRef('');
+    const [events, setEvents] = useState<LiveSessionEvent[]>(() => eventLogRef.current.all());
     const currentLapRef = useRef(0);
     const lastSampleIndexRef = useRef(-1);
     const initialEventsRef = useRef(initialEvents);
 
     const resetTracking = useCallback(() => {
         eventLogRef.current.reset();
-        sensorManagerRef.current.reset();
-        trackRef.current = '';
         currentLapRef.current = 0;
         lastSampleIndexRef.current = -1;
+        cornerRecorderRef.current.reset();
+        cornerRecordsRef.current = [];
+        setCornerRecords([]);
         setEvents([]);
     }, []);
+
+    useEffect(() => {
+        const updateMap = () => {
+            setMappedCornerCount(cornerRecorderRef.current.setMap(liveMap?.getCircuitMap() ?? null));
+        };
+        updateMap();
+        return liveMap?.subscribeCircuitMap(updateMap);
+    }, [liveMap]);
 
     useEffect(() => {
         if (initialEventsRef.current === initialEvents) return;
@@ -74,23 +86,23 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
     useEffect(() => {
         return liveTelemetryStore.subscribeEvents((event) => {
             if (event.type !== 'frame') {
-                resetTracking();
+                if (event.type === 'session-reset') resetTracking();
+                else {
+                    currentLapRef.current = 0;
+                    lastSampleIndexRef.current = -1;
+                    cornerRecorderRef.current.reset();
+                }
                 return;
             }
             if (event.sampleIndex <= lastSampleIndexRef.current) return;
 
-            const track = getTelemetryTrack(event.sample);
-            if (track && track !== trackRef.current) {
-                trackRef.current = track;
-                sensorManagerRef.current.setTrack(track);
-            }
-
             currentLapRef.current = getTelemetryLap(event.sample);
-            const eventCount = eventLogRef.current.length;
-            sensorManagerRef.current.tick(event.sample, event.sampleIndex, eventLogRef.current);
             lastSampleIndexRef.current = event.sampleIndex;
-            if (eventLogRef.current.length !== eventCount) {
-                setEvents(eventLogRef.current.all());
+            const completedCorners = cornerRecorderRef.current.tick(event.sample, event.sampleIndex)
+                .map((record) => ({ ...record, id: `${event.streamGeneration}:${record.id}` }));
+            if (completedCorners.length > 0) {
+                cornerRecordsRef.current = [...cornerRecordsRef.current, ...completedCorners];
+                setCornerRecords(cornerRecordsRef.current);
             }
         }, { replayLatest: true });
     }, [resetTracking]);
@@ -119,6 +131,7 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
             currentLap: currentLapRef.current,
         }),
         getAllEvents: () => eventLogRef.current.all(),
+        getCornerRecords: () => cornerRecordsRef.current.slice(),
     }), [name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     const registeredHandleRef = React.useRef(handle);
@@ -128,6 +141,21 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
         const term = search.trim().toLowerCase();
         return events.filter((event) => !term || JSON.stringify(event).toLowerCase().includes(term)).slice().reverse();
     }, [events, search]);
+    const cornerSummaries = useMemo(() => summarizeDriverCorners(cornerRecords), [cornerRecords]);
+    const cornerRows = useMemo(() => {
+        const term = search.trim().toLowerCase();
+        const cars = new Map<string, DriverCornerSummary[]>();
+        cornerSummaries.forEach((summary) => {
+            if (term && !`${summary.isPlayer ? 'player' : ''} car ${summary.carId} ${summary.cornerName} ${summary.cornerId}`.toLowerCase().includes(term)) return;
+            const corners = cars.get(summary.carId) ?? [];
+            corners.push(summary);
+            cars.set(summary.carId, corners);
+        });
+        return Array.from(cars, ([carId, corners]) => ({ carId,
+            corners: corners.sort((a, b) => a.cornerName.localeCompare(b.cornerName, undefined, { numeric: true })),
+        }))
+            .sort((a, b) => a.carId.localeCompare(b.carId, undefined, { numeric: true }));
+    }, [cornerSummaries, search]);
 
     return (
         <Box className="live-optional-panel">
@@ -138,6 +166,51 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
                 </TextField.Root>
             </Flex>
             <Box className="live-optional-panel__scroll">
+                <section aria-label="Driver corner times">
+                    <Flex justify="between" align="center" gap="2" mb="2">
+                        <Text weight="bold">Driver corner times</Text>
+                        <Text size="1" color="gray">{cornerRecords.length} completed corners</Text>
+                    </Flex>
+                    <Text as="p" size="1" color="gray">
+                        Average time in each corner across passes, using the middle 75% of complete times.
+                        Drops the fastest and slowest 12.5% (rounded down, at least one each).
+                        Requires 3 complete passes. Times use MM:SS:mmm.
+                    </Text>
+                    {mappedCornerCount === 0 && <Text color="gray">Open Live Map with tagged corners to record driver corner timing.</Text>}
+                    {cornerRows.length === 0 ? (mappedCornerCount > 0 || search.trim()) && <Text color="gray">{search.trim() ? 'No matching corner times' : 'Waiting for cars to cross a corner end'}</Text> : (
+                            <Table.Root size="1" className="live-event-log__cars">
+                                <Table.Header><Table.Row>
+                                    <Table.ColumnHeaderCell>Car index</Table.ColumnHeaderCell>
+                                    <Table.ColumnHeaderCell>Average corner time · middle 75%</Table.ColumnHeaderCell>
+                                </Table.Row></Table.Header>
+                                <Table.Body>{cornerRows.map(({ carId, corners }) => (
+                                    <Table.Row key={carId}>
+                                        <Table.RowHeaderCell className="live-event-log__car">
+                                            <Text weight="bold">{corners.some((corner) => corner.isPlayer) ? 'Player' : 'Car'}{carId !== 'player' ? ` #${carId}` : ''}</Text>
+                                        </Table.RowHeaderCell>
+                                        <Table.Cell>
+                                            <ol className="live-event-log__corners" aria-label={`Corner times for car ${carId}`}>
+                                                {corners.map((corner) => (
+                                                    <li key={corner.cornerId} className="live-event-log__corner">
+                                                        <Text weight="bold"><span title={corner.cornerId}>{corner.cornerName}</span></Text>
+                                                        <Text as="p" weight="bold">
+                                                            {corner.averageTimeMs === null ? 'Collecting times' : formatCornerTime(corner.averageTimeMs)}
+                                                        </Text>
+                                                        <Text as="p" size="1" color="gray">
+                                                            {corner.averageTimeMs === null
+                                                                ? `${corner.sampleCount}/3 complete passes`
+                                                                : `${corner.includedCount} of ${corner.sampleCount} times used`}
+                                                        </Text>
+                                                    </li>
+                                                ))}
+                                            </ol>
+                                        </Table.Cell>
+                                    </Table.Row>
+                                ))}</Table.Body>
+                            </Table.Root>
+                        )}
+                </section>
+                <Box mt="4">
                 {filtered.length === 0 ? <Text color="gray">No live events detected yet</Text> : (
                     <Table.Root size="1">
                         <Table.Header><Table.Row><Table.ColumnHeaderCell>Time</Table.ColumnHeaderCell><Table.ColumnHeaderCell>Type</Table.ColumnHeaderCell><Table.ColumnHeaderCell>Lap</Table.ColumnHeaderCell></Table.Row></Table.Header>
@@ -145,13 +218,14 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
                             {filtered.map((event) => (
                                 <Table.Row key={event.id}>
                                     <Table.Cell>{new Date(event.timestamp).toLocaleTimeString()}</Table.Cell>
-                                    <Table.Cell><Badge color={EVENT_COLORS[event.type]}>{event.type}</Badge></Table.Cell>
+                                    <Table.Cell><Badge color="green">{event.type}</Badge></Table.Cell>
                                     <Table.Cell>{event.lap}</Table.Cell>
                                 </Table.Row>
                             ))}
                         </Table.Body>
                     </Table.Root>
                 )}
+                </Box>
             </Box>
         </Box>
     );

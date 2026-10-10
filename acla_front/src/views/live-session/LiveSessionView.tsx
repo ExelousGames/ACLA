@@ -59,7 +59,6 @@ import type {
 import type { LiveSessionAnalysisResultPage } from './live-session-analysis-results';
 import type { LiveSessionRuntime, LiveSessionSnapshot } from './live-session-types';
 import type { LiveEventLogHandle } from './LiveEventLog';
-import type { EventSearchParams } from './event-log/EventLog';
 import { liveTelemetryStore } from './live-telemetry-store';
 import type { LiveTelemetryEventListener } from './live-telemetry-store';
 import type { TrackVisionHandle } from './track-vision/LiveTrackVision';
@@ -229,7 +228,7 @@ const isQueryScope = (value: unknown): value is QueryScope => {
                 && isFiniteNumber(scope.seconds);
         case 'event':
             return hasExactKeys(scope, ['type', 'eventType', 'which'])
-                && ['CORNER', 'STRAIGHT', 'CRASHED', 'OVERTAKE'].includes(scope.eventType as string)
+                && scope.eventType === 'STRAIGHT'
                 && (scope.which === 'last' || scope.which === 'current');
         case 'lap':
             return hasExactKeys(scope, ['type', 'lap'])
@@ -357,13 +356,15 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
         ?.findComponentRef<LiveEventLogHandle>(LIVE_EVENT_LOG_COMPONENT_NAME)
         ?.current ?? null;
     const findLiveEvents = (args: Record<string, any>) => {
+        const eventType = args.eventType ?? args.event_type;
+        if (eventType !== 'STRAIGHT') return [];
         const eventLog = getMountedEventLog();
         if (!eventLog) return [];
         return eventLog.findEvents({
-            eventType: args.eventType ?? args.event_type,
+            eventType,
             scope: args.scope ?? 'last',
             n: args.n,
-        } as EventSearchParams);
+        });
     };
     const resolveLiveTelemetryScope = (
         scope: QueryScope,

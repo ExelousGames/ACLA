@@ -1,0 +1,27 @@
+.live-event-log__cars {
+    width: 100%;
+}
+
+.live-event-log__car {
+    min-width: 110px;
+    vertical-align: top;
+    white-space: nowrap;
+}
+
+.live-event-log__corners {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.live-event-log__corner {
+    flex: 0 0 160px;
+    padding: 12px;
+    border: 1px solid var(--gray-a5);
+    border-radius: var(--radius-2);
+    background: var(--gray-a2);
+}
+

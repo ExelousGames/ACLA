@@ -73,7 +73,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 if (controller.signal.aborted) return;
                 if (voicePacks.current.has(sentence)) continue;
                 try {
-                    const pack = await synthesizeTts({ text: sentence, speed: 1.5 }, controller.signal);
+                    const pack = await synthesizeTts({ text: sentence, speed: 1.2 }, controller.signal);
                     if (controller.signal.aborted) return;
                     voicePacks.current.set(sentence, pack);
                     playReadyVoice();

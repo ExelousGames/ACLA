@@ -61,7 +61,7 @@ rule('Graphics_tc_level', 'dcTractionControl', integer);
 rule('Graphics_tc_cut_level', 'dcTractionControl2', integer);
 rule('Graphics_abs_level', 'dcABS', integer);
 rule('Graphics_mfd_fuel_to_add', 'PitSvFuel', positive);
-for (const [standard, sdk] of Object.entries({ current: 'LapCurrentLapTime', last: 'LapLastLapTime', best: 'LapBestLapTime' })) {
+for (const [standard, sdk] of Object.entries({ current: 'SessionTime', last: 'LapLastLapTime', best: 'LapBestLapTime' })) {
   rule(`Graphics_${standard}_time`, sdk, milliseconds);
 }
 for (const [corner, sdk] of Object.entries({ front_left: 'LF', front_right: 'RF', rear_left: 'LR', rear_right: 'RR' })) {
@@ -79,7 +79,7 @@ const derived = {
   Physics_velocity_y: 'VelocityX/Y/Z rotated by Yaw/Pitch/Roll -> track-frame Z (up), m/s',
   Physics_velocity_z: 'VelocityX/Y/Z rotated by Yaw/Pitch/Roll -> track-frame X, m/s',
   Graphics_status: 'IsOnTrack / IsReplayPlaying -> standard status enum',
-  Graphics_current_time_str: 'LapCurrentLapTime -> lap-time string',
+  Graphics_current_time_str: 'SessionTime -> minutes:seconds:milliseconds string',
   Graphics_last_time_str: 'LapLastLapTime -> lap-time string',
   Graphics_best_time_str: 'LapBestLapTime -> lap-time string',
   Graphics_delta_lap_time: 'LapDeltaToSessionBestLap, gated by LapDeltaToSessionBestLap_OK -> ms',
@@ -242,7 +242,10 @@ class IRacingAdapter {
     if (finite(values.SteeringWheelAngle) && finite(values.SteeringWheelAngleMax) && values.SteeringWheelAngleMax > 0) {
       put('Physics_steer_angle', Math.max(-1, Math.min(1, 2 * values.SteeringWheelAngle / values.SteeringWheelAngleMax)));
     }
-    for (const name of ['current', 'last', 'best']) {
+    if (sample.Graphics_current_time !== undefined) {
+      put('Graphics_current_time_str', lapTime(sample.Graphics_current_time).replace('.', ':'));
+    }
+    for (const name of ['last', 'best']) {
       const ms = sample[`Graphics_${name}_time`];
       if (ms !== undefined) put(`Graphics_${name}_time_str`, lapTime(ms));
     }

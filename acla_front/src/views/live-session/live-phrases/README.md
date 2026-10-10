@@ -44,9 +44,13 @@ matching guide reserves priority while waiting for those checks. The exit runs o
 the next engine step; state then considers root's children again. Session/stream
 resets and detection restarts create a fresh state at root.
 
-The UI uses the **Composite pattern**: `State.snapshot(context)` projects the whole
-runtime tree to plain `NodeSnapshot` data, and `ClosureTree` recursively renders
-each node. `PhraseSnapshot.root` is that recursive snapshot, including root-level
+The UI uses a folder explorer: `State.snapshot(context)` projects the whole
+runtime tree to plain `NodeSnapshot` data, and `ClosureTree` displays one directory
+at a time with a breadcrumb path and a Back button that moves up one level.
+Contents, Conditions and Details tabs show only the inspected node's information;
+opening an action selects Details. Navigation follows snapshot IDs independently
+of the live engine location, so updates preserve the inspected directory and tab.
+`PhraseSnapshot.root` is that recursive snapshot, including root-level
 actions and every nested closure in declaration order. The legacy `closures`
 summary remains for phrase events, timing, overlays and speech; it does not drive
 the tree UI. The plain `state` still contains `current`, `description`, `kind` and
@@ -102,7 +106,7 @@ to a closure's metadata ID, independent of its depth or root-child position.
 The speech action's description remains the sentence used by TTS and overlays.
 
 The first child, **Chicane overtake**, enters immediately when the
-visible opponent is within 10 m and its estimated arrival at a slow corner is
+visible opponent is within 2 m and its estimated arrival at a slow corner is
 within 2 s. That corner must belong to a labeled consecutive-corners region and
 its next linked corner must turn the opposite way. Arrival uses the nearest car
 ahead in `Graphics_normalized_positions`, excluding `Graphics_player_car_id`,
@@ -130,6 +134,23 @@ prevent this timed guide. Track Vision supplies the opponent's side position;
 map labels and geometry determine the upcoming slow corner's direction and its
 opposite linked turn, accounting for the game's X/Z coordinate orientation.
 
+The next root child, **One Tight Slow Corner**, enters immediately when the
+estimated opponent distance is at most 2 m **and** the upcoming corner is outside
+every Live Map `consecutive corners` label. Even the last or only corner in a
+labeled region is excluded. This entry check does not require a slow tag, an
+arrival-time limit, or an opponent motion rate; it still needs a mapped upcoming
+corner and a fresh opponent lap position. It selects between two speech actions:
+
+- Opponent at the left edge before a right turn, or at the right edge before a left turn:
+  “Opponent didnt defend, overtake from inside is possible here”
+- Opponent in the middle, with the driver at the right edge before a right turn or
+  at the left edge before a left turn:
+  “Opponent is defending, Pressure is on”.
+
+Speech can run as soon as its position conditions match; this guide has no extra
+arrival-time delay. It exits to root after either phrase runs. Chicane overtake
+retains priority when its more specific entry conditions match.
+
 Open Live Session, expand the right sidebar, and select **Live phrases**. The
 panel lists all overtaking guides as collapsed rows with live status and condition/action
 counts, above the latest 50 triggered sentences. Expand a closure, its entry or speech
@@ -143,7 +164,7 @@ it keeps listening when the sidebar is folded or the Assistant tab is selected.
 phrase cards. Enabling again starts fresh with new telemetry.
 
 Enabling detection also prepares every catalog sentence, including alternative actions, through the system TTS
-service at 1.5× speed, one request at a time. Completed clips stay cached while the panel is
+service at 1.2× speed, one request at a time. Completed clips stay cached while the panel is
 mounted. The Speech indicator shows **Preparing** until all requests finish,
 then turns green with **Ready** only when every catalog sentence has received
 its audio. Failed requests leave it **Incomplete**; disabling detection shows
@@ -265,9 +286,6 @@ The catalog includes:
   the advice depends on the opponent running wide and an opening appearing.
 - **Better exit pass:** the exit of a tagged slow or fast corner, with both
   positions known; use any exit-speed advantage once a passing lane is clear.
-- **Setting up the next corner:** player outside and opponent inside during entry
-  or mid-corner, with a linked mapped turn in the opposite direction. Establish
-  overlap and stay alongside so the outside becomes the inside for the next turn.
 - **Linked corners in the same direction:** preserve balance and room for the
   next apex, then build the passing run from the final exit.
 - **Exit into another corner:** prioritize positioning for the remaining corners

@@ -1,7 +1,28 @@
-import { createCameraProjection, DEFAULT_CAMERA, validCalibration } from './camera-projection';
+import { createCameraProjection, createGroundProjection, DEFAULT_CAMERA, validCalibration } from './camera-projection';
 import { evaluateRoad, fitRoadPolynomial } from './road-polynomial';
 
 const camera = { ...DEFAULT_CAMERA, heightM: 2, pitchDeg: 0, imageWidth: 1600, imageHeight: 900 };
+it.each([[1600, 900], [1280, 720], [800, 600]])('corrects ground distances at %s x %s and projects the grid at the same scale', (imageWidth, imageHeight) => {
+    const projection = createGroundProjection({ ...camera, imageWidth, imageHeight });
+    const u = 0.6, v = 0.5 + imageWidth / imageHeight * 0.1;
+    // This contact previously projected to (2, 10) m; it must be (0.2, 1) m.
+    const ground = projection.imageToGround(u, v)!;
+    expect(ground.x).toBeCloseTo(0.2, 8);
+    expect(ground.y).toBeCloseTo(1, 8);
+    const grid = projection.localToImage({ x: 0.2, y: 1, z: 0 })!;
+    expect(grid.u).toBeCloseTo(u, 8);
+    expect(grid.v).toBeCloseTo(v, 8);
+});
+
+it.each([-10, 0, 20])('keeps the corrected grid and ground projection aligned at pitch %s with camera offsets', (pitchDeg) => {
+    const projection = createGroundProjection({ ...camera, pitchDeg, yawDeg: 12, lateralOffsetM: -0.5, forwardOffsetM: 1.5 });
+    const point = { x: -0.85, y: 2.85, z: 0 };
+    const image = projection.localToImage(point)!;
+    const ground = projection.imageToGround(image.u, image.v)!;
+    expect(ground.x).toBeCloseTo(point.x, 8);
+    expect(ground.y).toBeCloseTo(point.y, 8);
+});
+
 it('matches the analytic level-camera projection in meters', () => {
     const projection = createCameraProjection(camera);
     const point = projection.localToImage({ x: 2, y: 10, z: 0 })!;

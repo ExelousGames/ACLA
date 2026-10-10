@@ -63,7 +63,7 @@ describe('iRacing standard field adapter', () => {
       SteeringWheelAngle: -Math.PI / 2, SteeringWheelAngleMax: 4 * Math.PI,
       FuelLevel: 24.5, dcBrakeBias: 54, BrakeABSactive: true, EngineWarnings: 0x10,
       LFpressure: 200, RFpressure: 210, LRpressure: 220, RRpressure: 230,
-      LFshockDefl: 0.02, PitSvLFP: 190, LapCurrentLapTime: 62.1234,
+      LFshockDefl: 0.02, PitSvLFP: 190, LapCurrentLapTime: 62.1234, SessionTime: 2027.758,
       LapLastLapTime: 91.005, LapBestLapTime: 90, LapDeltaToSessionBestLap: -0.125,
       LapDeltaToSessionBestLap_OK: true, SessionFlags: 0x108, LapDistPct: 0.72,
       CarIdxTrackSurface: [1, -1, 3, 0], SessionTimeRemain: 300, OnPitRoad: false,
@@ -73,7 +73,7 @@ describe('iRacing standard field adapter', () => {
       Physics_gas: 0.75, Physics_brake: 0.2, Physics_clutch: 1, Physics_fuel: 24.5,
       Physics_brake_bias: 0.54, Physics_abs: 1, Physics_pit_limiter_on: true,
       Physics_suspension_travel_front_left: 0.02,
-      Graphics_current_time: 62123, Graphics_current_time_str: '1:02.123',
+      Graphics_current_time: 2027758, Graphics_current_time_str: '33:47:758',
       Graphics_last_time: 91005, Graphics_last_time_str: '1:31.005',
       Graphics_delta_lap_time: -125, Graphics_delta_lap_time_str: '-0:00.125',
       Graphics_estimated_lap_time: 89875, Graphics_is_delta_positive: false,
@@ -89,6 +89,29 @@ describe('iRacing standard field adapter', () => {
     expect(sample.Physics_wheel_pressure_rear_right).toBeCloseTo(33.3587, 4);
     expect(sample.Graphics_mfd_tyre_pressure_front_left).toBeCloseTo(27.5572, 4);
     expect(validateSourceFrame({ game: 'iracing', sample }, 'iracing').ok).toBe(true);
+  });
+
+  it.each([
+    [0, 0, '0:00:000'],
+    [59.9996, 60000, '1:00:000'],
+    [3600.005, 3600005, '60:00:005'],
+  ])('converts session time %p to milliseconds and minutes:seconds:milliseconds', (time, ms, formatted) => {
+    const sample = new IRacingAdapter().adapt(packet({ SessionTime: time, LapCurrentLapTime: 12.345 }));
+    expect(sample).toMatchObject({ Graphics_current_time: ms, Graphics_current_time_str: formatted });
+  });
+
+  it('keeps session time advancing when the current lap timer resets', () => {
+    const adapter = new IRacingAdapter();
+    const before = adapter.adapt(packet({ SessionTime: 2027.758, LapCurrentLapTime: 92.758, LapCompleted: 4 }));
+    const after = adapter.adapt(packet({ SessionTime: 2028.008, LapCurrentLapTime: 0.008, LapCompleted: 5 }));
+    expect(after.Graphics_current_time - before.Graphics_current_time).toBe(250);
+    expect(after.Graphics_current_time_str).toBe('33:48:008');
+  });
+
+  it.each([undefined, null, NaN, Infinity, -1, '2027.758'])('omits unavailable or invalid session time without using lap time: %p', (time) => {
+    const sample = new IRacingAdapter().adapt(packet({ SessionTime: time, LapCurrentLapTime: 12.345 }));
+    expect(sample).not.toHaveProperty('Graphics_current_time');
+    expect(sample).not.toHaveProperty('Graphics_current_time_str');
   });
 
   it('tracks the brake pedal while simulator-applied braking stays at full force', () => {

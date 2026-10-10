@@ -1,4 +1,4 @@
-import { createCameraProjection, validCalibration } from './camera-projection';
+import { createGroundProjection, validCalibration } from './camera-projection';
 import type { ImageCar, ImagePoint, ReconstructedScene } from './reconstructed-scene';
 import type { CameraCalibration, GroundPoint } from './track-vision-types';
 
@@ -18,7 +18,7 @@ export interface BirdsEyeScene {
 export function projectBirdsEyeScene(scene: ReconstructedScene | null, calibration?: CameraCalibration): BirdsEyeScene | null {
     if (!scene || !validCalibration(calibration)
         || calibration.imageWidth !== scene.width || calibration.imageHeight !== scene.height) return null;
-    const camera = createCameraProjection(calibration);
+    const camera = createGroundProjection(calibration);
     const project = ({ x, y }: ImagePoint) => {
         const point = camera.imageToGround(x / scene.width, y / scene.height);
         return point && point.y > 0 && Math.hypot(point.x, point.y) <= 200 ? point : null;

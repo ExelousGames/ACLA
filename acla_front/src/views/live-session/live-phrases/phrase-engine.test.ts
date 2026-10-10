@@ -101,7 +101,7 @@ describe('live phrase closure tree', () => {
 });
 
 describe('condition connectors', () => {
-    const ruleWith = (conditions: readonly PhraseCondition[]) => ({ ...PHRASE_DEFINITIONS.find((phrase) => phrase.id === 'next-corner')!, conditions });
+    const ruleWith = (conditions: readonly PhraseCondition[]) => ({ ...PHRASE_DEFINITIONS.find((phrase) => phrase.id === defaultRule)!, conditions });
 
     describe.each([
         { expression: 'A AND B AND C', connectors: ['and', 'and'], matches: (a: boolean, b: boolean, c: boolean) => a && b && c },
@@ -175,7 +175,7 @@ describe('condition connectors', () => {
 
 describe('nested condition groups', () => {
     const leaf = (met: boolean, connector: PhraseConditionConnector = 'and') => new PhraseCondition('speed', '>=', met ? 30 : 120, undefined, connector);
-    const ruleWith = (conditions: readonly PhraseConditionNode[]) => ({ ...PHRASE_DEFINITIONS.find((phrase) => phrase.id === 'next-corner')!, conditions });
+    const ruleWith = (conditions: readonly PhraseConditionNode[]) => ({ ...PHRASE_DEFINITIONS.find((phrase) => phrase.id === defaultRule)!, conditions });
 
     describe.each([
         {
@@ -438,10 +438,12 @@ describe('vision and Live Map overtaking guides', () => {
 
     it('evaluates all conditions in guides suppressed by a higher-priority match', () => {
         const engine = new PhraseEngine();
-        engine.receiveMap(circuitMap('slow', true), 0);
+        const sequence = circuitMap('slow', true);
+        sequence.samples.middle_line!.find((point) => point.normalized_position === 0.31)!.x = 1100;
+        engine.receiveMap(sequence, 0);
         engine.receiveVision(vision(0, { player: 'outside', opponent: 'inside' }), 0);
         const snapshot = engine.receiveTelemetry(frame(driving), 0);
-        expect(snapshot.closures.find((rule) => rule.id === 'next-corner')?.status).toBe('Confirming');
+        expect(snapshot.closures.find((rule) => rule.id === 'same-direction')?.status).toBe('Confirming');
         const switchback = snapshot.closures.find((rule) => rule.id === 'switchback')!;
         expect(switchback.status).toBe('Not matched');
         expect(switchback.conditions.every((condition) => condition.conditionFit)).toBe(true);
@@ -477,16 +479,18 @@ describe('vision and Live Map overtaking guides', () => {
 
     it('lists timed and shape-specific guides before general overtaking guides', () => {
         expect(PHRASE_DEFINITIONS.map((rule) => rule.id)).toEqual([
-            'second-apex', 'next-corner', 'same-direction', 'sequence-exit', 's-bend',
+            'second-apex', 'one-tight-slow-corner', 'same-direction', 'sequence-exit', 's-bend',
             'tightening-corner', 'opening-corner', 'hairpin-exit',
             'inside-outbraking', 'around-outside', 'switchback',
             'better-exit', 'slipstream', 'pressure-feint',
         ]);
         PHRASE_DEFINITIONS.forEach((rule) => {
             expect(rule.sentence).not.toMatch(/you are .+; the opponent ahead is/);
-            const mapInput = rule.id === 'second-apex' ? 'opponentCornerEtaS' : 'phase';
+            const timed = rule.id === 'second-apex';
+            const standalone = rule.id === 'one-tight-slow-corner';
+            const mapInput = timed ? 'opponentCornerEtaS' : standalone ? 'approachCornerInSequence' : 'phase';
             expect(rule.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === mapInput)?.description)
-                .toContain(rule.id === 'second-apex' ? 'Opponent estimated time to corner entry' : 'Live Map section');
+                .toContain(timed ? 'Opponent estimated time to corner entry' : standalone ? 'Corner is not inside' : 'Live Map section');
         });
     });
 
@@ -504,12 +508,12 @@ describe('vision and Live Map overtaking guides', () => {
         expect(ids(engine, 800)).toEqual([tactic]);
     });
 
-    it.each(['opposite', 'same'] as const)('uses the %s direction sequence guide and reserves exit guidance for the last corner', (direction) => {
+    it.each(['opposite', 'same'] as const)('selects guidance for a %s direction sequence and reserves exit guidance for the last corner', (direction) => {
         const sequence = circuitMap('slow', true);
         if (direction === 'same') sequence.samples.middle_line!.find((point) => point.normalized_position === 0.31)!.x = 1100;
         sequence.centerline_tags!.push({ id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.31 });
         for (const [position, tactic] of [
-            [0.11, direction === 'opposite' ? 'next-corner' : 'same-direction'],
+            [0.11, direction === 'opposite' ? 'switchback' : 'same-direction'],
             [0.18, 'sequence-exit'],
             [0.29, direction === 'same' ? 'hairpin-exit' : 'better-exit'],
         ] as const) {
@@ -548,8 +552,8 @@ describe('vision and Live Map overtaking guides', () => {
         { tactic: 'switchback', speed: 'slow', position: 0.15, player: 'outside', opponent: 'inside' },
         { tactic: 'better-exit', speed: 'slow', position: 0.18, player: 'middle', opponent: 'inside' },
         { tactic: 'better-exit', speed: 'fast', position: 0.18, player: 'middle', opponent: 'inside' },
-        { tactic: 'next-corner', speed: 'fast', position: 0.11, player: 'outside', opponent: 'inside', linked: true },
-        { tactic: 'next-corner', speed: 'slow', position: 0.15, player: 'outside', opponent: 'inside', linked: true },
+        { tactic: 'around-outside', speed: 'fast', position: 0.11, player: 'outside', opponent: 'inside', linked: true },
+        { tactic: 'switchback', speed: 'slow', position: 0.15, player: 'outside', opponent: 'inside', linked: true },
         { tactic: 'pressure-feint', speed: 'slow', position: 0.11, player: 'middle', opponent: 'outside' },
     ] as const)('selects only $tactic for $speed at $position', (scenario) => {
         for (const corner of ['left', 'right'] as const) {

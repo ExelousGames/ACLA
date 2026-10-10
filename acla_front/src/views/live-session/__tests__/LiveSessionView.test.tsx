@@ -415,7 +415,7 @@ describe('LiveSessionView', () => {
         ['trimmed field repair', { fields: [' speed '], scope: { type: 'now' }, reduce: 'avg' }],
         ['JSON-string scope', { fields: ['speed'], scope: '{"type":"now"}', reduce: 'avg' }],
         ['missing scope data', { fields: ['speed'], scope: { type: 'last_seconds' }, reduce: 'avg' }],
-        ['alternate scope property', { fields: ['speed'], scope: { type: 'event', event_type: 'CORNER', which: 'last' }, reduce: 'avg' }],
+        ['alternate scope property', { fields: ['speed'], scope: { type: 'event', event_type: 'STRAIGHT', which: 'last' }, reduce: 'avg' }],
         ['malformed lap scope', { fields: ['speed'], scope: { type: 'lap', lap: '1' }, reduce: 'avg' }],
         ['malformed range scope', { fields: ['speed'], scope: { type: 'range', start: 0, end: '10' }, reduce: 'avg' }],
         ['missing reduction', { fields: ['speed'], scope: { type: 'now' } }],
@@ -516,8 +516,8 @@ describe('LiveSessionView', () => {
             componentDirectory!.registerComponentRef({ current: {
                 getComponentName: () => 'visualization:event-log',
                 findEvents: jest.fn(() => [{
-                    id: 'corner-1',
-                    type: 'CORNER',
+                    id: 'straight-1',
+                    type: 'STRAIGHT',
                     startSampleIdx: 0,
                     endSampleIdx: 0,
                     lap: 1,
@@ -529,9 +529,31 @@ describe('LiveSessionView', () => {
 
         await expect(handle.getTelemetryForScope({
             type: 'event',
-            eventType: 'CORNER',
+            eventType: 'STRAIGHT',
             which: 'last',
         })).resolves.toEqual([runtime.rows[0]]);
+    });
+
+    it.each(['CORNER', 'CRASHED', 'OVERTAKE'])('does not query retired %s live events or their telemetry', async (eventType) => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const runtime = createTelemetryRuntime();
+        const handle = renderRegisteredView(runtime);
+        const findEvents = jest.fn();
+        act(() => {
+            componentDirectory!.registerComponentRef({ current: {
+                getComponentName: () => 'visualization:event-log', findEvents,
+            } as any });
+        });
+
+        expect(handle.getEventLog({ eventType, scope: 'all' })).toEqual([]);
+        await expect(handle.getEventLogForAi({ event_type: eventType, scope: 'last' }).result)
+            .resolves.toEqual({ status: 'complete', events: [] });
+        const scope = { type: 'event', eventType, which: 'last' } as any;
+        await expect(handle.getTelemetryForScope(scope)).resolves.toEqual([]);
+        await expect(handle.queryTelemetryMetricForAi({ fields: ['speed'], scope, reduce: 'avg' }).result)
+            .rejects.toMatchObject({ name: 'InvalidOperationCallError' });
+        expect(findEvents).not.toHaveBeenCalled();
+        expect(runtime.streamRecordedTelemetry).not.toHaveBeenCalled();
     });
 
     it('returns an empty historical scope before a writer file exists', async () => {

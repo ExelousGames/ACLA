@@ -30,6 +30,7 @@ const INPUT_LABELS = {
     approachCornerDirection: 'Upcoming corner direction',
     approachSequenceRemaining: 'Corners following in the labeled consecutive-corners sequence',
     approachLinkedOpposite: 'Next linked corner turns the opposite way',
+    approachCornerInSequence: 'Upcoming corner is inside a Live Map consecutive corners label',
 } as const;
 type Input = keyof typeof INPUT_LABELS;
 type Inputs = PhraseMapContext & ReturnType<typeof getPhrasePositions> & {
@@ -37,7 +38,7 @@ type Inputs = PhraseMapContext & ReturnType<typeof getPhrasePositions> & {
     closingOnOpponent?: 0 | 1; directlyBehindOpponent?: 0 | 1;
     opponentCornerEtaS?: number; approachCornerSpeed?: PhraseMapContext['cornerSpeed'];
     approachCornerDirection?: PhraseMapContext['cornerDirection'];
-    approachSequenceRemaining?: number; approachLinkedOpposite?: 0 | 1 };
+    approachSequenceRemaining?: number; approachLinkedOpposite?: 0 | 1; approachCornerInSequence?: 0 | 1 };
 type PhraseVisionInput = Pick<TrackVisionDetection, 'capturedAt' | 'calibration' | 'birdsEyeScene'>;
 export type PhraseConditionConnector = 'and' | 'or';
 export class PhraseCondition {
@@ -63,6 +64,9 @@ export class PhraseCondition {
             const values = Array.isArray(this.value) ? this.value : [this.value];
             if (this.input === 'approachCornerDirection') {
                 return `Upcoming corner turns ${values.join(' or ')}`;
+            }
+            if (this.input === 'approachCornerInSequence' && this.value === 0) {
+                return 'Corner is not inside a consecutive corners label of the Live Map';
             }
             const subject = this.input.startsWith('player') ? 'Player' : 'Opponent';
             if (this.input === 'playerCorner' || this.input === 'opponentCorner') {
@@ -154,7 +158,7 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
         id: 'second-apex', name: 'Chicane overtake', holdMs: 0,
         description: 'Prepare for opposite linked corners, then speak when the opponent is less than 0.5 seconds from corner entry: go wide if the opponent is inside, or brake early and hold inside if the opponent is outside.',
         sentence: 'Go wide in the first turn. then take second apex if possible',
-        conditions: [condition('opponentDistanceM', '<=', 10), condition('opponentCornerEtaS', '<=', 2),
+        conditions: [condition('opponentDistanceM', '<=', 2), condition('opponentCornerEtaS', '<=', 2),
             condition('approachCornerSpeed', '=', 'slow'), condition('approachSequenceRemaining', '>=', 1),
             condition('approachLinkedOpposite', '=', 1)],
         actionConditions: [condition('opponentCornerEtaS', '<', 0.5), conditionGroup([
@@ -170,10 +174,23 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
         }],
     },
     {
-        id: 'next-corner', name: 'Setting up the next corner', holdMs: 800,
-        description: 'Use the outside of this turn to prepare for the inside of the next linked corner.',
-        sentence: 'Set up the next corner: if you can establish overlap on the outside, stay alongside through this turn and leave room; your side becomes the inside at the following corner.',
-        conditions: [...following, ...positioned, condition('phase', 'in', ['entry', 'middle']), condition('outsideLine', '=', 1), condition('linkedOpposite', '=', 1)],
+        id: 'one-tight-slow-corner', name: 'One Tight Slow Corner', holdMs: 0,
+        description: 'Follow an opponent within 2 m toward a corner outside any Live Map consecutive corners label: slipstream to a late brake when the opponent is outside, or brake earlier and clip the apex behind a defending opponent in the middle.',
+        sentence: 'Opponent didnt defend, overtake from inside is possible here',
+        conditions: [condition('opponentDistanceM', '<=', 2), condition('approachCornerInSequence', '=', 0)],
+        actionConditions: [
+            conditionGroup([condition('opponentPosition', '=', 'left'), condition('approachCornerDirection', '=', 'right')]),
+            conditionGroup([condition('opponentPosition', '=', 'right'), condition('approachCornerDirection', '=', 'left')], 'or'),
+        ],
+        additionalActions: [{
+            sentence: 'Opponent is defending, Pressure is on',
+            actionConditions: [
+                conditionGroup([condition('opponentPosition', '=', 'middle'), condition('playerPosition', '=', 'right'),
+                    condition('approachCornerDirection', '=', 'right')]),
+                conditionGroup([condition('opponentPosition', '=', 'middle'), condition('playerPosition', '=', 'left'),
+                    condition('approachCornerDirection', '=', 'left')], 'or'),
+            ],
+        }],
     },
     {
         id: 'same-direction', name: 'Linked corners in the same direction', holdMs: 800,
@@ -470,13 +487,15 @@ export class PhraseEngine {
         const inputs = readInputs(telemetryReady ? this.sample : {}, visionReady ? this.vision!.birdsEyeScene : null, mapContext);
         inputs.closingOnOpponent = visionReady ? this.closingOnOpponent : undefined;
         const opponent = telemetryReady && sameMap ? this.opponentMotion.at(now, TELEMETRY_MAX_AGE_MS) : undefined;
-        const approach = opponent && this.mapContext.approaching(opponent.position);
-        if (opponent && approach) {
-            inputs.opponentCornerEtaS = lapDistance(opponent.position, approach.cornerStartPosition) / opponent.rate;
+        const opponentPosition = telemetryReady && sameMap ? this.opponentMotion.positionAt(now, TELEMETRY_MAX_AGE_MS) : undefined;
+        const approach = this.mapContext.approaching(opponentPosition);
+        if (approach) {
+            inputs.opponentCornerEtaS = opponent ? lapDistance(opponent.position, approach.cornerStartPosition) / opponent.rate : undefined;
             inputs.approachCornerSpeed = approach.cornerSpeed;
             inputs.approachCornerDirection = approach.cornerDirection;
             inputs.approachSequenceRemaining = approach.sequenceRemaining;
             inputs.approachLinkedOpposite = approach.linkedOpposite;
+            inputs.approachCornerInSequence = approach.sequenceId === undefined ? 0 : 1;
         }
         const matched = new Map<string, boolean>();
         const actionMatched = new Map<string, boolean>();

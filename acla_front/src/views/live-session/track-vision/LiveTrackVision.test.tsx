@@ -471,6 +471,9 @@ it.each(['left', 'right'] as const)('publishes the displayed BEV for Live Phrase
     await flush();
     await startCapture();
     expect(ref.current!.getLatestDetection()!.birdsEyeScene).toBeNull();
+    selectStep('Camera position');
+    // Keep this bend fixture above the 10 m visible-road span required for corner fitting after scale correction.
+    fireEvent.change(screen.getByLabelText('Camera height (m)'), { target: { value: '4.8' } });
     fireEvent.click(cameraButton('Apply camera calibration'));
     const detection = ref.current!.getLatestDetection()!;
     expect(detection.geometry).toBeNull();
@@ -513,6 +516,8 @@ it('projects the previous scene and its cars with relative depth, updates live, 
     expect(detection.birdsEyeScene!.leftBoundary.length).toBeGreaterThan(0);
     expect(within(screen.getByLabelText('Top-down traffic')).getAllByLabelText(/^Car \d+$/)).toHaveLength(detection.birdsEyeScene!.cars.length);
     expect(screen.getByLabelText('Top-down traffic')).toHaveTextContent('Car 1');
+    expect(detection.birdsEyeScene!.cars[0].position.y).toBeCloseTo(1.8, 2);
+    expect(screen.getByLabelText('Top-down traffic')).toHaveTextContent('estimated 1.8 m ahead');
     expect(ref.current!.getLatestDetection()).toBe(detection);
     expect(detection.reconstruction).toBeNull();
     expect(detection.geometry).toBeNull();

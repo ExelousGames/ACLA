@@ -107,7 +107,7 @@ it('plays the additional chicane action using its own prepared sentence', async 
     try {
         const view = mount();
         await view.enable();
-        expect(synthesize).toHaveBeenCalledWith({ text: 'brake early, Hold inside', speed: 1.5 }, expect.any(AbortSignal));
+        expect(synthesize).toHaveBeenCalledWith({ text: 'brake early, Hold inside', speed: 1.2 }, expect.any(AbortSignal));
         await act(async () => { view.frame(); });
         expect(play).toHaveBeenCalledTimes(1);
         expect(play).toHaveBeenLastCalledWith(expect.objectContaining({

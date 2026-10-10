@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import type { CameraCalibration, CameraParameters } from './track-vision-types';
-import { createCameraProjection, validCalibration } from './camera-projection';
+import { createGroundProjection, validCalibration } from './camera-projection';
 
 const controls: Array<{ key: keyof CameraParameters; label: string; min: number; max: number; step: number }> = [
     { key: 'heightM', label: 'Camera height (m)', min: 0.2, max: 5, step: 0.05 },
@@ -13,7 +13,7 @@ const controls: Array<{ key: keyof CameraParameters; label: string; min: number;
 /** Reference ground grid for checking the camera pose; it does not generate scene geometry. */
 export function CameraGroundGrid({ camera, applied }: { camera: CameraCalibration; applied: boolean }) {
     if (!validCalibration(camera)) return null;
-    const projection = createCameraProjection(camera);
+    const projection = createGroundProjection(camera);
     const line = (points: Array<{ x: number; y: number }>) => points.map((point) => projection.localToImage({ ...point, z: 0 }))
         .filter((point): point is { u: number; v: number } => Boolean(point && point.u >= 0 && point.u <= 1 && point.v >= 0 && point.v <= 1))
         .map(({ u, v }) => `${u * camera.imageWidth},${v * camera.imageHeight}`).join(' ');

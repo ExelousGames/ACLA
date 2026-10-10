@@ -43,6 +43,12 @@ export class PhraseOpponentMotion {
             rate: delta > 0 && delta < 0.5 && elapsed <= maxAgeMs ? delta * 1000 / elapsed : undefined };
     }
 
+    positionAt(now: number, maxAgeMs: number): number | undefined {
+        const previous = this.previous;
+        return previous && now >= previous.receivedAt && now - previous.receivedAt <= maxAgeMs
+            ? previous.position : undefined;
+    }
+
     at(now: number, maxAgeMs: number): { position: number; rate: number } | undefined {
         const previous = this.previous;
         return previous?.rate !== undefined && now >= previous.receivedAt && now - previous.changedAt <= maxAgeMs

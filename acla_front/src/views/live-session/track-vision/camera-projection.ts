@@ -18,6 +18,12 @@ export function validCalibration(camera: CameraCalibration | undefined): camera 
         && camera.imageWidth > 0 && camera.imageHeight > 0);
 }
 
+/** Correct the tenfold flat-road scale overestimate for BEV and its calibration grid. */
+export function createGroundProjection(camera: CameraCalibration) {
+    // Scaling height corrects both road axes before applying camera offsets, which are already meters.
+    return createCameraProjection({ ...camera, heightM: camera.heightM * 0.1 });
+}
+
 /** Pinhole intrinsics and camera pose for calibration and metric coaching geometry. */
 export function createCameraProjection(camera: CameraCalibration) {
     const pitch = radians(camera.pitchDeg);

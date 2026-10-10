@@ -1,28 +1,26 @@
-import { EventType, SessionEvent } from 'views/session-shared/session-intelligence/types';
+import { LiveEventType, LiveSessionEvent } from 'views/session-shared/session-intelligence/types';
+
+const shouldLogEvent = (event: LiveSessionEvent): boolean => event.type === 'STRAIGHT';
 
 export interface EventSearchParams {
-    eventType: EventType;
+    eventType: LiveEventType;
     scope: 'last' | 'last_n' | 'lap_current' | 'lap_last' | 'all';
     n?: number;
     currentLap?: number;
 }
 
 export class EventLog {
-    private events: SessionEvent[];
+    private events: LiveSessionEvent[];
 
-    constructor(initialEvents: SessionEvent[] = []) {
-        this.events = initialEvents.slice();
+    constructor(initialEvents: LiveSessionEvent[] = []) {
+        this.events = initialEvents.filter(shouldLogEvent);
     }
 
-    push(event: SessionEvent): void {
-        this.events.push(event);
+    replace(events: LiveSessionEvent[]): void {
+        this.events = events.filter(shouldLogEvent);
     }
 
-    replace(events: SessionEvent[]): void {
-        this.events = events.slice();
-    }
-
-    find(params: EventSearchParams): SessionEvent[] {
+    find(params: EventSearchParams): LiveSessionEvent[] {
         const matches = this.events.filter((event) => event.type === params.eventType);
 
         switch (params.scope) {
@@ -46,12 +44,8 @@ export class EventLog {
         }
     }
 
-    all(): SessionEvent[] {
+    all(): LiveSessionEvent[] {
         return this.events.slice();
-    }
-
-    get length(): number {
-        return this.events.length;
     }
 
     reset(): void {

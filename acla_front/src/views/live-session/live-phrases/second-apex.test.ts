@@ -33,13 +33,13 @@ const linkedMap = (wrap = false, corner: 'left' | 'right' = 'right') => {
     });
     return map;
 };
-const closeVision = (now: number, corner: 'left' | 'right' = 'right', distance = 9,
+const closeVision = (now: number, corner: 'left' | 'right' = 'right', distance = 1.5,
     player: 'inside' | 'middle' | 'outside' = 'inside', opponent: 'inside' | 'middle' | 'outside' = 'inside') => {
     const detection = vision(now, { corner, player, opponent });
-    // Both cars are on a straight before the mapped corner; only their side positions are visible.
+    // Straight boundaries extend to the player so opponents within 2 m have visible track support.
     for (const side of ['leftBoundary', 'rightBoundary', 'centerline'] as const) {
         detection.birdsEyeScene![side] = detection.birdsEyeScene![side].map((points) =>
-            points.map((point) => ({ ...point, x: points[0].x })));
+            points.map((point) => ({ ...point, x: points[0].x, y: point.y - 8 })));
     }
     const offset = { inside: 2.5, middle: 5, outside: 7.5 };
     detection.birdsEyeScene!.cars[0].position = {
@@ -78,11 +78,11 @@ describe('second-apex closure', () => {
         expect(update(engine, 2800, 0.2, corner).events).toHaveLength(1);
     });
 
-    it('enters at the inclusive 10 m boundary without the ordinary 0.8 s hold', () => {
+    it('enters at the inclusive 2 m boundary without the ordinary 0.8 s hold', () => {
         const engine = new PhraseEngine([rule]);
         engine.receiveMap(linkedMap(), 0);
         update(engine, 0, 3);
-        engine.receiveVision(closeVision(1000, 'right', 10), 1000);
+        engine.receiveVision(closeVision(1000, 'right', 2), 1000);
         expect(engine.receiveTelemetry(frame(sample(2)), 1000).state.path).toEqual(['root', rule.name]);
     });
 
@@ -99,7 +99,7 @@ describe('second-apex closure', () => {
             let next = sample(reason === 'too early' ? 3 : reason === 'stationary' ? 3 : reason === 'reversing' ? 4 : 2);
             if (reason === 'no opponent positions') next = { ...next, Graphics_normalized_positions: undefined };
             if (reason === 'no player ID') next = { ...next, Graphics_player_car_id: undefined };
-            engine.receiveVision(closeVision(1000, 'right', reason === 'too far' ? 10.01 : 9), 1000);
+            engine.receiveVision(closeVision(1000, 'right', reason === 'too far' ? 2.01 : 1.5), 1000);
             const snapshot = engine.receiveTelemetry(frame(next), 1000);
             expect(snapshot.state.path).toEqual(['root']);
             expect(snapshot.events).toEqual([]);
