@@ -91,6 +91,143 @@ const Harness = ({
 describe('LiveEventLog telemetry ownership', () => {
     beforeEach(() => liveTelemetryStore.resetSession());
 
+    it('owns full-lap records without a map, discards unfinished laps on stream reset, and clears history on session reset', () => {
+        const eventLogRef = React.createRef<LiveEventLogHandle>();
+        render(<LiveEventLog ref={eventLogRef} name="visualization:event-log" />);
+        const section = within(screen.getByRole('region', { name: 'Driver lap times' }));
+        expect(section.getByText('Waiting for car telemetry')).toBeInTheDocument();
+        let sequence = 0, time = 2027758;
+        const publish = (count: number, start: number) => act(() => {
+            for (let i = 0; i < count; i += 1) {
+                sequence += 1;
+                time += 1000;
+                expect(liveTelemetryStore.publishFrame({
+                    type: 'frame', game: 'acc', sequence, committedSequence: sequence, committedCount: sequence,
+                    sample: { Graphics_current_time_str: formatCornerTime(time), Graphics_player_car_id: 7,
+                        Graphics_normalized_positions: { '7': ((start + i * 5) % 100) / 100, '63': ((start + i * 5) % 100) / 100 } },
+                })).toBe(true);
+            }
+        });
+        publish(22, 97);
+        const firstRecords = eventLogRef.current!.getLapRecords();
+        expect(firstRecords).toHaveLength(2);
+        expect(firstRecords).toEqual([
+            expect.objectContaining({ carId: '7', isPlayer: true, lapTimeMs: 20000 }),
+            expect.objectContaining({ carId: '63', isPlayer: false, lapTimeMs: 20000 }),
+        ]);
+        expect(section.getByText('2 completed laps')).toBeInTheDocument();
+        expect(section.getByText('Player #7')).toBeInTheDocument();
+        expect(section.getByText('Car #63')).toBeInTheDocument();
+        expect(section.getAllByText('00:20:000')).toHaveLength(2);
+        expect(section.getAllByText('1/3 complete laps')).toHaveLength(2);
+        eventLogRef.current!.getLapRecords().pop();
+        expect(eventLogRef.current!.getLapRecords()).toEqual(firstRecords);
+        act(() => { liveTelemetryStore.beginStream(); });
+        sequence = 0;
+        publish(20, 7);
+        expect(eventLogRef.current!.getLapRecords()).toEqual(firstRecords);
+        expect(section.getAllByText('1/3 complete laps')).toHaveLength(2);
+        publish(20, 7);
+        const records = eventLogRef.current!.getLapRecords();
+        expect(records).toHaveLength(4);
+        expect(new Set(records.map(({ id }) => id)).size).toBe(4);
+        expect(records.slice(2).every(({ lapTimeMs }) => lapTimeMs === 20000)).toBe(true);
+        expect(section.getAllByText('2/3 complete laps')).toHaveLength(2);
+        act(() => { liveTelemetryStore.resetSession(); });
+        expect(eventLogRef.current!.getLapRecords()).toEqual([]);
+        expect(section.queryByRole('table')).not.toBeInTheDocument();
+        expect(section.getByText('0 completed laps')).toBeInTheDocument();
+        sequence = 0;
+        publish(20, 7);
+        expect(eventLogRef.current!.getLapRecords()).toEqual([]);
+        expect(section.getAllByText('0/3 complete laps')).toHaveLength(2);
+    });
+
+    it('shows every observed car before timing is available, sorts car IDs, and searches lap rows', () => {
+        render(<LiveEventLog name="visualization:event-log" />);
+        const section = within(screen.getByRole('region', { name: 'Driver lap times' }));
+        act(() => {
+            liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence: 1, committedSequence: 1, committedCount: 1,
+                sample: { Graphics_player_car_id: 7, Graphics_normalized_car_position: 0.1,
+                    Graphics_normalized_positions: { '1052': 0.2, '2': 0.3, '7': 0.1 } } });
+        });
+        const rows = section.getAllByRole('row');
+        expect(rows).toHaveLength(4);
+        expect(rows.slice(1).map((row) => within(row).getByRole('rowheader').textContent)).toEqual(['Car #2', 'Player #7', 'Car #1052']);
+        expect(section.getAllByText('Not recorded')).toHaveLength(3);
+        expect(section.getAllByText('0/3 complete laps')).toHaveLength(3);
+        fireEvent.change(screen.getByPlaceholderText('Search events...'), { target: { value: 'PLAYER' } });
+        expect(section.getAllByRole('row')).toHaveLength(2);
+        expect(section.getByText('Player #7')).toBeInTheDocument();
+        fireEvent.change(screen.getByPlaceholderText('Search events...'), { target: { value: '1052' } });
+        expect(section.getAllByRole('row')).toHaveLength(2);
+        expect(section.getByText('Car #1052')).toBeInTheDocument();
+        fireEvent.change(screen.getByPlaceholderText('Search events...'), { target: { value: 'missing' } });
+        expect(section.getByText('No matching lap times')).toBeInTheDocument();
+        fireEvent.change(screen.getByPlaceholderText('Search events...'), { target: { value: '' } });
+        expect(section.getAllByRole('row')).toHaveLength(4);
+    });
+
+    it('updates last laps and trimmed averages independently for every car without needing a map', () => {
+        render(<LiveEventLog name="visualization:event-log" />);
+        const section = within(screen.getByRole('region', { name: 'Driver lap times' }));
+        let sequence = 0, time = 2027758;
+        const publish = (player: number, opponent: number) => {
+            sequence += 1;
+            liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence, committedSequence: sequence, committedCount: sequence,
+                sample: { Graphics_current_time_str: formatCornerTime(time), Graphics_player_car_id: 7,
+                    Graphics_normalized_car_position: player, Graphics_normalized_positions: { '63': opponent, '1052': 0.5 } } });
+        };
+        act(() => {
+            publish(0.95, 0.975);
+            time += 1000;
+            publish(0, 0);
+        });
+        expect(section.getAllByText('0/3 complete laps')).toHaveLength(3);
+        [200, 800, 1800].forEach((stepTime, lap) => act(() => {
+            for (let i = 1; i <= 20; i += 1) {
+                time += stepTime;
+                publish((i * 5 % 100) / 100, ((lap * 20 + i) * 25 % 1000) / 1000);
+            }
+        }));
+        const rows = section.getAllByRole('row');
+        expect(rows).toHaveLength(4);
+        const player = within(rows[1]);
+        expect(player.getByRole('rowheader')).toHaveTextContent('Player #7');
+        expect(player.getByText('00:36:000')).toBeInTheDocument();
+        expect(player.getByText('00:16:000')).toBeInTheDocument();
+        expect(player.getByText('1 of 3 laps used')).toBeInTheDocument();
+        const opponent = within(rows[2]);
+        expect(opponent.getByRole('rowheader')).toHaveTextContent('Car #63');
+        expect(opponent.getByText('00:20:000')).toBeInTheDocument();
+        expect(opponent.getByText('1/3 complete laps')).toBeInTheDocument();
+        expect(within(rows[3]).getByText('0/3 complete laps')).toBeInTheDocument();
+        expect(section.getByText('4 completed laps')).toBeInTheDocument();
+    });
+
+    it('collects lap timing only while mounted and does not reconstruct laps from the latest frame', () => {
+        const eventLogRef = React.createRef<LiveEventLogHandle>();
+        const { rerender } = render(<></>);
+        const publish = (from: number, count: number) => act(() => {
+            for (let i = from; i < from + count; i += 1) liveTelemetryStore.publishFrame({
+                type: 'frame', game: 'acc', sequence: i + 1, committedSequence: i + 1, committedCount: i + 1,
+                sample: { Graphics_current_time_str: formatCornerTime(2027758 + i * 1000),
+                    Graphics_normalized_positions: { '7': ((97 + i * 5) % 100) / 100 } },
+            });
+        });
+        publish(0, 22);
+        rerender(<LiveEventLog ref={eventLogRef} name="visualization:event-log" />);
+        expect(eventLogRef.current!.getLapRecords()).toEqual([]);
+        publish(22, 20);
+        expect(eventLogRef.current!.getLapRecords()).toEqual([]);
+        publish(42, 20);
+        expect(eventLogRef.current!.getLapRecords()).toHaveLength(1);
+        rerender(<></>);
+        publish(62, 20);
+        rerender(<LiveEventLog ref={eventLogRef} name="visualization:event-log" />);
+        expect(eventLogRef.current!.getLapRecords()).toEqual([]);
+    });
+
     it.each(['initial events', 'prop update', 'handle update'])('excludes retired event types from %s, counts, and searches', (source) => {
         const eventLogRef = React.createRef<LiveEventLogHandle>();
         const events: SessionEvent[] = ['CORNER', 'CRASHED', 'OVERTAKE', 'STRAIGHT'].map((type, index) => ({
@@ -213,6 +350,14 @@ describe('LiveEventLog telemetry ownership', () => {
         expect(playerCorners).toHaveLength(2);
         expect(within(rows[1]).getAllByText('00:02:000')).toHaveLength(2);
         expect(within(rows[1]).getAllByText('1 of 3 times used')).toHaveLength(2);
+        expect(within(rows[1]).getAllByText('Exit speed: 5.000% lap/s')).toHaveLength(2);
+        expect(within(rows[1]).getAllByText('1 of 3 exits used')).toHaveLength(2);
+        expect(within(rows[2]).getAllByText('1/3 exit observations')).toHaveLength(2);
+        expect(eventLogRef.current!.getCornerSummaries()).toEqual(expect.arrayContaining([
+            expect.objectContaining({ carId: '7', cornerId: 'turn-1', exitSpeedIncludedCount: 1 }),
+            expect.objectContaining({ carId: '63', cornerId: 'turn-1', averageExitSpeed: null, exitSpeedSampleCount: 1 }),
+        ]));
+        expect(eventLogRef.current!.getCornerSummaries().find((summary) => summary.carId === '7')!.averageExitSpeed).toBeCloseTo(0.05);
         expect(within(rows[2]).getAllByRole('listitem')).toHaveLength(2);
         expect(within(rows[2]).getAllByText('1/3 complete passes')).toHaveLength(2);
         expect(section.getByText('8 completed corners')).toBeInTheDocument();
@@ -256,6 +401,8 @@ describe('LiveEventLog telemetry ownership', () => {
         expect(section.getByText('1 of 3 times used')).toBeInTheDocument();
         expect(section.queryByText('00:01:000')).not.toBeInTheDocument();
         expect(section.queryByText('00:09:000')).not.toBeInTheDocument();
+        expect(section.getByText('Exit speed: 2.500% lap/s')).toBeInTheDocument();
+        expect(section.getByText('1 of 3 exits used')).toBeInTheDocument();
     });
 
     it('retains completed records through map changes and stream restarts until the session resets', () => {
@@ -276,13 +423,22 @@ describe('LiveEventLog telemetry ownership', () => {
         publish(2, 0.31);
         const firstRecord = eventLogRef.current!.getCornerRecords()[0];
         expect(firstRecord).toBeDefined();
+        expect(eventLogRef.current!.getCornerSummaries()).toHaveLength(1);
         rerender(view(null));
+        expect(eventLogRef.current!.getCornerSummaries()).toEqual([]);
         expect(screen.getByText('Open Live Map with tagged corners to record driver corner timing.')).toBeInTheDocument();
         expect(screen.getAllByRole('listitem')).toHaveLength(1);
         expect(screen.getByText('0/3 complete passes')).toBeInTheDocument();
         rerender(view({ ...cornerMap }));
+        expect(eventLogRef.current!.getCornerSummaries()).toHaveLength(1);
         expect(eventLogRef.current!.getCornerRecords()).toEqual([firstRecord]);
         expect(screen.getAllByRole('listitem')).toHaveLength(1);
+        rerender(view({ ...cornerMap, id: 'another-map' }));
+        expect(eventLogRef.current!.getCornerSummaries()).toEqual([]);
+        rerender(view({ ...cornerMap, centerline_segments: [{ ...cornerMap.centerline_segments![0], end_position: 0.32 }] }));
+        expect(eventLogRef.current!.getCornerSummaries()).toEqual([]);
+        rerender(view(cornerMap));
+        expect(eventLogRef.current!.getCornerSummaries()).toHaveLength(1);
 
         publish(3, 0.28);
         act(() => { liveTelemetryStore.beginStream(); });
@@ -295,12 +451,13 @@ describe('LiveEventLog telemetry ownership', () => {
         expect(records).toHaveLength(2);
         expect(records[0]).toEqual(firstRecord);
         expect(records[1].id).not.toBe(firstRecord.id);
-        expect(screen.getAllByRole('row')).toHaveLength(2);
+        expect(within(screen.getByRole('region', { name: 'Driver corner times' })).getAllByRole('row')).toHaveLength(2);
         expect(screen.getAllByRole('listitem')).toHaveLength(1);
         expect(screen.getByText('0/3 complete passes')).toBeInTheDocument();
 
         act(() => { liveTelemetryStore.resetSession(); });
         expect(eventLogRef.current!.getCornerRecords()).toEqual([]);
+        expect(eventLogRef.current!.getCornerSummaries()).toEqual([]);
         expect(screen.queryByRole('table')).not.toBeInTheDocument();
     });
 

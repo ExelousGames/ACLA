@@ -59,7 +59,6 @@ class Packet:
 class ACCBroadcasting:
     UPDATE_INTERVAL_MS = 100
     STALE_SECONDS = 2.0
-    RETRY_SECONDS = 5.0
 
     def __init__(self, config_path=None, *, socket_factory=socket.socket, clock=time.monotonic):
         self.config_path = Path(config_path) if config_path is not None else broadcasting_config_path()
@@ -70,10 +69,9 @@ class ACCBroadcasting:
         self.positions = {}
         self.session = None
         self.session_time = None
+        self.session_time_received = None
         self.track = None
         self.replay = False
-        self.last_received = 0.0
-        self.next_retry = 0.0
         self.last_warning = None
 
     def _warn(self, message):
@@ -81,8 +79,7 @@ class ACCBroadcasting:
             print(f'ACC broadcasting: {message}', file=sys.stderr, flush=True)
             self.last_warning = message
 
-    def _connect(self, now):
-        self.next_retry = now + self.RETRY_SECONDS
+    def _connect(self):
         try:
             # json.loads detects UTF-8/16/32, including ACC's BOM-less UTF-16 LE.
             config = json.loads(self.config_path.read_bytes())
@@ -97,7 +94,6 @@ class ACCBroadcasting:
             self.sock.setblocking(False)
             self.sock.connect(('127.0.0.1', port))
             self.sock.send(registration)
-            self.last_received = now
         except (OSError, ValueError, AttributeError, struct.error):
             self.close()
             self._warn('Unavailable; enable updListenerPort in broadcasting.json. Shared-memory capture continues.')
@@ -113,6 +109,8 @@ class ACCBroadcasting:
                 self._warn('Registration rejected; check connectionPassword in broadcasting.json.')
                 return
             self.positions.clear()
+            self.session_time = None
+            self.session_time_received = None
             self.connection_id = connection_id
             self.last_warning = None
             for request in (10, 11):
@@ -130,6 +128,7 @@ class ACCBroadcasting:
                 self.positions.clear()
             self.session = identity
             self.session_time = session_time
+            self.session_time_received = now
             self.replay = bool(replay)
         elif message == 3:
             car = packet.read('HHBBfffBHHHHfHi')
@@ -153,16 +152,15 @@ class ACCBroadcasting:
             if connection_id == self.connection_id:
                 if identity != self.track:
                     self.positions.clear()
+                    if self.track is not None:
+                        self.session_time_received = None
                 self.track = identity
-        self.last_received = now
 
     def poll(self):
         """Return fresh car-ID -> lap-fraction values, or None if disconnected."""
         now = self.clock()
         if self.sock is None:
-            if now < self.next_retry:
-                return None
-            self._connect(now)
+            self._connect()
         if self.sock is None:
             return None
         try:
@@ -180,16 +178,20 @@ class ACCBroadcasting:
                     break
         except OSError:
             self.close()
-            self.next_retry = now + self.RETRY_SECONDS
-        if self.sock is not None and now - self.last_received >= self.RETRY_SECONDS:
-            self.close()
-            self.next_retry = now + self.RETRY_SECONDS
-            self._warn('No UDP updates; reconnecting. Shared-memory capture continues.')
         if self.connection_id is None:
             return None
         self.positions = {key: value for key, value in self.positions.items()
                           if now - value[1] <= self.STALE_SECONDS}
         return {str(key): value[0] for key, value in self.positions.items()}
+
+    def get_session_time(self):
+        """Return fresh live RealtimeUpdate.SessionTime in native milliseconds."""
+        if (self.connection_id is None or self.replay or self.session_time is None
+                or self.session_time_received is None
+                or self.clock() - self.session_time_received > self.STALE_SECONDS
+                or not math.isfinite(self.session_time) or self.session_time < 0):
+            return None
+        return self.session_time
 
     def close(self):
         if self.sock is not None:
@@ -205,5 +207,6 @@ class ACCBroadcasting:
         self.positions.clear()
         self.session = None
         self.session_time = None
+        self.session_time_received = None
         self.track = None
         self.replay = False

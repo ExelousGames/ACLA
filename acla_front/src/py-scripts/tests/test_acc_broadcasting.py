@@ -122,6 +122,46 @@ class ACCBroadcastingTests(unittest.TestCase):
         self.now = 2.1
         self.assertEqual(self.poll(car_update(2, 0.5)), {'2': 0.5})
 
+    def test_session_time_preserves_native_milliseconds_and_session_resets(self):
+        self.assertIsNone(self.client.get_session_time())
+        self.poll(registration())
+        self.assertIsNone(self.client.get_session_time())
+        for session, elapsed in [(1, 12125.0), (1, 12375.0), (2, 0.0)]:
+            self.poll(session_update(session=session, elapsed=elapsed))
+            self.assertEqual(self.client.get_session_time(), elapsed)
+
+    def test_session_time_expires_independently_of_car_updates(self):
+        self.poll(registration(), session_update())
+        self.now = 2.1
+        self.poll(car_update())
+        self.assertIsNone(self.client.get_session_time())
+        self.poll(session_update(elapsed=12125.0))
+        self.assertEqual(self.client.get_session_time(), 12125.0)
+
+    def test_invalid_replay_and_disconnected_session_times_are_unavailable(self):
+        self.poll(registration())
+        for elapsed in (-1, float('nan'), float('inf')):
+            with self.subTest(elapsed=elapsed):
+                self.poll(session_update(elapsed=elapsed))
+                self.assertIsNone(self.client.get_session_time())
+        self.poll(session_update(replay=True))
+        self.assertIsNone(self.client.get_session_time())
+        self.poll(session_update())
+        self.assertEqual(self.client.get_session_time(), 10000.0)
+        self.poll(ConnectionResetError())
+        self.assertIsNone(self.client.get_session_time())
+        self.now = 5
+        self.poll(registration())
+        self.assertIsNone(self.client.get_session_time())
+
+    def test_track_change_and_reregistration_clear_session_time(self):
+        self.poll(registration(), session_update(), track_update())
+        self.assertEqual(self.client.get_session_time(), 10000.0)
+        self.poll(track_update('monza', 3))
+        self.assertIsNone(self.client.get_session_time())
+        self.poll(session_update(), registration())
+        self.assertIsNone(self.client.get_session_time())
+
     def test_session_track_and_replay_changes_clear_cached_cars(self):
         self.poll(registration(), session_update(), track_update(), car_update())
         self.assertEqual(self.poll(session_update(session=2)), {})
@@ -147,23 +187,35 @@ class ACCBroadcastingTests(unittest.TestCase):
     def test_rejected_registration_and_socket_errors_retry_without_old_positions(self):
         self.assertIsNone(self.poll(registration(0)))
         self.assertTrue(self.sock.closed)
-        self.now = 1
-        self.poll()
-        self.assertEqual(self.factory.call_count, 1)
-        self.now = 5
+        self.sock = FakeSocket()
+        self.factory.return_value = self.sock
         self.assertEqual(self.poll(registration(), car_update()), {'1052': 0.25})
-        self.assertIsNone(self.poll(ConnectionResetError()))
-        self.now = 10
-        self.assertEqual(self.poll(registration()), {})
-
-    def test_silent_server_times_out_and_reregisters(self):
-        self.poll(registration(), car_update())
-        self.now = 5.1
-        self.assertIsNone(self.poll())
-        self.assertTrue(self.sock.closed)
-        self.now = 10.1
-        self.assertEqual(self.poll(registration()), {})
         self.assertEqual(self.factory.call_count, 2)
+        self.assertIsNone(self.poll(ConnectionResetError()))
+        self.assertTrue(self.sock.closed)
+        self.sock = FakeSocket()
+        self.factory.return_value = self.sock
+        self.assertEqual(self.poll(registration()), {})
+        self.assertEqual(self.factory.call_count, 3)
+
+    def test_pending_registration_survives_silent_server_until_reply(self):
+        self.assertIsNone(self.poll())
+        self.now = 60
+        self.assertIsNone(self.poll())
+        self.assertFalse(self.sock.closed)
+        self.assertEqual(self.poll(registration(), session_update(), car_update()), {'1052': 0.25})
+        self.assertEqual(self.client.get_session_time(), 10000.0)
+        self.factory.assert_called_once()
+
+    def test_silent_registered_server_expires_data_without_closing_connection(self):
+        self.poll(registration(), session_update(), car_update())
+        self.now = 60
+        self.assertEqual(self.poll(), {})
+        self.assertIsNone(self.client.get_session_time())
+        self.assertFalse(self.sock.closed)
+        self.assertEqual(self.poll(session_update(elapsed=70000), car_update()), {'1052': 0.25})
+        self.assertEqual(self.client.get_session_time(), 70000.0)
+        self.factory.assert_called_once()
 
     def test_missing_or_disabled_config_is_optional_and_does_not_leak_passwords(self):
         for content in ['', 'null', '[]', '{"updListenerPort":0}', '{"updListenerPort":true}']:
@@ -226,10 +278,11 @@ class ACCExtractorBroadcastingTests(unittest.TestCase):
     def setUp(self):
         with patch('ACCMemoryExtractor.accSharedMemory'), patch('ACCMemoryExtractor.ACCBroadcasting'):
             self.recorder = ACCRecording()
+        self.recorder.broadcasting.get_session_time.return_value = None
         self.scheduler = Mock()
 
     def record(self, status=2):
-        self.recorder.asm.read_shared_memory.return_value = SimpleNamespace(
+        self.recorder.asm.read_shared_memory.return_value = None if status is None else SimpleNamespace(
             Graphics=SimpleNamespace(status=status, normalized_car_position=0.4))
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -245,16 +298,71 @@ class ACCExtractorBroadcastingTests(unittest.TestCase):
         self.recorder.broadcasting.poll.return_value = None
         self.assertEqual(self.record(), {'Graphics_status': 2, 'Graphics_normalized_car_position': 0.4})
 
-    def test_nonlive_and_missing_shared_memory_release_udp_state(self):
+    def test_adapts_native_broadcast_session_time_to_elapsed_seconds(self):
+        client = ACCBroadcasting()
+        client.connection_id = 7
+        self.recorder.broadcasting = client
+        with patch.object(client, 'poll', return_value={}):
+            for elapsed in (12125.0, 12375.0, 0.0):
+                client._handle(session_update(elapsed=elapsed), client.clock())
+                row = self.record()
+                self.assertEqual(row['Graphics_session_time'], elapsed / 1000.0)
+                self.assertEqual(row['Graphics_normalized_car_position'], 0.4)
+                self.assertNotIn('SessionTime', row)
+            client._handle(session_update(replay=True), client.clock())
+            self.assertNotIn('Graphics_session_time', self.record())
+
+    def test_nonlive_and_missing_shared_memory_keep_polling_without_closing(self):
         for status in (0, 1, 3):
-            self.assertNotIn('Graphics_normalized_positions', self.record(status))
-        self.recorder.broadcasting.poll.assert_not_called()
-        self.assertEqual(self.recorder.broadcasting.close.call_count, 3)
-        self.recorder.asm.read_shared_memory.return_value = None
-        with contextlib.redirect_stdout(io.StringIO()) as output:
-            self.recorder.recordOnce(self.scheduler, None)
-        self.assertEqual(json.loads(output.getvalue()), {'available': False})
-        self.assertEqual(self.recorder.broadcasting.close.call_count, 4)
+            row = self.record(status)
+            self.assertNotIn('Graphics_normalized_positions', row)
+            self.assertNotIn('Graphics_session_time', row)
+        self.assertEqual(self.record(None), {'available': False})
+        self.assertEqual(self.recorder.broadcasting.poll.call_count, 4)
+        self.recorder.broadcasting.close.assert_not_called()
+
+    def test_registration_and_telemetry_survive_gaps_between_shared_memory_samples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'broadcasting.json'
+            config.write_text('{"updListenerPort":9000}', encoding='utf-8')
+            sock = FakeSocket()
+            factory = Mock(return_value=sock)
+            clock = Mock(return_value=0.0)
+            client = ACCBroadcasting(config, socket_factory=factory, clock=clock)
+            self.addCleanup(client.close)
+            self.recorder.broadcasting = client
+
+            self.assertEqual(self.record(None), {'available': False})
+            self.assertEqual(sock.sent[0][:2], bytes([1, 4]))
+            clock.return_value = 10.0
+            self.record(0)
+            self.assertFalse(sock.closed)
+            sock.queue.extend([registration(), session_update(elapsed=12125), car_update()])
+            self.record(None)
+            self.record(None)
+            self.assertEqual(client.connection_id, 7)
+
+            row = self.record()
+            self.assertEqual(row['Graphics_normalized_positions'], {'1052': 0.25})
+            self.assertEqual(row['Graphics_session_time'], 12.125)
+
+            clock.return_value = 30.0
+            self.record(3)
+            self.record(None)
+            sock.queue.extend([session_update(elapsed=32125), car_update(position=0.5)])
+            row = self.record()
+            self.assertEqual(row['Graphics_normalized_positions'], {'1052': 0.5})
+            self.assertEqual(row['Graphics_session_time'], 32.125)
+            self.assertFalse(sock.closed)
+            factory.assert_called_once()
+            self.assertNotIn(struct.pack('<Bi', 9, 7), sock.sent)
+
+    def test_reader_shutdown_closes_broadcasting(self):
+        self.scheduler.run.side_effect = KeyboardInterrupt
+        with patch('ACCMemoryExtractor.sched.scheduler', return_value=self.scheduler):
+            with self.assertRaises(KeyboardInterrupt):
+                self.recorder.startRecording(None)
+        self.recorder.broadcasting.close.assert_called_once()
 
 
 if __name__ == '__main__':

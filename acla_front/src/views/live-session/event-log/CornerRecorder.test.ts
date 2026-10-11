@@ -35,6 +35,8 @@ describe('CornerRecorder', () => {
             records.push(...completed);
         });
         expect(records).toHaveLength(1);
+        expect(records[0].exitSpeed).toBeCloseTo(0.025);
+        expect(records[0].mapId).toBe('track');
         expect(records[0]).toMatchObject({
             carId: '7', isPlayer: true, cornerId: 'turn-1',
             decelerationStart: { position: 0.16, timeMs: BASE_TIME + 2000 },
@@ -56,6 +58,16 @@ describe('CornerRecorder', () => {
         expect(records[1]).toMatchObject({ isPlayer: false, decelerationStart: { position: 0.16 }, cornerTimeMs: 6250 });
     });
 
+    it('measures each car at the exit crossing even without an entry or a full rate window', () => {
+        tick(0, { '7': 0.29, '63': 0.295 });
+        const records = tick(100, { '7': 0.31, '63': 0.305 });
+        expect(records).toHaveLength(2);
+        expect(records[0].exit.timeMs).toBe(BASE_TIME + 50);
+        expect(records[0].exitSpeed).toBeCloseTo(0.2);
+        expect(records[1].exitSpeed).toBeCloseTo(0.1);
+        expect(records.every((record) => record.cornerTimeMs === null)).toBe(true);
+    });
+
     it('ignores repeated broadcast positions and duplicate clock ticks', () => {
         const records: DriverCornerRecord[] = [];
         positions.forEach((position, index) => {
@@ -65,6 +77,7 @@ describe('CornerRecorder', () => {
         });
         expect(records[0].decelerationStart?.position).toBe(0.16);
         expect(records[0].cornerTimeMs).toBe(6250);
+        expect(records[0].exitSpeed).toBeCloseTo(0.025);
     });
 
     it('interpolates corners across start/finish and records every passage once', () => {
@@ -73,8 +86,15 @@ describe('CornerRecorder', () => {
         [0.93, 0.96, 0.99, 0.01, 0.04].forEach((position, index) => records.push(...tick(index * 1000, { '7': position })));
         expect(records).toHaveLength(1);
         expect(records[0]).toMatchObject({ entry: { timeMs: BASE_TIME + 667 }, exit: { timeMs: BASE_TIME + 3333 }, cornerTimeMs: 2666 });
+        expect(records[0].exitSpeed).toBeCloseTo(0.03);
         for (let index = 5; index <= 23; index += 1) tick(index * 1000, { '7': 0.04 + (index - 4) * 0.05 });
         expect(tick(24000, { '7': 0.03 })).toHaveLength(1);
+    });
+
+    it('measures an exit crossing over the start/finish line', () => {
+        recorder.setMap({ ...map, centerline_segments: [{ id: 'wrap', tags: ['slow corner'], start_position: 0.95, end_position: 0 }] });
+        tick(0, { '7': 0.99 });
+        expect(tick(1000, { '7': 0.01 })[0].exitSpeed).toBeCloseTo(0.02);
     });
 
     it('records missing entry or motion as not observed when capture starts inside a corner', () => {
@@ -92,6 +112,22 @@ describe('CornerRecorder', () => {
         expect(tick(5000, { '7': 0.31 })).toEqual([]);
         tick(6000, { '7': 0.28 });
         expect(tick(0, { '7': 0.31 })).toEqual([]);
+    });
+
+    it('discards missing or invalid car timing even when the clock timestamp repeats', () => {
+        for (const cars of [{}, { '7': NaN }] as Array<Record<string, number>>) {
+            recorder.reset();
+            tick(0, { '7': 0.19 });
+            tick(1000, { '7': 0.24 });
+            tick(1000, cars);
+            expect(tick(2000, { '7': 0.31 })).toEqual([]);
+        }
+    });
+
+    it('accepts a forward sample exactly 0.1 lap away', () => {
+        tick(0, { '7': 0.15 });
+        tick(1000, { '7': 0.25 });
+        expect(tick(2000, { '7': 0.35 })[0]).toMatchObject({ cornerTimeMs: 1000 });
     });
 
     it('requires the requested clock and live data, and resets when maps or streams change', () => {

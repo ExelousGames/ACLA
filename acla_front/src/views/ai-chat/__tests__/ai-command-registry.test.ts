@@ -46,6 +46,7 @@ import type { AnalysisResultsChartHandle } from '../../session-shared/visualizat
 import type { AddFilteredDriverExpertComparisonsResult } from '../../session-shared/visualization/charts/AnalysisResultsChart';
 import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
 import { RecordingState } from 'views/live-session/recording-state';
+import { unavailableFrontOpponentAnalysis, type LiveFrontOpponentAiResult } from 'views/live-session/event-log/front-opponent-analysis';
 
 // @ts-expect-error OperationQueryResult requires an explicit data type.
 type MissingOperationQueryResultGeneric = OperationQueryResult;
@@ -59,6 +60,9 @@ type MissingTelemetryResultGeneric = QueryTelemetryMetricResult;
 const queryContractCoverage: FrontendAiQueryContractCoverage = true;
 
 const assertQueryContractTypes = (registry: AiCommandRegistry) => {
+    const frontOpponent: Tool<LiveFrontOpponentAiResult> = registry.live_analyze_front_opponent();
+    // @ts-expect-error Front opponent analysis takes no tool arguments.
+    registry.live_analyze_front_opponent({ car_id: '63' });
     const input: ProcedurePlanInput = { workflow: { name: 'set_procedure_plan',
         goal: 'Count', operations: [{ operation: { name: 'query_lap_analysis_result', title: 'Count', arguments: { query: '1' } } }],
     } };
@@ -114,7 +118,7 @@ const assertQueryContractTypes = (registry: AiCommandRegistry) => {
     const mismatchedReduction: Operation<QueryTelemetryMetricResult<'avg'>> = stats;
 
     return {
-        workflow, tool, invalidTool, invalidToolName, invalidWorkflowName,
+        workflow, tool, invalidTool, invalidToolName, invalidWorkflowName, frontOpponent,
         analysisResult,
         avg,
         min,
@@ -138,6 +142,43 @@ const register = (name: string, handle: object) => {
 };
 
 describe('frontend operation registry', () => {
+    it('dispatches front opponent analysis through its live handle with typed tool results', async () => {
+        const payload = unavailableFrontOpponentAnalysis('Open Live Event Log.');
+        const componentOperation = asTool(resolvedOperation(payload, 'complete'));
+        const analyzeFrontOpponentForAi = jest.fn(() => componentOperation);
+        const context: FrontendAiCommandContext = { sessionMode: 'live',
+            componentRefs: register(OPERATION_COMPONENT_NAMES.LIVE_SESSION, { analyzeFrontOpponentForAi }) };
+        const registry = createAiCommandRegistry(context);
+        const calls = [
+            registry.live_analyze_front_opponent(),
+            registry.live_analyze_front_opponent({}),
+            registry.live_analyze_front_opponent({ tool: { name: 'live_analyze_front_opponent' } }),
+            registry.live_analyze_front_opponent({ tool: { name: 'live_analyze_front_opponent', arguments: {} } }),
+            createWorkflowToolDispatcher(context)('live_analyze_front_opponent'),
+        ];
+        expect(frontendOperationRegistry.live_analyze_front_opponent.kind).toBe('tool');
+        for (const operation of calls) {
+            expect(operation).toBe(componentOperation);
+            expect(operation.kind).toBe('tool');
+            await expect(operation.result).resolves.toEqual(payload);
+        }
+        expect(analyzeFrontOpponentForAi.mock.calls).toEqual([[], [], [], [], []]);
+    });
+
+    it.each([
+        { car_id: '63' }, null, [],
+        { tool: { name: 'get_next_corner' } },
+        { tool: { name: 'live_analyze_front_opponent', arguments: { car_id: '63' } } },
+        { tool: { name: 'live_analyze_front_opponent', arguments: [] } },
+        { tool: { name: 'live_analyze_front_opponent' }, extra: true },
+    ])('rejects arguments and malformed front-opponent tool envelopes: %p', async (input) => {
+        const analyzeFrontOpponentForAi = jest.fn();
+        const registry = createAiCommandRegistry({ sessionMode: 'live',
+            componentRefs: register(OPERATION_COMPONENT_NAMES.LIVE_SESSION, { analyzeFrontOpponentForAi }) });
+        await expect(registry.live_analyze_front_opponent(input as any).result).rejects.toMatchObject({ name: 'InvalidOperationCallError' });
+        expect(analyzeFrontOpponentForAi).not.toHaveBeenCalled();
+    });
+
     const workflowNames: FrontendWorkflowName[] = [
         'create_repeatable_plan',
         'append_repeatable_plan',

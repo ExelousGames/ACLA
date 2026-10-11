@@ -10,6 +10,7 @@ const {
     validateLiveTelemetryRow,
 } = require('../../data/live-telemetry-dataset');
 const { AccPythonReader } = require('../../../electron/recording/readers/acc/acc-python-reader');
+const { IRacingReader } = require('../../../electron/recording/readers/iracing/iracing-reader');
 const { RecordingWriter } = require('../../../electron/recording/workers/writer-worker');
 const { RecordingView } = require('../../../electron/recording/workers/view-worker');
 const { RecordedFileReader } = require('../../../electron/recording/workers/recorded-file-reader-worker');
@@ -37,6 +38,63 @@ const invalidRows = [
 ];
 
 describe('live telemetry dataset boundary', () => {
+    it.each(['acc', 'iracing'])('persists elapsed session time through the %s reader and writer', async (game) => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'acla-session-time-'));
+        const child = new EventEmitter();
+        child.stdin = new PassThrough();
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        child.kill = () => child.emit('close', 0, null);
+        child.stdin.on('finish', () => setImmediate(() => child.emit('close', 0, null)));
+        const lines = new EventEmitter();
+        lines.close = jest.fn();
+        const Reader = game === 'acc' ? AccPythonReader : IRacingReader;
+        const reader = new Reader({
+            runtime: 'python', pythonExecutable: 'python', scriptDirectory: directory, scriptName: 'capture.py',
+        }, { spawn: () => child, createInterface: () => lines });
+        const writer = new RecordingWriter({
+            game, recordingDirectory: directory, progressPort: { postMessage: jest.fn() }, parentSend: jest.fn(),
+        });
+        const events = [];
+        let filePath;
+        try {
+            filePath = await writer.open();
+            const started = reader.start((event) => {
+                events.push(event);
+                if (event.type === 'frame') writer.acceptFrame(event.frame);
+            });
+            if (game === 'iracing') {
+                child.stdout.write('{"type":"ready"}\n');
+                await started;
+            }
+            for (const [tick, time] of [12.125, 0, undefined].entries()) {
+                if (game === 'acc') {
+                    // ACC's Python capture adapter already converts Broadcasting ms to seconds.
+                    lines.emit('line', JSON.stringify({ Graphics_status: 2, Graphics_session_time: time }));
+                } else {
+                    child.stdout.write(`${JSON.stringify({ type: 'sample', tick,
+                        values: { IsOnTrack: true, IsReplayPlaying: false, SessionTime: time } })}\n`);
+                }
+                await Promise.resolve();
+            }
+            await started;
+            await reader.stop();
+            await writer.end();
+            expect(events.map((event) => event.type)).toEqual(['frame', 'frame', 'frame']);
+            const rows = fs.readFileSync(filePath, 'utf8').trim().split('\n').map(JSON.parse);
+            expect(rows).toEqual(events.map((event) => event.frame.sample));
+            expect(rows[0].Graphics_session_time).toBe(12.125);
+            expect(rows[1].Graphics_session_time).toBe(0);
+            expect(rows[2]).not.toHaveProperty('Graphics_session_time');
+            expect(rows[0]).not.toHaveProperty('SessionTime');
+        } finally {
+            await reader.stop();
+            await writer.end();
+            if (filePath) fs.rmSync(filePath, { force: true });
+            fs.rmdirSync(directory);
+        }
+    });
+
     it.each(invalidRows)('rejects invalid rows in validation, writer and live view: %o', (sample) => {
         expect(validateLiveTelemetryRow(sample).ok).toBe(false);
         expect(() => assertLiveTelemetryRow(sample)).toThrow(TypeError);

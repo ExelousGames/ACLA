@@ -15,12 +15,15 @@ export interface DriverCornerRecord {
     isPlayer: boolean;
     cornerId: string;
     cornerName: string;
+    mapId: string;
     entry: CornerTimingPoint | null;
     exit: CornerTimingPoint;
     decelerationStart: CornerTimingPoint | null;
     accelerationStart: CornerTimingPoint | null;
     cornerTimeMs: number | null;
     decelerationToExitMs: number | null;
+    /** Lap fraction per second across the two position samples bracketing the exit. */
+    exitSpeed: number | null;
 }
 
 interface MotionPoint extends CornerTimingPoint {
@@ -69,11 +72,13 @@ function crossing(history: MotionPoint[], progress: number, position: number): C
 /** Records completed mapped corners. No player physics or wall clock is shared with opponents. */
 export class CornerRecorder {
     private corners: CircuitMapCenterlineSegment[] = [];
+    private mapId = '';
     private cars = new Map<string, MotionPoint[]>();
     private previousTime: number | null = null;
 
     setMap(map: CircuitMapDto | null): number {
         this.reset();
+        this.mapId = map?.id ?? '';
         this.corners = getCircuitMapCenterlineSegments(map)
             .filter((corner) => normalized(corner.start_position) && normalized(corner.end_position)
                 && forwardDistance(corner.start_position, corner.end_position) > 0
@@ -97,15 +102,14 @@ export class CornerRecorder {
             return [];
         }
         if (this.previousTime !== null && timeMs < this.previousTime) this.reset();
-        if (this.previousTime === timeMs) return [];
-        this.previousTime = timeMs;
-        if (this.corners.length === 0) return [];
-
         const positions = new Map(Object.entries(sample.Graphics_normalized_positions ?? {}).filter(([, value]) => normalized(value)));
         const playerId = sample.Graphics_player_car_id;
         const playerKey = typeof playerId === 'number' && Number.isSafeInteger(playerId) && playerId >= 0 ? String(playerId) : 'player';
         if (normalized(sample.Graphics_normalized_car_position)) positions.set(playerKey, sample.Graphics_normalized_car_position);
         this.cars.forEach((_, id) => { if (!positions.has(id)) this.cars.delete(id); });
+        if (this.previousTime === timeMs) return [];
+        this.previousTime = timeMs;
+        if (this.corners.length === 0) return [];
         const records: DriverCornerRecord[] = [];
 
         positions.forEach((position, carId) => {
@@ -114,7 +118,7 @@ export class CornerRecorder {
             const delta = previous ? forwardDistance(previous.position, position) : 0;
             const elapsed = previous ? timeMs - previous.timeMs : 0;
             if (previous && elapsed <= MAX_GAP_MS && delta === 0) return; // Repeated broadcast packets are not a stop.
-            if (previous && (elapsed > MAX_GAP_MS || delta > 0.1)) history = [];
+            if (previous && (elapsed > MAX_GAP_MS || delta > 0.1 + 1e-9)) history = [];
             const before = history[history.length - 1];
             const point: MotionPoint = { timeMs, position, sampleIndex, progress: before ? before.progress + delta : position };
             // A short window limits packet quantization noise while retaining the original onset sample.
@@ -140,6 +144,9 @@ export class CornerRecorder {
         const start = end - forwardDistance(corner.start_position, corner.end_position);
         const entry = crossing(history, start, corner.start_position);
         const exit = crossing(history, end, corner.end_position)!;
+        const beforeExit = history[history.length - 2];
+        const afterExit = history[history.length - 1];
+        const exitSpeed = (afterExit.progress - beforeExit.progress) * 1000 / (afterExit.timeMs - beforeExit.timeMs);
         // Do not backtrack into another corner's braking phase.
         const previousEnds = this.corners.filter((other) => other !== corner)
             .map((other) => forwardDistance(other.end_position, corner.start_position));
@@ -169,9 +176,11 @@ export class CornerRecorder {
         }
         return {
             id: `${carId}:${corner.id}:${exit.sampleIndex}`, carId, isPlayer, cornerId: corner.id,
+            mapId: this.mapId,
             cornerName: `Corner ${index + 1}`, entry, exit, decelerationStart, accelerationStart,
             cornerTimeMs: entry ? exit.timeMs - entry.timeMs : null,
             decelerationToExitMs: decelerationStart ? exit.timeMs - decelerationStart.timeMs : null,
+            exitSpeed,
         };
     }
 }

@@ -73,13 +73,12 @@ describe('iRacing standard field adapter', () => {
       Physics_gas: 0.75, Physics_brake: 0.2, Physics_clutch: 1, Physics_fuel: 24.5,
       Physics_brake_bias: 0.54, Physics_abs: 1, Physics_pit_limiter_on: true,
       Physics_suspension_travel_front_left: 0.02,
-      Graphics_current_time: 2027758, Graphics_current_time_str: '33:47:758',
       Graphics_last_time: 91005, Graphics_last_time_str: '1:31.005',
       Graphics_delta_lap_time: -125, Graphics_delta_lap_time_str: '-0:00.125',
       Graphics_estimated_lap_time: 89875, Graphics_is_delta_positive: false,
       Graphics_flag: 2, Graphics_global_yellow: true, Graphics_global_green: false,
       Graphics_status: 2, Graphics_session_type: 2, Graphics_current_sector_index: 2,
-      Graphics_active_cars: 3, Graphics_session_time_left: 300,
+      Graphics_active_cars: 3, Graphics_session_time: 2027.758, Graphics_session_time_left: 300,
       Static_track: 'spa - endurance', Static_car_model: 'GT3', Static_player_name: 'Zoë Driver',
       Static_max_rpm: 8500, Static_max_fuel: 100.5, Static_num_cars: 1, Static_sector_count: 3,
     });
@@ -91,27 +90,30 @@ describe('iRacing standard field adapter', () => {
     expect(validateSourceFrame({ game: 'iracing', sample }, 'iracing').ok).toBe(true);
   });
 
-  it.each([
-    [0, 0, '0:00:000'],
-    [59.9996, 60000, '1:00:000'],
-    [3600.005, 3600005, '60:00:005'],
-  ])('converts session time %p to milliseconds and minutes:seconds:milliseconds', (time, ms, formatted) => {
-    const sample = new IRacingAdapter().adapt(packet({ SessionTime: time, LapCurrentLapTime: 12.345 }));
-    expect(sample).toMatchObject({ Graphics_current_time: ms, Graphics_current_time_str: formatted });
-  });
-
-  it('keeps session time advancing when the current lap timer resets', () => {
+  it('leaves current time fields unmapped when session and lap clocks are available', () => {
     const adapter = new IRacingAdapter();
     const before = adapter.adapt(packet({ SessionTime: 2027.758, LapCurrentLapTime: 92.758, LapCompleted: 4 }));
     const after = adapter.adapt(packet({ SessionTime: 2028.008, LapCurrentLapTime: 0.008, LapCompleted: 5 }));
-    expect(after.Graphics_current_time - before.Graphics_current_time).toBe(250);
-    expect(after.Graphics_current_time_str).toBe('33:48:008');
+    expect(before.Graphics_session_time).toBe(2027.758);
+    expect(after.Graphics_session_time).toBe(2028.008);
+    for (const field of ['Graphics_current_time', 'Graphics_current_time_str']) {
+      expect(IRACING_FIELD_COVERAGE[field].supported).toBe(false);
+      expect(before).not.toHaveProperty(field);
+      expect(after).not.toHaveProperty(field);
+    }
   });
 
-  it.each([undefined, null, NaN, Infinity, -1, '2027.758'])('omits unavailable or invalid session time without using lap time: %p', (time) => {
-    const sample = new IRacingAdapter().adapt(packet({ SessionTime: time, LapCurrentLapTime: 12.345 }));
-    expect(sample).not.toHaveProperty('Graphics_current_time');
-    expect(sample).not.toHaveProperty('Graphics_current_time_str');
+  it('preserves zero and session resets without carrying unavailable elapsed time forward', () => {
+    const adapter = new IRacingAdapter();
+    expect(IRACING_FIELD_COVERAGE.Graphics_session_time).toEqual({ supported: true, source: 'SessionTime' });
+    expect(adapter.adapt(packet({ SessionTime: 2027.758 })).Graphics_session_time).toBe(2027.758);
+    expect(adapter.adapt(packet({ SessionNum: 2, SessionTime: 0 })).Graphics_session_time).toBe(0);
+    for (const SessionTime of [undefined, null, -1, NaN, Infinity, '12.125']) {
+      expect(adapter.adapt(packet({ SessionTime }))).not.toHaveProperty('Graphics_session_time');
+    }
+    for (const state of [{ IsOnTrack: false }, { IsReplayPlaying: true }]) {
+      expect(adapter.adapt(packet({ SessionTime: 12.125, ...state }))).not.toHaveProperty('Graphics_session_time');
+    }
   });
 
   it('tracks the brake pedal while simulator-applied braking stays at full force', () => {

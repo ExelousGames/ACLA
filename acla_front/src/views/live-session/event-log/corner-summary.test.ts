@@ -5,10 +5,29 @@ const record = (cornerTimeMs: number | null, overrides: Partial<DriverCornerReco
     id: 'pass', carId: '7', isPlayer: true, cornerId: 'turn-1', cornerName: 'Corner 1',
     entry: null, exit: { timeMs: 100000, position: 0.3, sampleIndex: 10 },
     decelerationStart: null, accelerationStart: null, decelerationToExitMs: null,
-    cornerTimeMs, ...overrides,
+    cornerTimeMs, exitSpeed: null, mapId: 'track', ...overrides,
 });
 
 describe('driver corner summaries', () => {
+    it('trims exit speeds independently of corner times and records incomplete corner exits', () => {
+        const speeds = [0.001, 0.03, 0.02, 0.09, 0.04, 0.05, 0.06, 0.07];
+        const summary = summarizeDriverCorners(speeds.map((exitSpeed, index) => record(
+            index === 0 ? null : (index + 1) * 1000, { exitSpeed },
+        )))[0];
+        expect(summary).toMatchObject({ sampleCount: 7, exitSpeedSampleCount: 8, exitSpeedIncludedCount: 6 });
+        expect(summary.averageExitSpeed).toBeCloseTo(0.045);
+        expect(summarizeDriverCorners([null, NaN, Infinity, -1, 0, 0.02, 0.03].map((exitSpeed) => record(5000, { exitSpeed })))[0])
+            .toMatchObject({ averageExitSpeed: null, exitSpeedSampleCount: 2, exitSpeedIncludedCount: 0 });
+    });
+
+    it('keeps exit speed samples separate by driver and corner', () => {
+        const records = [0.01, 0.02, 0.03].flatMap((exitSpeed) => [
+            record(1000, { exitSpeed }),
+            record(1000, { exitSpeed: exitSpeed * 2, carId: '63', isPlayer: false }),
+            record(1000, { exitSpeed: exitSpeed * 3, cornerId: 'turn-2' }),
+        ]);
+        expect(summarizeDriverCorners(records).map((summary) => summary.averageExitSpeed)).toEqual([0.02, 0.06, 0.04]);
+    });
     it('averages the middle 75% and excludes both fast and slow extremes', () => {
         const records = [90000, 5000, 1000, 9000, 4000, 8000, 7000, 6000].map((time) => record(time));
         const original = records.map((pass) => ({ ...pass }));

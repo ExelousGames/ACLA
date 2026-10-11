@@ -561,6 +561,18 @@ const definitionList = Object.freeze([
             .getNextCornerForAi(),
     },
     {
+        name: 'live_analyze_front_opponent',
+        kind: 'tool',
+        componentName: OPERATION_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context, args) => {
+            if (args !== undefined && (!isRecord(args) || Reflect.ownKeys(args).length > 0)) {
+                throw new InvalidOperationCallError('live_analyze_front_opponent takes no arguments.');
+            }
+            return getComponent<LiveSessionHandle>(context, OPERATION_COMPONENT_NAMES.LIVE_SESSION)
+                .analyzeFrontOpponentForAi();
+        },
+    },
+    {
         name: 'query_telemetry_metric',
         kind: 'tool',
         componentName: OPERATION_COMPONENT_NAMES.LIVE_SESSION,
@@ -663,7 +675,7 @@ export type FrontendOperation<TName extends FrontendOperationName> = (
 type NonQueryAiCommandRegistry = {
     [TName in Exclude<
         FrontendOperationName,
-        FrontendAiQueryName | 'display_specific_result_in_overlay'
+        FrontendAiQueryName | 'display_specific_result_in_overlay' | 'live_analyze_front_opponent'
     >]: (
         args: TName extends keyof WorkflowInputMap ? WorkflowInputMap[TName] : Record<string, unknown>,
     ) => FrontendOperation<TName>;
@@ -679,6 +691,7 @@ type WorkflowInputMap = {
 };
 
 type RawAiCommandRegistry = NonQueryAiCommandRegistry & FrontendAiQueryContractMap & {
+    live_analyze_front_opponent(args?: Record<string, never>): FrontendOperation<'live_analyze_front_opponent'>;
     display_specific_result_in_overlay(
         args: DisplaySpecificResultInOverlayArguments,
     ): FrontendOperation<'display_specific_result_in_overlay'>;

@@ -17,6 +17,7 @@ export interface PhraseMapContext {
     sequenceCornerCount?: number;
     sequenceCornerIndex?: number;
     sequenceRemaining?: number;
+    longStraightAfterCorner?: 0 | 1;
 }
 
 const normalized = (value: unknown): value is number => typeof value === 'number'
@@ -56,6 +57,15 @@ export function createPhraseMapContext(map: CircuitMapDto | null) {
     }).sort((a, b) => segmentSpan(a.area) - segmentSpan(b.area) || a.area.id.localeCompare(b.area.id));
     return {
         ready: line.length >= 2 && tags.length > 0,
+        longStraightsAt(position: unknown): readonly string[] | undefined {
+            if (!this.ready || !normalized(position)) return undefined;
+            // Tag membership is independent of the corner-approach phase.
+            return tags.filter((tag) => labels(tag).includes('long straight') && contains(tag, position)).map((tag) => tag.id);
+        },
+        cornersAt(position: unknown): readonly string[] | undefined {
+            if (!this.ready || !normalized(position)) return undefined;
+            return corners.filter((corner) => contains(corner, position)).map((corner) => corner.id);
+        },
         approaching(position: unknown): (PhraseMapContext & { cornerStartPosition: number }) | undefined {
             if (line.length < 2 || !normalized(position) || corners.some((corner) => contains(corner, position))) return undefined;
             // Time-based guidance must not inherit the fixed-distance lookahead used by at().
@@ -105,10 +115,22 @@ export function createPhraseMapContext(map: CircuitMapDto | null) {
             // An explicit sequence defines the link even when its internal gap exceeds lookahead.
             const linked = following && following !== corner && turn !== undefined && followingTurn !== undefined
                 && (sequence || distance(corner.end_position, following.start_position) <= lookahead);
+            const nextCornerDistance = Math.min(...corners.filter((other) => other !== corner)
+                .map((other) => contains(other, corner.end_position) ? 0 : distance(corner.end_position, other.start_position)),
+            distance(corner.end_position, corner.start_position));
+            const longStraightAfterCorner = tags.some((tag) => {
+                if (!labels(tag).includes('long straight')) return false;
+                const gap = contains(tag, corner.end_position) ? 0 : distance(corner.end_position, tag.start_position);
+                // Allow the same small tagging gap as corner lookahead, but never skip another corner.
+                return gap <= lookahead && gap < nextCornerDistance
+                    && distance(corner.end_position, tag.end_position) > 1e-9
+                    && distance(corner.end_position, tag.end_position) <= nextCornerDistance + 1e-9;
+            });
             return {
                 sectionId: corner.id,
                 phase: progress < 0.35 ? 'entry' : progress < 0.7 ? 'middle' : 'exit',
                 cornerSpeed: slow !== fast ? slow ? 'slow' : 'fast' : undefined,
+                longStraightAfterCorner: longStraightAfterCorner ? 1 : 0,
                 cornerShape: geometry.get(corner)?.shape,
                 cornerGeometry: geometry.get(corner),
                 // Match the game-specific X/Z orientation used by LiveTrajectoryMap.

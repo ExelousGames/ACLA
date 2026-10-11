@@ -77,6 +77,11 @@ export class Action<Context> {
         return new Action('exit to root', 'Return to the root closure so another guide can be selected.',
             (_context, state) => state.exitToRoot(), condition);
     }
+
+    static exitToParent<Context>(condition?: Condition<Context>): Action<Context> {
+        return new Action('exit to parent', 'Return to the enclosing closure.',
+            (_context, state) => state.exitToParent(), condition);
+    }
 }
 
 /** Each step descends through eligible closures and runs at most one action. */
@@ -107,6 +112,18 @@ export class State<Context> {
         this.location = this.root;
         this.executions.clear();
         this.checked.clear();
+    }
+
+    exitToParent(): void {
+        if (this.scopes.length === 1) return;
+        const exited = this.scopes.pop()!;
+        this.location = this.closure;
+        const clear = (node: Closure<Context> | Action<Context>) => {
+            this.checked.delete(node);
+            if (node instanceof Action) this.executions.delete(node);
+            else node.children.forEach(clear);
+        };
+        clear(exited);
     }
 
     /** Inspect the entire tree without stepping it or invoking opaque predicates. */

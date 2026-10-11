@@ -245,6 +245,7 @@ const LIVE_TELEMETRY_DATASET = Object.freeze(/** @type {const} */ ({
   Graphics_rain_tyres: 'integer',
   Graphics_secondary_display_index: 'integer',
   Graphics_session_index: 'integer',
+  Graphics_session_time: 'number',
   Graphics_session_time_left: 'number',
   Graphics_session_type: 'integer',
   Graphics_status: 'integer',

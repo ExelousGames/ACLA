@@ -184,13 +184,14 @@ describe('Live phrase overlay addons', () => {
         (window as any).electronAPI.sendOverlayPresentation = submit;
         const telemetry = createLiveTelemetryStore();
         const map = circuitMap();
-        const detection = vision(Date.now());
+        const detection = vision(Date.now(), { player: 'middle' });
         const root = {
             getComponentName: () => 'live-session',
             subscribeTelemetry: telemetry.subscribeEvents,
             getTrackVisionDetection: () => detection,
             subscribeTrackVision: () => () => undefined,
             getLiveCircuitMap: () => map,
+            getLiveCornerSummaries: () => [],
             subscribeLiveCircuitMap: () => () => undefined,
         };
         const Root = () => {
@@ -213,8 +214,8 @@ describe('Live phrase overlay addons', () => {
         const cards = submit.mock.calls[submit.mock.calls.length - 1][0].cards;
         expect(cards).toHaveLength(1);
         expect(cards[0]).toMatchObject({
-            componentName: 'live-phrases:inside-outbraking', componentType: 'live_phrase', status: 'focus',
-            snapshot: { ruleId: 'inside-outbraking', sentence: PHRASE_DEFINITIONS.find((rule) => rule.id === 'inside-outbraking')!.sentence },
+            componentName: 'live-phrases:pressure-feint', componentType: 'live_phrase', status: 'focus',
+            snapshot: { ruleId: 'pressure-feint', sentence: PHRASE_DEFINITIONS.find((rule) => rule.id === 'pressure-feint')!.sentence },
         });
         await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Disable detection' })); });
         expect(submit.mock.calls[submit.mock.calls.length - 1][0].cards).toEqual([]);

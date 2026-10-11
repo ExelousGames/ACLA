@@ -16,6 +16,17 @@ import {
 } from 'contexts/OperationComponentError';
 import { createOperation, createOperationFrom } from 'components/ai-operations';
 import { liveTelemetryStore } from '../live-telemetry-store';
+import { formatCornerTime } from '../event-log/CornerRecorder';
+import LiveEventLog from '../LiveEventLog';
+
+jest.mock('@radix-ui/themes', () => {
+    const Block = ({ children }: any) => <div>{children}</div>;
+    return {
+        Badge: Block, Box: Block, Flex: Block, Text: Block,
+        Table: { Root: 'table', Header: 'thead', Body: 'tbody', Row: 'tr', ColumnHeaderCell: 'th', RowHeaderCell: 'th', Cell: 'td' },
+        TextField: { Root: ({ children, ...props }: any) => <div><input {...props} />{children}</div>, Slot: Block },
+    };
+});
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: jest.fn(),
@@ -199,6 +210,58 @@ describe('LiveSessionView', () => {
         componentDirectory = null;
     });
 
+    it('reports the Event Log prerequisite before missing telemetry and reads a late-mounted log before selecting an opponent', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const view = renderRegisteredView(createRuntime('acc'));
+        await expect(view.analyzeFrontOpponentForAi().result).resolves.toMatchObject({
+            status: 'unavailable', reasons: [expect.stringContaining('Open Live Event Log')],
+            overall_lap_comparison: { status: 'unavailable', delta_ms: null },
+        });
+        const reads: string[] = [];
+        const logRef = { current: {
+            getComponentName: () => 'visualization:event-log',
+            getCornerRecords: jest.fn(() => { reads.push('corners'); return []; }),
+            getLapRecords: jest.fn(() => { reads.push('laps'); return []; }),
+        } };
+        act(() => { componentDirectory!.registerComponentRef(logRef); });
+        await expect(view.analyzeFrontOpponentForAi().result).resolves.toMatchObject({
+            status: 'unavailable', reasons: [expect.stringContaining('Live player ID')],
+        });
+        expect(reads).toEqual(['corners', 'laps']);
+        act(() => { liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence: 1, committedSequence: 1, committedCount: 1,
+            sample: { Graphics_player_car_id: 7, Graphics_normalized_car_position: 0.99, Graphics_normalized_positions: { '63': 0.01 } } }); });
+        await expect(view.analyzeFrontOpponentForAi().result).resolves.toMatchObject({ status: 'insufficient_data', player_car_id: '7', opponent_car_id: '63' });
+        act(() => { componentDirectory!.unregisterComponentRef(logRef); });
+        await expect(view.analyzeFrontOpponentForAi().result).resolves.toMatchObject({ status: 'unavailable', reasons: [expect.stringContaining('Open Live Event Log')] });
+    });
+
+    it('returns the mounted Event Log full-lap comparison as an immediate operation result', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        render(<OperationComponentRefProvider>
+            <LiveSessionContext.Provider value={createRuntime('acc') as any}>
+                <LiveSessionContent name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
+                <LiveEventLog name="visualization:event-log" />
+            </LiveSessionContext.Provider>
+            <RegistrationObserver />
+        </OperationComponentRefProvider>);
+        act(() => {
+            for (let i = 0; i <= 61; i += 1) liveTelemetryStore.publishFrame({
+                type: 'frame', game: 'acc', sequence: i + 1, committedSequence: i + 1, committedCount: i + 1,
+                sample: { Graphics_current_time_str: formatCornerTime(2027758 + i * 1000), Graphics_player_car_id: 7,
+                    Graphics_normalized_car_position: ((97 + i * 5) % 100) / 100,
+                    Graphics_normalized_positions: { '63': ((99 + i * 5) % 100) / 100 } },
+            });
+        });
+        const handle = componentDirectory!.findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+        const operation = handle.analyzeFrontOpponentForAi();
+        await expect(operation.result).resolves.toMatchObject({
+            status: 'partial', player_car_id: '7', opponent_car_id: '63',
+            overall_lap_comparison: { status: 'available', player_average_time_ms: 20000, opponent_average_time_ms: 20000,
+                player_sample_count: 3, opponent_sample_count: 3, delta_ms: 0 },
+            reasons: [expect.stringContaining('No corner timing records')],
+        });
+    });
+
     it('bridges new telemetry, resets and late-mounted Track Vision through the live root', () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
         const view = renderRegisteredView(createRuntime('acc'));
@@ -262,6 +325,21 @@ describe('LiveSessionView', () => {
         expect(stop).toHaveBeenCalledTimes(1);
         expect(listener).toHaveBeenCalledTimes(2);
         unsubscribe();
+    });
+
+    it('reads corner summaries from the currently mounted event log for live phrases', () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const view = renderRegisteredView(createRuntime('acc'));
+        expect(view.getLiveCornerSummaries()).toEqual([]);
+        const summaries = [{ carId: '7', cornerId: 'turn', averageExitSpeed: 0.03 }];
+        const logRef = { current: {
+            getComponentName: () => 'visualization:event-log',
+            getCornerSummaries: () => summaries,
+        } };
+        act(() => { componentDirectory!.registerComponentRef(logRef); });
+        expect(view.getLiveCornerSummaries()).toBe(summaries);
+        act(() => { componentDirectory!.unregisterComponentRef(logRef); });
+        expect(view.getLiveCornerSummaries()).toEqual([]);
     });
 
     it('registers current live operations under the exact component name', () => {

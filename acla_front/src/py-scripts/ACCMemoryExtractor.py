@@ -33,15 +33,18 @@ class ACCRecording:
         # schedule the next call first
         scheduler.enter(self._frame_delay, 1, self.recordOnce, (scheduler,full_path))
 
+        # Broadcasting belongs to the reader, even while shared memory has no fresh sample.
+        positions = self.broadcasting.poll()
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             flattened = self.flatten_object(sm)
             if flattened.get('Graphics_status') == 2:
-                positions = self.broadcasting.poll()
                 if positions is not None:
                     flattened['Graphics_normalized_positions'] = positions
-            else:
-                self.broadcasting.close()
+                    session_time = self.broadcasting.get_session_time()
+                    if session_time is not None:
+                        # Adapt Broadcasting milliseconds to standard elapsed seconds before delivery.
+                        flattened['Graphics_session_time'] = session_time / 1000.0
             
             #self.append_object_to_csv(flattened,full_path)
 
@@ -49,7 +52,6 @@ class ACCRecording:
             # emit compact JSON so the renderer receives a single line per sample
             print(DataclassJSONUtility.to_json(flattened).rstrip(), flush=True)
         else:
-            self.broadcasting.close()
             print(json.dumps({"available": False}).rstrip(), flush=True)
             
 

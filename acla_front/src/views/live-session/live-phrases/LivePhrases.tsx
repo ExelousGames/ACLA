@@ -121,7 +121,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         const unsubscribeMap = root.subscribeLiveCircuitMap(updateMap);
         updateMap();
         const unsubscribeTelemetry = root.subscribeTelemetry((event) => {
-            publish(engine.receiveTelemetry(event, Date.now()));
+            publish(engine.receiveTelemetry(event, Date.now(), root.getLiveCornerSummaries()));
         });
         // Expire inputs even if the simulator or screen capture stops sending events.
         const timer = setInterval(() => publish(engine.evaluate(Date.now())), 250);

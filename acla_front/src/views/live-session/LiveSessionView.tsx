@@ -59,6 +59,8 @@ import type {
 import type { LiveSessionAnalysisResultPage } from './live-session-analysis-results';
 import type { LiveSessionRuntime, LiveSessionSnapshot } from './live-session-types';
 import type { LiveEventLogHandle } from './LiveEventLog';
+import { analyzeFrontOpponent, unavailableFrontOpponentAnalysis, type LiveFrontOpponentAiResult } from './event-log/front-opponent-analysis';
+import type { DriverCornerSummary } from './event-log/corner-summary';
 import { liveTelemetryStore } from './live-telemetry-store';
 import type { LiveTelemetryEventListener } from './live-telemetry-store';
 import type { TrackVisionHandle } from './track-vision/LiveTrackVision';
@@ -140,6 +142,7 @@ export interface LiveSessionHandle extends ObservableOperationComponentHandle<Li
     subscribeTrackVision(listener: () => void): () => void;
     getLiveCircuitMap(): CircuitMapDto | null;
     subscribeLiveCircuitMap(listener: () => void): () => void;
+    getLiveCornerSummaries(): DriverCornerSummary[];
     queryTelemetryMetric<TReduce extends ReduceOp>(args: TelemetryQuery<TReduce>): Promise<QueryResult<TReduce>>;
     getTelemetryForScope(scope: QueryScope): Promise<Record<string, any>[]>;
     getEventLog(args: Record<string, any>): any[];
@@ -151,6 +154,7 @@ export interface LiveSessionHandle extends ObservableOperationComponentHandle<Li
     ): Operation<QueryTelemetryMetricResult<TReduce>>;
     getEventLogForAi(args: Record<string, any>): Operation<LiveEventLogAiResult>;
     getNextCornerForAi(): Operation<LiveNextCornerAiResult>;
+    analyzeFrontOpponentForAi(): Operation<LiveFrontOpponentAiResult>;
     collectLiveBaselineForAi(args: Record<string, any>): Operation<BaselineCollectionPayload>;
     restartLiveBaselineForAi(): Operation<LiveBaselineRestartAiResult>;
     analyzeLiveRecordedAnalysisForAi(args: Record<string, any>): Operation<LiveBaselineAnalysisAiResult>;
@@ -413,6 +417,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                 return () => { trackVisionListenersRef.current.delete(listener); };
             },
             getLiveCircuitMap: () => liveMapRef.current?.getCircuitMap() ?? null,
+            getLiveCornerSummaries: () => getMountedEventLog()?.getCornerSummaries() ?? [],
             subscribeLiveCircuitMap: (listener) => {
                 circuitMapListenersRef.current.add(listener);
                 return () => { circuitMapListenersRef.current.delete(listener); };
@@ -437,6 +442,13 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                 status: 'complete',
                 events: findLiveEvents(args),
             }), 'complete'),
+            analyzeFrontOpponentForAi: () => createOperationFrom(() => {
+                const eventLog = getMountedEventLog();
+                if (!eventLog) return unavailableFrontOpponentAnalysis('Open Live Event Log to collect lap and corner timing before analyzing the front opponent.');
+                const cornerRecords = eventLog.getCornerRecords();
+                const lapRecords = eventLog.getLapRecords();
+                return analyzeFrontOpponent(liveTelemetryStore.getSnapshot().currentTelemetry, cornerRecords, lapRecords);
+            }, 'complete'),
             getNextCornerForAi: () => createOperationFrom(() => {
                 const corner = liveSessionRef.current.getNextCorner();
                 if (!corner) throw new NoCornerDataError('No upcoming corner data is available.');

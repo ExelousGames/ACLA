@@ -487,10 +487,11 @@ it.each(['left', 'right'] as const)('publishes the displayed BEV for Live Phrase
     engine.receiveVision(detection, Date.now());
     const snapshot = engine.evaluate(Date.now());
     expect(snapshot.visionReady).toBe(true);
-    const conditions = snapshot.closures.find(({ id }) => id === 'inside-outbraking')!.conditions;
-    for (const input of ['carAhead', 'playerPosition', 'opponentPosition', 'insideLine']) {
+    const conditions = snapshot.closures.find(({ id }) => id === 'pressure-feint')!.conditions;
+    for (const input of ['carAhead', 'playerPosition', 'opponentPosition']) {
         expect(conditions.find((condition) => 'input' in condition && condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
     }
+    expect(conditions.find((condition) => 'input' in condition && condition.input === 'insideLine')).toMatchObject({ conditionFit: false, inputMissing: false });
     fireEvent.click(cameraButton('Clear calibration'));
     expect(ref.current!.getLatestDetection()!.birdsEyeScene).toBeNull();
 });

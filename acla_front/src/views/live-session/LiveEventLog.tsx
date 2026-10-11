@@ -20,6 +20,10 @@ import type { LiveTrajectoryMapHandle } from './LiveTrajectoryMap';
 import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
 import { CornerRecorder, DriverCornerRecord, formatCornerTime } from './event-log/CornerRecorder';
 import { DriverCornerSummary, summarizeDriverCorners } from './event-log/corner-summary';
+import { LapRecorder, type DriverLapRecord } from './event-log/LapRecorder';
+import { summarizeTimes } from './event-log/timing-summary';
+import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
+import { getCircuitMapCenterlineSegments } from 'views/circuit-maps/centerline-segments';
 import './LiveEventLog.css';
 
 const EMPTY_EVENTS: LiveSessionEvent[] = [];
@@ -30,6 +34,8 @@ export interface LiveEventLogHandle extends NamedOperationComponentHandle {
     findEvents(params: EventSearchParams): LiveSessionEvent[];
     getAllEvents(): LiveSessionEvent[];
     getCornerRecords(): DriverCornerRecord[];
+    getCornerSummaries(): DriverCornerSummary[];
+    getLapRecords(): DriverLapRecord[];
 }
 
 interface LiveEventLogProps {
@@ -50,6 +56,12 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
     const [search, setSearch] = useState('');
     const cornerRecorderRef = useRef(new CornerRecorder());
     const cornerRecordsRef = useRef<DriverCornerRecord[]>([]);
+    const cornerMapRef = useRef<CircuitMapDto | null>(null);
+    const lapRecorderRef = useRef(new LapRecorder());
+    const lapRecordsRef = useRef<DriverLapRecord[]>([]);
+    const [lapRecords, setLapRecords] = useState<DriverLapRecord[]>([]);
+    const lapCarsRef = useRef(new Map<string, boolean>());
+    const [lapCars, setLapCars] = useState<Array<{ carId: string; isPlayer: boolean }>>([]);
     const [cornerRecords, setCornerRecords] = useState<DriverCornerRecord[]>([]);
     const [mappedCornerCount, setMappedCornerCount] = useState(0);
     const eventLogRef = useRef(new EventLog(initialEvents));
@@ -64,13 +76,19 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
         lastSampleIndexRef.current = -1;
         cornerRecorderRef.current.reset();
         cornerRecordsRef.current = [];
+        lapRecorderRef.current.reset();
+        lapRecordsRef.current = [];
+        lapCarsRef.current.clear();
+        setLapRecords([]);
+        setLapCars([]);
         setCornerRecords([]);
         setEvents([]);
     }, []);
 
     useEffect(() => {
         const updateMap = () => {
-            setMappedCornerCount(cornerRecorderRef.current.setMap(liveMap?.getCircuitMap() ?? null));
+            cornerMapRef.current = liveMap?.getCircuitMap() ?? null;
+            setMappedCornerCount(cornerRecorderRef.current.setMap(cornerMapRef.current));
         };
         updateMap();
         return liveMap?.subscribeCircuitMap(updateMap);
@@ -91,6 +109,7 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
                     currentLapRef.current = 0;
                     lastSampleIndexRef.current = -1;
                     cornerRecorderRef.current.reset();
+                    lapRecorderRef.current.reset();
                 }
                 return;
             }
@@ -98,6 +117,25 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
 
             currentLapRef.current = getTelemetryLap(event.sample);
             lastSampleIndexRef.current = event.sampleIndex;
+            const playerId = event.sample.Graphics_player_car_id;
+            const playerKey = typeof playerId === 'number' && Number.isSafeInteger(playerId) && playerId >= 0 ? String(playerId) : 'player';
+            let carsChanged = false;
+            const observeCar = (carId: string, position: unknown) => {
+                if (typeof position !== 'number' || !Number.isFinite(position) || position < 0 || position > 1) return;
+                const isPlayer = carId === playerKey || lapCarsRef.current.get(carId) === true;
+                if (lapCarsRef.current.get(carId) === isPlayer) return;
+                lapCarsRef.current.set(carId, isPlayer);
+                carsChanged = true;
+            };
+            Object.entries(event.sample.Graphics_normalized_positions ?? {}).forEach(([carId, position]) => observeCar(carId, position));
+            observeCar(playerKey, event.sample.Graphics_normalized_car_position);
+            if (carsChanged) setLapCars(Array.from(lapCarsRef.current, ([carId, isPlayer]) => ({ carId, isPlayer })));
+            const completedLaps = lapRecorderRef.current.tick(event.sample, event.sampleIndex)
+                .map((record) => ({ ...record, id: `${event.streamGeneration}:${record.id}` }));
+            if (completedLaps.length > 0) {
+                lapRecordsRef.current = [...lapRecordsRef.current, ...completedLaps];
+                setLapRecords(lapRecordsRef.current);
+            }
             const completedCorners = cornerRecorderRef.current.tick(event.sample, event.sampleIndex)
                 .map((record) => ({ ...record, id: `${event.streamGeneration}:${record.id}` }));
             if (completedCorners.length > 0) {
@@ -132,6 +170,14 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
         }),
         getAllEvents: () => eventLogRef.current.all(),
         getCornerRecords: () => cornerRecordsRef.current.slice(),
+        getCornerSummaries: () => {
+            const map = cornerMapRef.current;
+            const corners = getCircuitMapCenterlineSegments(map);
+            return summarizeDriverCorners(cornerRecordsRef.current.filter((record) => record.mapId === map?.id
+                && corners.some((corner) => corner.id === record.cornerId && corner.end_position === record.exit.position
+                    && (!record.entry || corner.start_position === record.entry.position))));
+        },
+        getLapRecords: () => lapRecordsRef.current.slice(),
     }), [name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     const registeredHandleRef = React.useRef(handle);
@@ -142,6 +188,23 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
         return events.filter((event) => !term || JSON.stringify(event).toLowerCase().includes(term)).slice().reverse();
     }, [events, search]);
     const cornerSummaries = useMemo(() => summarizeDriverCorners(cornerRecords), [cornerRecords]);
+    const lapSummaries = useMemo(() => {
+        const recordsByCar = new Map<string, DriverLapRecord[]>();
+        lapRecords.forEach((record) => {
+            const records = recordsByCar.get(record.carId) ?? [];
+            records.push(record);
+            recordsByCar.set(record.carId, records);
+        });
+        return lapCars.map((car) => {
+            const records = recordsByCar.get(car.carId) ?? [];
+            return { ...car, ...summarizeTimes(records.map((record) => record.lapTimeMs)),
+                lastLapTimeMs: records[records.length - 1]?.lapTimeMs ?? null };
+        }).sort((a, b) => a.carId.localeCompare(b.carId, undefined, { numeric: true }));
+    }, [lapCars, lapRecords]);
+    const lapRows = useMemo(() => {
+        const term = search.trim().toLowerCase();
+        return lapSummaries.filter((car) => !term || `${car.isPlayer ? 'player' : ''} car ${car.carId} lap`.includes(term));
+    }, [lapSummaries, search]);
     const cornerRows = useMemo(() => {
         const term = search.trim().toLowerCase();
         const cars = new Map<string, DriverCornerSummary[]>();
@@ -166,6 +229,40 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
                 </TextField.Root>
             </Flex>
             <Box className="live-optional-panel__scroll">
+                <section aria-label="Driver lap times" className="live-event-log__laps">
+                    <Flex justify="between" align="center" gap="2" mb="2">
+                        <Text weight="bold">Driver lap times</Text>
+                        <Text size="1" color="gray">{lapRecords.length} completed laps</Text>
+                    </Flex>
+                    <Text as="p" size="1" color="gray">
+                        Full laps with uninterrupted timing between finish-line crossings. Initial partial laps are excluded.
+                        Average drops the fastest and slowest 12.5% (rounded down, at least one each).
+                        Requires 3 complete laps. Times use MM:SS:mmm.
+                    </Text>
+                    {lapRows.length === 0 ? <Text color="gray">{search.trim() ? 'No matching lap times' : 'Waiting for car telemetry'}</Text> : (
+                        <Table.Root size="1" className="live-event-log__cars">
+                            <Table.Header><Table.Row>
+                                <Table.ColumnHeaderCell>Car index</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>Last lap</Table.ColumnHeaderCell>
+                                <Table.ColumnHeaderCell>Average lap time · middle 75%</Table.ColumnHeaderCell>
+                            </Table.Row></Table.Header>
+                            <Table.Body>{lapRows.map((car) => (
+                                <Table.Row key={car.carId}>
+                                    <Table.RowHeaderCell className="live-event-log__car">
+                                        <Text weight="bold">{car.isPlayer ? 'Player' : 'Car'}{car.carId !== 'player' ? ` #${car.carId}` : ''}</Text>
+                                    </Table.RowHeaderCell>
+                                    <Table.Cell>{car.lastLapTimeMs === null ? 'Not recorded' : formatCornerTime(car.lastLapTimeMs)}</Table.Cell>
+                                    <Table.Cell>
+                                        <Text as="p" weight="bold">{car.averageTimeMs === null ? 'Collecting times' : formatCornerTime(car.averageTimeMs)}</Text>
+                                        <Text as="p" size="1" color="gray">
+                                            {car.averageTimeMs === null ? `${car.sampleCount}/3 complete laps` : `${car.includedCount} of ${car.sampleCount} laps used`}
+                                        </Text>
+                                    </Table.Cell>
+                                </Table.Row>
+                            ))}</Table.Body>
+                        </Table.Root>
+                    )}
+                </section>
                 <section aria-label="Driver corner times">
                     <Flex justify="between" align="center" gap="2" mb="2">
                         <Text weight="bold">Driver corner times</Text>
@@ -175,13 +272,15 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
                         Average time in each corner across passes, using the middle 75% of complete times.
                         Drops the fastest and slowest 12.5% (rounded down, at least one each).
                         Requires 3 complete passes. Times use MM:SS:mmm.
+                        Exit speed uses normalized lap position change per second at the corner end,
+                        with the same trimming rule applied independently to exit observations.
                     </Text>
                     {mappedCornerCount === 0 && <Text color="gray">Open Live Map with tagged corners to record driver corner timing.</Text>}
                     {cornerRows.length === 0 ? (mappedCornerCount > 0 || search.trim()) && <Text color="gray">{search.trim() ? 'No matching corner times' : 'Waiting for cars to cross a corner end'}</Text> : (
                             <Table.Root size="1" className="live-event-log__cars">
                                 <Table.Header><Table.Row>
                                     <Table.ColumnHeaderCell>Car index</Table.ColumnHeaderCell>
-                                    <Table.ColumnHeaderCell>Average corner time · middle 75%</Table.ColumnHeaderCell>
+                                    <Table.ColumnHeaderCell>Average corner time and exit speed · middle 75%</Table.ColumnHeaderCell>
                                 </Table.Row></Table.Header>
                                 <Table.Body>{cornerRows.map(({ carId, corners }) => (
                                     <Table.Row key={carId}>
@@ -200,6 +299,15 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
                                                             {corner.averageTimeMs === null
                                                                 ? `${corner.sampleCount}/3 complete passes`
                                                                 : `${corner.includedCount} of ${corner.sampleCount} times used`}
+                                                        </Text>
+                                                        <Text as="p" size="1">
+                                                            Exit speed: {corner.averageExitSpeed === null ? 'Collecting exits'
+                                                                : `${(corner.averageExitSpeed * 100).toFixed(3)}% lap/s`}
+                                                        </Text>
+                                                        <Text as="p" size="1" color="gray">
+                                                            {corner.averageExitSpeed === null
+                                                                ? `${corner.exitSpeedSampleCount}/3 exit observations`
+                                                                : `${corner.exitSpeedIncludedCount} of ${corner.exitSpeedSampleCount} exits used`}
                                                         </Text>
                                                     </li>
                                                 ))}

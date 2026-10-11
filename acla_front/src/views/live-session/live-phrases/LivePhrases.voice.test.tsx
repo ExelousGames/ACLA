@@ -11,7 +11,7 @@ import { circuitMap, vision } from './test-fixtures';
 
 jest.mock('components/tts', () => ({ synthesizeTts: jest.fn() }));
 const synthesize = synthesizeTts as jest.MockedFunction<typeof synthesizeTts>;
-const sentence = PHRASE_DEFINITIONS.find((rule) => rule.id === 'inside-outbraking')!.sentence;
+const sentence = PHRASE_DEFINITIONS.find((rule) => rule.id === 'pressure-feint')!.sentence;
 const sentences = PHRASE_DEFINITIONS.flatMap((rule) => [rule.sentence, ...(rule.additionalActions ?? []).map((action) => action.sentence)]);
 const pack = (text: string): TtsPack => ({ text, audioDataUrl: `data:audio/wav;base64,${btoa(text)}`, durationMs: 3000 });
 let audio: ReturnType<typeof installAudioDoubles>;
@@ -20,7 +20,7 @@ let otherPlayback: PlaybackHandle | undefined;
 const mount = () => {
     const telemetry = createLiveTelemetryStore();
     const map = circuitMap();
-    let detection = vision(Date.now());
+    let detection = vision(Date.now(), { player: 'middle' });
     let notifyVision: () => void = () => undefined;
     let sequence = 0;
     const root = {
@@ -29,6 +29,7 @@ const mount = () => {
         getTrackVisionDetection: () => detection,
         subscribeTrackVision: (listener: () => void) => { notifyVision = listener; return () => undefined; },
         getLiveCircuitMap: () => map,
+        getLiveCornerSummaries: () => [],
         subscribeLiveCircuitMap: () => () => undefined,
     };
     const Root = () => {
@@ -39,7 +40,7 @@ const mount = () => {
         <Root /><LivePhrases name="live-phrases" />
     </OperationComponentRefProvider></React.StrictMode>);
     const frame = (speed = 100) => {
-        detection = vision(Date.now());
+        detection = vision(Date.now(), { player: 'middle' });
         notifyVision();
         telemetry.publishFrame({
             type: 'frame', game: 'acc', sequence: ++sequence, committedCount: 0, committedSequence: 0,

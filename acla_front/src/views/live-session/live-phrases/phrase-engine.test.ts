@@ -2,7 +2,7 @@ import { createLiveTelemetryStore, LiveTelemetryFrameEvent } from '../live-telem
 import type { StandardTelemetrySample } from '../live-session-types';
 import { COOLDOWN_MS, PHRASE_DEFINITIONS, PhraseCondition, PhraseConditionGroup, PhraseEngine, TELEMETRY_MAX_AGE_MS, conditionGroup, getPhraseActions, type PhraseConditionConnector, type PhraseConditionNode } from './phrase-engine';
 import { VISION_MAX_AGE_MS } from '../track-vision/track-vision-types';
-import { circuitMap, shapedCornerMap, vision } from './test-fixtures';
+import { circuitMap, shapedCornerMap, vision as trackVision } from './test-fixtures';
 import { Action, Closure, State } from './closure';
 
 const frame = (sample: StandardTelemetrySample, status = 2): LiveTelemetryFrameEvent => ({
@@ -12,7 +12,8 @@ const frame = (sample: StandardTelemetrySample, status = 2): LiveTelemetryFrameE
 });
 const driving = { Physics_speed_kmh: 100, Graphics_normalized_car_position: 0.11 };
 const map = circuitMap();
-const defaultRule = 'inside-outbraking';
+const defaultRule = 'pressure-feint';
+const vision = (capturedAt: number, options: Parameters<typeof trackVision>[1] = {}) => trackVision(capturedAt, { player: 'middle', ...options });
 const ids = (engine: PhraseEngine, now: number) => engine.evaluate(now).events.map((event) => event.ruleId);
 const update = (engine: PhraseEngine, now: number, sample: StandardTelemetrySample = driving) => {
     engine.receiveVision(vision(now), now);
@@ -20,7 +21,7 @@ const update = (engine: PhraseEngine, now: number, sample: StandardTelemetrySamp
 };
 const straightDriving = { ...driving, Graphics_normalized_car_position: 0.5 };
 const slipstreamVision = (capturedAt: number, x = 2, y = 9) => {
-    const detection = vision(capturedAt, { corner: 'straight' });
+    const detection = trackVision(capturedAt, { corner: 'straight' });
     detection.birdsEyeScene!.cars[0].position = { x, y, z: 0 };
     return detection;
 };
@@ -38,14 +39,15 @@ describe('live phrase closure tree', () => {
             expect(child).toBeInstanceOf(Closure);
             expect(child.description).toBe(PHRASE_DEFINITIONS[index].description);
             expect(child.description.trim()).not.toBe('');
-            const actions = (child as Closure<unknown>).children;
+            const actions = (child as Closure<unknown>).children.filter((node) => node instanceof Action);
             const speech = getPhraseActions(PHRASE_DEFINITIONS[index]);
-            expect(actions.map((action) => action.name)).toEqual([...speech.map(() => 'say phrase'), 'exit to root']);
+            const parentSpeech = PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2) : speech;
+            expect(actions.map((action) => action.name)).toEqual([...parentSpeech.map(() => 'say phrase'), 'exit to root']);
             actions.forEach((action) => {
                 expect(action).toBeInstanceOf(Action);
                 expect(action.description.trim()).not.toBe('');
             });
-            expect(actions.slice(0, -1).map((action) => action.description)).toEqual(speech.map((action) => action.sentence));
+            expect(actions.slice(0, -1).map((action) => action.description)).toEqual(parentSpeech.map((action) => action.sentence));
             expect(snapshot.closures[index]).toMatchObject({
                 id: PHRASE_DEFINITIONS[index].id, name: child.name, description: child.description,
                 actions: actions.map(({ name, description }) => ({ name, description })),
@@ -427,7 +429,7 @@ describe('vision and Live Map overtaking guides', () => {
         const snapshot = engine.receiveTelemetry(frame(driving), 800);
         expect(snapshot.events).toEqual([]);
         const rule = snapshot.closures.find((rule) => rule.id === defaultRule)!;
-        expect(rule.missing).toEqual(['Player turn corner', 'Opponent turn corner', 'Player inside, opponent off the inside']);
+        expect(rule.missing).toEqual(['Player turn corner', 'Opponent turn corner', 'Player inside, opponent off the inside', 'Player outside, opponent inside']);
         for (const input of ['playerPosition', 'opponentPosition']) {
             expect(rule.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
         }
@@ -437,16 +439,14 @@ describe('vision and Live Map overtaking guides', () => {
     });
 
     it('evaluates all conditions in guides suppressed by a higher-priority match', () => {
-        const engine = new PhraseEngine();
-        const sequence = circuitMap('slow', true);
-        sequence.samples.middle_line!.find((point) => point.normalized_position === 0.31)!.x = 1100;
-        engine.receiveMap(sequence, 0);
-        engine.receiveVision(vision(0, { player: 'outside', opponent: 'inside' }), 0);
-        const snapshot = engine.receiveTelemetry(frame(driving), 0);
-        expect(snapshot.closures.find((rule) => rule.id === 'same-direction')?.status).toBe('Confirming');
-        const switchback = snapshot.closures.find((rule) => rule.id === 'switchback')!;
-        expect(switchback.status).toBe('Not matched');
-        expect(switchback.conditions.every((condition) => condition.conditionFit)).toBe(true);
+        const phrase = PHRASE_DEFINITIONS.find((rule) => rule.id === defaultRule)!;
+        const engine = new PhraseEngine([{ ...phrase, id: 'priority-guide' }, phrase]);
+        engine.receiveMap(map, 0);
+        const snapshot = update(engine, 0);
+        expect(snapshot.closures.find((rule) => rule.id === 'priority-guide')?.status).toBe('Confirming');
+        const suppressed = snapshot.closures.find((rule) => rule.id === defaultRule)!;
+        expect(suppressed.status).toBe('Not matched');
+        expect(suppressed.conditions.every((condition) => condition.conditionFit)).toBe(true);
     });
 
     it('keeps evaluated condition instances independent of past snapshots, other engines and the catalog', () => {
@@ -477,12 +477,9 @@ describe('vision and Live Map overtaking guides', () => {
         expect(ids(engine, 800)).toEqual([defaultRule]);
     });
 
-    it('lists timed and shape-specific guides before general overtaking guides', () => {
+    it('lists only the remaining guides in priority order', () => {
         expect(PHRASE_DEFINITIONS.map((rule) => rule.id)).toEqual([
-            'second-apex', 'one-tight-slow-corner', 'same-direction', 'sequence-exit', 's-bend',
-            'tightening-corner', 'opening-corner', 'hairpin-exit',
-            'inside-outbraking', 'around-outside', 'switchback',
-            'better-exit', 'slipstream', 'pressure-feint',
+            'second-apex', 'one-tight-slow-corner', 'slipstream', 'pressure-feint',
         ]);
         PHRASE_DEFINITIONS.forEach((rule) => {
             expect(rule.sentence).not.toMatch(/you are .+; the opponent ahead is/);
@@ -495,35 +492,31 @@ describe('vision and Live Map overtaking guides', () => {
     });
 
     it.each([
-        { shape: 's-bend', position: 0.12, tactic: 's-bend' },
-        { shape: 'tightening', position: 0.12, tactic: 'tightening-corner' },
-        { shape: 'opening', position: 0.2, tactic: 'opening-corner' },
-        { shape: 'hairpin', position: 0.2, tactic: 'hairpin-exit' },
-    ] as const)('selects $tactic from centerline geometry', ({ shape, position, tactic }) => {
+        { shape: 's-bend', position: 0.12 },
+        { shape: 'tightening', position: 0.12 },
+        { shape: 'hairpin', position: 0.2 },
+    ] as const)('does not emit removed guidance for $shape geometry', ({ shape, position }) => {
         const engine = new PhraseEngine();
         engine.receiveMap(shapedCornerMap(shape), 0);
         const sample = { ...driving, Graphics_normalized_car_position: position };
-        update(engine, 0, sample);
-        update(engine, 800, sample);
-        expect(ids(engine, 800)).toEqual([tactic]);
+        engine.receiveVision(vision(0, { player: 'inside', opponent: 'outside' }), 0);
+        engine.receiveTelemetry(frame(sample), 0);
+        engine.receiveTelemetry(frame(sample), 800);
+        expect(ids(engine, 800)).toEqual([]);
     });
 
-    it.each(['opposite', 'same'] as const)('selects guidance for a %s direction sequence and reserves exit guidance for the last corner', (direction) => {
+    it.each(['opposite', 'same'] as const)('does not emit removed guidance in a %s direction sequence', (direction) => {
         const sequence = circuitMap('slow', true);
         if (direction === 'same') sequence.samples.middle_line!.find((point) => point.normalized_position === 0.31)!.x = 1100;
         sequence.centerline_tags!.push({ id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.31 });
-        for (const [position, tactic] of [
-            [0.11, direction === 'opposite' ? 'switchback' : 'same-direction'],
-            [0.18, 'sequence-exit'],
-            [0.29, direction === 'same' ? 'hairpin-exit' : 'better-exit'],
-        ] as const) {
+        for (const position of [0.11, 0.18, 0.29]) {
             const engine = new PhraseEngine();
             engine.receiveMap(sequence, 0);
             const sample = { ...driving, Graphics_normalized_car_position: position };
             engine.receiveVision(vision(0, { player: 'outside', opponent: 'inside' }), 0);
             engine.receiveTelemetry(frame(sample), 0);
             engine.receiveTelemetry(frame(sample), 800);
-            expect(ids(engine, 800)).toEqual([tactic]);
+            expect(ids(engine, 800)).toEqual([]);
         }
     });
 
@@ -543,17 +536,17 @@ describe('vision and Live Map overtaking guides', () => {
         update(engine, 800, second);
         expect(ids(engine, 800)).toEqual([]);
         update(engine, 1500, second);
-        expect(ids(engine, 1500)).toEqual(['inside-outbraking']);
+        expect(ids(engine, 1500)).toEqual([defaultRule]);
     });
 
     it.each([
-        { tactic: 'inside-outbraking', speed: 'slow', position: 0.11, player: 'inside', opponent: 'outside' },
-        { tactic: 'around-outside', speed: 'fast', position: 0.11, player: 'outside', opponent: 'inside' },
-        { tactic: 'switchback', speed: 'slow', position: 0.15, player: 'outside', opponent: 'inside' },
-        { tactic: 'better-exit', speed: 'slow', position: 0.18, player: 'middle', opponent: 'inside' },
-        { tactic: 'better-exit', speed: 'fast', position: 0.18, player: 'middle', opponent: 'inside' },
-        { tactic: 'around-outside', speed: 'fast', position: 0.11, player: 'outside', opponent: 'inside', linked: true },
-        { tactic: 'switchback', speed: 'slow', position: 0.15, player: 'outside', opponent: 'inside', linked: true },
+        { tactic: null, speed: 'slow', position: 0.11, player: 'inside', opponent: 'outside' },
+        { tactic: null, speed: 'fast', position: 0.11, player: 'outside', opponent: 'inside' },
+        { tactic: null, speed: 'slow', position: 0.15, player: 'outside', opponent: 'inside' },
+        { tactic: null, speed: 'slow', position: 0.18, player: 'middle', opponent: 'inside' },
+        { tactic: null, speed: 'fast', position: 0.18, player: 'middle', opponent: 'inside' },
+        { tactic: null, speed: 'fast', position: 0.11, player: 'outside', opponent: 'inside', linked: true },
+        { tactic: null, speed: 'slow', position: 0.15, player: 'outside', opponent: 'inside', linked: true },
         { tactic: 'pressure-feint', speed: 'slow', position: 0.11, player: 'middle', opponent: 'outside' },
     ] as const)('selects only $tactic for $speed at $position', (scenario) => {
         for (const corner of ['left', 'right'] as const) {
@@ -563,11 +556,11 @@ describe('vision and Live Map overtaking guides', () => {
             engine.receiveVision(vision(0, { corner, player: scenario.player, opponent: scenario.opponent }), 0);
             engine.receiveTelemetry(frame(sample), 0);
             engine.receiveTelemetry(frame(sample), 800);
-            expect(ids(engine, 800)).toEqual([scenario.tactic]);
+            expect(ids(engine, 800)).toEqual(scenario.tactic ? [scenario.tactic] : []);
         }
     });
 
-    it.each([null, { ...map, centerline_tags: [] }, circuitMap('fast')])('withholds inside outbraking without a mapped slow corner', (input) => {
+    it.each([null, { ...map, centerline_tags: [] }])('withholds pressure and a feint without a mapped corner', (input) => {
         const engine = new PhraseEngine();
         engine.receiveMap(input, 0);
         update(engine, 0);
@@ -764,11 +757,14 @@ describe('vision and Live Map overtaking guides', () => {
         const engine = new PhraseEngine();
         engine.receiveMap(map, 0);
         update(engine, 0);
-        engine.receiveVision(vision(500, { player: 'middle', opponent: 'outside' }), 500);
+        engine.receiveVision(vision(500, { player: 'inside', opponent: 'outside' }), 500);
         engine.receiveTelemetry(frame(driving), 800);
         expect(ids(engine, 800)).toEqual([]);
-        engine.receiveTelemetry(frame(driving), 1300);
-        expect(ids(engine, 1300)).toEqual(['pressure-feint']);
+        update(engine, 900);
+        update(engine, 1699);
+        expect(ids(engine, 1699)).toEqual([]);
+        update(engine, 1700);
+        expect(ids(engine, 1700)).toEqual([defaultRule]);
     });
 
     it('restarts the hold when the camera alignment changes even within the same position band', () => {

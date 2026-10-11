@@ -2,6 +2,85 @@ import { createPhraseMapContext } from './phrase-map-context';
 import { circuitMap } from './test-fixtures';
 
 describe('Live Map phrase context', () => {
+    it('requires a nearby long straight after the corner without an intervening corner', () => {
+        const map = circuitMap();
+        map.centerline_segments = [
+            { id: 'turn', tags: ['corner', 'slow'], start_position: 0.1, end_position: 0.2 },
+            { id: 'after', tags: ['long straight'], start_position: 0.2, end_position: 0.4 },
+        ];
+        const after = map.centerline_segments[1];
+        expect(createPhraseMapContext(map).approaching(0.05)?.longStraightAfterCorner).toBe(1);
+        after.start_position = 0.205;
+        expect(createPhraseMapContext(map).approaching(0.05)?.longStraightAfterCorner).toBe(1);
+        after.tags = ['straight'];
+        expect(createPhraseMapContext(map).approaching(0.05)?.longStraightAfterCorner).toBe(0);
+        after.tags = ['long straight'];
+        after.start_position = 0.3;
+        expect(createPhraseMapContext(map).approaching(0.05)?.longStraightAfterCorner).toBe(0);
+        after.start_position = 0.21;
+        map.centerline_segments.push({ id: 'intervening', tags: ['corner'], start_position: 0.202, end_position: 0.208 });
+        expect(createPhraseMapContext(map).approaching(0.05)?.longStraightAfterCorner).toBe(0);
+    });
+
+    it('resolves a long straight after a corner across start/finish and rejects an approach-only straight', () => {
+        const map = circuitMap();
+        map.centerline_segments = [
+            { id: 'turn', tags: ['slow corner'], start_position: 0.9, end_position: 0.99 },
+            { id: 'after', tags: ['long straight'], start_position: 0.99, end_position: 0.2 },
+        ];
+        expect(createPhraseMapContext(map).approaching(0.8)?.longStraightAfterCorner).toBe(1);
+        map.centerline_segments[0].end_position = 0.01;
+        map.centerline_segments[1].start_position = 0.01;
+        expect(createPhraseMapContext(map).approaching(0.8)?.longStraightAfterCorner).toBe(1);
+        map.centerline_segments[1] = { id: 'before', tags: ['long straight'], start_position: 0.8, end_position: 0.9 };
+        expect(createPhraseMapContext(map).approaching(0.85)?.longStraightAfterCorner).toBe(0);
+    });
+    it.each(['corner', 'slow corner', 'fast corner'])('requires actual bounds for %s membership, including overlapping and wraparound corners', (label) => {
+        const map = circuitMap();
+        map.centerline_segments = [
+            { id: 'turn', tags: [label], start_position: 0.1, end_position: 0.2 },
+            { id: 'overlap', tags: ['corner'], start_position: 0.15, end_position: 0.25 },
+            { id: 'wrap', tags: ['corner'], start_position: 0.95, end_position: 0.05 },
+            { id: 'sequence', tags: ['corner', 'consecutive corners'], start_position: 0.1, end_position: 0.3 },
+        ];
+        const context = createPhraseMapContext(map);
+        expect(context.at(0.09).phase).toBe('entry');
+        expect(context.cornersAt(0.09)).toEqual([]);
+        expect(context.cornersAt(0.1)).toEqual(['turn']);
+        expect(context.cornersAt(0.18)).toEqual(['turn', 'overlap']);
+        expect(context.cornersAt(0.2)).toEqual(['turn', 'overlap']);
+        expect(context.cornersAt(0.201)).toEqual(['overlap']);
+        expect(context.cornersAt(0.26)).toEqual([]);
+        expect(context.cornersAt(0.97)).toEqual(['wrap']);
+        expect(context.cornersAt(0)).toEqual(['wrap']);
+        expect(context.cornersAt(0.05)).toEqual(['wrap']);
+        expect(context.cornersAt(0.051)).toEqual([]);
+        expect(context.cornersAt(NaN)).toBeUndefined();
+        expect(context.cornersAt(undefined)).toBeUndefined();
+        expect(createPhraseMapContext(null).cornersAt(0.15)).toBeUndefined();
+    });
+
+    it('resolves long-straight membership independently of corner approach, including overlapping and wraparound tags', () => {
+        const map = circuitMap();
+        map.centerline_tags!.push(
+            { id: 'wrap-straight', label: 'long straight', start_position: 0.95, end_position: 0.1 },
+            { id: 'overlap', label: 'long straight', start_position: 0.05, end_position: 0.09 },
+            { id: 'ordinary', label: 'straight', start_position: 0.25, end_position: 0.35 },
+        );
+        const context = createPhraseMapContext(map);
+        expect(context.longStraightsAt(0.97)).toEqual(['wrap-straight']);
+        expect(context.longStraightsAt(0)).toEqual(['wrap-straight']);
+        expect(context.longStraightsAt(0.08)).toEqual(['wrap-straight', 'overlap']);
+        expect(context.at(0.099).phase).toBe('entry');
+        expect(context.longStraightsAt(0.099)).toEqual(['wrap-straight']);
+        expect(context.longStraightsAt(0.1)).toEqual(['wrap-straight']);
+        expect(context.longStraightsAt(0.101)).toEqual([]);
+        expect(context.longStraightsAt(0.3)).toEqual([]);
+        expect(context.longStraightsAt(NaN)).toBeUndefined();
+        expect(context.longStraightsAt(undefined)).toBeUndefined();
+        expect(createPhraseMapContext(null).longStraightsAt(0.5)).toBeUndefined();
+    });
+
     it('resolves all tags on a segment and respects a cleared segment list', () => {
         const map = { ...circuitMap(), centerline_segments: [
             { id: 'turn', tags: ['corner', 'fast'], start_position: 0.1, end_position: 0.2 },

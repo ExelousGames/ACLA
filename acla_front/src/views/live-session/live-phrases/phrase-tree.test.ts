@@ -4,7 +4,7 @@ import { circuitMap, vision } from './test-fixtures';
 
 it('snapshots arbitrary root actions and nested catalog closures without relying on catalog position', () => {
     const run = jest.fn();
-    const rule = PHRASE_DEFINITIONS.find((phrase) => phrase.id === 'inside-outbraking')!;
+    const rule = PHRASE_DEFINITIONS.find((phrase) => phrase.id === 'pressure-feint')!;
     const engine = new PhraseEngine([rule], (phrases) => {
         const catalog = createPhraseRoot(phrases);
         return new Closure<PhraseContext>('custom root', 'Custom root.', () => true, [
@@ -13,7 +13,7 @@ it('snapshots arbitrary root actions and nested catalog closures without relying
         ]);
     });
     engine.receiveMap(circuitMap(), 0);
-    engine.receiveVision(vision(0), 0);
+    engine.receiveVision(vision(0, { player: 'middle' }), 0);
     const frame = (now: number) => {
         const sample = { Physics_speed_kmh: 100, Graphics_normalized_car_position: 0.11 };
         return engine.receiveTelemetry({

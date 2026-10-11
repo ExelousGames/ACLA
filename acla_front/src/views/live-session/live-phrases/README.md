@@ -13,11 +13,12 @@ Live phrases runs a closure tree instead of a flat sentence-rule dispatcher.
   async action holds the state until it settles; failures propagate to the caller.
 
 Entry conditions are checked only before entering a closure. Once entered, the
-state cannot move to its parent or a sibling closure, even if the entry condition
-becomes false or no children match. It stays inside until an explicit
-`Action.exitToRoot(condition?)` runs. With no condition, that action returns
-directly to root as soon as the state reaches it. Returning to root clears the
-completed actions, allowing a fresh visit. Each state owns its traversal memory.
+state stays inside even if the entry condition becomes false or no children match.
+`Action.exitToParent(condition?)` returns one level and clears the exited subtree's
+action memory, allowing another visit while preserving the parent's completed actions.
+`Action.exitToRoot(condition?)` returns directly to root and clears all completed
+actions. With no condition, either exit runs as soon as the state reaches it.
+Each state owns its traversal memory.
 
 ```ts
 const root = new Closure<{ ready: boolean }>('root', 'Select an eligible guide.', () => true, [
@@ -134,21 +135,59 @@ prevent this timed guide. Track Vision supplies the opponent's side position;
 map labels and geometry determine the upcoming slow corner's direction and its
 opposite linked turn, accounting for the game's X/Z coordinate orientation.
 
-The next root child, **One Tight Slow Corner**, enters immediately when the
-estimated opponent distance is at most 2 m **and** the upcoming corner is outside
-every Live Map `consecutive corners` label. Even the last or only corner in a
-labeled region is excluded. This entry check does not require a slow tag, an
-arrival-time limit, or an opponent motion rate; it still needs a mapped upcoming
-corner and a fresh opponent lap position. It selects between two speech actions:
+The next root child, **One Tight Slow Corner**, enters immediately when the next corner is labeled slow
+on the Live Map (`corner` with `slow`, or `slow corner`) **and** is outside every
+Live Map `consecutive corners` label. Even the last or only corner in a labeled
+region is excluded. Fast, unlabeled, or conflicting speed tags do not qualify.
+This entry check has no opponent-distance or arrival-time limit and does not require an opponent
+motion rate; it still needs a fresh opponent lap position.
 
-- Opponent at the left edge before a right turn, or at the right edge before a left turn:
-  “Opponent didnt defend, overtake from inside is possible here”
-- Opponent in the middle, with the driver at the right edge before a right turn or
-  at the left edge before a left turn:
-  “Opponent is defending, Pressure is on”.
+Its first child, **Inside the Long Straight**, enters when the driver's lap position
+is inside a Live Map segment tagged `long straight`. It remembers that specific
+segment and waits until the driver leaves its bounds, then runs **exit to parent**
+to return to **One Tight Slow Corner**. A plain `straight` tag does not qualify.
+Membership follows the tag bounds, including start/finish wraparound, independently
+of corner-approach labels. Missing map or fresh driver position data withholds the
+exit and speech. Inside this child, estimated opponent distance must be at most 2 m
+**and** the opponent must be outside the upcoming turn (at the left edge before a
+right turn, or at the right edge before a left turn) to trigger its **say phrase** action:
+“Opponent didnt defend, overtake from inside is possible here”. The phrase runs
+once per visit; the child stays selected until the driver leaves the straight.
+
+This child also offers:
+“From pervious laps statistic, you generally have better exit speed. long straight after this corner, consider back up a little bit to have space to overtake at exit.”
+It requires all three conditions: the player's average exit speed for the upcoming
+slow corner is greater than the nearest car ahead's, the estimated opponent gap
+is at most 2 m, and the corner leads onto a mapped `long straight`. The exit
+straight must begin at the exit or within the map's 150 m / 3% tagging tolerance,
+and cannot cross another corner. This action has priority over the inside-overtake
+phrase when both match; only one phrase runs per visit to this child.
+
+Open **Live Event Log** to collect exit observations for each car and corner.
+Exit speed is the forward normalized lap-position change per second between the
+two samples bracketing the mapped exit, using `Graphics_current_time_str`.
+It is independent of player physics and corner duration, and supports finish-line
+wraparound. A captured exit is valid even when the corner entry was not observed.
+The event log displays exit speed as percent of a lap per second and averages the
+middle 75% using its existing rule: drop 12.5% at each end, rounded down with at
+least one dropped from each end. Three valid exits per car are required. Speeds
+are trimmed independently of corner times. Missing history, equal/slower player
+speed, or a different map/corner withholds this action. Completed records survive
+stream restarts; a session reset clears them.
+
+Its next child, **Inside the Corner**, enters when the driver's lap position is
+inside a mapped corner's bounds (`corner`, `slow corner`, or `fast corner`). The
+corner-approach phase alone does not qualify. It remembers that specific corner
+and runs **exit to parent** when the driver leaves it, returning to **One Tight
+Slow Corner** even if another corner overlaps it. Missing map or fresh driver
+position data withholds the exit. Corner bounds include start/finish wraparound.
+
+While either child is active, the parent's speech action waits. At the parent,
+opponent in the middle, with the driver at the right edge before a right turn or
+at the left edge before a left turn, triggers “Opponent is defending, Pressure is on”.
 
 Speech can run as soon as its position conditions match; this guide has no extra
-arrival-time delay. It exits to root after either phrase runs. Chicane overtake
+arrival-time delay. The parent exits to root after its defending phrase runs. Chicane overtake
 retains priority when its more specific entry conditions match.
 
 Open Live Session, expand the right sidebar, and select **Live phrases**. The
@@ -279,24 +318,9 @@ The catalog includes:
 - **Slipstream:** an individual visible opponent within an estimated 10 m on a
   tagged straight, at least 80 km/h, with a steady or increasing gap and the
   player laterally offset rather than already tucked directly behind.
-- **Outbraking on the inside:** a slow corner entry, player inside and opponent
-  off the inside.
-- **Around the outside:** a fast corner entry, player outside and opponent inside.
-- **Switchback:** entry or middle of a slow corner, player outside and opponent inside;
-  the advice depends on the opponent running wide and an opening appearing.
-- **Better exit pass:** the exit of a tagged slow or fast corner, with both
-  positions known; use any exit-speed advantage once a passing lane is clear.
-- **Linked corners in the same direction:** preserve balance and room for the
-  next apex, then build the passing run from the final exit.
-- **Exit into another corner:** prioritize positioning for the remaining corners
-  of a tagged sequence before attempting an exit-speed pass.
-- **Direction change within a corner:** transition smoothly through an S-bend
-  and prioritize its final exit.
-- **Tightening corner:** reserve grip and delay full throttle as curvature grows.
-- **Opening corner:** progressively unwind steering and build traction as curvature eases.
-- **Hairpin exit:** finish rotating the car before building the exit-speed run.
-- **Pressure and a feint:** entry to a tagged slow or fast corner without either
-  of the above inside/outside arrangements. Show an attack before braking and
+- **Pressure and a feint:** entry to a tagged slow or fast corner without the
+  player inside and opponent off the inside, or the player outside and opponent
+  inside. Show an attack before braking and
   exploit the opening or compromised exit if the opponent responds.
 
 `LivePhrases` registers the `live-phrases` handle and connects through
@@ -305,6 +329,8 @@ resets without treating retained frames as fresh. `getTrackVisionDetection` /
 `subscribeTrackVision` bridge `visualization:track-vision`;
 `getLiveCircuitMap` / `subscribeLiveCircuitMap` bridge
 `visualization:live-trajectory-map`, including late mounts, map loads and removal.
+`getLiveCornerSummaries` reads the currently mounted Event Log on each telemetry
+event and supplies exit-speed comparisons only for matching map and corner bounds.
 
 `PhraseEngine` is deterministic and local, with no chat, API or speech calls.
 It reads the published Track Vision `birdsEyeScene`, the same calibrated flat-road projection
@@ -356,9 +382,9 @@ Turn-sign comparisons work with mirrored ACC/iRacing coordinates. Lap wraparound
 is supported for geometry and regions. Shapes and phases are map estimates, not
 measured racing lines or apexes. The panel displays the shape and sequence position.
 
-The first matching rule in the catalog takes priority, so linked-corner guidance
-supersedes an outside pass or switchback, and intermediate sequence exits
-supersede final-exit attacks. The other guides require a visible opponent and
+The first matching rule in the catalog takes priority, with Chicane overtake and
+One Tight Slow Corner before Slipstream and Pressure and a feint.
+The other guides require a visible opponent and
 at least 30 km/h (80 for slipstream). All corner guides require known individual
 positions. The wording does not claim that vision confirms overlap, passing
 clearance or the opponent's intent; the slipstream gap trend is a visual estimate.

@@ -49,6 +49,10 @@ export class PhraseOpponentMotion {
             ? previous.position : undefined;
     }
 
+    carIdAt(now: number, maxAgeMs: number): string | undefined {
+        return this.positionAt(now, maxAgeMs) !== undefined ? this.previous?.id : undefined;
+    }
+
     at(now: number, maxAgeMs: number): { position: number; rate: number } | undefined {
         const previous = this.previous;
         return previous?.rate !== undefined && now >= previous.receivedAt && now - previous.changedAt <= maxAgeMs

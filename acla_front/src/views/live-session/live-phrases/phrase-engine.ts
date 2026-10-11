@@ -9,6 +9,7 @@ import { getPhrasePositions } from './phrase-positions';
 import { Action, Closure, State, describeCondition, type ConditionSnapshot, type NodeInspection, type NodeSnapshot } from './closure';
 import { PhraseOpponentMotion } from './phrase-opponent-motion';
 import { lapDistance } from './phrase-corner-geometry';
+import type { DriverCornerSummary } from '../event-log/corner-summary';
 
 export const TELEMETRY_MAX_AGE_MS = 1500;
 export const REARM_MS = 500;
@@ -20,7 +21,7 @@ const INPUT_LABELS = {
     playerCorner: 'Player turn corner', opponentCorner: 'Opponent turn corner',
     playerPosition: 'Player track position', opponentPosition: 'Opponent track position',
     phase: 'Live Map section', cornerSpeed: 'Mapped corner speed', cornerShape: 'Mapped corner shape',
-    linkedOpposite: 'Next linked corner turns the opposite way', linkedSameDirection: 'Next linked corner turns the same way',
+    linkedOpposite: 'Next linked corner turns the opposite way',
     sequenceRemaining: 'Corners remaining in the mapped sequence',
     insideLine: 'Player inside, opponent off the inside', outsideLine: 'Player outside, opponent inside',
     opponentDistanceM: 'Estimated opponent distance (m)', closingOnOpponent: 'Closing on opponent',
@@ -31,6 +32,8 @@ const INPUT_LABELS = {
     approachSequenceRemaining: 'Corners following in the labeled consecutive-corners sequence',
     approachLinkedOpposite: 'Next linked corner turns the opposite way',
     approachCornerInSequence: 'Upcoming corner is inside a Live Map consecutive corners label',
+    betterCornerExitSpeed: 'Previous corner exits show the player has better exit speed than the car ahead',
+    approachLongStraightAfterCorner: 'Upcoming slow corner is followed by a long straight',
 } as const;
 type Input = keyof typeof INPUT_LABELS;
 type Inputs = PhraseMapContext & ReturnType<typeof getPhrasePositions> & {
@@ -38,7 +41,8 @@ type Inputs = PhraseMapContext & ReturnType<typeof getPhrasePositions> & {
     closingOnOpponent?: 0 | 1; directlyBehindOpponent?: 0 | 1;
     opponentCornerEtaS?: number; approachCornerSpeed?: PhraseMapContext['cornerSpeed'];
     approachCornerDirection?: PhraseMapContext['cornerDirection'];
-    approachSequenceRemaining?: number; approachLinkedOpposite?: 0 | 1; approachCornerInSequence?: 0 | 1 };
+    approachSequenceRemaining?: number; approachLinkedOpposite?: 0 | 1; approachCornerInSequence?: 0 | 1;
+    betterCornerExitSpeed?: 0 | 1; approachLongStraightAfterCorner?: 0 | 1 };
 type PhraseVisionInput = Pick<TrackVisionDetection, 'capturedAt' | 'calibration' | 'birdsEyeScene'>;
 export type PhraseConditionConnector = 'and' | 'or';
 export class PhraseCondition {
@@ -67,6 +71,9 @@ export class PhraseCondition {
             }
             if (this.input === 'approachCornerInSequence' && this.value === 0) {
                 return 'Corner is not inside a consecutive corners label of the Live Map';
+            }
+            if (this.input === 'betterCornerExitSpeed' || this.input === 'approachLongStraightAfterCorner') {
+                return INPUT_LABELS[this.input];
             }
             const subject = this.input.startsWith('player') ? 'Player' : 'Opponent';
             if (this.input === 'playerCorner' || this.input === 'opponentCorner') {
@@ -175,12 +182,15 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
     },
     {
         id: 'one-tight-slow-corner', name: 'One Tight Slow Corner', holdMs: 0,
-        description: 'Follow an opponent within 2 m toward a corner outside any Live Map consecutive corners label: slipstream to a late brake when the opponent is outside, or brake earlier and clip the apex behind a defending opponent in the middle.',
+        description: 'Follow an opponent toward the next corner labeled slow on the Live Map and outside any consecutive corners label: slipstream to a late brake when the opponent is outside, or brake earlier and clip the apex behind a defending opponent in the middle.',
         sentence: 'Opponent didnt defend, overtake from inside is possible here',
-        conditions: [condition('opponentDistanceM', '<=', 2), condition('approachCornerInSequence', '=', 0)],
+        conditions: [condition('approachCornerSpeed', '=', 'slow'), condition('approachCornerInSequence', '=', 0)],
         actionConditions: [
-            conditionGroup([condition('opponentPosition', '=', 'left'), condition('approachCornerDirection', '=', 'right')]),
-            conditionGroup([condition('opponentPosition', '=', 'right'), condition('approachCornerDirection', '=', 'left')], 'or'),
+            condition('opponentDistanceM', '<=', 2),
+            conditionGroup([
+                conditionGroup([condition('opponentPosition', '=', 'left'), condition('approachCornerDirection', '=', 'right')]),
+                conditionGroup([condition('opponentPosition', '=', 'right'), condition('approachCornerDirection', '=', 'left')], 'or'),
+            ]),
         ],
         additionalActions: [{
             sentence: 'Opponent is defending, Pressure is on',
@@ -190,67 +200,11 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
                 conditionGroup([condition('opponentPosition', '=', 'middle'), condition('playerPosition', '=', 'left'),
                     condition('approachCornerDirection', '=', 'left')], 'or'),
             ],
+        }, {
+            sentence: 'From pervious laps statistic, you generally have better exit speed. long straight after this corner, consider back up a little bit to have space to overtake at exit.',
+            actionConditions: [condition('betterCornerExitSpeed', '=', 1), condition('opponentDistanceM', '<=', 2),
+                condition('approachLongStraightAfterCorner', '=', 1)],
         }],
-    },
-    {
-        id: 'same-direction', name: 'Linked corners in the same direction', holdMs: 800,
-        description: 'Preserve balance and room through linked turns in the same direction before building a passing run.',
-        sentence: 'These corners turn the same way: keep the car balanced and leave room for the next apex. Build your passing run from the final exit once a clear lane opens.',
-        conditions: [...following, ...positioned, condition('phase', 'in', ['entry', 'middle']), condition('linkedSameDirection', '=', 1)],
-    },
-    {
-        id: 'sequence-exit', name: 'Exit into another corner', holdMs: 800,
-        description: 'Keep the current exit controlled to prepare for the remaining corners in the sequence.',
-        sentence: 'More corners follow in this sequence: keep this exit controlled and position for the next turn. Save the full exit-speed attack for the final corner and a clear passing lane.',
-        conditions: [...following, ...positioned, condition('phase', '=', 'exit'), condition('sequenceRemaining', '>=', 1)],
-    },
-    {
-        id: 's-bend', name: 'Direction change within a corner', holdMs: 800,
-        description: 'Manage the steering transition through an S-bend and prioritize its final exit.',
-        sentence: 'The road changes direction through this section: make a smooth steering transition, leave room alongside, and prioritize the final exit before attempting a pass.',
-        conditions: [...following, ...positioned, condition('phase', 'in', ['entry', 'middle']), condition('cornerShape', '=', 's-bend')],
-    },
-    {
-        id: 'tightening-corner', name: 'Tightening corner', holdMs: 800,
-        description: 'Keep grip in reserve as the corner tightens and avoid a passing line that closes at the exit.',
-        sentence: 'This corner tightens: keep some grip in reserve and delay full throttle until the steering can unwind. Avoid committing to a passing line that closes at the exit.',
-        conditions: [...following, ...positioned, condition('phase', 'in', ['entry', 'middle']), condition('cornerShape', '=', 'tightening')],
-    },
-    {
-        id: 'opening-corner', name: 'Opening corner', holdMs: 800,
-        description: 'Build traction as the corner opens to prepare a pass from the exit.',
-        sentence: 'This corner opens out: progressively unwind the steering and build traction. Use the exit to prepare a pass when a clear lane appears.',
-        conditions: [...following, ...positioned, condition('phase', 'in', ['middle', 'exit']), condition('cornerShape', '=', 'opening')],
-    },
-    {
-        id: 'hairpin-exit', name: 'Hairpin exit', holdMs: 800,
-        description: 'Finish rotating through a hairpin before using exit traction to build a passing run.',
-        sentence: 'Hairpin: finish rotating the car and feed in throttle as the steering opens. Prioritize traction, then use any exit-speed advantage when a passing lane is clear.',
-        conditions: [...following, ...positioned, condition('phase', 'in', ['middle', 'exit']), condition('cornerShape', '=', 'hairpin')],
-    },
-    {
-        id: 'inside-outbraking', name: 'Outbraking on the inside', holdMs: 800,
-        description: 'Prepare an inside outbraking attempt at a slow corner while preserving room at the apex and exit.',
-        sentence: 'Slow corner ahead: prepare an inside outbraking move. Establish overlap before turn-in, brake later only if you can still make the apex, and leave exit room.',
-        conditions: [...following, ...positioned, condition('phase', '=', 'entry'), condition('cornerSpeed', '=', 'slow'), condition('insideLine', '=', 1)],
-    },
-    {
-        id: 'around-outside', name: 'Around the outside', holdMs: 800,
-        description: 'Carry momentum around the outside of a fast corner when overlap and space permit.',
-        sentence: 'Faster corner: carry momentum around the outside only if you have overlap and room. Hold your line and allow space for the car inside.',
-        conditions: [...following, ...positioned, condition('phase', '=', 'entry'), condition('cornerSpeed', '=', 'fast'), condition('outsideLine', '=', 1)],
-    },
-    {
-        id: 'switchback', name: 'Switchback', holdMs: 800,
-        description: 'Prepare to cut back underneath the inside car if it runs wide and leaves a gap.',
-        sentence: 'Prepare a switchback: let the inside car commit, delay your turn-in, then cut back underneath if they run wide and the gap opens.',
-        conditions: [...following, ...positioned, condition('phase', 'in', ['entry', 'middle']), condition('cornerSpeed', '=', 'slow'), condition('outsideLine', '=', 1)],
-    },
-    {
-        id: 'better-exit', name: 'Better exit pass', holdMs: 800,
-        description: 'Build exit speed with smooth steering and throttle to prepare a pass in a clear lane.',
-        sentence: 'Build a better exit: open the steering and feed in throttle smoothly. Use any speed advantage to draw alongside once there is a clear passing lane.',
-        conditions: [...following, ...positioned, condition('phase', '=', 'exit'), condition('cornerSpeed', 'in', ['slow', 'fast'])],
     },
     {
         id: 'slipstream', name: 'Slipstream', holdMs: 800,
@@ -289,6 +243,8 @@ interface PhraseMemory { since?: number; clearSince?: number; armed: boolean; la
 export interface PhraseContext {
     now: number;
     emit: boolean;
+    driverLongStraightIds?: readonly string[];
+    driverCornerIds?: readonly string[];
     matched: ReadonlyMap<string, boolean>;
     actionMatched: ReadonlyMap<string, boolean>;
     memory: Map<string, PhraseMemory>;
@@ -307,9 +263,59 @@ function snapshotConditions(conditions: readonly PhraseConditionNode[]): Conditi
     }));
 }
 
+function createInsideLongStraightClosure(say: Action<PhraseContext>[]): Closure<PhraseContext> {
+    const enteredStraights = new WeakMap<State<PhraseContext>, string>();
+    const entry = ({ driverLongStraightIds }: PhraseContext) => Boolean(driverLongStraightIds?.length);
+    const exit = ({ driverLongStraightIds }: PhraseContext, state: State<PhraseContext>) => {
+        const entered = enteredStraights.get(state);
+        return entered !== undefined && driverLongStraightIds !== undefined && !driverLongStraightIds.includes(entered);
+    };
+    return new Closure('Inside the Long Straight',
+        'Stay inside the driver’s current long straight, then return to One Tight Slow Corner when the driver leaves it.',
+        describeCondition((context, state) => {
+            if (state.current !== state.closure || !entry(context)) return false;
+            enteredStraights.set(state, context.driverLongStraightIds![0]);
+            return true;
+        }, (context) => [{
+            description: 'Driver is inside a long straight', conditionFit: entry(context),
+            inputMissing: context.driverLongStraightIds === undefined,
+        }]), [
+            Action.exitToParent(describeCondition(exit, (context, state) => [{
+                description: 'Driver is no longer inside that long straight', conditionFit: exit(context, state),
+                inputMissing: context.driverLongStraightIds === undefined,
+            }])),
+            ...say.map((action) => new Action(action.name, action.description, action.run,
+                describeCondition((context, state) => entry(context) && action.condition(context, state), action.condition.describe!))),
+        ], { id: 'one-tight-slow-corner:inside-long-straight' });
+}
+
+function createInsideCornerClosure(): Closure<PhraseContext> {
+    const enteredCorners = new WeakMap<State<PhraseContext>, string>();
+    const entry = ({ driverCornerIds }: PhraseContext) => Boolean(driverCornerIds?.length);
+    const exit = ({ driverCornerIds }: PhraseContext, state: State<PhraseContext>) => {
+        const entered = enteredCorners.get(state);
+        return entered !== undefined && driverCornerIds !== undefined && !driverCornerIds.includes(entered);
+    };
+    return new Closure('Inside the Corner',
+        'Stay inside the driver’s current corner, then return to One Tight Slow Corner when the driver leaves it.',
+        describeCondition((context, state) => {
+            if (state.current !== state.closure || !entry(context)) return false;
+            enteredCorners.set(state, context.driverCornerIds![0]);
+            return true;
+        }, (context) => [{
+            description: 'Driver is inside a corner', conditionFit: entry(context),
+            inputMissing: context.driverCornerIds === undefined,
+        }]), [
+            Action.exitToParent(describeCondition(exit, (context, state) => [{
+                description: 'Driver is no longer inside that corner', conditionFit: exit(context, state),
+                inputMissing: context.driverCornerIds === undefined,
+            }])),
+        ], { id: 'one-tight-slow-corner:inside-corner' });
+}
+
 export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_DEFINITIONS): Closure<PhraseContext> {
     return new Closure('root',
-        'Select the first matching guide after its entry hold time. Each guide has an 8 s cooldown and requires a 0.5 s clear period before repeating. An entered closure stays selected until its exit to root action runs.',
+        'Select the first matching guide after its entry hold time. Each guide has an 8 s cooldown and requires a 0.5 s clear period before repeating. An entered guide stays selected until its exit to root action runs.',
         describeCondition(() => true, 'Always eligible'), phrases.map((phrase) => {
             const say = getPhraseActions(phrase).map((action) => new Action<PhraseContext>(
                 'say phrase', action.sentence, (context) => context.publish(phrase, action.sentence),
@@ -319,6 +325,7 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                     action.conditions
                         ? (context) => snapshotConditions(context.actionConditions.get(action.id) ?? [])
                         : 'Always eligible')));
+            const parentSay = phrase.id === 'one-tight-slow-corner' ? say.slice(1, 2) : say;
             return new Closure<PhraseContext>(
                 phrase.name,
                 phrase.description,
@@ -330,8 +337,9 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                     return context.emit && memory.armed && context.now - memory.since >= phrase.holdMs
                         && (memory.lastEmitted === undefined || context.now - memory.lastEmitted >= COOLDOWN_MS);
                 }, (context) => snapshotConditions(context.entryConditions.get(phrase.id) ?? [])),
-                [...say, Action.exitToRoot(describeCondition((_context, state) =>
-                    say.some((action) => state.current === action), 'The phrase action has run'))],
+                [...(phrase.id === 'one-tight-slow-corner' ? [createInsideLongStraightClosure([...say.slice(2), say[0]]), createInsideCornerClosure()] : []),
+                    ...parentSay, Action.exitToRoot(describeCondition((_context, state) =>
+                    parentSay.some((action) => state.current === action), 'The phrase action has run'))],
                 { id: phrase.id, inspect: (context) => ({
                     ...context.inspections.get(phrase.id),
                     fields: { 'Hold for': `${phrase.holdMs / 1000} s`, Cooldown: `${COOLDOWN_MS / 1000} s`, 'Clear period': `${REARM_MS / 1000} s` },
@@ -383,6 +391,7 @@ export class PhraseEngine {
     private sectionId?: string;
     private game?: string;
     private opponentMotion = new PhraseOpponentMotion();
+    private cornerSummaries: readonly DriverCornerSummary[] = [];
     private phraseClosures = new Map<string, Closure<PhraseContext>>();
 
     constructor(
@@ -407,6 +416,7 @@ export class PhraseEngine {
             this.memory.forEach((memory) => { memory.since = undefined; memory.armed = true; });
             this.sectionId = undefined;
             this.opponentMotion.reset();
+            this.cornerSummaries = [];
         }
         return this.evaluate(now);
     }
@@ -424,9 +434,10 @@ export class PhraseEngine {
         this.sectionId = undefined;
         this.game = undefined;
         this.opponentMotion.reset();
+        this.cornerSummaries = [];
     }
 
-    receiveTelemetry(event: LiveTelemetryEvent, now: number): PhraseSnapshot {
+    receiveTelemetry(event: LiveTelemetryEvent, now: number, cornerSummaries: readonly DriverCornerSummary[] = []): PhraseSnapshot {
         if (event.type !== 'frame') {
             this.reset(now);
         } else {
@@ -440,6 +451,7 @@ export class PhraseEngine {
             this.sample = event.telemetryStatus === 2 ? event.sample : {};
             this.receivedAt = event.telemetryStatus === 2 ? now : -Infinity;
             this.opponentMotion.update(this.sample, now, TELEMETRY_MAX_AGE_MS);
+            this.cornerSummaries = cornerSummaries;
         }
         return this.evaluate(now, true);
     }
@@ -496,6 +508,18 @@ export class PhraseEngine {
             inputs.approachSequenceRemaining = approach.sequenceRemaining;
             inputs.approachLinkedOpposite = approach.linkedOpposite;
             inputs.approachCornerInSequence = approach.sequenceId === undefined ? 0 : 1;
+            inputs.approachLongStraightAfterCorner = approach.cornerSpeed === 'slow' ? approach.longStraightAfterCorner : 0;
+            const opponentId = this.opponentMotion.carIdAt(now, TELEMETRY_MAX_AGE_MS);
+            const playerSummary = this.cornerSummaries.find((summary) => summary.carId === String(this.sample.Graphics_player_car_id)
+                && summary.cornerId === approach.sectionId);
+            const opponentSummary = this.cornerSummaries.find((summary) => summary.carId === opponentId
+                && summary.cornerId === approach.sectionId);
+            const playerSpeed = playerSummary?.averageExitSpeed;
+            const opponentSpeed = opponentSummary?.averageExitSpeed;
+            if (typeof playerSpeed === 'number' && Number.isFinite(playerSpeed) && playerSpeed > 0
+                && typeof opponentSpeed === 'number' && Number.isFinite(opponentSpeed) && opponentSpeed > 0) {
+                inputs.betterCornerExitSpeed = playerSpeed > opponentSpeed ? 1 : 0;
+            }
         }
         const matched = new Map<string, boolean>();
         const actionMatched = new Map<string, boolean>();
@@ -529,6 +553,10 @@ export class PhraseEngine {
         const inspections = new Map<string, NodeInspection>();
         const context: PhraseContext = {
             now, emit, matched, actionMatched, memory: this.memory,
+            driverLongStraightIds: telemetryReady && sameMap
+                ? this.mapContext.longStraightsAt(this.sample.Graphics_normalized_car_position) : undefined,
+            driverCornerIds: telemetryReady && sameMap
+                ? this.mapContext.cornersAt(this.sample.Graphics_normalized_car_position) : undefined,
             entryConditions: new Map(evaluated.map(({ phrase, conditions }) => [phrase.id, conditions])),
             actionConditions: evaluatedActionConditions,
             inspections,
@@ -549,8 +577,8 @@ export class PhraseEngine {
             if (!closure) return [];
             const selected = context.candidate === phrase.id || this.state.path.includes(closure);
             let status: ClosureStatus = missing.length || !telemetryReady ? 'Missing input' : 'Not matched';
-            if (this.state.closure === closure && (phrase.actionConditions || phrase.additionalActions?.length)) {
-                status = this.state.current instanceof Action ? 'Active' : 'Waiting for action';
+            if (this.state.path.includes(closure) && (phrase.actionConditions || phrase.additionalActions?.length)) {
+                status = this.state.current === closure ? 'Waiting for action' : 'Active';
             } else if (selected && matched.get(phrase.id)) {
                 const cooldown = memory.lastEmitted !== undefined && now - memory.lastEmitted < COOLDOWN_MS;
                 status = !memory.armed ? 'Active' : memory.since === undefined || now - memory.since < phrase.holdMs ? 'Confirming' : cooldown ? 'Cooldown' : 'Confirming';

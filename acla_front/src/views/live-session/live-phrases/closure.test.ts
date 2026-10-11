@@ -81,6 +81,33 @@ it('runs unconditional actions, including exit to root, as soon as they are reac
     expect(state.current).toBe(root);
 });
 
+it('exits one level, preserves parent actions, and resets nested actions for another visit', () => {
+    const parentRun = jest.fn();
+    const nestedRun = jest.fn();
+    const parentAction = new Action<Context>('parent work', 'Run once in the parent.', parentRun);
+    const nestedAction = new Action<Context>('nested work', 'Run once per nested visit.', nestedRun);
+    const nested = new Closure<Context>('nested', 'Wait for an explicit exit.', ({ enter }) => enter, [
+        nestedAction, Action.exitToParent(({ exit }) => exit),
+    ]);
+    const parent = new Closure<Context>('parent', 'Resume here after the nested exit.', () => true, [parentAction, nested]);
+    const root = new Closure<Context>('root', 'Root.', () => true, [parent]);
+    const state = new State(root);
+    state.exitToParent();
+    expect(state.path).toEqual([root]);
+    state.step(context);
+    state.step(context);
+    state.step({ ...context, exit: true });
+    expect(state.path).toEqual([root, parent]);
+    expect(state.current).toBe(parent);
+    expect(state.getExecution(parentAction).status).toBe('completed');
+    expect(state.getExecution(nestedAction).status).toBe('idle');
+    state.step(context);
+    expect(nestedRun).toHaveBeenCalledTimes(2);
+    expect(parentRun).toHaveBeenCalledTimes(1);
+    state.step({ ...context, exit: true });
+    expect(state.path).toEqual([root, parent]);
+});
+
 it('keeps independent states for the same tree', () => {
     const run = jest.fn();
     const root = new Closure<Context>('root', 'Choose the first eligible child.', () => true, [new Action('work', 'Invoke the work callback.', run)]);
