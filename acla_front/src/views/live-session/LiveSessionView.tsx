@@ -64,6 +64,7 @@ import type { DriverCornerSummary } from './event-log/corner-summary';
 import { liveTelemetryStore } from './live-telemetry-store';
 import type { LiveTelemetryEventListener } from './live-telemetry-store';
 import type { TrackVisionHandle } from './track-vision/LiveTrackVision';
+import { SessionScreenCaptureProvider } from './live-session-recording/SessionScreenCapture';
 import type { TrackVisionDetection } from './track-vision/track-vision-types';
 import type { LiveTrajectoryMapHandle } from './LiveTrajectoryMap';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
@@ -559,40 +560,42 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
     const { restorationError, sessionGame } = liveSession;
 
     return (
-        <section className="live-session-view" aria-label="Live Session">
-            <LiveSessionDetectionManager />
-            <LiveAnalysisSessionRecording recorderHostId={LIVE_SESSION_RECORDER_HOST_ID} />
-            {sessionGame === null ? (
-                <div className="live-session-waiting" data-testid="live-session-gate">
-                    <LiveSessionGameStatus />
-                    <div className="live-session-waiting__copy">
-                        <span className="live-session-waiting__eyebrow">Live session gate</span>
-                        <h2>Choose the simulator for this session</h2>
-                        <p>
-                            Start a new session when your simulator is detected. The selected game
-                            will stay fixed until you upload or discard the session.
-                        </p>
-                    </div>
-                </div>
-            ) : (
-                <>
-                    <LiveSessionGameStatus />
-                    {restorationError && (
-                        <div className="live-session-recovery-error" role="alert">
-                            {restorationError}
+        <SessionScreenCaptureProvider key={sessionGame ?? 'no-session'}>
+            <section className="live-session-view" aria-label="Live Session">
+                <LiveSessionDetectionManager />
+                <LiveAnalysisSessionRecording recorderHostId={LIVE_SESSION_RECORDER_HOST_ID} />
+                {sessionGame === null ? (
+                    <div className="live-session-waiting" data-testid="live-session-gate">
+                        <LiveSessionGameStatus />
+                        <div className="live-session-waiting__copy">
+                            <span className="live-session-waiting__eyebrow">Live session gate</span>
+                            <h2>Choose the simulator for this session</h2>
+                            <p>
+                                Start a new session when your simulator is detected. The selected game
+                                will stay fixed until you upload or discard the session.
+                            </p>
                         </div>
-                    )}
-                    <div className="live-session-view__workspace">
-                        <LiveTelemetryWorkspace name={OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
                     </div>
-                    <div
-                        id={LIVE_SESSION_RECORDER_HOST_ID}
-                        className="live-session-view__recorder"
-                        data-testid="live-session-recorder-host"
-                    />
-                </>
-            )}
-        </section>
+                ) : (
+                    <>
+                        <LiveSessionGameStatus />
+                        {restorationError && (
+                            <div className="live-session-recovery-error" role="alert">
+                                {restorationError}
+                            </div>
+                        )}
+                        <div className="live-session-view__workspace">
+                            <LiveTelemetryWorkspace name={OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
+                        </div>
+                        <div
+                            id={LIVE_SESSION_RECORDER_HOST_ID}
+                            className="live-session-view__recorder"
+                            data-testid="live-session-recorder-host"
+                        />
+                    </>
+                )}
+            </section>
+        </SessionScreenCaptureProvider>
     );
 };
 

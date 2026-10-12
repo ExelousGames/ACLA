@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain, dialog, desktopCapturer } = require('electron');
+const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain, dialog, desktopCapturer, shell } = require('electron');
 const { Worker } = require('worker_threads');
 const { PythonShell } = require('python-shell');
 const path = require('path');
@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const { detectSupportedDesktopGame } = require('./desktop-game-detection');
 const { RecordingSessionManager } = require('../electron/recording/recording-session-manager');
 const { registerScreenCapture } = require('../electron/screen-capture');
+const { registerSessionVideo } = require('../electron/session-video');
 const { registerTrackVisionModels } = require('../electron/track-vision-models');
 const {
   DESKTOP_GAME_SET,
@@ -50,6 +51,7 @@ function getPythonExecutable() {
 const devMode = app.isPackaged ? false : isDev;
 let mainWindow;
 const configureScreenCapture = registerScreenCapture({ ipcMain, desktopCapturer, getMainWindow: () => mainWindow });
+registerSessionVideo({ ipcMain, getMainWindow: () => mainWindow, getRecordingDirectory, shell });
 registerTrackVisionModels({ app, ipcMain, getMainWindow: () => mainWindow, getPythonExecutable });
 let isAppQuitting = false;
 let recordingManager = null;

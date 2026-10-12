@@ -8,6 +8,15 @@ contextBridge.exposeInMainWorld('screenCapture', {
     listSources: () => ipcRenderer.invoke('screen-capture-sources'),
     selectSource: (id) => ipcRenderer.invoke('screen-capture-select', id),
 });
+contextBridge.exposeInMainWorld('sessionVideo', {
+    create: (filePath) => ipcRenderer.invoke('session-video-create', filePath),
+    append: (filePath, bytes) => ipcRenderer.invoke('session-video-append', filePath, bytes),
+    finish: (filePath) => ipcRenderer.invoke('session-video-finish', filePath),
+    list: (filePath) => ipcRenderer.invoke('session-video-list', filePath),
+    read: (filePath, offset) => ipcRenderer.invoke('session-video-read', filePath, offset),
+    delete: (filePath) => ipcRenderer.invoke('session-video-delete', filePath),
+    reveal: (filePath) => ipcRenderer.invoke('session-video-reveal', filePath),
+});
 /**
  * Electron's main process is a Node.js environment that has full operating system access. 
  * On top of Electron modules, you can also access Node.js built-ins, as well as any packages installed via npm. 

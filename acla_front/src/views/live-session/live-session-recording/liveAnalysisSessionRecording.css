@@ -1,7 +1,7 @@
 /* Live recording floating bar — lp design language */
 
 .live-recording-bar {
-    border-radius: var(--lp-radius-pill);
+    border-radius: 24px;
     background: linear-gradient(180deg, rgba(22, 22, 40, 0.92), rgba(14, 14, 24, 0.92));
     backdrop-filter: blur(14px);
     color: var(--lp-white);
@@ -36,10 +36,49 @@
 }
 
 .live-recording-bar__inner {
-    border-radius: var(--lp-radius-pill);
+    min-height: 64px;
     padding-left: 8px;
     padding-right: 16px;
 }
+
+.live-recording-bar__capture {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 24px 14px;
+    border-top: 1px solid var(--lp-border);
+}
+
+.live-recording-bar__capture-label {
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--lp-gray);
+}
+
+.live-recording-bar__capture select,
+.live-recording-bar__capture button {
+    border: 1px solid var(--lp-border-strong);
+    border-radius: 8px;
+    background: #161628;
+    color: var(--lp-white);
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 10px;
+}
+
+.live-recording-bar__capture select {
+    flex: 1;
+    min-width: 0;
+    max-width: 320px;
+}
+
+.live-recording-bar__capture button { cursor: pointer; }
+.live-recording-bar__capture :disabled { opacity: 0.5; cursor: default; }
+.live-recording-bar__capture :focus-visible { outline: 2px solid var(--lp-blue); outline-offset: 2px; }
+.live-recording-bar__capture-error { flex-basis: 100%; font-size: 12px; color: var(--lp-amber); }
 
 /* Channel pill (REC · LIVE / TELEMETRY · SCANNING etc.) */
 .live-recording-bar__channel {

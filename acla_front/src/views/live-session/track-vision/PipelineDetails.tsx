@@ -6,10 +6,11 @@ import { createDepthMap, formatDepth } from './depth-map';
 
 import { VISION_DEPTH_COLORS, VISION_LABEL_COLORS as COLORS } from './vision-colors';
 
-export default function PipelineDetails({ step, frame, masks, classNames, filterConfidence, depthMap }: {
+export default function PipelineDetails({ step, frame, masks, classNames, filterConfidence, depthMap, depthEnabled }: {
     step: PipelineStep; frame: TrackVisionFrame | null; masks: AmodalMask[]; classNames: string[];
     depthMap: ReturnType<typeof createDepthMap>;
     filterConfidence: number;
+    depthEnabled: boolean;
 }) {
     const segment = frame?.detections.segment;
     const depth = frame?.detections.depth;
@@ -20,6 +21,9 @@ export default function PipelineDetails({ step, frame, masks, classNames, filter
     const rows = labelDepths(masks);
     const measured = rows.filter((row) => row.samples);
     const { near, far } = labelDepthRange(masks);
+    if (!depthEnabled && (step === 'depth-map' || step === 'depth')) return <p className="track-vision__hint">
+        Depth model is disabled. Enable it in Settings to view depth.
+    </p>;
     if (step === 'segmentation') return <div className="track-vision__legend" aria-label="Segmentation label legend">
         {classNames.map((label, classId) => <span key={classId}>
             <i style={{ background: COLORS[classId % COLORS.length] }} />{label}
@@ -36,8 +40,8 @@ export default function PipelineDetails({ step, frame, masks, classNames, filter
         <ul className="track-vision__filter-list" aria-label="Applied filters">
             <li><strong>Confidence ≥ {Math.round(filterConfidence * 100)}%</strong></li>
             <li><strong>Car interior retained</strong></li>
-            <li><strong>Overlaps resolved by depth</strong></li>
-            <li><strong>Valid depth only</strong></li>
+            <li><strong>{depthEnabled ? 'Overlaps resolved by depth' : 'Overlaps resolved by mask size'}</strong></li>
+            {depthEnabled && <li><strong>Valid depth only</strong></li>}
         </ul>
         {!segment && <p className="track-vision__hint">Waiting for segmentation.</p>}
     </div>;

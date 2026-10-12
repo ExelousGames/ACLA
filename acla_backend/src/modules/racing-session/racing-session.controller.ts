@@ -23,6 +23,7 @@ export class RacingSessionController {
         totalDataPoints: number;
         buffer: any[];
         nextChunkIndex: number;
+        videos: { name: string; size: number; mimeType: string; startedAt: number; chunkFileIds: any[]; receivedBytes: number; writing: boolean }[];
         createdAt: Date;
     }>();
 
@@ -42,6 +43,12 @@ export class RacingSessionController {
         // Clean up old assembled files every hour
         setInterval(() => {
             this.cleanupOldAssembledFiles();
+            for (const [uploadId, upload] of this.uploadStates) {
+                if (upload.videos.length && Date.now() - upload.createdAt.getTime() > 24 * 60 * 60 * 1000) {
+                    void this.cancelUpload({ user: { userId: upload.metadata.userId } }, uploadId)
+                        .catch(error => this.logger.warn(`Unable to clean up video upload: ${error.message}`));
+                }
+            }
         }, 60 * 60 * 1000); // 1 hour
 
         // Clean up old streaming files every hour
@@ -401,13 +408,28 @@ export class RacingSessionController {
 
     @UseGuards(AuthGuard('jwt'))
     @Post('upload/init')
-    async initUpload(@Body() metadata: UploadReacingSessionInitDto) {
+    async initUpload(@Body() metadata: UploadReacingSessionInitDto, @Request() req?) {
         if (typeof metadata.game_recorded_from !== 'string' || !metadata.game_recorded_from.trim()) {
             throw new BadRequestException(
                 'game_recorded_from must be a non-empty string',
             );
         }
 
+        if (metadata.videos !== undefined && (!Array.isArray(metadata.videos) || metadata.videos.length > 100)) {
+            throw new BadRequestException('Invalid video list');
+        }
+        if (metadata.videos?.length && (!req?.user?.userId || req.user.userId !== metadata.userId)) {
+            throw new ForbiddenException('Videos must belong to the authenticated user');
+        }
+        const videos = (metadata.videos || []).map(video => {
+            if (!video || typeof video.name !== 'string' || video.name.length > 255
+                || !Number.isSafeInteger(video.size) || video.size <= 0 || video.size > 20 * 1024 ** 3
+                || video.mimeType !== 'video/mp4' || !Number.isSafeInteger(video.startedAt) || video.startedAt < 0) {
+                throw new BadRequestException('Invalid video metadata');
+            }
+            return { name: path.basename(video.name), size: video.size, mimeType: video.mimeType, startedAt: video.startedAt,
+                chunkFileIds: [], receivedBytes: 0, writing: false };
+        });
         const uploadId = crypto.randomUUID();
         console.log('Initialized upload with ID:', uploadId, 'for user:', metadata.userId);
 
@@ -417,9 +439,71 @@ export class RacingSessionController {
             totalDataPoints: 0,
             buffer: [],
             nextChunkIndex: 0,
+            videos,
             createdAt: new Date()
         });
         return { uploadId: uploadId };
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('upload/video-chunk')
+    async receiveVideoChunk(@Request() req, @Body() body: { videoIndex: number; chunkIndex: number; data: string },
+        @Query('uploadId') uploadId: string) {
+        const upload = this.uploadStates.get(uploadId);
+        if (!upload) throw new BadRequestException('Upload does not exist or expired');
+        if (!req.user?.userId || req.user.userId !== upload.metadata.userId) throw new ForbiddenException('Upload belongs to another user');
+        const video = Number.isInteger(body.videoIndex) && body.videoIndex >= 0 ? upload.videos[body.videoIndex] : undefined;
+        if (!video || !Number.isInteger(body.chunkIndex) || body.chunkIndex < 0) throw new BadRequestException('Invalid video chunk');
+        if (body.chunkIndex < video.chunkFileIds.length) return { receivedChunks: video.chunkFileIds.length };
+        if (video.writing || body.chunkIndex !== video.chunkFileIds.length) throw new BadRequestException('Unexpected video chunk index');
+        if (typeof body.data !== 'string' || !body.data.length || body.data.length > 699052
+            || body.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(body.data)) {
+            throw new BadRequestException('Invalid video chunk data');
+        }
+        const data = Buffer.from(body.data, 'base64');
+        if (data.length > 512 * 1024 || video.receivedBytes + data.length > video.size) throw new BadRequestException('Video exceeds declared size');
+        video.writing = true;
+        try {
+            const id = await this.racingSessionService.uploadSessionVideoChunk(data,
+                { uploadId, userId: req.user.userId, videoIndex: body.videoIndex, chunkIndex: body.chunkIndex });
+            video.chunkFileIds.push(id);
+            video.receivedBytes += data.length;
+            upload.createdAt = new Date();
+            return { receivedChunks: video.chunkFileIds.length };
+        } finally { video.writing = false; }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Delete('upload/:uploadId')
+    async cancelUpload(@Request() req, @Param('uploadId') uploadId: string) {
+        const upload = this.uploadStates.get(uploadId);
+        if (!upload) return;
+        if (!req.user?.userId || req.user.userId !== upload.metadata.userId) throw new ForbiddenException('Upload belongs to another user');
+        if (upload.videos.some(video => video.writing)) throw new BadRequestException('Upload is busy');
+        await this.racingSessionService.deleteUploadFiles([...upload.fileIds, ...upload.videos.flatMap(video => video.chunkFileIds)]);
+        this.uploadStates.delete(uploadId);
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Get(':id/videos')
+    async listVideos(@Request() req, @Param('id') sessionId: string) {
+        if (!req.user?.userId) throw new ForbiddenException('Authenticated user id is required');
+        const videos = await this.racingSessionService.listSessionVideos(req.user.userId, sessionId);
+        return videos.map(({ name, size, mimeType, startedAt }, index) => ({ index, name, size, mimeType, startedAt }))
+            .filter(({ mimeType }) => mimeType === 'video/mp4');
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Get(':id/videos/:index')
+    async downloadVideo(@Request() req, @Param('id') sessionId: string, @Param('index') index: string, @Res() res: Response) {
+        if (!req.user?.userId) throw new ForbiddenException('Authenticated user id is required');
+        const video = await this.racingSessionService.downloadSessionVideo(req.user.userId, sessionId, Number(index));
+        res.setHeader('Content-Type', video.mimeType);
+        res.setHeader('Content-Length', video.size);
+        res.setHeader('Content-Disposition', `attachment; filename="session-video-${Number(index) + 1}.mp4"`);
+        video.stream.on('error', () => res.destroy());
+        res.on('close', () => video.stream.destroy());
+        video.stream.pipe(res);
     }
 
     @UseGuards(AuthGuard('jwt'))
@@ -473,16 +557,24 @@ export class RacingSessionController {
         return { receivedChunks: upload.nextChunkIndex };
     }
 
+    @UseGuards(AuthGuard('jwt'))
     @Post('upload/complete')
     async completeUpload(
         @Body() completionData: any,
-        @Query('uploadId') uploadId: string
+        @Query('uploadId') uploadId: string,
+        @Request() req?
     ) {
         const upload = this.uploadStates.get(uploadId);
         if (!upload) {
             throw new BadRequestException('Upload doesnt exist or expired');
         }
 
+        if (upload.videos.length && (!req?.user?.userId || req.user.userId !== upload.metadata.userId)) {
+            throw new ForbiddenException('Upload belongs to another user');
+        }
+        if (upload.videos.some(video => video.writing || video.receivedBytes !== video.size)) {
+            throw new BadRequestException('Video upload is incomplete');
+        }
         try {
             // Upload remaining buffer
             if (upload.buffer.length > 0) {
@@ -498,6 +590,7 @@ export class RacingSessionController {
                     }
                 );
                 upload.fileIds.push(fileId as unknown as Types.ObjectId);
+                upload.buffer = [];
             }
 
             // Create racing session in database
@@ -509,9 +602,11 @@ export class RacingSessionController {
                 upload.metadata.game_recorded_from,
                 upload.fileIds as unknown as any[],
                 upload.totalDataPoints,
-                1000
+                1000,
+                ...(upload.videos.length ? [upload.videos.map(({ receivedBytes, writing, ...video }) => video)] : [])
             );
 
+            this.uploadStates.delete(uploadId);
             return {
                 message: 'Upload completed successfully',
                 sessionId: createdSession._id, // Assuming createRacingSession returns the document
@@ -521,9 +616,6 @@ export class RacingSessionController {
         } catch (error) {
             this.logger.error(`Error creating Racing Session: ${error.message}`);
             throw new BadRequestException(`Upload failed: ${error.message}`);
-        } finally {
-            // Clean up
-            this.uploadStates.delete(uploadId);
         }
     }
 

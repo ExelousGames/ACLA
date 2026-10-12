@@ -36,6 +36,15 @@ export class RacingSession {
     @Prop({ type: [Object], required: false, default: [] })
     dataChunkFileIds?: ObjectId[];
 
+    @Prop({ type: [Object], required: false, default: [] })
+    videos?: {
+        name: string;
+        size: number;
+        mimeType: string;
+        startedAt: number;
+        chunkFileIds: ObjectId[];
+    }[];
+
     // Size of chunks used when splitting and uploading (for reconstruction/download)
     @Prop({ required: false })
     chunkSize?: number;

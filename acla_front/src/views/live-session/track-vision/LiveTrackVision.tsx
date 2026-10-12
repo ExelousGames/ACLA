@@ -1,6 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
-import { captureGameScreen, ScreenCaptureSource } from './screen-capture';
+import { useSessionScreenCapture } from '../live-session-recording/SessionScreenCapture';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
 import { MODEL_INPUT_RESOLUTIONS } from './vision-config';
 import { CameraCalibration, DETECTION_TASKS, DetectionTask, TrackVisionDetection, TrackVisionFrame } from './track-vision-types';
@@ -27,14 +27,14 @@ export interface TrackVisionHandle extends NamedOperationComponentHandle {
 
 const message = (error: unknown) => error instanceof Error ? error.message : 'Vision detection failed.';
 const GPU_RETRY_DELAY_MS = 3000;
-type DetectorState = { status: 'loading' | 'ready' | 'retrying' | 'error'; error?: string; classNames?: string[] };
+type DetectorState = { status: 'loading' | 'ready' | 'retrying' | 'error' | 'disabled'; error?: string; classNames?: string[] };
 
 const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name }, forwardedRef) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const previewRef = useRef<HTMLDialogElement>(null);
     const previewFrameRef = useRef<HTMLCanvasElement | null>(null);
-    const streamRef = useRef<MediaStream | null>(null);
+    const stream = useSessionScreenCapture()?.stream ?? null;
     const models = useRef<Partial<Record<DetectionTask, TrackVisionModel>>>({});
     const modelQueue = useRef<Promise<void>>(Promise.resolve());
     const inferenceRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -46,13 +46,12 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const motion = useRef<VisionMotion | undefined>(undefined);
     const motionGeneration = useRef(0);
     const listeners = useRef(new Set<() => void>());
-    const [sources, setSources] = useState<ScreenCaptureSource[]>([]);
-    const [sourceId, setSourceId] = useState('');
     const [retry, setRetry] = useState(0);
     const [savedSettings] = useState(readTrackVisionSettings);
     const [inputSizes, setInputSizes] = useState(savedSettings.inputSizes);
+    const [depthEnabled, setDepthEnabled] = useState(savedSettings.depthEnabled);
     const [detectors, setDetectors] = useState<Record<DetectionTask, DetectorState>>({
-        segment: { status: 'loading' }, depth: { status: 'loading' },
+        segment: { status: 'loading' }, depth: { status: savedSettings.depthEnabled ? 'loading' : 'disabled' },
     });
     const [captureState, setCaptureState] = useState<'idle' | 'starting' | 'active'>('idle');
     const [error, setError] = useState('');
@@ -71,7 +70,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const cameraCalibration = useRef(savedSettings.calibration);
     const [previewResult, setPreviewResult] = useState<TrackVisionDetection | null>(null);
     const [depthPointer, setDepthPointer] = useState<{ clientX: number; clientY: number } | null>(null);
-    const depthMap = useMemo(() => step === 'depth-map' ? createDepthMap(previewResult) : null, [previewResult, step]);
+    const depthMap = useMemo(() => depthEnabled && step === 'depth-map' ? createDepthMap(previewResult) : null, [previewResult, step, depthEnabled]);
     const depthRect = depthMap && depthPointer ? canvasRef.current?.getBoundingClientRect() : null;
     const hoveredDepth = depthMap && depthPointer && depthRect
         ? depthAtMouse(depthMap, depthRect, depthPointer.clientX, depthPointer.clientY) : null;
@@ -80,14 +79,14 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const previewWidth = previewFrameRef.current?.width ?? 0, previewHeight = previewFrameRef.current?.height ?? 0;
     const previewCamera = useMemo(() => ({ ...cameraDraft, imageWidth: previewWidth, imageHeight: previewHeight }),
         [cameraDraft, previewWidth, previewHeight]);
-    const options = useRef({ confidence, filterConfidence });
-    options.current = { confidence, filterConfidence };
+    const options = useRef({ confidence, filterConfidence, depthEnabled });
+    options.current = { confidence, filterConfidence, depthEnabled };
 
     useEffect(() => {
         if (window.screenCapture) saveTrackVisionSettings({
-            inputSizes, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture,
+            inputSizes, depthEnabled, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture,
         });
-    }, [inputSizes, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture]);
+    }, [inputSizes, depthEnabled, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture]);
 
     const togglePreviewSize = () => {
         const preview = previewRef.current;
@@ -112,8 +111,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         if (step === 'segmentation') drawVisionOverlay(preview, previewResult, displayLabel);
         if (step === 'filtering') drawVisionOverlay(preview, filteredFrame(previewResult, masks));
         if (step === 'depth-map' && depthMap) drawDepthMap(preview, depthMap);
-        if (step === 'depth') drawLabelDepths(preview, previewResult, masks);
-    }, [previewResult, previewCapturedAt, step, displayLabel, masks, depthMap]);
+        if (step === 'depth' && depthEnabled) drawLabelDepths(preview, previewResult, masks);
+    }, [previewResult, previewCapturedAt, step, displayLabel, masks, depthMap, depthEnabled]);
 
     useEffect(() => { setDepthPointer(null); }, [step, previewExpanded]);
 
@@ -164,41 +163,29 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     registeredHandle.current = handle;
     useRegisterOperationComponentRef(registeredHandle);
 
-    const releaseCapture = useCallback(() => {
+    const releaseFrames = useCallback(() => {
         captureVersion.current++;
         clearTimeout(timerRef.current);
-        streamRef.current?.getTracks().forEach((track) => { track.onended = null; track.stop(); });
-        streamRef.current = null;
         previewFrameRef.current = null;
         setPreviewCapturedAt(undefined);
         if (videoRef.current) videoRef.current.srcObject = null;
         publish(null);
     }, [publish]);
     const stop = useCallback(() => {
-        releaseCapture();
+        releaseFrames();
         setCaptureState('idle');
         setHasFrame(false);
         setStatus('Screen capture stopped.');
         const canvas = canvasRef.current;
         if (canvas && !canvas.hidden) canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
-    }, [releaseCapture]);
+    }, [releaseFrames]);
 
     useEffect(() => () => {
-        releaseCapture();
+        releaseFrames();
         modelVersion.current++;
         Object.values(models.current).forEach((model) => { void model.dispose().catch(() => undefined); });
         models.current = {};
-    }, [releaseCapture]);
-
-    const refreshSources = async () => {
-        setError('');
-        try {
-            const available = await window.screenCapture!.listSources();
-            setSources(available);
-            setSourceId((current) => available.some(({ id }) => id === current) ? current : '');
-            if (!available.length) setError('No capture sources found. Open the simulator and refresh.');
-        } catch (reason) { setError(message(reason)); }
-    };
+    }, [releaseFrames]);
 
     useEffect(() => {
         if (!window.screenCapture) return;
@@ -207,22 +194,24 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         const disposals: Promise<void>[] = [];
         for (const { id } of DETECTION_TASKS) {
             const model = models.current[id];
-            if (model && model.inputSize !== inputSizes[id]) {
+            if (model && (model.inputSize !== inputSizes[id] || (id === 'depth' && !depthEnabled))) {
                 delete models.current[id];
                 disposals.push(model.dispose().catch(() => undefined));
             }
         }
         setDetectors(Object.fromEntries(DETECTION_TASKS.map(({ id }) => {
+            if (id === 'depth' && !depthEnabled) return [id, { status: 'disabled' }];
             const model = models.current[id];
             return [id, model ? {
                 status: 'ready', classNames: model.classNames,
             } : { status: 'loading' }];
         })) as Record<DetectionTask, DetectorState>);
-        // Serialize retries and resolution changes so only one session per model is loaded.
+        // Serialize retries, toggles and resolution changes so only one session per model is loaded.
         modelQueue.current = modelQueue.current.then(async () => {
             await Promise.all(disposals);
             for (const { id } of DETECTION_TASKS) {
                 if (version !== modelVersion.current) return;
+                if (id === 'depth' && !depthEnabled) continue;
                 if (models.current[id]) continue;
                 try {
                     const model = id === 'depth'
@@ -241,7 +230,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
             }
         });
         // Retrying increments the version above; unmount cleanup invalidates it too.
-    }, [retry, publish, inputSizes]);
+    }, [retry, publish, inputSizes, depthEnabled]);
 
     useEffect(() => {
         const active = Object.values(detectors);
@@ -251,107 +240,111 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         return () => clearTimeout(timer);
     }, [detectors]);
 
-    const start = async () => {
-        releaseCapture();
+    useEffect(() => {
+        if (!stream) {
+            stop();
+            return;
+        }
+        releaseFrames();
         const version = captureVersion.current;
         setCaptureState('starting');
         setError('');
-        setStatus('Waiting for screen selection…');
-        try {
-            const stream = await captureGameScreen(sourceId);
-            if (version !== captureVersion.current) { stream.getTracks().forEach((track) => track.stop()); return; }
-            streamRef.current = stream;
-            stream.getVideoTracks().forEach((track) => { track.onended = stop; });
-            const video = videoRef.current!;
-            video.srcObject = stream;
-            await video.play();
-            await inferenceRef.current.catch(() => undefined);
-            if (version !== captureVersion.current) return;
-            setCaptureState('active');
-            const frame = document.createElement('canvas');
-            const tick = async () => {
+        setStatus('Starting session video preview…');
+        const start = async () => {
+            try {
+                const video = videoRef.current!;
+                video.srcObject = stream;
+                await video.play();
+                await inferenceRef.current.catch(() => undefined);
                 if (version !== captureVersion.current) return;
-                const started = performance.now();
-                try {
-                    if (video.readyState >= 2 && video.videoWidth && video.videoHeight) {
-                        frame.width = video.videoWidth;
-                        frame.height = video.videoHeight;
-                        const context = frame.getContext('2d');
-                        if (!context) throw new Error('Screen preview is unavailable.');
-                        context.drawImage(video, 0, 0);
-                        const stackVersion = modelVersion.current;
-                        const frameConfidence = options.current.confidence;
-                        const result: TrackVisionFrame = { capturedAt: Date.now(), motion: motion.current,
-                            width: frame.width, height: frame.height, detections: {} };
-                        const inference = (async () => {
-                            if (!models.current.segment || !models.current.depth) return;
-                            for (const { id } of DETECTION_TASKS) {
-                                if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
-                                const model = models.current[id]!;
-                                try {
-                                    if (id === 'depth') {
-                                        const segment = result.detections.segment;
-                                        // Preserve cockpit pixels for depth; their mask is used by downstream edge filtering.
-                                        const region = segment?.task === 'segment' && segment.width > 0 && segment.height > 0
-                                            ? { width: segment.width, height: segment.height, mask: new Uint8Array(segment.width * segment.height).fill(1) } : null;
-                                        if (!region) throw new Error('Depth requires a valid segmentation grid.');
-                                        result.detections.depth = await model.detect(frame, frameConfidence, region);
-                                    } else result.detections[id] = await model.detect(frame, frameConfidence);
-                                }
-                                catch (reason) {
-                                    if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
-                                    delete models.current[id];
-                                    void model.dispose().catch(() => undefined);
-                                    setDetectors((current) => ({ ...current, [id]: {
-                                        status: 'retrying', error: message(reason),
-                                    } }));
-                                    return;
-                                }
-                            }
-                        })();
-                        inferenceRef.current = inference;
-                        await inference;
-                        if (version !== captureVersion.current) return;
-                        if (stackVersion !== modelVersion.current) {
-                            timerRef.current = setTimeout(tick, 0);
-                            return;
-                        }
-                        // Keep a clean copy for the camera calibration preview.
-                        const previewFrame = previewFrameRef.current ?? document.createElement('canvas');
-                        previewFrame.width = frame.width;
-                        previewFrame.height = frame.height;
-                        const previewContext = previewFrame.getContext('2d');
-                        if (!previewContext) throw new Error('Screen preview is unavailable.');
-                        previewContext.drawImage(frame, 0, 0);
-                        previewFrameRef.current = previewFrame;
-                        setPreviewCapturedAt(result.capturedAt);
-                        // Read after inference so a pending frame cannot restore an old calibration.
-                        if (cameraCalibration.current && (cameraCalibration.current.imageWidth !== frame.width || cameraCalibration.current.imageHeight !== frame.height)) {
-                            cameraCalibration.current = undefined;
-                            setCalibration(undefined);
-                        }
-                        result.calibration = cameraCalibration.current;
-                        const complete = Boolean(result.detections.segment && result.detections.depth);
-                        publish(complete ? result : null);
-                        setHasFrame(true);
-                        setStatus(complete ? DETECTION_TASKS.map(({ id, label }) => `${label} · ${Math.round(result.detections[id]!.inferenceMs)} ms`).join(' / ')
-                            : 'Screen shared. Waiting for segmentation and depth.');
-                    }
-                    timerRef.current = setTimeout(tick, Math.max(0, 200 - (performance.now() - started)));
-                } catch (reason) {
+                setCaptureState('active');
+                const frame = document.createElement('canvas');
+                const tick = async () => {
                     if (version !== captureVersion.current) return;
-                    stop();
-                    setError(message(reason));
-                }
-            };
-            void tick();
-        } catch (reason) {
-            if (version !== captureVersion.current) return;
-            stop();
-            setError(reason instanceof Error && reason.name === 'NotAllowedError'
-                ? 'Screen sharing was cancelled or denied. Share again and select your game window.' : message(reason));
-        }
-    };
+                    const started = performance.now();
+                    try {
+                        if (video.readyState >= 2 && video.videoWidth && video.videoHeight) {
+                            frame.width = video.videoWidth;
+                            frame.height = video.videoHeight;
+                            const context = frame.getContext('2d');
+                            if (!context) throw new Error('Screen preview is unavailable.');
+                            context.drawImage(video, 0, 0);
+                            const stackVersion = modelVersion.current;
+                            const frameConfidence = options.current.confidence;
+                            const frameTasks = DETECTION_TASKS.filter(({ id }) => id !== 'depth' || options.current.depthEnabled);
+                            const result: TrackVisionFrame = { capturedAt: Date.now(), motion: motion.current,
+                                width: frame.width, height: frame.height, detections: {} };
+                            const inference = (async () => {
+                                if (frameTasks.some(({ id }) => !models.current[id])) return;
+                                for (const { id } of frameTasks) {
+                                    if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
+                                    const model = models.current[id]!;
+                                    try {
+                                        if (id === 'depth') {
+                                            const segment = result.detections.segment;
+                                            // Preserve cockpit pixels for depth; their mask is used by downstream edge filtering.
+                                            const region = segment?.task === 'segment' && segment.width > 0 && segment.height > 0
+                                                ? { width: segment.width, height: segment.height, mask: new Uint8Array(segment.width * segment.height).fill(1) } : null;
+                                            if (!region) throw new Error('Depth requires a valid segmentation grid.');
+                                            result.detections.depth = await model.detect(frame, frameConfidence, region);
+                                        } else result.detections[id] = await model.detect(frame, frameConfidence);
+                                    }
+                                    catch (reason) {
+                                        if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
+                                        delete models.current[id];
+                                        void model.dispose().catch(() => undefined);
+                                        setDetectors((current) => ({ ...current, [id]: {
+                                            status: 'retrying', error: message(reason),
+                                        } }));
+                                        return;
+                                    }
+                                }
+                            })();
+                            inferenceRef.current = inference;
+                            await inference;
+                            if (version !== captureVersion.current) return;
+                            if (stackVersion !== modelVersion.current) {
+                                timerRef.current = setTimeout(tick, 0);
+                                return;
+                            }
+                            // Keep a clean copy for the camera calibration preview.
+                            const previewFrame = previewFrameRef.current ?? document.createElement('canvas');
+                            previewFrame.width = frame.width;
+                            previewFrame.height = frame.height;
+                            const previewContext = previewFrame.getContext('2d');
+                            if (!previewContext) throw new Error('Screen preview is unavailable.');
+                            previewContext.drawImage(frame, 0, 0);
+                            previewFrameRef.current = previewFrame;
+                            setPreviewCapturedAt(result.capturedAt);
+                            // Read after inference so a pending frame cannot restore an old calibration.
+                            if (cameraCalibration.current && (cameraCalibration.current.imageWidth !== frame.width || cameraCalibration.current.imageHeight !== frame.height)) {
+                                cameraCalibration.current = undefined;
+                                setCalibration(undefined);
+                            }
+                            result.calibration = cameraCalibration.current;
+                            const complete = frameTasks.every(({ id }) => Boolean(result.detections[id]));
+                            publish(complete ? result : null);
+                            setHasFrame(true);
+                            setStatus(complete ? frameTasks.map(({ id, label }) => `${label} · ${Math.round(result.detections[id]!.inferenceMs)} ms`).join(' / ')
+                                : `Screen shared. Waiting for ${frameTasks.map(({ label }) => label.toLowerCase()).join(' and ')}.`);
+                        }
+                        timerRef.current = setTimeout(tick, Math.max(0, 200 - (performance.now() - started)));
+                    } catch (reason) {
+                        if (version !== captureVersion.current) return;
+                        stop();
+                        setError(message(reason));
+                    }
+                };
+                void tick();
+            } catch (reason) {
+                if (version !== captureVersion.current) return;
+                stop();
+                setError(message(reason));
+            }
+        };
+        void start();
+        return releaseFrames;
+    }, [stream, publish, releaseFrames, stop]);
 
     if (!window.screenCapture) {
         return <section className="track-vision" aria-label="Track Vision">
@@ -372,16 +365,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     <i />{captureState === 'active' ? 'Capturing' : captureState === 'starting' ? 'Starting…' : 'Capture idle'}
                 </span>
             </header>
-            <div className="track-vision__controls">
-                <select aria-label="Game window or screen" value={sourceId} disabled={captureState !== 'idle'} onChange={(event) => setSourceId(event.target.value)}>
-                    <option value="">Choose a window or screen</option>
-                    {sources.map(({ id, name: sourceName }) => <option key={id} value={id}>{sourceName}</option>)}
-                </select>
-                <button type="button" disabled={captureState !== 'idle'} onClick={() => void refreshSources()}>Refresh sources</button>
-                {captureState === 'idle'
-                    ? <button type="button" className="track-vision__start" disabled={!sourceId} onClick={() => void start()}>Share game screen</button>
-                    : <button type="button" onClick={stop}>Stop capture</button>}
-            </div>
             <div className="track-vision__tabs" role="tablist" aria-label="Vision pipeline steps">
                 {PIPELINE_STEPS.map((item, index) => <button key={item.id} type="button" role="tab"
                     id={`${pipelineId}-${item.id}`} aria-controls={`${pipelineId}-panel`} aria-selected={step === item.id}
@@ -417,15 +400,14 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     </span>}
                     {hasFrame && step === 'calibration' && showCalibrationOnCapture && previewFrameRef.current && validCalibration(previewCamera)
                         && <CameraGroundGrid camera={previewCamera} applied={Boolean(calibration)} />}
-                    {!hasFrame && <div className="track-vision__empty"><span className="track-vision__empty-icon" aria-hidden="true">▣</span><strong>No captured frame yet</strong></div>}
+                    {!hasFrame && <div className="track-vision__empty"><span className="track-vision__empty-icon" aria-hidden="true">▣</span><strong>No captured frame yet</strong><span>Share a game window from the Session Recording bar.</span></div>}
                     <div className="track-vision__preview-controls">
-                        {previewExpanded && captureState !== 'idle' && <button type="button" onClick={stop}>Stop capture</button>}
                         <button type="button" aria-expanded={previewExpanded} onClick={togglePreviewSize}>
                             {previewExpanded ? 'Restore capture' : 'Expand capture'}
                         </button>
                     </div>
                 </dialog>
-                <PipelineDetails step={step} frame={previewResult} masks={masks} classNames={labels} filterConfidence={filterConfidence} depthMap={depthMap} />
+                <PipelineDetails step={step} frame={previewResult} masks={masks} classNames={labels} filterConfidence={filterConfidence} depthMap={depthMap} depthEnabled={depthEnabled} />
                 <div hidden={!isSceneStep}>
                     <ReconstructedSceneView scene={hasFrame ? previewResult?.reconstructedScene ?? null : null}
                         source={hasFrame ? previewFrameRef.current : null} capturedAt={previewCapturedAt} />
@@ -470,15 +452,19 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     {DETECTION_TASKS.map(({ id, label }) => <div className="track-vision__detector" key={id}>
                         <strong>{label}</strong>
                         <span className="track-vision__detector-state">{detectors[id].status === 'ready'
-                            ? captureState === 'active' && DETECTION_TASKS.every(({ id }) => detectors[id].status === 'ready') ? 'Running' : 'Ready' : detectors[id].status === 'retrying' ? 'Retrying GPU…'
-                                : detectors[id].status === 'error' ? 'Unavailable' : 'Loading…'}</span>
+                            ? captureState === 'active' && DETECTION_TASKS.every(({ id }) => detectors[id].status === 'ready' || detectors[id].status === 'disabled') ? 'Running' : 'Ready' : detectors[id].status === 'retrying' ? 'Retrying GPU…'
+                                : detectors[id].status === 'disabled' ? 'Disabled' : detectors[id].status === 'error' ? 'Unavailable' : 'Loading…'}</span>
                         <label className="track-vision__resolution">Input resolution
-                            <select aria-label={`${label} input resolution`} value={inputSizes[id]}
+                            <select aria-label={`${label} input resolution`} value={inputSizes[id]} disabled={id === 'depth' && !depthEnabled}
                                 onChange={(event) => setInputSizes((current) => ({ ...current, [id]: Number(event.target.value) }))}>
                                 {MODEL_INPUT_RESOLUTIONS[id].map(({ label, size }) =>
                                     <option key={size} value={size}>{label} · {size} × {size}</option>)}
                             </select>
                         </label>
+                        {id === 'depth' && <label className="track-vision__depth-toggle">
+                            <input type="checkbox" checked={depthEnabled} onChange={(event) => setDepthEnabled(event.target.checked)} />
+                            Enable depth model
+                        </label>}
                         {!!detectors[id].classNames?.length && <div className="track-vision__hint" aria-label="Model labels">Labels: {detectors[id].classNames!.join(', ')}</div>}
                         {detectors[id].status === 'ready' && <div className="track-vision__hint" aria-label={`${label} inference device`}>GPU acceleration active</div>}
                         {detectors[id].error && <div className="track-vision__error" role="alert">

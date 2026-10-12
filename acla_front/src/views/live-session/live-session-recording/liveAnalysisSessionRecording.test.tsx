@@ -1,9 +1,10 @@
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import { RecordingState } from '../recording-state';
 import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
+import { SessionScreenCaptureProvider } from './SessionScreenCapture';
 
 const mockApiPost = jest.fn();
 
@@ -16,7 +17,7 @@ jest.mock('hooks/AuthProvider', () => ({
 
 jest.mock('services/api.service', () => ({
     __esModule: true,
-    default: { post: (...args: any[]) => mockApiPost(...args) },
+    default: { post: (...args: any[]) => mockApiPost(...args), delete: jest.fn().mockResolvedValue({}) },
 }));
 
 jest.mock('@radix-ui/themes', () => {
@@ -47,7 +48,7 @@ const createRuntime = (overrides: Record<string, unknown> = {}) => ({
     staticData: { Static_track: 'Monza', Static_car_model: 'GT3' },
     recordingState: RecordingState.READY,
     recordingMetadata: null,
-    recordingFileKey: null,
+    recordingFileKey: null as string | null,
     recordingActive: false,
     recordingGame: null,
     restorationStatus: 'idle',
@@ -86,15 +87,19 @@ const renderRecorder = (runtime: ReturnType<typeof createRuntime>, committedCoun
     const host = document.createElement('div');
     host.id = `recorder-host-${Math.random()}`;
     document.body.appendChild(host);
-    const view = render(
-        <LiveSessionContext.Provider value={runtime as any}>
-            <LiveAnalysisSessionRecording recorderHostId={host.id} />
-        </LiveSessionContext.Provider>,
+    const recorder = (value: ReturnType<typeof createRuntime>) => (
+        <LiveSessionContext.Provider value={value as any}>
+            <SessionScreenCaptureProvider>
+                <LiveAnalysisSessionRecording recorderHostId={host.id} />
+            </SessionScreenCaptureProvider>
+        </LiveSessionContext.Provider>
     );
-    return { ...view, host };
+    const view = render(recorder(runtime));
+    return { ...view, host, rerenderRuntime: (value: ReturnType<typeof createRuntime>) => view.rerender(recorder(value)) };
 };
 
 describe('recording session controls', () => {
+    afterEach(() => { delete window.sessionVideo; delete window.screenCapture; });
     beforeEach(() => {
         liveTelemetryStore.resetSession();
         jest.clearAllMocks();
@@ -106,6 +111,117 @@ describe('recording session controls', () => {
             },
         });
     });
+
+    it('selects and controls the shared video from the recording bar without a Track Vision panel', async () => {
+        const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+        const track = { stop: jest.fn(), onended: null };
+        const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
+        const getDisplayMedia = jest.fn().mockResolvedValue(stream);
+        Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getDisplayMedia } });
+        window.screenCapture = {
+            listSources: jest.fn().mockResolvedValue([{ id: 'window:42', name: 'Simulator' }]),
+            selectSource: jest.fn().mockResolvedValue(undefined),
+        };
+        const runtime = createRuntime();
+        const view = renderRecorder(runtime);
+        try {
+            const bar = within(view.host);
+            expect(bar.getByRole('button', { name: 'Share game screen' })).toBeDisabled();
+            fireEvent.click(bar.getByRole('button', { name: 'Refresh sources' }));
+            await bar.findByRole('option', { name: 'Simulator' });
+            fireEvent.change(bar.getByRole('combobox', { name: 'Game window or screen' }), { target: { value: 'window:42' } });
+            fireEvent.click(bar.getByRole('button', { name: 'Share game screen' }));
+            await bar.findByRole('button', { name: 'Stop capture' });
+            expect(window.screenCapture.selectSource).toHaveBeenCalledWith('window:42');
+            expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({ audio: false }));
+            expect(bar.getByRole('combobox', { name: 'Game window or screen' })).toBeDisabled();
+            fireEvent.click(bar.getByRole('button', { name: 'Start Recording' }));
+            await waitFor(() => expect(runtime.startRecordingSession).toHaveBeenCalledWith('acc'));
+            view.rerenderRuntime({ ...runtime, recordingState: RecordingState.RECORDING, recordingActive: true,
+                recordingFileKey: 'C:\\recordings\\acc.jsonl' });
+            expect(track.stop).not.toHaveBeenCalled();
+            fireEvent.click(bar.getByRole('button', { name: 'Stop capture' }));
+            expect(track.stop).toHaveBeenCalledTimes(1);
+            expect(runtime.stopRecordingSession).not.toHaveBeenCalled();
+            expect(bar.getByRole('combobox', { name: 'Game window or screen' })).toBeDisabled();
+            expect(bar.getByRole('button', { name: 'Share game screen' })).toBeDisabled();
+        } finally {
+            view.unmount();
+            view.host.remove();
+            delete window.screenCapture;
+            if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
+            else Reflect.deleteProperty(navigator, 'mediaDevices');
+        }
+    });
+
+    it('locks screen sharing while telemetry starts and unlocks it if startup fails', async () => {
+        window.screenCapture = {
+            listSources: jest.fn().mockResolvedValue([{ id: 'window:42', name: 'Simulator' }]),
+            selectSource: jest.fn(),
+        };
+        let completeStart!: (result: unknown) => void;
+        const runtime = createRuntime({ startRecordingSession: jest.fn(() => new Promise(resolve => { completeStart = resolve; })) });
+        const view = renderRecorder(runtime);
+        try {
+            const bar = within(view.host);
+            fireEvent.click(bar.getByRole('button', { name: 'Refresh sources' }));
+            await bar.findByRole('option', { name: 'Simulator' });
+            fireEvent.change(bar.getByRole('combobox'), { target: { value: 'window:42' } });
+            expect(bar.getByRole('button', { name: 'Share game screen' })).toBeEnabled();
+            fireEvent.click(bar.getByRole('button', { name: 'Start Recording' }));
+            expect(bar.getByRole('button', { name: 'Share game screen' })).toBeDisabled();
+            expect(bar.getByRole('button', { name: 'Start Recording' })).toBeDisabled();
+            expect(bar.getByRole('combobox')).toBeDisabled();
+            await act(async () => completeStart({ ok: false, error: { type: 'unsupported-recording-game' } }));
+            expect(bar.getByRole('button', { name: 'Share game screen' })).toBeEnabled();
+            expect(bar.getByRole('button', { name: 'Start Recording' })).toBeEnabled();
+        } finally { view.unmount(); view.host.remove(); }
+    });
+
+    it('waits for pending screen sharing before allowing telemetry recording', async () => {
+        const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+        let finishCapture!: (stream: unknown) => void;
+        const track = { stop: jest.fn(), onended: null };
+        const getDisplayMedia = jest.fn(() => new Promise(resolve => { finishCapture = resolve; }));
+        Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getDisplayMedia } });
+        window.screenCapture = {
+            listSources: jest.fn().mockResolvedValue([{ id: 'window:42', name: 'Simulator' }]),
+            selectSource: jest.fn().mockResolvedValue(undefined),
+        };
+        const runtime = createRuntime();
+        const view = renderRecorder(runtime);
+        try {
+            const bar = within(view.host);
+            fireEvent.click(bar.getByRole('button', { name: 'Refresh sources' }));
+            await bar.findByRole('option', { name: 'Simulator' });
+            fireEvent.change(bar.getByRole('combobox'), { target: { value: 'window:42' } });
+            fireEvent.click(bar.getByRole('button', { name: 'Share game screen' }));
+            expect(bar.getByRole('button', { name: 'Start Recording' })).toBeDisabled();
+            fireEvent.click(bar.getByRole('button', { name: 'Start Recording' }));
+            expect(runtime.startRecordingSession).not.toHaveBeenCalled();
+            await waitFor(() => expect(getDisplayMedia).toHaveBeenCalled());
+            await act(async () => finishCapture({ getTracks: () => [track], getVideoTracks: () => [track] }));
+            expect(bar.getByRole('button', { name: 'Start Recording' })).toBeEnabled();
+        } finally {
+            view.unmount(); view.host.remove();
+            if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
+            else Reflect.deleteProperty(navigator, 'mediaDevices');
+        }
+    });
+
+    it.each([RecordingState.RECORDING, RecordingState.HOLDING, RecordingState.RESUME_READY, RecordingState.UPLOAD_READY])(
+        'keeps video start locked for an existing session in %s', (recordingState) => {
+            window.screenCapture = { listSources: jest.fn(), selectSource: jest.fn() };
+            const view = renderRecorder(createRuntime({ recordingState, recordingFileKey: 'C:\\recordings\\acc.jsonl' }));
+            try {
+                const bar = within(view.host);
+                expect(bar.getByRole('combobox')).toBeDisabled();
+                expect(bar.getByRole('button', { name: 'Refresh sources' })).toBeDisabled();
+                expect(bar.getByRole('button', { name: 'Share game screen' })).toBeDisabled();
+                expect(bar.getByText('Video can only start with a new session recording.')).toBeInTheDocument();
+            } finally { view.unmount(); view.host.remove(); }
+        },
+    );
 
     it('starts the shared recording pipeline for the active DesktopGame', async () => {
         const runtime = createRuntime();
@@ -121,6 +237,34 @@ describe('recording session controls', () => {
         }));
         view.unmount();
         view.host.remove();
+    });
+
+    it.each([true, false])('restores local video and uploads it when Include recorded video is %s', async (includeVideo) => {
+        const clip = { filePath: 'C:\\recordings\\video.mp4', name: 'video.mp4', size: 4, mimeType: 'video/mp4', startedAt: 1 };
+        window.sessionVideo = { create: jest.fn(), append: jest.fn(), finish: jest.fn(),
+            list: jest.fn().mockResolvedValue([clip]), read: jest.fn().mockResolvedValue({ data: 'AQIDBA==', bytesRead: 4 }),
+            delete: jest.fn(), reveal: jest.fn().mockResolvedValue(undefined) };
+        mockApiPost.mockResolvedValue({ data: { uploadId: 'upload-1' } });
+        const runtime = createRuntime({
+            recordingState: RecordingState.UPLOAD_READY, recordingFileKey: 'C:\\recordings\\acc.jsonl',
+            recordingMetadata: { sessionName: 'Race', mapName: 'Track', carName: 'Car', gameRecordedFrom: 'acc' },
+            streamRecordedTelemetry: jest.fn(async (onChunk) => {
+                await onChunk([{ Physics_speed_kmh: 100 }]);
+                return { rowCount: 1, totalBytes: 50 };
+            }),
+        });
+        const view = renderRecorder(runtime, 1);
+        fireEvent.click(await screen.findByRole('button', { name: 'Show local video' }));
+        expect(window.sessionVideo.reveal).toHaveBeenCalledWith(clip.filePath);
+        fireEvent.click(await screen.findByRole('button', { name: 'Upload Session' }));
+        expect(screen.getByLabelText('Include recorded video')).toBeChecked();
+        if (!includeVideo) fireEvent.click(screen.getByLabelText('Include recorded video'));
+        const buttons = screen.getAllByRole('button', { name: 'Upload Session' });
+        fireEvent.click(buttons[buttons.length - 1]);
+        await waitFor(() => expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1));
+        expect(mockApiPost.mock.calls.filter(([url]) => url.includes('/video-chunk'))).toHaveLength(includeVideo ? 1 : 0);
+        expect(window.sessionVideo.delete).not.toHaveBeenCalled();
+        view.unmount(); view.host.remove();
     });
 
     it('gets the floating bar map from Static_track in the live session context', () => {

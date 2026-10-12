@@ -9,6 +9,7 @@ import { Types } from 'mongoose';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Readable } from 'stream';
 import { GameRecordedFrom } from 'src/racing-session-game';
 
 @Injectable()
@@ -25,14 +26,14 @@ export class RacingSessionService {
 
         const filter = { _id: sessionId, user_id: userId };
         const session = await this.racingSession.findOne(filter)
-            .select('dataChunkFileIds')
+            .select('dataChunkFileIds videos')
             .exec();
         if (!session) {
             throw new NotFoundException('Session not found');
         }
 
         // Keep metadata until cleanup succeeds so a failed deletion can be retried.
-        for (const fileId of session.dataChunkFileIds || []) {
+        for (const fileId of [...(session.dataChunkFileIds || []), ...(session.videos || []).flatMap(video => video.chunkFileIds)]) {
             const id = new ObjectId(fileId.toString());
             if (await this.gridfsService.getFileInfo(id, GRIDFS_BUCKETS.RACING_SESSIONS)) {
                 await this.gridfsService.deleteFile(id, GRIDFS_BUCKETS.RACING_SESSIONS);
@@ -224,7 +225,8 @@ export class RacingSessionService {
         gameRecordedFrom: GameRecordedFrom,
         dataChunkFileIds: ObjectId[],
         totalDataPoints: number,
-        chunkSize: number
+        chunkSize: number,
+        videos: RacingSession['videos'] = []
     ) {
         return this.racingSession.create({
             session_name,
@@ -236,8 +238,45 @@ export class RacingSessionService {
             chunkSize: chunkSize,
             totalChunks: dataChunkFileIds.length,
             totalDataPoints: totalDataPoints,
+            videos,
             created_date: new Date()
         });
+    }
+
+    async uploadSessionVideoChunk(data: Buffer, metadata: { userId: string; uploadId: string; videoIndex: number; chunkIndex: number }) {
+        return this.gridfsService.uploadFile(data, `${metadata.uploadId}-video-${metadata.videoIndex}-${metadata.chunkIndex}.mp4`,
+            { ...metadata, contentType: 'video/mp4' }, GRIDFS_BUCKETS.RACING_SESSIONS);
+    }
+
+    async deleteUploadFiles(fileIds: { toString(): string }[]) {
+        for (const id of fileIds) {
+            const fileId = new ObjectId(id.toString());
+            if (await this.gridfsService.getFileInfo(fileId, GRIDFS_BUCKETS.RACING_SESSIONS)) {
+                await this.gridfsService.deleteFile(fileId, GRIDFS_BUCKETS.RACING_SESSIONS);
+            }
+        }
+    }
+
+    async listSessionVideos(userId: string, sessionId: string) {
+        if (!Types.ObjectId.isValid(sessionId)) throw new BadRequestException('Invalid session id');
+        const session = await this.racingSession.findOne({ _id: sessionId, user_id: userId }).select('videos').exec();
+        if (!session) throw new NotFoundException('Session not found');
+        return session.videos || [];
+    }
+
+    async downloadSessionVideo(userId: string, sessionId: string, videoIndex: number) {
+        const videos = await this.listSessionVideos(userId, sessionId);
+        if (!Number.isInteger(videoIndex) || videoIndex < 0 || !videos[videoIndex]) throw new NotFoundException('Video not found');
+        const video = videos[videoIndex];
+        if (video.mimeType !== 'video/mp4') throw new NotFoundException('Video not found');
+        const gridfs = this.gridfsService;
+        const stream = Readable.from((async function* () {
+            for (const id of video.chunkFileIds) {
+                const chunk = await gridfs.downloadStream(new ObjectId(id.toString()), GRIDFS_BUCKETS.RACING_SESSIONS);
+                for await (const bytes of chunk) yield bytes;
+            }
+        })());
+        return { ...video, stream };
     }
 
     /**

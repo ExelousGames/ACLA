@@ -10,6 +10,8 @@ import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import type { LiveRecordingMetadata } from 'views/live-session/live-session-types';
 import { liveTelemetryStore, useCommittedSampleCount } from 'views/live-session/live-telemetry-store';
 import DataStructurePreview, { DataStructureSection } from 'components/data-structure/DataStructurePreview';
+import { SessionScreenCaptureControls, useSessionScreenCapture } from './SessionScreenCapture';
+import { useSessionVideo } from './use-session-video';
 
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
 const POST_SUCCESS_DIALOG_CLOSE_MS = 800;
@@ -52,10 +54,19 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         && (state === RecordingState.READY || state === RecordingState.RESUME_READY);
 
     const startInFlightRef = useRef(false);
+    const [isStarting, setIsStarting] = useState(false);
     const stopInFlightRef = useRef<Promise<void> | null>(null);
 
     const [isUploading, setIsUploading] = useState(false);
+    const [includeVideo, setIncludeVideo] = useState(true);
     const [uploadProgress, setUploadProgress] = useState(0);
+    const capture = useSessionScreenCapture();
+    const videoStartLocked = isStarting || analysisContext.recordingActive || Boolean(analysisContext.recordingFileKey)
+        || (state !== RecordingState.READY && state !== RecordingState.CHECKING);
+    const captureStarting = capture?.state === 'starting';
+    const video = useSessionVideo(capture?.stream ?? null, analysisContext.recordingFileKey,
+        state === RecordingState.RECORDING && !isUploading && uploadProgress < 100);
+    const { stop: stopVideo, refresh: refreshVideos } = video;
     const [uploadStatus, setUploadStatus] = useState('');
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [showRetryButton, setShowRetryButton] = useState(false);
@@ -106,18 +117,19 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         if (stopInFlightRef.current) return stopInFlightRef.current;
         stopInFlightRef.current = (async () => {
             try {
-                await analysisContextRef.current.stopRecordingSession(reason);
+                try { await stopVideo(); }
+                finally { await analysisContextRef.current.stopRecordingSession(reason); }
             } finally {
                 startInFlightRef.current = false;
                 stopInFlightRef.current = null;
             }
         })();
         return stopInFlightRef.current;
-    }, []);
+    }, [stopVideo]);
 
 
     const startRecording = useCallback(async () => {
-        if (!canRecord || startInFlightRef.current) {
+        if (!canRecord || captureStarting || startInFlightRef.current) {
             return;
         }
 
@@ -140,6 +152,8 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             gameRecordedFrom: sessionGame,
         };
         setRecordingUnavailable(null);
+        setIncludeVideo(true);
+        setIsStarting(true);
         try {
             const result = await ctx.startRecordingSession(sessionGame);
             if (!result.ok) {
@@ -156,8 +170,9 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             setRecordingUnavailable(error instanceof Error ? error.message : String(error));
         } finally {
             startInFlightRef.current = false;
+            setIsStarting(false);
         }
-    }, [canRecord]);
+    }, [canRecord, captureStarting]);
 
     useEffect(() => {
         return () => {
@@ -184,6 +199,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         setDataStructureOpen(false);
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
         startInFlightRef.current = false;
+        setIsStarting(false);
         stopInFlightRef.current = null;
         setRecordingUnavailable(null);
     }, []);
@@ -215,10 +231,15 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         if (!initialContext.recordingMetadata?.sessionName || !initialContext.recordingMetadata?.mapName || !initialContext.sessionGame || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
         uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Preparing telemetry data...'); setUploadError(null); setShowRetryButton(false);
         try {
-            if (initialContext.recordingState === RecordingState.RECORDING) {
-                await stopRecordingProcess('manual');
+            try {
+                await stopVideo().catch((error) => { if (includeVideo) throw error; });
+            } finally {
+                if (initialContext.recordingState === RecordingState.RECORDING) {
+                    await initialContext.stopRecordingSession('manual');
+                }
             }
             const uploadContext = analysisContextRef.current;
+            const videos = includeVideo ? await refreshVideos() : [];
             const metadata: UploadReacingSessionInitDto = {
                 sessionName: uploadContext.recordingMetadata!.sessionName,
                 mapName: uploadContext.recordingMetadata!.mapName,
@@ -230,6 +251,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                 metadata,
                 filePath: uploadContext.recordingFileKey!,
                 stream: uploadContext.streamRecordedTelemetry,
+                videos,
                 onProgress: (progress, status) => { setUploadProgress(progress); setUploadStatus(status); },
             });
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
@@ -246,24 +268,32 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             uploadInFlightRef.current = false;
             return false;
         }
-    }, [auth, cleanupTelemetryFile, returnToDetectionGate, stopRecordingProcess]);
+    }, [auth, cleanupTelemetryFile, returnToDetectionGate, stopVideo, refreshVideos, includeVideo]);
 
     const handleDiscardSession = useCallback(async () => {
         if (uploadInFlightRef.current) return;
         setDataStructureOpen(false);
         const discardContext = analysisContextRef.current;
         const fileKey = discardContext.recordingFileKey;
+        await stopVideo().catch(() => undefined);
         if (discardContext.recordingState === RecordingState.RECORDING) {
             try {
                 await stopRecordingProcess('manual');
             } catch { /* the main process has already torn down the failed pipeline */ }
         }
         if (fileKey) {
+            try {
+                const videos = await window.sessionVideo?.list(fileKey) ?? [];
+                for (const clip of videos) await window.sessionVideo!.delete(clip.filePath);
+            } catch (error) {
+                setUploadError(error instanceof Error ? error.message : String(error));
+                return;
+            }
             await cleanupTelemetryFile(fileKey);
         }
         discardContext.clearPersistedDraft?.();
         returnToDetectionGate();
-    }, [cleanupTelemetryFile, returnToDetectionGate, stopRecordingProcess]);
+    }, [cleanupTelemetryFile, returnToDetectionGate, stopRecordingProcess, stopVideo]);
     const handleRetryUpload = useCallback(() => { setUploadError(null); setShowRetryButton(false); setUploadProgress(0); handleUpload(); }, [handleUpload]);
 
     const openUploadDialog = useCallback(() => {
@@ -307,7 +337,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             <AlertDialog.Content maxWidth="600px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
                 <AlertDialog.Title>Finish Live Session</AlertDialog.Title>
                 <AlertDialog.Description size="2">
-                    Upload the recorded data, discard it, or keep the current session open.
+                    Upload the telemetry and recorded video, discard them, or keep the current session open.
                 </AlertDialog.Description>
                 {(isUploading || showRetryButton || uploadError || analysisContext.restorationError) && (
                     <Box my="4">
@@ -341,6 +371,18 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                         </Flex>
                     </Grid>
                 </Card>
+                <Box my="3">
+                    <label>
+                        <input type="checkbox" checked={includeVideo} disabled={isUploading}
+                            onChange={(event) => setIncludeVideo(event.target.checked)} /> Include recorded video
+                    </label>
+                    <Text as="p" size="2" color="gray">
+                        {video.saving ? 'The video will be saved before uploading.' : video.clips.length
+                            ? `${video.clips.length} local video clip(s), ${(video.clips.reduce((bytes, clip) => bytes + clip.size, 0) / 1048576).toFixed(1)} MB. Local videos are kept after upload.`
+                            : 'No video recorded. Share your game screen before starting a new session recording to include video.'}
+                    </Text>
+                    {video.error && <Text as="p" size="2" color="red" role="alert">{video.error} Uncheck “Include recorded video” to upload telemetry only.</Text>}
+                </Box>
                 <details className="data-structure" open={dataStructureOpen} onToggle={(event) => setDataStructureOpen(event.currentTarget.open)}>
                     <summary>Telemetry data structure</summary>
                     {dataStructureOpen && (
@@ -384,7 +426,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                 );
             case RecordingState.READY:
                 return (
-                    <Button radius="full" color="blue" onClick={() => { if (canRecord) { void startRecording(); } }}>
+                    <Button radius="full" color="blue" disabled={!canRecord || isStarting || captureStarting} onClick={() => { if (canRecord) { void startRecording(); } }}>
                         <Flex align="center" gap="2">
                             <PlayIcon size={14} />
                             <span>Start Recording</span>
@@ -408,7 +450,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             case RecordingState.RESUME_READY: {
                 return (
                     <Flex align="center" gap="2">
-                        <Button radius="full" variant="outline" color="blue" disabled={!canRecord || isUploading} onClick={() => { void startRecording(); }}>
+                        <Button radius="full" variant="outline" color="blue" disabled={!canRecord || isStarting || captureStarting || isUploading} onClick={() => { void startRecording(); }}>
                             <Flex align="center" gap="2">
                                 <PlayIcon size={14} />
                                 <span>Resume</span>
@@ -440,7 +482,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             default:
                 return null;
         }
-    }, [state, canRecord, startRecording, stopRecordingProcess, hasRecordedData, isUploading, openUploadDialog, handleDiscardSession]);
+    }, [state, canRecord, isStarting, captureStarting, startRecording, stopRecordingProcess, hasRecordedData, isUploading, openUploadDialog, handleDiscardSession]);
 
     const isRecording = state === RecordingState.RECORDING;
     const isPaused = state === RecordingState.HOLDING || state === RecordingState.RESUME_READY;
@@ -461,9 +503,9 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     if (!recorderHost) return null;
 
     return createPortal(
-        <Box className={`live-recording-bar ${isRecording ? 'live-recording-bar--rec' : ''}`} position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ marginLeft: 'max(24px, 10%)', marginRight: 'max(24px, 10%)' }}>
-            <Flex height="100%" align="center" position="relative" overflow="hidden" className="live-recording-bar__inner">
-                <Flex gap="3" align="center" p="3" style={{ minWidth: 0, flex: 1 }}>
+        <Box className={`live-recording-bar ${isRecording ? 'live-recording-bar--rec' : ''}`} position="relative" mb="5" style={{ marginLeft: 'max(24px, 10%)', marginRight: 'max(24px, 10%)' }}>
+            <Flex align="center" wrap="wrap" position="relative" className="live-recording-bar__inner">
+                <Flex gap="3" align="center" wrap="wrap" p="3" style={{ minWidth: 0, flex: 1 }}>
 
                     <div className={`live-recording-bar__channel ${channelMod}`}>
                         <span className="live-recording-bar__channel-dot" />
@@ -491,6 +533,16 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                 </div>
 
             </Flex>
+                    <SessionScreenCaptureControls startDisabled={videoStartLocked} />
+                    <Text size="1" color={video.saving ? 'red' : 'gray'} role="status">
+                        {video.saving ? 'Recording video locally' : video.clips.length ? `${video.clips.length} video clip(s) saved locally`
+                            : videoStartLocked ? 'Video can only start with a new session recording.'
+                                : 'Share a screen before Start Recording to record video with telemetry.'}
+                    </Text>
+                    {video.clips.length > 0 && <Button size="1" variant="outline" onClick={() => {
+                        void window.sessionVideo?.reveal(video.clips[0].filePath).catch((error) => setRecordingUnavailable(error.message));
+                    }}>Show local video</Button>}
+                    {video.error && <Text size="1" color="red" role="alert">{video.error}</Text>}
         </Box>,
         recorderHost,
     );

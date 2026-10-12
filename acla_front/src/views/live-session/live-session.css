@@ -190,8 +190,8 @@
 }
 
 .live-session-view__recorder {
-    height: 96px;
-    flex: 0 0 96px;
+    min-height: 96px;
+    flex: 0 0 auto;
     position: relative;
     min-width: 0;
 }
@@ -225,5 +225,5 @@
     .live-session-view { padding: 8px; }
     .live-session-game-status { margin-bottom: 8px; padding: 9px 12px; }
     .live-session-game-status__action { padding: 0 11px; }
-    .live-session-view__recorder { height: 108px; flex-basis: 108px; }
+    .live-session-view__recorder { min-height: 108px; }
 }

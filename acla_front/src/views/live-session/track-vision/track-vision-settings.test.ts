@@ -4,6 +4,16 @@ import { readTrackVisionSettings, saveTrackVisionSettings, TRACK_VISION_SETTINGS
 beforeEach(() => window.localStorage.clear());
 afterEach(() => jest.restoreAllMocks());
 
+it.each([undefined, null, 'false', 0, true])('keeps depth enabled for legacy or invalid settings: %s', (depthEnabled) => {
+    window.localStorage.setItem(TRACK_VISION_SETTINGS_KEY, JSON.stringify({ version: 1, depthEnabled }));
+    expect(readTrackVisionSettings().depthEnabled).toBe(true);
+});
+
+it('saves and restores disabled depth', () => {
+    saveTrackVisionSettings({ ...readTrackVisionSettings(), depthEnabled: false });
+    expect(readTrackVisionSettings().depthEnabled).toBe(false);
+});
+
 it.each(['{broken', 'null', '[]', '{"version":2}'])('uses defaults for invalid local settings: %s', (raw) => {
     const defaults = readTrackVisionSettings();
     window.localStorage.setItem(TRACK_VISION_SETTINGS_KEY, raw);

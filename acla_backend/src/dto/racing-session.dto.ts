@@ -19,6 +19,7 @@ export class UploadReacingSessionInitDto {
     carName: string;
     userId: string;
     game_recorded_from: GameRecordedFrom;
+    videos?: { name: string; size: number; mimeType: string; startedAt: number }[];
 }
 
 export class UploadReacingSessionProgressDto {

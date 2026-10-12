@@ -11,7 +11,7 @@ declare global {
 
 export async function captureGameScreen(sourceId: string): Promise<MediaStream> {
     const capture = window.screenCapture;
-    if (!capture) throw new Error('Track Vision is available only in the Electron desktop app.');
+    if (!capture) throw new Error('Screen capture is available only in the Electron desktop app.');
     if (!navigator.mediaDevices?.getDisplayMedia) {
         throw new Error('Screen capture is unavailable in the desktop app.');
     }
