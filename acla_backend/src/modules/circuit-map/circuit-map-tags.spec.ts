@@ -44,6 +44,38 @@ describe('Circuit map centerline segments', () => {
         expect(result.samples.middle_line).toEqual(payload.samples.middle_line);
     });
 
+    it('persists optional names through create, rename, clearing, and reload without changing segment identity', async () => {
+        const namedTag = { ...tag, name: '  La Source  ' };
+        expect((await service.create({ ...payload, centerline_segments: [namedTag, wrapTag] })).centerline_segments)
+            .toEqual([{ ...tag, name: 'La Source' }, wrapTag]);
+        expect((await service.get(mapId)).centerline_segments).toEqual([{ ...tag, name: 'La Source' }, wrapTag]);
+
+        const renamed = { ...tag, name: 'Turn 1' };
+        await service.update(mapId, { ...payload, centerline_segments: [renamed, wrapTag] });
+        expect((await service.get(mapId)).centerline_segments).toEqual([renamed, wrapTag]);
+
+        await service.update(mapId, { ...payload, centerline_segments: [{ ...tag, name: '   ' }, wrapTag] });
+        expect((await service.get(mapId)).centerline_segments).toEqual([tag, wrapTag]);
+
+        await service.update(mapId, { ...payload, centerline_segments: [renamed, wrapTag] });
+        await service.update(mapId, payload);
+        expect((await service.get(mapId)).centerline_segments).toEqual([tag, wrapTag]);
+    });
+
+    it('accepts a segment name at the length limit', async () => {
+        const namedTag = { ...tag, name: 'a'.repeat(120) };
+        await service.create({ ...payload, centerline_segments: [namedTag] });
+        expect((await service.get(mapId)).centerline_segments).toEqual([namedTag]);
+    });
+
+    it.each([null, 1, {}, [], 'a'.repeat(121)])('rejects an invalid segment name before writing: %p', async (name) => {
+        const data = { ...payload, centerline_segments: [{ ...tag, name }] as any };
+        await expect(service.create(data)).rejects.toThrow(BadRequestException);
+        await expect(service.update(mapId, data)).rejects.toThrow(BadRequestException);
+        expect(storage.create).not.toHaveBeenCalled();
+        expect(storage.findByIdAndUpdate).not.toHaveBeenCalled();
+    });
+
     it('clears removed tags and preserves tags when an older client omits the field', async () => {
         const { centerline_segments, ...legacyPayload } = payload;
         expect((await service.update(mapId, legacyPayload)).centerline_segments).toEqual(centerline_segments);

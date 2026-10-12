@@ -1,8 +1,11 @@
 import { normalizeCircuitMap, normalizeCircuitMapList } from '../circuitMapService';
 
 describe('circuit map game normalization', () => {
-    it('preserves segments with multiple tags and defaults older maps to no segments', () => {
-        const segments = [{ id: 'corner', tags: ['corner', 'slow'], start_position: 0.95, end_position: 0.05 }];
+    it('preserves named and unnamed segments with multiple tags and defaults older maps to no segments', () => {
+        const segments = [
+            { id: 'corner', tags: ['corner', 'slow'], start_position: 0.95, end_position: 0.05 },
+            { id: 'turn-1', name: 'La Source', tags: ['corner', 'slow'], start_position: 0.1, end_position: 0.2 },
+        ];
         expect(normalizeCircuitMap({ centerline_segments: segments }).centerline_segments).toEqual(segments);
         expect(normalizeCircuitMap({}).centerline_segments).toEqual([]);
     });

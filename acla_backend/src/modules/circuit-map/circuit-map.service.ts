@@ -140,7 +140,11 @@ export class CircuitMapService {
                 throw new BadRequestException('Centerline segment ids must be unique');
             }
             ids.add(id);
-            return { id, tags: Array.from(new Set(tag.tags.map((label) => label.trim()))), start_position: tag.start_position, end_position: tag.end_position };
+            if (tag.name !== undefined && (typeof tag.name !== 'string' || tag.name.trim().length > 120)) {
+                throw new BadRequestException('Centerline segment name must be a string of at most 120 characters');
+            }
+            const name = tag.name?.trim();
+            return { id, ...(name ? { name } : {}), tags: Array.from(new Set(tag.tags.map((label) => label.trim()))), start_position: tag.start_position, end_position: tag.end_position };
         });
     }
 

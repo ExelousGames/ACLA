@@ -40,6 +40,7 @@ export type CircuitMapSamplesByMode = Partial<Record<CircuitMapCaptureMode, Circ
 
 export type CircuitMapCenterlineSegment = {
     id: string;
+    name?: string;
     tags: string[];
     // Ordered in lap direction; start > end crosses the start/finish line.
     start_position: number;

@@ -972,6 +972,77 @@ describe('CircuitMaps', () => {
             expect(await screen.findByText(label)).toBeInTheDocument();
         });
 
+        it('adds, reloads, renames, and clears a segment name while retaining its tags and range', async () => {
+            await openTaggedMap();
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            clickMap(182, 42);
+            clickMap(718, 578);
+            const nameInput = screen.getByRole('textbox', { name: 'Segment name' });
+            expect(nameInput).toHaveValue('');
+            expect(nameInput).toHaveAttribute('maxlength', '120');
+            await userEvent.type(nameInput, '  La Source  ');
+            await userEvent.click(screen.getByRole('checkbox', { name: 'corner' }));
+            await userEvent.click(screen.getByRole('checkbox', { name: 'slow' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Add segment' }));
+            expect(screen.getByRole('button', { name: 'La Source corner, slow 0.0% → 50.0%' })).toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'Remove segment La Source' })).toBeInTheDocument();
+            const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
+            expect(contexts[contexts.length - 1].value.fillText).toHaveBeenCalledWith('La Source', 718, 24, 240);
+
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+            const savedSegment = (mockedApi.put.mock.calls[0][1] as any).centerline_segments[0];
+            expect(savedSegment).toEqual({ id: expect.any(String), name: 'La Source', tags: ['corner', 'slow'], start_position: 0, end_position: 0.5 });
+            expect(mockUpsertCachedCircuitMap).toHaveBeenLastCalledWith(expect.objectContaining({ centerline_segments: [savedSegment] }));
+
+            for (const [previousName, enteredName, expectedName] of [['La Source', '  Turn 1  ', 'Turn 1'], ['Turn 1', '   ', '']]) {
+                await userEvent.click(screen.getByRole('button', { name: /new map/i }));
+                await userEvent.click(screen.getByRole('button', { name: 'Tagged Circuit ACC' }));
+                await userEvent.click(await screen.findByRole('button', { name: `${previousName} corner, slow 0.0% → 50.0%` }));
+                const editName = screen.getByRole('textbox', { name: 'Segment name' });
+                expect(editName).toHaveValue(previousName);
+                await userEvent.clear(editName);
+                await userEvent.type(editName, enteredName);
+                await userEvent.click(screen.getByRole('button', { name: 'Update segment' }));
+                await userEvent.click(screen.getByRole('button', { name: /save/i }));
+                const { name, ...unnamedSegment } = savedSegment;
+                await waitFor(() => expect(mockedApi.put).toHaveBeenLastCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                    centerline_segments: [{ ...unnamedSegment, ...(expectedName ? { name: expectedName } : {}) }],
+                })));
+                await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+            }
+            await userEvent.click(screen.getByRole('button', { name: /new map/i }));
+            await userEvent.click(screen.getByRole('button', { name: 'Tagged Circuit ACC' }));
+            await userEvent.click(await screen.findByRole('button', { name: 'corner, slow 0.0% → 50.0%' }));
+            expect(screen.getByRole('textbox', { name: 'Segment name' })).toHaveValue('');
+            const latestContexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
+            expect(latestContexts[latestContexts.length - 1].value.fillText).toHaveBeenCalledWith('corner, slow', 718, 24, 240);
+        });
+
+        it('names an existing unnamed segment and resets cancelled names before selecting a new range', async () => {
+            await openTaggedMap([tag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Final corner 50.0% → 75.0%' }));
+            expect(screen.getByRole('textbox', { name: 'Segment name' })).toHaveValue('');
+            await userEvent.type(screen.getByRole('textbox', { name: 'Segment name' }), 'Bus Stop');
+            await userEvent.click(screen.getByRole('button', { name: 'Update segment' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Bus Stop Final corner 50.0% → 75.0%' }));
+            await userEvent.type(screen.getByRole('textbox', { name: 'Segment name' }), ' discarded');
+            await userEvent.click(screen.getByRole('button', { name: 'Cancel selection' }));
+            expect(screen.getByRole('button', { name: 'Bus Stop Final corner 50.0% → 75.0%' })).toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            clickMap(182, 42);
+            clickMap(718, 578);
+            expect(screen.getByRole('textbox', { name: 'Segment name' })).toHaveValue('');
+            await userEvent.click(screen.getByRole('button', { name: 'Cancel selection' }));
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenLastCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                centerline_segments: [{ ...tag, name: 'Bus Stop' }],
+            })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+        });
+
         it('saves multiple tags as one segment and edits them without changing its identity', async () => {
             await openTaggedMap([tag]);
             await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
