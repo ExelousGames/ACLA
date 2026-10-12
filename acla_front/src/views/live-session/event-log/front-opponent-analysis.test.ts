@@ -93,7 +93,7 @@ describe('front opponent analysis', () => {
         expect(result.faster_corners).toHaveLength(1);
         expect(result.overall_lap_comparison).toMatchObject({
             status: 'unavailable', delta_ms: null, player_average_time_ms: null, opponent_average_time_ms: 62000,
-            player_sample_count: 2, reason: expect.stringContaining('uninterrupted Graphics_current_time_str'),
+            player_sample_count: 2, reason: expect.stringContaining('uninterrupted Graphics_session_time'),
         });
         expect(result.insufficient_corners).toEqual([
             expect.objectContaining({ corner_id: 'short', player_sample_count: 2, opponent_sample_count: 3, reason: expect.stringContaining('three complete corner passes') }),

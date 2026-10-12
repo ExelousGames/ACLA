@@ -103,7 +103,8 @@ describe('LiveEventLog telemetry ownership', () => {
                 time += 1000;
                 expect(liveTelemetryStore.publishFrame({
                     type: 'frame', game: 'acc', sequence, committedSequence: sequence, committedCount: sequence,
-                    sample: { Graphics_current_time_str: formatCornerTime(time), Graphics_player_car_id: 7,
+                    sample: { Graphics_session_time: time / 1000, Graphics_player_car_id: 7,
+                        Graphics_current_time_str: formatCornerTime(((start + i * 5) % 100) * 200),
                         Graphics_normalized_positions: { '7': ((start + i * 5) % 100) / 100, '63': ((start + i * 5) % 100) / 100 } },
                 })).toBe(true);
             }
@@ -175,7 +176,7 @@ describe('LiveEventLog telemetry ownership', () => {
         const publish = (player: number, opponent: number) => {
             sequence += 1;
             liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence, committedSequence: sequence, committedCount: sequence,
-                sample: { Graphics_current_time_str: formatCornerTime(time), Graphics_player_car_id: 7,
+                sample: { Graphics_session_time: time / 1000, Graphics_player_car_id: 7,
                     Graphics_normalized_car_position: player, Graphics_normalized_positions: { '63': opponent, '1052': 0.5 } } });
         };
         act(() => {
@@ -211,7 +212,7 @@ describe('LiveEventLog telemetry ownership', () => {
         const publish = (from: number, count: number) => act(() => {
             for (let i = from; i < from + count; i += 1) liveTelemetryStore.publishFrame({
                 type: 'frame', game: 'acc', sequence: i + 1, committedSequence: i + 1, committedCount: i + 1,
-                sample: { Graphics_current_time_str: formatCornerTime(2027758 + i * 1000),
+                sample: { Graphics_session_time: (2027758 + i * 1000) / 1000,
                     Graphics_normalized_positions: { '7': ((97 + i * 5) % 100) / 100 } },
             });
         });
@@ -292,7 +293,7 @@ describe('LiveEventLog telemetry ownership', () => {
             act(() => {
                 liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence: index + 1,
                     committedSequence: index + 1, committedCount: index + 1,
-                    sample: { Graphics_current_time_str: formatCornerTime(2027758 + index * 1000),
+                    sample: { Graphics_session_time: (2027758 + index * 1000) / 1000,
                         Graphics_player_car_id: 7, Graphics_normalized_positions: { '7': position, '63': position } },
                 });
             });
@@ -334,7 +335,7 @@ describe('LiveEventLog telemetry ownership', () => {
                 const position = (0.18 + index * 0.05) % 1;
                 liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence: index + 1,
                     committedSequence: index + 1, committedCount: index + 1,
-                    sample: { Graphics_current_time_str: formatCornerTime(2027758 + index * 1000),
+                    sample: { Graphics_session_time: (2027758 + index * 1000) / 1000,
                         Graphics_player_car_id: 7,
                         Graphics_normalized_positions: index < 8 ? { '7': position, '63': position } : { '7': position } },
                 });
@@ -390,7 +391,7 @@ describe('LiveEventLog telemetry ownership', () => {
                 timeMs += [200, 800, 1800][Math.floor(index / 50)];
                 liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence: index + 1,
                     committedSequence: index + 1, committedCount: index + 1,
-                    sample: { Graphics_current_time_str: formatCornerTime(timeMs), Graphics_player_car_id: 7,
+                    sample: { Graphics_session_time: timeMs / 1000, Graphics_player_car_id: 7,
                         Graphics_normalized_positions: { '7': (0.18 + index * 0.02) % 1 } },
                 });
             }
@@ -415,7 +416,7 @@ describe('LiveEventLog telemetry ownership', () => {
         const publish = (sequence: number, position: number) => act(() => {
             liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence,
                 committedSequence: sequence, committedCount: sequence,
-                sample: { Graphics_current_time_str: formatCornerTime(2027758 + sequence * 1000),
+                sample: { Graphics_session_time: (2027758 + sequence * 1000) / 1000,
                     Graphics_normalized_positions: { '7': position } },
             });
         });
@@ -472,11 +473,11 @@ describe('LiveEventLog telemetry ownership', () => {
         rerender(view(cornerMap));
         expect(screen.getByText('Waiting for cars to cross a corner end')).toBeInTheDocument();
         act(() => { liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence: 1, committedSequence: 1, committedCount: 1,
-            sample: { Graphics_current_time_str: '33:47:758', Graphics_normalized_positions: { '7': 0.28 } } }); });
+            sample: { Graphics_session_time: 2027.758, Graphics_normalized_positions: { '7': 0.28 } } }); });
         rerender(view(null));
         rerender(view(cornerMap));
         act(() => { liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence: 2, committedSequence: 2, committedCount: 2,
-            sample: { Graphics_current_time_str: '33:48:758', Graphics_normalized_positions: { '7': 0.31 } } }); });
+            sample: { Graphics_session_time: 2028.758, Graphics_normalized_positions: { '7': 0.31 } } }); });
         expect(eventLogRef.current?.getCornerRecords()).toEqual([]);
     });
 });

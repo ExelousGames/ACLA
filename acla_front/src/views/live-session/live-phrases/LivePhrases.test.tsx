@@ -94,8 +94,8 @@ describe('LivePhrases root connection', () => {
         const snapshot = engine.evaluate(Date.now());
         snapshot.root = { ...snapshot.root, name: 'Custom root', description: 'Custom selection purpose.' };
         snapshot.root.children[0].children = [
-            { ...snapshot.root.children[0].children[0], name: 'Custom action', description: 'Custom action purpose.' },
-            { ...snapshot.root.children[0].children[1], name: 'Custom exit', description: 'Custom exit purpose.' },
+            { ...snapshot.root.children[0].children[1], name: 'Custom action', description: 'Custom action purpose.' },
+            { ...snapshot.root.children[0].children[2], name: 'Custom exit', description: 'Custom exit purpose.' },
         ];
         jest.spyOn(PhraseEngine.prototype, 'evaluate').mockReturnValue(snapshot);
         render(<LivePhrases name="live-phrases" />);
@@ -133,14 +133,16 @@ describe('LivePhrases root connection', () => {
         fireEvent.click(screen.getByLabelText('Chicane overtake closure'));
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         const entry = within(screen.getByRole('list', { name: 'Chicane overtake conditions' }));
-        expect(entry.getByText('Estimated opponent distance (m) <= 2')).toBeVisible();
-        expect(entry.getByText('Opponent estimated time to corner entry (s) <= 2')).toBeVisible();
-        fireEvent.click(screen.getByRole('tab', { name: 'Contents 3' }));
-        fireEvent.click(screen.getByLabelText('Chicane overtake action 1: say phrase'));
+        expect(entry.getByText('Upcoming mapped consecutive-corners sequence >= 1')).toBeVisible();
+        expect(entry.queryByText('Estimated opponent distance (m) <= 2')).not.toBeInTheDocument();
+        expect(entry.queryByText('Opponent estimated time to corner entry (s) <= 2')).not.toBeInTheDocument();
+        expect(entry.queryByText('Corners following in the labeled consecutive-corners sequence >= 1')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('tab', { name: 'Contents 4' }));
+        fireEvent.click(screen.getByLabelText('Chicane overtake action 2: say phrase'));
         expect(screen.getByText('Go wide in the first turn. then take second apex if possible')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         expect(screen.getByText('Action conditions')).toBeVisible();
-        const speechList = screen.getByRole('list', { name: 'Chicane overtake action 1: say phrase conditions' });
+        const speechList = screen.getByRole('list', { name: 'Chicane overtake action 2: say phrase conditions' });
         const speech = within(speechList);
         expect(speech.getByText('Opponent estimated time to corner entry (s) < 0.5')).toBeVisible();
         expect(speech.getByText('OR')).toBeVisible();
@@ -152,18 +154,18 @@ describe('LivePhrases root connection', () => {
         expect(speech.queryByText(/(?:Player|Opponent) in a .*turn corner/)).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         expect(screen.queryByText('Action conditions')).not.toBeInTheDocument();
-        expect(screen.queryByRole('list', { name: 'Chicane overtake action 1: say phrase conditions' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('list', { name: 'Chicane overtake action 2: say phrase conditions' })).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('Estimated opponent distance (m) <= 2')).toBeVisible();
+        expect(screen.getByText('Upcoming mapped consecutive-corners sequence >= 1')).toBeVisible();
     });
 
     it('shows the additional chicane speech action with its opposite-side conditions', () => {
         render(<LivePhrases name="live-phrases" />);
         fireEvent.click(screen.getByLabelText('Chicane overtake closure'));
-        fireEvent.click(screen.getByLabelText('Chicane overtake action 2: say phrase'));
+        fireEvent.click(screen.getByLabelText('Chicane overtake action 3: say phrase'));
         expect(screen.getByText('brake early, Hold inside')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        const list = screen.getByRole('list', { name: 'Chicane overtake action 2: say phrase conditions' });
+        const list = screen.getByRole('list', { name: 'Chicane overtake action 3: say phrase conditions' });
         expect(within(list).getByText('Opponent estimated time to corner entry (s) < 0.5')).toBeVisible();
         expect(within(list).getByText('OR')).toBeVisible();
         expect(within(list).getByText('Upcoming corner turns right')).toBeVisible();
@@ -171,7 +173,21 @@ describe('LivePhrases root connection', () => {
         expect(within(list).getByText('Upcoming corner turns left')).toBeVisible();
         expect(within(list).getByText('Opponent near the right edge')).toBeVisible();
         fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
-        expect(screen.getByLabelText('Chicane overtake action 3: exit to root')).toBeVisible();
+        expect(screen.getByLabelText('Chicane overtake action 4: exit to root')).toBeVisible();
+    });
+
+    it('shows exit-speed advice inside the Chicane overtake long-straight child', () => {
+        render(<LivePhrases name="live-phrases" />);
+        fireEvent.click(screen.getByLabelText('Chicane overtake closure'));
+        fireEvent.click(screen.getByLabelText('Inside the Long Straight closure'));
+        expect(screen.getByLabelText('Inside the Long Straight action 1: exit to parent')).toBeVisible();
+        fireEvent.click(screen.getByLabelText('Inside the Long Straight action 2: say phrase'));
+        expect(screen.getByText('From pervious laps statistic, you generally have better exit speed. long straight after this corner, consider back up a little bit to have space to overtake at exit.')).toBeVisible();
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        const conditions = within(screen.getByRole('list', { name: 'Inside the Long Straight action 2: say phrase conditions' }));
+        expect(conditions.getByText('Previous corner exits show the player has better exit speed than the car ahead')).toBeVisible();
+        expect(conditions.getByText('Estimated opponent distance (m) <= 2')).toBeVisible();
+        expect(conditions.getByText('Upcoming slow corner is followed by a long straight')).toBeVisible();
     });
 
     it('displays mixed connectors from the evaluated conditions in order', () => {

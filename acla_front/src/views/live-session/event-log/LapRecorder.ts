@@ -1,6 +1,6 @@
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import type { StandardTelemetrySample } from '../live-session-types';
-import { parseCornerTime, type CornerTimingPoint } from './CornerRecorder';
+import { parseSessionTimeMs, type CornerTimingPoint } from './CornerRecorder';
 
 export interface DriverLapRecord {
     id: string;
@@ -30,7 +30,7 @@ export class LapRecorder {
     }
 
     tick(sample: StandardTelemetrySample, sampleIndex: number): DriverLapRecord[] {
-        const timeMs = parseCornerTime(sample.Graphics_current_time_str);
+        const timeMs = parseSessionTimeMs(sample.Graphics_session_time);
         if (timeMs === null || (sample.Graphics_status !== undefined && sample.Graphics_status !== ACC_STATUS.ACC_LIVE)) {
             this.reset();
             return [];

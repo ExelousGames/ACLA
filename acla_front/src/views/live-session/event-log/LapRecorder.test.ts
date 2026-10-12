@@ -4,7 +4,7 @@ import { LapRecorder, type DriverLapRecord } from './LapRecorder';
 
 const BASE_TIME = 2027758;
 const sample = (time: number, positions: Record<string, number>): StandardTelemetrySample => ({
-    Graphics_current_time_str: formatCornerTime(BASE_TIME + time),
+    Graphics_session_time: (BASE_TIME + time) / 1000,
     Graphics_player_car_id: 7, Graphics_normalized_positions: positions,
     // These fields must never supply lap timing.
     Graphics_current_time: 1, Graphics_clock: 99999, Graphics_completed_lap: 400,
@@ -59,8 +59,10 @@ describe('LapRecorder', () => {
     });
 
     it.each([
-        ['missing clock', { Graphics_current_time: 3000 }],
-        ['invalid clock', { Graphics_current_time_str: 'invalid' }],
+        ['missing session clock', { ...sample(2000, { '7': 0.07 }), Graphics_session_time: undefined,
+            Graphics_current_time_str: formatCornerTime(BASE_TIME + 2000), Graphics_current_time: BASE_TIME + 2000 }],
+        ['invalid session clock', { ...sample(2000, { '7': 0.07 }), Graphics_session_time: NaN }],
+        ['negative session clock', { ...sample(2000, { '7': 0.07 }), Graphics_session_time: -1 }],
         ['missing cars', sample(2000, {})],
         ['invalid position', sample(2000, { '7': NaN })],
         ['out of range position', sample(2000, { '7': 1.2 })],
@@ -114,10 +116,22 @@ describe('LapRecorder', () => {
         expect(records[0]).toMatchObject({ carId: '63', lapTimeMs: 20000 });
     });
 
-    it('never substitutes a different clock when the supplied string clock rolls back every lap', () => {
-        for (let i = 0; i < 100; i += 1) expect(recorder.tick({
-            ...sample((i % 20) * 1000, { '7': ((97 + i * 5) % 100) / 100 }),
-            Graphics_clock: i, Graphics_current_time: i * 1000,
-        }, i)).toEqual([]);
+    it('records player and opponent laps using session time while the player lap clock resets', () => {
+        const records: DriverLapRecord[] = [];
+        for (let i = 0; i <= 41; i += 1) {
+            const playerPosition = ((97 + i * 4) % 100) / 100;
+            records.push(...recorder.tick({
+                ...sample(i * 1000, { '63': ((97 + i * 5) % 100) / 100 }),
+                Graphics_session_time: (BASE_TIME + i * 1000) / 1000,
+                Graphics_normalized_car_position: playerPosition,
+                Graphics_current_time_str: formatCornerTime(playerPosition * 25000),
+                Graphics_current_time: playerPosition * 25000,
+            }, i));
+        }
+        expect(records.map(({ carId, lapTimeMs, isPlayer }) => ({ carId, lapTimeMs, isPlayer }))).toEqual([
+            { carId: '63', lapTimeMs: 20000, isPlayer: false },
+            { carId: '7', lapTimeMs: 25000, isPlayer: true },
+            { carId: '63', lapTimeMs: 20000, isPlayer: false },
+        ]);
     });
 });

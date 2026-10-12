@@ -106,17 +106,25 @@ custom trees around the generated catalog. Phrase-specific timing status binds
 to a closure's metadata ID, independent of its depth or root-child position.
 The speech action's description remains the sentence used by TTS and overlays.
 
-The first child, **Chicane overtake**, enters immediately when the
-visible opponent is within 2 m and its estimated arrival at a slow corner is
-within 2 s. That corner must belong to a labeled consecutive-corners region and
-its next linked corner must turn the opposite way. Arrival uses the nearest car
+The first child, **Chicane overtake**, enters immediately when the upcoming mapped
+slow corner has at least one following corner in its labeled consecutive-corners
+sequence and its next linked corner turns the opposite way. The entry condition
+is displayed as **Upcoming mapped consecutive-corners sequence >= 1**. Entry has
+no opponent-distance or arrival-time limit and does not require a motion rate;
+it still needs a fresh opponent lap position. Arrival uses the nearest car
 ahead in `Graphics_normalized_positions`, excluding `Graphics_player_car_id`,
 and its forward normalized-position change per second. At least two distinct
 position samples are required; repeated packets retain the rate for up to 1.5 s.
 Opponent changes, stale telemetry, pauses and resets discard the rate. The map
 lookahead for this estimate is not limited by the normal 150 m / 3% approach range.
 
-Inside this closure, speech waits until the opponent's estimated corner entry is
+Its first child, **Inside the Long Straight**, uses the same driver-position entry,
+exit-to-parent behavior, and exit-speed advice as the child of **One Tight Slow Corner**
+described below. It offers only the “From pervious laps statistic...” phrase, with
+the same three conditions, and speaks once per straight visit. Leaving the straight
+returns to **Chicane overtake** so its timed speech actions can run.
+
+At the parent, speech waits until the opponent's estimated corner entry is
 strictly less than 0.5 s away. Track Vision then selects between two speech actions:
 
 - Opponent on the left before a mapped left turn, or on the right before a mapped right turn:
@@ -131,7 +139,7 @@ After either speech action runs, the next action exits to root.
 While waiting, its status is **Waiting for action**; losing the entry conditions
 does not exit an entered closure. As with other closures, a session/stream reset
 or detection restart returns to root. Missing opponent positions or a valid rate
-prevent this timed guide. Track Vision supplies the opponent's side position;
+prevent the timed speech actions. Track Vision supplies the opponent's side position;
 map labels and geometry determine the upcoming slow corner's direction and its
 opposite linked turn, accounting for the game's X/Z coordinate orientation.
 
@@ -165,7 +173,7 @@ phrase when both match; only one phrase runs per visit to this child.
 
 Open **Live Event Log** to collect exit observations for each car and corner.
 Exit speed is the forward normalized lap-position change per second between the
-two samples bracketing the mapped exit, using `Graphics_current_time_str`.
+two samples bracketing the mapped exit, using `Graphics_session_time` (elapsed seconds).
 It is independent of player physics and corner duration, and supports finish-line
 wraparound. A captured exit is valid even when the corner entry was not observed.
 The event log displays exit speed as percent of a lap per second and averages the

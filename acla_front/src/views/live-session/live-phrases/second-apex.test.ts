@@ -3,10 +3,17 @@ import type { StandardTelemetrySample } from '../live-session-types';
 import { PHRASE_DEFINITIONS, PhraseEngine, TELEMETRY_MAX_AGE_MS } from './phrase-engine';
 import { getPhrasePositions } from './phrase-positions';
 import { circuitMap, vision } from './test-fixtures';
+import type { DriverCornerSummary } from '../event-log/corner-summary';
 
 const rule = PHRASE_DEFINITIONS.find((phrase) => phrase.id === 'second-apex')!;
 const sentence = 'Go wide in the first turn. then take second apex if possible';
 const holdInsideSentence = 'brake early, Hold inside';
+const exitAdvice = PHRASE_DEFINITIONS.find((phrase) => phrase.id === 'one-tight-slow-corner')!.additionalActions![1].sentence;
+const exitHistory = (playerSpeed = 0.03): DriverCornerSummary[] => [playerSpeed, 0.02].map((averageExitSpeed, index) => ({
+    carId: String(index + 1), isPlayer: index === 0, cornerId: 'first', cornerName: 'First corner',
+    sampleCount: 0, includedCount: 0, averageTimeMs: null,
+    averageExitSpeed, exitSpeedSampleCount: 3, exitSpeedIncludedCount: 1,
+}));
 const normalize = (position: number) => (position + 1) % 1;
 const frame = (sample: StandardTelemetrySample, status = 2): LiveTelemetryFrameEvent => ({
     type: 'frame', sample, sampleIndex: 0, telemetryStatus: status,
@@ -53,10 +60,73 @@ const update = (engine: PhraseEngine, now: number, eta: number, corner: 'left' |
 };
 
 describe('second-apex closure', () => {
+    describe('Inside the Long Straight', () => {
+        const path = ['root', rule.name, 'Inside the Long Straight'];
+        const setup = () => {
+            const engine = new PhraseEngine();
+            const map = linkedMap();
+            map.centerline_segments!.push(
+                { id: 'approach-straight', tags: ['long straight'], start_position: 0.04, end_position: 0.115 },
+                { id: 'exit-straight', tags: ['long straight'], start_position: 0.225, end_position: 0.235 },
+            );
+            return { engine, map };
+        };
+
+        it('speaks once per straight visit, returns to Chicane overtake, then allows its timed prompt', () => {
+            const { engine, map } = setup();
+            engine.receiveMap(map, 0);
+            engine.receiveVision(closeVision(0, 'right', 2), 0);
+            const spoken = engine.receiveTelemetry(frame(sample(3)), 0, exitHistory());
+            expect(spoken.state.path).toEqual([...path, 'say phrase']);
+            expect(spoken.events).toEqual([{ id: 1, ruleId: rule.id, sentence: exitAdvice, timestamp: 0 }]);
+            expect(spoken.root.children[0].children[0]).toMatchObject({
+                id: 'second-apex:inside-long-straight', kind: 'closure', name: 'Inside the Long Straight',
+                children: [{ name: 'exit to parent' }, { name: 'say phrase', description: exitAdvice,
+                    conditions: [{ conditionFit: true }, { conditionFit: true }, { conditionFit: true }] }],
+            });
+            expect(update(engine, 1000, 2).state.path).toEqual([...path, 'say phrase']);
+            expect(update(engine, 2000, 1).events).toEqual(spoken.events);
+            expect(update(engine, 2500, 0.5).state.path).toEqual(['root', rule.name]);
+            const parentSpoken = update(engine, 2750, 0.25);
+            expect(parentSpoken.events).toEqual([...spoken.events, { id: 2, ruleId: rule.id, sentence, timestamp: 2750 }]);
+            expect(engine.evaluate(2750).state.path).toEqual(['root']);
+        });
+
+        it.each(['missing history', 'equal exit speeds', 'distant opponent', 'missing vision', 'no exit straight',
+            'ordinary exit straight', 'wrong corner history', 'outside approach straight'])(
+            'withholds exit advice with %s', (reason) => {
+                const { engine, map } = setup();
+                if (reason === 'no exit straight') map.centerline_segments!.pop();
+                if (reason === 'ordinary exit straight') map.centerline_segments![4].tags = ['straight'];
+                if (reason === 'outside approach straight') map.centerline_segments![3].tags = ['straight'];
+                engine.receiveMap(map, 0);
+                if (reason !== 'missing vision') engine.receiveVision(closeVision(0, 'right', reason === 'distant opponent' ? 2.01 : 2), 0);
+                let history = reason === 'missing history' ? [] : exitHistory(reason === 'equal exit speeds' ? 0.02 : 0.03);
+                if (reason === 'wrong corner history') history = history.map((summary) => ({ ...summary, cornerId: 'second' }));
+                const waiting = engine.receiveTelemetry(frame(sample(3)), 0, history);
+                expect(waiting.state.path).toEqual(reason === 'outside approach straight' ? ['root', rule.name] : path);
+                expect(waiting.events).toEqual([]);
+            },
+        );
+
+        it('waits for history and fresh telemetry before speaking, retaining the child when position is missing', () => {
+            const { engine, map } = setup();
+            engine.receiveMap(map, 0);
+            engine.receiveVision(closeVision(0), 0);
+            expect(engine.receiveTelemetry(frame(sample(3)), 0).state.path).toEqual(path);
+            expect(engine.evaluate(100).events).toEqual([]);
+            const missing = engine.receiveTelemetry(frame({ ...sample(3), Graphics_normalized_car_position: undefined }), 100, exitHistory());
+            expect(missing.state.path).toEqual(path);
+            expect(missing.events).toEqual([]);
+            const spoken = engine.receiveTelemetry(frame(sample(3)), 200, exitHistory());
+            expect(spoken.events).toEqual([{ id: 1, ruleId: rule.id, sentence: exitAdvice, timestamp: 200 }]);
+        });
+    });
+
     it.each(['left', 'right'] as const)('waits inside root child, speaks once before a %s turn, then exits', (corner) => {
         const engine = new PhraseEngine();
         engine.receiveMap(linkedMap(false, corner), 0);
-        expect(update(engine, 0, 3, corner).state.path).toEqual(['root']);
+        expect(update(engine, 0, 3, corner).state.path).toEqual(['root', rule.name]);
         const entered = update(engine, 1000, 2, corner);
         expect(entered.state.path).toEqual(['root', rule.name]);
         expect(entered.closures[0].status).toBe('Waiting for action');
@@ -78,15 +148,31 @@ describe('second-apex closure', () => {
         expect(update(engine, 2800, 0.2, corner).events).toHaveLength(1);
     });
 
-    it('enters at the inclusive 2 m boundary without the ordinary 0.8 s hold', () => {
+    it('enters immediately from the mapped sequence without vision or an opponent motion rate', () => {
         const engine = new PhraseEngine([rule]);
         engine.receiveMap(linkedMap(), 0);
-        update(engine, 0, 3);
-        engine.receiveVision(closeVision(1000, 'right', 2), 1000);
-        expect(engine.receiveTelemetry(frame(sample(2)), 1000).state.path).toEqual(['root', rule.name]);
+        const entered = engine.receiveTelemetry(frame(sample(3)), 0);
+        expect(entered.state.path).toEqual(['root', rule.name]);
+        expect(entered.closures[0].status).toBe('Waiting for action');
+        expect(entered.events).toEqual([]);
     });
 
-    it.each(['too far', 'too early', 'fast', 'unlabeled sequence', 'same direction', 'unknown geometry', 'no opponent positions', 'no player ID', 'stationary', 'reversing'])(
+    it.each(['distant opponent', 'early approach', 'stationary', 'reversing'])(
+        'enters and waits for speech with %s', (reason) => {
+            const engine = new PhraseEngine([rule]);
+            engine.receiveMap(linkedMap(), 0);
+            engine.receiveVision(closeVision(0, 'right', 20), 0);
+            expect(engine.receiveTelemetry(frame(sample(4)), 0).state.path).toEqual(['root', rule.name]);
+            engine.receiveVision(closeVision(1000, 'right', reason === 'distant opponent' ? 20 : 1.5), 1000);
+            const eta = reason === 'stationary' ? 4 : reason === 'reversing' ? 5 : 3;
+            const snapshot = engine.receiveTelemetry(frame(sample(eta)), 1000);
+            expect(snapshot.state.path).toEqual(['root', rule.name]);
+            expect(snapshot.closures[0].status).toBe('Waiting for action');
+            expect(snapshot.events).toEqual([]);
+        },
+    );
+
+    it.each(['fast', 'unlabeled sequence', 'same direction', 'unknown geometry', 'no opponent positions', 'no player ID'])(
         'does not enter for %s', (reason) => {
             const map = linkedMap();
             if (reason === 'fast') map.centerline_segments![0].tags = ['corner', 'fast'];
@@ -95,12 +181,11 @@ describe('second-apex closure', () => {
             if (reason === 'unknown geometry') map.samples.middle_line = [];
             const engine = new PhraseEngine([rule]);
             engine.receiveMap(map, 0);
-            update(engine, 0, reason === 'too early' ? 4 : 3);
-            let next = sample(reason === 'too early' ? 3 : reason === 'stationary' ? 3 : reason === 'reversing' ? 4 : 2);
+            let next = sample(3);
             if (reason === 'no opponent positions') next = { ...next, Graphics_normalized_positions: undefined };
             if (reason === 'no player ID') next = { ...next, Graphics_player_car_id: undefined };
-            engine.receiveVision(closeVision(1000, 'right', reason === 'too far' ? 2.01 : 1.5), 1000);
-            const snapshot = engine.receiveTelemetry(frame(next), 1000);
+            engine.receiveVision(closeVision(0), 0);
+            const snapshot = engine.receiveTelemetry(frame(next), 0);
             expect(snapshot.state.path).toEqual(['root']);
             expect(snapshot.events).toEqual([]);
         },
@@ -157,8 +242,8 @@ describe('second-apex closure', () => {
             const spoken = advance(2750, 0.25);
             expect(spoken.events).toEqual([{ id: 1, ruleId: rule.id, sentence: holdInsideSentence, timestamp: 2750 }]);
             expect(spoken.closures[0].status).toBe('Active');
-            expect(spoken.root.children[0].children[0].execution?.status).toBe('idle');
-            expect(spoken.root.children[0].children[1]).toMatchObject({
+            expect(spoken.root.children[0].children[1].execution?.status).toBe('idle');
+            expect(spoken.root.children[0].children[2]).toMatchObject({
                 current: true, description: holdInsideSentence, execution: { status: 'completed' },
             });
             expect(engine.evaluate(2750).state.path).toEqual(['root']);
@@ -213,7 +298,9 @@ describe('second-apex closure', () => {
         engine.receiveMap(linkedMap(), 0);
         update(engine, 0, 3);
         update(engine, 1000, 2);
-        engine.receiveVision(closeVision(1500, 'right', 20), 1500);
+        const noSequence = linkedMap();
+        noSequence.centerline_segments!.pop();
+        engine.receiveMap(noSequence, 1500);
         expect(engine.receiveTelemetry(frame(sample(1.5)), 1500).state.path).toEqual(['root', rule.name]);
         expect(engine.evaluate(1500).events).toEqual([]);
     });
@@ -232,10 +319,13 @@ describe('second-apex closure', () => {
         engine.receiveMap(linkedMap(), 0);
         update(engine, 0, 4);
         update(engine, 1000, 3);
-        expect(engine.receiveTelemetry(frame(sample(3)), 1010).closures[0].conditions[1].inputMissing).toBe(false);
-        expect(engine.receiveTelemetry(frame(sample(2, 0.125, '3')), 1100).state.path).toEqual(['root']);
-        expect(engine.evaluate(1100).closures[0].conditions[1].inputMissing).toBe(true);
-        expect(engine.receiveTelemetry(frame(sample(1)), 1100 + TELEMETRY_MAX_AGE_MS + 1).state.path).toEqual(['root']);
+        expect(engine.receiveTelemetry(frame(sample(3)), 1010).closures[0].actionConditions![0].inputMissing).toBe(false);
+        expect(engine.receiveTelemetry(frame(sample(2, 0.125, '3')), 1100).state.path).toEqual(['root', rule.name]);
+        expect(engine.evaluate(1100).closures[0].actionConditions![0].inputMissing).toBe(true);
+        const stale = engine.receiveTelemetry(frame(sample(1)), 1100 + TELEMETRY_MAX_AGE_MS + 1);
+        expect(stale.state.path).toEqual(['root', rule.name]);
+        expect(stale.closures[0].actionConditions![0].inputMissing).toBe(true);
+        expect(stale.events).toEqual([]);
     });
 
     it.each(['session-reset', 'stream-reset'] as const)('clears a waiting closure and motion history on %s', (type) => {
@@ -244,7 +334,7 @@ describe('second-apex closure', () => {
         update(engine, 0, 3);
         update(engine, 1000, 2);
         expect(engine.receiveTelemetry({ type, snapshot: createLiveTelemetryStore().getSnapshot() }, 1100).state.path).toEqual(['root']);
-        expect(update(engine, 1200, 0.25).state.path).toEqual(['root']);
+        expect(update(engine, 1200, 0.25).state.path).toEqual(['root', rule.name]);
         expect(engine.evaluate(1200).events).toEqual([]);
     });
 });

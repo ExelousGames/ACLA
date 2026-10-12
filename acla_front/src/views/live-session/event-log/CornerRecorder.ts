@@ -39,11 +39,10 @@ const HISTORY_MS = 30000;
 const RATE_WINDOW_MS = 150;
 const RATE_CHANGE = 0.02;
 
-export function parseCornerTime(value: unknown): number | null {
-    if (typeof value !== 'string') return null;
-    const match = /^(\d+):([0-5]\d)[:.](\d{3})$/.exec(value.trim());
-    if (!match) return null;
-    const time = Number(match[1]) * 60000 + Number(match[2]) * 1000 + Number(match[3]);
+/** Graphics_session_time is elapsed seconds; the player's lap clock resets at each finish line. */
+export function parseSessionTimeMs(value: unknown): number | null {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+    const time = Math.round(value * 1000);
     return Number.isSafeInteger(time) ? time : null;
 }
 
@@ -96,7 +95,7 @@ export class CornerRecorder {
     }
 
     tick(sample: StandardTelemetrySample, sampleIndex: number): DriverCornerRecord[] {
-        const timeMs = parseCornerTime(sample.Graphics_current_time_str);
+        const timeMs = parseSessionTimeMs(sample.Graphics_session_time);
         if (timeMs === null || (sample.Graphics_status !== undefined && sample.Graphics_status !== ACC_STATUS.ACC_LIVE)) {
             this.reset();
             return [];

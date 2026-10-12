@@ -41,7 +41,8 @@ describe('live phrase closure tree', () => {
             expect(child.description.trim()).not.toBe('');
             const actions = (child as Closure<unknown>).children.filter((node) => node instanceof Action);
             const speech = getPhraseActions(PHRASE_DEFINITIONS[index]);
-            const parentSpeech = PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2) : speech;
+            const parentSpeech = PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2)
+                : PHRASE_DEFINITIONS[index].id === 'second-apex' ? speech.slice(0, 2) : speech;
             expect(actions.map((action) => action.name)).toEqual([...parentSpeech.map(() => 'say phrase'), 'exit to root']);
             actions.forEach((action) => {
                 expect(action).toBeInstanceOf(Action);
@@ -485,9 +486,9 @@ describe('vision and Live Map overtaking guides', () => {
             expect(rule.sentence).not.toMatch(/you are .+; the opponent ahead is/);
             const timed = rule.id === 'second-apex';
             const standalone = rule.id === 'one-tight-slow-corner';
-            const mapInput = timed ? 'opponentCornerEtaS' : standalone ? 'approachCornerInSequence' : 'phase';
+            const mapInput = timed ? 'approachSequenceRemaining' : standalone ? 'approachCornerInSequence' : 'phase';
             expect(rule.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === mapInput)?.description)
-                .toContain(timed ? 'Opponent estimated time to corner entry' : standalone ? 'Corner is not inside' : 'Live Map section');
+                .toContain(timed ? 'Upcoming mapped consecutive-corners sequence' : standalone ? 'Corner is not inside' : 'Live Map section');
         });
     });
 

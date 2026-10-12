@@ -29,7 +29,7 @@ const INPUT_LABELS = {
     opponentCornerEtaS: 'Opponent estimated time to corner entry (s)',
     approachCornerSpeed: 'Upcoming mapped corner speed',
     approachCornerDirection: 'Upcoming corner direction',
-    approachSequenceRemaining: 'Corners following in the labeled consecutive-corners sequence',
+    approachSequenceRemaining: 'Upcoming mapped consecutive-corners sequence',
     approachLinkedOpposite: 'Next linked corner turns the opposite way',
     approachCornerInSequence: 'Upcoming corner is inside a Live Map consecutive corners label',
     betterCornerExitSpeed: 'Previous corner exits show the player has better exit speed than the car ahead',
@@ -157,6 +157,11 @@ const positioned = [
     condition('playerCorner', 'in', ['left', 'right']), condition('playerPosition', 'in', ['left', 'middle', 'right']),
     condition('opponentCorner', 'in', ['left', 'right']), condition('opponentPosition', 'in', ['left', 'middle', 'right']),
 ];
+const exitSpeedAdvice: PhraseActionDefinition = {
+    sentence: 'From pervious laps statistic, you generally have better exit speed. long straight after this corner, consider back up a little bit to have space to overtake at exit.',
+    actionConditions: [condition('betterCornerExitSpeed', '=', 1), condition('opponentDistanceM', '<=', 2),
+        condition('approachLongStraightAfterCorner', '=', 1)],
+};
 
 // Sentence metadata is compiled into child closures by createPhraseRoot.
 // More specific tactics take priority when entering from the root.
@@ -165,8 +170,7 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
         id: 'second-apex', name: 'Chicane overtake', holdMs: 0,
         description: 'Prepare for opposite linked corners, then speak when the opponent is less than 0.5 seconds from corner entry: go wide if the opponent is inside, or brake early and hold inside if the opponent is outside.',
         sentence: 'Go wide in the first turn. then take second apex if possible',
-        conditions: [condition('opponentDistanceM', '<=', 2), condition('opponentCornerEtaS', '<=', 2),
-            condition('approachCornerSpeed', '=', 'slow'), condition('approachSequenceRemaining', '>=', 1),
+        conditions: [condition('approachSequenceRemaining', '>=', 1), condition('approachCornerSpeed', '=', 'slow'),
             condition('approachLinkedOpposite', '=', 1)],
         actionConditions: [condition('opponentCornerEtaS', '<', 0.5), conditionGroup([
             conditionGroup([condition('approachCornerDirection', '=', 'left'), condition('opponentPosition', '=', 'left')]),
@@ -178,7 +182,7 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
                 conditionGroup([condition('approachCornerDirection', '=', 'right'), condition('opponentPosition', '=', 'left')]),
                 conditionGroup([condition('approachCornerDirection', '=', 'left'), condition('opponentPosition', '=', 'right')], 'or'),
             ])],
-        }],
+        }, exitSpeedAdvice],
     },
     {
         id: 'one-tight-slow-corner', name: 'One Tight Slow Corner', holdMs: 0,
@@ -200,11 +204,7 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
                 conditionGroup([condition('opponentPosition', '=', 'middle'), condition('playerPosition', '=', 'left'),
                     condition('approachCornerDirection', '=', 'left')], 'or'),
             ],
-        }, {
-            sentence: 'From pervious laps statistic, you generally have better exit speed. long straight after this corner, consider back up a little bit to have space to overtake at exit.',
-            actionConditions: [condition('betterCornerExitSpeed', '=', 1), condition('opponentDistanceM', '<=', 2),
-                condition('approachLongStraightAfterCorner', '=', 1)],
-        }],
+        }, exitSpeedAdvice],
     },
     {
         id: 'slipstream', name: 'Slipstream', holdMs: 800,
@@ -263,7 +263,7 @@ function snapshotConditions(conditions: readonly PhraseConditionNode[]): Conditi
     }));
 }
 
-function createInsideLongStraightClosure(say: Action<PhraseContext>[]): Closure<PhraseContext> {
+function createInsideLongStraightClosure(phrase: PhraseDefinition, say: Action<PhraseContext>[]): Closure<PhraseContext> {
     const enteredStraights = new WeakMap<State<PhraseContext>, string>();
     const entry = ({ driverLongStraightIds }: PhraseContext) => Boolean(driverLongStraightIds?.length);
     const exit = ({ driverLongStraightIds }: PhraseContext, state: State<PhraseContext>) => {
@@ -271,7 +271,7 @@ function createInsideLongStraightClosure(say: Action<PhraseContext>[]): Closure<
         return entered !== undefined && driverLongStraightIds !== undefined && !driverLongStraightIds.includes(entered);
     };
     return new Closure('Inside the Long Straight',
-        'Stay inside the driver’s current long straight, then return to One Tight Slow Corner when the driver leaves it.',
+        `Stay inside the driver’s current long straight, then return to ${phrase.name} when the driver leaves it.`,
         describeCondition((context, state) => {
             if (state.current !== state.closure || !entry(context)) return false;
             enteredStraights.set(state, context.driverLongStraightIds![0]);
@@ -286,7 +286,7 @@ function createInsideLongStraightClosure(say: Action<PhraseContext>[]): Closure<
             }])),
             ...say.map((action) => new Action(action.name, action.description, action.run,
                 describeCondition((context, state) => entry(context) && action.condition(context, state), action.condition.describe!))),
-        ], { id: 'one-tight-slow-corner:inside-long-straight' });
+        ], { id: `${phrase.id}:inside-long-straight` });
 }
 
 function createInsideCornerClosure(): Closure<PhraseContext> {
@@ -325,7 +325,11 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                     action.conditions
                         ? (context) => snapshotConditions(context.actionConditions.get(action.id) ?? [])
                         : 'Always eligible')));
-            const parentSay = phrase.id === 'one-tight-slow-corner' ? say.slice(1, 2) : say;
+            const parentSay = phrase.id === 'one-tight-slow-corner' ? say.slice(1, 2)
+                : phrase.id === 'second-apex' ? say.slice(0, 2) : say;
+            const children = phrase.id === 'one-tight-slow-corner'
+                ? [createInsideLongStraightClosure(phrase, [...say.slice(2), say[0]]), createInsideCornerClosure()]
+                : phrase.id === 'second-apex' ? [createInsideLongStraightClosure(phrase, say.slice(2))] : [];
             return new Closure<PhraseContext>(
                 phrase.name,
                 phrase.description,
@@ -337,8 +341,7 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                     return context.emit && memory.armed && context.now - memory.since >= phrase.holdMs
                         && (memory.lastEmitted === undefined || context.now - memory.lastEmitted >= COOLDOWN_MS);
                 }, (context) => snapshotConditions(context.entryConditions.get(phrase.id) ?? [])),
-                [...(phrase.id === 'one-tight-slow-corner' ? [createInsideLongStraightClosure([...say.slice(2), say[0]]), createInsideCornerClosure()] : []),
-                    ...parentSay, Action.exitToRoot(describeCondition((_context, state) =>
+                [...children, ...parentSay, Action.exitToRoot(describeCondition((_context, state) =>
                     parentSay.some((action) => state.current === action), 'The phrase action has run'))],
                 { id: phrase.id, inspect: (context) => ({
                     ...context.inspections.get(phrase.id),

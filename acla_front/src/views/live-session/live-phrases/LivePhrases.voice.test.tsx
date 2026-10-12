@@ -12,7 +12,7 @@ import { circuitMap, vision } from './test-fixtures';
 jest.mock('components/tts', () => ({ synthesizeTts: jest.fn() }));
 const synthesize = synthesizeTts as jest.MockedFunction<typeof synthesizeTts>;
 const sentence = PHRASE_DEFINITIONS.find((rule) => rule.id === 'pressure-feint')!.sentence;
-const sentences = PHRASE_DEFINITIONS.flatMap((rule) => [rule.sentence, ...(rule.additionalActions ?? []).map((action) => action.sentence)]);
+const sentences = Array.from(new Set(PHRASE_DEFINITIONS.flatMap((rule) => [rule.sentence, ...(rule.additionalActions ?? []).map((action) => action.sentence)])));
 const pack = (text: string): TtsPack => ({ text, audioDataUrl: `data:audio/wav;base64,${btoa(text)}`, durationMs: 3000 });
 let audio: ReturnType<typeof installAudioDoubles>;
 let otherPlayback: PlaybackHandle | undefined;

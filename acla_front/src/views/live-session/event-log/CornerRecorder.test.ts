@@ -1,5 +1,5 @@
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
-import { CornerRecorder, DriverCornerRecord, formatCornerTime, parseCornerTime } from './CornerRecorder';
+import { CornerRecorder, DriverCornerRecord, formatCornerTime, parseSessionTimeMs } from './CornerRecorder';
 
 const map: CircuitMapDto = {
     id: 'track', game: 'acc', circuit_name: 'Test circuit', resolution: 1000, samples: {},
@@ -12,19 +12,22 @@ describe('CornerRecorder', () => {
     let recorder: CornerRecorder;
     beforeEach(() => { recorder = new CornerRecorder(); recorder.setMap(map); });
     const tick = (time: number, cars: Record<string, number>, sampleIndex = time) => recorder.tick({
-        Graphics_current_time_str: formatCornerTime(BASE_TIME + time),
+        Graphics_session_time: (BASE_TIME + time) / 1000,
         Graphics_normalized_positions: cars,
         Graphics_player_car_id: 7,
         // Deliberately unrelated to opponent motion or the requested telemetry clock.
         Physics_speed_kmh: 900, Physics_brake: 1, Physics_gas: 0, Graphics_current_time: 1,
     }, sampleIndex);
 
-    it('parses minutes, seconds and milliseconds without wrapping minutes at an hour', () => {
-        expect(parseCornerTime('33:47:758')).toBe(BASE_TIME);
-        expect(parseCornerTime('1:02.003')).toBe(62003);
+    it('converts elapsed session seconds to milliseconds and formats times without wrapping at an hour', () => {
+        expect(parseSessionTimeMs(2027.758)).toBe(BASE_TIME);
+        expect(parseSessionTimeMs(62.003)).toBe(62003);
+        expect(parseSessionTimeMs(0)).toBe(0);
+        expect(parseSessionTimeMs(1 / 60)).toBe(17);
         expect(formatCornerTime(3600001)).toBe('60:00:001');
         expect(formatCornerTime(758)).toBe('00:00:758');
-        [undefined, '', '33:67:758', '33:47', '-1:00:000', 'NaN'].forEach((value) => expect(parseCornerTime(value)).toBeNull());
+        [undefined, null, '', '2027.758', NaN, Infinity, -1, Number.MAX_VALUE]
+            .forEach((value) => expect(parseSessionTimeMs(value)).toBeNull());
     });
 
     it('creates a record only at the end, backtracks braking and acceleration, and interpolates entry', () => {
@@ -91,6 +94,30 @@ describe('CornerRecorder', () => {
         expect(tick(24000, { '7': 0.03 })).toHaveLength(1);
     });
 
+    it('keeps player and opponent corner timing across player lap clock resets', () => {
+        recorder.setMap({ ...map, centerline_segments: [
+            ...map.centerline_segments!,
+            { id: 'wrap', tags: ['corner'], start_position: 0.95, end_position: 0.02 },
+        ] });
+        const records: DriverCornerRecord[] = [];
+        [0.93, 0.96, 0.99, 0.01, 0.04].forEach((position, index) => {
+            records.push(...recorder.tick({
+                Graphics_session_time: (BASE_TIME + index * 1000) / 1000,
+                Graphics_current_time_str: formatCornerTime(position * 25000),
+                Graphics_current_time: position * 25000,
+                Graphics_player_car_id: 7,
+                Graphics_normalized_car_position: position,
+                Graphics_normalized_positions: { '63': (18 + index * 3) / 100 },
+            }, index));
+        });
+        expect(records).toHaveLength(2);
+        expect(records).toEqual(expect.arrayContaining([
+            expect.objectContaining({ carId: '7', isPlayer: true, cornerId: 'wrap', cornerTimeMs: 2666 }),
+            expect.objectContaining({ carId: '63', isPlayer: false, cornerId: 'turn-1', cornerTimeMs: 3333 }),
+        ]));
+        expect(records.every(({ exitSpeed }) => Math.abs(exitSpeed! - 0.03) < 1e-9)).toBe(true);
+    });
+
     it('measures an exit crossing over the start/finish line', () => {
         recorder.setMap({ ...map, centerline_segments: [{ id: 'wrap', tags: ['slow corner'], start_position: 0.95, end_position: 0 }] });
         tick(0, { '7': 0.99 });
@@ -135,7 +162,7 @@ describe('CornerRecorder', () => {
             () => recorder.reset(),
             () => recorder.setMap(map),
             () => recorder.tick({ Graphics_current_time: BASE_TIME + 500 }, 1),
-            () => recorder.tick({ Graphics_current_time_str: formatCornerTime(BASE_TIME + 500), Graphics_status: 1 }, 1),
+            () => recorder.tick({ Graphics_session_time: (BASE_TIME + 500) / 1000, Graphics_status: 1 }, 1),
         ]) {
             recorder.reset();
             tick(0, { '7': 0.28 });
@@ -154,7 +181,7 @@ describe('CornerRecorder', () => {
             { id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.4 },
         ] })).toBe(1);
         tick(0, { '7': 0.28 });
-        const records = recorder.tick({ Graphics_current_time_str: formatCornerTime(BASE_TIME + 1000),
+        const records = recorder.tick({ Graphics_session_time: (BASE_TIME + 1000) / 1000,
             Graphics_player_car_id: 7, Graphics_normalized_car_position: 0.31, Graphics_normalized_positions: { '7': 0.28 } }, 1);
         expect(records).toHaveLength(1);
         expect(records[0]).toMatchObject({ carId: '7', isPlayer: true, cornerId: 'legacy' });
