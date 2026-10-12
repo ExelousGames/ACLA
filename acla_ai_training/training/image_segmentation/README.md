@@ -305,8 +305,9 @@ docker exec -it acla_ai_training_c python -m training.image_segmentation train \
   --model yolo26n-seg.pt --epochs 100 --imgsz 768 --batch 8 --device 0
 ```
 
-The default is CPU; select `--device 0` for a configured NVIDIA/ROCm GPU or `mps`
-for Apple Silicon. Pretrained weights download on first use to
+The default is the first configured NVIDIA/ROCm GPU (`--device 0`); select
+`--device cpu` for CPU training or `--device mps` for Apple Silicon.
+Pretrained weights download on first use to
 `storage/image_segmentation/pretrained/`, independent of the working directory. Supply a local
 segmentation checkpoint to avoid that download, or `--model yolo26n-seg.yaml`
 to initialize without pretrained weights.

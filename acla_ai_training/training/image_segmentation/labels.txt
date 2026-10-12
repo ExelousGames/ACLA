@@ -29,3 +29,4 @@ forest left
 forest right
 buildings left
 buildings right
+back mirror

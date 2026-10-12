@@ -219,7 +219,7 @@ def test_training_uses_dataset_from_saved_assignments(samples, monkeypatch, caps
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda *a, **kw: model))
 
     assert main([
-        "train-labelme", "--no-upload", "--split-file", str(split_file), "--epochs", "1", "--device", "0",
+        "train-labelme", "--no-upload", "--split-file", str(split_file), "--epochs", "1",
     ]) == 0
 
     options = model.train.call_args.kwargs

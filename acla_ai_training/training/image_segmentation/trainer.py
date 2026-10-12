@@ -23,7 +23,7 @@ def train_model(
     epochs: int = 100,
     imgsz: int = 768,
     batch: int = 8,
-    device: str = "cpu",
+    device: str = "0",
     workers: int = 0,
     project: Path = WORKSPACE_DIR / "storage/image_segmentation/runs",
     name: str = "train",

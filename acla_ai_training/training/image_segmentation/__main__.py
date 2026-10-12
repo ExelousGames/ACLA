@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     train.add_argument("--epochs", type=int, default=100)
     train.add_argument("--imgsz", type=int, default=768)
     train.add_argument("--batch", type=int, default=8)
-    train.add_argument("--device", default="cpu", help="cpu, 0 for the first GPU, or mps.")
+    train.add_argument("--device", default="0", help="0 for the first GPU (default), cpu, or mps.")
     train.add_argument("--workers", type=int, default=0)
     train.add_argument("--project", type=Path, default=WORKSPACE_DIR / "storage/image_segmentation/runs")
     train.add_argument("--name", default="train")
