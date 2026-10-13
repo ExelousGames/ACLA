@@ -425,8 +425,11 @@ export class RacingSessionController {
             );
         }
 
-        if (metadata.videos !== undefined && (!Array.isArray(metadata.videos) || metadata.videos.length > 100)) {
+        if (metadata.videos !== undefined && !Array.isArray(metadata.videos)) {
             throw new BadRequestException('Invalid video list');
+        }
+        if (metadata.videos && metadata.videos.length > 1) {
+            throw new BadRequestException('Only one video is allowed per session.');
         }
         if (metadata.videos?.length && (!req?.user?.userId || req.user.userId !== metadata.userId)) {
             throw new ForbiddenException('Videos must belong to the authenticated user');

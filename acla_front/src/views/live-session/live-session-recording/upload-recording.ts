@@ -12,6 +12,7 @@ type UploadOptions = {
 };
 
 export async function uploadRecording({ metadata, filePath, stream, onProgress, videos = [] }: UploadOptions) {
+    if (videos.length > 1) throw new Error('Only one video is allowed per session.');
     const progress = (percent: number, status: string) => onProgress(5 + Math.floor(percent * 0.9), status);
     progress(0, 'Initializing upload...');
     const initResp = await apiService.post('/racing-session/upload/init', {
@@ -67,7 +68,7 @@ export async function uploadRecording({ metadata, filePath, stream, onProgress, 
                 offset += bytesRead;
                 uploadedVideoBytes += bytesRead;
                 videoChunkIndex += 1;
-                progress(45 + 45 * uploadedVideoBytes / totalVideoBytes, `Uploading video ${videoIndex + 1} of ${videos.length}...`);
+                progress(45 + 45 * uploadedVideoBytes / totalVideoBytes, 'Uploading video...');
             }
         }
         progress(92, 'Finalizing upload...');

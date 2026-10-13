@@ -36,6 +36,21 @@ it.each([{}, { user: {} }])('rejects listing sessions with videos without an aut
     expect(service.listSessionsWithVideos).not.toHaveBeenCalled();
 });
 
+it('rejects multiple videos before creating an upload', async () => {
+    await expect(controller.initUpload({ ...metadata, videos: [metadata.videos[0], {
+        ...metadata.videos[0], name: 'second.mp4',
+    }] }, req)).rejects.toThrow('Only one video is allowed per session');
+    expect((controller as any).uploadStates.size).toBe(0);
+    expect(service.uploadSessionVideoChunk).not.toHaveBeenCalled();
+});
+
+it('rejects chunks for a second video in a session', async () => {
+    const { uploadId } = await controller.initUpload(metadata, req);
+    await expect(controller.receiveVideoChunk(req, { videoIndex: 1, chunkIndex: 0, data: 'AQIDBA==' }, uploadId))
+        .rejects.toBeInstanceOf(BadRequestException);
+    expect(service.uploadSessionVideoChunk).not.toHaveBeenCalled();
+});
+
 it('persists the video on the same session, ignores duplicate chunks, and refuses incomplete videos', async () => {
     const { uploadId } = await controller.initUpload(metadata, req);
     await controller.receiveChunk({ chunk: [{ speed: 100 }], chunkIndex: 0 }, uploadId);

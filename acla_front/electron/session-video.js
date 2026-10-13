@@ -6,7 +6,10 @@ const CHUNK_BYTES = 512 * 1024;
 
 function registerSessionVideo({ ipcMain, getMainWindow, getRecordingDirectory, shell }) {
   const writers = new Map();
+  const creating = new Set();
   const watched = new WeakSet();
+  const belongsToSession = (name, source) => name.startsWith(`${path.basename(source)}.video-`)
+    && /\.video-\d+-[a-f0-9-]+\.mp4$/.test(name);
   const owner = (event) => {
     const window = getMainWindow();
     if (!window || window.isDestroyed() || event.sender !== window.webContents
@@ -35,11 +38,17 @@ function registerSessionVideo({ ipcMain, getMainWindow, getRecordingDirectory, s
     }
     const source = await authorized(telemetryPath);
     if (!source.endsWith('.jsonl')) throw new Error('Invalid telemetry file.');
-    const startedAt = Date.now();
-    const filePath = `${source}.video-${startedAt}-${crypto.randomUUID()}.mp4`;
-    await fs.writeFile(filePath, Buffer.alloc(0), { flag: 'wx' });
-    writers.set(filePath, event.sender);
-    return { filePath, startedAt };
+    if (creating.has(source)) throw new Error('Only one video is allowed per session.');
+    creating.add(source);
+    try {
+      const files = await fs.readdir(path.dirname(source));
+      if (files.some(name => belongsToSession(name, source))) throw new Error('Only one video is allowed per session.');
+      const startedAt = Date.now();
+      const filePath = `${source}.video-${startedAt}-${crypto.randomUUID()}.mp4`;
+      await fs.writeFile(filePath, Buffer.alloc(0), { flag: 'wx' });
+      writers.set(filePath, event.sender);
+      return { filePath, startedAt };
+    } finally { creating.delete(source); }
   });
   ipcMain.handle('session-video-append', async (event, filePath, bytes) => {
     owner(event);
@@ -72,7 +81,7 @@ function registerSessionVideo({ ipcMain, getMainWindow, getRecordingDirectory, s
     const prefix = `${path.basename(source)}.video-`;
     const clips = [];
     for (const name of (await fs.readdir(directory)).sort()) {
-      if (!name.startsWith(prefix) || !/\.video-\d+-[a-f0-9-]+\.mp4$/.test(name)) continue;
+      if (!belongsToSession(name, source)) continue;
       const filePath = await videoPath(path.join(directory, name));
       const { size } = await fs.stat(filePath);
       if (size) clips.push({ filePath, name, size, mimeType: 'video/mp4', startedAt: Number(name.slice(prefix.length).split('-')[0]) });

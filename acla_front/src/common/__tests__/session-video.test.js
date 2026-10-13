@@ -25,6 +25,31 @@ beforeEach(async () => {
 afterEach(async () => { await fs.rm(directory, { recursive: true, force: true }); });
 const call = (name, ...args) => handlers[`session-video-${name}`](event, ...args);
 
+it('rejects a second video while recording and after saving without changing the first', async () => {
+    const { filePath } = await call('create', telemetry);
+    await expect(call('create', telemetry)).rejects.toThrow('Only one video is allowed per session');
+    await call('append', filePath, Uint8Array.from([1, 2]));
+    await call('finish', filePath);
+    await expect(call('create', telemetry)).rejects.toThrow('Only one video is allowed per session');
+    expect(await call('read', filePath, 0)).toEqual({ data: 'AQI=', bytesRead: 2 });
+    expect(await call('list', telemetry)).toHaveLength(1);
+});
+
+it('rejects concurrent video creation for the same session', async () => {
+    const results = await Promise.allSettled([call('create', telemetry), call('create', telemetry)]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find(result => result.status === 'rejected').reason.message).toContain('Only one video');
+    expect((await fs.readdir(directory)).filter(name => name.endsWith('.mp4'))).toHaveLength(1);
+});
+
+it('recognizes an existing video on disk and allows a separate session to record', async () => {
+    await fs.writeFile(`${telemetry}.video-1-abc.mp4`, Uint8Array.from([1]));
+    await expect(call('create', telemetry)).rejects.toThrow('Only one video is allowed per session');
+    const otherTelemetry = path.join(directory, 'other.jsonl');
+    await fs.writeFile(otherTelemetry, '{}\n');
+    await expect(call('create', otherTelemetry)).resolves.toHaveProperty('filePath');
+});
+
 it('persists ordered bytes and discovers clips again for the same telemetry file', async () => {
     const { filePath } = await call('create', telemetry);
     expect(filePath).toMatch(/\.mp4$/);

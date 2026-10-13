@@ -255,15 +255,39 @@ describe('recording session controls', () => {
         });
         const view = renderRecorder(runtime, 1);
         fireEvent.click(await screen.findByRole('button', { name: 'Show local video' }));
+        expect(screen.getByText('Video saved locally')).toBeInTheDocument();
         expect(window.sessionVideo.reveal).toHaveBeenCalledWith(clip.filePath);
         fireEvent.click(await screen.findByRole('button', { name: 'Upload Session' }));
         expect(screen.getByLabelText('Include recorded video')).toBeChecked();
+        expect(screen.getByText('Local video, 0.0 MB. The local video is kept after upload.')).toBeInTheDocument();
         if (!includeVideo) fireEvent.click(screen.getByLabelText('Include recorded video'));
         const buttons = screen.getAllByRole('button', { name: 'Upload Session' });
         fireEvent.click(buttons[buttons.length - 1]);
         await waitFor(() => expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1));
         expect(mockApiPost.mock.calls.filter(([url]) => url.includes('/video-chunk'))).toHaveLength(includeVideo ? 1 : 0);
         expect(window.sessionVideo.delete).not.toHaveBeenCalled();
+        view.unmount(); view.host.remove();
+    });
+
+    it('blocks upload of a restored session with multiple videos and keeps its files', async () => {
+        const clip = { filePath: 'first.mp4', name: 'first.mp4', size: 4, mimeType: 'video/mp4', startedAt: 1 };
+        window.sessionVideo = { create: jest.fn(), append: jest.fn(), finish: jest.fn(),
+            list: jest.fn().mockResolvedValue([clip, { ...clip, filePath: 'second.mp4', name: 'second.mp4' }]),
+            read: jest.fn(), delete: jest.fn(), reveal: jest.fn() };
+        const runtime = createRuntime({
+            recordingState: RecordingState.UPLOAD_READY, recordingFileKey: 'session.jsonl',
+            recordingMetadata: { sessionName: 'Race', mapName: 'Track', carName: 'Car', gameRecordedFrom: 'acc' },
+        });
+        const view = renderRecorder(runtime, 1);
+        await screen.findByText('Only one video is allowed per session. Multiple local videos were found.');
+        fireEvent.click(screen.getByRole('button', { name: 'Upload Session' }));
+        const buttons = screen.getAllByRole('button', { name: 'Upload Session' });
+        fireEvent.click(buttons[buttons.length - 1]);
+        await screen.findByRole('button', { name: 'Retry Upload' });
+        expect(mockApiPost).not.toHaveBeenCalled();
+        expect(runtime.clearPersistedDraft).not.toHaveBeenCalled();
+        expect(window.sessionVideo.delete).not.toHaveBeenCalled();
+        expect(window.electronAPI.deleteTempFile).not.toHaveBeenCalled();
         view.unmount(); view.host.remove();
     });
 

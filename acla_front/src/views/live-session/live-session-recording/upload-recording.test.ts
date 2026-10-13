@@ -18,18 +18,36 @@ beforeEach(() => {
 });
 afterEach(() => { delete window.sessionVideo; jest.useRealTimers(); });
 
-it('uploads every video clip before completing the same telemetry session', async () => {
+it('uploads the session video before completing the telemetry session', async () => {
     const upload = options();
-    upload.videos.push({ ...video, filePath: 'second.mp4', name: 'second.mp4' });
     await uploadRecording(upload);
     expect(post.mock.calls.map(([url]) => url)).toEqual([
         '/racing-session/upload/init', '/racing-session/upload/chunk?uploadId=upload-1',
-        '/racing-session/upload/video-chunk?uploadId=upload-1', '/racing-session/upload/video-chunk?uploadId=upload-1',
+        '/racing-session/upload/video-chunk?uploadId=upload-1',
         '/racing-session/upload/complete?uploadId=upload-1',
     ]);
     expect(post.mock.calls[0][1].videos).toEqual(upload.videos.map(({ filePath, ...metadata }) => metadata));
-    expect(post.mock.calls[3][1]).toEqual({ videoIndex: 1, chunkIndex: 0, data: 'AQIDBA==' });
+    expect(post.mock.calls[2][1]).toEqual({ videoIndex: 0, chunkIndex: 0, data: 'AQIDBA==' });
     expect(window.sessionVideo!.delete).not.toHaveBeenCalled();
+});
+
+it('rejects multiple videos before creating an upload or reading local files', async () => {
+    const upload = options();
+    upload.videos.push({ ...video, filePath: 'second.mp4', name: 'second.mp4' });
+    await expect(uploadRecording(upload)).rejects.toThrow('Only one video is allowed per session');
+    expect(post).not.toHaveBeenCalled();
+    expect(upload.stream).not.toHaveBeenCalled();
+    expect(window.sessionVideo!.read).not.toHaveBeenCalled();
+    expect(window.sessionVideo!.delete).not.toHaveBeenCalled();
+});
+
+it('allows a telemetry-only upload', async () => {
+    await uploadRecording({ ...options(), videos: [] });
+    expect(post.mock.calls.map(([url]) => url)).toEqual([
+        '/racing-session/upload/init', '/racing-session/upload/chunk?uploadId=upload-1',
+        '/racing-session/upload/complete?uploadId=upload-1',
+    ]);
+    expect(post.mock.calls[0][1]).not.toHaveProperty('videos');
 });
 
 it('retains local files and never completes a session when the video cannot be read', async () => {

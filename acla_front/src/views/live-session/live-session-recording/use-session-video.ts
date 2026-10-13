@@ -16,6 +16,10 @@ export function useSessionVideo(stream: MediaStream | null, filePath: string | n
     }, []);
     const refresh = useCallback(async () => {
         const files = filePath && window.sessionVideo ? await window.sessionVideo.list(filePath) : [];
+        if (files.length > 1) {
+            setClips([]);
+            throw new Error('Only one video is allowed per session. Multiple local videos were found.');
+        }
         setClips(files);
         return files;
     }, [filePath]);

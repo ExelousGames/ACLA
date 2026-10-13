@@ -378,7 +378,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                     </label>
                     <Text as="p" size="2" color="gray">
                         {video.saving ? 'The video will be saved before uploading.' : video.clips.length
-                            ? `${video.clips.length} local video clip(s), ${(video.clips.reduce((bytes, clip) => bytes + clip.size, 0) / 1048576).toFixed(1)} MB. Local videos are kept after upload.`
+                            ? `Local video, ${(video.clips[0].size / 1048576).toFixed(1)} MB. The local video is kept after upload.`
                             : 'No video recorded. Share your game screen before starting a new session recording to include video.'}
                     </Text>
                     {video.error && <Text as="p" size="2" color="red" role="alert">{video.error} Uncheck “Include recorded video” to upload telemetry only.</Text>}
@@ -535,7 +535,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             </Flex>
                     <SessionScreenCaptureControls startDisabled={videoStartLocked} />
                     <Text size="1" color={video.saving ? 'red' : 'gray'} role="status">
-                        {video.saving ? 'Recording video locally' : video.clips.length ? `${video.clips.length} video clip(s) saved locally`
+                        {video.saving ? 'Recording video locally' : video.clips.length ? 'Video saved locally'
                             : videoStartLocked ? 'Video can only start with a new session recording.'
                                 : 'Share a screen before Start Recording to record video with telemetry.'}
                     </Text>

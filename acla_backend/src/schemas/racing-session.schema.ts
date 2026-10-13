@@ -36,7 +36,10 @@ export class RacingSession {
     @Prop({ type: [Object], required: false, default: [] })
     dataChunkFileIds?: ObjectId[];
 
-    @Prop({ type: [Object], required: false, default: [] })
+    @Prop({ type: [Object], required: false, default: [], validate: {
+        validator: (videos: unknown[]) => !videos || videos.length <= 1,
+        message: 'Only one video is allowed per session.',
+    } })
     videos?: {
         name: string;
         size: number;
