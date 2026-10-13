@@ -1,6 +1,6 @@
-export type CircuitMapGame = 'acc' | 'other';
+export type CircuitMapGame = 'acc' | 'iracing';
 
-export type CircuitMapCaptureMode = 'left_boundary' | 'right_boundary' | 'pit_lane';
+export type CircuitMapCaptureMode = 'left_boundary' | 'middle_line' | 'right_boundary' | 'pit_lane';
 
 export type FutureCircuitMapCaptureMode =
     | 'racing_line'
@@ -9,11 +9,12 @@ export type FutureCircuitMapCaptureMode =
 
 export const CIRCUIT_MAP_GAMES: { value: CircuitMapGame; label: string }[] = [
     { value: 'acc', label: 'ACC' },
-    { value: 'other', label: 'Other' }
+    { value: 'iracing', label: 'iRacing' }
 ];
 
 export const CIRCUIT_MAP_CAPTURE_MODES: { value: CircuitMapCaptureMode; label: string }[] = [
     { value: 'left_boundary', label: 'Left Boundary' },
+    { value: 'middle_line', label: 'Middle Line' },
     { value: 'right_boundary', label: 'Right Boundary' },
     { value: 'pit_lane', label: 'Pit Lane' }
 ];
@@ -37,6 +38,18 @@ export type CircuitMapBinSample = {
 
 export type CircuitMapSamplesByMode = Partial<Record<CircuitMapCaptureMode, CircuitMapBinSample[]>>;
 
+export type CircuitMapCenterlineSegment = {
+    id: string;
+    name?: string;
+    tags: string[];
+    // Ordered in lap direction; start > end crosses the start/finish line.
+    start_position: number;
+    end_position: number;
+};
+
+// Read compatibility for maps saved before tags belonged to segments.
+export type CircuitMapCenterlineTag = Omit<CircuitMapCenterlineSegment, 'tags'> & { label: string };
+
 export type CircuitMapSummaryDto = {
     id: string;
     game: CircuitMapGame;
@@ -49,12 +62,16 @@ export type CircuitMapSummaryDto = {
 export type CircuitMapDto = CircuitMapSummaryDto & {
     resolution: number;
     samples: CircuitMapSamplesByMode;
+    centerline_segments?: CircuitMapCenterlineSegment[];
+    /** @deprecated Read only; save centerline_segments instead. */
+    centerline_tags?: CircuitMapCenterlineTag[];
 };
 
 export type CircuitMapAlignedRow = {
     bin: number;
     normalized_position: number;
     left_boundary?: CircuitMapBinSample;
+    middle_line?: CircuitMapBinSample;
     right_boundary?: CircuitMapBinSample;
     pit_lane?: CircuitMapBinSample;
 };

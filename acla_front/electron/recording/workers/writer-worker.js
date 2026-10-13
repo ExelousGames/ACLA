@@ -39,7 +39,7 @@ function streamEnd(stream) {
 }
 
 class RecordingWriter {
-  constructor({ game, recordingDirectory, progressPort, parentSend, fsModule = fs }) {
+  constructor({ game, recordingDirectory, progressPort, parentSend, onCommitted, fsModule = fs }) {
     if (!DESKTOP_GAME_SET.has(game)) throw new TypeError('Writer game is invalid.');
     if (typeof recordingDirectory !== 'string' || !path.isAbsolute(recordingDirectory)) {
       throw new TypeError('Writer recording directory must be absolute.');
@@ -51,6 +51,7 @@ class RecordingWriter {
     this.recordingDirectory = path.resolve(recordingDirectory);
     this.progressPort = progressPort;
     this.parentSend = parentSend;
+    this.onCommitted = onCommitted;
     this.fs = fsModule;
     this.stream = null;
     this.filePath = null;
@@ -139,6 +140,7 @@ class RecordingWriter {
       const fromSequence = batch[0].sequence;
       const toSequence = batch[batch.length - 1].sequence;
       this.committedCount += batch.length;
+      if (!this.ending) this.onCommitted?.(toSequence);
       this.progressPort.postMessage({
         type: 'committed',
         game: this.game,
@@ -262,6 +264,9 @@ function runWriterWorker() {
         recordingDirectory: message.recordingDirectory,
         progressPort,
         parentSend,
+        onCommitted: message.game === 'iracing'
+          ? (sequence) => framePort.postMessage({ type: 'ack', game: message.game, sequence })
+          : undefined,
       });
       framePort.on('message', (portEvent) => {
         const portMessage = eventData(portEvent);

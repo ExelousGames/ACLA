@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain } = require('electron');
+const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain, dialog, desktopCapturer, shell } = require('electron');
+const { Worker } = require('worker_threads');
 const { PythonShell } = require('python-shell');
 const path = require('path');
 const isDev = require('electron-is-dev');
@@ -8,6 +9,9 @@ const os = require('os');
 const crypto = require('crypto');
 const { detectSupportedDesktopGame } = require('./desktop-game-detection');
 const { RecordingSessionManager } = require('../electron/recording/recording-session-manager');
+const { registerScreenCapture } = require('../electron/screen-capture');
+const { registerSessionVideo } = require('../electron/session-video');
+const { registerTrackVisionModels } = require('../electron/track-vision-models');
 const {
   DESKTOP_GAME_SET,
   recordingStartFailure,
@@ -46,12 +50,16 @@ function getPythonExecutable() {
 
 const devMode = app.isPackaged ? false : isDev;
 let mainWindow;
+const configureScreenCapture = registerScreenCapture({ ipcMain, desktopCapturer, getMainWindow: () => mainWindow });
+registerSessionVideo({ ipcMain, getMainWindow: () => mainWindow, getRecordingDirectory, shell });
+registerTrackVisionModels({ app, ipcMain, getMainWindow: () => mainWindow, getPythonExecutable });
 let isAppQuitting = false;
 let recordingManager = null;
 let latestDetectedGame = null;
 let recordingIpcRegistered = false;
 let quitAfterRecordingShutdown = false;
 const recordedFileReads = new Map();
+let iracingImportInFlight = false;
 
 function getRecordingDirectory() {
   return path.join(app.getPath('userData'), 'acla-temp');
@@ -216,6 +224,50 @@ function registerRecordingIpc() {
     if (!isCurrentMainRenderer(event.sender)) throw new Error('Recording stop is allowed only from the active workspace.');
     if (!recordingManager) throw new Error('No recording session is active.');
     return recordingManager.stopSession(event.sender.id);
+  });
+
+  ipcMain.handle('import-local-iracing-telemetry', async (event) => {
+    if (!isCurrentMainRenderer(event.sender)) throw new Error('Telemetry import is allowed only from the active workspace.');
+    if (recordingManager?.hasActiveSession()) throw new Error('Stop recording before importing iRacing telemetry.');
+    if (iracingImportInFlight) throw new Error('An iRacing telemetry import is already running.');
+    iracingImportInFlight = true;
+    let worker;
+    let outputPath;
+    try {
+      const selection = await dialog.showOpenDialog(mainWindow, {
+        title: 'Open iRacing recorded telemetry',
+        defaultPath: path.join(app.getPath('documents'), 'iRacing', 'telemetry'),
+        filters: [{ name: 'iRacing telemetry', extensions: ['ibt'] }],
+        properties: ['openFile'],
+      });
+      if (selection.canceled || !selection.filePaths.length) return null;
+      if (!isCurrentMainRenderer(event.sender)) throw new Error('The analysis workspace was closed.');
+      await fs.promises.mkdir(getRecordingDirectory(), { recursive: true });
+      outputPath = path.join(getRecordingDirectory(), `iracing_local_${crypto.randomUUID()}.jsonl`);
+      worker = new Worker(path.join(app.getAppPath(), 'electron', 'recording', 'readers', 'iracing', 'iracing-local-import-worker.js'), {
+        workerData: { sourcePath: selection.filePaths[0], outputPath },
+      });
+      const result = await new Promise((resolve, reject) => {
+        worker.on('error', reject);
+        worker.on('exit', () => reject(new Error('iRacing telemetry import ended before completion.')));
+        worker.on('message', (message) => {
+          if (message.type === 'complete') resolve(message);
+          else if (message.type === 'error') reject(new Error(message.message));
+        });
+      });
+      if (!isCurrentMainRenderer(event.sender)) throw new Error('The analysis workspace was closed.');
+      return { filePath: result.filePath, fileName: path.basename(selection.filePaths[0]), rowCount: result.rowCount, track: result.track, car: result.car };
+    } catch (error) {
+      await worker?.terminate();
+      if (outputPath) {
+        await fs.promises.unlink(outputPath).catch(() => undefined);
+        await fs.promises.unlink(`${outputPath}.partial`).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      await worker?.terminate();
+      iracingImportInFlight = false;
+    }
   });
 
   ipcMain.handle('recorded-file-read-start', async (event, request) => {
@@ -420,6 +472,7 @@ function createWindow() {
     }
   });
 
+  configureScreenCapture(mainWindow);
   mainWindow.loadURL(devMode ? 'http://localhost:3000' : `file://${path.join(__dirname, '../build/index.html')}`);
   const ownerWebContentsId = mainWindow.webContents.id;
   mainWindow.webContents.on('destroyed', () => {

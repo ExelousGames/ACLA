@@ -1,0 +1,396 @@
+import React from 'react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { OperationComponentRefProvider, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import { createLiveTelemetryStore } from '../live-telemetry-store';
+import type { TrackVisionDetection } from '../track-vision/track-vision-types';
+import LivePhrases from './LivePhrases';
+import { PHRASE_DEFINITIONS, PhraseCondition, PhraseEngine, conditionGroup } from './phrase-engine';
+import { circuitMap, vision } from './test-fixtures';
+import type { DriverCornerSummary } from '../event-log/corner-summary';
+
+jest.mock('components/tts', () => ({ synthesizeTts: jest.fn(() => new Promise(() => undefined)) }));
+
+describe('LivePhrases root connection', () => {
+    beforeEach(() => { jest.useFakeTimers(); jest.setSystemTime(10000); });
+    afterEach(() => { jest.useRealTimers(); jest.restoreAllMocks(); });
+
+    it('uses newly available event-log exit speeds to trigger the long-straight advice', async () => {
+        const telemetry = createLiveTelemetryStore();
+        const map = circuitMap();
+        map.centerline_segments = [
+            { id: 'turn', tags: ['corner', 'slow'], start_position: 0.1, end_position: 0.2 },
+            { id: 'approach', tags: ['long straight'], start_position: 0.04, end_position: 0.09 },
+            { id: 'exit', tags: ['long straight'], start_position: 0.2, end_position: 0.4 },
+        ];
+        const detection = vision(Date.now(), { corner: 'straight', player: 'middle', opponent: 'middle' });
+        for (const side of ['leftBoundary', 'rightBoundary', 'centerline'] as const) {
+            detection.birdsEyeScene![side] = detection.birdsEyeScene![side].map((points) => points.map((point) => ({ ...point, y: point.y - 8 })));
+        }
+        detection.birdsEyeScene!.cars[0].position = { x: 0, y: 2, z: 0 };
+        let summaries: DriverCornerSummary[] = [];
+        const root = {
+            getComponentName: () => 'live-session', subscribeTelemetry: telemetry.subscribeEvents,
+            getTrackVisionDetection: () => detection, subscribeTrackVision: () => () => undefined,
+            getLiveCircuitMap: () => map, subscribeLiveCircuitMap: () => () => undefined,
+            getLiveCornerSummaries: () => summaries,
+        };
+        const Root = () => { useRegisterOperationComponentRef(React.useRef(root)); return null; };
+        render(<OperationComponentRefProvider><Root /><LivePhrases name="live-phrases" /></OperationComponentRefProvider>);
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enable detection' })); });
+        const publish = (sequence: number) => telemetry.publishFrame({ type: 'frame', game: 'acc', sequence,
+            committedCount: 0, committedSequence: 0, sample: {
+                Graphics_status: 2, Graphics_player_car_id: 1, Graphics_normalized_car_position: 0.05,
+                Graphics_normalized_positions: { 1: 0.05, 2: 0.051 },
+            } });
+        const sentence = PHRASE_DEFINITIONS.find((rule) => rule.id === 'one-tight-slow-corner')!.additionalActions![1].sentence;
+        const output = within(screen.getByRole('region', { name: 'Triggered sentences' }));
+        act(() => { publish(1); });
+        expect(output.queryByText(sentence)).not.toBeInTheDocument();
+        summaries = [0.03, 0.02].map((averageExitSpeed, index) => ({
+            carId: String(index + 1), isPlayer: index === 0, cornerId: 'turn', cornerName: 'Corner 1',
+            sampleCount: 3, includedCount: 1, averageTimeMs: 1000,
+            averageExitSpeed, exitSpeedSampleCount: 3, exitSpeedIncludedCount: 1,
+        }));
+        act(() => { publish(2); });
+        expect(output.getByText(sentence)).toBeInTheDocument();
+        act(() => { telemetry.resetSession(); summaries = []; publish(1); });
+        expect(output.queryByText(sentence)).not.toBeInTheDocument();
+    });
+
+    it('lists the entire catalog before the live root is available', () => {
+        render(<LivePhrases name="live-phrases" />);
+        expect(screen.getByRole('button', { name: 'Enable detection' })).toBeVisible();
+        expect(screen.getByText('Detection: Disabled')).toBeInTheDocument();
+        expect(jest.getTimerCount()).toBe(0);
+        const catalog = within(screen.getByRole('region', { name: 'Sentence catalog' }));
+        PHRASE_DEFINITIONS.forEach((rule) => {
+            const summary = catalog.getByLabelText(`${rule.name} closure`);
+            expect(summary).toBeVisible();
+            expect(within(summary).getByText('Missing input')).toBeVisible();
+            expect(catalog.queryByText(rule.sentence)).not.toBeInTheDocument();
+            fireEvent.click(summary);
+            fireEvent.click(catalog.getByRole('tab', { name: 'Conditions' }));
+            const conditions = within(catalog.getByRole('list', { name: `${rule.name} conditions` }));
+            expect(conditions.getAllByRole('listitem')).toHaveLength(rule.conditions.length);
+            expect(conditions.getAllByText('Missing input')).toHaveLength(rule.conditions.length);
+            conditions.getAllByRole('listitem').forEach((condition) => expect(condition).toHaveAttribute('data-condition-fit', 'false'));
+            expect(conditions.getAllByText('AND')).toHaveLength(rule.conditions.length - 1);
+            expect(within(conditions.getAllByRole('listitem')[0]).queryByText('AND')).not.toBeInTheDocument();
+            fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
+        });
+        expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
+        expect(screen.getByText('Live Map: Waiting for a tagged circuit map')).toBeInTheDocument();
+        fireEvent.click(catalog.getByLabelText('Pressure and a feint closure'));
+        fireEvent.click(catalog.getByRole('tab', { name: 'Conditions' }));
+        const positions = within(catalog.getByRole('list', { name: 'Pressure and a feint conditions' }));
+        for (const subject of ['Player', 'Opponent']) {
+            expect(positions.getByText(`${subject} in a left or right turn corner`)).toBeVisible();
+            expect(positions.getByText(`${subject} near the left edge or middle of the track or right edge`)).toBeVisible();
+        }
+    });
+
+    it('renders closure and action metadata from the engine snapshot', () => {
+        const engine = new PhraseEngine([{ ...PHRASE_DEFINITIONS[0], additionalActions: undefined, name: 'Custom guide', description: 'Custom guide purpose.' }]);
+        const snapshot = engine.evaluate(Date.now());
+        snapshot.root = { ...snapshot.root, name: 'Custom root', description: 'Custom selection purpose.' };
+        snapshot.root.children[0].children = [
+            { ...snapshot.root.children[0].children[1], name: 'Custom action', description: 'Custom action purpose.' },
+            { ...snapshot.root.children[0].children[2], name: 'Custom exit', description: 'Custom exit purpose.' },
+        ];
+        jest.spyOn(PhraseEngine.prototype, 'evaluate').mockReturnValue(snapshot);
+        render(<LivePhrases name="live-phrases" />);
+        const catalog = within(screen.getByRole('region', { name: 'Sentence catalog' }));
+        expect(catalog.getByRole('heading', { name: 'Custom root' })).toBeVisible();
+        fireEvent.click(catalog.getByRole('tab', { name: 'Details' }));
+        expect(catalog.getByText('Custom selection purpose.')).toBeVisible();
+        fireEvent.click(catalog.getByRole('tab', { name: 'Contents 1' }));
+        expect(catalog.getByText('Custom guide')).toBeVisible();
+        expect(catalog.queryByText('Custom guide purpose.')).not.toBeInTheDocument();
+        fireEvent.click(catalog.getByLabelText('Custom guide closure'));
+        fireEvent.click(catalog.getByRole('tab', { name: 'Details' }));
+        expect(catalog.getByText('Custom guide purpose.')).toBeVisible();
+        fireEvent.click(catalog.getByRole('tab', { name: 'Contents 2' }));
+        const actions = within(catalog.getByRole('list', { name: 'Custom guide children' }));
+        expect(actions.getByText('Custom action')).toBeVisible();
+        expect(actions.queryByText('Custom action purpose.')).not.toBeInTheDocument();
+        fireEvent.click(actions.getByLabelText('Custom guide action 1: Custom action'));
+        expect(catalog.getByText('Custom action purpose.')).toBeVisible();
+        expect(catalog.queryByText('Custom exit')).not.toBeInTheDocument();
+        fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
+        fireEvent.click(catalog.getByLabelText('Custom guide action 2: Custom exit'));
+        expect(catalog.getByText('Custom exit purpose.')).toBeVisible();
+        expect(catalog.queryByText('Custom action purpose.')).not.toBeInTheDocument();
+        fireEvent.click(within(catalog.getByRole('navigation', { name: 'Phrase directory' })).getByRole('button', { name: 'Custom root' }));
+        expect(catalog.getByLabelText('Custom guide closure')).toBeVisible();
+        expect(screen.getByLabelText('Closure state')).toBeVisible();
+        expect(screen.getByRole('heading', { name: 'Triggered sentences' })).toBeVisible();
+        expect(catalog.queryByText(PHRASE_DEFINITIONS[0].name)).not.toBeInTheDocument();
+        expect(catalog.queryByText('Actions: Say phrase → Exit to root after the phrase action runs')).not.toBeInTheDocument();
+    });
+
+    it('opens the second-apex action and switches between its details and speech conditions', () => {
+        render(<LivePhrases name="live-phrases" />);
+        fireEvent.click(screen.getByLabelText('Chicane overtake closure'));
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        const entry = within(screen.getByRole('list', { name: 'Chicane overtake conditions' }));
+        expect(entry.getByText('Upcoming mapped consecutive-corners sequence >= 1')).toBeVisible();
+        expect(entry.queryByText('Estimated opponent distance (m) <= 2')).not.toBeInTheDocument();
+        expect(entry.queryByText('Opponent estimated time to corner entry (s) <= 2')).not.toBeInTheDocument();
+        expect(entry.queryByText('Corners following in the labeled consecutive-corners sequence >= 1')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('tab', { name: 'Contents 4' }));
+        fireEvent.click(screen.getByLabelText('Chicane overtake action 2: say phrase'));
+        expect(screen.getByText('Go wide in the first turn. then take second apex if possible')).toBeVisible();
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        expect(screen.getByText('Action conditions')).toBeVisible();
+        const speechList = screen.getByRole('list', { name: 'Chicane overtake action 2: say phrase conditions' });
+        const speech = within(speechList);
+        expect(speech.getByText('Opponent estimated time to corner entry (s) < 0.5')).toBeVisible();
+        expect(speech.getByText('OR')).toBeVisible();
+        expect(speech.getByText('Upcoming corner turns left')).toBeVisible();
+        expect(speech.getByText('Opponent near the left edge')).toBeVisible();
+        expect(speech.getByText('Upcoming corner turns right')).toBeVisible();
+        expect(speech.getByText('Opponent near the right edge')).toBeVisible();
+        expect(speech.queryByText(/Player near/)).not.toBeInTheDocument();
+        expect(speech.queryByText(/(?:Player|Opponent) in a .*turn corner/)).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+        expect(screen.queryByText('Action conditions')).not.toBeInTheDocument();
+        expect(screen.queryByRole('list', { name: 'Chicane overtake action 2: say phrase conditions' })).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        expect(screen.getByText('Upcoming mapped consecutive-corners sequence >= 1')).toBeVisible();
+    });
+
+    it('shows the additional chicane speech action with its opposite-side conditions', () => {
+        render(<LivePhrases name="live-phrases" />);
+        fireEvent.click(screen.getByLabelText('Chicane overtake closure'));
+        fireEvent.click(screen.getByLabelText('Chicane overtake action 3: say phrase'));
+        expect(screen.getByText('brake early, Hold inside')).toBeVisible();
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        const list = screen.getByRole('list', { name: 'Chicane overtake action 3: say phrase conditions' });
+        expect(within(list).getByText('Opponent estimated time to corner entry (s) < 0.5')).toBeVisible();
+        expect(within(list).getByText('OR')).toBeVisible();
+        expect(within(list).getByText('Upcoming corner turns right')).toBeVisible();
+        expect(within(list).getByText('Opponent near the left edge')).toBeVisible();
+        expect(within(list).getByText('Upcoming corner turns left')).toBeVisible();
+        expect(within(list).getByText('Opponent near the right edge')).toBeVisible();
+        fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+        expect(screen.getByLabelText('Chicane overtake action 4: exit to root')).toBeVisible();
+    });
+
+    it('shows exit-speed advice inside the Chicane overtake long-straight child', () => {
+        render(<LivePhrases name="live-phrases" />);
+        fireEvent.click(screen.getByLabelText('Chicane overtake closure'));
+        fireEvent.click(screen.getByLabelText('Inside the Long Straight closure'));
+        expect(screen.getByLabelText('Inside the Long Straight action 1: exit to parent')).toBeVisible();
+        fireEvent.click(screen.getByLabelText('Inside the Long Straight action 2: say phrase'));
+        expect(screen.getByText('From pervious laps statistic, you generally have better exit speed. long straight after this corner, consider back up a little bit to have space to overtake at exit.')).toBeVisible();
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        const conditions = within(screen.getByRole('list', { name: 'Inside the Long Straight action 2: say phrase conditions' }));
+        expect(conditions.getByText('Previous corner exits show the player has better exit speed than the car ahead')).toBeVisible();
+        expect(conditions.getByText('Estimated opponent distance (m) <= 2')).toBeVisible();
+        expect(conditions.getByText('Upcoming slow corner is followed by a long straight')).toBeVisible();
+    });
+
+    it('displays mixed connectors from the evaluated conditions in order', () => {
+        const rules = PHRASE_DEFINITIONS.map((rule, index) => index === 0 ? {
+            ...rule,
+            conditions: [
+                new PhraseCondition('speed', '>=', 30),
+                new PhraseCondition('carAhead', '=', 1, undefined, 'or'),
+                new PhraseCondition('phase', '=', 'entry'),
+            ],
+        } : rule);
+        const snapshot = new PhraseEngine(rules).evaluate(Date.now());
+        jest.spyOn(PhraseEngine.prototype, 'evaluate').mockReturnValue(snapshot);
+        render(<LivePhrases name="live-phrases" />);
+        fireEvent.click(screen.getByLabelText(`${rules[0].name} closure`));
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        const conditions = within(screen.getByRole('list', { name: `${rules[0].name} conditions` }));
+        const items = conditions.getAllByRole('listitem');
+        expect(items).toHaveLength(3);
+        expect(within(items[0]).queryByText(/^(AND|OR)$/)).not.toBeInTheDocument();
+        expect(within(items[1]).getByText('OR')).toBeVisible();
+        expect(within(items[2]).getByText('AND')).toBeVisible();
+        expect(conditions.getAllByText('Missing input')).toHaveLength(3);
+        fireEvent.click(screen.getByText('How conditions are evaluated'));
+        expect(screen.getByText(/AND is evaluated before OR/)).toBeVisible();
+    });
+
+    it('displays nested group boundaries, connectors and each independent status', () => {
+        // A OR (B AND (C OR missing)): both groups match while A and the missing leaf do not.
+        const rules = PHRASE_DEFINITIONS.map((rule, index) => index === 0 ? {
+            ...rule,
+            conditions: [
+                new PhraseCondition('speed', '>=', 120),
+                conditionGroup([
+                    new PhraseCondition('speed', '>=', 30, undefined, 'or'),
+                    conditionGroup([
+                        new PhraseCondition('speed', '<=', 110, undefined, 'or'),
+                        new PhraseCondition('carAhead', '=', 1, undefined, 'or'),
+                    ]),
+                ], 'or'),
+            ],
+        } : rule);
+        const sample = { Physics_speed_kmh: 100 };
+        const snapshot = new PhraseEngine(rules).receiveTelemetry({
+            type: 'frame', sample, sampleIndex: 0, telemetryStatus: 2,
+            committedSampleCount: 0, sessionGeneration: 0, streamGeneration: 0,
+            update: { type: 'frame', game: 'acc', sample, sequence: 1, committedSequence: 0, committedCount: 0 },
+        }, Date.now());
+        jest.spyOn(PhraseEngine.prototype, 'evaluate').mockReturnValue(snapshot);
+        render(<LivePhrases name="live-phrases" />);
+        fireEvent.click(screen.getByLabelText(`${rules[0].name} closure`));
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        const list = screen.getByRole('list', { name: `${rules[0].name} conditions` });
+        const conditions = within(list);
+        expect(conditions.getByText('Speed (km/h) >= 30')).toBeVisible();
+        expect(conditions.getByText('Speed (km/h) <= 110')).toBeVisible();
+        const items = conditions.getAllByRole('listitem');
+        const groups = conditions.getAllByRole('group', { name: 'Condition group' });
+        expect(groups).toHaveLength(2);
+        expect(groups[0]).toContainElement(groups[1]);
+        expect(items).toHaveLength(6);
+        expect(within(items[1]).getAllByText('OR')).toHaveLength(2);
+        expect(within(groups[0]).getAllByText('OR')).toHaveLength(2);
+        expect(within(items[3]).getByText('AND')).toBeVisible();
+        expect(within(groups[1]).getByText('AND')).toBeVisible();
+        expect(within(groups[0]).getAllByText('Met')).toHaveLength(4);
+        expect(within(groups[1]).getAllByText('Met')).toHaveLength(2);
+        for (const item of [items[1], items[3]]) {
+            expect(item).toHaveAttribute('data-condition-fit', 'true');
+            expect(item).toHaveAttribute('data-input-missing', 'false');
+        }
+        for (const item of [items[2], items[4]]) {
+            expect(within(item).queryByText(/^(AND|OR)$/)).not.toBeInTheDocument();
+        }
+        const failed = within(items[0]);
+        expect(failed.getByText('Speed (km/h) >= 120')).toBeVisible();
+        expect(failed.getByText('Not met')).toBeVisible();
+        const missing = within(items[5]);
+        expect(missing.getByText('Opponent ahead on visible track = 1')).toBeVisible();
+        expect(missing.getByText('Missing input')).toBeVisible();
+        expect(missing.getByText('OR')).toBeVisible();
+        const firstGuide = within(screen.getByRole('region', { name: 'Sentence catalog' })).getAllByRole('listitem')[0];
+        expect(within(firstGuide).queryByText(/Waiting for:/)).not.toBeInTheDocument();
+        fireEvent.click(screen.getByText('How conditions are evaluated'));
+        expect(screen.getByText(/Groups are evaluated first/)).toBeVisible();
+    });
+
+    it('consumes only root events, expires stale input, resets history and releases subscriptions', () => {
+        const telemetry = createLiveTelemetryStore();
+        let detection: TrackVisionDetection | null = null;
+        const listeners = new Set<() => void>();
+        const stopTelemetry = jest.fn();
+        const stopVision = jest.fn();
+        const stopMap = jest.fn();
+        let map: ReturnType<typeof circuitMap> | null = null;
+        let notifyMap!: () => void;
+        const root = {
+            getComponentName: () => 'live-session',
+            subscribeTelemetry: jest.fn((listener) => {
+                const unsubscribe = telemetry.subscribeEvents(listener);
+                return () => { stopTelemetry(); unsubscribe(); };
+            }),
+            getTrackVisionDetection: () => detection,
+            subscribeTrackVision: (listener: () => void) => {
+                listeners.add(listener);
+                return () => { stopVision(); listeners.delete(listener); };
+            },
+            getLiveCircuitMap: () => map,
+            getLiveCornerSummaries: () => [],
+            subscribeLiveCircuitMap: (listener: () => void) => { notifyMap = listener; return stopMap; },
+        };
+        const Root = () => {
+            const ref = React.useRef(root);
+            useRegisterOperationComponentRef(ref);
+            return null;
+        };
+        const view = render(<OperationComponentRefProvider><Root /><LivePhrases name="live-phrases" /></OperationComponentRefProvider>);
+        const publish = (sequence: number, speed = 100) => telemetry.publishFrame({
+            type: 'frame', game: 'acc', sequence, committedCount: 0, committedSequence: 0,
+            sample: { Graphics_status: 2, Physics_speed_kmh: speed, Graphics_normalized_car_position: 0.11 },
+        });
+        expect(root.subscribeTelemetry).not.toHaveBeenCalled();
+        expect(listeners.size).toBe(0);
+        act(() => { publish(0); });
+        expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Enable detection' }));
+        expect(screen.getByText('Detection: Enabled')).toBeInTheDocument();
+        act(() => {
+            detection = { ...vision(Date.now(), { player: 'middle' }), geometry: null };
+            listeners.forEach((listener) => listener());
+            map = circuitMap();
+            notifyMap();
+            publish(1);
+            jest.advanceTimersByTime(800);
+            publish(2);
+        });
+        const output = within(screen.getByRole('region', { name: 'Triggered sentences' }));
+        const sentence = PHRASE_DEFINITIONS.find((rule) => rule.id === 'pressure-feint')!.sentence;
+        expect(output.getByText(sentence)).toBeInTheDocument();
+        expect(output.queryByText('You are accelerating.')).not.toBeInTheDocument();
+        expect(screen.getByText('Live Map: Ready')).toBeInTheDocument();
+        expect(screen.getByText('Current section: slow corner · entry')).toBeInTheDocument();
+        expect(screen.getByText('Corner shape: bend')).toBeInTheDocument();
+        fireEvent.click(screen.getByLabelText('Pressure and a feint closure'));
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        let conditions = within(screen.getByRole('list', { name: 'Pressure and a feint conditions' }));
+        const conditionCount = PHRASE_DEFINITIONS.find((rule) => rule.id === 'pressure-feint')!.conditions.length;
+        expect(conditions.getAllByText('Met')).toHaveLength(conditionCount);
+        conditions.getAllByRole('listitem').forEach((condition) => expect(condition).toHaveAttribute('data-condition-fit', 'true'));
+        act(() => { publish(3, 0); });
+        const speedCondition = within(conditions.getByText('Speed (km/h) >= 30').closest('li')!);
+        expect(speedCondition.getByText('Not met')).toBeVisible();
+        expect(conditions.getAllByText('Met')).toHaveLength(conditionCount - 1);
+        fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+        expect(screen.queryByRole('list', { name: 'Pressure and a feint conditions' })).not.toBeInTheDocument();
+        act(() => { publish(4); });
+        const closure = screen.getByLabelText('Pressure and a feint closure');
+        expect(within(closure).getByText('Active')).toBeVisible();
+        fireEvent.click(closure);
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        conditions = within(screen.getByRole('list', { name: 'Pressure and a feint conditions' }));
+        expect(within(conditions.getByText('Speed (km/h) >= 30').closest('li')!).getByText('Met')).toBeVisible();
+        fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
+        expect(screen.getByText('Detection: Disabled')).toBeInTheDocument();
+        expect(output.queryByText(sentence)).not.toBeInTheDocument();
+        expect(stopTelemetry).toHaveBeenCalledTimes(1);
+        expect(stopVision).toHaveBeenCalledTimes(1);
+        expect(stopMap).toHaveBeenCalledTimes(1);
+        expect(listeners.size).toBe(0);
+        expect(jest.getTimerCount()).toBe(0);
+        act(() => { publish(5); jest.advanceTimersByTime(800); });
+        expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
+        expect(output.queryByText(sentence)).not.toBeInTheDocument();
+        detection = { ...vision(Date.now(), { player: 'middle' }), geometry: null };
+        fireEvent.click(screen.getByRole('button', { name: 'Enable detection' }));
+        expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
+        act(() => { publish(6); });
+        expect(output.queryByText(sentence)).not.toBeInTheDocument();
+        act(() => { jest.advanceTimersByTime(800); publish(7); });
+        expect(output.getByText(sentence)).toBeInTheDocument();
+        act(() => {
+            map = circuitMap('slow', true);
+            map.centerline_tags!.push({ id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.31 });
+            notifyMap();
+        });
+        expect(screen.getByText('Corner sequence: alternating · 1 of 2 corners')).toBeInTheDocument();
+        const catalog = within(screen.getByRole('region', { name: 'Sentence catalog' }));
+        expect(catalog.getByRole('heading', { name: 'Pressure and a feint' })).toBeVisible();
+        expect(catalog.getByRole('tab', { name: 'Conditions' })).toHaveAttribute('aria-selected', 'true');
+        act(() => { jest.advanceTimersByTime(2250); });
+        expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
+        expect(screen.getByText('Track Vision: Unavailable or stale')).toBeInTheDocument();
+        expect(conditions.getAllByText('Missing input')).toHaveLength(conditionCount);
+        conditions.getAllByRole('listitem').forEach((condition) => expect(condition).toHaveAttribute('data-condition-fit', 'false'));
+        act(() => { telemetry.resetSession(); });
+        expect(output.queryByText(sentence)).not.toBeInTheDocument();
+        act(() => { map = null; notifyMap(); });
+        expect(screen.getByText('Live Map: Waiting for a tagged circuit map')).toBeInTheDocument();
+        view.unmount();
+        expect(stopTelemetry).toHaveBeenCalledTimes(2);
+        expect(stopVision).toHaveBeenCalledTimes(2);
+        expect(stopMap).toHaveBeenCalledTimes(2);
+        expect(listeners.size).toBe(0);
+        expect(jest.getTimerCount()).toBe(0);
+    });
+});

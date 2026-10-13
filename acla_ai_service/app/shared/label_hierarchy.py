@@ -4,23 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
+import pandas as pd
+
+from app.shared.circuit_sections import get_circuit_sections
 from app.shared.labels import (
     LABEL_CATEGORIES,
     LABEL_MAPPING,
-    LABEL_NAME_TO_ID,
-    TRACK_LABELS,
 )
 
 
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
-TRACK_LABEL_IDS = tuple(label_id for label_id in TRACK_LABELS if label_id in LABEL_MAPPING)
-TRACK_SECTION_LABEL_IDS = tuple(
-    section_id
-    for track_id in TRACK_LABEL_IDS
-    for section_id in LABEL_CATEGORIES.get(track_id, [])
-    if section_id in LABEL_MAPPING
-)
 
 
 def _parent_lookup() -> Dict[str, str]:
@@ -40,7 +33,7 @@ def normalize_grouped_label_ids(
     """Return valid label IDs with required parent labels included.
 
     Sub-labels are valid on lap segments, but they should never stand alone:
-    adding the parent main/circuit label keeps downstream grouping intact.
+    adding the parent behavior label keeps downstream grouping intact.
     """
     cleaned: List[str] = []
     rejected: List[Dict[str, Any]] = []
@@ -104,16 +97,6 @@ def _clip_label_ranges(
     return labels
 
 
-def _track_id(raw: Any) -> str:
-    value = str(raw or "").strip()
-    if value in LABEL_MAPPING:
-        return value
-    mapped = LABEL_NAME_TO_ID.get(value)
-    if mapped:
-        return mapped
-    return value.lower().replace(" ", "_").replace("-", "_")
-
-
 def _position_in_range(position: float, section_range: Tuple[float, float]) -> bool:
     lo, hi = section_range
     position = position % 1.0
@@ -122,36 +105,28 @@ def _position_in_range(position: float, section_range: Tuple[float, float]) -> b
     return position >= lo or position <= hi
 
 
-def _section_candidates(track_id: str) -> List[Tuple[str, Tuple[float, float]]]:
-    return [
-        (section_id, section_range)
-        for section_id, section_range in CIRCUIT_SECTION_RANGES.items()
-        if section_id.startswith(track_id)
-    ]
-
-
-def _section_for_position(position: Any, track_id: str) -> Optional[str]:
+def _section_for_position(position: Any, sections: List[Dict[str, Any]]) -> Optional[str]:
     try:
         normalized_position = float(position) % 1.0
     except (TypeError, ValueError):
         return None
 
-    for section_id, section_range in _section_candidates(track_id):
-        if _position_in_range(normalized_position, section_range):
-            return section_id
+    for section in sections:
+        if _position_in_range(normalized_position, section["normalized_position_range"]):
+            return section["id"]
     return None
 
 
 def _track_area_windows(
     telemetry_data: Sequence[Dict[str, Any]],
-    track_id: str,
+    sections: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     windows: List[Dict[str, Any]] = []
     current_section_id: Optional[str] = None
     current_start: Optional[int] = None
 
     for index, row in enumerate(telemetry_data):
-        section_id = _section_for_position(row.get(NORMALIZED_POSITION_COLUMN), track_id)
+        section_id = _section_for_position(row.get(NORMALIZED_POSITION_COLUMN), sections)
         if section_id == current_section_id:
             continue
 
@@ -182,11 +157,14 @@ def build_track_area_segments(
     include_empty_sections: bool = False,
 ) -> List[Dict[str, Any]]:
     """Build one segment per track-section window with all detected labels."""
-    track_id = _track_id(track_name)
-    if not track_id or not telemetry_data or not _section_candidates(track_id):
+    if not telemetry_data:
+        return build_classifier_segments(raw_segments)
+    sections = get_circuit_sections(pd.DataFrame(telemetry_data), track_name)
+    if not sections:
         return build_classifier_segments(raw_segments)
 
-    section_windows = _track_area_windows(telemetry_data, track_id)
+    section_names = {section["id"]: section["name"] for section in sections}
+    section_windows = _track_area_windows(telemetry_data, sections)
     if not section_windows:
         return build_classifier_segments(raw_segments)
 
@@ -218,6 +196,7 @@ def build_track_area_segments(
                 "id": f"{section_id}:{section_start}-{section_end}",
                 "labels": labels,
                 "track_section": section_id,
+                "track_section_name": section_names[section_id],
                 "start_index": section_start,
                 "end_index": section_end,
             })
@@ -244,10 +223,7 @@ def build_classifier_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict[s
         segment = {
             "id": raw_segment.get("id"),
             "labels": labels,
-            "track_section": next((
-                label["label_name"] for label in labels
-                if label["label_name"] in TRACK_SECTION_LABEL_IDS
-            ), None),
+            "track_section": None,
             "start_index": start_index,
             "end_index": end_index,
         }

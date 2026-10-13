@@ -1,14 +1,13 @@
-"""Shared top-lap payload and reference-feature operations.
+"""Shared top-lap payload loading and reference-feature operations.
 
 This module is intentionally independent of telemetry storage and training so
-both the training service and deployed runtime can use the same serialization
+both the training service and deployed runtime can use the same deserialization
 and feature calculations.
 """
 
 from __future__ import annotations
 
 import base64
-import io
 import pickle
 from typing import Any, Dict, List, Tuple
 
@@ -44,14 +43,6 @@ def bucket_key_from_dataframe(df: pd.DataFrame) -> Tuple[str, str, int]:
         avg_grip_int = 2
 
     return track, car, avg_grip_int
-
-
-def encode_components(data: Dict[str, Any]) -> str:
-    """Encode one top-lap component dictionary for backend storage."""
-
-    buffer = io.BytesIO()
-    pickle.dump(data, buffer, protocol=pickle.HIGHEST_PROTOCOL)
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
 def decode_components(model_data: str) -> Dict[str, Any]:
@@ -92,19 +83,6 @@ def _validate_entry(entry: TopLapEntry) -> None:
         raise ValueError("Top-lap entry feature dimensions are invalid")
     if not np.all(np.isfinite(entry.x)) or not np.all(np.isfinite(entry.y)):
         raise ValueError("Top-lap entry contains non-finite values")
-
-
-def serialize_top_lap_store(store: TopLapStore) -> Dict[str, Any]:
-    """Serialize a store using the ``top_lap_store`` payload."""
-
-    if not store.entries:
-        raise ValueError("No stored top laps to serialize. Record laps first.")
-
-    serialized_entries: Dict[str, str] = {}
-    for (track, car, grip), entry in store.entries.items():
-        key_str = f"{track}|{car}|grip{grip}"
-        serialized_entries[key_str] = encode_components(entry.to_components())
-    return {"top_lap_store": serialized_entries}
 
 
 def deserialize_top_lap_store(
@@ -290,6 +268,4 @@ __all__ = [
     "calculate_reference_features",
     "decode_components",
     "deserialize_top_lap_store",
-    "encode_components",
-    "serialize_top_lap_store",
 ]

@@ -8,6 +8,34 @@ This package contains the React UI and the Electron desktop shell that executes 
 - npm 9+
 - Python 3.10 or newer (system interpreter used to create virtual environments)
 
+## ACC per-car track positions
+
+ACC recording supplements shared memory with the local UDP Broadcasting API.
+`Graphics_normalized_positions` contains native car IDs mapped to lap fractions
+from 0 to 1, for example `{"7":0.25,"1052":0.8}`. iRacing emits the same field
+from `CarIdxLapDistPct`; the existing player-only `Graphics_normalized_car_position`
+is unchanged. Missing or stale car positions are omitted.
+
+Enable broadcasting in `Documents\Assetto Corsa Competizione\Config\broadcasting.json`
+with a nonzero `updListenerPort` (ACC's spelling), for example:
+
+```json
+{
+  "updListenerPort": 9000,
+  "connectionPassword": "your-password",
+  "commandPassword": ""
+}
+```
+
+Preserve any existing settings and restart ACC after changing its configuration.
+The extractor reads the port and connection password from that file automatically,
+including redirected Documents folders. Set `ACLA_ACC_BROADCAST_CONFIG` to use a
+different config file. It only connects to `127.0.0.1` and never sends driving,
+camera, or replay controls. No additional Python dependencies are required.
+If broadcasting is disabled or unavailable, shared-memory recording continues
+and the new field is omitted. UDP samples are requested every 100 ms; individual
+car positions expire after two seconds without an update.
+
 ## Python environments for desktop scripts
 
 All Electron-only Python entry points live under `src/py-scripts/`. We manage their dependencies with
@@ -65,6 +93,109 @@ main process automatically selects that interpreter; override it with the enviro
 
 - `npm run setup:python` — Run the Python environment bootstrap in on-demand mode.
 - `npm run electron` — Launch Electron pointing at the compiled build output.
+
+### Live telemetry dataset
+
+[`src/data/live-telemetry-dataset.js`](src/data/live-telemetry-dataset.js) is the
+authoritative table of application telemetry fields and value types. `Physics_*`,
+`Graphics_*`, and `Static_*` are shared application field groups used across
+simulators. Every simulator reader maps its native data to this contract and
+must produce rows accepted by the table. Register new fields before emitting them and
+document their units and meanings in [`tmp/telemetry-fields.md`](tmp/telemetry-fields.md).
+Readers must omit values their simulator cannot supply.
+
+The writer, live view, recorded-file reader, preload bridge, and renderer all
+validate against this dataset. Renderer field types also derive from the table.
+Rows retain their flat field names and values through recording and upload;
+transport metadata stays outside the row. Unknown fields, wrong types, raw SDK
+objects, and legacy aliases are rejected. There is no legacy catalog or fallback.
+
+### iRacing live recording
+
+Uploading an iRacing live recording creates one session containing the app's saved
+live samples, with `game_recorded_from` set to `iracing_live` and the original session
+name. Live-session uploads do not search for, convert, or upload native `.ibt` files.
+The app recording is deleted after the upload completes; a failed upload keeps the
+local draft available for retry. Existing `iracing` sessions remain supported.
+
+Native `.ibt` files can be opened separately for local recorded-session analysis.
+Enable iRacing disk telemetry while driving and exit the car before opening a file
+so it is finalized. Conversion runs in a worker, streams bounded
+batches through the dedicated
+[`IRacingIBTAdapter`](electron/recording/readers/iracing/iracing-ibt-adapter.js), and
+preserves the native files. This adapter has its own channel allowlist and coverage
+table, reuses the common iRacing mappings, and adds 36 mappings for brake-line
+pressure, tire surface temperatures, wheel speed, suspension velocity, ride height,
+oil measurements, fuel/manifold pressure, ABS force reduction, and player coordinates/identity. Thirty new shared
+Physics fields preserve measurements with different meanings from existing fields;
+surface temperatures are separate from core temperatures, and wheel speed is in
+m/s rather than rad/s. Additional mappings require matching SDK units in the file.
+Player `Lat`/`Lon`/`Alt` are converted through WGS84 Earth-centered coordinates to
+track-referenced XYZ in meters: **X east, Y up, Z north**. The origin is the session's
+`TrackLatitude`/`TrackLongitude`/`TrackAltitude`, shared across laps and stints.
+Only the player's coordinate slot is populated; missing geographic channels or
+reference metadata leave position absent. This geographic position frame differs
+from the simulator-local frame used by the existing heading and world-velocity fields.
+See [recorded-file field units and availability](tmp/telemetry-fields.md#iracing-recorded-file-fields).
+
+On Windows, launch an iRacing session and start recording from the live-session view.
+The recorder waits for the simulator while disconnected and resumes when telemetry
+returns. It uses the existing managed Python runtime and requires no extra Python
+packages or native compilation. The `electron/**/*` and `py-scripts` packaging rules
+include the reader, adapter, and capture script in desktop builds.
+
+The capture process follows the [iRacing SDK](https://forums.iracing.com/discussion/62/iracing-sdk)
+shared-memory protocol. It opens the map read-only, waits on the SDK event, copies
+the newest row, and checks the tick again before accepting the snapshot. Reference
+implementation: iRacing-authored [structure definitions](https://github.com/vipoo/irsdk/blob/master/irsdk_defines.h)
+and [capture algorithm](https://github.com/vipoo/irsdk/blob/master/irsdk_utils.cpp)
+in a public mirror of the official SDK; the official forum requires member access.
+
+Processing runs in four OS processes: SDK capture, reader/adapter, writer, and live
+view. `IRacingAdapter.adapt()` in
+[`iracing-adapter.js`](electron/recording/readers/iracing/iracing-adapter.js) converts
+the data **before** either consumer receives it. Raw SDK names and YAML never enter
+saved rows or uploads. `IRACING_FIELD_COVERAGE` accounts for all 270 registered fields;
+100 have mappings, conditional on the car/session exposing the required source.
+Other fields remain absent under the [standard contract](tmp/telemetry-fields.md).
+
+Conversions include m/s to km/h, kPa to psi, lap seconds to integer milliseconds,
+gear indexing (reverse/neutral/first become 0/1/2), normalized steering input,
+front brake bias as a fraction, and standard session/flag enums. Session YAML is
+parsed only when its SDK update counter changes. Metadata resets on reconnect.
+Physics is omitted outside the cockpit and during replay to avoid recording stale
+or spectator data as driver input. Cold pit tire measurements are not live tire
+pressure/core temperature; SDK repair time is not body damage. Live world positions
+and other channels without equivalent standard semantics remain absent.
+
+The additional mappings cover body acceleration, local and world velocity, angular velocity,
+orientation, fitted tire compound, fuel consumption and remaining laps, completed
+sector times, on-track relative gaps, and distance traveled. Motion units, axis/sign
+conventions, and calculation/reset rules are in
+[`tmp/telemetry-fields.md`](tmp/telemetry-fields.md#motion-and-calculated-fields).
+Sector and gap values are interpolated estimates. Fuel averages require a complete
+observed non-pit lap and confirmed non-electric metadata. Stint distance and used
+fuel require an observed stationary pit start or refuel; joining mid-stint leaves
+these totals absent. Missing data, towing, replay, session/driver changes, and gaps
+over one second invalidate history. Relative history is bounded to 180 seconds.
+The motion basis is covered by synthetic conversion tests; controlled ACC/iRacing
+captures are still needed to validate physical signs and gravity behavior across
+simulators. Mapping counts do not establish per-car live availability.
+
+There is one outstanding capture request and at most 120 unacknowledged frames per
+consumer. The writer acknowledges after disk commit; the view acknowledges after
+delivery. Capture pauses when either consumer falls behind and reports an error if
+it remains stalled for five seconds. IRSDK exposes the latest few ticks, not a durable
+history: slow consumers can therefore cause missed SDK ticks. This bounds recorder
+memory rather than promising lossless capture under arbitrary load. Game FPS impact
+still needs measurement with iRacing running on the target machine.
+
+Recorder checks:
+
+```bash
+python -m unittest discover -s src/py-scripts/tests -p test_iracing_sdk.py -v
+node node_modules/react-scripts/bin/react-scripts.js test --watchAll=false --runInBand --runTestsByPath src/common/__tests__/iracing-mappings.test.js src/common/__tests__/iracing-recording.test.js src/common/__tests__/live-telemetry-dataset.test.js src/common/__tests__/recording-architecture.test.js
+```
 
 ### Troubleshooting
 

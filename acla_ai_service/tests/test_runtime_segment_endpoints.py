@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api import racing_session
-from app.pipelines.inference.preprocessing import InferenceTelemetryBatch
+from app.shared.inference_preprocessing import InferenceTelemetryBatch
 
 
 def _configure_analysis_dependencies(monkeypatch):
@@ -26,11 +26,6 @@ def _configure_analysis_dependencies(monkeypatch):
         ),
     )
 
-    class TireGrip:
-        async def enrich(self, records):
-            return records
-
-    monkeypatch.setattr(racing_session, "get_tire_grip_analysis", TireGrip)
     monkeypatch.setattr(
         racing_session,
         "_project_expert_reference_data",

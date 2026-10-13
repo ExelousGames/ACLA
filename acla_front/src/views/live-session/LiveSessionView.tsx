@@ -1,5 +1,4 @@
-import React, { useContext, useLayoutEffect, useRef } from 'react';
-import type { DesktopGame } from 'contexts/DesktopGameContext';
+import React, { useContext, useEffect, useLayoutEffect, useRef } from 'react';
 import {
     OPERATION_COMPONENT_NAMES,
     OperationComponentRefDirectory,
@@ -16,7 +15,7 @@ import {
     NoTelemetryForScopeError,
     TelemetryAnalysisFailedError,
     InvalidOperationCallError,
-} from 'views/lap-analysis/ai-chat/operation-base';
+} from 'views/ai-chat/operation-base';
 import { BaselineCollectionNotStartedError } from 'contexts/OperationComponentError';
 import apiService from 'services/api.service';
 import type {
@@ -25,43 +24,50 @@ import type {
     BaselineCollectionPayload,
     BaselineCollectionQuery,
     BaselineTelemetryCondition,
-} from './BaselineCollection';
-import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
+} from './baseline-collection/BaselineCollection';
+import type { VisualizationManagerHandle } from 'views/session-shared/visualization/VisualizationPanelManager';
 import {
     normalizeSegmentClassificationResult,
     type SegmentClassificationResult,
-} from 'views/lap-analysis/recorded-session-analysis';
-import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
-import { openAnalysisResultsVisualization } from 'views/lap-analysis/visualization/open-analysis-results-visualization';
-import { getVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
+} from 'views/session-shared/segment-classification';
+import { getSegmentLabelIds } from 'views/session-shared/visualization/charts/segmentClassificationDisplay';
+import { openAnalysisResultsVisualization } from 'views/session-shared/visualization/open-analysis-results-visualization';
+import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
 import { LiveSessionContext, LiveSessionProvider } from './LiveSessionContext';
-import LiveSessionGameStatus, { LIVE_SESSION_GAME_LABELS } from './LiveSessionGameStatus';
+import LiveSessionGameStatus from './LiveSessionGameStatus';
 import LiveTelemetryWorkspace from './LiveTelemetryWorkspace';
-import LiveAnalysisSessionRecording from 'views/lap-analysis/liveAnalysisSessionRecording';
-import LiveSessionDetectionManager from 'views/lap-analysis/LiveSessionDetectionManager';
-import { RecordingState } from 'views/lap-analysis/recording-state';
-import { getTelemetryLap } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
+import LiveAnalysisSessionRecording from 'views/live-session/live-session-recording/liveAnalysisSessionRecording';
+import LiveSessionDetectionManager from 'views/live-session/LiveSessionDetectionManager';
+import { RecordingState } from 'views/live-session/recording-state';
+import { getTelemetryLap } from 'views/live-session/session-intelligence/live-performance-analyst';
 import {
     createTelemetryScopeCollector,
     reduceTelemetrySamples,
-} from 'views/lap-analysis/session-intelligence/telemetry-query';
+} from 'views/live-session/session-intelligence/telemetry-query';
 import type {
     CornerLookahead,
     QueryResult,
     QueryScope,
     ReduceOp,
     TelemetryQuery,
-} from 'views/lap-analysis/session-intelligence/types';
+} from 'views/session-shared/session-intelligence/types';
 import type {
     QueryTelemetryMetricArguments,
     QueryTelemetryMetricResult,
     TelemetryMetricReduce,
-} from 'views/lap-analysis/ai-chat/ai-command-registry';
+} from 'views/ai-chat/ai-command-registry';
 import type { LiveSessionAnalysisResultPage } from './live-session-analysis-results';
 import type { LiveSessionRuntime, LiveSessionSnapshot } from './live-session-types';
 import type { LiveEventLogHandle } from './LiveEventLog';
-import type { EventSearchParams } from './event-log/EventLog';
+import { analyzeFrontOpponent, unavailableFrontOpponentAnalysis, type LiveFrontOpponentAiResult } from './event-log/front-opponent-analysis';
+import type { DriverCornerSummary } from './event-log/corner-summary';
 import { liveTelemetryStore } from './live-telemetry-store';
+import type { LiveTelemetryEventListener } from './live-telemetry-store';
+import type { TrackVisionHandle } from './track-vision/LiveTrackVision';
+import { SessionScreenCaptureProvider } from './live-session-recording/SessionScreenCapture';
+import type { TrackVisionDetection } from './track-vision/track-vision-types';
+import type { LiveTrajectoryMapHandle } from './LiveTrajectoryMap';
+import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import {
     createControlledOperation,
     createOperationFrom,
@@ -132,6 +138,12 @@ export type LiveTelemetryAnalysisAiResult = {
 export interface LiveSessionHandle extends ObservableOperationComponentHandle<LiveSessionRuntime> {
     getRecordingState(): RecordingState;
     getCurrentTelemetry(): Record<string, any>;
+    subscribeTelemetry(listener: LiveTelemetryEventListener): () => void;
+    getTrackVisionDetection(): TrackVisionDetection | null;
+    subscribeTrackVision(listener: () => void): () => void;
+    getLiveCircuitMap(): CircuitMapDto | null;
+    subscribeLiveCircuitMap(listener: () => void): () => void;
+    getLiveCornerSummaries(): DriverCornerSummary[];
     queryTelemetryMetric<TReduce extends ReduceOp>(args: TelemetryQuery<TReduce>): Promise<QueryResult<TReduce>>;
     getTelemetryForScope(scope: QueryScope): Promise<Record<string, any>[]>;
     getEventLog(args: Record<string, any>): any[];
@@ -143,6 +155,7 @@ export interface LiveSessionHandle extends ObservableOperationComponentHandle<Li
     ): Operation<QueryTelemetryMetricResult<TReduce>>;
     getEventLogForAi(args: Record<string, any>): Operation<LiveEventLogAiResult>;
     getNextCornerForAi(): Operation<LiveNextCornerAiResult>;
+    analyzeFrontOpponentForAi(): Operation<LiveFrontOpponentAiResult>;
     collectLiveBaselineForAi(args: Record<string, any>): Operation<BaselineCollectionPayload>;
     restartLiveBaselineForAi(): Operation<LiveBaselineRestartAiResult>;
     analyzeLiveRecordedAnalysisForAi(args: Record<string, any>): Operation<LiveBaselineAnalysisAiResult>;
@@ -220,7 +233,7 @@ const isQueryScope = (value: unknown): value is QueryScope => {
                 && isFiniteNumber(scope.seconds);
         case 'event':
             return hasExactKeys(scope, ['type', 'eventType', 'which'])
-                && ['CORNER', 'STRAIGHT', 'CRASHED', 'OVERTAKE'].includes(scope.eventType as string)
+                && scope.eventType === 'STRAIGHT'
                 && (scope.which === 'last' || scope.which === 'current');
         case 'lap':
             return hasExactKeys(scope, ['type', 'lap'])
@@ -278,6 +291,7 @@ const compactClassification = (result: SegmentClassificationResult, limit: numbe
         start_index: segment.start_index,
         end_index: segment.end_index,
         track_section: segment.track_section ?? null,
+        track_section_name: segment.track_section_name ?? null,
         labels: getSegmentLabelIds(segment),
         ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
     })),
@@ -310,22 +324,6 @@ const getBaselineHandle = async (
     );
 };
 
-const LimitedLiveWorkspace = ({ game }: { game: Exclude<DesktopGame, 'acc'> }) => (
-    <div
-        className="live-session-limited-workspace"
-        data-testid="limited-live-workspace"
-        role="region"
-        aria-label={`${LIVE_SESSION_GAME_LABELS[game]} limited live workspace`}
-    >
-        <span className="live-session-limited-workspace__eyebrow">Limited workspace</span>
-        <h2>{LIVE_SESSION_GAME_LABELS[game]}</h2>
-        <p>
-            This session keeps the selected game locked, but ACC telemetry and recording controls
-            are not available for this simulator yet.
-        </p>
-    </div>
-);
-
 export const LiveSessionContent = ({ name }: { name: string }) => {
     const liveSession = useContext(LiveSessionContext);
     const componentRefs = useOptionalOperationComponentRefDirectory();
@@ -334,19 +332,45 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
     const liveSessionRef = useRef(liveSession);
     liveSessionRef.current = liveSession;
     const assistantSnapshotListenersRef = useRef(new Set<() => void>());
+    const trackVisionListenersRef = useRef(new Set<() => void>());
+    const circuitMapListenersRef = useRef(new Set<() => void>());
     const componentRef = useRef<LiveSessionHandle | null>(null);
+    const trackVision = componentRefs?.findComponentRef<TrackVisionHandle>(
+        getVisualizationComponentName('track-vision'),
+    )?.current ?? null;
+    const trackVisionRef = useRef(trackVision);
+    trackVisionRef.current = trackVision;
+    const liveMap = componentRefs?.findComponentRef<LiveTrajectoryMapHandle>(
+        getVisualizationComponentName('live-trajectory-map'),
+    )?.current ?? null;
+    const liveMapRef = useRef(liveMap);
+    liveMapRef.current = liveMap;
+
+    useEffect(() => {
+        const notify = () => circuitMapListenersRef.current.forEach((listener) => listener());
+        notify();
+        return liveMap?.subscribeCircuitMap(notify);
+    }, [liveMap]);
+
+    useEffect(() => {
+        const notify = () => trackVisionListenersRef.current.forEach((listener) => listener());
+        notify();
+        return trackVision?.subscribeDetection(notify);
+    }, [trackVision]);
 
     const getMountedEventLog = () => componentRefsRef.current
         ?.findComponentRef<LiveEventLogHandle>(LIVE_EVENT_LOG_COMPONENT_NAME)
         ?.current ?? null;
     const findLiveEvents = (args: Record<string, any>) => {
+        const eventType = args.eventType ?? args.event_type;
+        if (eventType !== 'STRAIGHT') return [];
         const eventLog = getMountedEventLog();
         if (!eventLog) return [];
         return eventLog.findEvents({
-            eventType: args.eventType ?? args.event_type,
+            eventType,
             scope: args.scope ?? 'last',
             n: args.n,
-        } as EventSearchParams);
+        });
     };
     const resolveLiveTelemetryScope = (
         scope: QueryScope,
@@ -387,6 +411,19 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
             },
             getRecordingState: () => liveSessionRef.current.recordingState,
             getCurrentTelemetry: () => liveTelemetryStore.getSnapshot().currentTelemetry,
+            // Only new frames: a retained frame must not be treated as fresh on mount.
+            subscribeTelemetry: (listener) => liveTelemetryStore.subscribeEvents(listener),
+            getTrackVisionDetection: () => trackVisionRef.current?.getLatestDetection() ?? null,
+            subscribeTrackVision: (listener) => {
+                trackVisionListenersRef.current.add(listener);
+                return () => { trackVisionListenersRef.current.delete(listener); };
+            },
+            getLiveCircuitMap: () => liveMapRef.current?.getCircuitMap() ?? null,
+            getLiveCornerSummaries: () => getMountedEventLog()?.getCornerSummaries() ?? [],
+            subscribeLiveCircuitMap: (listener) => {
+                circuitMapListenersRef.current.add(listener);
+                return () => { circuitMapListenersRef.current.delete(listener); };
+            },
             queryTelemetryMetric: (args) => queryLiveTelemetry(args),
             getTelemetryForScope: (scope) => getTelemetryForLiveScope(scope),
             getEventLog: (args) => findLiveEvents(args),
@@ -407,6 +444,13 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                 status: 'complete',
                 events: findLiveEvents(args),
             }), 'complete'),
+            analyzeFrontOpponentForAi: () => createOperationFrom(() => {
+                const eventLog = getMountedEventLog();
+                if (!eventLog) return unavailableFrontOpponentAnalysis('Open Live Event Log to collect lap and corner timing before analyzing the front opponent.');
+                const cornerRecords = eventLog.getCornerRecords();
+                const lapRecords = eventLog.getLapRecords();
+                return analyzeFrontOpponent(liveTelemetryStore.getSnapshot().currentTelemetry, cornerRecords, lapRecords);
+            }, 'complete'),
             getNextCornerForAi: () => createOperationFrom(() => {
                 const corner = liveSessionRef.current.getNextCorner();
                 if (!corner) throw new NoCornerDataError('No upcoming corner data is available.');
@@ -517,42 +561,42 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
     const { restorationError, sessionGame } = liveSession;
 
     return (
-        <section className="live-session-view" aria-label="Live Session">
-            <LiveSessionDetectionManager />
-            <LiveAnalysisSessionRecording recorderHostId={LIVE_SESSION_RECORDER_HOST_ID} />
-            {sessionGame === null ? (
-                <div className="live-session-waiting" data-testid="live-session-gate">
-                    <LiveSessionGameStatus />
-                    <div className="live-session-waiting__copy">
-                        <span className="live-session-waiting__eyebrow">Live session gate</span>
-                        <h2>Choose the simulator for this session</h2>
-                        <p>
-                            Start a new session when your simulator is detected. The selected game
-                            will stay fixed until you upload or discard the session.
-                        </p>
-                    </div>
-                </div>
-            ) : (
-                <>
-                    <LiveSessionGameStatus />
-                    {restorationError && (
-                        <div className="live-session-recovery-error" role="alert">
-                            {restorationError}
+        <SessionScreenCaptureProvider key={sessionGame ?? 'no-session'}>
+            <section className="live-session-view" aria-label="Live Session">
+                <LiveSessionDetectionManager />
+                <LiveAnalysisSessionRecording recorderHostId={LIVE_SESSION_RECORDER_HOST_ID} />
+                {sessionGame === null ? (
+                    <div className="live-session-waiting" data-testid="live-session-gate">
+                        <LiveSessionGameStatus />
+                        <div className="live-session-waiting__copy">
+                            <span className="live-session-waiting__eyebrow">Live session gate</span>
+                            <h2>Choose the simulator for this session</h2>
+                            <p>
+                                Start a new session when your simulator is detected. The selected game
+                                will stay fixed until you upload or discard the session.
+                            </p>
                         </div>
-                    )}
-                    <div className="live-session-view__workspace">
-                        {sessionGame === 'acc'
-                            ? <LiveTelemetryWorkspace name={OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
-                            : <LimitedLiveWorkspace game={sessionGame} />}
                     </div>
-                    <div
-                        id={LIVE_SESSION_RECORDER_HOST_ID}
-                        className="live-session-view__recorder"
-                        data-testid="live-session-recorder-host"
-                    />
-                </>
-            )}
-        </section>
+                ) : (
+                    <>
+                        <LiveSessionGameStatus />
+                        {restorationError && (
+                            <div className="live-session-recovery-error" role="alert">
+                                {restorationError}
+                            </div>
+                        )}
+                        <div className="live-session-view__workspace">
+                            <LiveTelemetryWorkspace name={OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
+                        </div>
+                        <div
+                            id={LIVE_SESSION_RECORDER_HOST_ID}
+                            className="live-session-view__recorder"
+                            data-testid="live-session-recorder-host"
+                        />
+                    </>
+                )}
+            </section>
+        </SessionScreenCaptureProvider>
     );
 };
 

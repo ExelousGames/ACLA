@@ -1,4 +1,4 @@
-import { RecordingState } from 'views/lap-analysis/recording-state';
+import { RecordingState } from 'views/live-session/recording-state';
 import { isDesktopGame } from 'contexts/DesktopGameContext';
 import {
     PERSISTED_LIVE_SESSION_DRAFT_VERSION,

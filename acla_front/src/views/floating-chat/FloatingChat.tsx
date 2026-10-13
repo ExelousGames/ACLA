@@ -1,5 +1,5 @@
 import React from 'react';
-import '../lap-analysis/ai-chat/ai-chat.css';
+import '../ai-chat/ai-chat.css';
 import './floating-chat.css';
 import type {
     AiOverlayPresentationAcknowledgement,

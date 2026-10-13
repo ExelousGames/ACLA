@@ -1,3 +1,1 @@
 # PyTorch is provided by the rocm/pytorch base image.
-# bitsandbytes removed — incompatible with AMD AI Max 395+ (gfx1151).
-# The annotation agent pipeline uses llama-cpp instead.

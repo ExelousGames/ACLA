@@ -27,47 +27,13 @@ class Settings(BaseSettings):
     ai_service_username: Optional[str] = None
     ai_service_password: Optional[str] = None
     
-    # Local LLM (llama-server / llama-cpp-python) Configuration
-    # llama-server runs as a sidecar inside the ai_service container and exposes
-    # an OpenAI-compatible HTTP API at this URL. The chat code calls it as if it
-    # were OpenAI, just with a different base_url.
-    llama_server_url: str = "http://127.0.0.1:8080/v1"
-    # Default targets the racing-engineer's brain: Qwen2.5-32B-Instruct. Override
-    # via LLAMA_MODEL_NAME / LLAMA_MODEL_REPO / LLAMA_MODEL_FILE env vars for
-    # local iteration on a smaller GGUF.
-    llama_model_name: str = "qwen2.5-32b-instruct"
-    llama_model_repo: str = "Qwen/Qwen2.5-32B-Instruct-GGUF"
-    llama_model_file: str = "qwen2.5-32b-instruct-q5_k_m-00001-of-00006.gguf"
-    llama_model_dir: str = "/app/models/llama_server"
-    llama_host: str = "127.0.0.1"
-    llama_port: int = 8080
-    llama_n_ctx: int = 8192
-    llama_n_gpu_layers: int = 99  # 0 disables GPU offload; 99 = offload all layers
-    llama_health_timeout_seconds: float = 2.0
-    # Seconds to wait for the chat sidecar to come up on first boot (model
-    # download can take many minutes). Matches the LLAMA_WAIT_SECONDS default
-    # used by the previous bash bootstrap.
-    llama_startup_timeout_seconds: int = 300
-
-    # Speculative decoding — uses a tiny draft model to predict the next
-    # tokens, then the main model verifies them in parallel. Same output
-    # distribution; reported 1.5-2.5x throughput gain when accept-rate is
-    # good. Draft must share a tokenizer with the main model — Qwen2.5-0.5B
-    # is the right pairing for Qwen2.5-32B.
-    llama_speculative_enabled: bool = True
-    llama_draft_model_repo: str = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
-    llama_draft_model_file: str = "qwen2.5-0.5b-instruct-q5_k_m.gguf"
-    llama_draft_n_gpu_layers: int = 99
-    llama_draft_max: int = 16
-    llama_draft_min: int = 0
-
-    # Chat LLM selector. Format: '<provider>:<model>', where provider is
-    # 'openai' or 'hosted'. Chat uses remote providers only.
+    # Chat, voice, and guidance LLM selector. Format: '<provider>:<model>',
+    # where provider is 'openai' or 'hosted'. All LLM inference is remote.
     chat_llm_model: str = "openai:gpt-5.5"
     chat_openai_api_key_env: str = "OPENAI_API_KEY"
 
     # Hosted LLM (OpenAI-compatible third-party endpoint). When CHAT_LLM_MODEL
-    # starts with 'hosted:', the chat + voice pipelines use this endpoint.
+    # starts with 'hosted:', all LLM pipelines use this endpoint.
     # Works with Groq, Cerebras, Together, Fireworks, OpenRouter, etc., by just
     # changing the base_url. HOSTED_LLM_API_KEY is then required.
     hosted_llm_base_url: Optional[str] = None   # e.g. https://api.groq.com/openai/v1

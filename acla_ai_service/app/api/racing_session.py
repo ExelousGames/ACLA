@@ -1,5 +1,5 @@
 """
-Racing session analysis endpoints for AI model training and analysis
+Live racing session analysis and inference endpoints
 """
 
 from fastapi import APIRouter, HTTPException, Body
@@ -8,17 +8,15 @@ from httpx import request
 from pydantic import BaseModel
 import asyncio
 import pandas as pd
-from app.pipelines.inference.preprocessing import (
+from app.shared.inference_preprocessing import (
     preprocess_inference_telemetry,
 )
-from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.racing_engineer.top_lap_reference_guidance import (
     generate_top_lap_reference_guidance,
 )
 from app.ml.model_hub import (
     get_opportunity_forecaster,
     get_segment_classifier,
-    get_tire_grip_analysis,
     get_top_lap_reference_model,
 )
 from app.services.runtime_segment_splitter import (
@@ -112,7 +110,6 @@ class LiveBaselineAnalysisRequest(BaseModel):
     records: List[Dict[str, Any]]
     
 # Initialize telemetry service
-telemetryMLService = Full_dataset_TelemetryMLService()
 
 
 def _classify_telemetry_segments(
@@ -335,7 +332,6 @@ async def get_top_lap_reference_guidance(
     try:
         try:
             result = await generate_top_lap_reference_guidance(
-                telemetryMLService,
                 telemetry_dict=request.current_telemetry,
                 user_request=request.human_request,
                 track_name=request.track_name,
@@ -446,7 +442,6 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
             track=request.track_name or splitter_result["circuit_id"],
             car=request.car_name,
         )
-        enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
         segments = _classify_telemetry_segments(
             enriched_rows,
             splitter_result["circuit_id"],
@@ -498,7 +493,6 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
             track=request.track or splitter_result["circuit_id"],
             car=request.car,
         )
-        enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
         segments = _classify_telemetry_segments(
             enriched_rows,
             splitter_result["circuit_id"],

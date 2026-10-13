@@ -8,10 +8,10 @@ import {
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import ProcedurePlan, { useProcedurePlanWorkflow, type ProcedurePlanHandle, type ProcedurePlanInput, type AppendProcedurePlanInput } from './ProcedurePlan';
 import RepeatablePlan, { useRepeatablePlanWorkflow, type RepeatablePlanHandle, type RepeatablePlanInput, type AppendRepeatablePlanInput } from './RepeatablePlan';
-import LiveRangeTodoList, { LiveRangeTodoListRunner, useLiveRangeTodoListWorkflow } from './LiveRangeTodoList';
+import LiveRangeTodoList, { LiveRangeTodoListRunner, useLiveRangeTodoListWorkflow } from '../../views/live-session/ai-operations/LiveRangeTodoList';
 import type { MountedWorkflow, MountWorkflow } from './WorkflowComponentBase';
 import type { WorkflowDispatcher } from './tool';
-import type { LiveRangeTodoListHandle, LiveRangeTodoListInput, CreateLiveRangeTodoListInput } from './live-range-todo-list-types';
+import type { LiveRangeTodoListHandle, LiveRangeTodoListInput, CreateLiveRangeTodoListInput } from '../../views/live-session/ai-operations/live-range-todo-list-types';
 
 export interface WorkflowPanelHandle extends NamedOperationComponentHandle {
     createProcedurePlan(input: ProcedurePlanInput, dispatch: WorkflowDispatcher): ReturnType<ProcedurePlanHandle['createProcedurePlan']>;

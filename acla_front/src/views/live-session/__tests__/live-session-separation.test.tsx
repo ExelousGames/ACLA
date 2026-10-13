@@ -1,7 +1,7 @@
 import React, { useContext, useState } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
-import { AnalysisContext } from 'views/lap-analysis/analysis-context';
+import { AnalysisContext } from 'views/recorded-session/analysis-context';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import type { RecordingViewUpdate, StandardTelemetrySample } from '../live-session-types';
 import { liveTelemetryStore, useCurrentTelemetry } from '../live-telemetry-store';
@@ -210,12 +210,12 @@ describe('live session state separation', () => {
 
         act(() => publishRecordingViewSample({
             Static_track: 'still-ignored',
-            Static_weather: 'dry',
+            Static_dry_tyres_name: 'dry',
             Graphics_status: ACC_STATUS.ACC_LIVE,
         }));
         expect(capturedLiveSession.staticData).toMatchObject({
             Static_track: 'monza',
-            Static_weather: 'dry',
+            Static_dry_tyres_name: 'dry',
         });
 
         act(() => {

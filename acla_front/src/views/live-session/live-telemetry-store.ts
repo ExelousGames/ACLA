@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
+import { validateLiveTelemetryField, validateLiveTelemetryRow } from 'data/live-telemetry-dataset';
 import type {
     LiveSessionStaticData,
     RecordingViewUpdate,
@@ -7,6 +8,7 @@ import type {
 } from './live-session-types';
 
 export interface LiveTelemetrySnapshot {
+    game: RecordingViewUpdate['game'] | null;
     graphicsTelemetry: StandardTelemetrySample;
     physicsTelemetry: StandardTelemetrySample;
     currentTelemetry: StandardTelemetrySample;
@@ -74,20 +76,18 @@ export interface LiveTelemetryStore {
 const EMPTY_SAMPLE: StandardTelemetrySample = Object.freeze({});
 
 const normalizeStatus = (value: unknown): ACC_STATUS | null => {
-    const numeric = typeof value === 'string' ? Number(value) : value;
-    if (typeof numeric !== 'number' || Number.isNaN(numeric)) return null;
-    return ACC_STATUS[numeric as ACC_STATUS] !== undefined ? numeric as ACC_STATUS : null;
+    if (typeof value !== 'number') return null;
+    return ACC_STATUS[value as ACC_STATUS] !== undefined ? value as ACC_STATUS : null;
 };
 
 const selectFields = (sample: StandardTelemetrySample, prefix: 'Graphics_' | 'Physics_') => {
-    const selected: StandardTelemetrySample = {};
-    Object.entries(sample).forEach(([key, value]) => {
-        if (key.startsWith(prefix)) selected[key] = value;
-    });
-    return Object.freeze(selected);
+    return Object.freeze(Object.fromEntries(
+        Object.entries(sample).filter(([key]) => key.startsWith(prefix)),
+    )) as StandardTelemetrySample;
 };
 
 const getInitialSnapshot = (sessionGeneration = 0, streamGeneration = 0): LiveTelemetrySnapshot => ({
+    game: null,
     graphicsTelemetry: EMPTY_SAMPLE,
     physicsTelemetry: EMPTY_SAMPLE,
     currentTelemetry: EMPTY_SAMPLE,
@@ -162,15 +162,20 @@ export const createLiveTelemetryStore = (): LiveTelemetryStore => {
             });
         },
         publishFrame: (update, nextLockedStaticData = {}) => {
+            if (!validateLiveTelemetryRow(update.sample).ok
+                || Object.entries(nextLockedStaticData).some(([key, value]) =>
+                    !key.startsWith('Static_') || !validateLiveTelemetryField(key, value))) {
+                return false;
+            }
             const sampleIndex = update.sequence - 1;
             if (!Number.isSafeInteger(sampleIndex) || sampleIndex < 0 || sampleIndex <= snapshot.sampleIndex) {
                 return false;
             }
 
             const nextStatic: StandardTelemetrySample = { ...lockedStaticData };
-            Object.entries(nextLockedStaticData).forEach(([key, value]) => {
+            Object.entries({ ...update.sample, ...nextLockedStaticData }).forEach(([key, value]) => {
                 if (key.startsWith('Static_') && !Object.prototype.hasOwnProperty.call(nextStatic, key)) {
-                    nextStatic[key] = value as StandardTelemetrySample[string];
+                    Object.assign(nextStatic, { [key]: value });
                 }
             });
             lockedStaticData = Object.freeze(nextStatic);
@@ -178,12 +183,12 @@ export const createLiveTelemetryStore = (): LiveTelemetryStore => {
             const graphicsTelemetry = selectFields(update.sample, 'Graphics_');
             const physicsTelemetry = selectFields(update.sample, 'Physics_');
             const currentTelemetry = Object.freeze({
+                ...update.sample,
                 ...lockedStaticData,
-                ...graphicsTelemetry,
-                ...physicsTelemetry,
             });
             const telemetryStatus = normalizeStatus(graphicsTelemetry.Graphics_status);
             snapshot = {
+                game: update.game,
                 graphicsTelemetry,
                 physicsTelemetry,
                 currentTelemetry,

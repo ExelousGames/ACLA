@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import joblib
 import numpy as np
@@ -13,7 +13,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
-from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
+from app.shared.circuit_sections import get_circuit_sections
 from app.shared.labels import LABEL_MAPPING
 from app.shared.telemetry import MAX_CARS
 
@@ -130,14 +130,14 @@ def match_circuit_section(
     lo, hi = projected
     span = _range_span(lo, hi)
     matches: List[Dict[str, Any]] = []
-    for label_id, section_range in CIRCUIT_SECTION_RANGES.items():
-        r_lo, r_hi = section_range
+    for section in get_circuit_sections(pd.DataFrame(telemetry_rows)):
+        r_lo, r_hi = section["normalized_position_range"]
         overlap = _range_overlap(lo, hi, r_lo, r_hi)
         if overlap <= 0:
             continue
         matches.append({
-            "label_id": label_id,
-            "name": LABEL_MAPPING.get(label_id, label_id),
+            "label_id": section["id"],
+            "name": section["name"],
             "section_range": [float(r_lo), float(r_hi)],
             "overlap_fraction": float(overlap / span),
         })
@@ -222,41 +222,6 @@ class OpportunityForecasterService:
         if not self.feature_names:
             self.feature_names = sorted(features)
         return np.asarray([[float(features.get(name, 0.0)) for name in self.feature_names]], dtype=float)
-
-    def train(self, examples: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-        feature_rows: List[Dict[str, float]] = []
-        labels: List[str] = []
-        for example in examples:
-            rows = example.get("telemetry_data") or example.get("telemetry_rows") or []
-            label = str(example.get("label") or example.get("target_label") or NO_OPPORTUNITY)
-            if label not in FORECAST_LABELS:
-                label = NO_OPPORTUNITY
-            feature_rows.append(self.extract_features(rows))
-            labels.append(label)
-
-        if not feature_rows:
-            raise ValueError("No opportunity forecast training examples provided")
-
-        self.feature_names = sorted({name for row in feature_rows for name in row})
-        x = np.asarray(
-            [[float(row.get(name, 0.0)) for name in self.feature_names] for row in feature_rows],
-            dtype=float,
-        )
-        self.scaler = StandardScaler()
-        x_scaled = self.scaler.fit_transform(x)
-        self.model = RandomForestClassifier(
-            n_estimators=120,
-            random_state=42,
-            class_weight="balanced",
-        )
-        self.model.fit(x_scaled, labels)
-        self.save_artifacts()
-        return {
-            "status": "success",
-            "samples": len(labels),
-            "classes": list(self.model.classes_),
-            "feature_count": len(self.feature_names),
-        }
 
     def save_artifacts(self) -> None:
         if self.model is None or self.scaler is None:

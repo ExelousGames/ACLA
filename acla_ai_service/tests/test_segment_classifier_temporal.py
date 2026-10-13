@@ -6,7 +6,7 @@ from sklearn.preprocessing import StandardScaler
 
 from app.ml.segment_classifier.model import TemporalDetectionModel
 from app.ml.segment_classifier.service import SegmentClassifierService
-from app.storage.datasets.segment_dataset import build_temporal_sequences
+from app.shared.segment_classifier_features import SEGMENT_CLASSIFIER_FEATURES
 
 
 def _rows(start, end):
@@ -18,7 +18,7 @@ def _rows(start, end):
 
 def _configured_service(models_directory):
     service = SegmentClassifierService(str(models_directory))
-    service.configure_labels(["MSP", "MSP1", "ST1", "silverstone"])
+    service.configure_labels(["MSP", "MSP1", "ST1", "ST2"])
     service.scaler = StandardScaler().fit(np.array([[0.0, 1.0], [2.0, 3.0]]))
     service.model = TemporalDetectionModel(
         input_dim=2,
@@ -64,76 +64,37 @@ def _fixed_logit_service(label_ids, label_weights, logits):
     return service
 
 
-def test_temporal_targets_include_all_labels_on_parent_and_child_ranges():
-    chunk = [
-        {
-            "id": "parent-msp",
-            "labels": ["MSP", "ST1", "silverstone"],
-            "start_index": 10,
-            "end_index": 14,
-            "telemetry_data": _rows(10, 14),
-        },
-        {
-            "id": "parent-ea",
-            "labels": ["EA", "ST2"],
-            "start_index": 14,
-            "end_index": 18,
-            "telemetry_data": _rows(14, 18),
-        },
-        {
-            "labels": ["MSP", "MSP1", "ST1"],
-            "parent_id": "parent-msp",
-            "start_index": 11,
-            "end_index": 13,
-            "telemetry_data": _rows(11, 13),
-        },
+@pytest.mark.parametrize("missing_feature", SEGMENT_CLASSIFIER_FEATURES)
+def test_classifier_zero_fills_missing_raw_or_expert_features(tmp_path, missing_feature):
+    service = SegmentClassifierService(str(tmp_path))
+    dataframe = pd.DataFrame([{
+        feature: 1.0
+        for feature in SEGMENT_CLASSIFIER_FEATURES
+        if feature != missing_feature
+    }])
+
+    numeric = service._prepare_numeric_features(dataframe)
+
+    assert numeric[missing_feature].tolist() == [0.0]
+    assert numeric[f"{missing_feature}_diff"].tolist() == [0.0]
+    assert (numeric[dataframe.columns] == 1.0).all().all()
+
+
+def test_classifier_selects_feature_order_and_derives_changes(tmp_path):
+    service = SegmentClassifierService(str(tmp_path))
+    dataframe = pd.DataFrame([
+        {**{feature: 1.0 for feature in reversed(SEGMENT_CLASSIFIER_FEATURES)}, "extra": 99},
+        {**{feature: 3.0 for feature in reversed(SEGMENT_CLASSIFIER_FEATURES)}, "extra": 100},
+    ])
+
+    numeric = service._prepare_numeric_features(dataframe)
+
+    assert list(numeric.columns) == [
+        *SEGMENT_CLASSIFIER_FEATURES,
+        *(f"{feature}_diff" for feature in SEGMENT_CLASSIFIER_FEATURES),
     ]
-
-    sequences = build_temporal_sequences(
-        chunk,
-        expected_features=["speed", "brake"],
-        label_ids=["MSP", "ST1", "silverstone", "EA", "ST2", "MSP1"],
-    )
-
-    assert len(sequences) == 1
-    sequence = sequences[0]
-    assert sequence.start_index == 10
-    assert sequence.features.shape == (8, 4)
-    np.testing.assert_array_equal(sequence.targets[:, 0], [1, 1, 1, 1, 0, 0, 0, 0])
-    np.testing.assert_array_equal(sequence.targets[:, 1], [1, 1, 1, 1, 0, 0, 0, 0])
-    np.testing.assert_array_equal(sequence.targets[:, 2], [1, 1, 1, 1, 0, 0, 0, 0])
-    np.testing.assert_array_equal(sequence.targets[:, 3], [0, 0, 0, 0, 1, 1, 1, 1])
-    np.testing.assert_array_equal(sequence.targets[:, 4], [0, 0, 0, 0, 1, 1, 1, 1])
-    np.testing.assert_array_equal(sequence.targets[:, 5], [0, 1, 1, 0, 0, 0, 0, 0])
-    np.testing.assert_array_equal(sequence.loss_mask, np.ones_like(sequence.targets))
-
-
-def test_temporal_sequence_builder_splits_uncovered_gaps():
-    chunk = [
-        {
-            "labels": ["MSP"],
-            "start_index": 0,
-            "end_index": 2,
-            "telemetry_data": _rows(0, 2),
-        },
-        {
-            "labels": ["EA"],
-            "start_index": 5,
-            "end_index": 7,
-            "telemetry_data": _rows(5, 7),
-        },
-    ]
-
-    sequences = build_temporal_sequences(
-        chunk,
-        expected_features=["speed", "brake"],
-        label_ids=["MSP", "EA"],
-    )
-
-    assert [(sequence.start_index, len(sequence.features)) for sequence in sequences] == [
-        (0, 2),
-        (5, 2),
-    ]
+    assert numeric["Physics_speed_kmh"].tolist() == [1.0, 3.0]
+    assert numeric["Physics_speed_kmh_diff"].tolist() == [0.0, 2.0]
 
 
 def test_temporal_model_preserves_the_entire_sequence_length():
@@ -216,11 +177,11 @@ def test_detection_uses_default_threshold_and_allows_override():
 def test_detection_includes_every_trained_label_category():
     service = SegmentClassifierService.__new__(SegmentClassifierService)
     service.threshold = 0.5
-    service.configure_labels(["MSP1", "ST1", "silverstone", "custom-label"])
+    service.configure_labels(["MSP1", "ST1", "ST2", "custom-label"])
     service.score_sequence = lambda dataframe: pd.DataFrame({
         "MSP1": [0.9, 0.1, 0.1],
         "ST1": [0.1, 0.7, 0.1],
-        "silverstone": [0.8, 0.8, 0.1],
+        "ST2": [0.8, 0.8, 0.1],
         "custom-label": [0.1, 0.1, 0.9],
     })
 
@@ -229,7 +190,7 @@ def test_detection_includes_every_trained_label_category():
     assert [item.label for item in detections] == [
         "MSP1",
         "ST1",
-        "silverstone",
+        "ST2",
         "custom-label",
     ]
 

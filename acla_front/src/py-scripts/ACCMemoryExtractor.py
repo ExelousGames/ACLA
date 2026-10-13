@@ -1,4 +1,5 @@
 from pyaccsharedmemory import accSharedMemory
+from acc_broadcasting import ACCBroadcasting
 import sched, time
 import csv
 from typing import List, Any, Dict
@@ -14,6 +15,7 @@ recordedData = []
 class ACCRecording:
     def __init__(self, target_fps: int = 60):
         self.asm = accSharedMemory()
+        self.broadcasting = ACCBroadcasting()
         self.target_fps = target_fps if target_fps > 0 else 60
         self._frame_delay = 1.0 / float(self.target_fps)
         return
@@ -22,15 +24,27 @@ class ACCRecording:
         my_scheduler = sched.scheduler(time.time, time.sleep)
         # 60 FPS = 1/60 seconds delay between calls
         my_scheduler.enter(self._frame_delay, 1, self.recordOnce, (my_scheduler,full_path))
-        my_scheduler.run()
+        try:
+            my_scheduler.run()
+        finally:
+            self.broadcasting.close()
 
     def recordOnce(self,scheduler,full_path): 
         # schedule the next call first
         scheduler.enter(self._frame_delay, 1, self.recordOnce, (scheduler,full_path))
 
+        # Broadcasting belongs to the reader, even while shared memory has no fresh sample.
+        positions = self.broadcasting.poll()
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
             flattened = self.flatten_object(sm)
+            if flattened.get('Graphics_status') == 2:
+                if positions is not None:
+                    flattened['Graphics_normalized_positions'] = positions
+                    session_time = self.broadcasting.get_session_time()
+                    if session_time is not None:
+                        # Adapt Broadcasting milliseconds to standard elapsed seconds before delivery.
+                        flattened['Graphics_session_time'] = session_time / 1000.0
             
             #self.append_object_to_csv(flattened,full_path)
 

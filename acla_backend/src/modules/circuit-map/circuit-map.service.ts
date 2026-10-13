@@ -4,6 +4,8 @@ import { Model, Types } from 'mongoose';
 import {
     CircuitMap,
     CircuitMapBinSample,
+    CircuitMapCenterlineTag,
+    CircuitMapCenterlineSegment,
     CircuitMapCaptureMode,
     CircuitMapGame,
     CircuitMapSamplesByMode,
@@ -15,9 +17,11 @@ type CircuitMapPayload = {
     source_track_key?: string | null;
     resolution?: number;
     samples?: Partial<Record<CircuitMapCaptureMode, CircuitMapBinSample[]>>;
+    centerline_tags?: CircuitMapCenterlineTag[];
+    centerline_segments?: CircuitMapCenterlineSegment[];
 };
 
-const CAPTURE_MODES: CircuitMapCaptureMode[] = ['left_boundary', 'right_boundary', 'pit_lane'];
+const CAPTURE_MODES: CircuitMapCaptureMode[] = ['left_boundary', 'middle_line', 'right_boundary', 'pit_lane'];
 
 @Injectable()
 export class CircuitMapService {
@@ -26,8 +30,15 @@ export class CircuitMapService {
         private readonly circuitMapModel: Model<CircuitMap>,
     ) { }
 
+    listCenterlineTags() {
+        return { tags: ['corner', 'slow', 'fast', 'long straight', 'consecutive corners'] };
+    }
+
     async list(game?: CircuitMapGame) {
-        const query = game ? { game } : {};
+        if (game !== undefined && game !== 'acc' && game !== 'iracing') {
+            throw new BadRequestException('game must be acc or iracing');
+        }
+        const query = game !== undefined ? { game } : {};
         const maps = await this.circuitMapModel
             .find(query)
             .sort({ updated_at: -1, circuit_name: 1 })
@@ -71,25 +82,91 @@ export class CircuitMapService {
         return this.toDto(updated);
     }
 
-    private normalizePayload(payload: CircuitMapPayload, requireName: boolean) {
+    async remove(id: string): Promise<void> {
+        this.assertObjectId(id);
+        const result = await this.circuitMapModel.deleteOne({ _id: id }).exec();
+        if (result.deletedCount === 0) {
+            throw new NotFoundException('Circuit map not found');
+        }
+    }
+
+    private normalizePayload(payload: CircuitMapPayload, isCreate: boolean) {
         const circuitName = payload.circuit_name?.trim();
-        if (requireName && !circuitName) {
+        if (isCreate && !circuitName) {
             throw new BadRequestException('circuit_name is required');
         }
 
-        const game = payload.game === 'other' ? 'other' : 'acc';
+        const game = payload.game;
+        if ((isCreate || game !== undefined) && game !== 'acc' && game !== 'iracing') {
+            throw new BadRequestException('game must be acc or iracing');
+        }
         const samples = this.normalizeSamples(payload.samples);
         const sampleCount = this.countSamples(samples);
 
         return {
-            game,
+            ...(game !== undefined ? { game } : {}),
             ...(circuitName ? { circuit_name: circuitName } : {}),
             source_track_key: payload.source_track_key || null,
             resolution: Number.isFinite(Number(payload.resolution)) ? Number(payload.resolution) : 1000,
             samples,
+            ...(isCreate || payload.centerline_segments !== undefined || payload.centerline_tags !== undefined
+                ? { centerline_segments: payload.centerline_segments !== undefined
+                    ? this.normalizeCenterlineSegments(payload.centerline_segments)
+                    : this.migrateCenterlineTags(payload.centerline_tags === undefined ? [] : payload.centerline_tags) }
+                : {}),
             sample_count: sampleCount,
             updated_at: new Date().toISOString(),
         };
+    }
+
+    private normalizeCenterlineSegments(segments: CircuitMapCenterlineSegment[]): CircuitMapCenterlineSegment[] {
+        if (!Array.isArray(segments)) {
+            throw new BadRequestException('centerline_segments must be an array');
+        }
+        const ids = new Set<string>();
+        return segments.map((tag) => {
+            if (!tag || typeof tag.id !== 'string' || !tag.id.trim() || tag.id.length > 120
+                || !Array.isArray(tag.tags) || tag.tags.length === 0
+                || tag.tags.some((label) => typeof label !== 'string' || !label.trim() || label.trim().length > 120)
+                || typeof tag.start_position !== 'number' || !Number.isFinite(tag.start_position)
+                || typeof tag.end_position !== 'number' || !Number.isFinite(tag.end_position)
+                || tag.start_position < 0 || tag.start_position > 1
+                || tag.end_position < 0 || tag.end_position > 1
+                || tag.start_position === tag.end_position) {
+                throw new BadRequestException('Each centerline segment requires an id, one or more tags of 1–120 characters, and distinct start/end positions from 0 to 1');
+            }
+            const id = tag.id.trim();
+            if (ids.has(id)) {
+                throw new BadRequestException('Centerline segment ids must be unique');
+            }
+            ids.add(id);
+            if (tag.name !== undefined && (typeof tag.name !== 'string' || tag.name.trim().length > 120)) {
+                throw new BadRequestException('Centerline segment name must be a string of at most 120 characters');
+            }
+            const name = tag.name?.trim();
+            return { id, ...(name ? { name } : {}), tags: Array.from(new Set(tag.tags.map((label) => label.trim()))), start_position: tag.start_position, end_position: tag.end_position };
+        });
+    }
+
+    private migrateCenterlineTags(tags: CircuitMapCenterlineTag[]): CircuitMapCenterlineSegment[] {
+        if (!Array.isArray(tags)) throw new BadRequestException('centerline_tags must be an array');
+        const converted = this.normalizeCenterlineSegments(tags.map((tag) => ({
+            id: tag?.id, tags: [tag?.label], start_position: tag?.start_position, end_position: tag?.end_position,
+        })));
+        const segments: CircuitMapCenterlineSegment[] = [];
+        const isCorner = (label: string) => ['corner', 'slow corner', 'fast corner'].includes(label.toLowerCase());
+        for (const tag of converted) {
+            const existing = segments.find((segment) => segment.start_position === tag.start_position
+                && segment.end_position === tag.end_position);
+            if (existing) {
+                // Keep the corner identity used by track guides and live coaching.
+                if (tag.tags.some(isCorner) && !existing.tags.some(isCorner)) existing.id = tag.id;
+                existing.tags = Array.from(new Set([...existing.tags, ...tag.tags]));
+            } else {
+                segments.push(tag);
+            }
+        }
+        return segments;
     }
 
     private normalizeSamples(samples?: CircuitMapPayload['samples']): CircuitMapSamplesByMode {
@@ -109,6 +186,7 @@ export class CircuitMapService {
                 : [],
         }), {
             left_boundary: [],
+            middle_line: [],
             right_boundary: [],
             pit_lane: [],
         } as CircuitMapSamplesByMode);
@@ -134,6 +212,7 @@ export class CircuitMapService {
             ...this.toSummaryDto(map),
             resolution: Number(map.resolution ?? 1000),
             samples: this.normalizeSamples(map.samples),
+            centerline_segments: map.centerline_segments ?? this.migrateCenterlineTags(map.centerline_tags ?? []),
         };
     }
 

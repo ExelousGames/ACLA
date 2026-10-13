@@ -28,7 +28,7 @@ import type { SerializedError } from 'errors/OperationError';
 import { WorkflowComponentBase, type MountWorkflow } from './WorkflowComponentBase';
 import { asWorkflow, readWorkflowCall, type Workflow, type WorkflowCall, type WorkflowProgress } from './workflow';
 import { bindWorkflowDispatcher, readToolCall, type ToolCall, type WorkflowDispatcher } from './tool';
-import { frontendOperationRegistry, type FrontendOperationName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import { frontendOperationRegistry, type FrontendOperationName } from 'views/ai-chat/ai-command-registry';
 import {
     createControlledOperation,
     createOperationFrom,

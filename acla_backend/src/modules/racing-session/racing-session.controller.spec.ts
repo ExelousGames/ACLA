@@ -20,6 +20,7 @@ describe('RacingSessionController', () => {
       listUserSessionsForAnalysis: jest.fn(),
       getSessionTelemetryForClassification: jest.fn(),
       createRacingSessionFromChunks: jest.fn(),
+      deleteSession: jest.fn(),
     };
     aiServiceClient = {
       classifySegments: jest.fn(),
@@ -43,7 +44,21 @@ describe('RacingSessionController', () => {
     expect(controller).toBeDefined();
   });
 
-  it.each([undefined, '', 'forza'])('rejects unsupported upload game %p before creating upload state', async (gameRecordedFrom) => {
+  it('deletes a session using the authenticated user id', async () => {
+    await controller.deleteSession(
+      { user: { userId: 'user-1' }, body: { userId: 'user-2' } },
+      '507f1f77bcf86cd799439011',
+    );
+    expect(racingSessionService.deleteSession).toHaveBeenCalledWith('user-1', '507f1f77bcf86cd799439011');
+  });
+
+  it('rejects deletion without an authenticated user id', async () => {
+    await expect(controller.deleteSession({}, '507f1f77bcf86cd799439011'))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    expect(racingSessionService.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null, '', '   ', 42, false, [], {}])('rejects invalid upload game %p before creating upload state', async (gameRecordedFrom) => {
     await expect(controller.initUpload({
       sessionName: 'Race 1',
       mapName: 'Monza',
@@ -55,7 +70,7 @@ describe('RacingSessionController', () => {
     expect((controller as any).uploadStates.size).toBe(0);
   });
 
-  it.each(['acc', 'ac', 'iracing'] as const)('accepts supported upload game %s', async (gameRecordedFrom) => {
+  it.each(['acc', 'ac', 'iracing', 'iracing_live', 'iracing_recorded', 'forza', 'custom-simulator'])('accepts client-supplied upload game %s', async (gameRecordedFrom) => {
     await expect(controller.initUpload({
       sessionName: 'Race 1',
       mapName: 'Monza',
@@ -65,14 +80,14 @@ describe('RacingSessionController', () => {
     })).resolves.toEqual({ uploadId: expect.any(String) });
   });
 
-  it('persists upload game metadata when completing a chunked session', async () => {
+  it.each(['acc', 'iracing_live', 'iracing_recorded', 'custom-simulator'])('persists %s metadata when completing a chunked session', async (gameRecordedFrom) => {
     racingSessionService.createRacingSessionFromChunks.mockResolvedValue({ _id: 'session-1' });
     const { uploadId } = await controller.initUpload({
       sessionName: 'Race 1',
       mapName: 'Monza',
       carName: 'GT3',
       userId: 'user-1',
-      game_recorded_from: 'acc',
+      game_recorded_from: gameRecordedFrom,
     });
 
     await expect(controller.completeUpload({}, uploadId)).resolves.toMatchObject({
@@ -83,7 +98,7 @@ describe('RacingSessionController', () => {
       'Monza',
       'GT3',
       'user-1',
-      'acc',
+      gameRecordedFrom,
       [],
       0,
       1000,

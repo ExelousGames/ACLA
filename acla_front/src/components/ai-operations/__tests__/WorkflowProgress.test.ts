@@ -1,7 +1,7 @@
-import { executeSubscribedFrontendOperation } from 'views/lap-analysis/ai-chat/use-voice-conversation';
+import { executeSubscribedFrontendOperation } from 'views/ai-chat/use-voice-conversation';
 import { ProcedurePlanRunner } from '../ProcedurePlan';
 import { RepeatablePlanRunner } from '../RepeatablePlan';
-import { LiveRangeTodoListRunner } from '../LiveRangeTodoList';
+import { LiveRangeTodoListRunner } from '../../../views/live-session/ai-operations/LiveRangeTodoList';
 import { createControlledOperation, createOperation, type Operation } from '../operation';
 import { asTool, type WorkflowDispatcher } from '../tool';
 

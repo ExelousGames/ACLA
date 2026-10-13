@@ -2,8 +2,8 @@ import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import FloatingChat from './FloatingChat';
 import { registerAiOverlayRenderer } from './overlay-renderer-modules';
-import { aiMessageDisplayOverlayRenderer } from 'views/lap-analysis/ai-chat/AiMessageDisplay';
-import { toolMessageDisplayOverlayRenderer } from 'views/lap-analysis/ai-chat/ToolMessageDisplay';
+import { aiMessageDisplayOverlayRenderer } from 'views/ai-chat/AiMessageDisplay';
+import { toolMessageDisplayOverlayRenderer } from 'views/ai-chat/ToolMessageDisplay';
 import type {
     AiOverlayPresentationAcknowledgement,
     AiOverlayPresentationSnapshot,

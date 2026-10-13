@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Box, Button, Flex, Heading, Select, Spinner, Text, TextField } from '@radix-ui/themes';
+import { AlertDialog, Badge, Box, Button, CheckboxGroup, Flex, Heading, Select, Spinner, Tabs, Text, TextField } from '@radix-ui/themes';
 import { CheckIcon, Cross2Icon, PauseIcon, PlayIcon, PlusIcon, ReloadIcon, TrashIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
-import { fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 'services/circuitMapService';
-import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
+import { fetchCenterlineTagOptions, fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 'services/circuitMapService';
+import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
+import { readLocalTelemetry } from 'views/session-shared/read-local-telemetry';
 import {
     OPERATION_COMPONENT_NAMES,
     useOptionalOperationComponentSnapshot,
@@ -13,12 +14,14 @@ import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
 import {
     liveTelemetryStore,
     useCurrentTelemetry,
+    useLiveTelemetrySelector,
     useTelemetryStatus,
 } from 'views/live-session/live-telemetry-store';
 import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CIRCUIT_MAP_GAMES,
     CircuitMapBinSample,
+    CircuitMapCenterlineSegment,
     CircuitMapCaptureMode,
     CircuitMapGame,
     CircuitMapSamplesByMode,
@@ -28,53 +31,57 @@ import {
     CIRCUIT_MAP_BIN_RESOLUTION,
     cloneSamplesByMode,
     countCircuitMapSamples,
-    extractAccCaptureSample,
+    extractCircuitMapCaptureSample,
+    getCenterlineRangeSamples,
     getCircuitMapDrawSegments,
+    getCircuitMapName,
+    getCircuitMapTrackKey,
+    mergeCircuitMapSamples,
     upsertCaptureModeSample
 } from './circuit-map-utils';
 import './circuit-maps.css';
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error';
+type CircuitMapView = 'bounded' | 'centerline';
 type SelectedPoint = { mode: CircuitMapCaptureMode; bin: number } | null;
-type DragState = { mode: CircuitMapCaptureMode; bin: number } | null;
 type ProjectedPoint = { screenX: number; screenY: number; sample: CircuitMapBinSample; mode: CircuitMapCaptureMode };
+type SelectedRange = { start_position: number; end_position: number | null };
+type MapDrag = { pointerId: number; startX: number; startY: number; panX: number; panY: number; moved: boolean };
+
+const VIEW_CAPTURE_MODES = {
+    bounded: CIRCUIT_MAP_CAPTURE_MODES.filter(({ value }) => value !== 'middle_line'),
+    centerline: CIRCUIT_MAP_CAPTURE_MODES.filter(({ value }) => value === 'middle_line')
+};
 
 const MODE_COLORS: Record<CircuitMapCaptureMode, string> = {
     left_boundary: '#29b6f6',
+    middle_line: '#ce93d8',
     right_boundary: '#ffca28',
     pit_lane: '#66bb6a'
 };
 
 const EMPTY_SAMPLES: CircuitMapSamplesByMode = {
     left_boundary: [],
+    middle_line: [],
     right_boundary: [],
     pit_lane: []
 };
 
-const getAccTrackKey = (liveData: any, staticData: any): string | null => (
-    liveData?.Static_track
-    || liveData?.Static?.track
-    || staticData?.Static_track
-    || staticData?.track
-    || null
-);
-
-const getAccCircuitName = (trackKey: string | null): string => {
-    if (!trackKey) return '';
-    return ACCMemoeryTracks.get(trackKey) || trackKey;
-};
+const MIN_ZOOM = 0.35;
+const MAX_ZOOM = 6;
+const ZOOM_STEP = 1.25;
+const PAN_THRESHOLD = 4;
 
 const formatModeLabel = (mode: CircuitMapCaptureMode): string => (
     CIRCUIT_MAP_CAPTURE_MODES.find((option) => option.value === mode)?.label || mode
 );
 
-const toNumber = (value: string, fallback: number): number => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-};
-
 const getSamplesForMode = (samplesByMode: CircuitMapSamplesByMode, mode: CircuitMapCaptureMode): CircuitMapBinSample[] => (
     samplesByMode[mode] || []
+);
+
+const formatRange = (start: number, end: number): string => (
+    `${(start * 100).toFixed(1)}% → ${(end * 100).toFixed(1)}%${start > end ? ' (across start/finish)' : ''}`
 );
 
 const CircuitMaps = () => {
@@ -82,14 +89,17 @@ const CircuitMaps = () => {
         OPERATION_COMPONENT_NAMES.LIVE_SESSION,
     );
     const currentTelemetry = useCurrentTelemetry();
+    const telemetryGame = useLiveTelemetrySelector((snapshot) => snapshot.game);
     const telemetryStatus = useTelemetryStatus();
-    const { refreshCircuitMaps, upsertCachedCircuitMap } = useCircuitMaps();
+    const { refreshCircuitMaps, upsertCachedCircuitMap, removeCachedCircuitMap } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
     const projectedPointsRef = useRef<ProjectedPoint[]>([]);
-    const dragStateRef = useRef<DragState>(null);
-    const liveSequenceRef = useRef(0);
+    const mapDragRef = useRef<MapDrag | null>(null);
     const lastCaptureSignatureRef = useRef('');
+    const mapLoadRequestRef = useRef(0);
+    const listLoadRequestRef = useRef(0);
+    const importRef = useRef<AbortController | null>(null);
 
     const [game, setGame] = useState<CircuitMapGame>('acc');
     const [mapList, setMapList] = useState<CircuitMapSummaryDto[]>([]);
@@ -99,61 +109,151 @@ const CircuitMaps = () => {
     const [circuitName, setCircuitName] = useState('');
     const [sourceTrackKey, setSourceTrackKey] = useState<string | null>(null);
     const [samplesByMode, setSamplesByMode] = useState<CircuitMapSamplesByMode>(EMPTY_SAMPLES);
+    const [centerlineSegments, setCenterlineSegments] = useState<CircuitMapCenterlineSegment[]>([]);
+    const [isSelectingRange, setIsSelectingRange] = useState(false);
+    const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(null);
+    const [segmentName, setSegmentName] = useState('');
+    const [tagLabels, setTagLabels] = useState<string[]>([]);
+    const [tagOptions, setTagOptions] = useState<string[]>([]);
+    const [tagOptionsState, setTagOptionsState] = useState<LoadState>('idle');
+    const [tagOptionsRetry, setTagOptionsRetry] = useState(0);
+    const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+    const [mapView, setMapView] = useState<CircuitMapView>('bounded');
     const [captureMode, setCaptureMode] = useState<CircuitMapCaptureMode>('left_boundary');
     const [isCapturing, setIsCapturing] = useState(false);
     const [selectedPoint, setSelectedPoint] = useState<SelectedPoint>(null);
     const [canvasSize, setCanvasSize] = useState({ width: 900, height: 620 });
-    const [manualNormalized, setManualNormalized] = useState('0');
-    const [manualX, setManualX] = useState('0');
-    const [manualZ, setManualZ] = useState('0');
+    const [zoom, setZoom] = useState(1);
+    const [pan, setPan] = useState({ x: 0, y: 0 });
+    const [isPanning, setIsPanning] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
+    const [isMapLoading, setIsMapLoading] = useState(false);
+    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
+    const [isImporting, setIsImporting] = useState(false);
+    const [importStatus, setImportStatus] = useState('');
+    const isTagEditingDisabled = isImporting || isMapLoading || isSaving || isDeleting;
+
+    const stopPanning = useCallback(() => {
+        const drag = mapDragRef.current;
+        mapDragRef.current = null;
+        setIsPanning(false);
+        if (drag && canvasRef.current?.hasPointerCapture(drag.pointerId)) {
+            canvasRef.current.releasePointerCapture(drag.pointerId);
+        }
+    }, []);
+
+    const resetViewport = useCallback(() => {
+        stopPanning();
+        setZoom(1);
+        setPan({ x: 0, y: 0 });
+    }, [stopPanning]);
+
+    const clearRangeSelection = useCallback(() => {
+        setIsSelectingRange(false);
+        setSelectedRange(null);
+        setSegmentName('');
+        setTagLabels([]);
+        setSelectedSegmentId(null);
+    }, []);
 
     const isAcc = game === 'acc';
-    const isAccLive = isAcc && telemetryStatus === ACC_STATUS.ACC_LIVE;
+    const isIRacing = game === 'iracing';
+    const canImportIRacing = Boolean(window.electronAPI?.importLocalIRacingTelemetry);
+    const isAccLive = isAcc && telemetryGame === game && telemetryStatus === ACC_STATUS.ACC_LIVE;
     const sampleCount = countCircuitMapSamples(samplesByMode);
-    const currentAccTrackKey = getAccTrackKey(
-        currentTelemetry,
-        liveSession?.staticData ?? {},
-    );
+    const visibleModes = VIEW_CAPTURE_MODES[mapView];
+    const visibleSampleCount = visibleModes.reduce((total, { value }) => total + getSamplesForMode(samplesByMode, value).length, 0);
+    const currentTrackKey = (telemetryGame === game ? getCircuitMapTrackKey(currentTelemetry) : null)
+        || (liveSession?.sessionGame === game ? getCircuitMapTrackKey(liveSession.staticData) : null);
     const liveCapture = useMemo(() => (
-        isAccLive ? extractAccCaptureSample(currentTelemetry, liveSequenceRef.current) : null
+        isAccLive ? extractCircuitMapCaptureSample(currentTelemetry) : null
     ), [currentTelemetry, isAccLive]);
 
     const loadMapList = useCallback(async (nextGame: CircuitMapGame = game) => {
+        const requestId = ++listLoadRequestRef.current;
         setListState('loading');
         setError(null);
 
         try {
-            setMapList(await fetchCircuitMapList(nextGame));
+            const maps = await fetchCircuitMapList(nextGame);
+            if (requestId !== listLoadRequestRef.current) return;
+            setMapList(maps);
             setListState('ready');
         } catch (loadError: any) {
+            if (requestId !== listLoadRequestRef.current) return;
             setMapList([]);
             setListState('error');
             setError(loadError?.data?.message || loadError?.message || 'Unable to load circuit maps.');
         }
     }, [game]);
 
+    const cancelImport = useCallback(() => {
+        importRef.current?.abort();
+        importRef.current = null;
+        setIsImporting(false);
+        setImportStatus('');
+    }, []);
+
+    useEffect(() => () => { importRef.current?.abort(); }, []);
+
     useEffect(() => {
+        if (mapView !== 'centerline') return;
+        let cancelled = false;
+        setTagOptionsState('loading');
+        fetchCenterlineTagOptions().then((options) => {
+            if (cancelled) return;
+            setTagOptions(options);
+            setTagOptionsState('ready');
+        }).catch(() => {
+            if (cancelled) return;
+            setTagOptions([]);
+            setTagOptionsState('error');
+        });
+        return () => { cancelled = true; };
+    }, [mapView, tagOptionsRetry]);
+
+    const changeMapView = (value: string) => {
+        if (isImporting) return;
+        const nextView = value as CircuitMapView;
+        setIsCapturing(false);
+        lastCaptureSignatureRef.current = '';
+        setSelectedPoint(null);
+        setImportStatus('');
+        clearRangeSelection();
+        setMapView(nextView);
+        resetViewport();
+        setCaptureMode(nextView === 'centerline' ? 'middle_line' : 'left_boundary');
+    };
+
+    useEffect(() => {
+        cancelImport();
+        mapLoadRequestRef.current += 1;
+        setIsMapLoading(false);
         setSelectedMapId(null);
         setCircuitName('');
+        resetViewport();
         setSourceTrackKey(null);
         setSamplesByMode(cloneSamplesByMode(EMPTY_SAMPLES));
+        setCenterlineSegments([]);
+        clearRangeSelection();
         setSelectedPoint(null);
         setIsCapturing(false);
         void loadMapList(game);
-    }, [game, loadMapList]);
+    }, [cancelImport, clearRangeSelection, game, loadMapList, resetViewport]);
 
     useEffect(() => {
         if (!isAcc || selectedMapId || circuitName) {
             return;
         }
 
-        const accName = getAccCircuitName(currentAccTrackKey);
-        if (accName) {
-            setCircuitName(accName);
-            setSourceTrackKey(currentAccTrackKey);
+        const name = getCircuitMapName(currentTrackKey, game);
+        if (name) {
+            setCircuitName(name);
+            setSourceTrackKey(currentTrackKey);
         }
-    }, [circuitName, currentAccTrackKey, isAcc, selectedMapId]);
+    }, [circuitName, currentTrackKey, game, isAcc, selectedMapId]);
 
     useEffect(() => {
         const wrapper = canvasWrapRef.current;
@@ -175,7 +275,6 @@ const CircuitMaps = () => {
     useEffect(() => {
         return liveTelemetryStore.subscribeEvents((event) => {
             if (event.type === 'session-reset') {
-                liveSequenceRef.current = 0;
                 lastCaptureSignatureRef.current = '';
                 return;
             }
@@ -183,50 +282,153 @@ const CircuitMaps = () => {
                 event.type !== 'frame'
                 || !isCapturing
                 || !isAcc
+                || event.update.game !== game
                 || event.telemetryStatus !== ACC_STATUS.ACC_LIVE
             ) return;
 
-            const liveCapture = extractAccCaptureSample(event.sample, liveSequenceRef.current);
+            const liveCapture = extractCircuitMapCaptureSample(event.sample);
             if (!liveCapture) return;
             const signature = `${liveCapture.bin}:${liveCapture.position.x}:${liveCapture.position.y}:${liveCapture.position.z}`;
             if (signature === lastCaptureSignatureRef.current) return;
 
             lastCaptureSignatureRef.current = signature;
-            liveSequenceRef.current += 1;
             setSamplesByMode((previous) => upsertCaptureModeSample(previous, captureMode, liveCapture));
         }, { replayLatest: true });
-    }, [captureMode, isAcc, isCapturing]);
+    }, [captureMode, game, isAcc, isCapturing]);
 
     const loadMap = useCallback(async (mapId: string) => {
+        cancelImport();
+        clearRangeSelection();
+        const requestId = ++mapLoadRequestRef.current;
+        setIsMapLoading(true);
         setSelectedMapId(mapId);
+        resetViewport();
         setError(null);
         setIsCapturing(false);
         setSelectedPoint(null);
 
         try {
             const map = await fetchCircuitMapById(mapId, game);
+            if (requestId !== mapLoadRequestRef.current) return;
             setCircuitName(map.circuit_name);
             setSourceTrackKey(map.source_track_key || null);
             setSamplesByMode(cloneSamplesByMode(map.samples));
+            setCenterlineSegments(map.centerline_segments || []);
             upsertCachedCircuitMap(map);
         } catch (loadError: any) {
+            if (requestId !== mapLoadRequestRef.current) return;
             setError(loadError?.data?.message || loadError?.message || 'Unable to load circuit map.');
+        } finally {
+            if (requestId === mapLoadRequestRef.current) setIsMapLoading(false);
         }
-    }, [game, upsertCachedCircuitMap]);
+    }, [cancelImport, clearRangeSelection, game, resetViewport, upsertCachedCircuitMap]);
 
     const resetForNewMap = useCallback(() => {
+        cancelImport();
+        mapLoadRequestRef.current += 1;
+        setIsMapLoading(false);
+        setIsCapturing(false);
         setSelectedMapId(null);
+        resetViewport();
         setSamplesByMode(cloneSamplesByMode(EMPTY_SAMPLES));
+        setCenterlineSegments([]);
+        clearRangeSelection();
         setSelectedPoint(null);
         if (isAcc) {
-            const accName = getAccCircuitName(currentAccTrackKey);
-            setCircuitName(accName);
-            setSourceTrackKey(currentAccTrackKey);
+            setCircuitName(getCircuitMapName(currentTrackKey, game));
+            setSourceTrackKey(currentTrackKey);
         } else {
             setCircuitName('');
             setSourceTrackKey(null);
         }
-    }, [currentAccTrackKey, isAcc]);
+    }, [cancelImport, clearRangeSelection, currentTrackKey, game, isAcc, resetViewport]);
+
+    const importIRacingFile = async () => {
+        if (importRef.current || !isIRacing || isMapLoading || isSaving || isDeleting) return;
+        const controller = new AbortController();
+        importRef.current = controller;
+        setIsImporting(true);
+        setError(null);
+        setImportStatus('Opening and converting iRacing telemetry...');
+        setSelectedPoint(null);
+        clearRangeSelection();
+        let convertedPath: string | undefined;
+        try {
+            const imported = await window.electronAPI.importLocalIRacingTelemetry();
+            if (!imported) {
+                if (!controller.signal.aborted) setImportStatus('');
+                return;
+            }
+            convertedPath = imported.filePath;
+            if (controller.signal.aborted) return;
+            let importedTrackKey: string | null = null;
+            let nextSamples = getSamplesForMode(samplesByMode, captureMode);
+            let capturedRows = 0;
+            const updatedAt = new Date().toISOString();
+            await readLocalTelemetry(imported.filePath, game, controller.signal, (count) => {
+                setImportStatus(`Reading telemetry: ${count.toLocaleString()} / ${imported.rowCount.toLocaleString()}`);
+            }, (rows) => {
+                for (const row of rows) {
+                    const trackKey = getCircuitMapTrackKey(row);
+                    if (!trackKey) continue;
+                    if ((importedTrackKey && trackKey !== importedTrackKey)
+                        || (sampleCount > 0 && sourceTrackKey && trackKey !== sourceTrackKey)) {
+                        throw new Error('This recording is from a different circuit. Create a New Map to import it.');
+                    }
+                    importedTrackKey = trackKey;
+                }
+                const result = mergeCircuitMapSamples(nextSamples, rows, updatedAt);
+                nextSamples = result.samples;
+                capturedRows += result.capturedRows;
+            });
+            if (controller.signal.aborted) return;
+            if (!capturedRows) {
+                throw new Error('This .ibt file contains no usable driver coordinates and lap positions. Try a completed recording with GPS telemetry.');
+            }
+            if (!importedTrackKey) {
+                throw new Error('This recording contains no track name in its telemetry.');
+            }
+            setSamplesByMode((previous) => ({ ...previous, [captureMode]: nextSamples }));
+            setCircuitName((previous) => previous || getCircuitMapName(importedTrackKey, game));
+            setSourceTrackKey(importedTrackKey);
+            setImportStatus(`${imported.fileName}: imported ${capturedRows.toLocaleString()} driver samples into ${formatModeLabel(captureMode)}.`);
+        } catch (cause) {
+            if (!controller.signal.aborted) {
+                setError(cause instanceof Error ? cause.message : 'Could not import the .ibt file.');
+                setImportStatus('');
+            }
+        } finally {
+            if (convertedPath) await window.electronAPI.deleteTempFile(convertedPath).catch(() => undefined);
+            if (importRef.current === controller) {
+                importRef.current = null;
+                if (!controller.signal.aborted) setIsImporting(false);
+            }
+        }
+    };
+
+    const deleteMap = async () => {
+        if (!selectedMapId || isDeleting || isSaving || isMapLoading || listState === 'loading') return;
+        setIsDeleting(true);
+        setDeleteError(null);
+        try {
+            try {
+                await apiService.delete(`/circuit-map/${encodeURIComponent(selectedMapId)}`);
+            } catch (deleteError: any) {
+                if (deleteError?.status !== 404 || deleteError?.data?.message !== 'Circuit map not found') {
+                    throw deleteError;
+                }
+            }
+            removeCachedCircuitMap(selectedMapId);
+            setMapList((previous) => previous.filter((map) => map.id !== selectedMapId));
+            resetForNewMap();
+            setError(null);
+            setDeleteDialogOpen(false);
+        } catch {
+            setDeleteError('Could not remove this map. Please try again.');
+        } finally {
+            setIsDeleting(false);
+        }
+    };
 
     const saveMap = useCallback(async () => {
         const trimmedName = circuitName.trim();
@@ -238,9 +440,10 @@ const CircuitMaps = () => {
         const payload = {
             game,
             circuit_name: trimmedName,
-            source_track_key: isAcc ? sourceTrackKey : null,
+            source_track_key: sourceTrackKey,
             resolution: CIRCUIT_MAP_BIN_RESOLUTION,
-            samples: samplesByMode
+            samples: samplesByMode,
+            centerline_segments: centerlineSegments
         };
 
         setIsSaving(true);
@@ -275,9 +478,9 @@ const CircuitMaps = () => {
             setIsSaving(false);
         }
     }, [
+        centerlineSegments,
         circuitName,
         game,
-        isAcc,
         loadMapList,
         refreshCircuitMaps,
         sampleCount,
@@ -321,34 +524,10 @@ const CircuitMaps = () => {
         setSelectedPoint(null);
     }, [selectedPoint]);
 
-    const addManualPoint = useCallback(() => {
-        const normalizedPosition = Math.min(1, Math.max(0, toNumber(manualNormalized, 0)));
-        const bin = Math.min(CIRCUIT_MAP_BIN_RESOLUTION - 1, Math.floor(normalizedPosition * CIRCUIT_MAP_BIN_RESOLUTION));
-        const sample: CircuitMapBinSample = {
-            bin,
-            normalized_position: normalizedPosition,
-            x: toNumber(manualX, 0),
-            y: 0,
-            z: toNumber(manualZ, 0),
-            sample_count: 1,
-            updated_at: new Date().toISOString(),
-            locked: true
-        };
-
-        setSamplesByMode((previous) => {
-            const samples = getSamplesForMode(previous, captureMode).filter((item) => item.bin !== bin);
-            return {
-                ...previous,
-                [captureMode]: [...samples, sample].sort((a, b) => a.bin - b.bin)
-            };
-        });
-        setSelectedPoint({ mode: captureMode, bin });
-    }, [captureMode, manualNormalized, manualX, manualZ]);
-
     const getCanvasProjection = useCallback(() => {
         const points: { x: number; z: number }[] = [];
-        Object.values(samplesByMode).forEach((samples) => {
-            samples?.forEach((sample) => points.push({ x: sample.x, z: sample.z }));
+        visibleModes.forEach(({ value }) => {
+            getSamplesForMode(samplesByMode, value).forEach((sample) => points.push({ x: sample.x, z: sample.z }));
         });
         if (liveCapture) {
             points.push({ x: liveCapture.position.x, z: liveCapture.position.z });
@@ -375,21 +554,19 @@ const CircuitMaps = () => {
         const spanZ = Math.max(1, maxZ - minZ);
         const usableWidth = Math.max(1, canvasSize.width - padding * 2);
         const usableHeight = Math.max(1, canvasSize.height - padding * 2);
-        const scale = Math.min(usableWidth / spanX, usableHeight / spanZ);
+        const scale = Math.min(usableWidth / spanX, usableHeight / spanZ) * zoom;
         const centerX = (minX + maxX) / 2;
         const centerZ = (minZ + maxZ) / 2;
+        // Canvas Y grows downward: keep that Z flip for ACC and undo it for iRacing.
+        const zDirection = isIRacing ? -1 : 1;
 
         return {
             project: (x: number, z: number) => ({
-                screenX: canvasSize.width / 2 + (x - centerX) * scale,
-                screenY: canvasSize.height / 2 + (z - centerZ) * scale
-            }),
-            unproject: (screenX: number, screenY: number) => ({
-                x: centerX + (screenX - canvasSize.width / 2) / scale,
-                z: centerZ + (screenY - canvasSize.height / 2) / scale
+                screenX: canvasSize.width / 2 + pan.x + (x - centerX) * scale,
+                screenY: canvasSize.height / 2 + pan.y + (z - centerZ) * scale * zDirection
             })
         };
-    }, [canvasSize, liveCapture, samplesByMode]);
+    }, [canvasSize, isIRacing, liveCapture, pan, samplesByMode, visibleModes, zoom]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -427,7 +604,7 @@ const CircuitMaps = () => {
         }
         context.restore();
 
-        CIRCUIT_MAP_CAPTURE_MODES.forEach(({ value }) => {
+        visibleModes.forEach(({ value }) => {
             const samples = getSamplesForMode(samplesByMode, value);
             const drawSegments = getCircuitMapDrawSegments(samples, value);
 
@@ -467,6 +644,66 @@ const CircuitMaps = () => {
             });
         });
 
+        if (mapView === 'centerline') {
+            const drawRange = (range: SelectedRange, color: string, label?: string) => {
+                const samples = getCenterlineRangeSamples(
+                    getSamplesForMode(samplesByMode, 'middle_line'),
+                    range.start_position,
+                    range.end_position ?? range.start_position
+                );
+                if (!samples.length) return;
+                context.save();
+                context.strokeStyle = color;
+                context.fillStyle = color;
+                context.lineWidth = 7;
+                context.lineJoin = 'round';
+                context.lineCap = 'round';
+                context.beginPath();
+                samples.forEach((sample, index) => {
+                    const point = project(sample.x, sample.z);
+                    if (index === 0) context.moveTo(point.screenX, point.screenY);
+                    else context.lineTo(point.screenX, point.screenY);
+                });
+                context.stroke();
+                [samples[0], samples[samples.length - 1]].forEach((sample) => {
+                    const point = project(sample.x, sample.z);
+                    context.beginPath();
+                    context.arc(point.screenX, point.screenY, 8, 0, Math.PI * 2);
+                    context.stroke();
+                });
+                if (label) {
+                    const middle = samples[Math.floor(samples.length / 2)];
+                    const point = project(middle.x, middle.z);
+                    context.font = 'bold 13px monospace';
+                    context.textAlign = 'center';
+                    context.fillText(label, point.screenX, point.screenY - 18, 240);
+                }
+                context.restore();
+            };
+            centerlineSegments.forEach((segment) => drawRange(segment, '#ffca28', segment.name || segment.tags.join(', ')));
+            const selectedTag = centerlineSegments.find((tag) => tag.id === selectedSegmentId);
+            if (selectedTag) drawRange(selectedTag, '#4dd0e1', selectedTag.name || selectedTag.tags.join(', '));
+            if (selectedRange) drawRange(selectedRange, '#4dd0e1');
+
+            const startPoint = projectedPoints.reduce<ProjectedPoint | null>((closest, point) => (
+                !closest || point.sample.normalized_position < closest.sample.normalized_position ? point : closest
+            ), null);
+
+            if (startPoint) {
+                context.save();
+                context.strokeStyle = '#00e676';
+                context.lineWidth = 3;
+                context.beginPath();
+                context.arc(startPoint.screenX, startPoint.screenY, 10, 0, Math.PI * 2);
+                context.stroke();
+                context.fillStyle = '#00e676';
+                context.font = 'bold 12px monospace';
+                context.textAlign = 'center';
+                context.fillText('START', startPoint.screenX, startPoint.screenY - 18);
+                context.restore();
+            }
+        }
+
         if (liveCapture) {
             const point = project(liveCapture.position.x, liveCapture.position.z);
             context.save();
@@ -480,17 +717,17 @@ const CircuitMaps = () => {
             context.restore();
         }
 
-        if (sampleCount === 0 && !liveCapture) {
+        if (visibleSampleCount === 0 && !liveCapture) {
             context.save();
             context.fillStyle = 'rgba(235,255,245,0.74)';
             context.font = '12px monospace';
             context.textAlign = 'center';
-            context.fillText('NO CIRCUIT SAMPLES', canvasSize.width / 2, canvasSize.height / 2);
+            context.fillText(mapView === 'centerline' ? 'NO CENTERLINE SAMPLES' : 'NO BOUNDED MAP SAMPLES', canvasSize.width / 2, canvasSize.height / 2);
             context.restore();
         }
 
         projectedPointsRef.current = projectedPoints;
-    }, [canvasSize, getCanvasProjection, liveCapture, sampleCount, samplesByMode, selectedPoint]);
+    }, [canvasSize, centerlineSegments, getCanvasProjection, liveCapture, mapView, visibleSampleCount, samplesByMode, selectedPoint, selectedRange, selectedSegmentId, visibleModes]);
 
     const getPointerPosition = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
         const rect = event.currentTarget.getBoundingClientRect();
@@ -501,6 +738,40 @@ const CircuitMaps = () => {
     }, []);
 
     const handlePointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+        if (isTagEditingDisabled || event.button !== 0 || mapDragRef.current) return;
+        event.preventDefault();
+        mapDragRef.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            panX: pan.x,
+            panY: pan.y,
+            moved: false
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setIsPanning(true);
+    }, [isTagEditingDisabled, pan]);
+
+    const handlePointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+        const drag = mapDragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const deltaX = event.clientX - drag.startX;
+        const deltaY = event.clientY - drag.startY;
+        if (!drag.moved && Math.hypot(deltaX, deltaY) < PAN_THRESHOLD) return;
+        drag.moved = true;
+        setPan({ x: drag.panX + deltaX, y: drag.panY + deltaY });
+    }, []);
+
+    const handlePointerCancel = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+        if (mapDragRef.current?.pointerId === event.pointerId) stopPanning();
+    }, [stopPanning]);
+
+    const handlePointerUp = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+        const drag = mapDragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        stopPanning();
+        if (isTagEditingDisabled || drag.moved
+            || Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= PAN_THRESHOLD) return;
         const pointer = getPointerPosition(event);
         const nearest = projectedPointsRef.current.reduce<{ point: ProjectedPoint | null; distance: number }>((closest, point) => {
             const distance = Math.hypot(point.screenX - pointer.screenX, point.screenY - pointer.screenY);
@@ -510,48 +781,48 @@ const CircuitMaps = () => {
             return closest;
         }, { point: null, distance: 12 }).point;
 
+        if (isSelectingRange && mapView === 'centerline') {
+            if (!nearest || nearest.mode !== 'middle_line') return;
+            const position = nearest.sample.normalized_position;
+            setSelectedRange((previous) => !previous || previous.end_position !== null
+                ? { start_position: position, end_position: null }
+                : { ...previous, end_position: position === previous.start_position ? null : position });
+            return;
+        }
+
         if (!nearest) {
             setSelectedPoint(null);
             return;
         }
 
-        const nextSelection = { mode: nearest.mode, bin: nearest.sample.bin };
-        setSelectedPoint(nextSelection);
-        dragStateRef.current = nextSelection;
-        event.currentTarget.setPointerCapture(event.pointerId);
-    }, [getPointerPosition]);
+        setSelectedSegmentId(null);
+        setSelectedPoint({ mode: nearest.mode, bin: nearest.sample.bin });
+    }, [getPointerPosition, isSelectingRange, isTagEditingDisabled, mapView, stopPanning]);
 
-    const handlePointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
-        const dragState = dragStateRef.current;
-        if (!dragState) return;
+    const saveSegment = (event: React.FormEvent) => {
+        event.preventDefault();
+        if (isTagEditingDisabled || tagOptionsState !== 'ready' || !selectedRange
+            || selectedRange.end_position === null || tagLabels.length === 0
+            || tagLabels.some((label) => !editableTagOptions.includes(label))) return;
+        const { start_position, end_position } = selectedRange;
+        const name = segmentName.trim();
+        if (name.length > 120) return;
+        const segment: CircuitMapCenterlineSegment = {
+            id: selectedSegmentId ?? window.crypto?.randomUUID?.() ?? `segment-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            ...(name ? { name } : {}),
+            tags: tagLabels,
+            start_position,
+            end_position
+        };
+        setCenterlineSegments((previous) => selectedSegmentId
+            ? previous.map((item) => item.id === selectedSegmentId ? segment : item)
+            : [...previous, segment]);
+        clearRangeSelection();
+        setSelectedSegmentId(segment.id);
+    };
 
-        const pointer = getPointerPosition(event);
-        const { unproject } = getCanvasProjection();
-        const nextPosition = unproject(pointer.screenX, pointer.screenY);
-
-        setSamplesByMode((previous) => {
-            const samples = getSamplesForMode(previous, dragState.mode);
-            return {
-                ...previous,
-                [dragState.mode]: samples.map((sample) => sample.bin === dragState.bin
-                    ? {
-                        ...sample,
-                        x: nextPosition.x,
-                        z: nextPosition.z,
-                        locked: true,
-                        updated_at: new Date().toISOString()
-                    }
-                    : sample)
-            };
-        });
-    }, [getCanvasProjection, getPointerPosition]);
-
-    const handlePointerUp = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
-        dragStateRef.current = null;
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-        }
-    }, []);
+    const selectedSegment = centerlineSegments.find((segment) => segment.id === selectedSegmentId);
+    const editableTagOptions = Array.from(new Set([...tagOptions, ...(selectedSegment?.tags ?? [])]));
 
     const selectedSample = useMemo(() => {
         if (!selectedPoint) return null;
@@ -564,14 +835,14 @@ const CircuitMaps = () => {
             Pause Capture
         </Button>
     ) : (
-        <Button color="green" disabled={!isAccLive} onClick={() => setIsCapturing(true)}>
+        <Button color="green" disabled={!isAccLive || !liveCapture} onClick={() => setIsCapturing(true)}>
             <PlayIcon />
             Start Capture
         </Button>
     );
 
     return (
-        <div className="circuit-maps">
+        <Tabs.Root className="circuit-maps" value={mapView} onValueChange={changeMapView}>
             <aside className="circuit-maps__sidebar">
                 <div className="circuit-maps__section">
                     <Heading size="5">Circuit Maps</Heading>
@@ -631,14 +902,20 @@ const CircuitMaps = () => {
 
                 <div className="circuit-maps__section">
                     <Text className="circuit-maps__label">Capture Mode</Text>
-                    <Select.Root value={captureMode} onValueChange={(value) => setCaptureMode(value as CircuitMapCaptureMode)}>
+                    <Select.Root value={captureMode} disabled={isImporting} onValueChange={(value) => setCaptureMode(value as CircuitMapCaptureMode)}>
                         <Select.Trigger />
                         <Select.Content>
-                            {CIRCUIT_MAP_CAPTURE_MODES.map((option) => (
+                            {visibleModes.map((option) => (
                                 <Select.Item key={option.value} value={option.value}>{option.label}</Select.Item>
                             ))}
                         </Select.Content>
                     </Select.Root>
+
+                    <Text size="2" className="circuit-maps__muted">
+                        {mapView === 'centerline'
+                            ? 'Middle line only. Each point requires a normalized lap position from 0 to 1.'
+                            : 'Left boundary, right boundary, and pit lane.'}
+                    </Text>
 
                     {isAcc ? (
                         <Flex align="center" gap="2" wrap="wrap">
@@ -646,27 +923,24 @@ const CircuitMaps = () => {
                             <Badge color={isAccLive ? 'green' : 'gray'}>{isAccLive ? 'ACC Live' : 'ACC Offline'}</Badge>
                         </Flex>
                     ) : (
-                        <Badge color="gray">Manual Edit</Badge>
+                        <Flex direction="column" gap="2">
+                            <Text size="2" className="circuit-maps__muted">
+                                Import your recorded driving path into {formatModeLabel(captureMode)}. Exit the car in iRacing first to finish recording.
+                            </Text>
+                            <Button onClick={() => void importIRacingFile()} disabled={!canImportIRacing || isImporting || isMapLoading || isSaving || isDeleting}>
+                                {isImporting ? <Spinner size="1" /> : <PlusIcon />}
+                                {isImporting ? 'Importing...' : 'Open .ibt file'}
+                            </Button>
+                            {!canImportIRacing && <Text size="2">Open the desktop app to import local iRacing .ibt files.</Text>}
+                            {importStatus && <Text role="status" size="2">{importStatus}</Text>}
+                        </Flex>
                     )}
-                </div>
-
-                <div className="circuit-maps__section">
-                    <Text className="circuit-maps__label">Manual Point</Text>
-                    <div className="circuit-maps__manual-grid">
-                        <TextField.Root placeholder="Normalized position 0-1" value={manualNormalized} onChange={(event) => setManualNormalized(event.target.value)} />
-                        <TextField.Root placeholder="X" value={manualX} onChange={(event) => setManualX(event.target.value)} />
-                        <TextField.Root placeholder="Z" value={manualZ} onChange={(event) => setManualZ(event.target.value)} />
-                    </div>
-                    <Button variant="soft" onClick={addManualPoint}>
-                        <PlusIcon />
-                        Add Point
-                    </Button>
                 </div>
 
                 <div className="circuit-maps__section">
                     <Text className="circuit-maps__label">Samples</Text>
                     <div className="circuit-maps__mode-grid">
-                        {CIRCUIT_MAP_CAPTURE_MODES.map((mode) => (
+                        {visibleModes.map((mode) => (
                             <div key={mode.value} className="circuit-maps__mode-row">
                                 <Text size="2">
                                     <span
@@ -681,9 +955,103 @@ const CircuitMaps = () => {
                     </div>
                 </div>
 
+                {mapView === 'centerline' && (
+                    <div className="circuit-maps__section">
+                        <Text className="circuit-maps__label">Segments</Text>
+                        <Text size="2" className="circuit-maps__muted">
+                            Each segment has one range, one or more tags, and an optional name. Select its start and end in lap direction, then choose tags and add a name. Click a segment to edit it. Changes are saved with the map when you press Save.
+                        </Text>
+                        {tagOptionsState === 'loading' && <Text size="2">Loading tags...</Text>}
+                        {tagOptionsState === 'error' && (
+                            <>
+                                <Text role="alert" size="2" className="circuit-maps__error">Unable to load centerline tags.</Text>
+                                <Button variant="soft" onClick={() => setTagOptionsRetry((previous) => previous + 1)}>Retry loading tags</Button>
+                            </>
+                        )}
+                        {tagOptionsState === 'ready' && tagOptions.length === 0 && <Text size="2">No centerline tags available.</Text>}
+                        <Button
+                            variant="soft"
+                            disabled={isTagEditingDisabled || tagOptionsState !== 'ready' || tagOptions.length === 0 || getSamplesForMode(samplesByMode, 'middle_line').length < 2}
+                            onClick={() => {
+                                clearRangeSelection();
+                                setSelectedPoint(null);
+                                setIsSelectingRange(true);
+                            }}
+                        >
+                            Select range
+                        </Button>
+                        {isSelectingRange && (
+                            <form className="circuit-maps__tag-form" onSubmit={saveSegment}>
+                                <Text role="status" size="2">
+                                    {!selectedRange ? 'Click the range start on the centerline.'
+                                        : selectedRange.end_position === null ? 'Click a different point for the range end.'
+                                            : formatRange(selectedRange.start_position, selectedRange.end_position)}
+                                </Text>
+                                {selectedRange?.end_position != null && (
+                                    <>
+                                        <Button type="button" size="1" variant="outline" disabled={isTagEditingDisabled} onClick={() => {
+                                            setSelectedRange({ start_position: selectedRange.end_position!, end_position: selectedRange.start_position });
+                                        }}>Swap start/end</Button>
+                                        <Text as="label" htmlFor="circuit-map-segment-name" size="2">Segment name (optional)</Text>
+                                        <TextField.Root
+                                            id="circuit-map-segment-name"
+                                            aria-label="Segment name"
+                                            placeholder="e.g. Turn 1"
+                                            value={segmentName}
+                                            maxLength={120}
+                                            disabled={isTagEditingDisabled}
+                                            onChange={(event) => setSegmentName(event.target.value)}
+                                        />
+                                        <CheckboxGroup.Root
+                                            aria-label="Segment tags"
+                                            value={tagLabels}
+                                            disabled={isTagEditingDisabled || tagOptionsState !== 'ready'}
+                                            onValueChange={setTagLabels}
+                                        >
+                                            {editableTagOptions.map((label) => <CheckboxGroup.Item key={label} value={label}>{label}</CheckboxGroup.Item>)}
+                                        </CheckboxGroup.Root>
+                                        <Button type="submit" disabled={isTagEditingDisabled || tagOptionsState !== 'ready' || tagLabels.length === 0 || tagLabels.some((label) => !editableTagOptions.includes(label))}>{selectedSegmentId ? 'Update segment' : 'Add segment'}</Button>
+                                    </>
+                                )}
+                                <Button type="button" variant="soft" color="gray" onClick={clearRangeSelection}>Cancel selection</Button>
+                            </form>
+                        )}
+                        <div className="circuit-maps__tag-list" aria-label="Centerline segments">
+                            {centerlineSegments.length === 0 && <Text size="2" className="circuit-maps__muted">No segments yet.</Text>}
+                            {centerlineSegments.map((segment) => (
+                                <div key={segment.id} className="circuit-maps__tag-row">
+                                    <button
+                                        type="button"
+                                        className={`circuit-maps__tag-button${selectedSegmentId === segment.id ? ' circuit-maps__tag-button--active' : ''}`}
+                                        aria-pressed={selectedSegmentId === segment.id}
+                                        disabled={isTagEditingDisabled}
+                                        onClick={() => {
+                                            clearRangeSelection();
+                                            setSelectedPoint(null);
+                                            setSelectedSegmentId(segment.id);
+                                            setSelectedRange({ start_position: segment.start_position, end_position: segment.end_position });
+                                            setSegmentName(segment.name || '');
+                                            setTagLabels(segment.tags);
+                                            setIsSelectingRange(true);
+                                        }}
+                                    >
+                                        {segment.name && <span>{segment.name}</span>}
+                                        <span>{segment.tags.join(', ')}</span>
+                                        <span className="circuit-maps__muted">{formatRange(segment.start_position, segment.end_position)}</span>
+                                    </button>
+                                    <Button size="1" color="red" variant="soft" aria-label={`Remove segment ${segment.name || segment.tags.join(', ')}`} disabled={isTagEditingDisabled} onClick={() => {
+                                        setCenterlineSegments((previous) => previous.filter((item) => item.id !== segment.id));
+                                        if (selectedSegmentId === segment.id) clearRangeSelection();
+                                    }}><TrashIcon /></Button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
                 {error ? (
                     <div className="circuit-maps__section">
-                        <Text size="2" className="circuit-maps__error">{error}</Text>
+                        <Text role="alert" size="2" className="circuit-maps__error">{error}</Text>
                     </div>
                 ) : null}
             </aside>
@@ -693,8 +1061,8 @@ const CircuitMaps = () => {
                     <div className="circuit-maps__toolbar-main">
                         <Text size="2" className="circuit-maps__title">{circuitName || 'Unsaved Circuit Map'}</Text>
                         <Text size="1" className="circuit-maps__muted">
-                            {sampleCount.toLocaleString()} samples
-                            {isAcc && sourceTrackKey ? ` / ${sourceTrackKey}` : ''}
+                            {visibleSampleCount.toLocaleString()} samples
+                            {sourceTrackKey ? ` / ${sourceTrackKey}` : ''}
                         </Text>
                     </div>
 
@@ -703,31 +1071,93 @@ const CircuitMaps = () => {
                             <div className={`circuit-maps__status${isCapturing ? ' circuit-maps__status--capture' : isAccLive ? ' circuit-maps__status--live' : ''}`}>
                                 <span className="circuit-maps__status-dot" />
                                 <Text size="1">
-                                    {isCapturing ? `Capturing ${formatModeLabel(captureMode)}` : isAccLive ? 'Live telemetry' : 'Waiting for telemetry'}
+                                    {isCapturing
+                                        ? `Capturing ${formatModeLabel(captureMode)}`
+                                        : !isAccLive
+                                            ? 'Waiting for telemetry'
+                                            : liveCapture ? 'Live telemetry' : 'Waiting for coordinates and normalized position'}
                                 </Text>
                             </div>
                         ) : null}
-                        <Button onClick={() => void saveMap()} disabled={isSaving || !circuitName.trim()}>
+                        <AlertDialog.Root open={deleteDialogOpen} onOpenChange={(open) => {
+                            if (isDeleting) return;
+                            setDeleteDialogOpen(open);
+                            setDeleteError(null);
+                        }}>
+                            <AlertDialog.Trigger>
+                                <Button color="red" variant="soft" disabled={!selectedMapId || isMapLoading || listState === 'loading' || isSaving || isDeleting || isImporting}>
+                                    <TrashIcon />
+                                    Remove Map
+                                </Button>
+                            </AlertDialog.Trigger>
+                            <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(event) => {
+                                if (isDeleting) event.preventDefault();
+                            }}>
+                                <AlertDialog.Title>Remove circuit map?</AlertDialog.Title>
+                                <AlertDialog.Description size="2">
+                                    Permanently remove “{mapList.find((map) => map.id === selectedMapId)?.circuit_name || circuitName}” and all samples in its bounded and centerline maps?
+                                    {' '}This global map will be removed for everyone. This cannot be undone.
+                                </AlertDialog.Description>
+                                {deleteError && (
+                                    <Box mt="3">
+                                        <Text role="alert" size="2" color="red">{deleteError}</Text>
+                                    </Box>
+                                )}
+                                <Flex gap="3" mt="4" justify="end">
+                                    <AlertDialog.Cancel>
+                                        <Button variant="soft" color="gray" disabled={isDeleting}>Cancel</Button>
+                                    </AlertDialog.Cancel>
+                                    <Button color="red" disabled={isDeleting} onClick={() => void deleteMap()}>
+                                        {isDeleting ? 'Removing...' : 'Remove map'}
+                                    </Button>
+                                </Flex>
+                            </AlertDialog.Content>
+                        </AlertDialog.Root>
+                        <Button onClick={() => void saveMap()} disabled={isSaving || isMapLoading || isDeleting || isImporting || !circuitName.trim()}>
                             {isSaving ? <Spinner size="1" /> : <CheckIcon />}
                             Save
                         </Button>
                     </div>
                 </div>
 
-                <Box ref={canvasWrapRef} className="circuit-maps__canvas-wrap">
+                <Tabs.List className="circuit-maps__tabs" aria-label="Circuit map type">
+                    <Tabs.Trigger value="bounded" disabled={isImporting}>Bounded Map</Tabs.Trigger>
+                    <Tabs.Trigger value="centerline" disabled={isImporting}>Centerline Map</Tabs.Trigger>
+                </Tabs.List>
+
+                <Tabs.Content value={mapView} ref={canvasWrapRef} className="circuit-maps__canvas-wrap">
                     <canvas
                         ref={canvasRef}
-                        className="circuit-maps__canvas"
+                        className={`circuit-maps__canvas${isPanning ? ' circuit-maps__canvas--panning' : ''}`}
+                        aria-label={mapView === 'centerline' ? 'Centerline map' : 'Bounded map'}
+                        title="Drag to move the map. Click a point to select it."
                         onPointerDown={handlePointerDown}
                         onPointerMove={handlePointerMove}
                         onPointerUp={handlePointerUp}
-                        onPointerCancel={handlePointerUp}
+                        onPointerCancel={handlePointerCancel}
+                        onLostPointerCapture={handlePointerCancel}
                     />
+
+                    <div className="circuit-maps__zoom" role="group" aria-label="Map zoom">
+                        <Button size="1" variant="soft" aria-label="Zoom out" title="Zoom out"
+                            disabled={zoom <= MIN_ZOOM} onClick={() => setZoom((value) => Math.max(MIN_ZOOM, value / ZOOM_STEP))}>
+                            −
+                        </Button>
+                        <Text size="1" className="circuit-maps__zoom-level" aria-label="Zoom level">{Math.round(zoom * 100)}%</Text>
+                        <Button size="1" variant="soft" aria-label="Zoom in" title="Zoom in"
+                            disabled={zoom >= MAX_ZOOM} onClick={() => setZoom((value) => Math.min(MAX_ZOOM, value * ZOOM_STEP))}>
+                            +
+                        </Button>
+                        <Button size="1" variant="soft" aria-label="Fit map" title="Reset zoom and position to fit the map" onClick={resetViewport}>
+                            Fit
+                        </Button>
+                    </div>
 
                     {selectedSample && selectedPoint ? (
                         <div className="circuit-maps__selection">
                             <Badge color="green">{formatModeLabel(selectedPoint.mode)}</Badge>
                             <Text size="1">Bin {selectedSample.bin}</Text>
+                            {mapView === 'centerline' && <Text size="1">Normalized position {selectedSample.normalized_position}</Text>}
                             <Text size="1">Samples {selectedSample.sample_count}</Text>
                             <Button size="1" variant="soft" onClick={() => setSelectedSample((sample) => ({ ...sample, locked: !sample.locked }))}>
                                 {selectedSample.locked ? <Cross2Icon /> : <CheckIcon />}
@@ -739,9 +1169,9 @@ const CircuitMaps = () => {
                             </Button>
                         </div>
                     ) : null}
-                </Box>
+                </Tabs.Content>
             </main>
-        </div>
+        </Tabs.Root>
     );
 };
 

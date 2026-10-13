@@ -1,4 +1,4 @@
-import { normalizeAnalysisResultsData } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
+import { normalizeAnalysisResultsData } from 'views/session-shared/visualization/charts/analysisResultsModel';
 import { LiveSessionAnalysisResultPage } from './live-session-analysis-results';
 import { normalizeLiveSessionOwnerEmail } from './live-session-draft-storage';
 

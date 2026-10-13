@@ -191,7 +191,7 @@ async def hydrate_chatbot_models(backend: Optional[Any] = None) -> Dict[str, boo
 
     backend_client = backend or backend_service
     # Runtime top-lap reference data is backend-owned. Clear readiness before
-    # every startup hydration and never reconstruct it from a local artifact.
+    # every startup hydration so an earlier in-memory reference cannot be reused.
     get_top_lap_reference_model().reset()
     _hydration_status["top_lap_reference"] = False
     results: Dict[str, bool] = {}

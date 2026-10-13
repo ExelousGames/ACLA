@@ -1,7 +1,7 @@
 import React, { useContext } from 'react';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
+import type { VisualizationManagerHandle } from 'views/session-shared/visualization/VisualizationPanelManager';
 import {
     OPERATION_COMPONENT_NAMES,
     OperationComponentRefProvider,
@@ -40,6 +40,9 @@ jest.mock('components/data-graphs', () => ({
 jest.mock('../LiveTrajectoryMap', () => () => <div>Live trajectory map</div>);
 jest.mock('../LiveTelemetryOverview', () => ({ name, telemetry }: any) => <div data-testid={name}>Live telemetry {telemetry?.label}</div>);
 jest.mock('../LiveEventLog', () => () => <div>Live event log</div>);
+jest.mock('../track-vision/track-vision-model', () => ({
+    TrackVisionModel: { loadBackend: jest.fn(async () => ({ dispose: jest.fn() })) },
+}));
 
 let directory: OperationComponentRefDirectory | null = null;
 const DirectoryObserver = () => {
@@ -48,6 +51,52 @@ const DirectoryObserver = () => {
 };
 
 describe('LiveTelemetryWorkspace named manager', () => {
+    beforeEach(() => {
+        window.screenCapture = { listSources: jest.fn().mockResolvedValue([]), selectSource: jest.fn() };
+    });
+    afterEach(() => { delete window.screenCapture; });
+
+    it('opens one Track Vision panel and registers its detection API', async () => {
+        const ref = React.createRef<VisualizationManagerHandle>();
+        render(<OperationComponentRefProvider><DirectoryObserver /><LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" /></OperationComponentRefProvider>);
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Track Vision' }));
+        expect(screen.getByRole('region', { name: 'Track Vision' })).toBeInTheDocument();
+        expect(directory!.findComponentRef('visualization:track-vision')?.current).toEqual(expect.objectContaining({ getLatestDetection: expect.any(Function) }));
+        act(() => { expect(ref.current!.requestVisualization({ name: 'another-vision', type: 'track-vision' }).reused).toBe(true); });
+        await userEvent.click(screen.getByRole('button', { name: 'Remove Track Vision' }));
+        expect(directory!.findComponentRef('visualization:track-vision')).toBeNull();
+    });
+    it('offers Suspension, updates the same panel, and unregisters it when removed', async () => {
+        const ref = React.createRef<VisualizationManagerHandle>();
+        render(
+            <OperationComponentRefProvider>
+                <DirectoryObserver />
+                <LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />
+            </OperationComponentRefProvider>,
+        );
+        expect(ref.current!.getVisualizationCapabilities().availableCharts).toContainEqual(
+            expect.objectContaining({ type: 'suspension', name: 'Suspension', canOpen: true }),
+        );
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Suspension' }));
+        expect(screen.getByTestId('live-suspension')).toBeInTheDocument();
+        expect(directory!.findComponentRef('visualization:suspension')?.current).not.toBeNull();
+        expect(ref.current!.getCurrentVisualizations()).toEqual([
+            expect.objectContaining({ name: 'visualization:suspension', type: 'suspension', height: 520 }),
+        ]);
+        act(() => {
+            expect(ref.current!.requestVisualization({
+                name: 'another-suspension', type: 'suspension',
+                data: { Physics_suspension_travel_front_left: 0.034 },
+            })).toMatchObject({ reused: true });
+        });
+        expect(screen.getAllByTestId('live-suspension')).toHaveLength(1);
+        expect(screen.getByText('34.0')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: 'Remove Suspension' }));
+        expect(screen.queryByTestId('live-suspension')).not.toBeInTheDocument();
+        expect(directory!.findComponentRef('visualization:suspension')).toBeNull();
+        expect(screen.getByRole('menuitem', { name: 'Suspension' })).toBeInTheDocument();
+    });
+
     it('displays locally saved analysis after remount and clears the open chart when a new session starts', async () => {
         localStorage.clear();
         let runtime!: React.ContextType<typeof LiveSessionContext>;
@@ -87,7 +136,7 @@ describe('LiveTelemetryWorkspace named manager', () => {
         expect(screen.getByRole('button', { name: 'Lap Results' })).toBeDisabled();
     });
 
-    it('adds and removes the live 2D telemetry trajectory', async () => {
+    it('adds and removes the live map', async () => {
         const ref = React.createRef<VisualizationManagerHandle>();
         render(<LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />);
 
@@ -95,13 +144,13 @@ describe('LiveTelemetryWorkspace named manager', () => {
         expect(ref.current!.getVisualizationCapabilities().availableCharts).toContainEqual(
             expect.objectContaining({
                 type: 'live-trajectory-map',
-                name: 'Live 2D Telemetry Trajectory',
+                name: 'Live Map',
                 openCount: 0,
                 canOpen: true,
             }),
         );
 
-        await userEvent.click(screen.getByRole('menuitem', { name: 'Live 2D Telemetry Trajectory' }));
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Live Map' }));
         expect(screen.getByText('Live trajectory map')).toBeInTheDocument();
         expect(ref.current!.getCurrentVisualizations()).toEqual([
             expect.objectContaining({
@@ -110,9 +159,9 @@ describe('LiveTelemetryWorkspace named manager', () => {
             }),
         ]);
 
-        await userEvent.click(screen.getByRole('button', { name: 'Remove Live 2D Telemetry Trajectory' }));
+        await userEvent.click(screen.getByRole('button', { name: 'Remove Live Map' }));
         expect(screen.queryByText('Live trajectory map')).not.toBeInTheDocument();
-        expect(screen.getByRole('menuitem', { name: 'Live 2D Telemetry Trajectory' })).toBeInTheDocument();
+        expect(screen.getByRole('menuitem', { name: 'Live Map' })).toBeInTheDocument();
         expect(ref.current!.getCurrentVisualizations()).toEqual([]);
     });
 

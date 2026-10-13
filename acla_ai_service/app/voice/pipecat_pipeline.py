@@ -584,7 +584,7 @@ def _split_function_tag_prefix(text: str) -> tuple[str, str]:
 def _build_function_tag_recovery():
     """Strip and dispatch Llama-style text-channel function tags.
 
-    Some OpenAI-compatible local models occasionally emit
+    Some hosted OpenAI-compatible models occasionally emit
     ``<function=name>{...}</function>`` as text instead of using native
     ``tool_calls``. This processor sits before transcript/TTS so those tags
     are never shown or spoken, and sends them through the same dispatch path
@@ -899,7 +899,7 @@ def _build_context_logger():
 
     Logs at INFO level under `[CTX-DUMP]` whenever the LLM starts producing
     a response — at that moment ``context.messages`` is exactly what was
-    sent to llama-server, so we can see prior assistant turns, tool calls,
+    sent to the cloud LLM, so we can see prior assistant turns, tool calls,
     and tool results in the order the model saw them.
     """
     from pipecat.frames.frames import Frame, LLMFullResponseStartFrame

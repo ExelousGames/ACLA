@@ -244,7 +244,8 @@ class BackendService:
         carName: Optional[str] = None,
         chunk_size: int = 1000,
         cleanup_cache: bool = True,
-        data_cache=None,
+        *,
+        data_cache,
     ) -> Dict[str, Any]:
         """
         Stream all racing sessions directly to cache without loading into memory
@@ -256,16 +257,11 @@ class BackendService:
             carName: Optional car name filter  
             chunk_size: Unused parameter (kept for API compatibility)
             cleanup_cache: When True, remove existing cache for cache_key before streaming
-            data_cache:  instance to stream data to (uses shared cache if None)
+            data_cache: Training-owned cache instance to stream data to
             
         Returns:
             Dictionary with metadata only (no session data in memory)
         """
-        if not data_cache:
-            # Deferred import to avoid circular imports.
-            from app.storage import get_shared_telemetry_store
-            data_cache = get_shared_telemetry_store()
-
         # Ensure we always start with a clean cache entry for this key
         if hasattr(data_cache, "has_cached_data") and data_cache.has_cached_data(cache_key):
             if cleanup_cache:
@@ -717,51 +713,6 @@ class BackendService:
                     os.remove(tmp_file_path)
             except Exception:
                 pass
-
-    async def save_ai_model(
-        self,
-        model_type: str,
-        model_data: Dict[str, Any],
-        metadata: Optional[Dict[str, Any]] = None,
-        is_active: bool = True
-    ) -> Dict[str, Any]:
-        """Save AI model results to backend using chunked transfer.
-
-        Args:
-            model_type: Type of the AI model (e.g., "tire_grip_analysis", "top_lap_reference")
-            model_data: The serialized model data payload
-            metadata: Optional metadata containing model info and timestamps
-            is_active: Whether this model should be set as active
-        """
-
-        metadata = metadata or {}
-
-        print(f"[INFO] Saving AI model results to backend: {model_type}")
-        logger.info(f"Saving AI model results to backend: {model_type}")
-
-        # Structure the data according to the specified format
-        structured_data = {
-            "modelType": model_type,
-            "modelData": model_data,
-            "metadata": metadata,
-            "isActive": is_active
-        }
-
-        try:
-            # Use chunked upload for large data
-            response = await self.send_chunked_data(
-                data=structured_data, 
-                endpoint="ai-model/save",
-                chunk_size=512 * 1024  # 512KB chunks
-            )
-            
-            if not response.get("success", False):
-                raise Exception(f"Backend rejected data: {response.get('message', 'Unknown error')}")
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to save AI model results: {str(e)}")
-            raise
-        return {"success": True}
 
     async def initGetActiveModelData(self, modelType: str) -> Dict[str, Any]:
         """Initialize chunked retrieval of active model data from backend.

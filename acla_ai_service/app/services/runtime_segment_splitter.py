@@ -12,8 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
-from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
+from app.shared.circuit_sections import get_circuit_sections, normalize_circuit_id
 from app.shared.telemetry import MAX_CARS
 
 
@@ -25,15 +24,7 @@ class RuntimeSegmentSplitError(ValueError):
 
 
 def _normalise_circuit_id(raw: Any) -> str:
-    value = str(raw or "").strip()
-    if not value:
-        return ""
-    if value in LABEL_MAPPING:
-        return value
-    mapped = LABEL_NAME_TO_ID.get(value)
-    if mapped:
-        return mapped
-    return value.lower().replace(" ", "_").replace("-", "_")
+    return normalize_circuit_id(str(raw or ""))
 
 
 def _static_track(dataframe: pd.DataFrame) -> Optional[str]:
@@ -54,11 +45,8 @@ def resolve_runtime_circuit(
     resolved = _normalise_circuit_id(raw_circuit)
     if not resolved:
         raise RuntimeSegmentSplitError("circuit could not be resolved from the request or Static_track")
-    if not any(
-        section_id.rstrip("0123456789") == resolved
-        for section_id in CIRCUIT_SECTION_RANGES
-    ):
-        raise RuntimeSegmentSplitError(f"unsupported circuit: {raw_circuit}")
+    if not get_circuit_sections(dataframe, resolved):
+        raise RuntimeSegmentSplitError(f"no backend sections available for circuit: {raw_circuit}")
     return resolved
 
 
@@ -1064,18 +1052,17 @@ def _is_following_only(window: Dict[str, Any]) -> bool:
 
 def _section_segments(
     positions: np.ndarray,
-    circuit_id: str,
+    circuit_sections: List[Dict[str, Any]],
     lap_boundaries: List[int],
 ) -> Tuple[List[Dict[str, Any]], int]:
     candidates = [
         {
-            "id": section_id,
-            "name": LABEL_MAPPING.get(section_id, section_id),
-            "lo": float(section_range[0]),
-            "hi": float(section_range[1]),
+            "id": section["id"],
+            "name": section["name"],
+            "lo": float(section["normalized_position_range"][0]),
+            "hi": float(section["normalized_position_range"][1]),
         }
-        for section_id, section_range in CIRCUIT_SECTION_RANGES.items()
-        if section_id.rstrip("0123456789") == circuit_id
+        for section in circuit_sections
     ]
     boundary_set = set(lap_boundaries)
 
@@ -1221,7 +1208,9 @@ def split_runtime_segments(dataframe: pd.DataFrame, circuit_id: Optional[str]) -
             errors="coerce",
         ).to_numpy(dtype=float)
     lap_boundaries = _lap_boundary_offsets(positions, completed_laps)
-    sections, unmatched = _section_segments(positions, resolved_circuit, lap_boundaries)
+    sections, unmatched = _section_segments(
+        positions, get_circuit_sections(source, resolved_circuit), lap_boundaries,
+    )
 
     opponent_session = _has_active_opponent_data(source)
     interaction_windows = _detect_opponent_interaction_windows(source, 0, len(source))

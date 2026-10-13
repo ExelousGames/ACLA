@@ -17,12 +17,14 @@ export type AllMapsBasicInfoListDto = {
     list: { name: string; }[];
 }
 
+export type RecordedSessionSource = DesktopGame | 'iracing_live' | 'iracing_recorded';
+
 export type UploadReacingSessionInitDto = {
     sessionName: string;
     mapName: string;
     carName: string;
     userId: string;
-    game_recorded_from: DesktopGame;
+    game_recorded_from: RecordedSessionSource;
 }
 
 export type UploadRacingSessionInitReturnDto = {
@@ -38,8 +40,9 @@ export type SessionBasicInfoListDto = {
 }
 
 export type RacingSessionDetailedInfoDto = {
+    storage?: 'cloud' | 'local';
     session_name: string;
-    game_recorded_from?: DesktopGame;
+    game_recorded_from?: RecordedSessionSource;
     SessionId: string;
     map: string;
     car: string;

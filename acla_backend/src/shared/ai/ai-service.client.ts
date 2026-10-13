@@ -163,6 +163,7 @@ export interface SegmentClassificationSegment {
     id?: string;
     labels: SegmentClassificationLabel[];
     track_section?: string;
+    track_section_name?: string;
     start_index: number;
     end_index: number;
     time_gap?: LiveBaselineTimeGap;

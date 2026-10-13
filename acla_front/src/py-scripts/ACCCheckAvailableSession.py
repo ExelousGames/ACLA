@@ -84,7 +84,6 @@ class ACCSessionChecker(StreamingServer):
             return
 
         self._last_payload_json = payload_json
-        payload.setdefault("available", True)
         self.emit_update(payload)
 
     # ------------------------------------------------------------------
@@ -132,7 +131,9 @@ class ACCSessionChecker(StreamingServer):
 
     def _serialize_snapshot(self, snapshot: Any) -> Optional[str]:
         try:
-            return DataclassJSONUtility.to_json(snapshot, compact=True)
+            # Native ACC objects stay inside the reader; the application receives
+            # only the availability field from the shared telemetry dataset.
+            return DataclassJSONUtility.to_json({"Graphics_status": snapshot.Graphics.status}, compact=True)
         except Exception:
             self.emit_error(
                 "serialization",
@@ -161,7 +162,6 @@ class ACCSessionChecker(StreamingServer):
             self._emit_checking(request_id=request_id)
             return
 
-        payload.setdefault("available", True)
         self._last_payload_json = payload_json
         self.emit_update(payload, request_id=request_id)
 

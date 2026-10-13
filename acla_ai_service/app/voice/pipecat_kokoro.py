@@ -2,7 +2,7 @@
 
 [LAT-DIAG] log prefix: end-to-end latency markers for a single LLM turn.
 LLM_TTFT_MS = time from LLMFullResponseStartFrame to the first TextFrame
-(local llama-server prompt-eval + first-token decode). FIRST_AUDIO_MS =
+(cloud LLM request + first-token latency). FIRST_AUDIO_MS =
 LLMFullResponseStartFrame to the first OutputAudioRawFrame pushed
 downstream — what the driver actually hears.
 

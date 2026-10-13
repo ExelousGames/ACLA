@@ -24,13 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 
-# Install Node.js 20 + Claude Code CLI (driven by claude-agent-sdk for the
-# Claude annotation backend). Auth is supplied at runtime by bind-mounting
-# the host's ~/.claude into the container — no API key is baked into the image.
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && npm install -g @anthropic-ai/claude-code \
-    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -49,16 +42,14 @@ COPY requirements.nvidia.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.nvidia.txt
-RUN CMAKE_ARGS="-DGGML_CUDA=on" pip install --no-cache-dir llama-cpp-python
 
 # Copy application code and setup in single layer
 COPY . .
-ENV STREAMLIT_CONFIG_FILE=/app/.streamlit/config.toml
 RUN chmod +x /app/start-dev.sh \
-    && mkdir -p /app/models/llama_server /app/models/kokoro
+    && mkdir -p /app/models/kokoro
 
-# Expose ports: 8000 = FastAPI, 8080 = llama-server (internal sidecar; host network in dev compose)
-EXPOSE 8000 8080
+# Frontend-facing API and chat WebSocket
+EXPOSE 8000
 
 # Command to run the application in development mode with memory-efficient options
 CMD ["/app/start-dev.sh"]

@@ -23,17 +23,13 @@ from app.shared.expert_features import ExpertFeatureCatalog
 from app.shared.telemetry import TelemetryFeatures, _safe_float  # Force unbuffered output for real-time print statements
 import os
 
-# Extracted in refactor/hexagonal-v4 — pulled out of this 2740-line module.
-# Re-imported so the trainer and entry function (still in this file)
-# see the same symbols.
-from app.storage.datasets.transformer_scaler import PerFeatureScaler, _RunningFeatureStats
-from app.storage.datasets.telemetry_dataset import TelemetryActionDataset
+# Training and inference share the scaler and its serialized payload format.
+from app.ml.transformer.scaler import PerFeatureScaler
 
 os.environ['PYTHONUNBUFFERED'] = '1'
 sys.stdout.reconfigure(line_buffering=True)
 
 
-# --- class PerFeatureScaler: removed; see app/ml/transformer/scaler.py or app/storage/datasets/telemetry_dataset.py ---
 def _safe_number(value: Union[int, float], round_floats: Optional[int] = 6, replace_invalid_with: Any = None) -> Any:
     """Convert a numeric value to a JSON-safe Python primitive.
 
@@ -1005,8 +1001,5 @@ class ExpertActionTransformer(nn.Module):
             raise RuntimeError(error_msg) from e
 
 
-# --- class _RunningFeatureStats: removed; see app/ml/transformer/scaler.py or app/storage/datasets/telemetry_dataset.py ---
-# --- class TelemetryActionDataset(Dataset): removed; see app/ml/transformer/scaler.py or app/storage/datasets/telemetry_dataset.py ---
-# ExpertActionTrainer + prepare_and_train_coach_transformer_model moved to
-# app/pipelines/training/transformer_trainer.py in refactor/hexagonal-v5.
+# Training orchestration lives in training.pipelines.training.transformer_trainer.
 # Callers should import from there directly.

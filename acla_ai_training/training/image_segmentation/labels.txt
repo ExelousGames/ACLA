@@ -1,0 +1,32 @@
+track
+curb
+grass
+car
+other
+fence
+car pack
+sand
+Outfield asphalt road
+sky
+car interior
+racing track white line
+forest
+buildings
+overhead truss structure
+curb left
+curb right
+grass left
+grass right
+fence left
+fence right
+sand left
+sand right
+outfield asphalt road left
+outfield asphalt road right
+racing track white line left
+racing track white line right
+forest left
+forest right
+buildings left
+buildings right
+back mirror

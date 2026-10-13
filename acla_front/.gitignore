@@ -2,6 +2,9 @@
 /dist
 /node_modules
 /build
+/public/vision-runtime
+/public/vision-models/*.onnx
+/public/vision-models/*.tmp
 
 # Logs
 logs

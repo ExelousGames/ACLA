@@ -1,24 +1,29 @@
 import type { DesktopGame } from 'contexts/DesktopGameContext';
-import { RecordingEvent, RecordingState, StopReason } from 'views/lap-analysis/recording-state';
+import type { LIVE_TELEMETRY_DATASET } from 'data/live-telemetry-dataset';
+import { RecordingEvent, RecordingState, StopReason } from 'views/live-session/recording-state';
 import type {
     CornerLookahead,
-} from 'views/lap-analysis/session-intelligence/types';
-import type { LiveSessionType } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
+} from 'views/session-shared/session-intelligence/types';
+import type { LiveSessionType } from 'views/live-session/session-intelligence/live-performance-analyst';
 import type {
     AppendLiveSessionAnalysisResultPageInput,
     AppendLiveSessionAnalysisResultPageResult,
     LiveSessionAnalysisResultPage,
 } from './live-session-analysis-results';
 
-export type TelemetryJsonValue =
-    | string
-    | number
-    | boolean
-    | null
-    | TelemetryJsonValue[]
-    | { [key: string]: TelemetryJsonValue };
+type TelemetryFieldValues = {
+    boolean: boolean;
+    integer: number;
+    number: number;
+    string: string;
+    coordinates: { x: number; y: number; z: number }[];
+    'integer-array': number[];
+    'normalized-positions': Record<string, number>;
+};
 
-export type StandardTelemetrySample = Record<string, TelemetryJsonValue>;
+export type StandardTelemetrySample = {
+    [Field in keyof typeof LIVE_TELEMETRY_DATASET]?: TelemetryFieldValues[typeof LIVE_TELEMETRY_DATASET[Field]];
+};
 export type LiveTelemetry = StandardTelemetrySample;
 
 export type RecordingStartFailureType =
@@ -97,7 +102,7 @@ export interface LocalTelemetryFileValidation {
 export interface LiveVisualizationInstance {
     name: string;
     id: string;
-    type: 'live-trajectory-map' | 'telemetry-overview' | 'event-log' | 'analysis-results' | 'baseline-collection';
+    type: 'live-trajectory-map' | 'telemetry-overview' | 'suspension' | 'track-vision' | 'event-log' | 'analysis-results' | 'baseline-collection';
     height: number;
     data?: unknown;
     config?: Record<string, unknown>;
@@ -144,6 +149,7 @@ export interface LiveSessionRuntime {
     streamRecordedTelemetry: (
         onChunk: (rows: StandardTelemetrySample[]) => void | Promise<void>,
         onProgress?: (rowsRead: number, totalRows: number | null, bytesRead: number, totalBytes: number) => void,
+        sourceFilePath?: string,
     ) => Promise<{ rowCount: number; totalBytes: number }>;
     clearRecordingSession: () => void;
     clearPersistedDraft: () => void;

@@ -1,10 +1,7 @@
 """Domain helper: enriched label docs for annotation / agent code.
 
 * Main-label taxonomy lives in ``lap_annotation.json``.
-* Circuit sections are deterministic geometry, owned by
-  ``app.shared.circuit_sections``. We synthesize their docs from the
-  section ranges (``type="circuit_section"``, ``parent=<circuit>``,
-  ``normalized_position_range``), naming them from ``LABEL_MAPPING``.
+* Circuit sections are backend map metadata, not classifier labels.
 
 Two verbs, mirroring the skill registry:
 
@@ -20,25 +17,8 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
-from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
-from app.shared.labels import LABEL_MAPPING
 from app.internal_knowledge_base import skills
 from app.internal_knowledge_base._query import matches
-
-
-def _circuit_section_docs() -> List[Dict[str, Any]]:
-    docs: List[Dict[str, Any]] = []
-    for sid, rng in CIRCUIT_SECTION_RANGES.items():
-        docs.append({
-            "id": sid,
-            "name": LABEL_MAPPING.get(sid, sid),
-            "type": "circuit_section",
-            "parent": sid.rstrip("0123456789"),
-            "normalized_position_range": (
-                (float(rng[0]), float(rng[1])) if rng is not None else None
-            ),
-        })
-    return docs
 
 
 def _label_docs() -> List[Dict[str, Any]]:
@@ -63,7 +43,7 @@ def _label_docs() -> List[Dict[str, Any]]:
 def _label_index() -> Dict[str, Dict[str, Any]]:
     return {
         str(doc["id"]): doc
-        for doc in [*_label_docs(), *_circuit_section_docs()]
+        for doc in _label_docs()
     }
 
 

@@ -199,6 +199,38 @@ input {
     animation: side-menu-tooltip-in 0.12s ease-out;
 }
 
+.SideMenuSubsections {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-left: 12px;
+    padding-left: 8px;
+    border-left: 1px solid var(--lp-border);
+}
+
+.SideMenuSubsection {
+    padding: 9px 8px;
+    gap: 8px;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.SideMenuSubsection .TabsTriggerLabel {
+    white-space: normal;
+    line-height: 1.5;
+}
+
+.SideMenuSubsection[aria-pressed="true"] {
+    color: var(--lp-green);
+    background: var(--lp-green-dim);
+}
+
+.TabsRoot[data-menu-collapsed="true"] .SideMenuSubsections {
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
+}
+
 .SideMenuTooltipArrow {
     fill: var(--lp-bg-surface, #161628);
 }
@@ -232,6 +264,7 @@ input {
 }
 
 @media (max-width: 768px) {
+    .SideMenuSubsections { margin-left: 0; padding-left: 0; border-left: 0; }
     .ScrollAreaRoot { width: 64px; }
     .SideMenuHeader { justify-content: center; padding-inline: 10px; }
     .TabsList { padding-inline: 10px; }

@@ -159,3 +159,27 @@ def user_workflow_case(request):
         },
         "arguments": {"workflow": body},
     })
+
+
+@pytest.fixture
+def runtime_circuit_sections(monkeypatch):
+    """Backend map snapshots for tests of runtime section consumers."""
+    from app.shared import circuit_sections
+
+    sections = {
+        "brands_hatch": [
+            {"id": "corner-a", "name": "Backend First Corner",
+             "normalized_position_range": (0.1, 0.18)},
+            {"id": "corner-b", "name": "Backend Second Corner",
+             "normalized_position_range": (0.19, 0.25)},
+        ],
+        "moza": [
+            {"id": "finish-straight", "name": "Backend Finish Straight",
+             "normalized_position_range": (0.93, 0.08)},
+        ],
+    }
+    monkeypatch.setattr(
+        circuit_sections, "_cached_sections",
+        lambda track, game, cache_minute: sections.get(track, []),
+    )
+    return sections

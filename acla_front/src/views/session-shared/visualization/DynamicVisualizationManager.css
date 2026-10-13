@@ -1,0 +1,282 @@
+.dynamic-visualization-manager {
+    width: 100%;
+    height: auto;
+    min-width: 0;
+    min-height: 100%;
+    max-height: none;
+    flex: 0 0 auto;
+    padding: 16px;
+    background: var(--lp-bg);
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+    color: var(--lp-white);
+}
+
+.manager-header {
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--lp-border);
+    flex-shrink: 0;
+}
+
+.manager-header .rt-Text {
+    font-family: var(--lp-mono);
+    font-size: 12px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--lp-green);
+}
+
+/* Style the Add Visualization button to match the lp palette */
+.manager-header .rt-Button {
+    font-family: var(--lp-mono);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    font-size: 11px;
+    background: var(--lp-green-dim);
+    color: var(--lp-green);
+    border: none;
+    border-radius: var(--lp-radius-pill);
+    transition: all 0.15s;
+}
+.manager-header .rt-Button:hover:not(:disabled) {
+    background: rgba(0, 230, 118, 0.18);
+    box-shadow: 0 0 12px var(--lp-green-dim);
+}
+.manager-header .rt-Button:disabled {
+    opacity: 0.4;
+    background: transparent;
+    color: var(--lp-gray);
+}
+
+.visualization-workspace {
+    width: 100%;
+    background: transparent;
+    flex: 0 0 auto;
+    min-height: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 14px;
+    overflow: visible;
+}
+
+.static-map-container {
+    height: 520px;
+}
+
+.static-map-body .map-visualization-card {
+    border: 0;
+    border-radius: 0;
+}
+
+.visualizations-container {
+    flex: 1 1 320px;
+    min-width: 0;
+    min-height: 0;
+    height: max-content;
+    max-height: none;
+    padding-right: 4px;
+    overflow: visible;
+    scrollbar-gutter: stable;
+    scroll-padding-block-end: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+/*
+ * Keep a concrete final flex item in the scroll extent. Chromium can omit a
+ * flex/grid container's trailing padding from its scrollHeight, which leaves
+ * the bottom border of the last visualization hidden at maximum scroll.
+ */
+.visualizations-container::after {
+    content: '';
+    width: 100%;
+    flex: 0 0 1px;
+}
+
+.static-map-container,
+.visualization-container {
+    background: rgba(14, 14, 24, 0.82);
+    border-radius: var(--lp-radius);
+    border: 1px solid var(--lp-border-strong);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+    transition: border-color 0.15s ease;
+    overflow: hidden;
+    min-height: 220px;
+    width: 100%;
+    max-width: 100%;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    position: relative;
+    color: var(--lp-white);
+}
+
+.static-map-container,
+.visualization-container--primary {
+    flex: 1 1 640px;
+    width: auto;
+}
+
+.visualization-container.is-dragging {
+    opacity: 0.5;
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.5);
+}
+.visualization-container.is-drop-target {
+    outline: 2px solid var(--lp-green);
+    outline-offset: -2px;
+}
+.visualization-container.is-resizing {
+    user-select: none;
+}
+.visualization-container:hover {
+    border-color: var(--lp-border-strong);
+}
+
+.static-map-header,
+.visualization-header {
+    display: flex;
+    align-items: center;
+    min-height: 50px;
+    padding: 14px 52px 12px 18px;
+    background: transparent;
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: 2;
+    cursor: move;
+    user-select: none;
+    touch-action: none;
+    color: var(--lp-white);
+    font-family: var(--lp-mono);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+}
+
+.static-map-header {
+    padding-right: 18px;
+    cursor: default;
+}
+
+.static-map-header::before,
+.visualization-header::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 -24px;
+    z-index: 0;
+    pointer-events: none;
+    background: linear-gradient(
+        to bottom,
+        rgba(14, 14, 24, 0.82) 0%,
+        rgba(14, 14, 24, 0.48) 48%,
+        rgba(14, 14, 24, 0) 100%
+    );
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 34%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 0%, #000 34%, transparent 100%);
+}
+
+.static-map-header > *,
+.visualization-header > * {
+    position: relative;
+    z-index: 1;
+}
+
+.static-map-body,
+.visualization-content {
+    flex: 1;
+    min-height: 0;
+    box-sizing: border-box;
+    padding-top: 58px;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.static-map-body {
+    display: flex;
+    height: 100%;
+    overflow: hidden;
+}
+
+.visualization-close-button {
+    position: absolute;
+    top: 11px;
+    right: 12px;
+    width: 28px;
+    height: 28px;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--lp-green);
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease;
+    z-index: 3;
+}
+.visualization-close-button:hover {
+    color: var(--lp-green);
+    background: var(--lp-green-dim);
+}
+
+.visualization-resize-handle {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    width: 14px;
+    height: 14px;
+    border-right: 2px solid var(--lp-gray);
+    border-bottom: 2px solid var(--lp-gray);
+    opacity: 0.6;
+    cursor: nwse-resize;
+    border-bottom-right-radius: 2px;
+    touch-action: none;
+}
+.visualization-resize-handle:hover { opacity: 1; border-color: var(--lp-green); }
+
+.empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 220px;
+    border: 1px dashed var(--lp-border-strong);
+    border-radius: var(--lp-radius);
+    background:
+        radial-gradient(ellipse 60% 50% at 50% 50%, rgba(0, 230, 118, 0.04), transparent 70%),
+        var(--lp-bg-alt);
+    color: var(--lp-gray);
+}
+.empty-state .rt-Text {
+    font-family: var(--lp-mono);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--lp-gray) !important;
+}
+
+@media (max-width: 768px) {
+    .dynamic-visualization-manager { padding: 10px; }
+    .manager-header { margin-bottom: 8px; }
+    .visualization-workspace {
+        gap: 8px;
+    }
+    .static-map-container {
+        min-height: 460px;
+    }
+    .visualizations-container {
+        width: 100%;
+        height: max-content;
+        max-height: none;
+        padding: 0;
+        overflow: visible;
+        gap: 14px;
+    }
+    .visualization-container { min-height: 200px; }
+}

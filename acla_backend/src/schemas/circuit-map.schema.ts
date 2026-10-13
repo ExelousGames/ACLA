@@ -1,7 +1,18 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 
-export type CircuitMapGame = 'acc' | 'other';
-export type CircuitMapCaptureMode = 'left_boundary' | 'right_boundary' | 'pit_lane';
+export type CircuitMapGame = 'acc' | 'iracing';
+export type CircuitMapCaptureMode = 'left_boundary' | 'middle_line' | 'right_boundary' | 'pit_lane';
+
+export type CircuitMapCenterlineSegment = {
+    id: string;
+    name?: string;
+    tags: string[];
+    // Ordered in lap direction; start > end crosses the start/finish line.
+    start_position: number;
+    end_position: number;
+};
+
+export type CircuitMapCenterlineTag = Omit<CircuitMapCenterlineSegment, 'tags'> & { label: string };
 
 export class CircuitMapBinSample {
     @Prop({ required: true })
@@ -34,6 +45,9 @@ export class CircuitMapSamplesByMode {
     left_boundary: CircuitMapBinSample[];
 
     @Prop({ type: [Object], default: [] })
+    middle_line: CircuitMapBinSample[];
+
+    @Prop({ type: [Object], default: [] })
     right_boundary: CircuitMapBinSample[];
 
     @Prop({ type: [Object], default: [] })
@@ -42,7 +56,7 @@ export class CircuitMapSamplesByMode {
 
 @Schema()
 export class CircuitMap {
-    @Prop({ type: String, required: true, enum: ['acc', 'other'], default: 'acc' })
+    @Prop({ type: String, required: true, enum: ['acc', 'iracing'] })
     game: CircuitMapGame;
 
     @Prop({ required: true })
@@ -56,6 +70,13 @@ export class CircuitMap {
 
     @Prop({ type: Object, default: {} })
     samples: CircuitMapSamplesByMode;
+
+    // Undefined distinguishes legacy documents from an explicitly cleared list.
+    @Prop({ type: [Object], default: undefined })
+    centerline_segments?: CircuitMapCenterlineSegment[];
+
+    @Prop({ type: [Object], default: undefined })
+    centerline_tags?: CircuitMapCenterlineTag[];
 
     @Prop({ required: true, default: 0 })
     sample_count: number;

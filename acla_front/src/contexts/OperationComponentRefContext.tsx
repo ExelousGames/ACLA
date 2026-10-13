@@ -29,6 +29,7 @@ export const OPERATION_COMPONENT_NAMES = Object.freeze({
     DASHBOARD_ASSISTANT: 'dashboard-assistant',
     WORKFLOW_PANEL: 'workflow-panel',
     LIVE_SESSION: 'live-session',
+    LIVE_PHRASES: 'live-phrases',
     SESSION_ANALYSIS: 'session-analysis',
     USER_SUMMARY: 'user-summary',
     LIVE_VISUALIZATION_MANAGER: 'live-visualization-manager',

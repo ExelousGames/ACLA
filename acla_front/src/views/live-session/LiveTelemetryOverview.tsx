@@ -3,7 +3,7 @@ import { Box, Grid, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { LiveTelemetry } from './live-session-types';
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
-import { runVisualizationBooleanCallback } from 'views/lap-analysis/visualization/visualization-component-callbacks';
+import { runVisualizationBooleanCallback } from 'views/session-shared/visualization/visualization-component-callbacks';
 import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/OperationComponentError';
 import { useCurrentTelemetry } from './live-telemetry-store';
 
@@ -59,6 +59,9 @@ const LiveTelemetryOverview = forwardRef<LiveTelemetryOverviewHandle, LiveTeleme
             <TextField.Root placeholder="Search live features..." value={search} onChange={(event) => setSearch(event.target.value)}>
                 <TextField.Slot><MagnifyingGlassIcon /></TextField.Slot>
             </TextField.Root>
+            <Text size="1" color="gray">
+                {entries.length} {entries.length === 1 ? 'field' : 'fields'} displayed
+            </Text>
             <Box className="live-optional-panel__scroll">
                 {entries.length === 0 ? <Text color="gray">No current telemetry available</Text> : (
                     <Grid columns="2" gap="3">

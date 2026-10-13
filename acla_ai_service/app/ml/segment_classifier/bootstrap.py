@@ -1,8 +1,7 @@
 """Hydrate the segment classifier from the backend on FastAPI startup.
 
-Mirrors :func:`app.llama.chat_model.ensure_chat_gguf`: if the local model files
-exist we no-op; otherwise we fetch the active payload from the backend and
-write the artifacts back into ``segment_classifier.models_directory``.
+If the local model files exist we no-op; otherwise we fetch the active payload
+from the backend and write the artifacts into ``segment_classifier.models_directory``.
 
 Backend upload happens at the tail of
 :meth:`SegmentClassifierTrainer.train_model`, so the round-trip is

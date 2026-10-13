@@ -5,9 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.api import racing_session
-from app.pipelines.inference.preprocessing import InferenceTelemetryBatch
+from app.shared.inference_preprocessing import InferenceTelemetryBatch
 from app.shared.segment import PredictedSegment
 
+
+pytestmark = pytest.mark.usefixtures("runtime_circuit_sections")
 
 def _label(name: str, start: int, end: int):
     return {"label_name": name, "start_index": start, "end_index": end}
@@ -87,15 +89,6 @@ def _configure_endpoint_services(monkeypatch, segment):
         ),
     )
 
-    class TireGripService:
-        async def enrich(self, records):
-            return records
-
-    monkeypatch.setattr(
-        racing_session,
-        "get_tire_grip_analysis",
-        TireGripService,
-    )
     monkeypatch.setattr(
         racing_session,
         "split_runtime_segments",
@@ -201,12 +194,12 @@ async def test_live_baseline_returns_one_segment_with_all_labels_for_track_secti
 
     assert result["parent_segment_count"] == 1
     assert len(result["segments"]) == 1
-    assert result["segments"][0]["id"] == "brands_hatch3:0-4"
+    assert result["segments"][0]["id"] == "corner-a:0-4"
     assert result["segments"][0]["labels"] == [
         _label("MSP", 0, 4), _label("MSP1", 0, 1),
         _label("RM", 0, 4), _label("RM1", 1, 3), _label("ST1", 2, 4),
     ]
-    assert result["segments"][0]["track_section"] == "brands_hatch3"
+    assert result["segments"][0]["track_section"] == "corner-a"
     assert result["segments"][0]["start_index"] == 0
     assert result["segments"][0]["end_index"] == 4
 
@@ -346,8 +339,8 @@ def test_track_section_splitting_preserves_every_classifier_label(monkeypatch):
 
     assert len(segments) == 2
     assert [segment["track_section"] for segment in segments] == [
-        "brands_hatch3",
-        "brands_hatch4",
+        "corner-a",
+        "corner-b",
     ]
     assert [segment["labels"] for segment in segments] == [
         [_label("MSP", 0, 2), _label("MSP1", 0, 1), _label("MSP2", 1, 2)],
@@ -395,7 +388,7 @@ async def test_section_and_label_ranges_use_original_telemetry_indices(endpoint,
             racing_session.LiveBaselineAnalysisRequest(track="brands_hatch", records=source)
         )
     first, second = result["segments"]
-    assert first["id"] == "brands_hatch3:1-5"
-    assert second["id"] == "brands_hatch4:9-13"
+    assert first["id"] == "corner-a:1-5"
+    assert second["id"] == "corner-b:9-13"
     assert first["labels"] == [_label("MSP", 1, 5), _label("MSP1", 4, 5)]
     assert second["labels"] == [_label("MSP", 9, 13), _label("MSP1", 9, 10)]

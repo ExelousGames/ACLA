@@ -1,0 +1,86 @@
+.data-structure {
+    margin-top: 16px;
+    border: 1px solid var(--gray-a6);
+    border-radius: var(--radius-3);
+    font-size: 13px;
+}
+
+.data-structure > summary {
+    padding: 12px;
+    font-weight: 600;
+}
+
+.data-structure .data-structure {
+    margin: 8px 12px 12px;
+}
+
+.data-structure summary {
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.data-structure summary:hover {
+    background: var(--gray-a3);
+}
+
+.data-structure summary:focus-visible,
+.data-structure__tree:focus-visible,
+.data-structure__retry:focus-visible {
+    outline: 2px solid var(--accent-8);
+    outline-offset: -2px;
+}
+
+.data-structure__message {
+    margin: 0;
+    padding: 8px 12px;
+    color: var(--gray-11);
+    overflow-wrap: anywhere;
+}
+
+.data-structure__tree {
+    max-height: 300px;
+    overflow: auto;
+    padding: 8px;
+}
+
+.data-structure__node > summary,
+.data-structure__leaf {
+    padding: 5px 4px;
+    line-height: 1.5;
+}
+
+.data-structure__leaf {
+    padding-left: 18px;
+    overflow-wrap: anywhere;
+}
+
+.data-structure__children {
+    margin-left: 12px;
+    padding-left: 8px;
+    border-left: 1px solid var(--gray-a6);
+}
+
+.data-structure__name {
+    font-family: var(--code-font-family);
+}
+
+.data-structure__type,
+.data-structure__count {
+    margin-left: 8px;
+    color: var(--gray-11);
+    font-size: 12px;
+}
+
+.data-structure__type {
+    color: var(--accent-11);
+}
+
+.data-structure__retry {
+    padding: 6px 10px;
+    border: 1px solid var(--gray-a6);
+    border-radius: var(--radius-2);
+    background: var(--gray-a3);
+    color: var(--gray-12);
+    font: inherit;
+    cursor: pointer;
+}

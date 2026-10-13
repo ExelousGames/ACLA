@@ -19,6 +19,7 @@ export class UploadReacingSessionInitDto {
     carName: string;
     userId: string;
     game_recorded_from: GameRecordedFrom;
+    videos?: { name: string; size: number; mimeType: string; startedAt: number }[];
 }
 
 export class UploadReacingSessionProgressDto {
@@ -196,6 +197,7 @@ export class SegmentClassificationSegmentDto {
     id?: string;
     labels: SegmentClassificationLabelDto[];
     track_section?: string;
+    track_section_name?: string;
     start_index: number;
     end_index: number;
     time_gap?: LiveBaselineTimeGapDto;

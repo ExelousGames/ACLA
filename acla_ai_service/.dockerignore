@@ -22,19 +22,12 @@ coverage.xml
 .pytest_cache
 .hypothesis
 
-# Ignore model files if they're large
+# Model artifacts are hydrated at runtime, never baked into the image.
 models/
-!models/.gitkeep
-!models/*/.gitkeep
+app/models/
+*.gguf
 corner_models/*
 !corner_models/.gitkeep
-top_lap_models/*
-!top_lap_models/.gitkeep
-imitation_models/*
-
-# Ignore runtime telemetry database files
-app/storage/telemetry_lance_store/
-app/storage/telemetry_lance_backups/
 
 # Ignore debug output
 scripts/debug_output/*

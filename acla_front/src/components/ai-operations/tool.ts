@@ -1,5 +1,5 @@
 import type { Operation, OperationExecutionOutput, OperationStatusPayload } from './operation';
-import type { FrontendOperationName, FrontendToolName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import type { FrontendOperationName, FrontendToolName } from 'views/ai-chat/ai-command-registry';
 import type { WorkflowComponentBase } from './WorkflowComponentBase';
 import type { Workflow } from './workflow';
 

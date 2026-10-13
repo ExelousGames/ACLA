@@ -1,24 +1,30 @@
-import { parseTelemetryFrame, Vec3 } from 'views/lap-analysis/visualization/charts/mapTelemetry';
+import type { Vec3 } from 'views/session-shared/visualization/charts/mapTelemetry';
+import { ACCMemoeryTracks, ACC_STATUS } from 'data/live-analysis/live-map-data';
+import type { StandardTelemetrySample } from 'views/live-session/live-session-types';
 import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CircuitMapAlignedRow,
     CircuitMapBinSample,
     CircuitMapCaptureMode,
+    CircuitMapGame,
     CircuitMapSamplesByMode
 } from './circuit-map-types';
 
 export const CIRCUIT_MAP_BIN_RESOLUTION = 1000;
 
-const toFiniteNumber = (value: unknown): number | null => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-};
+export const getCircuitMapTrackKey = (row: Pick<StandardTelemetrySample, 'Static_track'>): string | null => (
+    typeof row.Static_track === 'string' && row.Static_track.trim() ? row.Static_track : null
+);
+
+export const getCircuitMapName = (trackKey: string | null, game: CircuitMapGame): string => (
+    trackKey ? (game === 'acc' ? ACCMemoeryTracks.get(trackKey) || trackKey : trackKey) : ''
+);
 
 export const getCircuitMapBin = (
     normalizedPosition: number,
     resolution = CIRCUIT_MAP_BIN_RESOLUTION
 ): number | null => {
-    if (!Number.isFinite(normalizedPosition) || normalizedPosition < 0) {
+    if (!Number.isFinite(normalizedPosition) || normalizedPosition < 0 || normalizedPosition > 1) {
         return null;
     }
 
@@ -26,13 +32,17 @@ export const getCircuitMapBin = (
     return Math.min(maxBin, Math.floor(normalizedPosition * resolution));
 };
 
-export const extractAccCaptureSample = (
-    row: Record<string, any>,
-    sourceIndex = 0,
+// Live readers and file converters supply the same standard player fields.
+// Never substitute another car when the player's coordinates are unavailable.
+export const extractCircuitMapCaptureSample = (
+    row: StandardTelemetrySample,
     resolution = CIRCUIT_MAP_BIN_RESOLUTION
 ): { bin: number; normalizedPosition: number; position: Vec3 } | null => {
-    const normalizedPosition = toFiniteNumber(row.Graphics_normalized_car_position);
-    if (normalizedPosition === null) {
+    const normalizedPosition = row.Graphics_normalized_car_position;
+    const playerId = row.Graphics_player_car_id;
+    if (row.Graphics_status !== ACC_STATUS.ACC_LIVE
+        || typeof normalizedPosition !== 'number' || !Number.isFinite(normalizedPosition)
+        || typeof playerId !== 'number' || !Number.isSafeInteger(playerId) || playerId < 0) {
         return null;
     }
 
@@ -41,21 +51,18 @@ export const extractAccCaptureSample = (
         return null;
     }
 
-    const frame = parseTelemetryFrame(row, sourceIndex);
-    if (!frame) {
-        return null;
-    }
-
-    const playerKey = frame.playerKey || 'slot:0';
-    const playerCar = frame.cars.find((car) => car.key === playerKey) || frame.cars[0];
-    if (!playerCar) {
+    const slot = row.Graphics_car_id?.indexOf(playerId) ?? -1;
+    const position = slot >= 0 ? row.Graphics_car_coordinates?.[slot] : undefined;
+    if (!position || ![position.x, position.y, position.z].every((value) => (
+        typeof value === 'number' && Number.isFinite(value)
+    ))) {
         return null;
     }
 
     return {
         bin,
-        normalizedPosition: Math.min(1, Math.max(0, normalizedPosition)),
-        position: playerCar.position
+        normalizedPosition,
+        position
     };
 };
 
@@ -112,6 +119,23 @@ export const upsertCaptureModeSample = (
     ...samplesByMode,
     [mode]: upsertCircuitMapSample(samplesByMode[mode] || [], capture, updatedAt)
 });
+
+export const mergeCircuitMapSamples = (
+    samples: CircuitMapBinSample[],
+    rows: StandardTelemetrySample[],
+    updatedAt = new Date().toISOString()
+): { samples: CircuitMapBinSample[]; capturedRows: number } => {
+    const bins = new Map(samples.map((sample) => [sample.bin, sample]));
+    let capturedRows = 0;
+    rows.forEach((row) => {
+        const capture = extractCircuitMapCaptureSample(row);
+        if (!capture) return;
+        const existing = bins.get(capture.bin);
+        bins.set(capture.bin, upsertCircuitMapSample(existing ? [existing] : [], capture, updatedAt)[0]);
+        capturedRows += 1;
+    });
+    return { samples: Array.from(bins.values()).sort((a, b) => a.bin - b.bin), capturedRows };
+};
 
 export const alignCircuitMapSamples = (
     samplesByMode: CircuitMapSamplesByMode,
@@ -185,8 +209,24 @@ export const countCircuitMapSamples = (samplesByMode: CircuitMapSamplesByMode): 
     Object.values(samplesByMode).reduce((sum, samples) => sum + (samples?.length || 0), 0)
 );
 
+export const getCenterlineRangeSamples = (
+    samples: CircuitMapBinSample[],
+    startPosition: number,
+    endPosition: number
+): CircuitMapBinSample[] => {
+    const sorted = [...samples].sort((a, b) => a.normalized_position - b.normalized_position);
+    if (startPosition <= endPosition) {
+        return sorted.filter((sample) => sample.normalized_position >= startPosition && sample.normalized_position <= endPosition);
+    }
+    return [
+        ...sorted.filter((sample) => sample.normalized_position >= startPosition),
+        ...sorted.filter((sample) => sample.normalized_position <= endPosition)
+    ];
+};
+
 export const cloneSamplesByMode = (samplesByMode: CircuitMapSamplesByMode): CircuitMapSamplesByMode => ({
     left_boundary: [...(samplesByMode.left_boundary || [])],
+    middle_line: [...(samplesByMode.middle_line || [])],
     right_boundary: [...(samplesByMode.right_boundary || [])],
     pit_lane: [...(samplesByMode.pit_lane || [])]
 });

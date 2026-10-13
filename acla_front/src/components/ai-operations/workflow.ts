@@ -1,5 +1,5 @@
 import type { Operation } from './operation';
-import type { FrontendWorkflowName } from 'views/lap-analysis/ai-chat/ai-command-registry';
+import type { FrontendWorkflowName } from 'views/ai-chat/ai-command-registry';
 
 export type WorkflowProgress<TStep = unknown> = {
     /** Successful child step executions, including repeatable plan retries. */

@@ -1,0 +1,1076 @@
+/**
+ * Voice conversation hook — racing engineer (Phase 1 of the racing-engineer
+ * rebuild). Opens a WebSocket to the backend's `/voice/stream` and runs
+ * BOTH channels over the same connection:
+ *
+ * - **Binary frames** — raw PCM16 mic in / assistant audio out. Same protocol
+ *   as before.
+ * - **Text frames** — JSON tool-relay messages. The backend emits
+ *   `{type:"tool_call",id,name,arguments}` frames; this hook dispatches
+ *   them through a caller-supplied handler registry and replies with
+ *   `{type:"tool_result",...}` on termination. Operation progress is emitted
+ *   locally for the UI.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import apiService from 'services/api.service';
+import { audioManager, type AudioStreamHandle } from 'services/audio';
+import { buildFormattedToolResultFrame } from './voice-tool-result-formatter';
+import { readWorkflowProgress } from 'components/ai-operations/workflow';
+import {
+    OperationError,
+    OperationAbortedError,
+    InvalidOperationCallError,
+    OperationNotRegisteredError,
+    type Operation,
+    type OperationExecutionOutput,
+    type OperationStatusPayload,
+    type SerializedErrorCause,
+    normalizeOperationError,
+    serializeErrorCause,
+} from './operation-base';
+
+const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
+const INLINE_FUNCTION_CALL_RE = /<function=([a-zA-Z0-9_.:-]+)\s*>?([\s\S]*?)<\/function>/g;
+
+export type VoiceConversationState =
+    | 'idle'           // not connected
+    | 'connecting'     // WS handshake in progress
+    | 'listening'      // mic open, sending to server
+    | 'speaking'       // server is sending us audio
+    | 'error';
+
+/** Shared handler for frontend tools and workflows. */
+export type FrontendOperationHandler = (
+    args: Record<string, unknown>,
+) => Operation<OperationExecutionOutput, OperationStatusPayload>;
+
+export interface AiSessionContext {
+    session_mode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
+    agent_mode?: 'track_guide' | 'overtake' | 'live_performance_analyst';
+}
+export type ConversationRole = 'main' | 'agent';
+
+const canonicalizeSessionContext = (
+    value: AiSessionContext | null | undefined,
+): AiSessionContext => ({
+    session_mode: typeof value?.session_mode === 'string'
+        ? value.session_mode
+        : 'live',
+    ...(typeof value?.agent_mode === 'string'
+        ? { agent_mode: value.agent_mode }
+        : {}),
+});
+
+/** One event surfaced to the chat UI off the voice WS. The hook fires
+ *  these via `onEvent` so the caller can append them to a message list. */
+type VoiceEventPayload =
+    | { kind: 'user_transcript'; text: string; source?: 'voice' | 'typed' }
+    | { kind: 'assistant_transcript'; text: string; emotion?: string }
+    | { kind: 'tool_status'; data: Record<string, unknown> }
+    | {
+        kind: 'tool_call';
+        runId?: string;
+        name: string;
+        title: string;
+        status: 'started' | 'completed';
+        arguments?: Record<string, unknown>;
+        result?: unknown;
+        ok?: boolean;
+        errorName?: string | null;
+        message?: string | null;
+    };
+
+export type VoiceEvent = VoiceEventPayload & { clientSessionId?: string };
+
+export interface VoiceConversationOptions {
+    audioPriority?: number;
+    audioVolume?: number;
+    /** Driving session id — required for backend tools that look up
+     *  recent telemetry / lap data by session. */
+    sessionId?: string;
+    /** User id — required for backend tools that key off the logged-in
+     *  user (e.g. saved preferences, history). */
+    userId?: string;
+    conversationRole?: ConversationRole;
+    chatLlmModel?: string | null;
+    clientSessionId?: string;
+    parentClientSessionId?: string | null;
+    /** Map of frontend operation name → handler. The LLM picks which operations to
+     *  call from its system prompt; the backend routes the call to this
+     *  hook over the WS via a `tool_call` text frame; we dispatch by
+     *  name. Missing handlers are returned as failed tool_result frames. */
+    operationHandlers?: Record<string, FrontendOperationHandler>;
+    /** Compact frontend view/session state injected into the backend system
+     *  context before the LLM chooses tools. */
+    sessionContext?: AiSessionContext;
+    /** Fires for each transcript / tool lifecycle event the backend sends. The
+     *  caller is responsible for appending to its own message list. */
+    onEvent?: (event: VoiceEvent) => void;
+}
+
+export const buildVoiceSessionMetadata = (options: Pick<
+    VoiceConversationOptions,
+    'clientSessionId' | 'conversationRole' | 'parentClientSessionId'
+>) => ({
+    conversation_role: options.conversationRole || 'main',
+    client_session_id: options.clientSessionId,
+    parent_client_session_id: options.parentClientSessionId ?? null,
+});
+
+export interface VoiceConversation {
+    state: VoiceConversationState;
+    error: string | null;
+    /** Current mic input level in [0, 1] — peak amplitude over the last
+     *  ~66ms window. 0 while not capturing. Updates ~15Hz. Use this to
+     *  render a volume meter so the user can confirm the mic is hot. */
+    micLevel: number;
+    micDisabled: boolean;
+    /** Start the session — opens mic + WS. Throws if user denies mic. */
+    start: (eventSessionId?: string) => Promise<void>;
+    /** System teardown — closes resources and aborts operations, retaining the session for resume. */
+    stop: () => void;
+    /** Tear down and discard session identity so the next start creates a fresh conversation. */
+    reset: () => void;
+    setMicDisabled: (disabled: boolean) => void;
+    /** Send a typed chat message over the WS. Returns false if no WS is
+     *  open. The backend treats it as a synthetic user turn and runs
+     *  the LLM (same path as a spoken turn). */
+    sendUserText: (text: string) => boolean;
+    /** Push a background status update into the open voice session as a
+     *  tool_result. Returns false when the voice WebSocket is not ready. */
+    sendToolStatus: (data: Record<string, unknown>) => boolean;
+    /** Send a tool_result frame into the open voice session. */
+    sendToolResult: (frame: ToolResultFrame) => boolean;
+    /** Execute a frontend operation through this session's subscription channel. */
+    executeOperationCall: (call: SubscribedOperationCall) => Promise<OperationSubscriptionResult | null>;
+}
+
+export interface ToolResultFrame {
+    id: string;
+    name: string;
+    result: unknown;
+    arguments?: Record<string, unknown>;
+}
+
+export interface SubscribedOperationCall {
+    id?: string;
+    name?: string;
+    title?: string;
+    arguments?: Record<string, unknown>;
+}
+
+interface OperationSubscriptionResultBase {
+    id: string;
+    name: string;
+}
+
+export type OperationSubscriptionResult = OperationSubscriptionResultBase & (
+    | { ok: true; result: OperationExecutionOutput }
+    | {
+        ok: false;
+        errorName: string;
+        message: string;
+        cause?: SerializedErrorCause;
+    }
+);
+
+type ToolFrameSender = (payload: object) => void;
+type ToolEventEmitter = (event: VoiceEvent) => void;
+
+interface ExecuteSubscribedOperationOptions {
+    call: SubscribedOperationCall;
+    handlers: Record<string, FrontendOperationHandler>;
+    sendText: ToolFrameSender;
+    emitEvent?: ToolEventEmitter;
+    makeRunId?: () => string;
+    signal?: AbortSignal;
+}
+
+export interface InlineFunctionCall {
+    name: string;
+    arguments: Record<string, unknown>;
+}
+
+const parseInlineFunctionArguments = (
+    rawArguments: string,
+): Record<string, unknown> => {
+    const trimmed = rawArguments.trim();
+    if (!trimmed) return {};
+
+    try {
+        const parsed = JSON.parse(trimmed);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed
+            : { value: parsed };
+    } catch {
+        return { raw: trimmed };
+    }
+};
+
+export const extractInlineFunctionCalls = (
+    text: string,
+): { cleanText: string; calls: InlineFunctionCall[] } => {
+    const calls: InlineFunctionCall[] = [];
+    const cleanText = text.replace(INLINE_FUNCTION_CALL_RE, (_match, rawName, rawArguments) => {
+        const name = String(rawName || '').trim();
+        if (name) {
+            calls.push({
+                name,
+                arguments: parseInlineFunctionArguments(String(rawArguments || '')),
+            });
+        }
+        return '';
+    }).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+
+    return { cleanText, calls };
+};
+
+const getToolResultForAi = (result: unknown, status?: string): unknown => {
+    const payload = result && typeof result === 'object' && !Array.isArray(result)
+        ? result
+        : { value: result };
+    return status === undefined ? payload : { ...payload, status };
+};
+
+const buildToolResultFrame = (
+    id: string,
+    name: string,
+    result: unknown,
+) => {
+    return {
+        type: 'tool_result',
+        id,
+        name,
+        result,
+    };
+};
+
+const buildFailedToolResult = (error: OperationError, status = 'failed') => ({
+    status,
+    ok: false as const,
+    name: error.name,
+    message: error.message,
+    ...(error.cause !== undefined ? { cause: serializeErrorCause(error.cause) } : {}),
+});
+
+const buildFailedOperationSubscriptionResult = (
+    id: string,
+    toolName: string,
+    error: OperationError,
+): OperationSubscriptionResult => ({
+    id,
+    name: toolName,
+    ok: false,
+    errorName: error.name,
+    message: error.message,
+    ...(error.cause !== undefined ? { cause: serializeErrorCause(error.cause) } : {}),
+});
+
+const getOperationLogSummary = (payload: object): string => {
+    const frame = payload as Record<string, unknown>;
+    const parts = [frame.type, frame.name, frame.id]
+        .filter((part): part is string => typeof part === 'string' && part.trim().length > 0);
+    return parts.length > 0 ? ` (${parts.join(' / ')})` : '';
+};
+
+const logOperationSend = (payload: object, json: string) => {
+    const prettyJson = JSON.stringify(JSON.parse(json), null, 2);
+    console.groupCollapsed(`[ai-tool] sent to ai${getOperationLogSummary(payload)}`);
+    console.log(prettyJson);
+    console.groupEnd();
+};
+
+const defaultOperationRunId = () =>
+    `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+export const executeSubscribedFrontendOperation = async ({
+    call,
+    handlers,
+    sendText,
+    emitEvent,
+    makeRunId = defaultOperationRunId,
+    signal,
+}: ExecuteSubscribedOperationOptions): Promise<OperationSubscriptionResult> => {
+    const id = call.id || makeRunId();
+    const name = String(call.name || '').trim();
+    const title = call.title || name;
+    const args = call.arguments && typeof call.arguments === 'object'
+        ? call.arguments
+        : {};
+
+    if (!name) {
+        const error = new InvalidOperationCallError(
+            'Tool call is missing a name.',
+        );
+        const failure = buildFailedToolResult(error);
+        sendText(buildToolResultFrame(id, name, failure));
+        return buildFailedOperationSubscriptionResult(id, name, error);
+    }
+
+    emitEvent?.({
+        kind: 'tool_call',
+        runId: id,
+        name,
+        title,
+        status: 'started',
+        arguments: args,
+    });
+
+    const handler = handlers[name];
+
+    let removeAbortListener: (() => void) | undefined;
+    let failureStatus = 'failed';
+    try {
+        if (signal?.aborted) throw new OperationAbortedError();
+        if (!handler) {
+            throw new OperationNotRegisteredError(
+                `No handler is registered for '${name}'.`,
+            );
+        }
+
+        const operation = handler(args);
+        const abortOperation = () => operation.abort();
+        signal?.addEventListener('abort', abortOperation, { once: true });
+        removeAbortListener = () => signal?.removeEventListener('abort', abortOperation);
+        // A handler may synchronously trigger a system session transition.
+        if (signal?.aborted) abortOperation();
+        let terminated = false;
+        const terminationPromise = new Promise<{
+            status: string;
+            result: OperationExecutionOutput;
+        }>((resolve) => operation.notifyTerminated((termination) => {
+            terminated = true;
+            resolve(termination);
+        }));
+        operation.statuses.forEach((statusPromise) => {
+            void statusPromise.then((status) => {
+                if (terminated || signal?.aborted) return;
+                emitEvent?.({
+                    kind: 'tool_call',
+                    runId: id,
+                    name,
+                    title,
+                    status: 'started',
+                    result: status,
+                    ok: true,
+                });
+            }, (statusError) => {
+                if (terminated || signal?.aborted) return;
+                const error = normalizeOperationError(statusError);
+                const failure = buildFailedToolResult(error, 'status_failed');
+                console.error(`[ai-tool] '${name}' status failed.`, error);
+                emitEvent?.({
+                    kind: 'tool_call',
+                    runId: id,
+                    name,
+                    title,
+                    status: 'started',
+                    result: failure,
+                    ok: false,
+                    errorName: error.name,
+                    message: error.message,
+                });
+            });
+        });
+        const termination = await terminationPromise;
+        if (termination.result instanceof Error) {
+            failureStatus = termination.status;
+            throw termination.result;
+        }
+        if (signal?.aborted) throw new OperationAbortedError();
+        const result = getToolResultForAi(termination.result, termination.status);
+        sendText(buildToolResultFrame(id, name, result));
+        emitEvent?.({
+            kind: 'tool_call',
+            runId: id,
+            name,
+            title,
+            status: 'completed',
+            result,
+            ok: true,
+        });
+        return { id, name, ok: true, result: termination.result };
+    } catch (err) {
+        const error = normalizeOperationError(err);
+        const failure = {
+            ...buildFailedToolResult(
+                error,
+                err instanceof OperationAbortedError ? 'aborted' : failureStatus,
+            ),
+            ...readWorkflowProgress(err),
+        };
+        sendText(buildToolResultFrame(id, name, failure));
+        emitEvent?.({
+            kind: 'tool_call',
+            runId: id,
+            name,
+            title,
+            status: 'completed',
+            ok: false,
+            errorName: error.name,
+            message: error.message,
+        });
+        return buildFailedOperationSubscriptionResult(id, name, error);
+    } finally {
+        removeAbortListener?.();
+    }
+};
+
+export function useVoiceConversation(
+    options: VoiceConversationOptions = {},
+): VoiceConversation {
+    const [state, setState] = useState<VoiceConversationState>('idle');
+    const [error, setError] = useState<string | null>(null);
+    const [micLevel, setMicLevel] = useState<number>(0);
+    const [micDisabled, setMicDisabledState] = useState<boolean>(false);
+
+    // Hold refs to all the resources we need to tear down on stop().
+    const wsRef = useRef<WebSocket | null>(null);
+    const readyWsRef = useRef<WebSocket | null>(null);
+    const connectionAbortRef = useRef<AbortController | null>(null);
+    const chatSessionIdRef = useRef<string | null>(null);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const micStreamRef = useRef<MediaStream | null>(null);
+    const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+    const playbackRef = useRef<AudioStreamHandle | null>(null);
+    const connectTimeoutRef = useRef<number | null>(null);
+    const connectionAttemptRef = useRef(0);
+    const micDisabledRef = useRef(false);
+    const micLevelRef = useRef(0);
+    const pendingMicLevelRef = useRef<number | null>(null);
+    const micLevelFrameRef = useRef<number | null>(null);
+    const sessionContextRef = useRef<AiSessionContext | null>(
+        canonicalizeSessionContext(options.sessionContext),
+    );
+
+    /**
+     * Open the backend voice WS through apiService — same baseURL + JWT
+     * source as every REST call. `user_id` is derived server-side from
+     * the JWT claim and isn't sent from here.
+     */
+    const openWs = useCallback((
+        chatSessionAction: 'create' | 'resume',
+        chatSessionId: string | null,
+    ): WebSocket => {
+        const metadata = buildVoiceSessionMetadata({
+            clientSessionId: options.clientSessionId,
+            conversationRole: options.conversationRole,
+            parentClientSessionId: options.parentClientSessionId,
+        });
+        return apiService.openWebSocket('/voice/stream', {
+            session_id: options.sessionId,
+            conversation_role: metadata.conversation_role,
+            client_session_id: metadata.client_session_id,
+            parent_client_session_id: metadata.parent_client_session_id || undefined,
+            chat_llm_model: options.chatLlmModel?.trim() || undefined,
+            chat_session_action: chatSessionAction,
+            chat_session_id: chatSessionId || undefined,
+        });
+    }, [
+        options.chatLlmModel,
+        options.clientSessionId,
+        options.conversationRole,
+        options.parentClientSessionId,
+        options.sessionId,
+    ]);
+
+    // Always-fresh handler registry — updated as options.operationHandlers changes
+    // without forcing the WS to reopen.
+    const operationHandlersRef = useRef<Record<string, FrontendOperationHandler>>(
+        options.operationHandlers || {},
+    );
+    useEffect(() => {
+        operationHandlersRef.current = options.operationHandlers || {};
+    }, [options.operationHandlers]);
+
+    // Same pattern for onEvent — keeps closures fresh without re-opening WS.
+    const onEventRef = useRef<((event: VoiceEvent) => void) | undefined>(
+        options.onEvent,
+    );
+    const activeEventSessionIdRef = useRef<string | undefined>(options.clientSessionId);
+    useEffect(() => {
+        onEventRef.current = options.onEvent;
+    }, [options.onEvent]);
+
+    const emitVoiceEvent = useCallback((event: VoiceEvent) => {
+        onEventRef.current?.({
+            ...event,
+            clientSessionId: event.clientSessionId ?? activeEventSessionIdRef.current ?? options.clientSessionId,
+        });
+    }, [options.clientSessionId]);
+
+    useEffect(() => {
+        sessionContextRef.current = canonicalizeSessionContext(options.sessionContext);
+        const ws = wsRef.current;
+        if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
+
+        try {
+            ws.send(JSON.stringify({
+                type: 'session_context',
+                session_context: sessionContextRef.current,
+            }));
+        } catch (err) {
+            console.warn('[voice] session_context update failed:', err);
+        }
+    }, [options.sessionContext]);
+    const resetMicLevel = useCallback(() => {
+        if (micLevelFrameRef.current !== null) {
+            window.cancelAnimationFrame(micLevelFrameRef.current);
+            micLevelFrameRef.current = null;
+        }
+        pendingMicLevelRef.current = null;
+        if (micLevelRef.current !== 0) {
+            micLevelRef.current = 0;
+            setMicLevel(0);
+        }
+    }, []);
+
+    const commitMicLevel = useCallback((level: number) => {
+        const normalized = level > 1 ? 1 : level < 0 ? 0 : level;
+        if (Math.abs(micLevelRef.current - normalized) < 0.01) {
+            return;
+        }
+        micLevelRef.current = normalized;
+        setMicLevel(normalized);
+    }, []);
+
+    const scheduleMicLevel = useCallback((level: number) => {
+        pendingMicLevelRef.current = level;
+        if (micLevelFrameRef.current !== null) {
+            return;
+        }
+
+        micLevelFrameRef.current = window.requestAnimationFrame(() => {
+            micLevelFrameRef.current = null;
+            const nextLevel = pendingMicLevelRef.current;
+            pendingMicLevelRef.current = null;
+            if (nextLevel !== null) {
+                commitMicLevel(nextLevel);
+            }
+        });
+    }, [commitMicLevel]);
+
+    const setMicDisabled = useCallback((disabled: boolean) => {
+        micDisabledRef.current = disabled;
+        setMicDisabledState((previous) => previous === disabled ? previous : disabled);
+        resetMicLevel();
+        try {
+            micStreamRef.current?.getAudioTracks().forEach((track) => {
+                track.enabled = !disabled;
+            });
+        } catch { /* ignore */ }
+    }, [resetMicLevel]);
+
+    const clearConnectTimeout = useCallback(() => {
+        if (connectTimeoutRef.current !== null) {
+            window.clearTimeout(connectTimeoutRef.current);
+            connectTimeoutRef.current = null;
+        }
+    }, []);
+
+    const releaseSessionResources = useCallback((
+        closeCode = 1000,
+        closeReason = 'client stop',
+    ) => {
+        connectionAttemptRef.current += 1;
+        clearConnectTimeout();
+        readyWsRef.current = null;
+        const connectionAbort = connectionAbortRef.current;
+        connectionAbortRef.current = null;
+        connectionAbort?.abort();
+
+        try { workletNodeRef.current?.disconnect(); } catch { /* ignore */ }
+        workletNodeRef.current = null;
+
+        try {
+            micStreamRef.current?.getTracks().forEach((t) => t.stop());
+        } catch { /* ignore */ }
+        micStreamRef.current = null;
+
+        try { audioContextRef.current?.close(); } catch { /* ignore */ }
+        audioContextRef.current = null;
+
+        playbackRef.current?.stop();
+        playbackRef.current = null;
+
+        const ws = wsRef.current;
+        wsRef.current = null;
+        if (ws) {
+            try {
+                if (ws.readyState <= WebSocket.OPEN) {
+                    ws.close(closeCode, closeReason);
+                }
+            } catch { /* ignore */ }
+        }
+
+        resetMicLevel();
+    }, [clearConnectTimeout, resetMicLevel]);
+
+    const stop = useCallback(() => {
+        // Tear down in reverse order of construction. All steps are idempotent.
+        releaseSessionResources();
+        setState('idle');
+    }, [releaseSessionResources]);
+
+    const reset = useCallback(() => {
+        stop();
+        chatSessionIdRef.current = null;
+        activeEventSessionIdRef.current = undefined;
+        setError(null);
+        setMicDisabled(false);
+    }, [setMicDisabled, stop]);
+
+    const start = useCallback(async (eventSessionId?: string) => {
+        if (state !== 'idle' && state !== 'error') {
+            return;
+        }
+
+        if (state === 'error') {
+            releaseSessionResources(1000, 'connection retry');
+        }
+        const connectionAttempt = ++connectionAttemptRef.current;
+
+        const connectionEventSessionId = eventSessionId ?? options.clientSessionId;
+        activeEventSessionIdRef.current = connectionEventSessionId;
+        const emitConnectionEvent = (event: VoiceEvent) => {
+            onEventRef.current?.({ ...event, clientSessionId: connectionEventSessionId });
+        };
+
+        setError(null);
+        setState('connecting');
+
+        try {
+            // --- 1. Request mic permission ---
+            const micStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                },
+                video: false,
+            });
+            if (connectionAttempt !== connectionAttemptRef.current) {
+                micStream.getTracks().forEach((track) => track.stop());
+                return;
+            }
+            micStream.getAudioTracks().forEach((track) => {
+                track.enabled = !micDisabledRef.current;
+            });
+            micStreamRef.current = micStream;
+
+            // --- 2. Set up capture AudioContext + worklet ---
+            // Capture at 16kHz mono to match the server's expected input rate
+            // (see audio_in_sample_rate in pipecat_pipeline.py). Whisper STT
+            // wants 16kHz natively, so doing the resample on the client saves
+            // network bandwidth and avoids server-side resampling.
+            //
+            // Browsers MAY refuse non-default sample rates on some OSes — if
+            // 16kHz isn't supported, fall back to the system default. The
+            // server resamples in that case (slightly slower path).
+            let captureContext: AudioContext;
+            try {
+                captureContext = new AudioContext({ sampleRate: 16000 });
+            } catch {
+                console.warn('[voice] 16kHz capture context rejected, using system default');
+                captureContext = new AudioContext();
+            }
+            audioContextRef.current = captureContext;
+
+            try {
+                await captureContext.audioWorklet.addModule('/pcm-capture-worklet.js');
+            } catch (err) {
+                console.error('[voice] failed to load pcm-capture-worklet.js — check that /pcm-capture-worklet.js is reachable:', err);
+                throw err;
+            }
+            if (connectionAttempt !== connectionAttemptRef.current) return;
+
+            const source = captureContext.createMediaStreamSource(micStream);
+            const workletNode = new AudioWorkletNode(captureContext, 'pcm-capture');
+            workletNodeRef.current = workletNode;
+            source.connect(workletNode);
+            // Do NOT connect workletNode to captureContext.destination — that
+            // would echo the mic back to the speakers.
+
+            // --- 3. Open WebSocket ---
+            const requestedChatSessionId = chatSessionIdRef.current;
+            const chatSessionAction = requestedChatSessionId ? 'resume' : 'create';
+            const ws = openWs(chatSessionAction, requestedChatSessionId);
+            const connectionAbort = new AbortController();
+            connectionAbortRef.current = connectionAbort;
+            ws.binaryType = 'arraybuffer';
+            wsRef.current = ws;
+            connectTimeoutRef.current = window.setTimeout(() => {
+                if (wsRef.current !== ws || readyWsRef.current === ws) {
+                    return;
+                }
+
+                const timeoutSeconds = Math.round(VOICE_WS_CONNECT_TIMEOUT_MS / 1000);
+                const message = `Voice connection timed out after ${timeoutSeconds}s`;
+                console.error('[voice] WS connection timeout:', {
+                    readyState: ws.readyState,
+                    url: ws.url,
+                });
+                setError(message);
+                setState('error');
+                releaseSessionResources(4000, 'connection timeout');
+            }, VOICE_WS_CONNECT_TIMEOUT_MS);
+
+            // Hook up the worklet → WS pipe. The worklet posts two kinds of
+            // messages: { type:'pcm', buffer } (forwarded over the WS) and
+            // { type:'level', rms, peak } (used to drive the mic meter so
+            // the user can see whether their voice is registering).
+            workletNode.port.onmessage = (event) => {
+                const data = event.data;
+                if (data && data.type === 'level') {
+                    if (micDisabledRef.current) {
+                        resetMicLevel();
+                        return;
+                    }
+                    // Prefer peak — it's what the user perceives as "am I
+                    // talking right now". RMS is averaged and looks sleepy.
+                    const lvl = typeof data.peak === 'number' ? data.peak : 0;
+                    scheduleMicLevel(lvl);
+                    return;
+                }
+                if (!data || data.type !== 'pcm' || !data.buffer) return;
+                if (micDisabledRef.current) return;
+                if (wsRef.current !== ws || readyWsRef.current !== ws) return;
+                if (ws.readyState !== WebSocket.OPEN) return;
+                try {
+                    ws.send(data.buffer as ArrayBuffer);
+                } catch (err) {
+                    console.warn('[voice] send failed:', err);
+                }
+            };
+
+            // A discarded handle stays invalid through quiet intervals, until restart.
+            const playback = audioManager.createStream({
+                type: 'voice', priority: options.audioPriority ?? 50,
+                volume: options.audioVolume, format: 'pcm16', sampleRate: 24000,
+                onStart: () => {
+                    if (wsRef.current === ws && playbackRef.current === playback) setState('speaking');
+                },
+                onIdle: () => {
+                    if (wsRef.current === ws && playbackRef.current === playback) {
+                        setState((previous) => previous === 'speaking' ? 'listening' : previous);
+                    }
+                },
+                onComplete: (outcome) => {
+                    if (wsRef.current !== ws || playbackRef.current !== playback) return;
+                    setState((previous) => previous === 'speaking' ? 'listening' : previous);
+                    if (outcome.status === 'failed') console.warn('[voice] playback failed:', outcome.error);
+                },
+            });
+            playbackRef.current = playback;
+
+            ws.onopen = () => {
+                if (wsRef.current !== ws) return;
+                // First text frame on every voice session: hand the backend
+                // compact runtime context. The AI service uses it to retrieve
+                // the authenticated Model Command Protocol catalog.
+                try {
+                    const metadata = buildVoiceSessionMetadata({
+                        clientSessionId: options.clientSessionId,
+                        conversationRole: options.conversationRole,
+                        parentClientSessionId: options.parentClientSessionId,
+                    });
+                    ws.send(JSON.stringify({
+                        type: 'session_info',
+                        ...metadata,
+                        session_context: sessionContextRef.current,
+                    }));
+                } catch (err) {
+                    console.warn('[voice] session_info send failed:', err);
+                }
+            };
+
+            // ── Tool-relay text channel ────────────────────────────────────
+            // Helpers that wrap the WS for tool handlers. Defined here so
+            // they capture the live `ws` instance; not exposed externally.
+            const sendText = (payload: object) => {
+                if (wsRef.current !== ws || readyWsRef.current !== ws) return;
+                if (ws.readyState !== WebSocket.OPEN) return;
+                try {
+                    const json = JSON.stringify(payload);
+                    logOperationSend(payload, json);
+                    ws.send(json);
+                }
+                catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
+            };
+            const handleToolCall = async (msg: {
+                id?: string; name?: string; arguments?: Record<string, unknown>;
+            }) => {
+                const id = msg.id;
+                const name = msg.name;
+                if (!id || !name) {
+                    console.warn('[ai-tool] bad tool_call frame:', msg);
+                    return;
+                }
+                await executeSubscribedFrontendOperation({
+                    call: { id, name, arguments: msg.arguments },
+                    handlers: operationHandlersRef.current,
+                    sendText,
+                    emitEvent: emitConnectionEvent,
+                    signal: connectionAbort.signal,
+                });
+            };
+
+            const handleInlineToolCall = async (
+                call: InlineFunctionCall,
+                index: number,
+            ) => {
+                const id = `inline-${Date.now()}-${index}-${Math.random().toString(36).substring(2, 9)}`;
+                await executeSubscribedFrontendOperation({
+                    call: { id, name: call.name, arguments: call.arguments },
+                    handlers: operationHandlersRef.current,
+                    sendText,
+                    emitEvent: emitConnectionEvent,
+                    signal: connectionAbort.signal,
+                });
+            };
+
+            const reportConnectionFailure = (
+                message: string,
+                closeCode = 4001,
+                closeReason = 'connection failed',
+            ) => {
+                if (wsRef.current !== ws) return;
+                console.error('[voice] connection failed:', message);
+                setError(message);
+                setState('error');
+                releaseSessionResources(closeCode, closeReason);
+            };
+
+            ws.onmessage = (event) => {
+                if (wsRef.current !== ws) return;
+                // Text frame → tool-relay channel. Binary frame → PCM audio.
+                if (typeof event.data === 'string') {
+                    let parsed: any;
+                    try { parsed = JSON.parse(event.data); }
+                    catch { console.warn('[voice/tool-relay] non-JSON text frame:', event.data); return; }
+                    if (parsed?.type === 'chat_session_ready') {
+                        const readyChatSessionId = typeof parsed.chat_session_id === 'string'
+                            ? parsed.chat_session_id.trim()
+                            : '';
+                        const validCreate = (
+                            chatSessionAction === 'create'
+                            && readyChatSessionId.length > 0
+                            && parsed.resumed === false
+                        );
+                        const validResume = (
+                            chatSessionAction === 'resume'
+                            && readyChatSessionId === requestedChatSessionId
+                            && parsed.resumed === true
+                        );
+                        if (!validCreate && !validResume) {
+                            reportConnectionFailure(
+                                chatSessionAction === 'resume'
+                                    ? 'Voice session resume handshake returned an unexpected chat session'
+                                    : 'Voice session create handshake was invalid',
+                                4002,
+                                'invalid chat session handshake',
+                            );
+                            return;
+                        }
+
+                        chatSessionIdRef.current = readyChatSessionId;
+                        readyWsRef.current = ws;
+                        clearConnectTimeout();
+                        setState('listening');
+                        return;
+                    }
+
+                    if (parsed?.type === 'error') {
+                        // Backend explicit error (e.g. a stale process-local
+                        // chat session or unavailable voice dependency).
+                        const msg = parsed.message || parsed.error_type || 'backend error';
+                        if (parsed.error_type === 'ChatSessionNotFound' || parsed.error_type === 'ChatSessionReplaced') {
+                            chatSessionIdRef.current = null;
+                        }
+                        reportConnectionFailure(msg);
+                        return;
+                    }
+
+                    if (readyWsRef.current !== ws) {
+                        console.warn('[voice/tool-relay] frame received before chat session readiness:', parsed?.type);
+                        return;
+                    }
+
+                    if (parsed?.type === 'tool_call') {
+                        void handleToolCall(parsed);
+                    } else if (parsed?.type === 'user_transcript') {
+                        const text = String(parsed.text || '').trim();
+                        if (text) {
+                            emitConnectionEvent({
+                                kind: 'user_transcript',
+                                text,
+                                source: parsed.source === 'typed' ? 'typed' : 'voice',
+                            });
+                        }
+                    } else if (parsed?.type === 'assistant_transcript') {
+                        const text = String(parsed.text || '').trim();
+                        if (text) {
+                            const { cleanText, calls } = extractInlineFunctionCalls(text);
+                            calls.forEach((call, index) => {
+                                void handleInlineToolCall(call, index);
+                            });
+                            const emotion = typeof parsed.emotion === 'string' ? parsed.emotion : undefined;
+                            if (cleanText) {
+                                emitConnectionEvent({ kind: 'assistant_transcript', text: cleanText, emotion });
+                            }
+                        }
+                    } else {
+                        console.warn('[voice/tool-relay] unknown text frame:', parsed?.type);
+                    }
+                    return;
+                }
+                if (!(event.data instanceof ArrayBuffer)) return;
+                if (readyWsRef.current !== ws) return;
+                // Server sent raw PCM16 mono at the kokoro sample rate.
+                playback.enqueuePcm16(event.data);
+            };
+
+            ws.onerror = (event) => {
+                if (wsRef.current !== ws) return;
+                console.error('[voice] WS error event:', event);
+                reportConnectionFailure('Voice connection error');
+            };
+
+            ws.onclose = (event) => {
+                if (wsRef.current !== ws) return;
+                reportConnectionFailure(`Voice connection closed (${event.code}): ${event.reason || 'unknown'}`);
+            };
+        } catch (err) {
+            if (connectionAttempt !== connectionAttemptRef.current) return;
+            console.error('[voice] start failed:', err);
+            setError((err as Error).message || 'Failed to start voice session');
+            setState('error');
+            releaseSessionResources(4001, 'start failed');
+        }
+    }, [
+        state,
+        clearConnectTimeout,
+        openWs,
+        releaseSessionResources,
+        options.clientSessionId,
+        options.conversationRole,
+        options.parentClientSessionId,
+        options.audioPriority,
+        options.audioVolume,
+        resetMicLevel,
+        scheduleMicLevel,
+    ]);
+
+    /**
+     * Send a typed chat message over the open voice WS. Backend treats it
+     * as a synthetic user turn (same path as a spoken turn after STT).
+     * Returns false if there's no open WS to send on.
+     */
+    const sendUserText = useCallback((text: string): boolean => {
+        const ws = wsRef.current;
+        if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return false;
+        const trimmed = text.trim();
+        if (!trimmed) return false;
+        try {
+            ws.send(JSON.stringify({
+                type: 'user_text',
+                text: trimmed,
+                session_context: sessionContextRef.current,
+            }));
+            return true;
+        } catch (err) {
+            console.warn('[voice] sendUserText failed:', err);
+            return false;
+        }
+    }, []);
+
+    const sendToolStatus = useCallback((data: Record<string, unknown>): boolean => {
+        const ws = wsRef.current;
+        if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return false;
+        emitVoiceEvent({ kind: 'tool_status', data });
+        try {
+            const frame = buildFormattedToolResultFrame(data, defaultOperationRunId());
+            const json = JSON.stringify(frame);
+            logOperationSend(frame, json);
+            ws.send(json);
+            return true;
+        } catch (err) {
+            console.warn('[voice] sendToolStatus failed:', err);
+            return false;
+        }
+    }, [emitVoiceEvent]);
+
+    const sendToolResult = useCallback((frame: ToolResultFrame): boolean => {
+        const ws = wsRef.current;
+        if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return false;
+        try {
+            const payload = buildToolResultFrame(
+                frame.id,
+                frame.name,
+                getToolResultForAi(frame.result),
+            );
+            const json = JSON.stringify(payload);
+            logOperationSend(payload, json);
+            ws.send(json);
+            return true;
+        } catch (err) {
+            console.warn('[voice] sendToolResult failed:', err);
+            return false;
+        }
+    }, []);
+
+    const executeOperationCall = useCallback(async (
+        call: SubscribedOperationCall,
+    ): Promise<OperationSubscriptionResult | null> => {
+        const ws = wsRef.current;
+        if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return null;
+        const connectionAbort = connectionAbortRef.current;
+        if (!connectionAbort || connectionAbort.signal.aborted) return null;
+        const eventSessionId = activeEventSessionIdRef.current;
+
+        const sendText = (payload: object) => {
+            if (wsRef.current !== ws || readyWsRef.current !== ws) return;
+            if (ws.readyState !== WebSocket.OPEN) return;
+            try {
+                const json = JSON.stringify(payload);
+                logOperationSend(payload, json);
+                ws.send(json);
+            }
+            catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
+        };
+
+        return executeSubscribedFrontendOperation({
+            call,
+            handlers: operationHandlersRef.current,
+            sendText,
+            emitEvent: (event) => emitVoiceEvent({ ...event, clientSessionId: eventSessionId }),
+            signal: connectionAbort.signal,
+        });
+    }, [emitVoiceEvent]);
+
+    // A new client identity creates a new session; transport teardown alone
+    // retains the current server identity so system-paused sessions can resume.
+    useEffect(() => {
+        chatSessionIdRef.current = null;
+        setError(null);
+        setState('idle');
+        return () => stop();
+    }, [options.clientSessionId, options.conversationRole, options.userId, stop]);
+
+    return {
+        state,
+        error,
+        micLevel,
+        micDisabled,
+        start,
+        stop,
+        reset,
+        setMicDisabled,
+        sendUserText,
+        sendToolStatus,
+        sendToolResult,
+        executeOperationCall,
+    };
+}

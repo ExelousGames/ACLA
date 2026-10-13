@@ -6,13 +6,14 @@ import {
     CircuitMapSummaryDto
 } from 'views/circuit-maps/circuit-map-types';
 import { CIRCUIT_MAP_BIN_RESOLUTION } from 'views/circuit-maps/circuit-map-utils';
+import { getCircuitMapCenterlineSegments } from 'views/circuit-maps/centerline-segments';
 
 const countSamples = (samplesByMode: CircuitMapSamplesByMode): number => (
     Object.values(samplesByMode).reduce((sum, samples) => sum + (samples?.length || 0), 0)
 );
 
 const normalizeGame = (game: unknown, fallback: CircuitMapGame = 'acc'): CircuitMapGame => (
-    game === 'other' ? 'other' : fallback
+    game === 'acc' || game === 'iracing' ? game : fallback
 );
 
 export const normalizeCircuitMapList = (data: any): CircuitMapSummaryDto[] => {
@@ -42,6 +43,7 @@ export const normalizeCircuitMap = (data: any, fallbackGame: CircuitMapGame = 'a
     const rawSamples = data?.samples || {};
     const samples: CircuitMapSamplesByMode = {
         left_boundary: Array.isArray(rawSamples.left_boundary) ? rawSamples.left_boundary : [],
+        middle_line: Array.isArray(rawSamples.middle_line) ? rawSamples.middle_line : [],
         right_boundary: Array.isArray(rawSamples.right_boundary) ? rawSamples.right_boundary : [],
         pit_lane: Array.isArray(rawSamples.pit_lane) ? rawSamples.pit_lane : []
     };
@@ -54,13 +56,22 @@ export const normalizeCircuitMap = (data: any, fallbackGame: CircuitMapGame = 'a
         updated_at: data?.updated_at ?? null,
         sample_count: Number(data?.sample_count ?? countSamples(samples)),
         resolution: Number(data?.resolution ?? CIRCUIT_MAP_BIN_RESOLUTION),
-        samples
+        samples,
+        centerline_segments: getCircuitMapCenterlineSegments({
+            centerline_segments: data?.centerline_segments,
+            centerline_tags: Array.isArray(data?.centerline_tags) ? data.centerline_tags : []
+        })
     };
 };
 
 export const fetchCircuitMapList = async (game: CircuitMapGame): Promise<CircuitMapSummaryDto[]> => {
     const response = await apiService.get<any>('/circuit-map/list', { game });
     return normalizeCircuitMapList(response.data);
+};
+
+export const fetchCenterlineTagOptions = async (): Promise<string[]> => {
+    const response = await apiService.get<{ tags: string[] }>('/circuit-map/centerline-tags');
+    return Array.isArray(response.data.tags) ? response.data.tags : [];
 };
 
 export const fetchCircuitMapById = async (

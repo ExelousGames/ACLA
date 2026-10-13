@@ -48,6 +48,15 @@ describe('ApiService', () => {
         expect(apiService).toBeDefined();
     });
 
+    it('downloads binary data through the authenticated client with the requested timeout', async () => {
+        const bytes = new ArrayBuffer(4);
+        mockAxiosInstance.get.mockResolvedValue({ data: bytes });
+        await expect(apiService.getBinary('/ai-model/ultralytics/model/file', { timeoutMs: 300000 })).resolves.toBe(bytes);
+        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/ai-model/ultralytics/model/file', {
+            responseType: 'arraybuffer', timeout: 300000,
+        });
+    });
+
     describe('get', () => {
         it('should call axiosInstance.get with correct params', async () => {
             const mockResponse = { data: { id: 1 }, status: 200 };

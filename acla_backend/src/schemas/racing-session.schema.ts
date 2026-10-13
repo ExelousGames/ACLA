@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
 import { ObjectId } from "mongoose";
-import { GAME_RECORDED_FROM_VALUES, GameRecordedFrom } from "src/racing-session-game";
+import { GameRecordedFrom } from "src/racing-session-game";
 
 //Each schema maps to a MongoDB collection and defines the shape of the documents within that collection
 //The @Schema() decorator marks a class as a schema definition. It maps our Cat class to a MongoDB collection of the same name, but with an additional “s” at the end - so the final mongo collection name will be cats
@@ -19,7 +19,7 @@ export class RacingSession {
     @Prop({ type: String, ref: 'UserInfo', required: true })
     user_id: string;
 
-    @Prop({ required: true, enum: [...GAME_RECORDED_FROM_VALUES] })
+    @Prop({ type: String, required: true })
     game_recorded_from: GameRecordedFrom;
 
     @Prop()
@@ -35,6 +35,15 @@ export class RacingSession {
     // IDs of GridFS files for each chunk of session data (ordered).
     @Prop({ type: [Object], required: false, default: [] })
     dataChunkFileIds?: ObjectId[];
+
+    @Prop({ type: [Object], required: false, default: [] })
+    videos?: {
+        name: string;
+        size: number;
+        mimeType: string;
+        startedAt: number;
+        chunkFileIds: ObjectId[];
+    }[];
 
     // Size of chunks used when splitting and uploading (for reconstruction/download)
     @Prop({ required: false })

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, Query, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Post, Put, Query, Request, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { CircuitMapGame } from 'src/schemas/circuit-map.schema';
 import { CircuitMapService } from './circuit-map.service';
@@ -10,7 +10,13 @@ export class CircuitMapController {
     @UseGuards(AuthGuard('jwt'))
     @Get('list')
     list(@Request() req, @Query('game') game?: CircuitMapGame) {
-        return this.circuitMapService.list(game === 'other' ? 'other' : game === 'acc' ? 'acc' : undefined);
+        return this.circuitMapService.list(game);
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Get('centerline-tags')
+    listCenterlineTags() {
+        return this.circuitMapService.listCenterlineTags();
     }
 
     @UseGuards(AuthGuard('jwt'))
@@ -29,5 +35,12 @@ export class CircuitMapController {
     @Put(':id')
     update(@Request() req, @Param('id') id: string, @Body() body: any) {
         return this.circuitMapService.update(id, body);
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Delete(':id')
+    @HttpCode(HttpStatus.NO_CONTENT)
+    remove(@Param('id') id: string): Promise<void> {
+        return this.circuitMapService.remove(id);
     }
 }
