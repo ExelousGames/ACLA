@@ -45,3 +45,25 @@ def test_lap_annotation_page_displays_its_title(monkeypatch):
     )
 
     streamlit.subheader.assert_called_once_with("Lap Annotation")
+
+
+def test_annotation_build_load_and_save_discard_track_labels(monkeypatch):
+    frame = pd.DataFrame({"Static_track": ["silverstone"], "speed": [40.0]})
+    segment = shared.build_segment(
+        frame, start=0, end=1,
+        label_ids=["silverstone", "silverstone1", "MSP", "ST1"],
+    )
+    assert segment.labels == ["MSP", "ST1"]
+    assert segment.telemetry_data == frame.to_dict(orient="records")
+
+    # Existing in-memory or stored annotations must not reintroduce old labels.
+    segment.labels = ["silverstone", "silverstone1", "MSP", "ST1"]
+    store = MagicMock()
+    store.get_chunk.return_value = [segment.to_dict()]
+    monkeypatch.setattr(shared, "get_store", lambda: store)
+    assert shared.load_annotations("session", "key")[0].labels == ["MSP", "ST1"]
+    assert shared.load_session_segments("key", "session")[0].labels == ["MSP", "ST1"]
+    shared.save_annotations("session", [segment], "key", silent=True)
+    expected = segment.to_dict()
+    expected["labels"] = ["MSP", "ST1"]
+    store.save_chunk.assert_called_once_with("key", "session", [expected])

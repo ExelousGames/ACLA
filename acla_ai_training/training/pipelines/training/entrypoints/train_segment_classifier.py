@@ -13,11 +13,9 @@ project_root = Path(__file__).resolve().parents[4]
 sys.path.append(str(project_root))
 
 from training.ml.segment_classifier.trainer import segment_classifier_trainer
-from training.pipelines.training.config import TrainingPipelineConfig
 
 
 async def main() -> int:
-    cfg = TrainingPipelineConfig()
     parser = argparse.ArgumentParser(
         description="Train the temporal behavior segment detector.",
     )
@@ -25,7 +23,7 @@ async def main() -> int:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val-split", type=float, default=0.1)
-    parser.add_argument("--annotation-key", default=cfg.annotation_cache_key)
+    parser.add_argument("--annotation-key", required=True)
     parser.add_argument(
         "--session-id",
         dest="session_ids",
@@ -34,6 +32,8 @@ async def main() -> int:
         help="Session chunk ID to include. Repeat to train on multiple sessions.",
     )
     args = parser.parse_args()
+    if not args.annotation_key.strip():
+        parser.error("--annotation-key must name an annotation dataset")
 
     selected_sessions = args.session_ids if args.session_ids is not None else "all"
     print(

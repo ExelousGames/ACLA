@@ -291,6 +291,7 @@ const compactClassification = (result: SegmentClassificationResult, limit: numbe
         start_index: segment.start_index,
         end_index: segment.end_index,
         track_section: segment.track_section ?? null,
+        track_section_name: segment.track_section_name ?? null,
         labels: getSegmentLabelIds(segment),
         ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
     })),

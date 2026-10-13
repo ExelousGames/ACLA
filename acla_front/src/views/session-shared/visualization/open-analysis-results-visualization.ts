@@ -8,6 +8,7 @@ import type { SegmentClassificationResult } from 'views/session-shared/segment-c
 import type { VisualizationManagerHandle } from './VisualizationPanelManager';
 import type { AnalysisResultsChartHandle } from './charts/AnalysisResultsChart';
 import type { AnalysisResultElement } from './charts/analysisResultsModel';
+import { getSegmentTrackSectionText } from './charts/segmentClassificationDisplay';
 import { resolveAnalysisResultsComparison } from './charts/analysisResultsComparisonAdapter';
 import { getSingletonVisualizationComponentName } from './visualization-component-names';
 
@@ -43,7 +44,7 @@ const buildAnalysisElements = (
             label_name: getLabelName(label.label_name) || label.label_name,
         })),
         ...(segment.track_section ? {
-            section: getLabelName(segment.track_section) || segment.track_section,
+            section: getSegmentTrackSectionText(segment),
         } : {}),
         ...(start !== null && end !== null ? {
             normalizedPositionRange: { start, end },

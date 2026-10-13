@@ -41,7 +41,7 @@ import type { VisualizationManagerHandle } from 'views/session-shared/visualizat
 import type { AnalysisResultsChartHandle } from 'views/session-shared/visualization/charts/AnalysisResultsChart';
 import type { AnalysisResultElement } from 'views/session-shared/visualization/charts/analysisResultsModel';
 import { resolveAnalysisResultsComparison } from 'views/session-shared/visualization/charts/analysisResultsComparisonAdapter';
-import type { SegmentClassificationLabel } from 'views/session-shared/visualization/charts/segmentClassificationDisplay';
+import { getSegmentTrackSectionText, type SegmentClassificationLabel } from 'views/session-shared/visualization/charts/segmentClassificationDisplay';
 import { getSingletonVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
 import BaselineProgressDisplay from './BaselineProgressDisplay';
 import './baseline-collection.css';
@@ -476,15 +476,11 @@ const getAnalysisLimit = (value: unknown): number => {
     return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 50) : 8;
 };
 
-const getLabelText = (chat: AiChatHandle, labelId?: string | null): string | null => (
-    labelId ? chat.getLabelName(labelId) || labelId : null
-);
-
 const compactSegment = (segment: any, chat: AiChatHandle) => ({
     id: segment.id ?? null,
     start_index: segment.start_index,
     end_index: segment.end_index,
-    track_section: getLabelText(chat, segment.track_section),
+    track_section: segment.track_section ? getSegmentTrackSectionText(segment) : null,
     labels: segment.labels.map((label: SegmentClassificationLabel) => ({
         ...label,
         label_name: chat.getLabelName(label.label_name) || label.label_name,
@@ -521,7 +517,7 @@ const buildAnalysisElements = (
             label_name: chat.getLabelName(label.label_name) || label.label_name,
         })),
         ...(segment.track_section ? {
-            section: chat.getLabelName(segment.track_section) || segment.track_section,
+            section: getSegmentTrackSectionText(segment),
         } : {}),
         ...(start !== null && end !== null ? {
             normalizedPositionRange: { start, end },

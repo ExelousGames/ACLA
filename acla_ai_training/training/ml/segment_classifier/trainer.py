@@ -21,7 +21,7 @@ from app.ml.segment_classifier.service import (
     SegmentClassifierService,
     segment_classifier,
 )
-from app.shared.labels import normalize_label_ids
+from training.shared.labels import classifier_label_ids
 from training.storage import get_shared_telemetry_store
 from training.storage.datasets.segment_dataset import (
     TemporalStreamingDataset,
@@ -115,7 +115,10 @@ class SegmentClassifierTrainer:
             session_id = str(raw_session_id)
             if selected is not None and session_id not in selected:
                 continue
-            records = _chunk_records(chunk)
+            records = [
+                {**record, "labels": classifier_label_ids(record.get("labels"))}
+                for record in _chunk_records(chunk)
+            ]
             if records:
                 sessions_found.add(session_id)
                 for sample_id, sample_records in _annotation_samples(records):
@@ -174,7 +177,7 @@ class SegmentClassifierTrainer:
             label_id
             for chunk in self.store.get_cached_data_chunks(cache_key)
             for record in _chunk_records(chunk)
-            for label_id in normalize_label_ids(record.get("labels"))
+            for label_id in classifier_label_ids(record.get("labels"))
         }
         if not label_ids:
             raise ValueError("No labels found in classifier training data.")
@@ -302,18 +305,18 @@ class SegmentClassifierTrainer:
         batch_size: int = 32,
         learning_rate: float = 0.001,
         val_split: float = 0.1,
-        annotation_cache_key: Optional[str] = None,
+        *,
+        annotation_cache_key: str,
         session_ids: Optional[Collection[str]] = None,
     ) -> None:
+        if not annotation_cache_key or not annotation_cache_key.strip():
+            raise ValueError("An explicit annotation dataset key is required.")
         self._configure_training_backend()
 
-        from training.pipelines.training.config import TrainingPipelineConfig
-
-        source_key = annotation_cache_key or TrainingPipelineConfig().annotation_cache_key
-        train_key = f"{source_key}_train"
-        val_key = f"{source_key}_val"
+        train_key = f"{annotation_cache_key}_train"
+        val_key = f"{annotation_cache_key}_val"
         await self.prepare_training_data(
-            source_key,
+            annotation_cache_key,
             train_key,
             val_key,
             val_split,

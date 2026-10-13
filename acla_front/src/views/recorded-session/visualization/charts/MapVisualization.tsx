@@ -327,7 +327,7 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
             segmentId: activeSegment.id,
             startIndex: activeSegment.start_index,
             endIndex: activeSegment.end_index,
-            trackSection: getSegmentTrackSectionText(activeSegment, getLabelName),
+            trackSection: getSegmentTrackSectionText(activeSegment),
             labels: resolveActiveSegmentLabelTexts(activeSegment, currentFrame.sourceIndex, getLabelName)
         };
     }, [currentFrame, getLabelName, segmentClassification]);
@@ -800,7 +800,7 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
                                                     />
                                                     <span className="map-visualization__segment-copy">
                                                         <span className="map-visualization__segment-parent-label">
-                                                            Section: {getSegmentTrackSectionText(segment, getLabelName)}
+                                                            Section: {getSegmentTrackSectionText(segment)}
                                                         </span>
                                                         {labelTexts.length > 0 && (
                                                             <span className="map-visualization__segment-sub-labels">

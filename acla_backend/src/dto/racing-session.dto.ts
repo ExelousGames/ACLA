@@ -197,6 +197,7 @@ export class SegmentClassificationSegmentDto {
     id?: string;
     labels: SegmentClassificationLabelDto[];
     track_section?: string;
+    track_section_name?: string;
     start_index: number;
     end_index: number;
     time_gap?: LiveBaselineTimeGapDto;

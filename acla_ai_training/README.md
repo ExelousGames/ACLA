@@ -15,6 +15,13 @@ for knowledge-base embeddings and speech processing in the live service.
 Training orchestration and CLI entrypoints live in `training/pipelines/training`.
 Model fitting lives in `training/ml` (classifier, cropper, and opportunity
 forecaster) and `training/pipelines/training/transformer_trainer.py`.
+Segment classifier targets include behavior and segment-type labels, but exclude
+track identities and named track sections. Annotation forms and saved labels use
+the same catalog. Track section names and ranges for automatic lap splitting and
+map overlays come from the backend circuit map's `centerline_segments`, matched
+by game and source track key or circuit name. Backend sections refresh within
+one minute; missing maps or cleared sections have no hardcoded fallback.
+Removed labels are not copied into annotation metadata.
 Storage utilities and dataset adapters live in `training/storage`; cropper
 target construction and calibration live in `training/ml/segment_cropper`.
 The shared scaler lives in `app/ml/transformer/scaler.py` in the runtime package.
@@ -49,6 +56,52 @@ Successful training uploads the saved checkpoint to `POST /ai-model/ultralytics`
 Pass `--no-upload` for offline training or `--upload-name` to set the backend model
 name. The workflow guide also describes uploading existing `.pt` checkpoints
 without retraining and the local FastAPI upload endpoint.
+
+## Download paired session telemetry and recordings
+
+Start the local training FastAPI app from this folder:
+
+```bash
+python -m uvicorn training.api.app:app --host 127.0.0.1 --port 8002
+```
+
+In another terminal, set `BACKEND_ACCESS_TOKEN` to the session owner's backend
+login JWT, then download a session by its backend ID:
+
+```bash
+python scripts/download_session.py SESSION_ID
+```
+
+The script calls `POST /racing-session/{session_id}/download` with
+`Authorization: Bearer <token>`. Use `--api-url` if the training API is at a
+different address. The API uses `BACKEND_SERVER_IP` and `BACKEND_PROXY_PORT`
+(default `http://backend:7001`); for a local backend, set them to
+`http://localhost` and `7001` before starting the API. Video endpoints require
+the owning user's token; the AI service account cannot download another user's
+recordings.
+
+For the existing training container, run these commands in separate terminals;
+port 8002 does not need to be published:
+
+```bash
+docker exec -it acla_ai_training_c python3 -m uvicorn training.api.app:app --host 127.0.0.1 --port 8002
+docker exec -e BACKEND_ACCESS_TOKEN acla_ai_training_c python3 /app/scripts/download_session.py SESSION_ID
+```
+
+The second command forwards your exported `BACKEND_ACCESS_TOKEN`. Files are
+saved on the API server under `storage/session_downloads/SESSION_ID/`:
+
+- `telemetry.json`: all telemetry records, in backend chunk order.
+- `video_000.mp4`, etc.: every attached MP4, named by its backend video index.
+- `manifest.json`: session metadata and each video's original name, size,
+  `startedAt` timestamp, index, and local filename.
+
+The directory becomes available only after telemetry counts and all video sizes
+match the backend metadata. Failed downloads remove temporary files. Sessions
+without recordings are rejected, and an existing download returns HTTP 409
+without overwriting it. The API returns the saved file paths; the script exits
+with a nonzero status on failure. Storage is relative to this workspace,
+independent of the directory where the API was launched.
 
 ## Extract images from videos
 
@@ -143,6 +196,11 @@ Classifier and cropper training save artifacts locally and upload them as active
 models to the backend. Check the training log for upload errors. Restart
 `ai_service` after a successful upload to load the new active artifacts.
 
+Training commands require `--annotation-key DATASET_KEY`; there is no default
+annotation dataset. Direct classifier and cropper trainer calls must pass
+`annotation_cache_key="DATASET_KEY"`. The UI supplies the dataset selected on
+the pipeline's training node.
+
 ## Existing data
 
 Development Compose retains the existing `ai_models` training volume. Telemetry
@@ -156,6 +214,15 @@ directories by default.
 these locations. Existing datasets and backups have been moved intact from the
 service workspace. Custom absolute dataset paths in pipeline manifests must
 point to locations available to the training process.
+
+To remove track and named-section labels from an older annotation dataset:
+
+```bash
+python -m training.pipelines.manifest.remove_track_labels DATASET_KEY --dry-run
+python -m training.pipelines.manifest.remove_track_labels DATASET_KEY
+```
+
+The migration updates labels in place and preserves all other segment fields.
 
 ## Local Python
 
@@ -178,7 +245,8 @@ python -m uvicorn training.api.app:app --host 127.0.0.1 --port 8002
 ```
 
 It retains `/annotation/run` and `/annotation/run/stream` and adds
-`POST /models/ultralytics/upload` for publishing binary checkpoints to the backend.
+`POST /racing-session/{session_id}/download` for paired telemetry/video downloads
+and `POST /models/ultralytics/upload` for publishing binary checkpoints to the backend.
 See the [upload instructions](training/image_segmentation/README.md#upload-a-trained-model)
 for the multipart fields and metadata format. The manually launched Streamlit UI
 invokes annotation in process.

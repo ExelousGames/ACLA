@@ -61,7 +61,7 @@ def _preprocessor_trainer(targets, label_ids=None):
 async def test_preprocessors_do_not_require_behavior_hierarchy():
     trainer = _preprocessor_trainer(
         [[1.0, 1.0], [0.0, 0.0]],
-        label_ids=["ST1", "silverstone"],
+        label_ids=["ST1", "ST2"],
     )
 
     await trainer.fit_preprocessors("train")
@@ -71,9 +71,12 @@ async def test_preprocessors_do_not_require_behavior_hierarchy():
 
 
 @pytest.mark.asyncio
-async def test_preprocessors_configure_every_label_from_training_data(tmp_path):
+async def test_preprocessors_exclude_track_and_section_labels(tmp_path):
     chunk = [{
-        "labels": ["MSP", "ST1", "silverstone", "custom-label"],
+        "labels": [
+            "MSP", "ST1", "silverstone", "silverstone1", "sliverstone6",
+            "brands_hatch8", "custom-label",
+        ],
         "start_index": 0,
         "end_index": 2,
         "telemetry_data": [{"speed": 40.0}, {"speed": 41.0}],
@@ -90,12 +93,23 @@ async def test_preprocessors_configure_every_label_from_training_data(tmp_path):
 
     await trainer.fit_preprocessors("train")
 
-    assert classifier.label_ids == ["MSP", "ST1", "custom-label", "silverstone"]
+    assert classifier.label_ids == ["MSP", "ST1", "custom-label"]
     sequence = next(trainer._iter_sequences("train"))
     np.testing.assert_array_equal(
         sequence.targets,
         np.ones((2, len(classifier.label_ids)), dtype=np.float32),
     )
+
+
+def test_classifier_rejects_training_data_with_only_track_labels():
+    trainer = SegmentClassifierTrainer.__new__(SegmentClassifierTrainer)
+    trainer.store = SimpleNamespace(
+        get_cached_data_chunks=lambda _key: iter([
+            [{"labels": ["silverstone", "silverstone1", "sliverstone6"]}],
+        ]),
+    )
+    with pytest.raises(ValueError, match="No labels found"):
+        trainer._configure_training_labels("train")
 
 
 @pytest.mark.asyncio

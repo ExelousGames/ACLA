@@ -18,7 +18,7 @@ def _rows(start, end):
 
 def _configured_service(models_directory):
     service = SegmentClassifierService(str(models_directory))
-    service.configure_labels(["MSP", "MSP1", "ST1", "silverstone"])
+    service.configure_labels(["MSP", "MSP1", "ST1", "ST2"])
     service.scaler = StandardScaler().fit(np.array([[0.0, 1.0], [2.0, 3.0]]))
     service.model = TemporalDetectionModel(
         input_dim=2,
@@ -177,11 +177,11 @@ def test_detection_uses_default_threshold_and_allows_override():
 def test_detection_includes_every_trained_label_category():
     service = SegmentClassifierService.__new__(SegmentClassifierService)
     service.threshold = 0.5
-    service.configure_labels(["MSP1", "ST1", "silverstone", "custom-label"])
+    service.configure_labels(["MSP1", "ST1", "ST2", "custom-label"])
     service.score_sequence = lambda dataframe: pd.DataFrame({
         "MSP1": [0.9, 0.1, 0.1],
         "ST1": [0.1, 0.7, 0.1],
-        "silverstone": [0.8, 0.8, 0.1],
+        "ST2": [0.8, 0.8, 0.1],
         "custom-label": [0.1, 0.1, 0.9],
     })
 
@@ -190,7 +190,7 @@ def test_detection_includes_every_trained_label_category():
     assert [item.label for item in detections] == [
         "MSP1",
         "ST1",
-        "silverstone",
+        "ST2",
         "custom-label",
     ]
 

@@ -12,6 +12,8 @@ from app.services.runtime_segment_splitter import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("runtime_circuit_sections")
+
 def _solo_frame(positions, **columns):
     return pd.DataFrame({
         "Graphics_normalized_car_position": positions,
@@ -44,8 +46,8 @@ def test_circuit_section_changes_create_ordered_ranges():
         (segment["start_index"], segment["end_index"], segment["circuit_section_id"])
         for segment in result["segments"]
     ] == [
-        (0, 2, "brands_hatch3"),
-        (2, 4, "brands_hatch4"),
+        (0, 2, "corner-a"),
+        (2, 4, "corner-b"),
     ]
 
 
@@ -54,7 +56,7 @@ def test_wrap_around_section_matches_both_sides_of_start_finish(positions):
     result = split_runtime_segments(_solo_frame(positions), "moza")
 
     assert len(result["segments"]) == 1
-    assert result["segments"][0]["circuit_section_id"] == "moza1"
+    assert result["segments"][0]["circuit_section_id"] == "finish-straight"
 
 
 def test_lap_boundary_splits_a_wrap_around_section():
@@ -113,7 +115,7 @@ def test_explicit_circuit_precedes_static_track_and_errors_when_unsupported():
     dataframe = _solo_frame([0.12], Static_track=["brands_hatch"])
 
     assert resolve_runtime_circuit(dataframe) == "brands_hatch"
-    with pytest.raises(RuntimeSegmentSplitError, match="unsupported circuit"):
+    with pytest.raises(RuntimeSegmentSplitError, match="no backend sections"):
         resolve_runtime_circuit(dataframe, "spa")
 
 

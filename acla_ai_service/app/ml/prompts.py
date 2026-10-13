@@ -1,11 +1,8 @@
-from typing import List, Any
+from typing import List, Any, Dict, Optional
+from app.shared.label_hierarchy import build_track_area_segments
 from app.shared.labels import LABEL_MAPPING
 MAIN_EVENT_LABELS = [
     "1", "2", "EA", "4", "RM", "MSP", "MSR", "O", "OD"
-]
-
-TRACK_LOCATION_LABELS = [
-    "brands_hatch", "silverstone"
 ]
 
 PROMPT_TEMPLATES = {
@@ -47,19 +44,27 @@ def get_available_prompts(labels: List[Any]) -> List[str]:
         return PROMPT_TEMPLATES[main_events[0]]
     return PROMPT_TEMPLATES["default"]
 
-def generate_llm_prompt_from_labels(labels: List[Any], template_index: int = 0) -> str:
-    """Generates a prompt for LLM inference based on segment labels using the selected template."""
+def generate_llm_prompt_from_labels(
+    labels: List[Any],
+    template_index: int = 0,
+    *,
+    telemetry_data: Optional[List[Dict[str, Any]]] = None,
+    track_name: Optional[str] = None,
+) -> str:
+    """Generate a prompt with classifier events and backend-map location context."""
     labels_str_list = [str(l) for l in labels]
     
     main_events = [l for l in labels_str_list if l in MAIN_EVENT_LABELS]
-    track_locations = [l for l in labels_str_list if l in TRACK_LOCATION_LABELS]
-    track_sections = [l for l in labels_str_list if any(l.startswith(tl) and l != tl for tl in TRACK_LOCATION_LABELS)]
-    sublabels = [l for l in labels_str_list if l not in MAIN_EVENT_LABELS and l not in TRACK_LOCATION_LABELS and l not in track_sections]
+    sublabels = [l for l in labels_str_list if l not in MAIN_EVENT_LABELS]
+    rows = telemetry_data or []
+    track = track_name or next((row["Static_track"] for row in rows if row.get("Static_track")), None)
+    sections = build_track_area_segments([], rows, track, include_empty_sections=True)
+    section_names = list(dict.fromkeys(section["track_section_name"] for section in sections))
 
     # Convert to human readable strings
     main_events_str = ", ".join([LABEL_MAPPING.get(l, l) for l in main_events]) if main_events else "event"
-    track_locations_str = ", ".join([LABEL_MAPPING.get(l, l) for l in track_locations]) if track_locations else "unknown track"
-    track_sections_str = ", ".join([LABEL_MAPPING.get(l, l) for l in track_sections]) if track_sections else "unknown section"
+    track_locations_str = track or "unknown track"
+    track_sections_str = ", ".join(section_names) if section_names else "unknown section"
     sublabels_str = ", ".join([LABEL_MAPPING.get(l, l) for l in sublabels]) if sublabels else "none"
 
     templates = get_available_prompts(labels)
@@ -75,24 +80,16 @@ def generate_llm_prompt_from_labels(labels: List[Any], template_index: int = 0) 
         sublabels_str=sublabels_str
     )
 
-def generate_training_prompt(labels: List[Any], template_index: int = 0) -> str:
-    """Generates the training prompt based on segment labels using the selected template."""
-    return generate_llm_prompt_from_labels(labels, template_index)
-    track_locations_str = ", ".join([LABEL_MAPPING.get(l, l) for l in track_locations]) if track_locations else "unknown track"
-    track_sections_str = ", ".join([LABEL_MAPPING.get(l, l) for l in track_sections]) if track_sections else "unknown section"
-    sublabels_str = ", ".join([LABEL_MAPPING.get(l, l) for l in sublabels]) if sublabels else "none"
-
-    templates = get_available_prompts(labels)
-    if template_index < 0 or template_index >= len(templates):
-        template_index = 0
-    
-    template = templates[template_index]
-    
-    return template.format(
-        main_events_str=main_events_str,
-        track_locations_str=track_locations_str,
-        track_sections_str=track_sections_str,
-        sublabels_str=sublabels_str
+def generate_training_prompt(
+    labels: List[Any],
+    template_index: int = 0,
+    *,
+    telemetry_data: Optional[List[Dict[str, Any]]] = None,
+    track_name: Optional[str] = None,
+) -> str:
+    """Generate a training prompt with the same backend-map context as inference."""
+    return generate_llm_prompt_from_labels(
+        labels, template_index, telemetry_data=telemetry_data, track_name=track_name,
     )
 
 def get_human_readable_labels(labels: List[Any]) -> List[str]:

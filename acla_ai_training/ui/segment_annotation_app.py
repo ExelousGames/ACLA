@@ -46,7 +46,7 @@ _ensure_app_module_on_path()
 
 # ── Imports (after path bootstrap) ────────────────────────────────────────
 from segment_tabs.shared import (
-    get_store, TrainingPipelineConfig, get_available_sessions, register_output_dir,
+    get_store, get_available_sessions, register_output_dir,
 )
 from segment_tabs.manual import render_manual_annotation
 from segment_tabs.detailed import render_detailed_labeling
@@ -310,7 +310,6 @@ def _render_dataset_backup_section(store) -> None:
 
 def main() -> None:
     store = get_store()
-    cfg = TrainingPipelineConfig()
 
     # ── Sidebar: pipeline picker + git-style snapshot view ────────────
     with st.sidebar:
@@ -320,7 +319,7 @@ def main() -> None:
             time.sleep(0.5)
             os._exit(0)
         st.markdown("---")
-        pipeline = render_pipeline_sidebar(store, cfg)
+        pipeline = render_pipeline_sidebar(store)
         _sync_all_pipeline_dir_maps()
         st.markdown("---")
         _render_dataset_backup_section(store)

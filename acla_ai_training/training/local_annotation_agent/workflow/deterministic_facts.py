@@ -18,7 +18,6 @@ from training.local_annotation_agent.workflow.deterministic_engine import (
     ResolvedInput,
 )
 from app.shared.annotation_telemetry import annotation_telemetry
-from app.shared.labels import LABEL_MAPPING
 
 
 SMOOTHING_WINDOW = 3
@@ -54,6 +53,7 @@ class EvaluationContext:
     telemetry: pd.DataFrame
     section_id: str = ""
     overlap_section_ids: Tuple[str, ...] = ()
+    section_names: Mapping[str, str] = field(default_factory=dict)
     _input_cache: Dict[Tuple[int, int, str], Optional[ResolvedInput]] = field(default_factory=dict)
     _fact_cache: Dict[Tuple[Any, ...], Any] = field(default_factory=dict)
     _analysis_cache: Dict[Tuple[Any, ...], Any] = field(default_factory=dict)
@@ -62,10 +62,12 @@ class EvaluationContext:
     def from_dataframe(
         cls, df: pd.DataFrame, *, section_id: str = "",
         overlap_section_ids: Sequence[str] = (),
+        section_names: Optional[Mapping[str, str]] = None,
     ) -> "EvaluationContext":
         return cls(
             smooth_telemetry(df), section_id,
             tuple(str(value) for value in overlap_section_ids),
+            section_names or {},
         )
 
     def segment(self, range_: HalfOpenRange) -> pd.DataFrame:
@@ -945,7 +947,8 @@ def build_fact_registry() -> FactRegistry:
         ),
         "find_phase_presence": FactDefinition(range_kind, lambda _context, _inputs: True),
         "find_section_overlap_names": FactDefinition(range_kind, lambda context, _inputs: [
-            LABEL_MAPPING[value] for value in context.overlap_section_ids if value in LABEL_MAPPING
+            context.section_names[value]
+            for value in context.overlap_section_ids if value in context.section_names
         ]),
         "find_total_time_change": FactDefinition(range_kind, _mapping_fact(_time_analysis, "delta_value")),
         "find_starting_time_direction": FactDefinition(range_kind, _mapping_fact(_time_analysis, "starting_direction")),

@@ -39,6 +39,7 @@ const analysisResult = {
         id: 'segment-1',
         labels: [{ label_name: 'MSP', start_index: 0, end_index: 1 }],
         track_section: 'turn-1',
+        track_section_name: 'Backend Hairpin',
         start_index: 0,
         end_index: 1,
         expert_reference_data: [{
@@ -52,6 +53,7 @@ const analysisResult = {
         id: 'segment-2',
         labels: [{ label_name: 'EA', start_index: 1, end_index: 2 }],
         track_section: 'turn-2',
+        track_section_name: 'Backend Straight',
         start_index: 1,
         end_index: 2,
         expert_reference_data: [],
@@ -691,7 +693,7 @@ describe('BaselineCollection visualization', () => {
                 expect.objectContaining({
                     id: 'segment-1',
                     labels: [{ label_name: 'Mistake (Practice)', start_index: 0, end_index: 1 }],
-                    section: 'Turn One',
+                    section: 'Backend Hairpin',
                     comparison: {
                         samples: [
                             expect.objectContaining({
@@ -720,7 +722,7 @@ describe('BaselineCollection visualization', () => {
                 segments: [{
                     id: 'segment-1',
                     labels: [{ label_name: 'Mistake (Practice)', start_index: 0, end_index: 1 }],
-                    track_section: 'Turn One',
+                    track_section: 'Backend Hairpin',
                 }],
             },
             source: 'baseline_lap_record',

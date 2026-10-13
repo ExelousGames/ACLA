@@ -39,7 +39,9 @@ try:
     # Force reload to pick up model changes (e.g. new fields)
     importlib.reload(app.shared.labels)
     importlib.reload(app.shared.segment)
-    from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, LABEL_IMAGE_MAP
+    from training.shared.labels import (
+        LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, classifier_label_ids,
+    )
     from app.shared.segment import AnnotatedSegment, SegmentFeatureCatalog
     from training.pipelines.inference.segment_updater import SegmentUpdater
 
@@ -166,6 +168,7 @@ def load_session_segments(cache_key: str, session_id: str) -> List[AnnotatedSegm
 
     segments = [AnnotatedSegment.from_dict(d) for d in payload]
     for segment in segments:
+        segment.labels = classifier_label_ids(segment.labels)
         if segment.chunk_index is None:
             segment.chunk_index = session_id
     return segments
@@ -256,6 +259,7 @@ def load_annotations(session_id: str, annotation_key: str) -> List[AnnotatedSegm
     segments = [AnnotatedSegment.from_dict(d) for d in raw_data]
     # Ensure chunk_index is set for loaded segments
     for s in segments:
+        s.labels = classifier_label_ids(s.labels)
         if s.chunk_index is None:
             s.chunk_index = session_id
     return segments
@@ -290,7 +294,7 @@ def build_segment(
         rows = segment_df.to_dict(orient="records")
     return AnnotatedSegment(
         id=id or str(uuid.uuid4()),
-        labels=list(label_ids),
+        labels=classifier_label_ids(label_ids),
         segment_length=len(rows) if rows else max(0, int(end) - int(start)),
         start_index=int(start),
         end_index=int(end),
@@ -308,6 +312,8 @@ def save_annotations(session_id: str, annotations: List[AnnotatedSegment], annot
     
     # Save to specific chunk index
     data_to_save = [a.to_dict() for a in annotations]
+    for segment in data_to_save:
+        segment["labels"] = classifier_label_ids(segment["labels"])
     
     if not data_to_save:
         # If empty, delete the chunk so it doesn't show up as an annotated session

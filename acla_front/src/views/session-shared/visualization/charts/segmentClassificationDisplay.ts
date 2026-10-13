@@ -17,6 +17,7 @@ export type SegmentClassificationSegment = {
     id?: string;
     labels: SegmentClassificationLabel[];
     track_section?: string;
+    track_section_name?: string;
     start_index: number;
     end_index: number;
     time_gap?: SegmentTimeGap;
@@ -54,10 +55,12 @@ const dedupeTexts = (texts: string[]): string[] => {
 
 export const getSegmentTrackSectionText = (
     segment: SegmentClassificationSegment,
-    resolveLabel?: SegmentLabelResolver,
 ): string => {
+    if (segment.track_section_name) {
+        return segment.track_section_name;
+    }
     if (segment.track_section) {
-        return getSegmentLabelText(segment.track_section, resolveLabel);
+        return segment.track_section;
     }
 
     return 'Unknown section';

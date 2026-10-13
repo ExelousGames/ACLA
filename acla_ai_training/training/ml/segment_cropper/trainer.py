@@ -205,12 +205,13 @@ class SegmentCropperTrainer:
         epochs: int = 10,
         batch_size: int = 8,
         learning_rate: float = 1e-3,
-        annotation_cache_key: Optional[str] = None,
+        *,
+        annotation_cache_key: str,
     ) -> None:
-        from training.pipelines.training.config import TrainingPipelineConfig
+        if not annotation_cache_key or not annotation_cache_key.strip():
+            raise ValueError("An explicit annotation dataset key is required.")
 
-        source_key = annotation_cache_key or TrainingPipelineConfig().annotation_cache_key
-        sessions = self.load_sessions(source_key)
+        sessions = self.load_sessions(annotation_cache_key)
         training_sessions, validation_sessions = self.split_sessions(sessions)
         training_sequences = [
             build_sequence(session, self.cropper_service.feature_names)

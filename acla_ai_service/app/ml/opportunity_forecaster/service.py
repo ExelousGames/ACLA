@@ -13,7 +13,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
-from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
+from app.shared.circuit_sections import get_circuit_sections
 from app.shared.labels import LABEL_MAPPING
 from app.shared.telemetry import MAX_CARS
 
@@ -130,14 +130,14 @@ def match_circuit_section(
     lo, hi = projected
     span = _range_span(lo, hi)
     matches: List[Dict[str, Any]] = []
-    for label_id, section_range in CIRCUIT_SECTION_RANGES.items():
-        r_lo, r_hi = section_range
+    for section in get_circuit_sections(pd.DataFrame(telemetry_rows)):
+        r_lo, r_hi = section["normalized_position_range"]
         overlap = _range_overlap(lo, hi, r_lo, r_hi)
         if overlap <= 0:
             continue
         matches.append({
-            "label_id": label_id,
-            "name": LABEL_MAPPING.get(label_id, label_id),
+            "label_id": section["id"],
+            "name": section["name"],
             "section_range": [float(r_lo), float(r_hi)],
             "overlap_fraction": float(overlap / span),
         })

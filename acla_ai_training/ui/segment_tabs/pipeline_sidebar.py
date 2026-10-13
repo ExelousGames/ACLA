@@ -11,7 +11,6 @@ from typing import Any, Optional
 
 import streamlit as st
 
-from training.pipelines.training.config import TrainingPipelineConfig
 from training.pipelines.manifest.models import Pipeline
 from training.pipelines.manifest.registry import (
     create_pipeline,
@@ -48,7 +47,7 @@ def set_active_pipeline_id(pid: Optional[str]) -> None:
         st.session_state[_ACTIVE_KEY] = pid
 
 
-def render_pipeline_sidebar(store: Any, cfg: TrainingPipelineConfig) -> Optional[Pipeline]:
+def render_pipeline_sidebar(store: Any) -> Optional[Pipeline]:
     """Render the sidebar and return the active Pipeline (or None)."""
     st.header("Pipelines")
 
@@ -91,10 +90,7 @@ def render_pipeline_sidebar(store: Any, cfg: TrainingPipelineConfig) -> Optional
         if st.button("Create pipeline", type="primary",
                      width="stretch", disabled=not new_name):
             try:
-                pipeline = create_pipeline(
-                    name=new_name,
-                    annotation_prefix=cfg.annotation_cache_key,
-                )
+                pipeline = create_pipeline(name=new_name)
                 set_active_pipeline_id(pipeline.id)
                 st.query_params["pipeline"] = pipeline.id
                 _clear_route_query()

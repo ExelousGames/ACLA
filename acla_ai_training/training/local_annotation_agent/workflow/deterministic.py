@@ -29,7 +29,9 @@ from training.local_annotation_agent.workflow.deterministic_facts import (
     smooth_telemetry,
 )
 from training.local_annotation_agent.workflow.results import AnnotationResult, LapAnnotationResult
-from app.shared.labels import BEHAVIOR_LABELS, LABEL_CATEGORIES, LABEL_MAPPING
+from app.shared.labels import BEHAVIOR_LABELS
+from training.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING
+from training.shared.circuit_sections import get_circuit_sections
 
 
 INTERPRETER = RequirementInterpreter(INPUT_REGISTRY, FACT_REGISTRY)
@@ -206,9 +208,10 @@ def _resolve_circuit_sections(
     df: pd.DataFrame, circuit_id: str, section_id: str, start: int, end: int,
     opponent_interaction: Optional[dict],
 ) -> Tuple[str, List[str]]:
+    section_ids = {section["id"] for section in get_circuit_sections(df, circuit_id)}
     primary_id = (
         section_id
-        if section_id in LABEL_MAPPING and section_id != "interaction_window"
+        if section_id in section_ids and section_id != "interaction_window"
         else None
     )
     context_ids = []
@@ -217,7 +220,7 @@ def _resolve_circuit_sections(
             candidate = (
                 context.get("circuit_section_id") if isinstance(context, dict) else None
             )
-            if candidate in LABEL_MAPPING and candidate not in context_ids:
+            if candidate in section_ids and candidate not in context_ids:
                 context_ids.append(candidate)
     try:
         from training.shared.annotation_agent_tools import locate_circuit_section
@@ -232,7 +235,7 @@ def _resolve_circuit_sections(
     overlap_ids = [
         str(match["label_id"])
         for match in content.get("top_matches") or []
-        if isinstance(match, dict) and match.get("label_id") in LABEL_MAPPING
+        if isinstance(match, dict) and match.get("label_id") in section_ids
     ]
     candidate_ids = [*([primary_id] if primary_id else []), *context_ids, *overlap_ids]
     candidate_ids = [
@@ -243,7 +246,7 @@ def _resolve_circuit_sections(
         return primary_id, candidate_ids
     if len(context_ids) == 1:
         return context_ids[0], candidate_ids
-    if candidate in LABEL_MAPPING:
+    if candidate in section_ids:
         return str(candidate), candidate_ids or [str(candidate)]
     if candidate_ids:
         return candidate_ids[0], candidate_ids
@@ -262,9 +265,9 @@ def _is_far_from_expert_in_pit(
     context: EvaluationContext, scope: HalfOpenRange,
 ) -> bool:
     overlap_names = [
-        LABEL_MAPPING[value]
+        context.section_names[value]
         for value in context.overlap_section_ids
-        if value in LABEL_MAPPING
+        if value in context.section_names
     ]
     if "Pit" not in overlap_names:
         return False
@@ -309,6 +312,10 @@ def calculate_lap_annotation(
     context = EvaluationContext(
         telemetry, section_id=resolved_section_id,
         overlap_section_ids=tuple(overlap_section_ids),
+        section_names={
+            section["id"]: section["name"]
+            for section in get_circuit_sections(telemetry, circuit_id)
+        } if overlap_section_ids else {},
     )
     if _is_far_from_expert_in_pit(context, scope):
         eligible = [label for label in eligible if label != "RM"]
@@ -318,7 +325,7 @@ def calculate_lap_annotation(
         resolved_section_id = next(
             (
                 candidate for candidate in overlap_section_ids
-                if LABEL_MAPPING.get(candidate) == "Pit"
+                if context.section_names.get(candidate) == "Pit"
             ),
             resolved_section_id,
         )
@@ -342,7 +349,7 @@ def calculate_lap_annotation(
 
     label_ids = (
         [
-            circuit_id, resolved_section_id, *behavior,
+            *behavior,
             *(label for label, _, _ in resolved_children),
         ]
         if behavior else []

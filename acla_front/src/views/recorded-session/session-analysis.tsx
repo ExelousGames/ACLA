@@ -35,7 +35,7 @@ import {
     getRecordedAnalysisStateForResult,
 } from './recorded-session-analysis';
 import { analyzeRecordedTelemetry } from './analyze-recorded-telemetry';
-import { getSegmentLabelIds } from '../session-shared/visualization/charts/segmentClassificationDisplay';
+import { getSegmentLabelIds, getSegmentTrackSectionText } from '../session-shared/visualization/charts/segmentClassificationDisplay';
 import {
     openAnalysisResultsVisualization,
     resolveAnalysisLabel,
@@ -154,7 +154,7 @@ const compactRecordedAnalysisForAi = (
                 start_index: segment.start_index,
                 end_index: segment.end_index,
                 track_section: segment.track_section
-                    ? getLabelName(segment.track_section) || segment.track_section
+                    ? getSegmentTrackSectionText(segment)
                     : null,
                 labels: getSegmentLabelIds(segment)
                     .map((labelId) => getLabelName(labelId) || labelId),

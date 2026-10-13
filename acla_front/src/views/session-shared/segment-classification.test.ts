@@ -1,3 +1,4 @@
+import { getSegmentTrackSectionText } from './visualization/charts/segmentClassificationDisplay';
 import { normalizeSegmentClassificationResult } from 'views/session-shared/segment-classification';
 
 describe('normalizeSegmentClassificationResult', () => {
@@ -11,6 +12,7 @@ describe('normalizeSegmentClassificationResult', () => {
                 id: 'section-id:120-180',
                 labels,
                 track_section: 'section-id',
+                track_section_name: 'Backend Hairpin',
                 start_index: 120,
                 end_index: 180,
                 time_gap: { start_ms: 150, end_ms: 420, delta_ms: 270 },
@@ -19,6 +21,8 @@ describe('normalizeSegmentClassificationResult', () => {
         }, 'session-1');
 
         expect(result.segments[0].labels).toEqual(labels);
+        expect(getSegmentTrackSectionText(result.segments[0]))
+            .toBe('Backend Hairpin');
         expect(result.segments[0].time_gap).toEqual({ start_ms: 150, end_ms: 420, delta_ms: 270 });
     });
 

@@ -84,6 +84,29 @@ async def test_guidance_calls_selected_cloud_provider(monkeypatch, cloud_provide
 
 
 @pytest.mark.asyncio
+async def test_guidance_preserves_raw_map_context(monkeypatch, cloud_provider, telemetry):
+    from app.shared import label_hierarchy
+
+    rows = {**telemetry, "Static_track": "Telemetry Track", "game": "iracing",
+            "Graphics_normalized_car_position": 0.2}
+    lookup = Mock(return_value=[{
+        "id": "map-corner", "name": "Backend Hairpin",
+        "normalized_position_range": (0.1, 0.3),
+    }])
+    monkeypatch.setattr(label_hierarchy, "get_circuit_sections", lookup)
+    _mock_cloud(monkeypatch)
+
+    result = await guidance.generate_top_lap_reference_guidance(rows, track_name="Requested Track")
+
+    assert result["status"] == "success"
+    assert "Requested Track" in result["llm"]["user"]
+    assert "Backend Hairpin" in result["llm"]["user"]
+    frame, track = lookup.call_args.args
+    assert frame.to_dict("records") == [rows]
+    assert track == "Requested Track"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status,content", [(503, "Unavailable"), (200, None)])
 async def test_cloud_failure_returns_error_without_fallback(
     monkeypatch, cloud_provider, telemetry, status, content,

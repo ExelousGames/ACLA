@@ -2692,7 +2692,8 @@ def test_lap_contract_uses_branch_evidence_for_reasoning(monkeypatch):
         circuit_id="silverstone",
     )
 
-    assert result.label_ids == ["silverstone", "silverstone1", "EA"]
+    assert result.label_ids == ["EA"]
+    assert result.section_id == "silverstone1"
     assert (result.start_index, result.end_index) == (0, 8)
     assert not any(
         label.startswith("ST")

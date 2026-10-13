@@ -33,6 +33,7 @@ export const normalizeSegmentClassificationResult = (
             ...segment,
             labels: normalizeSegmentLabels(segment.labels),
             track_section: typeof segment.track_section === 'string' ? segment.track_section : undefined,
+            track_section_name: typeof segment.track_section_name === 'string' ? segment.track_section_name : undefined,
             expert_reference_data: Array.isArray(segment.expert_reference_data)
                 ? segment.expert_reference_data
                 : [],

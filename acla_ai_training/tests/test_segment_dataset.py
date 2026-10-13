@@ -10,11 +10,11 @@ def _rows(start, end):
     ]
 
 
-def test_temporal_targets_include_all_labels_on_parent_and_child_ranges():
+def test_temporal_targets_include_training_labels_on_parent_and_child_ranges():
     chunk = [
         {
             "id": "parent-msp",
-            "labels": ["MSP", "ST1", "silverstone"],
+            "labels": ["MSP", "ST1", "silverstone", "silverstone1"],
             "start_index": 10,
             "end_index": 14,
             "telemetry_data": _rows(10, 14),
@@ -38,7 +38,7 @@ def test_temporal_targets_include_all_labels_on_parent_and_child_ranges():
     sequences = build_temporal_sequences(
         chunk,
         expected_features=["speed", "brake"],
-        label_ids=["MSP", "ST1", "silverstone", "EA", "ST2", "MSP1"],
+        label_ids=["MSP", "ST1", "EA", "ST2", "MSP1"],
     )
 
     assert len(sequences) == 1
@@ -47,10 +47,10 @@ def test_temporal_targets_include_all_labels_on_parent_and_child_ranges():
     assert sequence.features.shape == (8, 4)
     np.testing.assert_array_equal(sequence.targets[:, 0], [1, 1, 1, 1, 0, 0, 0, 0])
     np.testing.assert_array_equal(sequence.targets[:, 1], [1, 1, 1, 1, 0, 0, 0, 0])
-    np.testing.assert_array_equal(sequence.targets[:, 2], [1, 1, 1, 1, 0, 0, 0, 0])
+    assert sequence.targets.shape == (8, 5)
+    np.testing.assert_array_equal(sequence.targets[:, 2], [0, 0, 0, 0, 1, 1, 1, 1])
     np.testing.assert_array_equal(sequence.targets[:, 3], [0, 0, 0, 0, 1, 1, 1, 1])
-    np.testing.assert_array_equal(sequence.targets[:, 4], [0, 0, 0, 0, 1, 1, 1, 1])
-    np.testing.assert_array_equal(sequence.targets[:, 5], [0, 1, 1, 0, 0, 0, 0, 0])
+    np.testing.assert_array_equal(sequence.targets[:, 4], [0, 1, 1, 0, 0, 0, 0, 0])
     np.testing.assert_array_equal(sequence.loss_mask, np.ones_like(sequence.targets))
 
 

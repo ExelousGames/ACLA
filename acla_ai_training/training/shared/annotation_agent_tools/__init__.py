@@ -33,6 +33,7 @@ import pandas as pd
 from PIL import Image
 
 from app.shared.annotation_telemetry import annotation_telemetry
+from training.shared.circuit_sections import get_circuit_sections
 
 LOGGER = logging.getLogger(__name__)
 
@@ -2540,9 +2541,8 @@ def split_lap_by_circuit_sections(
         Inclusive-exclusive parent slice. The caller picks any contiguous
         range — the function does not assume a full lap.
     circuit_id : str, optional
-        Restrict matching to sections whose ``parent`` equals this circuit
-        (e.g. ``"brands_hatch"``). When ``None``, every ``circuit_section``
-        with a filled range competes.
+        Match the backend map by its source track key or circuit name.
+        When ``None``, use the telemetry's ``Static_track`` value.
 
     Returns
     -------
@@ -2577,7 +2577,6 @@ def split_lap_by_circuit_sections(
     crossed in/out at the boundary.
     """
     from training.local_annotation_agent.evaluators import PipelineAttachment
-    from app.internal_knowledge_base.label_lookup import find_labels
 
     s, e = int(start_index), int(end_index)
     splitter_signature = get_opponent_splitter_rule_signature()
@@ -2645,11 +2644,8 @@ def split_lap_by_circuit_sections(
             if not _is_following_only_interaction_window(w)
         ]
 
-    section_filter: Dict[str, Any] = {"type": "circuit_section"}
-    if circuit_id is not None:
-        section_filter["parent"] = circuit_id
     candidates: List[Dict[str, Any]] = []
-    for entry in find_labels(**section_filter):
+    for entry in get_circuit_sections(df, circuit_id):
         rng = entry.get("normalized_position_range")
         if rng is None:
             continue
@@ -2951,7 +2947,6 @@ def locate_circuit_section(
     otherwise ``is_ambiguous`` is true and callers should resolve the
     competing ``top_matches`` against splitter context and pit-lane evidence.
     """
-    from app.internal_knowledge_base.label_lookup import find_labels
 
     # Backwards-compatible path for direct Python callers that still pass
     # (df, start, end). Provider-facing tools should pass circuit_id first.
@@ -3000,7 +2995,7 @@ def locate_circuit_section(
     seg_span = max(seg_hi - seg_lo, 1e-6)
 
     matches: List[Dict[str, Any]] = []
-    for entry in find_labels(type="circuit_section", parent=circuit):
+    for entry in get_circuit_sections(df, circuit):
         rng = entry.get("normalized_position_range")
         if rng is None:
             continue
@@ -3027,9 +3022,8 @@ def locate_circuit_section(
     top = matches[:3]
 
     # Pit lanes and adjacent straights frequently share a normalized_position
-    # range (e.g. brands_hatch1 and brands_hatch17 both at [0.94, 1]), so the
-    # leader can tie the runner-up at the same overlap_fraction. Refuse to
-    # name a single best_match in that case — force the caller to pick.
+    # range, so the leader can tie the runner-up at the same overlap_fraction.
+    # Refuse to name a single best_match in that case — force the caller to pick.
     AMBIGUOUS_MARGIN = 0.05
     is_ambiguous = (
         len(top) >= 2

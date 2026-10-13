@@ -67,16 +67,12 @@ def delete(pipeline_id: str) -> bool:
     return False
 
 
-def create_pipeline(name: str, annotation_prefix: str) -> Pipeline:
+def create_pipeline(name: str) -> Pipeline:
     """Create an empty pipeline.
 
     No nodes are scaffolded — the user adds annotation and training
     components individually in the graph view and picks each one's
     kind from the dropdown.
-
-    ``annotation_prefix`` is retained for compatibility with callers
-    but currently unused; per-node ``output_key`` is derived in the UI
-    when nodes are added.
     """
     pid = slugify(name)
     pipeline = Pipeline(id=pid, version=1, annotations=[], trainings=[])

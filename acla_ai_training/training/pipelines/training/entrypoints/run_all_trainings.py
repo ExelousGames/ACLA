@@ -24,8 +24,10 @@ async def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run all telemetry-model trainings sequentially.",
     )
-    parser.add_argument("--annotation-key", default=cfg.annotation_cache_key)
+    parser.add_argument("--annotation-key", required=True)
     args = parser.parse_args()
+    if not args.annotation_key.strip():
+        parser.error("--annotation-key must name an annotation dataset")
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s",

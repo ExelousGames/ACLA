@@ -15,7 +15,6 @@ class TrainingPipelineConfig:
     _enriched_sessions_prefix: str = "racing_sessions_enriched_"
     _segments_prefix: str = "enriched_segments_"
     _top_laps_prefix: str = "top_laps_"
-    _annotation_prefix: str = "manual_segment_annotations_FirstBatchOfSegmentAnnotation"
     _training_segments_prefix: str = "training_segments_"
 
     # Cleanup flags.
@@ -48,11 +47,6 @@ class TrainingPipelineConfig:
     def top_laps_cache_key(self) -> str:
         """Get top laps cache key with optional ID suffix."""
         return f"{self._top_laps_prefix}{self.id}" if self.id else self._top_laps_prefix
-
-    @property
-    def annotation_cache_key(self) -> str:
-        """Get annotation cache key with optional ID suffix."""
-        return f"{self._annotation_prefix}_{self.id}" if self.id else self._annotation_prefix
 
     @property
     def training_segments_cache_key(self) -> str:

@@ -75,7 +75,9 @@ async def generate_top_lap_reference_guidance(
         try:
             # This endpoint has one telemetry row. Temporal detection requires a
             # sequence, so guidance deliberately uses the existing generic prompt.
-            user_prompt = generate_llm_prompt_from_labels([])
+            user_prompt = generate_llm_prompt_from_labels(
+                [], telemetry_data=[telemetry_dict], track_name=track_name,
+            )
         except Exception as e:
             raise RuntimeError(f"Failed to generate LLM prompt from labels: {str(e)}")
 

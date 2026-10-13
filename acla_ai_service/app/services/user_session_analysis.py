@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
-from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
-from app.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING, LABEL_NAME_TO_ID
+from app.shared.circuit_sections import get_circuit_sections, normalize_circuit_id
+from app.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING
 from app.integrations.backend.client import backend_service
 from app.ml.model_hub import (
     get_segment_classifier,
@@ -29,13 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 def _track_id(raw: Any) -> str:
-    value = str(raw or "").strip()
-    if value in LABEL_MAPPING:
-        return value
-    mapped = LABEL_NAME_TO_ID.get(value)
-    if mapped:
-        return mapped
-    return value.lower().replace(" ", "_").replace("-", "_")
+    return normalize_circuit_id(str(raw or ""))
 
 
 def _position_in_range(position: float, section_range: Tuple[float, float]) -> bool:
@@ -46,7 +40,10 @@ def _position_in_range(position: float, section_range: Tuple[float, float]) -> b
     return position >= lo or position <= hi
 
 
-def _section_for_rows(rows: Sequence[Dict[str, Any]], track_id: str) -> Optional[str]:
+def _section_for_rows(
+    rows: Sequence[Dict[str, Any]],
+    sections: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
     positions: List[float] = []
     for row in rows:
         try:
@@ -59,14 +56,9 @@ def _section_for_rows(rows: Sequence[Dict[str, Any]], track_id: str) -> Optional
         return None
 
     position = sorted(positions)[len(positions) // 2]
-    candidates = [
-        (section_id, section_range)
-        for section_id, section_range in CIRCUIT_SECTION_RANGES.items()
-        if section_id.startswith(track_id)
-    ]
-    for section_id, section_range in candidates:
-        if _position_in_range(position, section_range):
-            return section_id
+    for section in sections:
+        if _position_in_range(position, section["normalized_position_range"]):
+            return section
     return None
 
 
@@ -86,12 +78,14 @@ def _ensure_track(summary: Dict[str, Any], track_id: str, track_name: str) -> Di
     )
 
 
-def _ensure_section(track_summary: Dict[str, Any], section_id: str) -> Dict[str, Any]:
+def _ensure_section(
+    track_summary: Dict[str, Any], section_id: str, section_name: str,
+) -> Dict[str, Any]:
     sections = track_summary.setdefault("sections", {})
     return sections.setdefault(
         section_id,
         {
-            "sectionName": LABEL_MAPPING.get(section_id, section_id),
+            "sectionName": section_name,
             "expertLevelTurns": 0,
             "mistakes": 0,
             "practiceMistakes": 0,
@@ -158,9 +152,9 @@ def _build_parent_segments(track_summary: Dict[str, Any]) -> List[Dict[str, Any]
         parent_segments.append(
             {
                 "parentSegmentId": section_id,
-                "parentSegmentName": section_summary.get("sectionName") or _label_name(section_id),
+                "parentSegmentName": section_summary.get("sectionName") or section_id,
                 "sectionId": section_id,
-                "sectionName": section_summary.get("sectionName") or _label_name(section_id),
+                "sectionName": section_summary.get("sectionName") or section_id,
                 "expertLevelTurns": int(section_summary.get("expertLevelTurns", 0)),
                 "mistakes": int(section_summary.get("mistakes", 0)),
                 "practiceMistakes": int(section_summary.get("practiceMistakes", 0)),
@@ -242,10 +236,9 @@ async def _scan_session(
     if not rows:
         return None
 
-    splitter_result = split_runtime_segments(
-        pd.DataFrame(rows),
-        session_meta.get("map"),
-    )
+    dataframe = pd.DataFrame(rows)
+    splitter_result = split_runtime_segments(dataframe, session_meta.get("map"))
+    sections = get_circuit_sections(dataframe, splitter_result["circuit_id"])
     track_id = splitter_result["circuit_id"]
     track_summary = _ensure_track(
         summary,
@@ -275,12 +268,12 @@ async def _scan_session(
             continue
 
         segment_rows = enriched_rows[start:end]
-        section_id = _section_for_rows(segment_rows, track_id)
-        if not section_id:
+        section = _section_for_rows(segment_rows, sections)
+        if section is None:
             continue
 
         label = str(segment.label)
-        section_summary = _ensure_section(track_summary, section_id)
+        section_summary = _ensure_section(track_summary, section["id"], section["name"])
         _increment_label(section_summary, label)
     return track_id
 

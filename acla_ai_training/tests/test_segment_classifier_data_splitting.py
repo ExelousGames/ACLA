@@ -174,3 +174,30 @@ async def test_positive_validation_split_requires_two_samples():
             "val",
             val_split=0.1,
         )
+
+
+@pytest.mark.asyncio
+async def test_training_splits_discard_track_labels_without_adding_metadata():
+    import copy
+
+    parent = _segment(1)
+    parent["labels"] = ["silverstone", "silverstone1", "MSP", "ST1"]
+    child = _segment(2, parent_id=parent["id"])
+    child["labels"] = ["silverstone", "sliverstone6", "MSP1"]
+    source = [parent, child, _segment(3)]
+    original = copy.deepcopy(source)
+    store = _Store({"source": {"session": source}})
+
+    await _trainer(store).prepare_training_data("source", "train", "val", val_split=0.5)
+
+    saved = {
+        record["id"]: record
+        for key in ("train", "val")
+        for records in store.saved[key].values()
+        for record in records
+    }
+    expected = copy.deepcopy(original)
+    expected[0]["labels"] = ["MSP", "ST1"]
+    expected[1]["labels"] = ["MSP1"]
+    assert saved == {record["id"]: record for record in expected}
+    assert source == original

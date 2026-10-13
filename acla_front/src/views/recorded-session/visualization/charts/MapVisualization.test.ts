@@ -307,7 +307,6 @@ describe('MapVisualization playback indexing', () => {
 
 describe('MapVisualization AI segment labels', () => {
     const labelNames: Record<string, string> = {
-        brands_hatch2: 'Paddock Hill Bend',
         MSP: 'Mistake (Practice)',
         MSP1: 'Initiate brake too late',
         EA: 'Expert Adherence (Training)',
@@ -317,7 +316,8 @@ describe('MapVisualization AI segment labels', () => {
 
     it('formats track sections with flat analysis labels', () => {
         const segment = {
-            track_section: 'brands_hatch2',
+            track_section: 'backend-section-id',
+            track_section_name: 'Paddock Hill Bend',
             labels: [
                 { label_name: 'MSP', start_index: 10, end_index: 30 },
                 { label_name: 'MSP1', start_index: 14, end_index: 18 },
@@ -327,7 +327,7 @@ describe('MapVisualization AI segment labels', () => {
             end_index: 30,
         };
 
-        expect(getSegmentTrackSectionText(segment, resolveLabel)).toBe('Paddock Hill Bend');
+        expect(getSegmentTrackSectionText(segment)).toBe('Paddock Hill Bend');
         expect(getSegmentLabelIds(segment)).toEqual(['MSP', 'MSP1', 'EA']);
         expect(resolveSegmentLabelTexts(segment, resolveLabel)).toEqual([
             'Mistake (Practice)',
@@ -357,7 +357,7 @@ describe('MapVisualization AI segment labels', () => {
             end_index: 3,
         };
 
-        expect(getSegmentTrackSectionText(segment, resolveLabel)).toBe('Unknown section');
+        expect(getSegmentTrackSectionText(segment)).toBe('Unknown section');
         expect(getSegmentLabelIds(segment)).toEqual(['MSP', 'MSP1', 'ST3']);
         expect(resolveSegmentLabelTexts(segment, resolveLabel)).toEqual([
             'Mistake (Practice)',

@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 import pandas as pd
 import plotly.graph_objects as go
 
-from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
-from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
+from training.shared.circuit_sections import get_circuit_sections
 
 
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
-TRACK_COLUMN = "Static_track"
 
 SECTION_COLORS = [
     "#2563eb",
@@ -27,8 +25,7 @@ SECTION_COLORS = [
 
 
 def track_sections_available(df: pd.DataFrame) -> bool:
-    circuit_id = _circuit_id_from_df(df)
-    return bool(circuit_id and _section_candidates(circuit_id))
+    return bool(get_circuit_sections(df))
 
 
 def add_track_section_trajectory(
@@ -103,32 +100,6 @@ def add_track_section_bands(fig, df: pd.DataFrame, anchor_col: str) -> None:
         ))
 
 
-def _circuit_id_from_df(df: pd.DataFrame) -> Optional[str]:
-    if TRACK_COLUMN not in df.columns or df.empty:
-        return None
-    values = df[TRACK_COLUMN].dropna()
-    if values.empty:
-        return None
-    raw: Any = values.iloc[0]
-    text = str(raw).strip()
-    if not text:
-        return None
-    if text in LABEL_MAPPING:
-        return text
-    mapped = LABEL_NAME_TO_ID.get(text)
-    if mapped:
-        return mapped
-    return text.lower().replace(" ", "_").replace("-", "_")
-
-
-def _section_candidates(circuit_id: str) -> list[tuple[str, tuple[float, float]]]:
-    return [
-        (section_id, section_range)
-        for section_id, section_range in CIRCUIT_SECTION_RANGES.items()
-        if section_id.startswith(circuit_id)
-    ]
-
-
 def _section_for_position(
     position: float,
     candidates: list[tuple[str, tuple[float, float]]],
@@ -147,11 +118,11 @@ def _section_runs(df: pd.DataFrame) -> list[dict]:
     if NORMALIZED_POSITION_COLUMN not in df.columns or df.empty:
         return []
 
-    circuit_id = _circuit_id_from_df(df)
-    if not circuit_id:
-        return []
-
-    candidates = _section_candidates(circuit_id)
+    sections = {section["id"]: section for section in get_circuit_sections(df)}
+    candidates = [
+        (section["id"], section["normalized_position_range"])
+        for section in sections.values()
+    ]
     if not candidates:
         return []
 
@@ -166,10 +137,11 @@ def _section_runs(df: pd.DataFrame) -> list[dict]:
         run_df = df.iloc[current_start:end_iloc]
         if run_df.empty:
             return
-        lo, hi = CIRCUIT_SECTION_RANGES[current_section]
+        section = sections[current_section]
+        lo, hi = section["normalized_position_range"]
         runs.append({
             "section_id": current_section,
-            "section_name": LABEL_MAPPING.get(current_section, current_section),
+            "section_name": section["name"],
             "normalized_range": (lo, hi),
             "start_index": run_df.index[0],
             "end_index": run_df.index[-1],

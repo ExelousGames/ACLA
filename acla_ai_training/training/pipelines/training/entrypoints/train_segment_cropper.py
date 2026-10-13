@@ -10,17 +10,17 @@ project_root = Path(__file__).resolve().parents[4]
 sys.path.append(str(project_root))
 
 from training.ml.segment_cropper.trainer import segment_cropper_trainer
-from training.pipelines.training.config import TrainingPipelineConfig
 
 
 async def main() -> int:
-    cfg = TrainingPipelineConfig()
     parser = argparse.ArgumentParser(description="Train the learned session boundary cropper.")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--annotation-key", default=cfg.annotation_cache_key)
+    parser.add_argument("--annotation-key", required=True)
     args = parser.parse_args()
+    if not args.annotation_key.strip():
+        parser.error("--annotation-key must name an annotation dataset")
     print(
         f"[INFO] Starting cropper training: epochs={args.epochs} "
         f"batch_size={args.batch_size} lr={args.lr} "
