@@ -43,6 +43,39 @@ describe('RacingSessionService', () => {
     expect(service).toBeDefined();
   });
 
+  describe('listSessionsWithVideos', () => {
+    it('filters by owner and MP4 attachments and returns only IDs and creation dates, newest first', async () => {
+      const sessionId = new ObjectId();
+      const createdDate = new Date('2026-10-13T12:00:00.000Z');
+      const exec = jest.fn().mockResolvedValue([
+        { _id: sessionId, created_date: createdDate, user_id: 'user-1', session_name: 'Race 1' },
+      ]);
+      const sort = jest.fn().mockReturnValue({ exec });
+      const select = jest.fn().mockReturnValue({ sort });
+      racingSessionModel.find.mockReturnValue({ select });
+
+      await expect(service.listSessionsWithVideos('user-1')).resolves.toEqual({
+        list: [{ sessionId: sessionId.toString(), created_date: createdDate }],
+      });
+      expect(racingSessionModel.find).toHaveBeenCalledWith({
+        user_id: 'user-1',
+        'videos.mimeType': 'video/mp4',
+      });
+      expect(select).toHaveBeenCalledWith('_id created_date');
+      expect(sort).toHaveBeenCalledWith({ created_date: -1, _id: -1 });
+    });
+
+    it('returns an empty list when no sessions have matching videos', async () => {
+      racingSessionModel.find.mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          sort: jest.fn().mockReturnValue({ exec: jest.fn().mockResolvedValue([]) }),
+        }),
+      });
+
+      await expect(service.listSessionsWithVideos('user-1')).resolves.toEqual({ list: [] });
+    });
+  });
+
   describe('deleteSession', () => {
     const sessionId = '507f1f77bcf86cd799439011';
     const fileIds = ['507f1f77bcf86cd799439012', '507f1f77bcf86cd799439013'];

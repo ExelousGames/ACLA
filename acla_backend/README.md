@@ -27,6 +27,23 @@
 
 Trained Ultralytics model storage: see the [Ultralytics model API contract](src/modules/ai-model/ultralytics/README.md).
 
+## Sessions with video attachments
+
+`GET /racing-session/with-videos` requires an `Authorization: Bearer <token>` header and returns the authenticated user's sessions with at least one MP4 video attachment, newest first. No request body or query parameters are required.
+
+```json
+{
+  "list": [
+    {
+      "sessionId": "507f1f77bcf86cd799439011",
+      "created_date": "2026-10-13T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+`created_date` is the session creation timestamp in ISO 8601 format. If no sessions match, the response is `{ "list": [] }`. Use `GET /racing-session/:id/videos` to list a session's available recordings.
+
 ## Project setup
 
 ```bash

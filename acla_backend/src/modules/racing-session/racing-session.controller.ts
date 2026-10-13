@@ -2,6 +2,7 @@ import { Controller, Get, Delete, Param, UseGuards, Request, Post, Body, Query, 
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
 import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, TrackCornerKnowledgeRequestDto, TrackCornerKnowledgeResponseDto, MapBasicInfoListDto, SegmentClassificationRequestDto, SegmentClassificationResponseDto, LiveBaselineAnalysisRequestDto, LiveBaselineAnalysisResponseDto, UserSessionsAnalysisInitResponseDto } from 'src/dto/racing-session.dto';
+import { SessionsWithVideosListDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
@@ -77,6 +78,15 @@ export class RacingSessionController {
     @Post('sessionbasiclist')
     retrieveAllRacingBasicSessionsInfo(@Request() req, @Body() body): Promise<SessionBasicInfoListDto | null> {
         return this.racingSessionService.retrieveAllRacingSessionsBasicInfo(body.map_name, body.user_id);
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Get('with-videos')
+    async listSessionsWithVideos(@Request() req): Promise<SessionsWithVideosListDto> {
+        if (!req.user?.userId) {
+            throw new ForbiddenException('Authenticated user id is required');
+        }
+        return this.racingSessionService.listSessionsWithVideos(req.user.userId);
     }
 
     @UseGuards(AuthGuard('jwt'))

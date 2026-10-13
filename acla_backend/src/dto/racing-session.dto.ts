@@ -7,6 +7,13 @@ export class SessionBasicInfoListDto {
     }[] = []
 }
 
+export class SessionsWithVideosListDto {
+    list: {
+        sessionId: string;
+        created_date: Date;
+    }[] = [];
+}
+
 export class MapBasicInfoListDto {
     list: {
         name: string

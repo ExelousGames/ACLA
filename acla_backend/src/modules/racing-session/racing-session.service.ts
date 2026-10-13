@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { AnalysisSessionMetadataDto, RacingSessionDetailedInfoDto, SessionBasicInfoListDto, AllSessionsInitResponseDto, SessionChunkDto, MapBasicInfoListDto } from 'src/dto/racing-session.dto';
+import { AnalysisSessionMetadataDto, RacingSessionDetailedInfoDto, SessionBasicInfoListDto, AllSessionsInitResponseDto, SessionChunkDto, MapBasicInfoListDto, SessionsWithVideosListDto } from 'src/dto/racing-session.dto';
 import { RacingSession } from 'src/schemas/racing-session.schema';
 import { GridFSService, GRIDFS_BUCKETS } from '../gridfs/gridfs.service';
 import { ObjectId } from 'mongodb';
@@ -78,6 +78,23 @@ export class RacingSessionService {
             throw new Error(`Failed to process data: ${e.message}`);
         }
 
+    }
+
+    async listSessionsWithVideos(userId: string): Promise<SessionsWithVideosListDto> {
+        const sessions = await this.racingSession.find({
+            user_id: userId,
+            'videos.mimeType': 'video/mp4',
+        })
+            .select('_id created_date')
+            .sort({ created_date: -1, _id: -1 })
+            .exec();
+
+        return {
+            list: sessions.map(session => ({
+                sessionId: session._id.toString(),
+                created_date: session.created_date,
+            })),
+        };
     }
 
     async retrieveAllSessionMapBasicInfo(userId: string): Promise<MapBasicInfoListDto | null> {

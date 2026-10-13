@@ -14,6 +14,7 @@ let service: any;
 beforeEach(() => {
     jest.useFakeTimers();
     service = {
+        listSessionsWithVideos: jest.fn(),
         uploadSessionVideoChunk: jest.fn().mockResolvedValue(new ObjectId()),
         uploadSessionChunk: jest.fn().mockResolvedValue(new ObjectId()),
         createRacingSessionFromChunks: jest.fn().mockResolvedValue({ _id: 'session-1' }),
@@ -22,6 +23,18 @@ beforeEach(() => {
     controller = new RacingSessionController(service, {} as any, {} as any, {} as any);
 });
 afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
+
+it('lists sessions with videos for the authenticated user, ignoring supplied user IDs', async () => {
+    const result = { list: [{ sessionId: 'session-1', created_date: new Date('2026-10-13T12:00:00.000Z') }] };
+    service.listSessionsWithVideos.mockResolvedValue(result);
+    await expect(controller.listSessionsWithVideos({ ...req, query: { userId: 'user-2' } })).resolves.toEqual(result);
+    expect(service.listSessionsWithVideos).toHaveBeenCalledWith('user-1');
+});
+
+it.each([{}, { user: {} }])('rejects listing sessions with videos without an authenticated user ID: %p', async (request) => {
+    await expect(controller.listSessionsWithVideos(request)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(service.listSessionsWithVideos).not.toHaveBeenCalled();
+});
 
 it('persists the video on the same session, ignores duplicate chunks, and refuses incomplete videos', async () => {
     const { uploadId } = await controller.initUpload(metadata, req);
