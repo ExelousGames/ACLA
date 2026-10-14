@@ -306,17 +306,17 @@ class ACCExtractorBroadcastingTests(unittest.TestCase):
             for elapsed in (12125.0, 12375.0, 0.0):
                 client._handle(session_update(elapsed=elapsed), client.clock())
                 row = self.record()
-                self.assertEqual(row['Graphics_session_time'], elapsed / 1000.0)
+                self.assertEqual(row['Graphics_game_time'], elapsed / 1000.0)
                 self.assertEqual(row['Graphics_normalized_car_position'], 0.4)
                 self.assertNotIn('SessionTime', row)
             client._handle(session_update(replay=True), client.clock())
-            self.assertNotIn('Graphics_session_time', self.record())
+            self.assertNotIn('Graphics_game_time', self.record())
 
     def test_nonlive_and_missing_shared_memory_keep_polling_without_closing(self):
         for status in (0, 1, 3):
             row = self.record(status)
             self.assertNotIn('Graphics_normalized_positions', row)
-            self.assertNotIn('Graphics_session_time', row)
+            self.assertNotIn('Graphics_game_time', row)
         self.assertEqual(self.record(None), {'available': False})
         self.assertEqual(self.recorder.broadcasting.poll.call_count, 4)
         self.recorder.broadcasting.close.assert_not_called()
@@ -344,7 +344,7 @@ class ACCExtractorBroadcastingTests(unittest.TestCase):
 
             row = self.record()
             self.assertEqual(row['Graphics_normalized_positions'], {'1052': 0.25})
-            self.assertEqual(row['Graphics_session_time'], 12.125)
+            self.assertEqual(row['Graphics_game_time'], 12.125)
 
             clock.return_value = 30.0
             self.record(3)
@@ -352,7 +352,7 @@ class ACCExtractorBroadcastingTests(unittest.TestCase):
             sock.queue.extend([session_update(elapsed=32125), car_update(position=0.5)])
             row = self.record()
             self.assertEqual(row['Graphics_normalized_positions'], {'1052': 0.5})
-            self.assertEqual(row['Graphics_session_time'], 32.125)
+            self.assertEqual(row['Graphics_game_time'], 32.125)
             self.assertFalse(sock.closed)
             factory.assert_called_once()
             self.assertNotIn(struct.pack('<Bi', 9, 7), sock.sent)

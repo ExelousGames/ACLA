@@ -109,8 +109,8 @@ describe('iRacing .ibt import', () => {
         Physics_brake: 0.25, Physics_packed_id: 100, Graphics_status: 2, Graphics_active_cars: 2,
         Graphics_global_green: true, Graphics_is_in_pit_lane: true, Static_player_name: 'Zoë Driver' });
       expect(rows[1].Physics_speed_kmh).toBe(216);
-      expect(rows[0].Graphics_session_time).toBe(10);
-      expect(rows[1].Graphics_session_time).toBe(10 + 1 / 60);
+      expect(rows[0].Graphics_game_time).toBe(10);
+      expect(rows[1].Graphics_game_time).toBe(10 + 1 / 60);
       expect(rows[0]).not.toHaveProperty('Physics_fuel');
     } finally { await ibt.close(); }
   });

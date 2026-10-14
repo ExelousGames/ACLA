@@ -12,7 +12,7 @@ describe('CornerRecorder', () => {
     let recorder: CornerRecorder;
     beforeEach(() => { recorder = new CornerRecorder(); recorder.setMap(map); });
     const tick = (time: number, cars: Record<string, number>, sampleIndex = time) => recorder.tick({
-        Graphics_session_time: (BASE_TIME + time) / 1000,
+        Graphics_game_time: (BASE_TIME + time) / 1000,
         Graphics_normalized_positions: cars,
         Graphics_player_car_id: 7,
         // Deliberately unrelated to opponent motion or the requested telemetry clock.
@@ -102,7 +102,7 @@ describe('CornerRecorder', () => {
         const records: DriverCornerRecord[] = [];
         [0.93, 0.96, 0.99, 0.01, 0.04].forEach((position, index) => {
             records.push(...recorder.tick({
-                Graphics_session_time: (BASE_TIME + index * 1000) / 1000,
+                Graphics_game_time: (BASE_TIME + index * 1000) / 1000,
                 Graphics_current_time_str: formatCornerTime(position * 25000),
                 Graphics_current_time: position * 25000,
                 Graphics_player_car_id: 7,
@@ -162,7 +162,7 @@ describe('CornerRecorder', () => {
             () => recorder.reset(),
             () => recorder.setMap(map),
             () => recorder.tick({ Graphics_current_time: BASE_TIME + 500 }, 1),
-            () => recorder.tick({ Graphics_session_time: (BASE_TIME + 500) / 1000, Graphics_status: 1 }, 1),
+            () => recorder.tick({ Graphics_game_time: (BASE_TIME + 500) / 1000, Graphics_status: 1 }, 1),
         ]) {
             recorder.reset();
             tick(0, { '7': 0.28 });
@@ -181,7 +181,7 @@ describe('CornerRecorder', () => {
             { id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.4 },
         ] })).toBe(1);
         tick(0, { '7': 0.28 });
-        const records = recorder.tick({ Graphics_session_time: (BASE_TIME + 1000) / 1000,
+        const records = recorder.tick({ Graphics_game_time: (BASE_TIME + 1000) / 1000,
             Graphics_player_car_id: 7, Graphics_normalized_car_position: 0.31, Graphics_normalized_positions: { '7': 0.28 } }, 1);
         expect(records).toHaveLength(1);
         expect(records[0]).toMatchObject({ carId: '7', isPlayer: true, cornerId: 'legacy' });

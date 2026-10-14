@@ -1,4 +1,4 @@
-// The authoritative field table for every simulator reader and adapter.
+// The authoritative field table for every simulator reader, adapter and writer.
 // Add telemetry fields here before emitting them. Downstream accepts only rows
 // validated against this table. Readers convert to the documented units and
 // enum meanings before emitting a row.
@@ -175,6 +175,8 @@ const LIVE_TELEMETRY_DATASET = Object.freeze(/** @type {const} */ ({
   // Graphics
   Graphics_abs_level: 'integer',
   Graphics_active_cars: 'integer',
+  // Elapsed recording seconds, added by the shared writer.
+  Graphics_analyst_session_time: 'number',
   Graphics_best_time: 'integer',
   Graphics_best_time_str: 'string',
   Graphics_car_coordinates: 'coordinates',
@@ -245,7 +247,7 @@ const LIVE_TELEMETRY_DATASET = Object.freeze(/** @type {const} */ ({
   Graphics_rain_tyres: 'integer',
   Graphics_secondary_display_index: 'integer',
   Graphics_session_index: 'integer',
-  Graphics_session_time: 'number',
+  Graphics_game_time: 'number',
   Graphics_session_time_left: 'number',
   Graphics_session_type: 'integer',
   Graphics_status: 'integer',

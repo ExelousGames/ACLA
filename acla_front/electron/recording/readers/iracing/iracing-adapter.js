@@ -51,7 +51,7 @@ rule('Graphics_position', 'PlayerCarPosition', (value) => value > 0 ? value : un
 rule('Graphics_player_car_id', 'PlayerCarIdx', positive);
 rule('Graphics_normalized_car_position', 'LapDistPct', fraction);
 rule('Graphics_session_index', 'SessionNum', positive);
-rule('Graphics_session_time', 'SessionTime', positive);
+rule('Graphics_game_time', 'SessionTime', positive);
 rule('Graphics_session_time_left', 'SessionTimeRemain', (value) => value < 604800 ? positive(value) : undefined);
 rule('Graphics_is_in_pit_lane', 'OnPitRoad');
 rule('Graphics_is_in_pit', 'PlayerTrackSurface', (value) => Number.isInteger(value) ? value === 1 : undefined);

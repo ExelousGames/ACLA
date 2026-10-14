@@ -44,7 +44,7 @@ class ACCRecording:
                     session_time = self.broadcasting.get_session_time()
                     if session_time is not None:
                         # Adapt Broadcasting milliseconds to standard elapsed seconds before delivery.
-                        flattened['Graphics_session_time'] = session_time / 1000.0
+                        flattened['Graphics_game_time'] = session_time / 1000.0
             
             #self.append_object_to_csv(flattened,full_path)
 

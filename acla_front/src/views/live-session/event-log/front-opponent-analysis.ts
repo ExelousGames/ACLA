@@ -35,7 +35,7 @@ const COMPARISON_METHODS = {
     opponent_selection: 'nearest_positive_forward_distance_under_half_lap',
     corner_average: 'trimmed_average_complete_corner_passes',
     lap_average: 'trimmed_average_between_consecutive_interpolated_finish_line_crossings',
-    clock: 'Graphics_session_time elapsed seconds converted to milliseconds',
+    clock: 'Graphics_game_time elapsed seconds converted to milliseconds',
     minimum_samples_per_car: 3,
     trim_rule: 'Remove max(1, floor(sample_count * 0.125)) samples from each end.',
     delta: 'player_minus_opponent_ms; rounded to milliseconds; negative means player faster',
@@ -119,7 +119,7 @@ export function analyzeFrontOpponent(
     );
     result.overall_lap_comparison = compareTimes(lapSummary(playerKey), lapSummary(opponentKey), 'laps');
     if (result.overall_lap_comparison.status === 'unavailable') {
-        result.overall_lap_comparison.reason += ' Only uninterrupted Graphics_session_time intervals between consecutive finish-line crossings count; corner times are not substituted.';
+        result.overall_lap_comparison.reason += ' Only uninterrupted Graphics_game_time intervals between consecutive finish-line crossings count; corner times are not substituted.';
         result.reasons.push(result.overall_lap_comparison.reason);
     }
     const summaries = summarizeDriverCorners(cornerRecords.filter((record) => record.carId === playerKey || record.carId === opponentKey));

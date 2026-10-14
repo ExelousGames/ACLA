@@ -30,7 +30,7 @@ export class LapRecorder {
     }
 
     tick(sample: StandardTelemetrySample, sampleIndex: number): DriverLapRecord[] {
-        const timeMs = parseSessionTimeMs(sample.Graphics_session_time);
+        const timeMs = parseSessionTimeMs(sample.Graphics_game_time);
         if (timeMs === null || (sample.Graphics_status !== undefined && sample.Graphics_status !== ACC_STATUS.ACC_LIVE)) {
             this.reset();
             return [];

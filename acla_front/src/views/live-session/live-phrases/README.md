@@ -173,7 +173,7 @@ phrase when both match; only one phrase runs per visit to this child.
 
 Open **Live Event Log** to collect exit observations for each car and corner.
 Exit speed is the forward normalized lap-position change per second between the
-two samples bracketing the mapped exit, using `Graphics_session_time` (elapsed seconds).
+two samples bracketing the mapped exit, using `Graphics_game_time` (elapsed seconds).
 It is independent of player physics and corner duration, and supports finish-line
 wraparound. A captured exit is valid even when the corner entry was not observed.
 The event log displays exit speed as percent of a lap per second and averages the

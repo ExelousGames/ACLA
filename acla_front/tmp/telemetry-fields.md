@@ -60,7 +60,7 @@ Native `.ibt` files use [IRacingIBTAdapter](../electron/recording/readers/iracin
 and an independent channel allowlist. The adapter reuses the common iRacing
 conversions and adds 36 mappings: four existing brake-pressure fields, 30 new
 shared Physics fields, and two existing coordinate/identity arrays.
-Its coverage table accounts for all 272 registered fields,
+Its coverage table accounts for all 273 registered fields,
 with 136 supported conditionally on source availability. The live adapter
 maps 100 fields; disk-only values never enter the live capture allowlist.
 
@@ -141,8 +141,8 @@ This is the application-wide telemetry standard shared by all supported simulato
 - Field meanings, coordinate conventions, units, and enum values are shared across simulators. A reader converts its raw values when necessary to meet the standard before emitting the sample; downstream components do not perform game-specific conversions.
 - Standard field names remain stable across readers. A reader uses the semantically equivalent standard field or omits it; it does not introduce a replacement name.
 - A successful recorded row is one flat JSON object containing only keys from this catalog, regardless of the source game.
-- After a reader has produced the standard object, the writer, saved-file reader, renderer, and upload path preserve every telemetry key and value unchanged. They must not rename fields, add aliases, convert units, wrap the row in another persisted object, or add metadata fields to the row.
-- The authoritative field table is [live-telemetry-dataset.js](../src/data/live-telemetry-dataset.js), currently containing 272 keys: 163 Physics, 86 Graphics, and 23 Static. Every reader and adapter must emit rows accepted by this dataset. Register new fields in that table and document their units and meanings here before use; do not introduce game-specific aliases.
+- After a reader has produced the standard object, downstream components preserve the simulator telemetry keys and values unchanged. The shared writer adds `Graphics_analyst_session_time` from its own recording clock. The saved-file reader, renderer, and upload path preserve that value too. They must not rename fields, add aliases, convert units, or wrap the row in another persisted object.
+- The authoritative field table is [live-telemetry-dataset.js](../src/data/live-telemetry-dataset.js), currently containing 273 keys: 163 Physics, 87 Graphics, and 23 Static. Every reader and adapter must emit rows accepted by this dataset. Register new fields in that table and document their units and meanings here before use; do not introduce game-specific aliases.
 - `Graphics_status`, `Graphics_session_type`, `Graphics_flag`, `Graphics_penalty`, `Graphics_track_grip_status`, and the three `Graphics_rain_intensity*` fields contain the standard integers defined below. Readers map native enum values to these integers.
 - `Graphics_last_sector_time_str` has type integer despite its suffix, and `Graphics_rain_tyres` is an integer `0`/`1`. Readers must emit these declared types, and downstream components preserve them unchanged.
 - `Graphics_car_coordinates` is an array of 60 `{ "x": number, "y": number, "z": number }` objects. `Graphics_car_id` is an array of 60 integers. `Graphics_normalized_positions` is a car-ID-keyed object described below. All other field values are scalar; readers flatten native objects into the exact keys below.
@@ -346,9 +346,9 @@ out-of-range fractions are excluded. The map is rebuilt for every live sample
 and is also imported from native IBT files when that channel exists. Existing
 non-driving/replay gating applies.
 
-## Elapsed session time
+## Elapsed game and analyst recording time
 
-`Graphics_session_time` is a finite, nonnegative number of seconds elapsed since
+`Graphics_game_time` is a finite, nonnegative number of seconds elapsed since
 the simulator session started, including fractional seconds. ACC reads Broadcasting
 `RealtimeUpdate.SessionTime` in milliseconds and converts it to seconds in the
 Python capture adapter. iRacing maps the SDK `SessionTime` value in seconds through
@@ -358,7 +358,18 @@ Missing, negative, nonfinite, or non-live values are omitted. ACC also omits val
 older than two seconds and clears them on reconnect, track changes, or capture stop.
 The writer and recorded-file reader preserve the adapted value unchanged.
 
-## Graphics fields (86)
+`Graphics_analyst_session_time` is a finite, nonnegative number of seconds elapsed
+since the shared recording writer opened the recording file, including fractional
+seconds. The writer uses a monotonic clock and stamps each sample when it receives
+it, before disk batching. Time includes any delay before the first sample and gaps
+between samples, and continues through simulator pauses, reconnects and game-session
+resets. Each new recording starts a new clock; ending the recording stops accepting
+samples. The final row retains its sample time, without adding a synthetic end row.
+This field is owned by the writer, not by simulator readers or adapters, and is
+available in saved recordings and committed-file reads. Direct live reader frames
+and native IBT imports do not synthesize it.
+
+## Graphics fields (87)
 
 ```text
 Graphics_packed_id                                      integer
@@ -373,7 +384,8 @@ Graphics_position                                       integer
 Graphics_current_time                                   integer
 Graphics_last_time                                      integer
 Graphics_best_time                                      integer
-Graphics_session_time                                   number
+Graphics_game_time                                      number
+Graphics_analyst_session_time                           number
 Graphics_session_time_left                              number
 Graphics_distance_traveled                              number
 Graphics_is_in_pit                                      boolean

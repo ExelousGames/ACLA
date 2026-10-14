@@ -246,7 +246,7 @@ describe('LiveSessionView', () => {
         act(() => {
             for (let i = 0; i <= 61; i += 1) liveTelemetryStore.publishFrame({
                 type: 'frame', game: 'acc', sequence: i + 1, committedSequence: i + 1, committedCount: i + 1,
-                sample: { Graphics_session_time: (2027758 + i * 1000) / 1000, Graphics_player_car_id: 7,
+                sample: { Graphics_game_time: (2027758 + i * 1000) / 1000, Graphics_player_car_id: 7,
                     Graphics_normalized_car_position: ((97 + i * 5) % 100) / 100,
                     Graphics_normalized_positions: { '63': ((99 + i * 5) % 100) / 100 } },
             });

@@ -78,7 +78,7 @@ describe('iRacing standard field adapter', () => {
       Graphics_estimated_lap_time: 89875, Graphics_is_delta_positive: false,
       Graphics_flag: 2, Graphics_global_yellow: true, Graphics_global_green: false,
       Graphics_status: 2, Graphics_session_type: 2, Graphics_current_sector_index: 2,
-      Graphics_active_cars: 3, Graphics_session_time: 2027.758, Graphics_session_time_left: 300,
+      Graphics_active_cars: 3, Graphics_game_time: 2027.758, Graphics_session_time_left: 300,
       Static_track: 'spa - endurance', Static_car_model: 'GT3', Static_player_name: 'Zoë Driver',
       Static_max_rpm: 8500, Static_max_fuel: 100.5, Static_num_cars: 1, Static_sector_count: 3,
     });
@@ -94,8 +94,8 @@ describe('iRacing standard field adapter', () => {
     const adapter = new IRacingAdapter();
     const before = adapter.adapt(packet({ SessionTime: 2027.758, LapCurrentLapTime: 92.758, LapCompleted: 4 }));
     const after = adapter.adapt(packet({ SessionTime: 2028.008, LapCurrentLapTime: 0.008, LapCompleted: 5 }));
-    expect(before.Graphics_session_time).toBe(2027.758);
-    expect(after.Graphics_session_time).toBe(2028.008);
+    expect(before.Graphics_game_time).toBe(2027.758);
+    expect(after.Graphics_game_time).toBe(2028.008);
     for (const field of ['Graphics_current_time', 'Graphics_current_time_str']) {
       expect(IRACING_FIELD_COVERAGE[field].supported).toBe(false);
       expect(before).not.toHaveProperty(field);
@@ -105,14 +105,14 @@ describe('iRacing standard field adapter', () => {
 
   it('preserves zero and session resets without carrying unavailable elapsed time forward', () => {
     const adapter = new IRacingAdapter();
-    expect(IRACING_FIELD_COVERAGE.Graphics_session_time).toEqual({ supported: true, source: 'SessionTime' });
-    expect(adapter.adapt(packet({ SessionTime: 2027.758 })).Graphics_session_time).toBe(2027.758);
-    expect(adapter.adapt(packet({ SessionNum: 2, SessionTime: 0 })).Graphics_session_time).toBe(0);
+    expect(IRACING_FIELD_COVERAGE.Graphics_game_time).toEqual({ supported: true, source: 'SessionTime' });
+    expect(adapter.adapt(packet({ SessionTime: 2027.758 })).Graphics_game_time).toBe(2027.758);
+    expect(adapter.adapt(packet({ SessionNum: 2, SessionTime: 0 })).Graphics_game_time).toBe(0);
     for (const SessionTime of [undefined, null, -1, NaN, Infinity, '12.125']) {
-      expect(adapter.adapt(packet({ SessionTime }))).not.toHaveProperty('Graphics_session_time');
+      expect(adapter.adapt(packet({ SessionTime }))).not.toHaveProperty('Graphics_game_time');
     }
     for (const state of [{ IsOnTrack: false }, { IsReplayPlaying: true }]) {
-      expect(adapter.adapt(packet({ SessionTime: 12.125, ...state }))).not.toHaveProperty('Graphics_session_time');
+      expect(adapter.adapt(packet({ SessionTime: 12.125, ...state }))).not.toHaveProperty('Graphics_game_time');
     }
   });
 
@@ -373,7 +373,7 @@ describe('iRacing recording integration', () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('writes and reads adapted iRacing rows unchanged, with credits after disk writes', async () => {
+  it('writes and reads adapted iRacing rows with recording time, with credits after disk writes', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'acla-iracing-recording-'));
     const committed = jest.fn();
     const writer = new RecordingWriter({ game: 'iracing', recordingDirectory: directory,
@@ -392,7 +392,9 @@ describe('iRacing recording integration', () => {
       expect(rows[0].Physics_velocity_y).toBeCloseTo(0, 10);
       expect(rows[0].Physics_velocity_z).toBeCloseTo(-2, 10);
       // JSON stores signed zero as 0 (for example, the normalized zero roll).
-      const serializedRows = JSON.parse(JSON.stringify(rows));
+      const serializedRows = JSON.parse(JSON.stringify(rows)).map((sample) => ({
+        ...sample, Graphics_analyst_session_time: expect.any(Number),
+      }));
       rows.forEach((sample) => writer.acceptFrame({ game: 'iracing', sample }));
       expect(committed).not.toHaveBeenCalled();
       await writer.flush();
