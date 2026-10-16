@@ -16,6 +16,10 @@ The original labels remain available.
 Track, grass, fence, curb, sand, sky, and racing track white line regions may
 continue behind car or car pack polygons where their hidden extent is clear.
 Annotate those regions continuously and annotate the cars separately.
+Enable View > Position Context for a separate top-down map window. Prepared
+.position.json files supply the centerline, reference lap and driver trajectory
+across 100 frames before and after the current image; adjust the range and axes
+in that window. It follows image navigation without changing annotations.
 """
 
 import sys

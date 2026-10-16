@@ -107,6 +107,39 @@ async def test_guidance_preserves_raw_map_context(monkeypatch, cloud_provider, t
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("game_source", ["request", "telemetry", "legacy"])
+async def test_guidance_preserves_game_for_reference_lookup(
+    monkeypatch, cloud_provider, telemetry, game_source,
+):
+    from app.api import racing_session
+
+    rows = dict(telemetry)
+    context = {}
+    if game_source == "request":
+        context["game"] = "iracing_recorded"
+        rows["game_recorded_from"] = "acc"
+    elif game_source == "telemetry":
+        rows["game_recorded_from"] = "iracing_recorded"
+    enrich = Mock(side_effect=lambda records, **kwargs: records)
+    monkeypatch.setattr(
+        guidance, "get_top_lap_reference_model",
+        lambda: SimpleNamespace(enrich=enrich),
+    )
+    _mock_cloud(monkeypatch)
+
+    result = await racing_session.get_top_lap_reference_guidance(
+        racing_session.TopLapReferenceGuidanceRequest(
+            current_telemetry=rows, track_name="spa", car_name="car-a", **context,
+        )
+    )
+
+    assert result["guidance_result"]["status"] == "success"
+    assert "game_recorded_from" not in enrich.call_args.args[0][0]
+    expected_game = None if game_source == "legacy" else "iracing_recorded"
+    assert enrich.call_args.kwargs["game"] == expected_game
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status,content", [(503, "Unavailable"), (200, None)])
 async def test_cloud_failure_returns_error_without_fallback(
     monkeypatch, cloud_provider, telemetry, status, content,

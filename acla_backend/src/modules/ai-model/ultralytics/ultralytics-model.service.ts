@@ -39,10 +39,11 @@ export class UltralyticsModelService {
         }
       })(),
     );
+    const annotationFormat = dto.task === 'position' ? 'position' : 'labelme';
     const modelFileId = await this.gridfsService.uploadStream(
       source,
       file.originalname,
-      { name: dto.name, framework: 'ultralytics', annotationFormat: 'labelme' },
+      { name: dto.name, framework: 'ultralytics', annotationFormat },
       GRIDFS_BUCKETS.ULTRALYTICS_MODELS,
     );
 
@@ -53,7 +54,7 @@ export class UltralyticsModelService {
         classNames: dto.classNames,
         metadata: dto.metadata ?? {},
         framework: 'ultralytics',
-        annotationFormat: 'labelme',
+        annotationFormat,
         modelFileId,
         filename: file.originalname,
         sizeBytes: file.size,

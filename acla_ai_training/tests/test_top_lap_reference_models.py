@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock
 
+import httpx
 import numpy as np
 import pandas as pd
 import pytest
@@ -10,6 +12,7 @@ from app.shared.expert_features import ExpertFeatureCatalog
 from app.shared.telemetry import FeatureProcessor
 from app.top_laps.runtime import RuntimeTopLapReferenceModel
 from training.top_laps.service import TopLapReferenceModelService
+from training.pipelines.training.pipeline.cleaning import _update_top_lap, process_single_chunk
 
 
 def _top_lap(track: str = "spa", car: str = "car-a", grip: int = 2):
@@ -99,15 +102,15 @@ async def test_service_builds_from_cached_top_laps():
 
 def test_serialized_payload_preserves_all_buckets_through_backend_json():
     training = TopLapReferenceModelService()
-    buckets = [("spa", "car-a", 2), ("spa", "car-a", 5), ("monza", "car-b", 3)]
-    for track, car, grip in buckets:
-        training.top_lap_store.record_lap(_top_lap(track, car, grip))
+    buckets = [("acc", "spa", "car-a", 2), ("acc", "spa", "car-a", 5), ("iracing_live", "spa", "car-a", 2), ("acc", "monza", "car-b", 3)]
+    for game, track, car, grip in buckets:
+        training.top_lap_store.record_lap(_top_lap(track, car, grip), game=game)
 
     payload = json.loads(json.dumps(training.serialize_reference_model()))
 
     assert set(payload) == {"top_lap_store"}
     assert set(payload["top_lap_store"]) == {
-        f"{track}|{car}|grip{grip}" for track, car, grip in buckets
+        f"{game}|{track}|{car}|grip{grip}" for game, track, car, grip in buckets
     }
     assert all(isinstance(value, str) for value in payload["top_lap_store"].values())
     runtime = RuntimeTopLapReferenceModel()
@@ -124,6 +127,110 @@ def test_serialized_payload_preserves_all_buckets_through_backend_json():
 def test_serializing_empty_reference_store_is_rejected():
     with pytest.raises(ValueError, match="No stored top laps to serialize"):
         TopLapReferenceModelService().serialize_reference_model()
+
+
+@pytest.mark.asyncio
+async def test_cached_reference_laps_stay_separate_by_session_game():
+    laps = []
+    for game, speed in [("acc", 150.0), ("iracing_recorded", 250.0)]:
+        laps.append([
+            {**row, "game_recorded_from": game, "Physics_speed_kmh": speed}
+            for row in _top_lap()
+        ])
+
+    class TelemetryStore:
+        def has_cached_data(self, cache_key):
+            return True
+
+        def get_cached_data_chunks(self, **kwargs):
+            return iter([(laps, "chunk-1")])
+
+    service = TopLapReferenceModelService()
+    result = await service.build_from_cached_top_laps(
+        "top-laps", telemetry_store=TelemetryStore(),
+    )
+    assert len(result["metadata"]["buckets_recorded"]) == 2
+    assert len(service.top_lap_store.entries) == 2
+    assert result["reference_summary"]["position_summary"]["games_recorded"] == 2
+    assert {bucket["game"] for bucket in result["metadata"]["buckets_recorded"]} == {
+        "acc", "iracing_recorded",
+    }
+    runtime = RuntimeTopLapReferenceModel()
+    runtime.install_backend_payload(json.loads(json.dumps(service.serialize_reference_model())))
+
+    for game, speed in [("acc", 150.0), ("iracing_recorded", 250.0)]:
+        enriched = runtime.enrich([_runtime_record()], track="spa", car="car-a", game=game)
+        assert enriched[0]["expert_optimal_speed"] == pytest.approx(speed)
+        sampled = service.sample_reference_actions(pd.DataFrame(_top_lap()), game=game)
+        assert sampled["optimal_actions"]["expert_optimal_speed"] == pytest.approx(speed)
+        features = service.extract_reference_features(_top_lap(), game=game)
+        assert features[0]["expert_optimal_speed"] == pytest.approx(speed)
+
+
+@pytest.mark.asyncio
+async def test_session_metadata_game_survives_download_cleaning_and_top_lap_selection(monkeypatch):
+    from app.integrations.backend import client as backend_client
+
+    metadata = [
+        {"sessionId": "session-acc", "game_recorded_from": "acc", "chunkCount": 1, "dataPoints": 2},
+        {"sessionId": "session-iracing", "game_recorded_from": "iracing_recorded", "chunkCount": 1, "dataPoints": 2},
+    ]
+    source = [
+        {**row, "Graphics_completed_lap": 1, "game_recorded_from": "incorrect-row-game"}
+        for row in _top_lap()
+    ]
+    backend = backend_client.BackendService()
+    monkeypatch.setattr(backend, "call_backend_function", AsyncMock(side_effect=[
+        {"downloadId": "download-1", "totalSessions": 2, "sessionMetadata": metadata},
+        {},
+    ]))
+    monkeypatch.setattr(backend, "get_auth_headers", lambda: {})
+    http_client = httpx.AsyncClient
+    monkeypatch.setattr(backend_client.httpx, "AsyncClient", lambda **kwargs: http_client(
+        **kwargs, transport=httpx.MockTransport(lambda request: httpx.Response(200, json=source)),
+    ))
+    cached_chunks = []
+
+    class TelemetryStore:
+        def has_cached_data(self, cache_key):
+            return False
+
+        async def cache_chunks_streaming(self, *, cache_key, chunks_iterator):
+            async for chunk in chunks_iterator:
+                cached_chunks.append(chunk)
+            return True
+
+    result = await backend.get_all_racing_sessions_streaming("sessions", data_cache=TelemetryStore())
+    assert result["success"] is True
+    assert len(cached_chunks) == 2
+    top_laps = {}
+    features = [name for name in source[0] if name != "game_recorded_from"]
+    for (records, chunk_id), session in zip(cached_chunks, metadata):
+        assert all(row["game_recorded_from"] == session["game_recorded_from"] for row in records)
+        _, count, candidates, cleaned, error, _ = process_single_chunk(records, chunk_id, features, 500)
+        assert error is None
+        assert count == 1
+        assert all(row["game_recorded_from"] == session["game_recorded_from"] for row in cleaned)
+        for candidate in candidates:
+            _update_top_lap(top_laps, candidate)
+    assert set(top_laps) == {
+        ("acc", "spa", "car-a", 2), ("iracing_recorded", "spa", "car-a", 2),
+    }
+    original_acc = top_laps[("acc", "spa", "car-a", 2)]
+    faster_acc = {**original_acc, "lap_time_ms": original_acc["lap_time_ms"] - 1}
+    _update_top_lap(top_laps, faster_acc)
+    assert top_laps[("acc", "spa", "car-a", 2)] is faster_acc
+    assert len(top_laps) == 2
+
+
+def test_nearest_grip_does_not_use_another_games_reference():
+    from app.top_laps.runtime import TopLapReferenceModelError
+
+    _, payload = _training_payload()
+    runtime = RuntimeTopLapReferenceModel()
+    runtime.install_backend_payload(payload)
+    with pytest.raises(TopLapReferenceModelError, match="iracing_live"):
+        runtime.enrich([_runtime_record()], track="spa", car="car-a", game="iracing_live")
 
 
 def test_nearest_grip_runtime_values_match_pipeline_features():

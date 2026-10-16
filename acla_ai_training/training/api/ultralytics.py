@@ -19,7 +19,7 @@ MAX_METADATA_BYTES = 1024 * 1024
 
 class UltralyticsMetadata(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    task: Literal["detect", "segment", "classify", "pose", "obb"]
+    task: Literal["detect", "segment", "classify", "pose", "obb", "position"]
     class_names: list[str] = Field(alias="classNames", min_length=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

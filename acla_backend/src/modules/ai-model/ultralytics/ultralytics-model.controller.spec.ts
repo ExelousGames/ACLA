@@ -13,7 +13,11 @@ import { ObjectId } from 'mongodb';
 import { Readable } from 'stream';
 import * as request from 'supertest';
 import { App } from 'supertest/types';
-import { UltralyticsModel } from '../../../schemas/ultralytics-model.schema';
+import {
+  UltralyticsModel,
+  UltralyticsModelSchema,
+} from '../../../schemas/ultralytics-model.schema';
+import { model as mongooseModel } from 'mongoose';
 import { GRIDFS_BUCKETS, GridFSService } from '../../gridfs/gridfs.service';
 import { AIModel } from '../../../schemas/ai-model.schema';
 import { ChunkClientService } from '../../../shared/chunk-service/chunk.service';
@@ -186,6 +190,31 @@ describe('Ultralytics model API (backend only)', () => {
       .expect(401);
     expect(gridfs.uploadStream).not.toHaveBeenCalled();
     expect(unlink).not.toHaveBeenCalled();
+  });
+
+  it('stores position checkpoints with a distinct task and annotation format', async () => {
+    const positionMetadata = {
+      ...metadata,
+      name: 'track-position',
+      task: 'position',
+      metadata: { format: 'acla-yolo-position-v1', metrics: { val_mae: 0.25 } },
+    };
+    const response = await upload(JSON.stringify(positionMetadata)).expect(201);
+    expect(response.body).toMatchObject({
+      ...positionMetadata,
+      annotationFormat: 'position',
+      sha256: createHash('sha256').update(weights).digest('hex'),
+    });
+    expect(storedBytes).toEqual(weights);
+    expect(gridfs.uploadStream).toHaveBeenCalledWith(
+      expect.any(Readable),
+      'best.pt',
+      expect.objectContaining({ annotationFormat: 'position' }),
+      GRIDFS_BUCKETS.ULTRALYTICS_MODELS,
+    );
+    const StoredModel = mongooseModel('PositionUploadTest', UltralyticsModelSchema);
+    await expect(new StoredModel(savedModel).validate()).resolves.toBeUndefined();
+    await expectTemporaryFileRemoved();
   });
 
   it('requires authentication for the Ultralytics list instead of treating the family as a generic ID', async () => {

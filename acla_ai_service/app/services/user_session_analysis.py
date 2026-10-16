@@ -249,6 +249,7 @@ async def _scan_session(
         rows,
         track=session_meta.get("map") or track_id,
         car=session_meta.get("car_name"),
+        game=session_meta.get("game_recorded_from"),
     )
     df = pd.DataFrame(enriched_rows)
     predicted_segments = get_segment_classifier().classify_ranges(

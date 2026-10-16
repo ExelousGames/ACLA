@@ -85,7 +85,7 @@ def _configure_endpoint_services(monkeypatch, segment):
         racing_session,
         "get_top_lap_reference_model",
         lambda: SimpleNamespace(
-            enrich=lambda records, track=None, car=None: records,
+            enrich=lambda records, track=None, car=None, game=None: records,
         ),
     )
 

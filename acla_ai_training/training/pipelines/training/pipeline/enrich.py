@@ -42,7 +42,7 @@ async def enrich_sessions_with_context(
         )
     except NoTopLapReferenceError as e:
         print(
-            f"[WARN] No top-lap reference for ({e.track}, {e.car}); "
+            f"[WARN] No top-lap reference for ({e.game}, {e.track}, {e.car}); "
             f"skipping session ({len(chunk_data)} records)"
         )
         return []

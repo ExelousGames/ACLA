@@ -1,8 +1,8 @@
 """
-Training-owned top-lap reference builder for ACC telemetry.
+Training-owned top-lap reference builder for session telemetry.
 
 This is a memory-based registry. We store the selected top lap per
-``(track, car, avg_grip_int)`` bucket (filled by the cleaning stage of the
+``(game, track, car, avg_grip_int)`` bucket (filled by the cleaning stage of the
 training pipeline) and answer queries by 1-D interpolating that one lap's
 telemetry against ``normalized_position``.
 """
@@ -58,8 +58,9 @@ class TopLapReferenceModelService:
         top_laps_cache_key: str,
         *,
         telemetry_store,
+        game: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Load cached top laps and store one per (track, car, grip)."""
+        """Load cached top laps and store one per (game, track, car, grip)."""
         self.logger.info(
             "Building top-lap references from cache: %s",
             top_laps_cache_key,
@@ -73,7 +74,7 @@ class TopLapReferenceModelService:
         )
 
         total_samples = 0
-        recorded_keys: List[Tuple[str, str, int]] = []
+        recorded_keys: List[Tuple[str, str, str, int]] = []
 
         for chunk_tuple in chunks_iterator:
             chunk_data, _chunk_id = chunk_tuple
@@ -81,7 +82,7 @@ class TopLapReferenceModelService:
                 continue
 
             for lap_records in chunk_data:
-                key = self.top_lap_store.record_lap(lap_records)
+                key = self.top_lap_store.record_lap(lap_records, game=game)
                 if key is not None:
                     recorded_keys.append(key)
                 total_samples += len(lap_records)
@@ -92,15 +93,15 @@ class TopLapReferenceModelService:
 
         results = {
             'modelData': {
-                f"{t}|{c}|grip{g}": entry.to_components()
-                for (t, c, g), entry in self.top_lap_store.entries.items()
+                f"{game}|{t}|{c}|grip{g}": entry.to_components()
+                for (game, t, c, g), entry in self.top_lap_store.entries.items()
             },
             'metadata': {
-                'input_features': ['normalized_position', 'track', 'car', 'avg_grip_int'],
+                'input_features': ['normalized_position', 'game', 'track', 'car', 'avg_grip_int'],
                 'target_features': sorted(all_targets),
                 'buckets_recorded': [
-                    {'track': t, 'car': c, 'avg_grip_int': g}
-                    for (t, c, g) in recorded_keys
+                    {'game': game, 'track': t, 'car': c, 'avg_grip_int': g}
+                    for (game, t, c, g) in recorded_keys
                 ],
                 'total_training_samples': total_samples,
             },
@@ -108,8 +109,10 @@ class TopLapReferenceModelService:
         results['reference_summary'] = self._generate_reference_summary(results)
         return results
 
-    def sample_reference_actions(self, processed_df: pd.DataFrame) -> Dict[str, Any]:
-        """Sample the stored top lap for the batch's track, car, and grip."""
+    def sample_reference_actions(
+        self, processed_df: pd.DataFrame, *, game: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Sample the stored top lap for the batch's game, track, car, and grip."""
         if not self.top_lap_store.entries:
             self.logger.warning("No stored top-lap references available")
             return {"error": "No stored top-lap references available"}
@@ -121,14 +124,14 @@ class TopLapReferenceModelService:
             return {"error": "Graphics_normalized_car_position not found in input data"}
 
         try:
-            track, car, avg_grip_int = bucket_key_from_dataframe(processed_df)
+            game, track, car, avg_grip_int = bucket_key_from_dataframe(processed_df, game=game)
         except ValueError as e:
             return {"error": str(e)}
 
         normalized_positions = processed_df['Graphics_normalized_car_position'].values
         try:
             reference_actions = self.top_lap_store.predict(
-                track, car, avg_grip_int, normalized_positions
+                track, car, avg_grip_int, normalized_positions, game=game
             )
         except KeyError as e:
             return {"error": str(e)}
@@ -144,11 +147,14 @@ class TopLapReferenceModelService:
     def extract_reference_features(
         self,
         telemetry_data: List[Dict[str, Any]],
+        *,
+        game: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Calculate reference fields and deltas for each telemetry row."""
         reference_feature_rows = calculate_reference_features(
             self.top_lap_store,
             telemetry_data,
+            game=game,
         )
         self.logger.info(
             "Completed top-lap reference extraction for %d records",
@@ -159,6 +165,7 @@ class TopLapReferenceModelService:
     def _generate_reference_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:
         metadata = results.get('metadata', {})
         buckets = metadata.get('buckets_recorded', [])
+        games = {b['game'] for b in buckets}
         tracks = {b['track'] for b in buckets}
         cars = {b['car'] for b in buckets}
         return {
@@ -166,6 +173,7 @@ class TopLapReferenceModelService:
             'reference_built': ['top_lap_store'] if buckets else [],
             'position_summary': {
                 'buckets_recorded': len(buckets),
+                'games_recorded': len(games),
                 'tracks_recorded': len(tracks),
                 'cars_recorded': len(cars),
                 'input_features': len(metadata.get('input_features', [])),

@@ -8,6 +8,7 @@ export const ULTRALYTICS_TASKS = [
   'classify',
   'pose',
   'obb',
+  'position',
 ] as const;
 export type UltralyticsTask = (typeof ULTRALYTICS_TASKS)[number];
 
@@ -19,7 +20,7 @@ export class UltralyticsModel {
   @Prop({ required: true, enum: ['ultralytics'], default: 'ultralytics' })
   framework: string;
 
-  @Prop({ required: true, enum: ['labelme'], default: 'labelme' })
+  @Prop({ required: true, enum: ['labelme', 'position'], default: 'labelme' })
   annotationFormat: string;
 
   @Prop({ type: String, required: true, enum: ULTRALYTICS_TASKS })

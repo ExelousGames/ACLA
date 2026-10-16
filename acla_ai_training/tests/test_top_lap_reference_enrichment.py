@@ -32,13 +32,15 @@ def _runtime_ranges_for_enrichment_tests(monkeypatch):
 class EnrichingRuntime:
     def __init__(self, time_differences=None, expert_optimal_times=None):
         self.calls = []
+        self.games = []
         self.time_differences = time_differences or []
         self.expert_optimal_times = expert_optimal_times or []
 
     def is_ready(self):
         return True
 
-    def enrich(self, records, track=None, car=None):
+    def enrich(self, records, track=None, car=None, game=None):
+        self.games.append(game)
         copied = [dict(row) for row in records]
         for index, row in enumerate(copied):
             row["expert_optimal_speed"] = 150.0
@@ -70,7 +72,7 @@ class UnavailableRuntime:
     def is_ready(self):
         return False
 
-    def enrich(self, records, track=None, car=None):
+    def enrich(self, records, track=None, car=None, game=None):
         raise TopLapReferenceModelError("Top-lap reference model is unavailable")
 
 
@@ -604,11 +606,13 @@ async def test_user_summary_session_classifier_receives_enriched_copies(monkeypa
             "sessionId": "session-1",
             "map": "brands_hatch",
             "car_name": "car-a",
+            "game_recorded_from": "iracing_recorded",
         },
         source,
     )
 
     assert classifier_frames[0].iloc[0]["expert_optimal_speed"] == 150.0
+    assert runtime.games == ["iracing_recorded"]
     assert "driver_push_to_limit" not in classifier_frames[0].columns
     assert classifier_frames[0].iloc[0]["Static_track"] == "brands_hatch"
     assert classifier_frames[0].iloc[0]["Static_car_model"] == "car-a"

@@ -77,6 +77,7 @@ class TopLapReferenceGuidanceRequest(BaseModel):
     delay_seconds: Optional[float] = 0.0
     track_name: str
     car_name: str   
+    game: Optional[str] = None
     user_id: Optional[str] = None
 
 class OpportunityForecastRequest(BaseModel):
@@ -102,10 +103,12 @@ class SegmentClassificationRequest(BaseModel):
     telemetry_data: List[Dict[str, Any]]
     track_name: Optional[str] = None
     car_name: Optional[str] = None
+    game: Optional[str] = None
 
 class LiveBaselineAnalysisRequest(BaseModel):
     track: Optional[str] = None
     car: Optional[str] = None
+    game: Optional[str] = None
     baseline_lap: Optional[int] = None
     records: List[Dict[str, Any]]
     
@@ -336,6 +339,7 @@ async def get_top_lap_reference_guidance(
                 user_request=request.human_request,
                 track_name=request.track_name,
                 car_name=request.car_name,
+                game=request.game,
             )
 
         except Exception as e:
@@ -441,6 +445,7 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
             preprocessed.records,
             track=request.track_name or splitter_result["circuit_id"],
             car=request.car_name,
+            game=request.game,
         )
         segments = _classify_telemetry_segments(
             enriched_rows,
@@ -492,6 +497,7 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
             preprocessed.records,
             track=request.track or splitter_result["circuit_id"],
             car=request.car,
+            game=request.game,
         )
         segments = _classify_telemetry_segments(
             enriched_rows,

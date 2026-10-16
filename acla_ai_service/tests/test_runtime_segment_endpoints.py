@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from app.api import racing_session
 from app.shared.inference_preprocessing import InferenceTelemetryBatch
+from app.top_laps.runtime import RuntimeTopLapReferenceModel
 
 
 def _configure_analysis_dependencies(monkeypatch):
@@ -22,7 +23,7 @@ def _configure_analysis_dependencies(monkeypatch):
         racing_session,
         "get_top_lap_reference_model",
         lambda: SimpleNamespace(
-            enrich=lambda records, track=None, car=None: records,
+            enrich=lambda records, track=None, car=None, game=None: records,
         ),
     )
 
@@ -122,6 +123,59 @@ async def test_following_only_direct_analysis_succeeds_with_zero_segments(
     assert result["segments"] == []
     assert "expert_reference_data" not in result
     assert classified_ranges == [[]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["segment", "live"])
+@pytest.mark.parametrize("game_source", ["request", "telemetry", "legacy"])
+async def test_direct_analysis_selects_reference_for_game(
+    endpoint, game_source, monkeypatch,
+):
+    _configure_analysis_dependencies(monkeypatch)
+    runtime = RuntimeTopLapReferenceModel()
+    for game, speed in [("acc", 100.0), ("iracing_recorded", 200.0)]:
+        runtime.top_lap_store.record_lap([{
+            "Static_track": "brands_hatch",
+            "Static_car_model": "car-a",
+            "Graphics_normalized_car_position": 0.12,
+            "Physics_speed_kmh": speed,
+        }], game=game)
+    monkeypatch.setattr(racing_session, "get_top_lap_reference_model", lambda: runtime)
+    monkeypatch.setattr(
+        racing_session, "split_runtime_segments",
+        lambda dataframe, circuit_id: {
+            "circuit_id": "brands_hatch", "segments": [],
+        },
+    )
+    classified_rows = []
+    monkeypatch.setattr(
+        racing_session, "get_segment_classifier",
+        lambda: SimpleNamespace(classify_ranges=lambda dataframe, ranges: (
+            classified_rows.extend(dataframe.to_dict("records")) or []
+        )),
+    )
+    records = [{"Graphics_normalized_car_position": 0.12, "Physics_speed_kmh": 150.0}]
+    context = {"game": "iracing_recorded"} if game_source == "request" else {}
+    if game_source == "telemetry":
+        records[0]["game_recorded_from"] = "iracing_recorded"
+
+    if endpoint == "segment":
+        result = await racing_session.classify_session_segments(
+            racing_session.SegmentClassificationRequest(
+                telemetry_data=records, track_name="brands_hatch", car_name="car-a",
+                **context,
+            )
+        )
+    else:
+        result = await racing_session.analyze_live_baseline(
+            racing_session.LiveBaselineAnalysisRequest(
+                records=records, track="brands_hatch", car="car-a", **context,
+            )
+        )
+
+    assert result["status"] == "success"
+    expected_speed = 100.0 if game_source == "legacy" else 200.0
+    assert classified_rows[0]["expert_optimal_speed"] == expected_speed
 
 
 @pytest.mark.asyncio

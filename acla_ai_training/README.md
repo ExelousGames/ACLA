@@ -57,51 +57,191 @@ Pass `--no-upload` for offline training or `--upload-name` to set the backend mo
 name. The workflow guide also describes uploading existing `.pt` checkpoints
 without retraining and the local FastAPI upload endpoint.
 
-## Download paired session telemetry and recordings
+## Prepare images, telemetry, and position references
 
-Start the local training FastAPI app from this folder:
-
-```bash
-python -m uvicorn training.api.app:app --host 127.0.0.1 --port 8002
-```
-
-In another terminal, set `BACKEND_ACCESS_TOKEN` to the session owner's backend
-login JWT, then download a session by its backend ID:
+Run the guided preparation command to choose sessions,
+frame sampling, and alignment settings:
 
 ```bash
-python scripts/download_session.py SESSION_ID
+# From acla_ai_training/:
+export PYTHONPATH=../acla_ai_service
+python scripts/prepare_position_dataset.py
+# Or in the training container:
+docker exec -it acla_ai_training_c python3 /app/scripts/prepare_position_dataset.py
 ```
 
-The script calls `POST /racing-session/{session_id}/download` with
-`Authorization: Bearer <token>`. Use `--api-url` if the training API is at a
-different address. The API uses `BACKEND_SERVER_IP` and `BACKEND_PROXY_PORT`
-(default `http://backend:7001`); for a local backend, set them to
-`http://localhost` and `7001` before starting the API. Video endpoints require
-the owning user's token; the AI service account cannot download another user's
-recordings.
+The prompts query `/racing-session/with-videos` and list the configured account's
+video sessions with their creation dates in the machine's local timezone.
+Choose **Today**, **Yesterday**, **Last 2 days**, **Last 3 days**,
+**Last week**, or **Pick a session** (by listed number or ID). Last 2/3 days and
+last week include today; last week means seven calendar days. Preparation accepts
+one or more sessions without assigning splits; training requires at least two.
+Press Enter to finish picking individual sessions or accept an option's default.
+Review the settings before choosing Start; no sessions are downloaded before
+then, and Ctrl+C cancels. Preparation downloads the selected sessions, extracts
+aligned video frames, and prepares reference-lap/centerline XYZ inputs and signed
+offset targets for `train_position.py`.
 
-For the existing training container, run these commands in separate terminals;
-port 8002 does not need to be published:
+For unattended use, pass the existing command-line options instead:
 
 ```bash
-docker exec -it acla_ai_training_c python3 -m uvicorn training.api.app:app --host 127.0.0.1 --port 8002
-docker exec -e BACKEND_ACCESS_TOKEN acla_ai_training_c python3 /app/scripts/download_session.py SESSION_ID
+python scripts/prepare_position_dataset.py \
+  --sessions SESSION_ID_A SESSION_ID_B --fps 2
 ```
 
-The second command forwards your exported `BACKEND_ACCESS_TOKEN`. Files are
-saved on the API server under `storage/session_downloads/SESSION_ID/`:
+`--sessions` accepts multiple backend session IDs or local session/frame folders.
+Sessions whose local folders already exist are skipped entirely, even if the
+folder is incomplete: they are not downloaded, extracted, or processed again.
+Only missing sessions are downloaded and prepared. The command reports
+`skipped_sessions` alongside frame counts and
+`annotation_directories` to open in Labelme. If every session is skipped, it
+exits successfully without creating output. Failures
+exit with a nonzero status, remove the failed stage's temporary output, and
+preserve completed stages. To retry an incomplete session, move its entire
+session folder out of the download directory first.
 
-- `telemetry.json`: all telemetry records, in backend chunk order.
-- `video_000.mp4`, etc.: every attached MP4, named by its backend video index.
-- `manifest.json`: session metadata and each video's original name, size,
-  `startedAt` timestamp, index, and local filename.
+The command uses the shared authenticated `backend_service`. Configure
+`BACKEND_SERVER_IP`, `BACKEND_PROXY_PORT`, `AI_SERVICE_USERNAME`, and
+`AI_SERVICE_PASSWORD` as for other training commands. No separate FastAPI server
+or manual access token is needed. The training container already supplies the
+shared package and backend settings. Video endpoints require the configured
+account to own the session; the AI service account cannot download another
+user's recordings.
 
-The directory becomes available only after telemetry counts and all video sizes
-match the backend metadata. Failed downloads remove temporary files. Sessions
-without recordings are rejected, and an existing download returns HTTP 409
-without overwriting it. The API returns the saved file paths; the script exits
-with a nonzero status on failure. Storage is relative to this workspace,
-independent of the directory where the API was launched.
+The backend needs an active `top_lap_reference` model containing player XYZ and
+a circuit map with `samples.middle_line` for each session's game and track.
+The command downloads the reference line and centerline map from the backend
+to prepare position inputs and targets.
+
+### Prepared files
+
+Downloads and images are kept in `storage/session_downloads/SESSION_ID/`:
+
+- `telemetry.json`: all telemetry rows, in backend chunk order.
+- `video_000.mp4`: the session's MP4, named by backend video index.
+- `manifest.json`: session metadata and the video's original name, size,
+  timestamp, index, and local filename.
+- `frames/video_000/frame_000000.jpg`: images numbered by source frame index.
+- `frames/video_000/frame_000000.position.json`: the matching image filename,
+  session ID, reference XYZ inputs, and signed offset targets for that image.
+- `frames/manifest.json`: alignment settings and matched/unmatched frame counts.
+
+The video preparation command creates each image and its `.position.json` file
+in the same folder. Each position file contains `session_id`, `image`, `references`,
+and `target`. Both numeric fields are two XYZ triples, ordered reference lap then
+centerline. Images and their matching position files can be moved together.
+
+Training discovers `.position.json` files recursively under the folder passed to
+`--manifest`, such as `storage/session_downloads`. Preparation creates no aggregate
+`positions.json` index or `position-data` directory.
+
+Preparation looks up both reference XYZ positions at each frame's normalized
+lap position and calculates `reference - driver` and `centerline - driver` targets.
+Driver XYZ, normalized lap position, telemetry rows, and reference-model/map
+snapshots are not passed to training. The trainer reads only the prepared
+coordinates, targets, and images, so training works offline without source JSON
+files. Frame/telemetry matches are used only in memory during preparation;
+no per-image `.telemetry.json` files are written. The original session telemetry
+remains in the download cache.
+Images remain in their extracted folders and are
+referenced by relative paths. Preparation validates the saved pairs with the
+training loader through folder discovery. Existing images, position files, and
+annotations remain available through folder discovery. A run with only existing
+sessions leaves all files untouched.
+
+### Frame alignment
+
+New extraction defaults to every frame; `--fps 2` samples two images per second
+using video presentation timestamps relative to the first decoded frame,
+including variable-frame-rate recordings. Higher rates never duplicate frames.
+Telemetry must have finite, nondecreasing `Graphics_analyst_session_time` in seconds.
+Matching uses the nearest complete row without interpolation; ties prefer the
+earlier row. Frames outside telemetry coverage or farther than
+`--max-delta-ms 100` from the nearest row are skipped.
+
+**Alignment assumption:** telemetry uses analyst elapsed time while video `startedAt`
+uses wall-clock time, with no exact shared start marker. The session video's
+first frame is aligned to the first telemetry row. Pauses, clock resets, and
+startup delays can invalidate this estimate. Check alignment before using these
+training targets.
+
+Override a video's start relative to the first telemetry row with repeatable
+`--video-offset SESSION_ID=SECONDS`. A positive offset means the video
+starts later than that row. Offsets are scoped to a session:
+
+```bash
+python scripts/prepare_position_dataset.py \
+  --sessions SESSION_ID_A SESSION_ID_B --fps 2 \
+  --video-offset SESSION_ID_A=0.25 \
+  --video-offset SESSION_ID_B=-0.5
+```
+
+Offsets do not correct drift or pauses within a video. The alignment delta is
+the distance to the selected telemetry sample under the estimate, not verified
+synchronization accuracy. Alignment options apply only to new sessions;
+existing session folders are skipped regardless of their saved settings. To
+prepare a session with different settings, move its entire session folder first,
+preserving any human annotations you need.
+
+### Reference selection and annotation
+
+Track and car come from `Static_track` and `Static_car_model`. Grip is the rounded
+average of `Graphics_track_grip_status` over unique aligned telemetry rows, using
+the shared reference-model bucketing rule. An exact track/car/grip reference
+must exist. Map selection prefers the newest matching `source_track_key`, with
+circuit-name fallback only for maps without a source key. Game comes from the
+session's `game_recorded_from` metadata.
+
+`Graphics_normalized_car_position` locates both reference XYZ positions. Driver
+XYZ is selected by first reading `Graphics_active_cars`, trimming both
+`Graphics_car_coordinates` and `Graphics_car_id` to that count, then locating
+`Graphics_player_car_id` in the active IDs and reading the corresponding coordinate.
+This applies to single-car sessions too. Zero active cars or a missing or ambiguous
+player ID match skips the frame; legacy `Graphics_player_pos_x/y/z` fields are not used.
+All coordinates retain their source axes and scale; curves must cover the lap and share the
+telemetry coordinate system. Preparation uses driver XYZ only to calculate the
+six signed targets (`reference XYZ - driver XYZ` and `centerline XYZ - driver XYZ`)
+and excludes it from the prepared position files.
+
+After preparation succeeds, annotate the images in each reported directory:
+
+```bash
+python scripts/open_labelme.py storage/session_downloads/SESSION_ID_A/frames
+python scripts/open_labelme.py storage/session_downloads/SESSION_ID_B/frames
+```
+
+Save Labelme annotations as `frame_000000.json` beside each image, alongside its
+separate `frame_000000.position.json`. Then train the position extension from the
+folder containing the prepared pairs and an existing segmentation
+checkpoint:
+
+```bash
+python scripts/train_position.py \
+  --manifest storage/session_downloads \
+  --model storage/image_segmentation/runs/train/weights/best.pt \
+  --output storage/image_segmentation/position-runs/run-1 \
+  --epochs 100 --imgsz 768 --batch 8 --device 0
+```
+
+Folder input includes all `.position.json` files recursively. To train on a subset,
+pass a folder containing only those image/position pairs to `--manifest`.
+
+Training randomly shuffles individual frames before the first epoch, using
+`--val-fraction 0.2` and `--seed 42` by default. The fraction applies to frame count,
+with at least one frame in each split. Frames from the same session can appear in
+both splits; a single session with at least two frames is sufficient.
+The run's `split.json` records the image paths, fraction, and seed. The same
+image paths and seed reproduce the assignments. Position data must use adjacent
+`.position.json` files. Indexes containing inline frame data or preset `split`
+assignments are rejected; rerun preparation and pass the folder of prepared pairs.
+
+The regression trainer uses images, reference XYZ, and prepared position targets; it
+does not read Labelme polygons. To incorporate newly drawn region labels into
+its image features, train a segmentation checkpoint with those labels first,
+then pass that checkpoint to `--model`. The preparation merge leaves that
+training behavior unchanged. See the
+[regression workflow](training/image_segmentation/README.md#predict-signed-position-differences-from-images)
+for model inputs, output definitions, and inference.
 
 ## Extract images from videos
 

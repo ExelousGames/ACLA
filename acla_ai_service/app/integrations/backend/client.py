@@ -188,6 +188,19 @@ class BackendService:
             logger.error(f"Backend request to {endpoint} failed: {str(e)}")
             raise Exception(f"Backend function call failed: {str(e)}\n")
 
+    async def iter_session_video(self, session_id: str, video_index: int):
+        """Stream a session recording using the configured backend account."""
+        if not await self.ensure_connection():
+            raise ConnectionError("Failed to establish backend connection")
+
+        timeout = httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=60.0)
+        url = f"{self.base_url}:{self.base_port}/racing-session/{session_id}/videos/{video_index}"
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("GET", url, headers=self.get_auth_headers()) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                    yield chunk
+
     async def get_user_analysis_sessions(self, user_id: str, session_limit: int = 10) -> Dict[str, Any]:
         response = await self.call_backend_function(
             "racing-session/analysis/user-sessions/init",
@@ -355,6 +368,10 @@ class BackendService:
                                     session_meta,
                                     chunk_index,
                                 )
+                                chunk_rows = [
+                                    {**row, "game_recorded_from": session_meta["game_recorded_from"]}
+                                    for row in chunk_rows
+                                ]
                                 yield (chunk_rows, f"{session_id}:chunk_{chunk_index:06d}")
                             except Exception as e:
                                 logger.error(

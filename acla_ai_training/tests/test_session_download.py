@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
-from scripts import download_session
-from training.api import session_download
-from training.api.app import app
+from app.integrations.backend import client as backend_client
+from training.storage.session_download import download_session_pair
 
 
 SESSION_ID = "0123456789abcdef01234567"
@@ -33,7 +32,7 @@ class VideoStream(httpx.AsyncByteStream):
 
 
 @pytest.fixture
-def api(monkeypatch, tmp_path):
+def backend(monkeypatch, tmp_path):
     backend = SimpleNamespace(
         requests=[], statuses={}, stream_error=None,
         chunks=[[ROWS[0]], [ROWS[1]]],
@@ -43,14 +42,16 @@ def api(monkeypatch, tmp_path):
         }],
         videos=[
             {"index": 0, "name": "../../outside.mp4", "size": 8, "mimeType": "video/mp4", "startedAt": 100},
-            {"index": 2, "name": "second.mp4", "size": 8, "mimeType": "video/mp4", "startedAt": 200},
         ],
     )
 
     def handle(request):
         backend.requests.append(request)
-        assert request.headers["Authorization"] == "Bearer owner-token"
         path = request.url.path
+        if path == "/userinfo/auth/login":
+            assert json.loads(request.content) == {"email": "owner@example.com", "password": "password"}
+            return httpx.Response(200, json={"access_token": "service-token"})
+        assert request.headers["Authorization"] == "Bearer service-token"
         status = backend.statuses.get(path)
         if status:
             return httpx.Response(status, json={"message": "Rejected"})
@@ -75,115 +76,112 @@ def api(monkeypatch, tmp_path):
 
     client_type = httpx.AsyncClient
     monkeypatch.setattr(
-        session_download.httpx, "AsyncClient",
+        backend_client.httpx, "AsyncClient",
         lambda **kwargs: client_type(transport=httpx.MockTransport(handle), **kwargs),
     )
-    app.dependency_overrides[session_download.get_backend_url] = lambda: "http://backend:7001/"
-    app.dependency_overrides[session_download.get_download_directory] = lambda: tmp_path
-    try:
-        with TestClient(app) as client:
-            yield client, backend, tmp_path
-    finally:
-        app.dependency_overrides.pop(session_download.get_backend_url, None)
-        app.dependency_overrides.pop(session_download.get_download_directory, None)
+    monkeypatch.setattr(backend_client, "settings", SimpleNamespace(
+        backend_server_ip="http://backend", backend_proxy_port="7001",
+        ai_service_username="owner@example.com", ai_service_password="password",
+    ))
+    service = backend_client.BackendService()
+    return service, backend, tmp_path
 
 
-def download(client, session_id=SESSION_ID):
-    return client.post(
-        f"/racing-session/{session_id}/download",
-        headers={"Authorization": "Bearer owner-token"},
-    )
+def download(service, root, session_id=SESSION_ID):
+    return asyncio.run(download_session_pair(service, session_id, root))
 
 
-def test_download_publishes_telemetry_and_all_videos_together(api):
-    client, backend, root = api
-    response = download(client)
+def test_download_publishes_telemetry_and_session_video_together(backend):
+    service, backend, root = backend
+    result = download(service, root)
 
-    assert response.status_code == 201, response.text
     saved = root / SESSION_ID
-    result = response.json()
     assert result["session_id"] == SESSION_ID
     assert result["directory"] == str(saved)
     assert json.loads(Path(result["telemetry_file"]).read_text()) == ROWS
-    assert result["video_files"] == [str(saved / "video_000.mp4"), str(saved / "video_002.mp4")]
-    assert all(Path(path).read_bytes() == b"mp4-data" for path in result["video_files"])
+    assert result["video_files"] == [str(saved / "video_000.mp4")]
+    assert Path(result["video_files"][0]).read_bytes() == b"mp4-data"
     manifest = json.loads(Path(result["manifest_file"]).read_text())
     assert manifest["session"] == backend.metadata[0]
     assert manifest["telemetry_file"] == "telemetry.json"
-    assert manifest["videos"] == [
-        {**video, "file": filename}
-        for video, filename in zip(backend.videos, ["video_000.mp4", "video_002.mp4"])
-    ]
+    assert manifest["videos"] == [{**backend.videos[0], "file": "video_000.mp4"}]
     assert sorted(path.name for path in saved.iterdir()) == [
-        "manifest.json", "telemetry.json", "video_000.mp4", "video_002.mp4",
+        "manifest.json", "telemetry.json", "video_000.mp4",
     ]
     assert list(root.iterdir()) == [saved]
     assert backend.requests[-1].url.path == CLEANUP_PATH
+    assert sum(request.url.path == "/userinfo/auth/login" for request in backend.requests) == 1
+    assert all(request.url.host == "backend" and request.url.port == 7001 for request in backend.requests)
 
 
-def test_existing_pair_is_preserved_without_backend_requests(api):
-    client, backend, root = api
-    assert download(client).status_code == 201
+def test_existing_pair_is_preserved_without_backend_requests(backend):
+    service, backend, root = backend
+    download(service, root)
     original = {path.name: path.read_bytes() for path in (root / SESSION_ID).iterdir()}
     backend.requests.clear()
-    assert download(client, SESSION_ID.upper()).status_code == 409
+    with pytest.raises(FileExistsError):
+        download(service, root, SESSION_ID.upper())
     assert not backend.requests
     assert {path.name: path.read_bytes() for path in (root / SESSION_ID).iterdir()} == original
 
 
-def test_owner_token_is_required(api):
-    client, backend, root = api
-    response = client.post(f"/racing-session/{SESSION_ID}/download")
-    assert response.status_code == 401
+def test_backend_credentials_are_required(backend):
+    service, backend, root = backend
+    service.username = None
+    with pytest.raises(RuntimeError, match="Failed to establish backend connection"):
+        download(service, root)
     assert not backend.requests
     assert not list(root.iterdir())
 
 
 @pytest.mark.parametrize("session_id", ["not-an-id", "abc", "z" * 24])
-def test_invalid_session_id_is_rejected_before_backend_access(api, session_id):
-    client, backend, _ = api
-    assert download(client, session_id).status_code == 422
+def test_invalid_session_id_is_rejected_before_backend_access(backend, session_id):
+    service, backend, root = backend
+    with pytest.raises(ValueError, match="Invalid session ID"):
+        download(service, root, session_id)
     assert not backend.requests
 
 
-def test_session_without_video_does_not_download_telemetry(api):
-    client, backend, root = api
+def test_session_without_video_does_not_download_telemetry(backend):
+    service, backend, root = backend
     backend.videos = []
-    assert download(client).status_code == 404
-    assert len(backend.requests) == 1
+    with pytest.raises(FileNotFoundError, match="no attached MP4 video"):
+        download(service, root)
+    assert [request.url.path for request in backend.requests] == ["/userinfo/auth/login", VIDEO_PATH]
     assert not list(root.iterdir())
 
 
-@pytest.mark.parametrize("path,status,expected", [
-    (VIDEO_PATH, 401, 401), (VIDEO_PATH, 403, 403), (VIDEO_PATH, 404, 404),
-    (CHUNK_PATH, 500, 502), (VIDEO_PATH + "/2", 404, 404),
-    (VIDEO_PATH + "/2", 500, 502),
+@pytest.mark.parametrize("path,status", [
+    (VIDEO_PATH, 401), (VIDEO_PATH, 403), (VIDEO_PATH, 404),
+    (CHUNK_PATH, 500), (VIDEO_PATH + "/0", 404), (VIDEO_PATH + "/0", 500),
 ])
-def test_backend_failure_never_leaves_an_unpaired_download(api, path, status, expected):
-    client, backend, root = api
+def test_backend_failure_never_leaves_an_unpaired_download(backend, path, status):
+    service, backend, root = backend
     backend.statuses[path] = status
-    assert download(client).status_code == expected
+    with pytest.raises((RuntimeError, httpx.HTTPStatusError)):
+        download(service, root)
     assert not list(root.iterdir())
     if path != VIDEO_PATH:
         assert backend.requests[-1].url.path == CLEANUP_PATH
 
 
-@pytest.mark.parametrize("error,status", [(httpx.ReadTimeout, 504), (httpx.ReadError, 502)])
-def test_interrupted_video_removes_telemetry_and_partial_files(api, error, status):
-    client, backend, root = api
+@pytest.mark.parametrize("error", [httpx.ReadTimeout, httpx.ReadError])
+def test_interrupted_video_removes_telemetry_and_partial_files(backend, error):
+    service, backend, root = backend
     backend.stream_error = error
-    assert download(client).status_code == status
+    with pytest.raises(error):
+        download(service, root)
     assert not list(root.iterdir())
     assert backend.requests[-1].url.path == CLEANUP_PATH
 
 
 @pytest.mark.parametrize("fault", ["count", "video-size", "wrong-session", "invalid-chunk", "invalid-json", "zero-chunks"])
-def test_incomplete_or_mismatched_data_is_not_published(api, fault):
-    client, backend, root = api
+def test_incomplete_or_mismatched_data_is_not_published(backend, fault):
+    service, backend, root = backend
     if fault == "count":
         backend.metadata[0]["dataPoints"] = 3
     elif fault == "video-size":
-        backend.videos[1]["size"] = 100
+        backend.videos[0]["size"] = 100
     elif fault == "wrong-session":
         backend.metadata[0]["sessionId"] = "f" * 24
     elif fault == "invalid-chunk":
@@ -192,43 +190,15 @@ def test_incomplete_or_mismatched_data_is_not_published(api, fault):
         backend.chunks[1] = [42]
     else:
         backend.metadata[0]["chunkCount"] = 0
-    assert download(client).status_code == 502
+    with pytest.raises((ValueError, RuntimeError)):
+        download(service, root)
     assert not list(root.iterdir())
     assert backend.requests[-1].url.path == CLEANUP_PATH
 
 
-def test_cleanup_failure_does_not_undo_completed_pair(api):
-    client, backend, root = api
+def test_cleanup_failure_does_not_undo_completed_pair(backend):
+    service, backend, root = backend
     backend.statuses[CLEANUP_PATH] = 500
-    assert download(client).status_code == 201
+    download(service, root)
     assert (root / SESSION_ID / "telemetry.json").is_file()
-    assert (root / SESSION_ID / "video_002.mp4").is_file()
-
-
-@pytest.mark.parametrize("status,exit_code", [(201, 0), (404, 1), (409, 1), (502, 1)])
-def test_script_calls_local_api_with_owner_token(monkeypatch, capsys, status, exit_code):
-    monkeypatch.setenv("BACKEND_ACCESS_TOKEN", "owner-token")
-    requests = []
-
-    def handle(request):
-        requests.append(request)
-        return httpx.Response(status, json={"directory": "/app/storage/session_downloads/session"})
-
-    client_type = httpx.Client
-    monkeypatch.setattr(
-        download_session.httpx, "Client",
-        lambda **kwargs: client_type(transport=httpx.MockTransport(handle), **kwargs),
-    )
-    assert download_session.main([SESSION_ID, "--api-url", "http://localhost:8002/"]) == exit_code
-    assert str(requests[0].url) == f"http://localhost:8002/racing-session/{SESSION_ID}/download"
-    assert requests[0].headers["Authorization"] == "Bearer owner-token"
-    output = capsys.readouterr()
-    assert "owner-token" not in output.out + output.err
-    assert bool(output.err) == bool(exit_code)
-
-
-def test_script_requires_owner_token(monkeypatch):
-    monkeypatch.delenv("BACKEND_ACCESS_TOKEN", raising=False)
-    with pytest.raises(SystemExit) as error:
-        download_session.main([SESSION_ID])
-    assert error.value.code == 2
+    assert (root / SESSION_ID / "video_000.mp4").is_file()

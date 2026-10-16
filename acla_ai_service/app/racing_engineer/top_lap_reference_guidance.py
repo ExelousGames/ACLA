@@ -26,6 +26,7 @@ async def generate_top_lap_reference_guidance(
     user_request: Optional[str] = None,
     track_name: Optional[str] = None,
     car_name: Optional[str] = None,
+    game: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate segment-purpose guidance using the LLM without requiring the transformer."""
     start_time = time.time()
@@ -50,6 +51,7 @@ async def generate_top_lap_reference_guidance(
                 [processed_telemetry_dict],
                 track=track_name,
                 car=car_name,
+                game=game if game is not None else telemetry_dict.get("game_recorded_from"),
             )[0]
         except Exception as e:
             raise RuntimeError(

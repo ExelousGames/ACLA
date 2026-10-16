@@ -77,6 +77,21 @@ In Labelme, press **Ctrl+N** (Create Polygons), click along the region boundary,
 and double-click to finish. Choose a label, then **Ctrl+S** to save. Use **D** / **A**
 for the next / previous image. JSON annotations are saved beside the images.
 
+For frames from `prepare_position_dataset.py`, enable **View > Position Context**
+to open a separate floating top-down map window. It follows the current image and
+reads the adjacent `.position.json` files in frame order, showing the **centerline**,
+**reference lap**, and **driver trajectory** with dots at the current frame.
+The default range is **100 prepared frames before and after**; change **Frames
+before / after** in the map window to adjust it. Only the current session and video
+folder are included. Invalid or unavailable neighboring frames leave gaps in the
+paths; an image without position data clears the map.
+
+The **Axes** selector defaults to **X / Z**; choose the horizontal plane matching
+your saved coordinate convention. These are world-coordinate paths, independent
+of the image's camera perspective. The map never adds annotation shapes or changes
+the position files. Close it or toggle **View > Position Context** to hide it;
+Labelme remembers its window visibility and layout between launches.
+
 Click **Custom Annotate** in the toolbar (or **Edit > Custom Annotate**) to add
 polygons for the current image using the newest segmentation checkpoint uploaded
 to the backend. Each click compares the latest model ID, size, and SHA-256 with
@@ -340,6 +355,200 @@ After successful training, both `train` and `train-labelme` (including
 checkpoint. Local checkpoints are preserved. Use `--upload-name track-segments`
 to set the backend model name (default: `track-segments`), or `--no-upload` to
 train offline without publishing.
+
+## Predict signed position differences from images
+
+`train-position` extends an existing YOLO segmentation checkpoint with a small
+regression head. It combines the image features feeding YOLO's segmentation
+head with two XYZ positions, looked up during preparation at the frame's
+normalized lap position. The added output is exactly six signed values, ordered as:
+
+```text
+reference_delta_xyz  = reference_lap_xyz(s) - driver_xyz
+centerline_delta_xyz = centerline_map_xyz(s) - driver_xyz
+```
+
+These are direct component-wise differences in the original coordinate system.
+There is no conversion to meters, Euclidean distance, absolute value, or
+lateral/longitudinal transformation. Normalized position `s` is a lookup key,
+not an XYZ coordinate. All three sources must use the same coordinate frame and
+scale; use the map's stored XYZ, not its rendered screen coordinates.
+
+Driver XYZ is required **only during preparation to construct training labels**.
+Each image's `.position.json` contains its filename, session ID, reference coordinates, and targets;
+it excludes driver XYZ and normalized lap position. The model receives the image
+and the two reference XYZ triples; targets provide supervision and error metrics.
+Inference accepts only the image and the two reference positions. Reference lookup uses
+linear interpolation, including across the start/finish seam when needed;
+missing axes and invalid or missing reference curves fail instead of becoming
+zero coordinates.
+
+The first version freezes all YOLO parameters and BatchNorm statistics and
+trains an MLP on pooled image features plus the six reference coordinates.
+Reference inputs are standardized using training-set statistics. Outputs and
+losses stay in raw coordinate units, with an unconstrained linear output layer
+and Smooth L1 training loss. Image preparation letterboxes the entire frame;
+there are no flips, crops, mosaics, or other geometric training augmentations
+that would invalidate its position target.
+
+### Align frames to telemetry
+
+Run the preparation command without arguments for step-by-step choices of
+sessions, sampling, and alignment. It downloads the selected sessions
+without splitting them, extracts images and aligns telemetry in memory, and
+uses the backend reference-lap model and centerline maps to prepare numeric inputs
+and targets:
+
+```bash
+python scripts/prepare_position_dataset.py
+# Unattended equivalent with explicit sessions and sampling:
+python scripts/prepare_position_dataset.py \
+  --sessions SESSION_ID_A SESSION_ID_B --fps 2
+```
+
+This creates `frame_000000.jpg` and `frame_000000.position.json` together in each
+session's `frames/video_000/` folder. The position file holds that image's reference
+XYZ and precomputed offsets. Training discovers these files recursively from the
+input folder; preparation creates no aggregate `positions.json` index or
+`position-data` directory. No telemetry or reference snapshots are written to the
+trainer output, and no per-image telemetry files are saved.
+Sessions with existing local folders are
+skipped without downloading or processing them; only new sessions enter the output.
+The [workspace guide](../../README.md#prepare-images-telemetry-and-position-references)
+describes session selection, backend configuration, alignment offsets, and
+coordinate extraction.
+
+Once preparation succeeds, open each reported `annotation_directories` folder
+with `python scripts/open_labelme.py PATH`. Save Labelme JSON beside the images.
+Pass the folder containing the image/position pairs to `train-position` below.
+The position trainer reads images, reference XYZ, and
+prepared targets. It does not read source telemetry or Labelme polygons; use a
+segmentation checkpoint trained on the new region labels if they should inform
+its frozen image features.
+
+For other images, prepare both reference XYZ inputs and signed offset targets
+synchronized to each image. Provide at least two frames for training to split;
+they can come from a single session. Save each position file
+beside its image, using the same stem with `.position.json`, for example
+`frame_000120.position.json`:
+
+```json
+{
+  "session_id": "session-a",
+  "image": "frame_000120.jpg",
+  "references": [[0.2, 0.0, 0.5], [0.25, 0.0, 0.5]],
+  "target": [[0.07, 0.02, 0.09], [0.12, 0.02, 0.09]]
+}
+```
+
+Folder input discovers `.position.json` files recursively and pools their frames
+for a random train/validation split; Labelme annotations are ignored. The image
+filename is relative to its position file, so these pairs can be moved together. A dataset index instead
+contains sessions with `id` and `frames`, where each frame has a `position_file`
+path relative to the index. Inline frame data and preset session `split`
+assignments are rejected; regenerate these datasets with the preparation command.
+
+Each `references` and `target` array must have shape `(2, 3)` and finite values.
+Row 0 is the reference lap; row 1 is the centerline. Targets are the corresponding
+reference XYZ minus driver XYZ, calculated before discarding driver coordinates.
+The trainer does no reference lookup or target calculation. Older manifests with
+`normalized_position` and `driver_position` must be regenerated by running
+preparation again.
+
+During preparation, reference selection requires an exact track/car/grip bucket
+in the active top-lap store. Circuit maps must match `source_track_key`; display
+names are not used for matching. Centerline points come from `samples.middle_line`.
+Both curves need at least two distinct normalized positions, all three axes, and
+adequately sampled complete laps. When running outside Docker, expose the shared
+service package with `PYTHONPATH=../acla_ai_service` as for other training commands.
+
+### Train and predict
+
+```bash
+python scripts/train_position.py \
+  --manifest storage/session_downloads \
+  --model storage/image_segmentation/runs/train/weights/best.pt \
+  --output storage/image_segmentation/position-runs/run-1 \
+  --epochs 100 --imgsz 768 --batch 8 --device 0
+```
+
+In the training container, use
+`docker exec -it acla_ai_training_c python3 /app/scripts/train_position.py`
+with the same arguments. The script forwards to
+`python -m training.image_segmentation train-position`.
+
+Use your actual segmentation checkpoint and a new output directory. CPU is the
+default if `--device` is omitted. Before the first epoch, training shuffles individual
+frames reproducibly with `--seed 42` and assigns `--val-fraction 0.2` to validation by
+default. The validation count is rounded and clamped to leave at least one frame
+in each split. Frames from the same session can appear in both splits.
+The run's `split.json` records the seed, fraction, and train/validation image paths.
+Prepared position files and the dataset index are not changed.
+
+Training also writes `best.pt`, `last.pt`, and
+`results.json`, including validation MAE for every reference/axis in raw
+coordinates. The best checkpoint is selected by mean validation MAE.
+
+After training, `best.pt` is uploaded to the backend using the same authentication
+and binary storage as segmentation training. The default name is `track-position`;
+use `--upload-name my-position-model` to change it, or `--no-upload` to train
+offline. The backend must include support for the `position` task. Position
+uploads preserve the combined YOLO weights and regression head, input image size,
+output definitions, and validation metrics. They are stored with `task: position`
+and do not enter the Track Vision segmentation model selection.
+
+If the upload fails, training exits with an error and keeps its local checkpoints
+and metrics. Publish the saved checkpoint without retraining with:
+
+```bash
+python -m training.image_segmentation upload-position \
+  storage/image_segmentation/position-runs/run-1/best.pt --name track-position
+```
+
+Use the same backend environment configuration described under **Upload a trained
+model** below. Successful uploads print the backend model ID.
+
+For inference, load your reference-lap XYZ points and backend circuit-map export:
+
+```python
+import json
+from pathlib import Path
+from training.image_segmentation.position_data import PositionCurve
+from training.image_segmentation.position_model import YOLOPositionModel
+
+reference = PositionCurve.from_points(json.loads(Path("reference-lap.json").read_text()))
+centerline = PositionCurve.from_points(
+    json.loads(Path("circuit-map.json").read_text())["samples"]["middle_line"]
+)
+model = YOLOPositionModel.load(Path("position-runs/run-1/best.pt"))
+result = model.predict_position(Path("frame.jpg"), 0.25, reference, centerline)
+# {"reference_delta": [dx, dy, dz], "centerline_delta": [dx, dy, dz]}
+```
+
+For an already loaded top-lap entry, use `PositionCurve.from_top_lap(entry)`.
+Position checkpoints include the original YOLO weights and the added head and
+load through `YOLOPositionModel.load`; they are not standard Ultralytics-only
+checkpoints. Use `upload-position` to store them; the segmentation `upload`
+command continues to accept segmentation checkpoints only. Uploading stores the
+model for later download; the live API does not yet run position inference.
+
+Accuracy needs evaluation on synchronized held-out sessions, especially when
+camera view, car, track, or reference conditions change. Compare against a
+position-only baseline to establish whether the images improve prediction.
+The two predictions are learned outputs, so their mutual geometric consistency
+is not guaranteed by this independent six-output head.
+
+Related research supports the components of this approach, rather than this
+exact racing target:
+
+- [PoseNet (ICCV 2015)](https://arxiv.org/abs/1505.07427) regresses camera pose
+  from a single RGB image, demonstrating image-to-continuous-position learning.
+- [FiLM (AAAI 2018)](https://arxiv.org/abs/1709.07871) conditions visual features
+  on additional information. It offers a possible alternative to the simple
+  feature concatenation used here; its experiments concern visual reasoning.
+- [TransFuser (CVPR 2021)](https://arxiv.org/abs/2104.09224) combines image and
+  LiDAR representations for driving and waypoint prediction. It is evidence
+  for multimodal fusion, not a study of this exact pair of XYZ inputs.
 
 ## Upload a trained model
 

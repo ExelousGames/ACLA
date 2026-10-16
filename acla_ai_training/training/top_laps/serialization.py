@@ -25,8 +25,8 @@ def serialize_top_lap_store(store: TopLapStore) -> Dict[str, Any]:
         raise ValueError("No stored top laps to serialize. Record laps first.")
 
     serialized_entries: Dict[str, str] = {}
-    for (track, car, grip), entry in store.entries.items():
-        key_str = f"{track}|{car}|grip{grip}"
+    for (game, track, car, grip), entry in store.entries.items():
+        key_str = f"{game}|{track}|{car}|grip{grip}"
         serialized_entries[key_str] = encode_components(entry.to_components())
     return {"top_lap_store": serialized_entries}
 

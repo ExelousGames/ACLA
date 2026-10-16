@@ -36,6 +36,11 @@ def test_preparation_preserves_classes_polygons_and_nested_names(tmp_path):
     _annotation(tmp_path / "train/session_b", labels=("car", "car"))
     _annotation(tmp_path / "val/session_c", labels=())
     Image.new("RGB", (100, 50)).save(tmp_path / "train/unreviewed.png")
+    for folder, name in (("train/session_a", "frame"), ("val/session_c", "frame"), ("train", "unreviewed")):
+        (tmp_path / folder / f"{name}.position.json").write_text(json.dumps({
+            "session_id": folder, "image": f"{name}.png",
+            "references": [[1, 2, 3], [4, 5, 6]], "target": [[0, 0, 0], [0, 0, 0]],
+        }))
     original = (tmp_path / "train/session_a/frame.json").read_bytes()
 
     data = prepare_dataset(tmp_path / "train", tmp_path / "val", tmp_path / "output")

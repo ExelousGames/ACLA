@@ -1,4 +1,4 @@
-"""Run with python -m training.image_segmentation {annotate,prepare,train,train-labelme,upload}."""
+"""Local image annotation, segmentation training, and position-regression training."""
 
 from __future__ import annotations
 
@@ -54,6 +54,20 @@ def main(argv: list[str] | None = None) -> int:
     prepared = commands.add_parser("train", parents=[train], help="Train a prepared YOLO dataset.")
     prepared.add_argument("--data", type=Path, required=True, help="Prepared data.yaml file.")
 
+    position = commands.add_parser("train-position", help="Extend a saved YOLO segmentation model with signed XYZ offsets.")
+    position.add_argument("--manifest", type=Path, required=True, help="Recursively scan a folder for .position.json files, or read a positions.json index; randomly split frames when training starts.")
+    position.add_argument("--model", type=Path, required=True, help="Existing segmentation .pt checkpoint.")
+    position.add_argument("--output", type=Path, required=True, help="New directory for position checkpoints and metrics.")
+    position.add_argument("--epochs", type=int, default=100)
+    position.add_argument("--imgsz", type=int, default=768)
+    position.add_argument("--batch", type=int, default=8)
+    position.add_argument("--device", default="cpu")
+    position.add_argument("--workers", type=int, default=0)
+    position.add_argument("--val-fraction", type=float, default=0.2, help="Validation share of frames (default: 0.2).")
+    position.add_argument("--seed", type=int, default=42, help="Random frame split and training seed (default: 42).")
+    position.add_argument("--no-upload", action="store_true", help="Keep the checkpoint local without uploading.")
+    position.add_argument("--upload-name", default="track-position", help="Model name in the backend store.")
+
     automatic = commands.add_parser(
         "train-labelme", parents=[train], help="Split nested Labelme annotations and train.",
     )
@@ -75,14 +89,35 @@ def main(argv: list[str] | None = None) -> int:
     upload = commands.add_parser("upload", help="Upload a saved segmentation checkpoint without retraining.")
     upload.add_argument("checkpoint", type=Path, help="Local trained .pt checkpoint.")
     upload.add_argument("--name", default="track-segments", help="Model name in the backend store.")
+    upload_position = commands.add_parser("upload-position", help="Upload a saved position checkpoint without retraining.")
+    upload_position.add_argument("checkpoint", type=Path, help="Local trained position .pt checkpoint.")
+    upload_position.add_argument("--name", default="track-position", help="Model name in the backend store.")
     args = parser.parse_args(argv)
 
-    if args.command == "upload":
-        from .publication import upload_checkpoint
+    if args.command == "train-position":
+        from .position_training import train_position_model
+
+        try:
+            checkpoint = train_position_model(
+                args.manifest, model=args.model, output=args.output, epochs=args.epochs,
+                imgsz=args.imgsz, batch=args.batch, device=args.device, workers=args.workers,
+                val_fraction=args.val_fraction, seed=args.seed,
+                upload=not args.no_upload, upload_name=args.upload_name,
+            )
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            parser.error(str(exc))
+        print(f"Position checkpoint ready: {checkpoint}")
+        return 0
+
+    if args.command in ("upload", "upload-position"):
+        if args.command == "upload-position":
+            from .position_publication import upload_position_checkpoint as upload_checkpoint
+        else:
+            from .publication import upload_checkpoint
 
         try:
             record = asyncio.run(upload_checkpoint(args.checkpoint, name=args.name))
-        except (OSError, ValueError, ImportError, httpx.HTTPError) as exc:
+        except (OSError, ValueError, ImportError, KeyError, TypeError, RuntimeError, httpx.HTTPError) as exc:
             parser.error(f"Backend upload failed: {exc}")
         print(f"Model uploaded to backend: {record['_id']}")
         return 0

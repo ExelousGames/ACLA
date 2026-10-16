@@ -106,6 +106,14 @@ def test_expired_authentication_refreshes_and_resends_complete_checkpoint(api):
     assert all(parts["file"].get_payload(decode=True) == b"checkpoint" for _, parts in backend.requests)
 
 
+def test_position_task_is_forwarded_without_becoming_segmentation(api):
+    client, backend = api
+    metadata = {**METADATA, "name": "track-position", "task": "position"}
+    assert upload(client, metadata=json.dumps(metadata)).status_code == 201
+    _, parts = backend.requests[0]
+    assert json.loads(parts["metadata"].get_payload(decode=True)) == metadata
+
+
 @pytest.mark.parametrize("filename,content", [("best.json", b"weights"), ("best.pt", b"")])
 def test_invalid_checkpoint_is_rejected_without_backend_call(api, filename, content):
     client, backend = api

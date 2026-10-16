@@ -337,3 +337,100 @@ def test_auto_annotation_is_disabled_while_drawing(editor, provider):
     window.close_file()
     window._on_drawing_polygon_changed(False)
     assert not action.isEnabled()
+
+
+def test_position_window_follows_images_and_keeps_annotations_separate(editor):
+    from PyQt5 import QtCore, QtWidgets
+
+    window, annotation = editor
+    images = [annotation.with_suffix(".png"), annotation.with_name("frame_2.png"), annotation.with_name("frame_10.png")]
+    for index, image in enumerate(images):
+        window._image.save(str(image))
+        image.with_suffix(".position.json").write_text(json.dumps({
+            "session_id": "session-a", "image": image.name,
+            "references": [[index * 10, 0, 2], [index * 10, 0, 6]],
+            "target": [[0, 0, 2], [0, 0, 6]],
+        }))
+    original_positions = [image.with_suffix(".position.json").read_bytes() for image in images]
+    window._load_file(str(images[0]))
+    panel = window._position_panel
+    floating = window._position_window
+    action = floating.toggleViewAction()
+    assert action in window._menus.view.actions()
+    assert not action.isChecked()
+    action.trigger()
+    assert floating.isVisible() and floating.isFloating()
+    assert floating.allowedAreas() == QtCore.Qt.NoDockWidgetArea
+    assert panel.radius.value() == 100
+    assert len(panel.context.frames) == 3
+    assert panel.context.current_index == 0
+    assert len(panel.map.scene().items()) == 6  # Three paths and three current markers.
+    markers = [item for item in panel.map.scene().items() if isinstance(item, QtWidgets.QGraphicsEllipseItem)]
+    assert sorted((item.pos().x(), item.pos().y()) for item in markers) == [(0, -6), (0, -2), (0, 0)]
+    assert window._canvas_widgets.canvas.shapes == []
+    assert not annotation.exists()
+
+    # Saved Labelme annotations can be reopened alongside the position sidecars.
+    window._switch_canvas_mode(edit=False, create_mode="polyline_polygon")
+    finish_polyline(window, [(10, 20), (30, 20)])
+    saved = annotation.read_bytes()
+    window._load_file(str(annotation))
+    assert len(window._canvas_widgets.canvas.shapes) == 1
+    assert panel.context.current_index == 0
+    window._load_file(str(images[1]))
+    assert panel.context.current_index == 1
+    assert panel.context.frames[1].driver == (10, 0, 0)
+    assert "frame_2.png" in panel.status.text()
+
+    panel.radius.setValue(0)
+    assert len(panel.context.frames) == 1
+    assert panel.context.current_index == 0
+    panel.axes.setCurrentIndex(1)
+    assert len(panel.map.scene().items()) == 6
+    floating.close()
+    assert not action.isChecked()
+    action.trigger()
+    window.close_file()
+    assert panel.context is None
+    assert panel.map.scene().items() == []
+    assert annotation.read_bytes() == saved
+    assert [image.with_suffix(".position.json").read_bytes() for image in images] == original_positions
+
+
+@pytest.mark.parametrize("position_contents", [None, "{broken", '{"session_id":"a"}'])
+def test_position_window_clears_stale_paths_when_data_is_unavailable(editor, position_contents):
+    window, annotation = editor
+    image = annotation.with_suffix(".png")
+    position = image.with_suffix(".position.json")
+    position.write_text(json.dumps({
+        "session_id": "a", "image": image.name,
+        "references": [[0, 0, 0], [0, 0, 0]], "target": [[0, 0, 0], [0, 0, 0]],
+    }))
+    window._load_file(str(image))
+    assert window._position_panel.context is not None
+    if position_contents is None:
+        position.unlink()
+    else:
+        position.write_text(position_contents)
+    window._load_file(str(image))
+    assert window._position_panel.context is None
+    assert window._position_panel.map.scene().items() == []
+    assert "position data" in window._position_panel.status.text()
+    assert window._canvas_widgets.canvas.isEnabled()
+
+
+def test_position_window_visibility_and_floating_layout_are_restored(editor):
+    window, _ = editor
+    window._position_window.toggleViewAction().trigger()
+    window.close()
+
+    reopened = type(window)(
+        config_file=PACKAGE_DIR / "labelme.yaml", config_overrides={"labels": ["track"]},
+    )
+    try:
+        assert reopened._position_window.toggleViewAction().isChecked()
+        assert reopened._position_window.isFloating()
+        reopened._position_window.close()
+    finally:
+        reopened.close()
+        reopened.deleteLater()

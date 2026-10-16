@@ -1,6 +1,6 @@
 """Top-lap registry for reference telemetry.
 
-Stores the selected top lap per ``(track, car, avg_grip_int)`` combination and
+Stores the selected top lap per ``(game, track, car, avg_grip_int)`` combination and
 answers
 position-based queries by 1-D interpolating that one lap's telemetry against
 ``normalized_position``.
@@ -38,14 +38,15 @@ _EXPERT_TARGET_FROM_TELEMETRY: Dict[str, str] = {
 
 
 class NoTopLapReferenceError(KeyError):
-    """No top-lap reference stored for a (track, car) at any grip bucket."""
+    """No top-lap reference stored for a (game, track, car) at any grip bucket."""
 
-    def __init__(self, track: str, car: str, avg_grip_int: int):
+    def __init__(self, track: str, car: str, avg_grip_int: int, *, game: str = "acc"):
+        self.game = game
         self.track = track
         self.car = car
         self.avg_grip_int = int(avg_grip_int)
         super().__init__(
-            f"No top-lap reference stored for {(track, car, int(avg_grip_int))}"
+            f"No top-lap reference stored for {(game, track, car, int(avg_grip_int))}"
         )
 
 
@@ -67,12 +68,21 @@ def _compute_avg_grip_int(values: np.ndarray) -> int:
     return max(0, min(6, int(round(mean))))
 
 
+def _resolve_game(game: Optional[str], record: Dict[str, Any]) -> str:
+    # References and telemetry cached before game was recorded were ACC-only.
+    value = game if game is not None else record.get("game_recorded_from", "acc")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("game_recorded_from is required to derive the reference game")
+    return value
+
+
 class TopLapEntry:
     """One stored top lap with sorted/deduped x and y for np.interp lookup."""
 
     def __init__(
         self,
         *,
+        game: str = "acc",
         track: str,
         car: str,
         avg_grip_int: int,
@@ -80,6 +90,7 @@ class TopLapEntry:
         y: np.ndarray,
         target_features: List[str],
     ):
+        self.game = game
         self.track = track
         self.car = car
         self.avg_grip_int = avg_grip_int
@@ -92,6 +103,7 @@ class TopLapEntry:
         cls,
         records: List[Dict[str, Any]],
         *,
+        game: str = "acc",
         track: str,
         car: str,
         avg_grip_int: int,
@@ -121,6 +133,7 @@ class TopLapEntry:
         y = df[target_features].to_numpy(dtype=float) if target_features else np.zeros((len(df), 0))
 
         return cls(
+            game=game,
             track=track,
             car=car,
             avg_grip_int=avg_grip_int,
@@ -155,6 +168,7 @@ class TopLapEntry:
 
     def to_components(self) -> Dict[str, Any]:
         return {
+            "game": self.game,
             "track": self.track,
             "car": self.car,
             "avg_grip_int": int(self.avg_grip_int),
@@ -166,6 +180,7 @@ class TopLapEntry:
     @classmethod
     def from_components(cls, components: Dict[str, Any]) -> "TopLapEntry":
         return cls(
+            game=components.get("game", "acc"),
             track=components["track"],
             car=components["car"],
             avg_grip_int=int(components["avg_grip_int"]),
@@ -176,7 +191,7 @@ class TopLapEntry:
 
 
 class TopLapStore:
-    """Registry of top laps keyed by (track, car, avg_grip_int)."""
+    """Registry of top laps keyed by (game, track, car, avg_grip_int)."""
 
     def __init__(
         self,
@@ -185,7 +200,7 @@ class TopLapStore:
         debug_logger: Optional[Callable[..., None]] = None,
         logger: Optional[logging.Logger] = None,
     ):
-        self.entries: Dict[Tuple[str, str, int], TopLapEntry] = {}
+        self.entries: Dict[Tuple[str, str, str, int], TopLapEntry] = {}
         self.debug_enabled = debug
         self._debug_logger = debug_logger
         self.logger = logger or logging.getLogger(f"{__name__}.TopLapStore")
@@ -198,7 +213,9 @@ class TopLapStore:
         else:
             self.logger.debug(_format_debug_message(message, debug_data))
 
-    def record_lap(self, records: List[Dict[str, Any]]) -> Optional[Tuple[str, str, int]]:
+    def record_lap(
+        self, records: List[Dict[str, Any]], *, game: Optional[str] = None,
+    ) -> Optional[Tuple[str, str, str, int]]:
         """Store one lap; key derived from its records.
 
         Caller is expected to pass laps already selected as top per bucket
@@ -207,6 +224,7 @@ class TopLapStore:
         if not records:
             return None
 
+        game = _resolve_game(game, records[0])
         track = records[0].get("Static_track", "unknown_track")
         car = records[0].get("Static_car_model", "unknown_car")
         grip_values = [
@@ -217,12 +235,13 @@ class TopLapStore:
         avg_grip_int = _compute_avg_grip_int(np.asarray(grip_values, dtype=float))
 
         entry = TopLapEntry.from_lap_records(
-            records, track=track, car=car, avg_grip_int=avg_grip_int
+            records, game=game, track=track, car=car, avg_grip_int=avg_grip_int
         )
-        key = (track, car, avg_grip_int)
+        key = (game, track, car, avg_grip_int)
         self.entries[key] = entry
         self._debug(
             "stored top lap",
+            game=game,
             track=track,
             car=car,
             avg_grip_int=avg_grip_int,
@@ -230,16 +249,18 @@ class TopLapStore:
         )
         return key
 
-    def record_laps(self, lap_records_list: List[List[Dict[str, Any]]]) -> List[Tuple[str, str, int]]:
-        keys: List[Tuple[str, str, int]] = []
+    def record_laps(
+        self, lap_records_list: List[List[Dict[str, Any]]], *, game: Optional[str] = None,
+    ) -> List[Tuple[str, str, str, int]]:
+        keys: List[Tuple[str, str, str, int]] = []
         for lap_records in lap_records_list:
-            key = self.record_lap(lap_records)
+            key = self.record_lap(lap_records, game=game)
             if key is not None:
                 keys.append(key)
         return keys
 
-    def has(self, track: str, car: str, avg_grip_int: int) -> bool:
-        return (track, car, avg_grip_int) in self.entries
+    def has(self, track: str, car: str, avg_grip_int: int, *, game: str = "acc") -> bool:
+        return (game, track, car, avg_grip_int) in self.entries
 
     def predict(
         self,
@@ -247,21 +268,23 @@ class TopLapStore:
         car: str,
         avg_grip_int: int,
         normalized_positions: Union[float, List[float], np.ndarray],
+        *,
+        game: str = "acc",
     ) -> Union[Dict[str, float], List[Dict[str, float]]]:
-        key = (track, car, int(avg_grip_int))
+        key = (game, track, car, int(avg_grip_int))
         entry = self.entries.get(key)
         if entry is None:
             # Session chunks are arbitrary row slices, so their averaged grip
             # rarely matches a stored top lap's grip exactly. Fall back to
-            # the closest available grip bucket for the same (track, car).
+            # the closest available grip bucket for the same (game, track, car).
             candidates = [
                 (k, e) for k, e in self.entries.items()
-                if k[0] == track and k[1] == car
+                if k[:3] == (game, track, car)
             ]
             if not candidates:
-                raise NoTopLapReferenceError(track, car, avg_grip_int)
+                raise NoTopLapReferenceError(track, car, avg_grip_int, game=game)
             fallback_key, entry = min(
-                candidates, key=lambda ke: abs(ke[0][2] - int(avg_grip_int))
+                candidates, key=lambda ke: abs(ke[0][3] - int(avg_grip_int))
             )
             self._debug(
                 "grip bucket miss; using nearest grip",

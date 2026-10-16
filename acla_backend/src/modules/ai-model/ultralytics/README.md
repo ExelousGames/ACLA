@@ -1,6 +1,7 @@
 # Ultralytics model storage
 
-Backend storage for Ultralytics `.pt` weights trained with LabelMe annotations.
+Backend storage for Ultralytics `.pt` weights trained with LabelMe annotations
+and ACLA YOLO position-regression checkpoints.
 `UltralyticsModelModule` stores model metadata in MongoDB's `ultralytics_models`
 collection and the unchanged binary file in the `ultralytics_models` GridFS bucket
 (`ultralytics_models.files` / `ultralytics_models.chunks`). Its endpoints live
@@ -43,10 +44,17 @@ Send `multipart/form-data` with exactly these fields:
 ```
 
 `name`, `task`, and `classNames` are required. Supported tasks are `detect`,
-`segment`, `classify`, `pose`, and `obb`. `classNames` must contain unique,
+`segment`, `classify`, `pose`, `obb`, and the ACLA extension `position`.
+`classNames` must contain unique,
 non-empty strings **in model class-ID order**: array index 0 is class 0.
 The nested `metadata` object is optional and preserves training parameters,
 metrics, dataset details, and run identifiers supplied by the uploader.
+
+For `position`, `classNames` describes the embedded segmentation model; regression
+output names, target definition, coordinate units, and validation metrics belong
+in `metadata`. Position checkpoints use `metadata.format: "acla-yolo-position-v1"`
+and load with `YOLOPositionModel.load`, not the standard Ultralytics loader.
+The `/ai-model/ultralytics/track-vision` selector only returns `segment` models.
 
 Example request (shell syntax; save the JSON above as `model-metadata.json`):
 
@@ -58,7 +66,8 @@ curl -X POST http://localhost:7001/ai-model/ultralytics \
 ```
 
 The response includes `_id`, the supplied metadata, `framework: "ultralytics"`,
-`annotationFormat: "labelme"`, `modelFileId`, `filename`, `sizeBytes`, `sha256`,
+`annotationFormat` (`"position"` for position tasks, otherwise `"labelme"`),
+`modelFileId`, `filename`, `sizeBytes`, `sha256`,
 `createdAt`, and `updatedAt`. Use `_id` in the read/download routes. Each upload
 creates a new record, including uploads with the same name; it does not replace
 or activate an existing model.

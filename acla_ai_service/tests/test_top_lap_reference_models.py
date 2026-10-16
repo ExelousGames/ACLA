@@ -130,6 +130,23 @@ def test_unmatched_track_or_car_is_rejected():
         )
 
 
+def test_legacy_acc_payload_does_not_match_other_games():
+    payload = _backend_payload()
+    key, encoded = next(iter(payload["top_lap_store"].items()))
+    components = pickle.loads(base64.b64decode(encoded))
+    components.pop("game")
+    payload["top_lap_store"][key] = base64.b64encode(pickle.dumps(components)).decode("utf-8")
+    runtime = RuntimeTopLapReferenceModel()
+    runtime.install_backend_payload(payload)
+
+    assert runtime.enrich([_runtime_record()], track="spa", car="car-a", game="acc")
+    with pytest.raises(TopLapReferenceModelError, match="iracing_recorded"):
+        runtime.enrich(
+            [{**_runtime_record(), "game_recorded_from": "iracing_recorded"}],
+            track="spa", car="car-a",
+        )
+
+
 def test_malformed_payload_does_not_replace_installed_reference():
     payload = _backend_payload()
     runtime = RuntimeTopLapReferenceModel()

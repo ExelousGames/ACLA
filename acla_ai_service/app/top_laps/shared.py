@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import base64
 import pickle
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -18,12 +18,15 @@ from app.top_laps.model import (
     TopLapEntry,
     TopLapStore,
     _compute_avg_grip_int,
+    _resolve_game,
 )
 from app.shared.expert_features import ExpertFeatureCatalog
 
 
-def bucket_key_from_dataframe(df: pd.DataFrame) -> Tuple[str, str, int]:
-    """Return the exact track/car and averaged grip bucket for telemetry."""
+def bucket_key_from_dataframe(
+    df: pd.DataFrame, *, game: Optional[str] = None,
+) -> Tuple[str, str, str, int]:
+    """Return the exact game/track/car and averaged grip bucket for telemetry."""
 
     if "Static_track" not in df.columns or df["Static_track"].empty:
         raise ValueError("Static_track required to derive bucket key")
@@ -42,7 +45,7 @@ def bucket_key_from_dataframe(df: pd.DataFrame) -> Tuple[str, str, int]:
     else:
         avg_grip_int = 2
 
-    return track, car, avg_grip_int
+    return _resolve_game(game, df.iloc[0].to_dict()), track, car, avg_grip_int
 
 
 def decode_components(model_data: str) -> Dict[str, Any]:
@@ -62,12 +65,14 @@ def decode_components(model_data: str) -> Dict[str, Any]:
 
 def _validate_entry(entry: TopLapEntry) -> None:
     if (
-        not isinstance(entry.track, str)
+        not isinstance(entry.game, str)
+        or not entry.game.strip()
+        or not isinstance(entry.track, str)
         or not entry.track
         or not isinstance(entry.car, str)
         or not entry.car
     ):
-        raise ValueError("Top-lap entry requires track and car")
+        raise ValueError("Top-lap entry requires game, track and car")
     if not 0 <= entry.avg_grip_int <= 6:
         raise ValueError("Top-lap grip bucket must be between 0 and 6")
     if entry.x.ndim != 1 or entry.x.size == 0:
@@ -110,7 +115,7 @@ def deserialize_top_lap_store(
                 f"Top-lap entry {key_str!r} has invalid components"
             ) from exc
         _validate_entry(entry)
-        key = (entry.track, entry.car, int(entry.avg_grip_int))
+        key = (entry.game, entry.track, entry.car, int(entry.avg_grip_int))
         if key in store.entries:
             raise ValueError(f"Duplicate top-lap entry for {key}")
         store.entries[key] = entry
@@ -121,6 +126,8 @@ def deserialize_top_lap_store(
 def calculate_reference_features(
     store: TopLapStore,
     telemetry_data: List[Dict[str, Any]],
+    *,
+    game: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Calculate the classifier's reference fields for each telemetry row."""
 
@@ -138,12 +145,13 @@ def calculate_reference_features(
             "Graphics_normalized_car_position required for reference extraction"
         )
 
-    track, car, avg_grip_int = bucket_key_from_dataframe(processed_df)
+    game, track, car, avg_grip_int = bucket_key_from_dataframe(processed_df, game=game)
     batch_predictions = store.predict(
         track,
         car,
         avg_grip_int,
         processed_df["Graphics_normalized_car_position"].values,
+        game=game,
     )
     if not isinstance(batch_predictions, list):
         batch_predictions = [batch_predictions]

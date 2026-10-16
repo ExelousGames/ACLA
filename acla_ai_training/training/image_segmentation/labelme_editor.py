@@ -71,6 +71,31 @@ def create_main_window(base_window):
         _backend_annotator = None
         _yolo26x_annotator = None
 
+        def _setup_menus(self):
+            from PyQt5 import QtCore, QtWidgets
+            from training.image_segmentation.labelme_position import PositionPanel
+
+            menus = super()._setup_menus()
+            self._position_panel = PositionPanel(self)
+            self._position_window = QtWidgets.QDockWidget("Position Context", self)
+            self._position_window.setObjectName("PositionContext")
+            self._position_window.setAllowedAreas(QtCore.Qt.NoDockWidgetArea)
+            self._position_window.setWidget(self._position_panel)
+            self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._position_window)
+            self._position_window.setFloating(True)
+            self._position_window.resize(560, 440)
+            self._position_window.hide()
+            menus.view.addAction(self._position_window.toggleViewAction())
+            return menus
+
+        def _load_file(self, image_or_label_path):
+            super()._load_file(image_or_label_path)
+            self._position_panel.set_image(self._image_path)
+
+        def reset_state(self):
+            super().reset_state()
+            self._position_panel.set_image(None)
+
         def _setup_actions(self):
             from PyQt5 import QtWidgets
 

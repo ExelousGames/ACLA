@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from app.shared.telemetry import FeatureProcessor
+from app.top_laps.model import _resolve_game
 from training.pipelines.manifest.protection import (
     is_protected_chunk_id,
     session_id_from_chunk_id,
@@ -31,7 +32,7 @@ MAX_PLAYER_POSITION_JUMP_M = 500.0
 MAX_PLAYER_POSITION_SPEED_MPS = 250.0
 MAX_OPPONENT_POSITION_JUMP_M = 1_000.0
 MAX_OPPONENT_DISTANCE_FROM_PLAYER_M = 20_000.0
-TopLapKey = Tuple[str, str, int]
+TopLapKey = Tuple[str, str, str, int]
 TopLapMap = Dict[TopLapKey, Dict[str, Any]]
 
 
@@ -266,6 +267,7 @@ def _update_top_lap(
         return None, None, False
 
     key = (
+        _resolve_game(None, records[0]),
         records[0].get("Static_track", "unknown_track"),
         candidate.get("car", "unknown_car"),
         candidate.get("avg_grip_int", 2),
@@ -299,7 +301,7 @@ async def process_lap_sessions_efficiently(
         f"[INFO] Processing cached dataset '{session_data_cache_key}' with immediate caching"
     )
 
-    # Keyed by (track, car, avg_grip_int). Stores the fastest lap per combo.
+    # Keyed by (game, track, car, avg_grip_int). Stores the fastest lap per combo.
     top_laps: TopLapMap = {}
     total_sessions_cached = 0
     total_processed = 0
@@ -443,18 +445,18 @@ async def process_lap_sessions_efficiently(
         raise ValueError("No session data cached for transformer training")
 
     print(f"[SUCCESS] Processed {chunk_idx} sessions from {session_chunks_processed} raw chunks")
-    print(f"[SUCCESS] Selected top laps from {len(top_laps)} (track, car, grip) buckets")
+    print(f"[SUCCESS] Selected top laps from {len(top_laps)} (game, track, car, grip) buckets")
     print(f"[SUCCESS] Cached {total_sessions_cached} session batches across {chunk_idx} sessions")
 
     top_laps_cache_key = cache_config.top_laps_cache_key
     try:
         async def top_laps_generator():
             for key, lap_info in top_laps.items():
-                track_name, car_name, avg_grip_int = key
+                game, track_name, car_name, avg_grip_int = key
                 bucket_records = [lap_info["records"]]
 
                 if bucket_records:
-                    chunk_id = f"{track_name}|{car_name}|grip{avg_grip_int}"
+                    chunk_id = f"{game}|{track_name}|{car_name}|grip{avg_grip_int}"
                     print(f"[DEBUG] Yielding top lap chunk for {key}")
                     yield (bucket_records, chunk_id)
 
@@ -493,6 +495,7 @@ def process_single_chunk(
         if telemetry_df.empty:
             return chunk_idx, 0, [], [], None, chunk_id
 
+        game = _resolve_game(None, telemetry_df.iloc[0].to_dict())
         processor = FeatureProcessor(telemetry_df)
         processor.general_cleaning_for_analysis()
         processed_df = processor.flip_y_z_features()
@@ -520,6 +523,7 @@ def process_single_chunk(
         if filtered_session_df.empty:
             return chunk_idx, 0, [], [], None, chunk_id
 
+        filtered_session_df["game_recorded_from"] = game
         session_records = filtered_session_df.to_dict("records")
 
         lap_structs = processor.split_into_laps(filtered_session_df)

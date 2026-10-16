@@ -51,6 +51,7 @@ class RuntimeTopLapReferenceModel:
         records: List[Dict[str, Any]],
         track: Optional[str] = None,
         car: Optional[str] = None,
+        game: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Return copied telemetry rows merged with all expert classifier fields."""
 
@@ -76,10 +77,11 @@ class RuntimeTopLapReferenceModel:
             reference_rows = calculate_reference_features(
                 self.top_lap_store,
                 copied_rows,
+                game=game,
             )
         except NoTopLapReferenceError as exc:
             raise TopLapReferenceModelError(
-                f"No top-lap reference for track {exc.track!r} "
+                f"No top-lap reference for game {exc.game!r}, track {exc.track!r} "
                 f"and car {exc.car!r}"
             ) from exc
         except (TypeError, ValueError) as exc:

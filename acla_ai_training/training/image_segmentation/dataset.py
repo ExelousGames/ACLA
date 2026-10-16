@@ -120,7 +120,8 @@ def prepare_dataset(
     for split, source in (("train", train_dir), ("val", val_dir)):
         source = source.resolve()
         annotations = (
-            sorted(source.rglob("*.json")) if annotation_splits is None
+            sorted(path for path in source.rglob("*.json") if not path.name.endswith(".position.json"))
+            if annotation_splits is None
             else annotation_splits[split]
         )
         if not annotations:
