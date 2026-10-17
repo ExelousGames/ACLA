@@ -79,8 +79,8 @@ one or more sessions without assigning splits; training requires at least two.
 Press Enter to finish picking individual sessions or accept an option's default.
 Review the settings before choosing Start; no sessions are downloaded before
 then, and Ctrl+C cancels. Preparation downloads the selected sessions, extracts
-aligned video frames, and prepares reference-lap/centerline XYZ inputs and signed
-offset targets for `train_position.py`.
+aligned video frames, and prepares reference-lap/centerline XYZ, game, map name,
+normalized lap position, and signed offset targets for `train_position.py`.
 
 For unattended use, pass the existing command-line options instead:
 
@@ -123,12 +123,13 @@ Downloads and images are kept in `storage/session_downloads/SESSION_ID/`:
   timestamp, index, and local filename.
 - `frames/video_000/frame_000000.jpg`: images numbered by source frame index.
 - `frames/video_000/frame_000000.position.json`: the matching image filename,
-  session ID, reference XYZ inputs, and signed offset targets for that image.
+  session ID, reference XYZ, game, map name, normalized lap position, and signed offsets.
 - `frames/manifest.json`: alignment settings and matched/unmatched frame counts.
 
 The video preparation command creates each image and its `.position.json` file
-in the same folder. Each position file contains `session_id`, `image`, `references`,
-and `target`. Both numeric fields are two XYZ triples, ordered reference lap then
+in the same folder. Each position file contains `session_id`, `image`, `game`,
+`map_name`, `normalized_position`, `references`, and `target`.
+The `references` and `target` arrays are two XYZ triples, ordered reference lap then
 centerline. Images and their matching position files can be moved together.
 
 Training discovers `.position.json` files recursively under the folder passed to
@@ -137,10 +138,12 @@ Training discovers `.position.json` files recursively under the folder passed to
 
 Preparation looks up both reference XYZ positions at each frame's normalized
 lap position and calculates `reference - driver` and `centerline - driver` targets.
-Driver XYZ, normalized lap position, telemetry rows, and reference-model/map
-snapshots are not passed to training. The trainer reads only the prepared
-coordinates, targets, and images, so training works offline without source JSON
-files. Frame/telemetry matches are used only in memory during preparation;
+Game and map names are copied from the selected centerline map's `game` and
+`circuit_name`; normalized lap position is retained as a model input.
+Driver XYZ, telemetry rows, and reference-model/map snapshots are not passed to
+training. The trainer reads the prepared context, coordinates, targets, and images,
+so training works offline without source JSON files.
+Frame/telemetry matches are used only in memory during preparation;
 no per-image `.telemetry.json` files are written. The original session telemetry
 remains in the download cache.
 Images remain in their extracted folders and are
@@ -188,9 +191,8 @@ preserving any human annotations you need.
 Track and car come from `Static_track` and `Static_car_model`. Grip is the rounded
 average of `Graphics_track_grip_status` over unique aligned telemetry rows, using
 the shared reference-model bucketing rule. An exact track/car/grip reference
-must exist. Map selection prefers the newest matching `source_track_key`, with
-circuit-name fallback only for maps without a source key. Game comes from the
-session's `game_recorded_from` metadata.
+must exist. Map selection uses the newest matching `source_track_key` within the
+session's game. The model's game and map-name inputs come from that map's details.
 
 `Graphics_normalized_car_position` locates both reference XYZ positions. Driver
 XYZ is selected by first reading `Graphics_active_cars`, trimming both
@@ -235,7 +237,9 @@ image paths and seed reproduce the assignments. Position data must use adjacent
 `.position.json` files. Indexes containing inline frame data or preset `split`
 assignments are rejected; rerun preparation and pass the folder of prepared pairs.
 
-The regression trainer uses images, reference XYZ, and prepared position targets; it
+The regression trainer uses images, reference XYZ, game/map names, normalized lap
+position, and prepared position targets. Names are one-hot encoded using category
+vocabularies saved with the checkpoint for inference. The trainer
 does not read Labelme polygons. To incorporate newly drawn region labels into
 its image features, train a segmentation checkpoint with those labels first,
 then pass that checkpoint to `--model`. The preparation merge leaves that

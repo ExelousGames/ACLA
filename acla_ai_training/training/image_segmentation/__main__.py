@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     position.add_argument("--epochs", type=int, default=100)
     position.add_argument("--imgsz", type=int, default=768)
     position.add_argument("--batch", type=int, default=8)
-    position.add_argument("--device", default="cpu")
+    position.add_argument("--device", default="0", help="0 for the first GPU (default), cpu, or mps.")
     position.add_argument("--workers", type=int, default=0)
     position.add_argument("--val-fraction", type=float, default=0.2, help="Validation share of frames (default: 0.2).")
     position.add_argument("--seed", type=int, default=42, help="Random frame split and training seed (default: 42).")

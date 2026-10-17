@@ -52,8 +52,9 @@ metrics, dataset details, and run identifiers supplied by the uploader.
 
 For `position`, `classNames` describes the embedded segmentation model; regression
 output names, target definition, coordinate units, and validation metrics belong
-in `metadata`. Position checkpoints use `metadata.format: "acla-yolo-position-v1"`
-and load with `YOLOPositionModel.load`, not the standard Ultralytics loader.
+in `metadata`. Position checkpoints use `metadata.format: "acla-yolo-position-v2"`
+and include game/map-name vocabularies in `metadata.categories`. These checkpoints
+load with `YOLOPositionModel.load`, not the standard Ultralytics loader.
 The `/ai-model/ultralytics/track-vision` selector only returns `segment` models.
 
 Example request (shell syntax; save the JSON above as `model-metadata.json`):

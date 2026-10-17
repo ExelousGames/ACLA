@@ -37,7 +37,7 @@ def train_position_model(
     epochs=100,
     imgsz=768,
     batch=8,
-    device="cpu",
+    device="0",
     workers=0,
     val_fraction=0.2,
     seed=42,
@@ -53,13 +53,14 @@ def train_position_model(
     splits = split_position_frames(records, val_fraction=val_fraction, seed=seed)
     torch.manual_seed(seed)
     device = f"cuda:{device}" if str(device).isdigit() else device
-    network = YOLOPositionModel.from_segmentation_checkpoint(model, imgsz).to(device)
+    categories = {field: sorted({row[field] for row in records}) for field in ("game", "map_name")}
+    network = YOLOPositionModel.from_segmentation_checkpoint(model, imgsz, categories=categories).to(device)
     positions = torch.from_numpy(np.stack([row["references"].reshape(6) for row in splits["train"]])).to(device)
-    # Only numeric inputs are standardized, using training references alone.
+    # Standardize XYZ using training references alone; context stays in [0, 1].
     network.position_mean.copy_(positions.mean(0))
     network.position_std.copy_(positions.std(0, unbiased=False).clamp_min(1.0))
     loaders = {
-        split: DataLoader(PositionDataset(records, imgsz), batch_size=batch, shuffle=split == "train", num_workers=workers)
+        split: DataLoader(PositionDataset(records, imgsz, categories), batch_size=batch, shuffle=split == "train", num_workers=workers)
         for split, records in splits.items()
     }
     optimizer = torch.optim.Adam(network.head.parameters(), lr=1e-3)
@@ -81,7 +82,7 @@ def train_position_model(
         loss_total = 0.0
         for sample in loaders["train"]:
             optimizer.zero_grad()
-            prediction = network(sample["image"].to(device), sample["references"].to(device))
+            prediction = network(sample["image"].to(device), sample["references"].to(device), sample["context"].to(device))
             loss = loss_function(prediction, sample["target"].to(device))
             loss.backward()
             optimizer.step()
@@ -90,7 +91,7 @@ def train_position_model(
         errors = torch.zeros(2, 3, device=device)
         with torch.no_grad():
             for sample in loaders["val"]:
-                prediction = network(sample["image"].to(device), sample["references"].to(device))
+                prediction = network(sample["image"].to(device), sample["references"].to(device), sample["context"].to(device))
                 errors += (prediction - sample["target"].to(device)).abs().sum(0)
         per_axis = (errors / len(splits["val"])).flatten().cpu().tolist()
         metrics = {

@@ -1,4 +1,4 @@
-"""Download sessions and prepare image/XYZ inputs and offset targets before annotation.
+"""Prepare image/XYZ, game, map name, and normalized-position inputs with offset targets.
 
 Run without arguments for step-by-step prompts, or pass flags for unattended use.
 Telemetry is used during preparation; the trainer receives only prepared inputs
@@ -6,6 +6,7 @@ and targets in a .position.json file beside each image, discovered recursively
 during training. Per-image telemetry is never saved to disk.
 Individual frames are randomly split later, when training starts.
 Reference lines and centerline maps are downloaded from the backend.
+Game and map names come from the selected centerline map's game and circuit_name.
 """
 
 from __future__ import annotations

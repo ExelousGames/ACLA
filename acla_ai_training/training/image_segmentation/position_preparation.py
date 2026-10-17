@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from app.top_laps.shared import bucket_key_from_dataframe, deserialize_top_lap_store
-from .position_data import PositionCurve, load_position_manifest, reference_inputs
+from .position_data import PositionCurve, load_position_manifest, position_context, reference_inputs
 
 
 logger = logging.getLogger(__name__)
@@ -198,12 +198,17 @@ async def prepare_position_dataset(backend, extractions: list[dict]) -> dict:
             detail = await _request(backend, f"circuit-map/{map_id}")
             if detail["game"] != game or _track_key(detail.get("source_track_key") or "") != track:
                 raise ValueError(f"Circuit map {map_id} does not match {game}/{track}")
-            maps[map_id] = PositionCurve.from_points(detail["samples"]["middle_line"])
+            maps[map_id] = {
+                "curve": PositionCurve.from_points(detail["samples"]["middle_line"]),
+                "game": detail["game"], "map_name": detail.get("circuit_name"),
+            }
+        circuit_map = maps[map_id]
         prepared_frames = []
         for frame in session["frames"]:
-            references = reference_inputs(frame["normalized_position"], reference_lap, maps[map_id])
+            references = reference_inputs(frame["normalized_position"], reference_lap, circuit_map["curve"])
             prepared_frames.append({
                 "image": frame["image"],
+                **position_context(frame["normalized_position"], circuit_map["game"], circuit_map["map_name"]),
                 "references": references.tolist(),
                 "target": signed_targets(references, frame["driver_position"]).tolist(),
             })
@@ -223,6 +228,8 @@ async def prepare_position_dataset(backend, extractions: list[dict]) -> dict:
                     created.append(position_path)
                     json.dump({
                         "session_id": session["id"], "image": image.name,
+                        "game": frame["game"], "map_name": frame["map_name"],
+                        "normalized_position": frame["normalized_position"],
                         "references": frame["references"], "target": frame["target"],
                     }, target, indent=2, allow_nan=False)
                     target.write("\n")

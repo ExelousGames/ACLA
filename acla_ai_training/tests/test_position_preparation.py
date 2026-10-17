@@ -138,8 +138,44 @@ def test_extracted_frames_become_offline_trainable_dataset_with_signed_targets(d
             if not path.name.endswith(".position.json"):
                 path.unlink()
     records = load_position_manifest(dataset.downloads)
+    for frames in records.values():
+        assert [row["normalized_position"] for row in frames] == [0, 0.25, 0.5]
+        assert all(row["game"] == "acc" and row["map_name"] == "Display Name" for row in frames)
     np.testing.assert_allclose(records["a" * 24][1]["references"], [[2, 3, 4], [-2, 3, -4]])
     np.testing.assert_allclose(records["a" * 24][1]["target"], [[1.9, 2.7, 3.8], [-2.1, 2.7, -4.2]])
+
+
+@pytest.mark.parametrize("source", ["iracing", "iracing_live", "iracing_recorded"])
+def test_context_comes_from_each_selected_map_detail(dataset, source):
+    dataset.extractions[1]["session"]["game_recorded_from"] = source
+    reference = dataset.store.entries[("acc", "test_track", "car", 2)]
+    dataset.store.entries[(source, "test_track", "car", 2)] = TopLapEntry(
+        game=source, track=reference.track, car=reference.car, avg_grip_int=2,
+        x=reference.x, y=reference.y, target_features=reference.target_features,
+    )
+    dataset.model.modelData = serialize_top_lap_store(dataset.store)
+    dataset.responses["circuit-map/list?game=iracing"] = {"list": [{
+        "id": "iracing-map", "source_track_key": "Test Track", "circuit_name": "Old Display Name",
+    }]}
+    dataset.responses["circuit-map/iracing-map"] = {
+        **dataset.responses["circuit-map/map-id"], "id": "iracing-map",
+        "game": "iracing", "circuit_name": "iRacing Display Name",
+    }
+
+    assert prepare(dataset)["frames"] == 6
+    records = load_position_manifest(dataset.downloads)
+    for session_id, game, map_name in (
+        ("a" * 24, "acc", "Display Name"), ("b" * 24, "iracing", "iRacing Display Name"),
+    ):
+        assert all(row["game"] == game and row["map_name"] == map_name for row in records[session_id])
+
+
+@pytest.mark.parametrize("name", [None, " ", 7])
+def test_preparation_rejects_missing_or_invalid_map_names_before_writing(dataset, name):
+    dataset.responses["circuit-map/map-id"]["circuit_name"] = name
+    with pytest.raises(ValueError, match="map_name"):
+        prepare(dataset)
+    assert not list(dataset.downloads.rglob("*.position.json"))
 
 
 def test_driver_xyz_and_other_telemetry_never_become_training_inputs(dataset):
@@ -154,8 +190,10 @@ def test_driver_xyz_and_other_telemetry_never_become_training_inputs(dataset):
             path.unlink()
     prepare(dataset)
     after = load_position_manifest(dataset.downloads)["a" * 24][0]
-    assert set(before) == set(after) == {"image", "references", "target"}
+    assert set(before) == set(after) == {"image", "references", "target", "game", "map_name", "normalized_position"}
     assert before["image"] == after["image"]
+    for field in ("game", "map_name", "normalized_position"):
+        assert before[field] == after[field]
     np.testing.assert_array_equal(before["references"], after["references"])
     np.testing.assert_allclose(before["target"], [[0.9, 1.7, 2.8], [-1.1, 1.7, -3.2]])
     np.testing.assert_allclose(after["target"], [[2, 5, 1], [0, 5, -5]])
@@ -583,7 +621,10 @@ def test_one_command_downloads_extracts_and_prepares_before_annotation(downloada
             assert row["image"].is_relative_to(folder)
             assert not row["image"].with_suffix(".json").exists()
             position = json.loads(row["image"].with_suffix(".position.json").read_text())
-            assert set(position) == {"session_id", "image", "references", "target"}
+            assert set(position) == {"session_id", "image", "references", "target", "game", "map_name", "normalized_position"}
+            assert position["game"] == row["game"] == "acc"
+            assert position["map_name"] == row["map_name"] == "Display Name"
+            assert position["normalized_position"] == row["normalized_position"]
             assert position["session_id"] == session_id
             assert position["image"] == row["image"].name
             np.testing.assert_allclose(position["references"], row["references"])
@@ -602,6 +643,8 @@ def test_one_command_downloads_extracts_and_prepares_before_annotation(downloada
     for session_id, frames in moved_records.items():
         for row, original in zip(frames, records[session_id]):
             assert row["image"].parent == moved / session_id
+            for field in ("game", "map_name", "normalized_position"):
+                assert row[field] == original[field]
             np.testing.assert_array_equal(row["references"], original["references"])
             np.testing.assert_array_equal(row["target"], original["target"])
 

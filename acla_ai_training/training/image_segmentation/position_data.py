@@ -1,4 +1,4 @@
-"""Load prepared image/XYZ inputs and targets without reading driver telemetry."""
+"""Load prepared image, XYZ, and track-context inputs without reading driver telemetry."""
 
 from __future__ import annotations
 
@@ -12,6 +12,33 @@ from torch.utils.data import Dataset
 
 
 OUTPUT_NAMES = tuple(f"{reference}_delta_{axis}" for reference in ("reference", "centerline") for axis in "xyz")
+
+
+def position_context(normalized_position, game, map_name):
+    """Validate the context shared by preparation, training, and prediction."""
+    if (
+        isinstance(normalized_position, bool) or not isinstance(normalized_position, (int, float))
+        or not np.isfinite(normalized_position) or not 0 <= normalized_position <= 1
+    ):
+        raise ValueError("normalized_position must be a finite number between 0 and 1.")
+    context = {"normalized_position": float(normalized_position)}
+    for field, value in (("game", game), ("map_name", map_name)):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field} must be a nonempty name.")
+        context[field] = value.strip()
+    return context
+
+
+def encode_position_context(normalized_position, game, map_name, categories):
+    """Encode lap progress followed by game and map one-hot vectors in saved order."""
+    context = position_context(normalized_position, game, map_name)
+    encoded = [context["normalized_position"]]
+    for field in ("game", "map_name"):
+        names = categories[field]
+        if context[field] not in names:
+            raise ValueError(f"Unknown {field}: {context[field]!r}; use a model trained with this name.")
+        encoded.extend(float(name == context[field]) for name in names)
+    return np.asarray(encoded, dtype=np.float32)
 
 
 class PositionCurve:
@@ -61,14 +88,15 @@ class PositionCurve:
 
 
 def reference_inputs(normalized_position, reference_lap: PositionCurve, centerline: PositionCurve):
-    """The complete numeric model input, with no driver coordinates or derived deltas."""
+    """Reference XYZ inputs, with no driver coordinates or derived deltas."""
     return np.stack((reference_lap.at(normalized_position), centerline.at(normalized_position)))
 
 
 def load_position_manifest(path: Path) -> dict[str, list[dict]]:
     """Read a position-file folder or dataset index, grouped by session without splitting.
 
-    Each frame contains an image path and two (2, 3) arrays: references and target.
+    Each frame contains image, game, map_name, normalized_position, and two
+    (2, 3) arrays: references and target.
     Image paths are relative to their JSON file. No telemetry or curve files are read.
     """
     path = path.resolve()
@@ -99,13 +127,18 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
             raise ValueError(f"Position file belongs to another session: {position_path}")
         if "references" not in frame or "target" not in frame:
             raise ValueError("Position files require references and target arrays; rerun prepare_position_dataset.py.")
+        if not {"game", "map_name", "normalized_position"} <= frame.keys():
+            raise ValueError(
+                "Position files require game, map_name, and normalized_position; "
+                "regenerate the dataset with prepare_position_dataset.py."
+            )
         image = (position_path.parent / frame["image"]).resolve()
         if image in images:
             raise ValueError(f"Image appears more than once in the position dataset: {image}")
         if not image.is_file():
             raise FileNotFoundError(f"Image does not exist: {image}")
         images.add(image)
-        record = {"image": image}
+        record = {"image": image, **position_context(frame["normalized_position"], frame["game"], frame["map_name"])}
         for field in ("references", "target"):
             values = np.asarray(frame[field], dtype=np.float32)
             if values.shape != (2, 3) or not np.isfinite(values).all():
@@ -129,8 +162,9 @@ def image_tensor(path: Path, imgsz: int) -> torch.Tensor:
 
 
 class PositionDataset(Dataset):
-    def __init__(self, records, imgsz):
+    def __init__(self, records, imgsz, categories):
         self.records, self.imgsz = records, imgsz
+        self.categories = categories
 
     def __len__(self):
         return len(self.records)
@@ -141,5 +175,8 @@ class PositionDataset(Dataset):
         return {
             "image": image_tensor(row["image"], self.imgsz),
             "references": torch.from_numpy(row["references"]),
+            "context": torch.from_numpy(encode_position_context(
+                row["normalized_position"], row["game"], row["map_name"], self.categories,
+            )),
             "target": torch.from_numpy(row["target"]),
         }

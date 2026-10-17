@@ -29,7 +29,7 @@ async def upload_position_checkpoint(
         raise ValueError("Model name must contain 1 to 200 characters")
 
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    if not isinstance(saved, dict) or saved.get("format") != "acla-yolo-position-v1":
+    if not isinstance(saved, dict) or saved.get("format") != "acla-yolo-position-v2":
         raise ValueError("Not an ACLA YOLO position checkpoint.")
     if saved.get("output_names") != list(OUTPUT_NAMES) or not saved.get("state_dict"):
         raise ValueError("Position checkpoint is missing its weights or signed XYZ outputs.")
@@ -42,6 +42,7 @@ async def upload_position_checkpoint(
             "format": saved["format"],
             "trainingRunId": checkpoint.parent.name,
             "imgsz": saved["imgsz"],
+            "categories": saved["categories"],
             "outputNames": saved["output_names"],
             "targetDefinition": saved["target_definition"],
             "coordinateUnits": saved["coordinate_units"],
