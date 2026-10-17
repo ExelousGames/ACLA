@@ -506,26 +506,65 @@ Prepared position files and the dataset index are not changed.
 
 Training also writes `best.pt`, `last.pt`, and
 `results.json`, including validation MAE for every reference/axis in raw
-coordinates. The best checkpoint is selected by mean validation MAE.
+coordinates. The best checkpoint is selected by mean validation MAE. It then
+exports that checkpoint to `best.onnx` and `best.onnx.json`, including with
+`--no-upload`. The `.pt` checkpoints remain available for Python inference.
 
-After training, `best.pt` is uploaded to the backend using the same authentication
+After export, `best.onnx` is uploaded to the backend using the same authentication
 and binary storage as segmentation training. The default name is `track-position`;
 use `--upload-name my-position-model` to change it, or `--no-upload` to train
-offline. The backend must include support for the `position` task. Position
-uploads preserve the combined YOLO weights, position encoder and regression head, category vocabularies,
-input image size, output definitions, and validation metrics. They are stored with `task: position`
-and do not enter the Track Vision segmentation model selection.
+and export offline. Position uploads contain one self-contained ONNX graph with
+the combined segmentation and position outputs. They are stored with
+`task: position` and `metadata.artifactFormat: onnx` and do not enter the Track
+Vision segmentation model selection.
 
-If the upload fails, training exits with an error and keeps its local checkpoints
-and metrics. Publish the saved checkpoint without retraining with:
+The backend must accept `.onnx` on `POST /ai-model/ultralytics` and preserve the
+filename and metadata when serving the model. Its current `.pt` restriction and
+the frontend's local Python export path require follow-up changes; use
+`--no-upload` until the backend accepts ONNX. The frontend should download the
+published ONNX bytes directly into ONNX Runtime and use the supplied metadata.
+It no longer needs to reconstruct the PyTorch model or understand its internal
+encoder/head architecture.
+
+If export or upload fails, training exits with an error and keeps its local
+checkpoints and metrics. Export and publish the saved checkpoint without
+retraining with:
 
 ```bash
 python -m training.image_segmentation upload-position \
   storage/image_segmentation/position-runs/run-1/best.pt --name track-position
 ```
 
+Passing `best.onnx` instead publishes the existing export without exporting
+again. Publication reads metadata embedded in the ONNX file, so the JSON sidecar
+is not required for upload.
+
 Use the same backend environment configuration described under **Upload a trained
 model** below. Successful uploads print the backend model ID.
+
+#### Track Vision ONNX contract
+
+The graph uses ONNX opset 17 and fixed batch size 1 at the checkpoint's training
+image size. All inputs and outputs are float32. `metadata.inference` describes
+the names, exact shapes, preprocessing, and context order; its `schemaVersion`
+is 1. This interface is independent of the informational checkpoint `format`
+label. Internal model changes can keep this interface unchanged.
+
+| Tensor | Shape | Meaning |
+| --- | --- | --- |
+| Input `images` | `[1, 3, imgsz, imgsz]` | RGB, NCHW, divided by 255. Letterbox the full frame, round resized dimensions ties-to-even, center with floor offsets, and pad with RGB 114. |
+| Input `references` | `[1, 2, 3]` | Reference-lap XYZ, then centerline XYZ, in source coordinates. Learned standardization is inside the graph. |
+| Input `context` | `[1, 1 + len(game) + len(map_name)]` | Normalized lap position, then game and map-name one-hot vectors in `metadata.categories` order. |
+| Output `deltas` | `[1, 2, 3]` | Reference XYZ minus driver XYZ, then centerline XYZ minus driver XYZ. |
+| Output `predictions` | `[1, 4 + class_count + mask_channels, anchors]` | Raw YOLO one-to-many predictions: center XY/width/height in image pixels, class scores, then mask coefficients. |
+| Output `prototypes` | `[1, mask_channels, height, width]` | Segmentation mask prototypes; dimensions are recorded in the manifest. |
+
+The frontend must validate finite reference coordinates, lap position in `[0, 1]`,
+and known category values; Python's input validation is not part of the graph.
+`classNames`, category vocabularies, coordinate/output definitions, and training
+metrics accompany the graph in the upload metadata. The same metadata (without
+the user-selected upload `name`) is saved in `best.onnx.json` and as JSON in the
+ONNX custom metadata property `acla.track-position`.
 
 For inference, load your reference-lap XYZ points and backend circuit-map export:
 
@@ -549,7 +588,7 @@ result = model.predict_position(
 For an already loaded top-lap entry, use `PositionCurve.from_top_lap(entry)`.
 Position checkpoints include the original YOLO weights, position encoder and added head and
 load through `YOLOPositionModel.load`; they are not standard Ultralytics-only
-checkpoints. Use `upload-position` to store them; the segmentation `upload`
+checkpoints. Use `upload-position` to export and store their ONNX graph; the segmentation `upload`
 command continues to accept segmentation checkpoints only. Uploading stores the
 model for later download; the live API does not yet run position inference.
 The current format is `acla-yolo-position-v3`. Position checkpoints without the

@@ -9,7 +9,9 @@ when training starts, regardless of their source sessions.
 Preparation aligns images to telemetry using Graphics_analyst_session_time.
 No driver telemetry is read during training.
 Uses the first GPU by default; use --device cpu for CPU training.
-Uploads best.pt to the backend by default; use --no-upload for local-only runs
+Exports best.onnx and best.onnx.json for direct Track Vision inference, preserving
+best.pt and last.pt for Python use. Uploads best.onnx to the backend by default;
+use --no-upload to export locally without publishing
 or --upload-name to change the backend name (default: track-position).
 
 Usage: python scripts/train_position.py --manifest storage/session_downloads --model best.pt --output position-runs/run-1

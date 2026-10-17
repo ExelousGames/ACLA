@@ -428,6 +428,8 @@ def test_single_session_training_saves_raw_axis_metrics_and_uses_only_train_refe
     )
     assert checkpoint == output / "best.pt"
     assert (output / "last.pt").is_file()
+    assert (output / "best.onnx").is_file()
+    assert (output / "best.onnx.json").is_file()
     split = json.loads((output / "split.json").read_text())
     image_folder = position_folder if use_position_folder else aligned_manifest.parent
     assert split == {
@@ -474,8 +476,11 @@ def position_checkpoint(tiny_yolo, tmp_path):
     return checkpoint
 
 
-def test_position_upload_streams_original_weights_and_regression_metadata(position_checkpoint, monkeypatch):
+@pytest.mark.parametrize("already_exported", [False, True])
+def test_position_upload_streams_onnx_and_regression_metadata(position_checkpoint, monkeypatch, already_exported):
     from training import model_publication
+    from training.image_segmentation import position_publication
+    from training.image_segmentation.position_export import export_position_checkpoint
     from training.image_segmentation.position_publication import upload_position_checkpoint
     from training.image_segmentation.position_data import OUTPUT_NAMES
 
@@ -496,7 +501,11 @@ def test_position_upload_streams_original_weights_and_regression_metadata(positi
         lambda **kwargs: client_type(transport=httpx.MockTransport(handle), **kwargs),
     )
     before = position_checkpoint.read_bytes()
-    record = asyncio.run(upload_position_checkpoint(position_checkpoint, backend_service=backend))
+    artifact = position_checkpoint.with_suffix(".onnx")
+    if already_exported:
+        export_position_checkpoint(position_checkpoint)
+        monkeypatch.setattr(position_publication, "export_position_checkpoint", lambda _: pytest.fail("ONNX must not be exported again"))
+    record = asyncio.run(upload_position_checkpoint(artifact if already_exported else position_checkpoint, backend_service=backend))
     assert record == {"_id": "position-model"}
     assert len(requests) == 1
     request = requests[0]
@@ -506,14 +515,20 @@ def test_position_upload_streams_original_weights_and_regression_metadata(positi
         f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode() + request.content
     )
     parts = {part.get_param("name", header="content-disposition"): part for part in message.iter_parts()}
-    assert parts["file"].get_filename() == "best.pt"
-    assert parts["file"].get_payload(decode=True) == before == position_checkpoint.read_bytes()
+    assert parts["file"].get_filename() == "best.onnx"
+    assert parts["file"].get_payload(decode=True) == artifact.read_bytes()
+    assert before == position_checkpoint.read_bytes()
     metadata = json.loads(parts["metadata"].get_payload(decode=True))
+    manifest = json.loads(artifact.with_suffix(".onnx.json").read_text())
+    assert metadata == {"name": "track-position", **manifest}
+    inference = metadata["metadata"].pop("inference")
+    assert list(inference["inputs"]) == ["images", "references", "context"]
+    assert list(inference["outputs"]) == ["deltas", "predictions", "prototypes"]
     assert metadata == {
         "name": "track-position", "task": "position",
         "classNames": list(YOLOPositionModel.load(position_checkpoint).yolo.names.values()),
         "metadata": {
-            "format": "acla-yolo-position-v3", "trainingRunId": position_checkpoint.parent.name,
+            "format": "acla-yolo-position-v3", "artifactFormat": "onnx", "trainingRunId": position_checkpoint.parent.name,
             "categories": CATEGORIES,
             "imgsz": 64, "outputNames": list(OUTPUT_NAMES),
             "targetDefinition": "reference_position - current_position",
@@ -522,7 +537,7 @@ def test_position_upload_streams_original_weights_and_regression_metadata(positi
     }
 
 
-@pytest.mark.parametrize("problem", ["missing", "empty", "extension", "outputs", "weights", "metrics", "name"])
+@pytest.mark.parametrize("problem", ["missing", "empty", "extension", "outputs", "weights", "metrics", "name", "target", "units", "std"])
 def test_invalid_position_upload_never_connects_to_backend(position_checkpoint, problem):
     from training.image_segmentation.position_publication import upload_position_checkpoint
 
@@ -542,6 +557,8 @@ def test_invalid_position_upload_never_connects_to_backend(position_checkpoint, 
         key, value = {
             "outputs": ("output_names", []),
             "weights": ("state_dict", {}), "metrics": ("metrics", {"val_mae": float("nan")}),
+            "target": ("target_definition", "wrong sign"), "units": ("coordinate_units", "meters"),
+            "std": ("state_dict", {**saved["state_dict"], "position_std": torch.zeros(6)}),
         }[problem]
         saved[key] = value
         torch.save(saved, checkpoint)
@@ -576,11 +593,38 @@ def test_position_training_uploads_best_and_preserves_weights_on_failure(
     else:
         assert train_position_model(aligned_manifest, **args) == output / "best.pt"
         assert "Model uploaded to backend: position-model" in capsys.readouterr().out
-    upload.assert_awaited_once_with(output / "best.pt", name="track-position")
+    upload.assert_awaited_once_with((output / "best.onnx").resolve(), name="track-position")
     assert any(not torch.equal(value, encoder_before[key]) for key, value in network.position_encoder.state_dict().items())
     YOLOPositionModel.load(output / "best.pt")
     assert (output / "last.pt").is_file()
     assert (output / "results.json").is_file()
+    assert (output / "best.onnx").is_file()
+    assert (output / "best.onnx.json").is_file()
+
+
+def test_position_training_preserves_checkpoint_and_skips_upload_when_export_fails(
+    tiny_yolo, aligned_manifest, tmp_path, monkeypatch,
+):
+    from training.image_segmentation import position_publication, position_training
+
+    network = YOLOPositionModel(tiny_yolo, imgsz=64, categories=CATEGORIES)
+    monkeypatch.setattr(YOLOPositionModel, "from_segmentation_checkpoint", lambda *args, **kwargs: network)
+
+    def fail_export(checkpoint):
+        raise RuntimeError("unsupported export operator")
+
+    monkeypatch.setattr(position_training, "export_position_checkpoint", fail_export)
+    upload = AsyncMock()
+    monkeypatch.setattr(position_publication, "upload_position_checkpoint", upload)
+    output = tmp_path / "run"
+    with pytest.raises(RuntimeError, match="Training completed, but ONNX export failed") as error:
+        train_position_model(aligned_manifest, model=tmp_path / "segment.pt", output=output,
+                             epochs=1, imgsz=64, batch=1, device="cpu")
+    assert "upload-position" in str(error.value)
+    YOLOPositionModel.load(output / "best.pt")
+    assert (output / "last.pt").is_file()
+    assert not (output / "best.onnx").exists()
+    upload.assert_not_awaited()
 
 
 @pytest.mark.parametrize("failed", [False, True])

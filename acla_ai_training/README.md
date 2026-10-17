@@ -247,6 +247,15 @@ training behavior unchanged. See the
 [regression workflow](training/image_segmentation/README.md#predict-signed-position-differences-from-images)
 for model inputs, output definitions, and inference.
 
+After training, the best checkpoint is exported to `best.onnx` with an accompanying
+`best.onnx.json` inference manifest. The graph includes position deltas and
+segmentation outputs for direct loading by Track Vision. The default upload now
+sends ONNX; `--no-upload` still produces the local ONNX artifacts. Until the
+backend upload route accepts `.onnx`, use `--no-upload`. See the
+[ONNX contract](training/image_segmentation/README.md#track-vision-onnx-contract)
+for the backend/frontend handoff and publishing a saved checkpoint without
+retraining.
+
 ## Extract images from videos
 
 From this folder, extract every frame from the videos directly inside an input

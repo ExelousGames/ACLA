@@ -14,6 +14,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from .position_data import OUTPUT_NAMES, PositionDataset, load_position_manifest
+from .position_export import export_position_checkpoint
 from .position_model import YOLOPositionModel
 
 
@@ -110,16 +111,26 @@ def train_position_model(
         (output / "results.json").write_text(json.dumps(history, indent=2) + "\n", encoding="utf-8")
         print(f"Epoch {epoch}/{epochs}: loss={metrics['train_loss']:.6g}, val MAE={metrics['val_mae']:.6g} (raw coordinates)", flush=True)
     checkpoint = output / "best.pt"
+    print(f"Exporting Track Vision ONNX: {checkpoint}", flush=True)
+    try:
+        artifact = export_position_checkpoint(checkpoint)
+    except (OSError, ValueError, ImportError, KeyError, TypeError, RuntimeError) as exc:
+        raise RuntimeError(
+            f"Training completed, but ONNX export failed: {exc}. "
+            f"The local checkpoint is preserved at {checkpoint}. "
+            "Use the upload-position command to export and publish it without retraining."
+        ) from exc
+    print(f"Track Vision ONNX ready: {artifact}", flush=True)
     if upload:
         from .position_publication import upload_position_checkpoint
 
-        print(f"Uploading trained checkpoint: {checkpoint}", flush=True)
+        print(f"Uploading Track Vision ONNX: {artifact}", flush=True)
         try:
-            record = asyncio.run(upload_position_checkpoint(checkpoint, name=upload_name))
+            record = asyncio.run(upload_position_checkpoint(artifact, name=upload_name))
         except (OSError, ValueError, ImportError, KeyError, TypeError, RuntimeError, httpx.HTTPError) as exc:
             raise RuntimeError(
                 f"Training completed, but backend upload failed: {exc}. "
-                f"The local checkpoint is preserved at {checkpoint}. "
+                f"The local checkpoint and ONNX artifact are preserved at {checkpoint} and {artifact}. "
                 "Use the upload-position command to publish it without retraining."
             ) from exc
         print(f"Model uploaded to backend: {record['_id']}", flush=True)

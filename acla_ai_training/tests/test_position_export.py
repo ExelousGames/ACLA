@@ -1,0 +1,93 @@
+"""Compare browser ONNX outputs with the actual trained position/YOLO model."""
+
+import json
+
+import numpy as np
+import onnx
+import onnxruntime as ort
+import pytest
+import torch
+from ultralytics.nn.tasks import SegmentationModel
+
+from training.image_segmentation.position_export import METADATA_KEY, export_position_checkpoint
+from training.image_segmentation.position_model import YOLOPositionModel
+
+
+@pytest.mark.parametrize("head,end2end,legacy_export_api", [("Segment", False, True), ("Segment26", True, False)])
+@pytest.mark.parametrize("imgsz", [64, 96, 128])
+def test_export_preserves_position_and_segmentation_with_small_uneven_and_even_grids(
+    tmp_path, monkeypatch, head, end2end, legacy_export_api, imgsz,
+):
+    if legacy_export_api:
+        export = torch.onnx.export
+
+        def legacy_export(model, inputs, output, *, input_names, output_names, opset_version, dynamic_axes):
+            return export(model, inputs, output, input_names=input_names, output_names=output_names,
+                          opset_version=opset_version, dynamic_axes=dynamic_axes, dynamo=False)
+
+        monkeypatch.setattr(torch.onnx, "export", legacy_export)
+    previous = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        torch.manual_seed(3)
+        yolo = SegmentationModel({"nc": 2, "end2end": end2end, "backbone": [
+            [-1, 1, "Conv", [8, 3, 2]], [-1, 1, "Conv", [16, 3, 2]],
+            [-1, 1, "Conv", [16, 3, 2]], [-1, 1, "Conv", [32, 3, 2]], [-1, 1, "Conv", [32, 3, 2]],
+        ], "head": [[[2, 3, 4], 1, head, [2, 8, 16]]]}, verbose=False).eval()
+        yolo.names = {0: "track", 1: "car"}
+        categories = {"game": ["acc"], "map_name": ["monza", "spa"]}
+        model = YOLOPositionModel(yolo, imgsz=imgsz, categories=categories).eval()
+        model.position_mean.copy_(torch.arange(6))
+        model.position_std.copy_(torch.arange(1, 7))
+        checkpoint = tmp_path / "best.pt"
+        model.save(checkpoint, metrics={"val_mae": 0.25})
+        original = checkpoint.read_bytes()
+        output = export_position_checkpoint(checkpoint)
+        assert checkpoint.read_bytes() == original
+        assert output == checkpoint.with_suffix(".onnx")
+        graph = onnx.load(str(output))
+        assert all(not tensor.external_data for tensor in graph.graph.initializer)
+        # Both output branches must share the image backbone in the exported graph.
+        assert sum(node.op_type == "Conv" and node.input[0] == "images" for node in graph.graph.node) == 1
+        manifest = json.loads(output.with_suffix(".onnx.json").read_text())
+        assert json.loads({item.key: item.value for item in graph.metadata_props}[METADATA_KEY]) == manifest
+        assert manifest["task"] == "position"
+        assert manifest["classNames"] == ["track", "car"]
+        metadata = manifest["metadata"]
+        assert metadata["artifactFormat"] == "onnx"
+        assert metadata["categories"] == categories
+        assert metadata["imgsz"] == imgsz
+        assert metadata["metrics"] == {"val_mae": 0.25}
+        contract = metadata["inference"]
+        assert contract["inputs"] == {
+            "images": {"dtype": "float32", "shape": [1, 3, imgsz, imgsz]},
+            "references": {"dtype": "float32", "shape": [1, 2, 3]},
+            "context": {"dtype": "float32", "shape": [1, 4]},
+        }
+        assert contract["outputs"]["deltas"] == {"dtype": "float32", "shape": [1, 2, 3]}
+        assert contract["image"]["paddingValue"] == 114
+        assert contract["image"]["scale"] == 1 / 255
+        assert contract["contextOrder"] == ["normalized_position", "game", "map_name"]
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = options.inter_op_num_threads = 1
+        session = ort.InferenceSession(str(output), sess_options=options, providers=["CPUExecutionProvider"])
+        image = torch.rand(1, 3, imgsz, imgsz)
+        references = torch.tensor([[[10., -20., 30.], [-40., 50., -60.]]])
+        context = torch.tensor([[0.25, 1., 1., 0.]])
+        segment = model.yolo.model[-1]
+        segment.export, segment.format, segment.dynamic, segment.end2end = True, "onnx", False, False
+        results = []
+        for points, values in [(references, context), (references + 4, context),
+                               (references, torch.tensor([[0.75, 1., 0., 1.]]))]:
+            with torch.no_grad():
+                expected = (model(image, points, values), *model.yolo(image))
+            result = session.run(None, {"images": image.numpy(), "references": points.numpy(), "context": values.numpy()})
+            for actual, value in zip(result, expected):
+                np.testing.assert_allclose(actual, value.numpy(), rtol=1e-4, atol=1e-5)
+            results.append(result)
+        for changed in results[1:]:
+            assert not np.allclose(results[0][0], changed[0])
+            np.testing.assert_array_equal(results[0][1], changed[1])
+            np.testing.assert_array_equal(results[0][2], changed[2])
+    finally:
+        torch.set_num_threads(previous)

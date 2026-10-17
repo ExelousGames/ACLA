@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     position = commands.add_parser("train-position", help="Extend a saved YOLO segmentation model with signed XYZ offsets.")
     position.add_argument("--manifest", type=Path, required=True, help="Recursively scan a folder for .position.json files, or read a positions.json index; randomly split frames when training starts.")
     position.add_argument("--model", type=Path, required=True, help="Existing segmentation .pt checkpoint.")
-    position.add_argument("--output", type=Path, required=True, help="New directory for position checkpoints and metrics.")
+    position.add_argument("--output", type=Path, required=True, help="New directory for position checkpoints, ONNX, and metrics.")
     position.add_argument("--epochs", type=int, default=100)
     position.add_argument("--imgsz", type=int, default=768)
     position.add_argument("--batch", type=int, default=8)
@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     position.add_argument("--workers", type=int, default=0)
     position.add_argument("--val-fraction", type=float, default=0.2, help="Validation share of frames (default: 0.2).")
     position.add_argument("--seed", type=int, default=42, help="Random frame split and training seed (default: 42).")
-    position.add_argument("--no-upload", action="store_true", help="Keep the checkpoint local without uploading.")
+    position.add_argument("--no-upload", action="store_true", help="Export ONNX locally without uploading.")
     position.add_argument("--upload-name", default="track-position", help="Model name in the backend store.")
 
     automatic = commands.add_parser(
@@ -89,8 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     upload = commands.add_parser("upload", help="Upload a saved segmentation checkpoint without retraining.")
     upload.add_argument("checkpoint", type=Path, help="Local trained .pt checkpoint.")
     upload.add_argument("--name", default="track-segments", help="Model name in the backend store.")
-    upload_position = commands.add_parser("upload-position", help="Upload a saved position checkpoint without retraining.")
-    upload_position.add_argument("checkpoint", type=Path, help="Local trained position .pt checkpoint.")
+    upload_position = commands.add_parser("upload-position", help="Export/publish a position model as ONNX without retraining.")
+    upload_position.add_argument("checkpoint", type=Path, help="Local position .pt checkpoint or exported .onnx artifact.")
     upload_position.add_argument("--name", default="track-position", help="Model name in the backend store.")
     args = parser.parse_args(argv)
 
