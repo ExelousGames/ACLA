@@ -280,17 +280,25 @@ def test_regression_trains_without_mutating_yolo_and_roundtrips(tiny_yolo, align
     records = load_position_manifest(aligned_manifest)
     sample = PositionDataset(records["session-a"], 64, CATEGORIES)[0]
     model.train()
-    optimizer = torch.optim.Adam(model.head.parameters(), lr=0.01)
+    assert not any(module.training for module in model.yolo.modules())
+    encoder_before = {key: value.clone() for key, value in model.position_encoder.state_dict().items()}
+    optimizer = torch.optim.Adam((parameter for parameter in model.parameters() if parameter.requires_grad), lr=0.01)
     inputs = tuple(sample[field].unsqueeze(0) for field in ("image", "references", "context"))
+    with torch.no_grad():
+        segmentation_before = model.yolo(inputs[0])
     prediction = model(*inputs)
     assert prediction.shape == (1, 2, 3)
     loss = (prediction - sample["target"]).square().mean()
     loss.backward()
     assert model.head[0].weight.grad.abs().sum() > 0
+    assert model.position_encoder[0].weight.grad.abs().sum() > 0
     assert all(parameter.grad is None for parameter in model.yolo.parameters())
     optimizer.step()
+    assert any(not torch.equal(value, encoder_before[key]) for key, value in model.position_encoder.state_dict().items())
     for key, value in model.yolo.state_dict().items():
         torch.testing.assert_close(value, before[key], rtol=0, atol=0)
+    with torch.no_grad():
+        torch.testing.assert_close(model.yolo(inputs[0]), segmentation_before, rtol=0, atol=0)
     model.eval()
     with torch.no_grad():
         expected = model(*inputs)
@@ -298,6 +306,7 @@ def test_regression_trains_without_mutating_yolo_and_roundtrips(tiny_yolo, align
     model.save(checkpoint)
     restored = YOLOPositionModel.load(checkpoint)
     assert restored.categories == CATEGORIES
+    assert not any(parameter.requires_grad for parameter in restored.yolo.parameters())
     with torch.no_grad():
         actual = restored(*inputs)
     torch.testing.assert_close(actual, expected)
@@ -313,6 +322,38 @@ def test_regression_trains_without_mutating_yolo_and_roundtrips(tiny_yolo, align
     )
     with pytest.raises(ValueError, match="Unknown map_name"):
         restored.predict_position(tmp_path / "missing.png", 0.25, curve, curve, game="acc", map_name="Unknown")
+
+
+@pytest.mark.parametrize("image_size", [64, 96])
+def test_position_predictions_distinguish_layouts_with_identical_global_averages(tiny_yolo, image_size):
+    model = YOLOPositionModel(tiny_yolo, imgsz=image_size, categories=CATEGORIES).eval()
+
+    def spatial_features(module, inputs, output):
+        # Identical per-channel means, but opposite left/right layouts in the batch.
+        features = torch.zeros_like(output)
+        features[0, :, :, 0] = 1
+        features[1] = features[0].flip(-1)
+        torch.testing.assert_close(features[0].mean((-2, -1)), features[1].mean((-2, -1)))
+        return features
+
+    handles = [model.yolo.model[index].register_forward_hook(spatial_features) for index in model.feature_layers]
+    try:
+        with torch.no_grad():
+            # Route one spatial cell through the encoder and regression head.
+            for parameter in (*model.position_encoder.parameters(), *model.head.parameters()):
+                parameter.zero_()
+            model.position_encoder[0].weight[0, 0] = 1
+            model.head[0].weight[0, 0] = 1
+            model.head[2].weight[0, 0] = 1
+            prediction = model(
+                torch.zeros(2, 3, image_size, image_size), torch.zeros(2, 2, 3),
+                torch.tensor([[0.25, 1, 0, 1, 0]]).repeat(2, 1),
+            )
+        assert prediction.shape == (2, 2, 3)
+        assert prediction[0, 0, 0] > prediction[1, 0, 0]
+    finally:
+        for handle in handles:
+            handle.remove()
 
 
 def test_all_context_inputs_affect_predictions_with_fixed_image_and_references(tiny_yolo):
@@ -342,6 +383,16 @@ def test_checkpoint_without_context_requires_retraining(position_checkpoint, lab
     saved.pop("categories")
     torch.save(saved, position_checkpoint)
     with pytest.raises(ValueError, match="retrain older models"):
+        YOLOPositionModel.load(position_checkpoint)
+
+
+def test_checkpoint_without_spatial_encoder_requires_retraining(position_checkpoint):
+    saved = torch.load(position_checkpoint, weights_only=True)
+    saved["state_dict"] = {
+        key: value for key, value in saved["state_dict"].items() if not key.startswith("position_encoder.")
+    }
+    torch.save(saved, position_checkpoint)
+    with pytest.raises(ValueError, match="retrain.*spatial"):
         YOLOPositionModel.load(position_checkpoint)
 
 
@@ -462,7 +513,7 @@ def test_position_upload_streams_original_weights_and_regression_metadata(positi
         "name": "track-position", "task": "position",
         "classNames": list(YOLOPositionModel.load(position_checkpoint).yolo.names.values()),
         "metadata": {
-            "format": "acla-yolo-position-v2", "trainingRunId": position_checkpoint.parent.name,
+            "format": "acla-yolo-position-v3", "trainingRunId": position_checkpoint.parent.name,
             "categories": CATEGORIES,
             "imgsz": 64, "outputNames": list(OUTPUT_NAMES),
             "targetDefinition": "reference_position - current_position",
@@ -505,9 +556,11 @@ def test_position_training_uploads_best_and_preserves_weights_on_failure(
 ):
     from training.image_segmentation import position_publication
 
+    network = YOLOPositionModel(tiny_yolo, imgsz=64, categories=CATEGORIES)
+    encoder_before = {key: value.clone() for key, value in network.position_encoder.state_dict().items()}
     monkeypatch.setattr(
         YOLOPositionModel, "from_segmentation_checkpoint",
-        lambda checkpoint, imgsz, categories: YOLOPositionModel(tiny_yolo, imgsz, categories=categories),
+        lambda checkpoint, imgsz, categories: network,
     )
     upload = AsyncMock(return_value={"_id": "position-model"})
     if failed:
@@ -524,6 +577,7 @@ def test_position_training_uploads_best_and_preserves_weights_on_failure(
         assert train_position_model(aligned_manifest, **args) == output / "best.pt"
         assert "Model uploaded to backend: position-model" in capsys.readouterr().out
     upload.assert_awaited_once_with(output / "best.pt", name="track-position")
+    assert any(not torch.equal(value, encoder_before[key]) for key, value in network.position_encoder.state_dict().items())
     YOLOPositionModel.load(output / "best.pt")
     assert (output / "last.pt").is_file()
     assert (output / "results.json").is_file()

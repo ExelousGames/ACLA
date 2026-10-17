@@ -1,4 +1,4 @@
-"""Train the position head with randomly split frames and raw XYZ errors."""
+"""Train the position encoder and head with split frames and raw XYZ errors."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def train_position_model(
         split: DataLoader(PositionDataset(records, imgsz, categories), batch_size=batch, shuffle=split == "train", num_workers=workers)
         for split, records in splits.items()
     }
-    optimizer = torch.optim.Adam(network.head.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam((parameter for parameter in network.parameters() if parameter.requires_grad), lr=1e-3)
     loss_function = nn.SmoothL1Loss()
     output.mkdir(parents=True)
     assignments = {split: [str(row["image"]) for row in frames] for split, frames in splits.items()}
