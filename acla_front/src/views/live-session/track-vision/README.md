@@ -1,14 +1,14 @@
 # Track Vision
 
-Track Vision runs locally in the Electron desktop app. Select and share a simulator window from the **Session Recording** bar, then open **Live Session → Add Visualization → Track Vision** to analyze that stream. Segmentation and **Depth** are required and always run on the GPU. Segmentation shows the uploaded model name and its labels; depth uses the bundled Depth-Anything-V2-Small model. Each captured frame runs through segmentation and depth while retaining the car interior. **Reconstructed scene** shows left and right track boundaries plus all accepted cars and car packs in 2D camera image space. The final **Bird's-eye view** projects that scene onto a flat road and includes your car as the reference point. The Capture tab shows the clean source frame; filtered depth colors appear in Label depths.
+Track Vision runs locally in the Electron desktop app. Select and share a simulator window from the **Session Recording** bar, then open **Live Session → Add Visualization → Track Vision** to analyze that stream. The uploaded `track-position` checkpoint supplies segmentation and position in one GPU inference pass. Optional **Depth** uses the bundled Depth-Anything-V2-Small model. Each captured frame runs through segmentation and, when enabled, depth while retaining the car interior. **Reconstructed scene** shows left and right track boundaries plus all accepted cars and car packs in 2D camera image space. The final **Bird's-eye view** projects that scene onto a flat road and includes your car as the reference point. The Capture tab shows the clean source frame; filtered depth colors appear in Label depths.
 
-Car interior masks remain available through filtering and label-depth inspection, including detections accepted below the stricter track confidence threshold. They do not cut other masks upstream. Depth receives the full captured image, including cockpit and unlabelled pixels; only letterbox-padding output is discarded. The final scene uses the interior mask to suppress track-outline points on or near cockpit edges. If either model is unavailable or fails, scene reconstruction waits for both models to be ready; no partial result or previous-frame mask is published. Empty or interior-only segmentation still permits depth inference.
+Car interior masks remain available through filtering and label-depth inspection, including detections accepted below the stricter track confidence threshold. They do not cut other masks upstream. Depth receives the full captured image, including cockpit and unlabelled pixels; only letterbox-padding output is discarded. The final scene uses the interior mask to suppress track-outline points on or near cockpit edges. If an enabled model is unavailable or fails, scene reconstruction waits for all enabled models to be ready; no partial result or previous-frame mask is published. Empty or interior-only segmentation still permits depth inference.
 
 Use **Expand capture** in the preview to fill most of the app window. Capture, detections, and the optional camera grid continue at the larger size. Choose **Restore capture** or press **Escape** to return to the panel; **Stop capture** is also available in the expanded view.
 
 Use **Display label** in the bottom **Settings** section to show only one label's masks, boxes, and captions, or choose **All labels** (the default). Changing the selection updates the current preview immediately. Detection and scene reconstruction continue using every label.
 
-In **Settings → Track models**, each model has an **Input resolution** dropdown with Low, Medium and High presets. Segmentation uses 384 × 384, 640 × 640 and 768 × 768; depth uses 252 × 252, 392 × 392 and 518 × 518. Both default to High. Lower resolutions reduce GPU work. Changing a resolution clears old detections and reloads only that model while capture continues; scene reconstruction resumes when both models are ready.
+In **Settings → Track models**, **Segmentation and position** shows the shared checkpoint and its fixed training resolution. Depth has an **Input resolution** dropdown with Low (252 × 252), Medium (392 × 392) and High (518 × 518, default) presets. Changing depth resolution reloads only depth while capture continues. **Enable depth model** can disable depth without interrupting segmentation or position.
 
 ## Visual pipeline
 
@@ -29,17 +29,17 @@ With live motion telemetry, the bird's-eye view also remembers recently visible 
 
 History covers the nearby road (up to 20 m ahead and 5 m behind), keeps at most 24 captures, and expires original observations after 4 seconds. New visible edges take precedence, missing sections remain separate, and moving traffic is never retained. History clears on capture/model reset, calibration/filter changes, telemetry pause/replay/reset, stale motion (over 500 ms), capture gaps (over 1 second), or abrupt heading changes. Without usable motion, the current-frame view remains available. A fixed driving camera and applied calibration are required; motion alignment and flat-road distances remain approximate.
 
-Window selection and capture start/stop controls live in the **Session Recording** bar. Track Vision consumes that shared stream: closing the panel releases its models and detections while capture continues, and reopening it resumes analysis without another window selection. Ending the live session stops capture. Share the game screen before **Start Recording** to include video from the initial telemetry recording start. Telemetry can record without video. Screen selection and sharing start are locked once recording begins, including while paused or after restoring a draft; stopping capture does not allow video to restart in that session. Starting telemetry waits for any pending screen-sharing request to finish or be cancelled. Each session can have at most one video. The app saves silent MP4 video locally beside the telemetry file in its application data folder (`acla-temp`). Stopping either capture or telemetry finalizes the video. **Show local video** opens the saved file location. **Upload Session** includes the saved video by default; uncheck **Include recorded video** for a telemetry-only upload. Upload waits for the final video write, sends video in bounded chunks, and retains the local video after success or failure. **Discard Session** deletes the local telemetry and its video. Restored drafts rediscover the video from the telemetry file path. Multiple local videos block video upload without deleting any files. The backend enforces the one-video limit and stores video chunks on the same session and provides authenticated list/download routes at `GET /racing-session/:id/videos` and `GET /racing-session/:id/videos/:index`. **Settings** is the single configuration section at the bottom of the window. It is collapsible and opens automatically on detector errors. Camera parameters, applied calibration, the reference-grid toggle, display label, both confidence thresholds and model input resolutions are saved automatically in local storage and restored when Track Vision is reopened. Capture sources must still be selected for each new window-sharing session. Its **Filtering confidence** slider defaults to 65% and updates filtered masks, the reconstructed scene and coaching inputs for the current and future frames. The **Segmentation confidence** slider controls which masks the model returns; car interior masks accepted by detection are retained independently of the filtering threshold. Arrow keys, Home and End navigate the tabs. Switching tabs reuses the latest frame, keeps capture and models running, and preserves camera settings. The diagnostic views do not modify published detections or coaching inputs.
+Window selection and capture start/stop controls live in the **Session Recording** bar. Track Vision consumes that shared stream: closing the panel releases its models and detections while capture continues, and reopening it resumes analysis without another window selection. Ending the live session stops capture. Share the game screen before **Start Recording** to include video from the initial telemetry recording start. Telemetry can record without video. Screen selection and sharing start are locked once recording begins, including while paused or after restoring a draft; stopping capture does not allow video to restart in that session. Starting telemetry waits for any pending screen-sharing request to finish or be cancelled. Each session can have at most one video. The app saves silent MP4 video locally beside the telemetry file in its application data folder (`acla-temp`). Stopping either capture or telemetry finalizes the video. **Show local video** opens the saved file location. **Upload Session** includes the saved video by default; uncheck **Include recorded video** for a telemetry-only upload. Upload waits for the final video write, sends video in bounded chunks, and retains the local video after success or failure. **Discard Session** deletes the local telemetry and its video. Restored drafts rediscover the video from the telemetry file path. Multiple local videos block video upload without deleting any files. The backend enforces the one-video limit and stores video chunks on the same session and provides authenticated list/download routes at `GET /racing-session/:id/videos` and `GET /racing-session/:id/videos/:index`. **Settings** is the single configuration section at the bottom of the window. It is collapsible and opens automatically on detector errors. Camera parameters, applied calibration, the reference-grid toggle, display label, both confidence thresholds and depth input resolution are saved automatically in local storage and restored when Track Vision is reopened. Capture sources must still be selected for each new window-sharing session. Its **Filtering confidence** slider defaults to 65% and updates filtered masks, the reconstructed scene and coaching inputs for the current and future frames. The **Segmentation confidence** slider controls which masks the model returns; car interior masks accepted by detection are retained independently of the filtering threshold. Arrow keys, Home and End navigate the tabs. Switching tabs reuses the latest frame, keeps capture and models running, and preserves camera settings. The diagnostic views do not modify published detections or coaching inputs.
 
 ## Backend model contract
 
-Track Vision requests `GET /ai-model/ultralytics?name=track-segments` with the normal JWT, filters for the exact `track-segments` name and `segment` task, and selects the newest upload by its parsed `createdAt` timestamp. Equal timestamps use descending `_id` as a deterministic tie-breaker. Selection does not depend on catalogue order or version text in a name; missing or invalid upload dates are reported as an error. If no matching segmentation model is available, loading reports an error. The selected catalogue entry is converted to:
+Track Vision requests `GET /ai-model/ultralytics?name=track-position` with the normal JWT, filters for the exact `track-position` name and `position` task, and selects the newest upload by its parsed `createdAt` timestamp. Equal timestamps use descending `_id` as a deterministic tie-breaker. Selection does not depend on catalogue order or version text in a name; missing or invalid upload dates are reported as an error. If no matching shared model is available, loading reports an error. The selected catalogue entry is converted to:
 
 ```json
 {
   "id": "MongoDB model ID",
-  "name": "track-features",
-  "task": "segment",
+  "name": "track-position",
+  "task": "position",
   "classNames": ["track", "curb"],
   "sizeBytes": 123456,
   "sha256": "checkpoint SHA-256",
@@ -47,7 +47,7 @@ Track Vision requests `GET /ai-model/ultralytics?name=track-segments` with the n
 }
 ```
 
-`POST /ai-model/ultralytics` publishes a `.pt` checkpoint with metadata. Array positions in `classNames` are class IDs. The frontend checks the metadata when loading a model and uses the authenticated `GET /ai-model/ultralytics/:id/file` route only if that checkpoint is missing locally. Upload a new segmentation model named `track-segments` to make it the version selected on the next model load. Cache entries use the selected model ID and checksum, so repeated uploads under the same name remain separate versions.
+`POST /ai-model/ultralytics` publishes a `.pt` checkpoint with metadata. Array positions in `classNames` are class IDs. The frontend checks the metadata when loading a model and uses the authenticated `GET /ai-model/ultralytics/:id/file` route only if that checkpoint is missing locally. Upload a new combined checkpoint named `track-position` to make it the version selected on the next model load. Cache entries use the selected model ID and checksum, so repeated uploads under the same name remain separate versions.
 
 ## Local storage and inference
 
@@ -60,23 +60,23 @@ Electron stores backend checkpoints, ONNX exports, and their metadata under:
   manifest-<input-size>.json
 ```
 
-Downloads are checked against the backend byte length and SHA-256 before saving. On first use of each resolution, the desktop Python environment converts the verified checkpoint to a static, float32 ONNX segmentation model at the selected size. Exports and manifests are cached separately per resolution and share the original checkpoint. Export is offline and automatic package installation is disabled. The exporter validates the model task, class count, input resolution and output layout. Backend class names are applied in class-ID order and used by both the label list and overlays.
+Downloads are checked against the backend byte length and SHA-256 before saving. The desktop Python environment exports one static, float32 ONNX graph at the checkpoint's saved `metadata.imgsz` training resolution. The graph returns `deltas`, raw segmentation `predictions`, and mask `prototypes` using one backbone pass. Export is offline and automatic package installation is disabled. The exporter validates reference semantics, class labels, input resolution and output layout. Old position-only ONNX exports are rebuilt from cached checkpoints without downloading weights again. Track Vision does not request or run a separate `track-segments` model.
 
-The original checkpoint is retained if conversion fails, so a retry can export it without another download. Verified ONNX exports survive app restarts; damaged exports are rebuilt from the saved checkpoint. Segmentation metadata is requested from the backend when loading, so segmentation requires a backend connection. Depth loads independently from the bundled `public/vision-models/depth-anything-v2-small.onnx` and needs no backend connection.
+The original checkpoint is retained if conversion fails, so a retry can export it without another download. Verified ONNX exports survive app restarts; damaged exports are rebuilt from the saved checkpoint. Shared-model metadata is requested from the backend when loading, so Track Vision requires a backend connection. Depth loads independently from the bundled `public/vision-models/depth-anything-v2-small.onnx` and needs no backend connection.
 
 Desktop development and packaging install the conversion dependencies from `src/py-scripts/requirements.txt` through the existing `setup:python` lifecycle. After updating an existing checkout, run `npm run setup:python` and restart Electron, or use `npm run start:electron`, which performs setup automatically. `npm run setup:vision` only copies the pinned ONNX Runtime Web assets from node_modules into the app; it never downloads models.
 
 To prepare the bundled depth weights before development or packaging, install `scripts/vision-requirements.txt` in a Python environment and run `npm run setup:vision-models`. The script uses `.venv/track-vision` when present; `VISION_PYTHON` selects another interpreter. It exports the official `depth-anything/Depth-Anything-V2-Small-hf` checkpoint at a pinned revision, downloading on first use and validating/reusing prepared weights thereafter. Static float32 ONNX inputs are `[1, 3, size, size]` for sizes 252, 392 and 518, with RGB ImageNet normalization; outputs are `[1, size, size]` relative disparity. The default 518px export keeps the filename `depth-anything-v2-small.onnx`; the smaller exports use `depth-anything-v2-small-252.onnx` and `depth-anything-v2-small-392.onnx`. These generated files are ignored by Git and copied into the build with the public assets. Its Apache 2.0 license is included in `public/vision-models/DEPTH-ANYTHING-V2-LICENSE.txt`.
 
-Inference requires WebGPU for both models. GPU failures retry after three seconds. Model retrieval and export errors offer a manual Retry button. Screen preview remains available when a model cannot load, but inference and scene reconstruction wait for both models. Models cannot be disabled individually, and there is no CPU fallback.
+Inference requires WebGPU for both models. GPU failures retry after three seconds. Model retrieval and export errors offer a manual Retry button. Screen preview remains available when a model cannot load, but inference and scene reconstruction wait for all enabled models. Depth can be disabled; there is no CPU fallback.
 
 All frames and inference stay on this device. Captured frames run sequentially at up to 5 FPS. GPU initialization, inference, and disposal share one queue across Track Vision panels.
 
 ## Results
 
-### Position add-on
+### Position from the shared model
 
-Track Vision also queries the Ultralytics model catalogue for `track-position`,
+Track Vision queries the Ultralytics model catalogue once for `track-position`,
 filters for that exact name and the `position` task, and selects the newest upload
 by `createdAt` with the same `_id` tie-breaker. Electron verifies and caches its weights, then exports
 the saved network locally without importing the training workspace. Format/version
@@ -87,16 +87,16 @@ changing the network's required inputs still requires their definition and live 
 The exporter derives the regression head widths and optional context input from the
 checkpoint weights, rather than selecting an implementation by version. The runtime
 warms up the exported graph to verify its executable inputs and outputs.
-It runs on WebGPU at its saved training resolution, independently of the segmentation
-resolution setting. **Settings → Track models → Position add-on** shows loading,
-availability and retry status. A missing add-on does not block segmentation or depth.
+Segmentation and position run together on WebGPU at the saved training resolution.
+**Settings → Track models → Segmentation and position** shows their shared loading,
+availability and retry status. A missing checkpoint prevents inference; screen preview remains available.
 
 Keep **Live Map** open with its reference lap and centerline loaded. For each captured
 image, Track Vision samples fresh live `Graphics_normalized_car_position` and asks
 that map for the corresponding reference-lap and `samples.middle_line` XYZ points.
 Both lookups interpolate by normalized position, including the start/finish seam.
 Map camera zoom, flips and screen coordinates do not affect these inputs. Track Vision
-does not download reference data again and never passes driver XYZ to the add-on.
+does not download reference data again and never passes driver XYZ to the model.
 
 The model receives the full letterboxed image and `[reference XYZ, centerline XYZ]`
 as a `[1, 2, 3]` tensor. When its graph requests context, it also receives
@@ -113,12 +113,13 @@ resetting telemetry clears the markers. The two signed XYZ output triples are sh
 and published as `TrackVisionDetection.position.referenceDelta` and `centerlineDelta`,
 with `references`, `normalizedPosition`, and `inferenceMs`. They remain in source
 coordinates: reference XYZ minus inferred driver XYZ. Missing references, paused or
-stale telemetry omit position results; resetting telemetry or changing the loaded
+stale telemetry omit position results while segmentation continues using placeholder
+reference/context inputs; resetting telemetry or changing the loaded
 map/reference during inference discards the pending position prediction.
 
 ### Detector results
 
-`TrackVisionModel.loadBackend(inputSize = 768)` loads segmentation through the desktop cache. `TrackVisionModel.loadBuiltin('depth', inputSize = 518)` loads bundled depth weights. `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time, and ordered class names for segmentation. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. Both models scale the shared 768px letterbox coordinates to their selected input resolution to keep masks aligned. Segmentation boxes are normalized using the actual input size. Call `dispose()` when finished.
+`TrackPositionModel.load()` loads the shared graph through the desktop cache. Its `detect(canvas, confidence, references?, context?)` returns instance masks, normalized boxes, class IDs, inference time, ordered class names, and optional position deltas from the same pass. Without references, position deltas are omitted. `TrackVisionModel.loadBuiltin('depth', inputSize = 518)` loads bundled depth weights. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. Both models letterbox the full capture into their square inputs. Segmentation boxes are normalized using the training input size. Call `dispose()` when finished.
 
 `LiveTrackVision` registers a `TrackVisionHandle` as `visualization:track-vision`. Consumers use `getLatestDetection()` or `subscribeDetection(listener)`. Results include the source timestamp and dimensions, successful segmentation under `detections.segment`, and depth under `detections.depth`. Masks, boxes, and depth maps refer to the letterboxed model input; drawing segmentation removes its padding. Results clear on stop, configuration changes, and unmount. Depth values remain available to detection consumers; the Label depths tab visualizes retained label depths as a heatmap.
 

@@ -4,7 +4,7 @@ const { createHash } = require('crypto');
 const { execFile } = require('child_process');
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const CACHE_VERSION = 3; // Keep a separate static ONNX export for each input resolution.
+const CACHE_VERSION = 4; // Position exports now include segmentation from the shared backbone.
 const INPUT_SIZES = [384, 640, 768];
 
 function validateModel(model) {

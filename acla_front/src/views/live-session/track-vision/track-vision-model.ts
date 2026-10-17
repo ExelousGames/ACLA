@@ -1,16 +1,15 @@
 import type { InferenceSession } from 'onnxruntime-web';
 import { letterbox, rgbaToChw, FloatTensor } from './yolo-segmentation';
-import { decodeDepth, decodeSegments } from './vision-decoding';
-import { DETECTION_TASKS, DetectionTask, VisionResult } from './track-vision-types';
+import { decodeDepth } from './vision-decoding';
+import { DETECTION_TASKS, VisionResult } from './track-vision-types';
 import { readVisionModel, visionAssetUrl } from './vision-assets';
-import { loadBackendVisionModel } from './backend-vision-model';
 import { runWithVisionGpuQueue } from './vision-gpu-queue';
 import { MaskRegion, resizeMask } from './world-mask';
 import { DEPTH_INPUT_SIZE, VISION_INPUT_SIZE } from './vision-config';
 
 export class GpuInferenceError extends Error {}
 
-type ModelMetadata = { task: DetectionTask; name: string; classNames: string[]; inputSize: number };
+type ModelMetadata = { task: 'depth'; name: string; classNames: string[]; inputSize: number };
 
 export class TrackVisionModel {
     private pending: Promise<unknown> = Promise.resolve();
@@ -22,18 +21,13 @@ export class TrackVisionModel {
     private constructor(
         private runtime: typeof import('onnxruntime-web'),
         private session: InferenceSession,
-        readonly task: DetectionTask,
+        readonly task: 'depth',
         readonly name: string,
         readonly classNames: string[],
         readonly inputSize: number,
     ) {
         this.inputCanvas.width = this.inputSize;
         this.inputCanvas.height = this.inputSize;
-    }
-
-    static async loadBackend(inputSize = VISION_INPUT_SIZE): Promise<TrackVisionModel> {
-        const { bytes, metadata } = await loadBackendVisionModel(inputSize);
-        return TrackVisionModel.load(bytes, { task: 'segment', name: metadata.name, classNames: metadata.classNames, inputSize });
     }
 
     static async loadBuiltin(task: 'depth', inputSize = DEPTH_INPUT_SIZE): Promise<TrackVisionModel> {
@@ -63,12 +57,10 @@ export class TrackVisionModel {
             const session = await runtime.InferenceSession.create(bytes, { executionProviders: ['webgpu'] });
             const model = new TrackVisionModel(runtime, session, metadata.task, metadata.name, metadata.classNames, metadata.inputSize);
             try {
-                if (session.inputNames.length !== 1 || session.outputNames.length !== (metadata.task === 'segment' ? 2 : 1)) {
-                    throw new Error(metadata.task === 'depth'
-                        ? 'Unexpected depth model inputs or outputs. Re-export the bundled weights.'
-                        : 'Unexpected segmentation model inputs or outputs. Upload compatible segmentation weights.');
+                if (session.inputNames.length !== 1 || session.outputNames.length !== 1) {
+                    throw new Error('Unexpected depth model inputs or outputs. Re-export the bundled weights.');
                 }
-                await model.run(new Float32Array(3 * model.inputSize ** 2), 0.5);
+                await model.run(new Float32Array(3 * model.inputSize ** 2));
                 return model;
             } catch (error) {
                 // Initialization already owns the queue; clean up without re-entering it.
@@ -78,7 +70,7 @@ export class TrackVisionModel {
         });
     }
 
-    private async run(input: Float32Array, threshold: number) {
+    private async run(input: Float32Array) {
         const tensor = new this.runtime.Tensor('float32', input, [1, 3, this.inputSize, this.inputSize]);
         let outputs: InferenceSession.ReturnType | undefined;
         try {
@@ -87,18 +79,14 @@ export class TrackVisionModel {
                 if (!(value.data instanceof Float32Array)) throw new Error('Track Vision requires float32 model outputs.');
                 return { dims: value.dims, data: value.data };
             });
-            if (this.task === 'depth') return decodeDepth(values[0]);
-            const predictions = values.find(({ dims }) => dims.length === 3);
-            const prototypes = values.find(({ dims }) => dims.length === 4);
-            if (!predictions || !prototypes) throw new Error('Segment requires prediction and mask-prototype outputs.');
-            return decodeSegments(predictions, prototypes, this.inputSize, threshold, this.classNames.length);
+            return decodeDepth(values[0]);
         } finally {
             tensor.dispose();
             if (outputs) Object.values(outputs).forEach((output) => output.dispose());
         }
     }
 
-    async detect(frame: HTMLCanvasElement, threshold: number, region?: MaskRegion): Promise<VisionResult> {
+    async detect(frame: HTMLCanvasElement, _threshold: number, region?: MaskRegion): Promise<VisionResult> {
         if (this.disposed) throw new Error('The vision model has been released.');
         if (this.busy) throw new Error('Vision inference is already running.');
         if (!frame.width || !frame.height) throw new Error('No captured frame is available.');
@@ -128,7 +116,7 @@ export class TrackVisionModel {
                     for (let i = 0; i < mask.length; i++) input[offset + i] = (input[offset + i] - mean[channel]) / std[channel];
                 }
             }
-            const result = await runWithVisionGpuQueue(() => this.run(input, threshold));
+            const result = await runWithVisionGpuQueue(() => this.run(input));
             if (result.task === 'depth' && region) {
                 const mask = resizeMask(region, result.width, result.height);
                 for (let i = 0; i < mask.length; i++) {

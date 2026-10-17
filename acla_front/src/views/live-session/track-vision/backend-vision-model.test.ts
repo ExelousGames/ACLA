@@ -1,5 +1,5 @@
 import apiService from 'services/api.service';
-import { BackendVisionModel, loadBackendVisionModel, loadBackendPositionModel } from './backend-vision-model';
+import { BackendVisionModel, loadBackendPositionModel } from './backend-vision-model';
 
 jest.mock('services/api.service', () => ({ __esModule: true, default: { get: jest.fn(), getBinary: jest.fn() } }));
 const metadata: BackendVisionModel = {
@@ -14,63 +14,46 @@ const prepare = jest.fn();
 
 beforeEach(() => {
     window.trackVisionModels = { prepare };
-    (apiService.get as jest.Mock).mockResolvedValue({ data: [catalogueModel] });
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [positionCatalogueModel] });
     (apiService.getBinary as jest.Mock).mockResolvedValue(new ArrayBuffer(4));
 });
 afterEach(() => { delete window.trackVisionModels; });
 
 it('checks the backend version and reuses local weights without downloading', async () => {
     prepare.mockResolvedValue(new Uint8Array([1, 2]));
-    const result = await loadBackendVisionModel();
-    expect(apiService.get).toHaveBeenCalledWith('/ai-model/ultralytics', { name: 'track-segments' });
-    expect(prepare).toHaveBeenCalledWith(metadata, undefined, 768);
+    const result = await loadBackendPositionModel();
+    expect(apiService.get).toHaveBeenCalledWith('/ai-model/ultralytics', { name: 'track-position' });
+    expect(prepare).toHaveBeenCalledWith(positionMetadata, undefined, 512);
     expect(apiService.getBinary).not.toHaveBeenCalled();
-    expect(result.metadata.classNames).toEqual(['curb', 'track']);
-    expect(new Uint8Array(result.bytes)).toEqual(new Uint8Array([1, 2]));
+    expect(result!.metadata.classNames).toEqual(['curb', 'track']);
+    expect(new Uint8Array(result!.bytes)).toEqual(new Uint8Array([1, 2]));
 });
 
 it('downloads missing weights from the backend and saves them before inference', async () => {
     prepare.mockResolvedValueOnce(null).mockResolvedValueOnce(new Uint8Array([7]));
-    await loadBackendVisionModel();
+    await loadBackendPositionModel();
     expect(apiService.getBinary).toHaveBeenCalledWith(metadata.downloadPath, { timeoutMs: 300000 });
-    expect(prepare).toHaveBeenLastCalledWith(metadata, new ArrayBuffer(4), 768);
+    expect(prepare).toHaveBeenLastCalledWith(positionMetadata, new ArrayBuffer(4), 512);
 });
 
 it('coalesces simultaneous panel loads into one download and export', async () => {
     prepare.mockResolvedValueOnce(null).mockResolvedValueOnce(new Uint8Array([7]));
-    const [first, second] = await Promise.all([loadBackendVisionModel(), loadBackendVisionModel()]);
+    const [first, second] = await Promise.all([loadBackendPositionModel(), loadBackendPositionModel()]);
     expect(first).toBe(second);
     expect(apiService.getBinary).toHaveBeenCalledTimes(1);
     expect(prepare).toHaveBeenCalledTimes(2);
 });
 
-it('keeps concurrent loads at different resolutions separate', async () => {
-    prepare.mockImplementation(async (_metadata, _bytes, inputSize) => new Uint8Array([inputSize / 128]));
-    const [low, high] = await Promise.all([loadBackendVisionModel(384), loadBackendVisionModel(768)]);
-    expect(new Uint8Array(low.bytes)).toEqual(new Uint8Array([3]));
-    expect(new Uint8Array(high.bytes)).toEqual(new Uint8Array([6]));
-    expect(prepare).toHaveBeenCalledWith(metadata, undefined, 384);
-    expect(prepare).toHaveBeenCalledWith(metadata, undefined, 768);
-});
-
 it('rejects invalid model IDs without fetching any weights', async () => {
-    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...catalogueModel, _id: '../model' }] });
-    await expect(loadBackendVisionModel()).rejects.toThrow('invalid Track Vision model metadata');
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel, _id: '../model' }] });
+    await expect(loadBackendPositionModel()).rejects.toThrow('invalid Track Vision model metadata');
     expect(prepare).not.toHaveBeenCalled();
     expect(apiService.getBinary).not.toHaveBeenCalled();
 });
 
-it('reports backend errors and permits retry without any bundled model fallback', async () => {
-    (apiService.get as jest.Mock).mockRejectedValueOnce({ status: 404, data: { message: 'No segmentation model uploaded' } });
-    await expect(loadBackendVisionModel()).rejects.toThrow('No segmentation model uploaded');
-    expect(prepare).not.toHaveBeenCalled();
-    prepare.mockResolvedValue(new Uint8Array([1]));
-    await expect(loadBackendVisionModel()).resolves.toMatchObject({ metadata });
-});
-
 it('preserves conversion errors and never downloads another model as a fallback', async () => {
     prepare.mockRejectedValue(new Error('Backend labels do not match the model'));
-    await expect(loadBackendVisionModel()).rejects.toThrow('Backend labels do not match');
+    await expect(loadBackendPositionModel()).rejects.toThrow('Backend labels do not match');
     expect(apiService.getBinary).not.toHaveBeenCalled();
 });
 
@@ -89,7 +72,7 @@ it('loads the newest position checkpoint at its training resolution using the ex
     expect(apiService.getBinary).not.toHaveBeenCalled();
 });
 
-it('allows segmentation to continue when no position add-on was uploaded', async () => {
+it('returns no shared checkpoint when only a separate segmentation model exists', async () => {
     (apiService.get as jest.Mock).mockResolvedValue({ data: [catalogueModel] });
     await expect(loadBackendPositionModel()).resolves.toBeNull();
     expect(prepare).not.toHaveBeenCalled();
@@ -120,7 +103,6 @@ it('preserves the published category vocabulary and order for position inference
 });
 
 describe.each([
-    { task: 'segment', model: catalogueModel, load: () => loadBackendVisionModel() },
     { task: 'position', model: positionCatalogueModel, load: () => loadBackendPositionModel() },
 ])('$task model selection', ({ model, load }) => {
     it('selects the latest upload date for the exact model name and task, regardless of catalogue order', async () => {
@@ -163,13 +145,7 @@ describe.each([
     });
 });
 
-it('reports a missing segmentation model instead of loading an unrelated model name', async () => {
-    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...catalogueModel, name: 'other-segments' }] });
-    await expect(loadBackendVisionModel()).rejects.toThrow('No Track Vision segmentation model has been uploaded');
-    expect(prepare).not.toHaveBeenCalled();
-});
-
-it('leaves the position add-on disabled when only unrelated model names are available', async () => {
+it('does not load unrelated model names', async () => {
     (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel, name: 'other-position' }] });
     await expect(loadBackendPositionModel()).resolves.toBeNull();
     expect(prepare).not.toHaveBeenCalled();

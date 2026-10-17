@@ -126,3 +126,15 @@ it('exports position checkpoints with their own task and fixed training resoluti
     expect(exporter).toHaveBeenCalledTimes(1);
     await expect(makeCache().prepare(addon, undefined, 518)).rejects.toThrow('input resolution');
 });
+
+it('re-exports old position-only graphs from cached weights without downloading', async () => {
+    const shared = { ...model, task: 'position', name: 'track-position' };
+    await makeCache().prepare(shared, weights, 512);
+    const manifestPath = path.join(folder(), 'manifest-512.json');
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, version: 3 }));
+    await expect(makeCache().prepare(shared, undefined, 512)).resolves.toEqual(Buffer.from([5, 6]));
+    expect(exporter).toHaveBeenCalledTimes(2);
+    await expect(makeCache().prepare(shared, undefined, 512)).resolves.toEqual(Buffer.from([5, 6]));
+    expect(exporter).toHaveBeenCalledTimes(2);
+});

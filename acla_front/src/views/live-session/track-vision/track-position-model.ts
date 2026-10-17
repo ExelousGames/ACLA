@@ -4,7 +4,8 @@ import { GpuInferenceError } from './track-vision-model';
 import { runWithVisionGpuQueue } from './vision-gpu-queue';
 import { visionAssetUrl } from './vision-assets';
 import { rgbaToChw } from './yolo-segmentation';
-import type { PositionReferences, TrackPositionResult } from './track-vision-types';
+import { decodeSegments } from './vision-decoding';
+import type { PositionReferences, TrackPositionResult, VisionResult } from './track-vision-types';
 
 // Python/Pillow training uses ties-to-even rounding for the letterboxed image.
 const roundEven = (value: number) => value % 1 === 0.5 ? 2 * Math.round(value / 2) : Math.round(value);
@@ -22,14 +23,14 @@ export class TrackPositionModel {
     private canvas = document.createElement('canvas');
 
     private constructor(private runtime: typeof import('onnxruntime-web'), private session: InferenceSession,
-        readonly name: string, readonly inputSize: number, private categories: Record<string, string[]> = {}) {
+        readonly name: string, readonly inputSize: number, readonly classNames: string[], private categories: Record<string, string[]> = {}) {
         this.canvas.width = this.canvas.height = inputSize;
     }
 
-    static async load(): Promise<TrackPositionModel | null> {
+    static async load(): Promise<TrackPositionModel> {
         const loaded = await loadBackendPositionModel();
-        if (!loaded) return null;
-        if (!('gpu' in navigator) || !navigator.gpu) throw new GpuInferenceError('GPU acceleration is unavailable for the position add-on.');
+        if (!loaded) throw new Error('No track-position model has been uploaded for segmentation and position.');
+        if (!('gpu' in navigator) || !navigator.gpu) throw new GpuInferenceError('GPU acceleration is unavailable for Track Vision.');
         return runWithVisionGpuQueue(async () => {
             const runtime = await import('onnxruntime-web/webgpu');
             runtime.env.wasm.wasmPaths = visionAssetUrl('vision-runtime/');
@@ -39,18 +40,18 @@ export class TrackPositionModel {
             let session: InferenceSession | undefined;
             try {
                 session = await runtime.InferenceSession.create(loaded.bytes, { executionProviders: ['webgpu'] });
-                const model = new TrackPositionModel(runtime, session, loaded.metadata.name, loaded.inputSize, loaded.categories);
+                const model = new TrackPositionModel(runtime, session, loaded.metadata.name, loaded.inputSize, loaded.metadata.classNames, loaded.categories);
                 // Run the actual graph instead of inferring compatibility from a version or input count.
-                await model.run(new Float32Array(3 * loaded.inputSize ** 2), new Float32Array(6), { normalized_position: 0 });
+                await model.run(new Float32Array(3 * loaded.inputSize ** 2), new Float32Array(6), 0.5, { normalized_position: 0 });
                 return model;
             } catch (error) {
                 await session?.release().catch(() => undefined);
-                throw new GpuInferenceError(`Position add-on GPU initialization failed. ${error instanceof Error ? error.message : String(error)}`);
+                throw new GpuInferenceError(`Track Vision GPU initialization failed. ${error instanceof Error ? error.message : String(error)}`);
             }
         });
     }
 
-    private async run(image: Float32Array, references: Float32Array, context?: PositionContext) {
+    private async run(image: Float32Array, references: Float32Array, threshold: number, context?: PositionContext) {
         const feeds: Record<string, import('onnxruntime-web').Tensor> = {};
         if (this.session.inputNames.includes('context')) {
             if (!context || !Number.isFinite(context.normalized_position)
@@ -75,22 +76,29 @@ export class TrackPositionModel {
         let outputs: InferenceSession.ReturnType | undefined;
         try {
             outputs = await this.session.run(feeds);
+            const { predictions, prototypes } = outputs;
+            if (!(predictions?.data instanceof Float32Array) || !(prototypes?.data instanceof Float32Array)) {
+                throw new Error('Track Vision requires segmentation predictions and mask prototypes from track-position.');
+            }
+            const segment = decodeSegments({ dims: predictions.dims, data: predictions.data },
+                { dims: prototypes.dims, data: prototypes.data }, this.inputSize, threshold, this.classNames.length);
             const result = outputs.deltas;
             if (result?.dims.join(',') !== '1,2,3' || !(result.data instanceof Float32Array)
-                || result.data.length !== 6 || !result.data.every(Number.isFinite)) throw new Error('Invalid position add-on output.');
-            return { referenceDelta: Array.from(result.data.slice(0, 3)) as [number, number, number],
-                centerlineDelta: Array.from(result.data.slice(3, 6)) as [number, number, number] };
+                || result.data.length !== 6 || !result.data.every(Number.isFinite)) throw new Error('Invalid track-position output.');
+            return { ...segment, position: { referenceDelta: Array.from(result.data.slice(0, 3)) as [number, number, number],
+                centerlineDelta: Array.from(result.data.slice(3, 6)) as [number, number, number] } };
         } finally {
             Object.values(feeds).forEach((input) => input.dispose());
             if (outputs) Object.values(outputs).forEach((output) => output.dispose());
         }
     }
 
-    async predict(frame: HTMLCanvasElement, references: PositionReferences, positionContext?: PositionContext): Promise<TrackPositionResult> {
-        if (this.disposed) throw new Error('The position add-on has been released.');
-        if (this.busy) throw new Error('Position inference is already running.');
-        const points = new Float32Array([references.reference.x, references.reference.y, references.reference.z,
-            references.centerline.x, references.centerline.y, references.centerline.z]);
+    async detect(frame: HTMLCanvasElement, threshold: number, references?: PositionReferences, positionContext?: PositionContext): Promise<VisionResult & { position?: TrackPositionResult }> {
+        if (this.disposed) throw new Error('The track-position model has been released.');
+        if (this.busy) throw new Error('Track Vision inference is already running.');
+        // Segmentation is image-only. Placeholder references/context keep it available without live telemetry.
+        const points = references ? new Float32Array([references.reference.x, references.reference.y, references.reference.z,
+            references.centerline.x, references.centerline.y, references.centerline.z]) : new Float32Array(6);
         if (!points.every(Number.isFinite) || !frame.width || !frame.height) throw new Error('Position inference requires a frame and finite reference points.');
         this.busy = true;
         const operation = (async () => {
@@ -105,7 +113,11 @@ export class TrackPositionModel {
             context.imageSmoothingQuality = 'high';
             context.drawImage(frame, Math.floor((this.inputSize - width) / 2), Math.floor((this.inputSize - height) / 2), width, height);
             const image = rgbaToChw(context.getImageData(0, 0, this.inputSize, this.inputSize).data);
-            return { ...await runWithVisionGpuQueue(() => this.run(image, points, positionContext)), inferenceMs: performance.now() - started };
+            const { position, ...segment } = await runWithVisionGpuQueue(() => this.run(image, points, threshold,
+                references ? positionContext : { normalized_position: 0 }));
+            const inferenceMs = performance.now() - started;
+            return { ...segment, classNames: this.classNames, inferenceMs,
+                ...(references ? { position: { ...position, inferenceMs } } : {}) };
         })();
         this.pending = operation;
         try { return await operation; } finally { this.busy = false; }

@@ -21,12 +21,15 @@ class PositionExportTests(unittest.TestCase):
     def test_contextual_checkpoint_exports_progress_and_category_features_without_version_gates(self):
         self.verify_checkpoint({'game': ['acc'], 'map_name': ['monza', 'nurburgring_24h']})
 
-    def verify_checkpoint(self, categories=None):
+    def test_yolo26_checkpoint_exports_raw_masks_from_its_one_to_many_head(self):
+        self.verify_checkpoint(segment_head='Segment26', end2end=True)
+
+    def verify_checkpoint(self, categories=None, segment_head='Segment', end2end=False):
         torch.set_num_threads(1)
         torch.manual_seed(3)
-        yolo = SegmentationModel({'nc': 2, 'backbone': [
+        yolo = SegmentationModel({'nc': 2, 'end2end': end2end, 'backbone': [
             [-1, 1, 'Conv', [8, 3, 2]], [-1, 1, 'Conv', [16, 3, 2]], [-1, 1, 'Conv', [32, 3, 2]],
-        ], 'head': [[[0, 1, 2], 1, 'Segment', [2, 8, 16]]]}, verbose=False).eval()
+        ], 'head': [[[0, 1, 2], 1, segment_head, [2, 8, 16]]]}, verbose=False).eval()
         layers = list(yolo.model[-1].f)
         image = torch.rand(1, 3, 64, 64)
         with torch.no_grad():
@@ -59,22 +62,33 @@ class PositionExportTests(unittest.TestCase):
                 if context is not None:
                     parts += (context,)
                 expected = head(torch.cat(parts, dim=1)).reshape(1, 2, 3)
-                torch.testing.assert_close(model(*inputs), expected)
+                deltas, predictions, prototypes = model(*inputs)
+                torch.testing.assert_close(deltas, expected)
+                yolo.model[-1].export = True
+                yolo.model[-1].format = 'onnx'
+                yolo.model[-1].end2end = False
+                expected_predictions, expected_prototypes = yolo(image)
+                torch.testing.assert_close(predictions, expected_predictions)
+                torch.testing.assert_close(prototypes, expected_prototypes)
             export_model(checkpoint, ['track', 'car'], 64, output)
             from onnx.reference import ReferenceEvaluator
             session = ReferenceEvaluator(str(output))
-            result = session.run(None, feeds)[0]
+            result, segments, masks = session.run(None, feeds)
             np.testing.assert_allclose(result, expected.numpy(), rtol=1e-4, atol=1e-5)
+            np.testing.assert_allclose(segments, expected_predictions.numpy(), rtol=1e-4, atol=1e-5)
+            np.testing.assert_allclose(masks, expected_prototypes.numpy(), rtol=1e-4, atol=1e-5)
             changed = references + 4
             with torch.no_grad():
-                changed_expected = model(image, changed, context).numpy()
-            changed_result = session.run(None, {**feeds, 'references': changed.numpy()})[0]
+                changed_expected = model(image, changed, context)[0].numpy()
+            changed_result, changed_segments, changed_masks = session.run(None, {**feeds, 'references': changed.numpy()})
             np.testing.assert_allclose(changed_result, changed_expected, rtol=1e-4, atol=1e-5)
+            np.testing.assert_array_equal(changed_segments, segments)
+            np.testing.assert_array_equal(changed_masks, masks)
             self.assertFalse(np.allclose(result, changed_result))
             if context is not None:
                 changed_context = torch.tensor([[0.75, 1., 1., 0.]])
                 with torch.no_grad():
-                    context_expected = model(image, references, changed_context).numpy()
+                    context_expected = model(image, references, changed_context)[0].numpy()
                 context_result = session.run(None, {**feeds, 'context': changed_context.numpy()})[0]
                 np.testing.assert_allclose(context_result, context_expected, rtol=1e-4, atol=1e-5)
                 self.assertFalse(np.allclose(result, context_result))
@@ -89,7 +103,7 @@ class PositionExportTests(unittest.TestCase):
                     torch.save(saved, checkpoint)
                     restored = load_position_model(checkpoint, ['track', 'car'], 64)
                     with torch.no_grad():
-                        torch.testing.assert_close(restored(*inputs), expected)
+                        torch.testing.assert_close(restored(*inputs)[0], expected)
             export_model(checkpoint, ['track', 'car'], 64, output)
             unversioned_result = ReferenceEvaluator(str(output)).run(None, feeds)[0]
             np.testing.assert_allclose(unversioned_result, expected.numpy(), rtol=1e-4, atol=1e-5)

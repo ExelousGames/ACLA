@@ -1,7 +1,7 @@
 import * as gpuRuntime from 'onnxruntime-web/webgpu';
 import * as cpuRuntime from 'onnxruntime-web/wasm';
-import { loadBackendVisionModel } from './backend-vision-model';
-import { TrackVisionModel } from './track-vision-model';
+import { loadBackendPositionModel } from './backend-vision-model';
+import { TrackPositionModel } from './track-position-model';
 
 jest.mock('onnxruntime-web/webgpu', () => ({
     env: { wasm: {}, webgpu: {} }, InferenceSession: { create: jest.fn() }, Tensor: jest.fn(),
@@ -9,7 +9,7 @@ jest.mock('onnxruntime-web/webgpu', () => ({
 jest.mock('onnxruntime-web/wasm', () => ({
     env: { wasm: {}, webgpu: {} }, InferenceSession: { create: jest.fn() }, Tensor: jest.fn(),
 }), { virtual: true });
-jest.mock('./backend-vision-model', () => ({ loadBackendVisionModel: jest.fn() }));
+jest.mock('./backend-vision-model', () => ({ loadBackendPositionModel: jest.fn() }));
 
 type Task = 'first' | 'second' | 'third';
 const tasks: Task[] = ['first', 'second', 'third'];
@@ -19,6 +19,7 @@ const tensor = (dims: number[], data: Float32Array | Uint8Array) => ({
     dims, data, type: data instanceof Float32Array ? 'float32' : 'uint8', dispose: jest.fn(),
 });
 const outputsFor = (_task: Task) => ({
+    deltas: tensor([1, 2, 3], new Float32Array(6)),
     predictions: tensor([1, 6, 8400], new Float32Array(6 * 8400)),
     prototypes: tensor([1, 1, 2, 2], new Float32Array(4)),
 });
@@ -38,7 +39,7 @@ const gpuOperation = <T,>(name: string, work: () => T | Promise<T>) => async () 
     }
 };
 const sessionFor = (task: Task) => ({
-    inputNames: ['images'], outputNames: Object.keys(outputsFor(task)),
+    inputNames: ['images', 'references'], outputNames: Object.keys(outputsFor(task)),
     run: jest.fn(gpuOperation(`${task}:run`, () => outputsFor(task))),
     release: jest.fn(gpuOperation(`${task}:release`, () => undefined)),
 });
@@ -60,9 +61,9 @@ beforeEach(() => {
         (runtime.Tensor as unknown as jest.Mock).mockImplementation((_type, data, dims) => tensor(dims, data));
     }
     let loadIndex = 0;
-    (loadBackendVisionModel as jest.Mock).mockImplementation(async () => {
+    (loadBackendPositionModel as jest.Mock).mockImplementation(async () => {
         const task = tasks[loadIndex++];
-        return { bytes: bytesFor(task), metadata: { name: task, classNames: ['track'] } };
+        return { bytes: bytesFor(task), inputSize: 768, metadata: { name: task, classNames: ['track'] } };
     });
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
         fillRect: jest.fn(), drawImage: jest.fn(),
@@ -80,8 +81,8 @@ afterEach(() => {
 });
 
 it('serializes initialization and warm-up across all enabled detector tasks', async () => {
-    const models = await Promise.all((['first', 'second', 'third'] as const).map(() => TrackVisionModel.loadBackend()));
-    expect(models.map((model) => model.executionProvider)).toEqual(['webgpu', 'webgpu', 'webgpu']);
+    const models = await Promise.all((['first', 'second', 'third'] as const).map(() => TrackPositionModel.load()));
+    expect(gpuRuntime.InferenceSession.create).toHaveBeenCalledTimes(3);
     expect(events).toEqual(['first', 'second', 'third'].flatMap((task) => [
         `${task}:create:start`, `${task}:create:end`, `${task}:run:start`, `${task}:run:end`,
     ]));
@@ -91,17 +92,17 @@ it('serializes initialization and warm-up across all enabled detector tasks', as
 });
 
 it('queues live inference, another detector load, and disposal on the same GPU', async () => {
-    const first = await TrackVisionModel.loadBackend();
-    const second = await TrackVisionModel.loadBackend();
+    const first = await TrackPositionModel.load();
+    const second = await TrackPositionModel.load();
     events = [];
     const firstResult = first.detect(frame, 0.5);
-    const thirdLoad = TrackVisionModel.loadBackend();
+    const thirdLoad = TrackPositionModel.load();
     const secondResult = second.detect(frame, 0.5);
     const secondDisposal = second.dispose();
     const [firstDetection, third, secondDetection] = await Promise.all([firstResult, thirdLoad, secondResult, secondDisposal]);
     expect(firstDetection.task).toBe('segment');
     expect(secondDetection.task).toBe('segment');
-    expect(third.executionProvider).toBe('webgpu');
+    expect(third.name).toBe('third');
     expect(events.indexOf('second:release:start')).toBeGreaterThan(events.indexOf('second:run:end'));
     await Promise.all([first.dispose(), second.dispose(), third.dispose()]);
     expect(sessions.second.release).toHaveBeenCalledTimes(1);
@@ -113,9 +114,9 @@ it('finishes failed warm-up cleanup before allowing another detector to initiali
     sessions.first.run.mockImplementationOnce(gpuOperation('first:run', () => { throw new Error('Warm-up failed'); }));
     sessions.first.release.mockImplementationOnce(gpuOperation('first:release', () => { throw new Error('Release failed'); }));
     const [failed, working] = await Promise.allSettled([
-        TrackVisionModel.loadBackend(), TrackVisionModel.loadBackend(),
+        TrackPositionModel.load(), TrackPositionModel.load(),
     ]);
-    expect(failed).toMatchObject({ status: 'rejected', reason: new Error('GPU inference failed. Warm-up failed') });
+    expect(failed).toMatchObject({ status: 'rejected', reason: new Error('Track Vision GPU initialization failed. Warm-up failed') });
     expect(working.status).toBe('fulfilled');
     if (working.status === 'fulfilled') await working.value.dispose();
     expect(events.indexOf('second:create:start')).toBeGreaterThan(events.indexOf('first:release:end'));
@@ -123,8 +124,8 @@ it('finishes failed warm-up cleanup before allowing another detector to initiali
 });
 
 it('continues processing other detectors after inference and disposal fail', async () => {
-    const first = await TrackVisionModel.loadBackend();
-    const second = await TrackVisionModel.loadBackend();
+    const first = await TrackPositionModel.load();
+    const second = await TrackPositionModel.load();
     sessions.first.run.mockImplementationOnce(gpuOperation('first:run', () => { throw new Error('Inference failed'); }));
     sessions.first.release.mockImplementationOnce(gpuOperation('first:release', () => { throw new Error('Release failed'); }));
     const results = await Promise.allSettled([first.detect(frame, 0.5), second.detect(frame, 0.5), first.dispose()]);

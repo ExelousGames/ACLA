@@ -1,4 +1,4 @@
-"""Export the published position add-on without importing the training workspace."""
+"""Export segmentation and position from one published track-position checkpoint."""
 import argparse
 from copy import deepcopy
 import json
@@ -55,14 +55,27 @@ def load_position_model(weights: Path, labels: list[str], input_size: int):
                     raise ValueError(f'Position head needs {self.context_size} context values but saved categories describe {expected}.')
 
         def forward(self, images, references, context=None):
-            # Same pooled segmentation features and reference standardization as training.
-            features = torch.stack(self.yolo.predict(images, embed=self.feature_layers))
+            # Run the backbone once, retaining the same pooled features as predict(embed=...).
+            x, saved_outputs, embeddings = images, [], []
+            for layer in self.yolo.model:
+                if layer.f != -1:
+                    x = saved_outputs[layer.f] if isinstance(layer.f, int) else [
+                        x if index == -1 else saved_outputs[index] for index in layer.f]
+                x = layer(x)
+                saved_outputs.append(x if layer.i in self.yolo.save else None)
+                if layer.i in self.feature_layers:
+                    embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).flatten(1))
+            predictions, prototypes = x
+            features = torch.cat(embeddings, dim=1)
             positions = (references.flatten(1) - self.position_mean) / self.position_std
             inputs = (features, positions) if context is None else (features, positions, context)
-            return self.head(torch.cat(inputs, dim=1)).reshape(1, 2, 3)
+            return self.head(torch.cat(inputs, dim=1)).reshape(1, 2, 3), predictions, prototypes
 
     model = PositionModel()
     model.load_state_dict(saved['state_dict'], strict=True)
+    # Export raw one-to-many masks, including checkpoints with an end-to-end head.
+    segment = model.yolo.model[-1]
+    segment.export, segment.format, segment.dynamic, segment.end2end = True, 'onnx', False, False
     if not torch.isfinite(model.position_std).all() or not (model.position_std > 0).all():
         raise ValueError('Invalid position input standardization.')
     return model.eval().requires_grad_(False)
@@ -84,12 +97,16 @@ def export_model(weights: Path, labels: list[str], input_size: int, output: Path
         inputs += (torch.zeros(1, model.context_size),)
         input_names.append('context')
     torch.onnx.export(model, inputs, str(output),
-                      input_names=input_names, output_names=['deltas'],
+                      input_names=input_names, output_names=['deltas', 'predictions', 'prototypes'],
                       opset_version=17, dynamic_axes=None, dynamo=False)
     graph = onnx.load(str(output))
     onnx.checker.check_model(graph)
     shapes = lambda values: [tuple(dim.dim_value for dim in value.type.tensor_type.shape.dim) for value in values]
-    if shapes(graph.graph.input) != [tuple(value.shape) for value in inputs] or shapes(graph.graph.output) != [(1, 2, 3)]:
+    outputs = shapes(graph.graph.output)
+    if (shapes(graph.graph.input) != [tuple(value.shape) for value in inputs] or len(outputs) != 3
+            or outputs[0] != (1, 2, 3) or len(outputs[1]) != 3 or len(outputs[2]) != 4
+            or outputs[1][0] != 1 or outputs[2][0] != 1
+            or outputs[1][1] != 4 + len(labels) + outputs[2][1]):
         raise ValueError('Unexpected position ONNX inputs or outputs.')
     return output
 

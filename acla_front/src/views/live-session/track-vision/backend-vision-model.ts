@@ -1,5 +1,4 @@
 import apiService from 'services/api.service';
-import { VISION_INPUT_SIZE } from './vision-config';
 
 export interface BackendVisionModel {
     id: string;
@@ -24,8 +23,6 @@ declare global {
         };
     }
 }
-
-const pending = new Map<number, Promise<{ bytes: ArrayBuffer; metadata: BackendVisionModel }>>();
 
 async function findLatestModel(name: string, task: BackendVisionModel['task']) {
     const { data } = await apiService.get<CatalogueVisionModel[]>('/ai-model/ultralytics', { name });
@@ -63,31 +60,6 @@ async function prepare(metadata: BackendVisionModel, inputSize: number) {
     return { bytes: new Uint8Array(bytes).buffer, metadata };
 }
 
-async function load(inputSize: number) {
-    const cache = window.trackVisionModels;
-    if (!cache) throw new Error('Restart the Electron desktop app to enable local Track Vision models.');
-    try {
-        const model = await findLatestModel('track-segments', 'segment');
-        if (!model) {
-            throw new Error('No Track Vision segmentation model has been uploaded');
-        }
-        return await prepare(toMetadata(model), inputSize);
-    } catch (error) {
-        if (error instanceof Error) throw error;
-        const failure = error as { message?: string; data?: { message?: string } };
-        throw new Error(failure?.data?.message || failure?.message || 'Unable to retrieve the Track Vision model from the backend.');
-    }
-}
-
-export function loadBackendVisionModel(inputSize = VISION_INPUT_SIZE) {
-    let operation = pending.get(inputSize);
-    if (!operation) {
-        operation = load(inputSize).finally(() => { pending.delete(inputSize); });
-        pending.set(inputSize, operation);
-    }
-    return operation;
-}
-
 async function loadPosition() {
     const model = await findLatestModel('track-position', 'position');
     if (!model) return null;
@@ -95,7 +67,7 @@ async function loadPosition() {
     // Format labels are descriptive, not a compatibility allowlist. The exporter
     // and inference runtime check the actual checkpoint and tensor interface.
     if (!Number.isInteger(inputSize) || inputSize < 32 || inputSize > 2048 || inputSize % 32 !== 0) {
-        throw new Error('Position add-on metadata.imgsz must be an integer from 32 to 2048, divisible by 32.');
+        throw new Error('Track-position metadata.imgsz must be an integer from 32 to 2048, divisible by 32.');
     }
     return { ...await prepare(toMetadata(model), inputSize), inputSize, categories: model.metadata?.categories };
 }
