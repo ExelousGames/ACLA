@@ -54,4 +54,40 @@ describe('live map normalized positions', () => {
         expect(getLiveMapCars({ Graphics_player_car_id: 63, Graphics_normalized_positions: { 0: 0.1 } }, middleLine)[0].isPlayer).toBe(false);
         expect(getLiveMapCars({}, middleLine)).toEqual([]);
     });
+
+    it('swaps only the live ACC player coordinates, preserving stored centerline axes and opponents', () => {
+        const storedLine = [{ ...point(0, 0, 3), y: 100 }, { ...point(0.5, 100, 4), y: 200 }];
+        const line = getLiveMapMiddleLine({ game: 'acc', samples: { middle_line: storedLine } } as CircuitMapDto);
+        const sample = {
+            Graphics_player_car_id: 1052,
+            Graphics_car_id: [63, 1052],
+            Graphics_car_coordinates: [{ x: 900, y: 901, z: 902 }, { x: 110, y: 3, z: 220 }],
+            Graphics_normalized_car_position: 0.5,
+            Graphics_normalized_positions: { 63: 0 },
+        };
+        expect(getLiveMapCars(sample, line, 'acc')).toEqual([
+            { key: '63', isPlayer: false, position: { x: 0, y: 100, z: 3 } },
+            { key: '1052', isPlayer: true, position: { x: 110, y: 220, z: 3 } },
+        ]);
+        expect(getLiveMapPosition(line, 0.5)).toEqual({ x: 100, y: 200, z: 4 });
+        expect(getLiveMapPosition(line, 0.25)).toEqual({ x: 50, y: 150, z: 3.5 });
+        expect(storedLine[1]).toMatchObject({ x: 100, y: 200, z: 4 });
+        expect(sample.Graphics_car_coordinates[1]).toEqual({ x: 110, y: 3, z: 220 });
+        expect(getLiveMapCars(sample, line, 'iracing')[1].position).toEqual({ x: 100, y: 200, z: 4 });
+        expect(getLiveMapCars({ ...sample, Graphics_normalized_car_position: undefined }, line, 'acc')[1].position)
+            .toEqual({ x: 110, y: 220, z: 3 });
+    });
+
+    it('keeps the centerline fallback when the ACC player coordinates are missing or invalid', () => {
+        const sample = {
+            Graphics_player_car_id: 1052,
+            Graphics_car_id: [63],
+            Graphics_car_coordinates: [{ x: 900, y: 901, z: 902 }],
+            Graphics_normalized_car_position: 0.5,
+        };
+        expect(getLiveMapCars(sample, middleLine, 'acc')[0].position).toEqual({ x: 100, y: 0, z: 0 });
+        expect(getLiveMapCars({ ...sample, Graphics_car_id: [1052],
+            Graphics_car_coordinates: [{ x: 110, y: NaN, z: 3 }] }, middleLine, 'acc')[0].position)
+            .toEqual({ x: 100, y: 0, z: 0 });
+    });
 });

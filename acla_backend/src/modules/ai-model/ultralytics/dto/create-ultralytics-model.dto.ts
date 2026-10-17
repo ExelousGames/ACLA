@@ -1,12 +1,8 @@
 import { BadRequestException } from '@nestjs/common';
-import {
-  ULTRALYTICS_TASKS,
-  UltralyticsTask,
-} from '../../../../schemas/ultralytics-model.schema';
 
 export interface CreateUltralyticsModelDto {
   name: string;
-  task: UltralyticsTask;
+  task: string;
   classNames: string[];
   metadata?: Record<string, unknown>;
 }
@@ -48,11 +44,6 @@ export function parseUltralyticsModelMetadata(
       'name must be a non-empty string of at most 200 characters',
     );
   }
-  if (!ULTRALYTICS_TASKS.includes(value.task as UltralyticsTask)) {
-    throw new BadRequestException(
-      `task must be one of: ${ULTRALYTICS_TASKS.join(', ')}`,
-    );
-  }
   if (
     !Array.isArray(value.classNames) ||
     value.classNames.length === 0 ||
@@ -71,7 +62,7 @@ export function parseUltralyticsModelMetadata(
 
   return {
     name: value.name.trim(),
-    task: value.task as UltralyticsTask,
+    task: value.task as string,
     classNames: value.classNames as string[],
     metadata: value.metadata,
   };

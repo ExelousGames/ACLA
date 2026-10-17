@@ -22,7 +22,7 @@ export const getLiveMapMiddleLine = (map: CircuitMapDto | null): CircuitMapBinSa
 );
 
 // Interpolate by lap progress, including the interval across the start/finish line.
-export const getLiveMapPosition = (middleLine: CircuitMapBinSample[], position: number): Vec3 | null => {
+export const getLiveMapPosition = (middleLine: (Vec3 & { normalized_position: number })[], position: number): Vec3 | null => {
     if (middleLine.length < 2 || !isNormalizedPosition(position)) return null;
 
     let low = 0;
@@ -46,7 +46,7 @@ export const getLiveMapPosition = (middleLine: CircuitMapBinSample[], position: 
     };
 };
 
-export const getLiveMapCars = (sample: StandardTelemetrySample, middleLine: CircuitMapBinSample[]): LiveMapCar[] => {
+export const getLiveMapCars = (sample: StandardTelemetrySample, middleLine: CircuitMapBinSample[], game?: string | null): LiveMapCar[] => {
     const playerId = sample.Graphics_player_car_id;
     const playerKey = typeof playerId === 'number' && Number.isSafeInteger(playerId) && playerId >= 0
         ? String(playerId) : null;
@@ -60,5 +60,16 @@ export const getLiveMapCars = (sample: StandardTelemetrySample, middleLine: Circ
         const position = getLiveMapPosition(middleLine, normalizedPosition);
         if (position) cars.push({ key, isPlayer: key === playerKey || key === 'player', position });
     });
+    if (game === 'acc' && playerKey !== null) {
+        const slot = sample.Graphics_car_id?.findIndex((id) => id === playerId) ?? -1;
+        const coordinates = slot >= 0 ? sample.Graphics_car_coordinates?.[slot] : undefined;
+        if (coordinates && [coordinates.x, coordinates.y, coordinates.z].every((value) => typeof value === 'number' && Number.isFinite(value))) {
+            // Convert raw ACC Y-up to the stored lines' X/Y track plane, Z altitude convention once.
+            const position = { x: coordinates.x, y: coordinates.z, z: coordinates.y };
+            const player = cars.find((car) => car.isPlayer);
+            if (player) player.position = position;
+            else cars.push({ key: playerKey, isPlayer: true, position });
+        }
+    }
     return cars;
 };

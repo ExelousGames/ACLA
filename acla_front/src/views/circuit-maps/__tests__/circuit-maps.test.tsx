@@ -542,6 +542,8 @@ describe('CircuitMaps', () => {
         await waitFor(() => expect(mockedApi.post).toHaveBeenCalled());
         const [, payload] = mockedApi.post.mock.calls[0];
         expect((payload as any).samples[mode]).toHaveLength(120);
+        expect((payload as any).samples[mode][0]).toMatchObject({ x: 1.5, y: 2.5, z: 1, sample_count: 2 });
+        expect((payload as any).samples[mode][119]).toMatchObject({ x: 121, y: 122, z: 1, sample_count: 1 });
         expect((payload as any).samples[mode === 'middle_line' ? 'left_boundary' : 'middle_line']).toEqual([]);
         await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
     });
@@ -589,22 +591,27 @@ describe('CircuitMaps', () => {
     });
 
     it.each([
-        { game: 'acc', startY: 42, endY: 578 },
-        { game: 'iracing', startY: 578, endY: 42 },
-    ])('renders $game paths with the correct Z orientation and keeps points fixed in each map tab', async ({ game, startY, endY }) => {
+        { game: 'acc', startY: 42, endY: 578, altitude: 0 },
+        { game: 'acc', startY: 42, endY: 578, altitude: 10000 },
+        { game: 'iracing', startY: 578, endY: 42, altitude: 10000 },
+    ])('renders $game track axes with altitude variation $altitude and keeps stored points fixed in each map tab', async ({ game, startY, endY, altitude }) => {
         const sample = { bin: 0, normalized_position: 0, x: 0, y: 0, z: 0, sample_count: 1 };
+        const position = (x: number, vertical: number, height: number) => (
+            game === 'acc' ? { x, y: vertical, z: height } : { x, y: height, z: vertical }
+        );
         const savedMap = {
             id: 'two-maps', game, circuit_name: 'Two Maps', resolution: 1000,
             samples: {
-                left_boundary: [sample],
-                right_boundary: [{ ...sample, x: 100, z: 100 }],
-                pit_lane: [{ ...sample, x: 50, z: 50 }],
+                left_boundary: [{ ...sample, ...position(0, 0, 3 - altitude) }],
+                right_boundary: [{ ...sample, ...position(100, 100, 3 + altitude) }],
+                pit_lane: [{ ...sample, ...position(50, 50, 3) }],
                 middle_line: [
-                    { ...sample, x: 10000, z: 10000 },
-                    { ...sample, bin: 500, normalized_position: 0.5, x: 10020, z: 10020 },
+                    { ...sample, ...position(10000, 10000, 3 - altitude) },
+                    { ...sample, bin: 500, normalized_position: 0.5, ...position(10020, 10020, 3 + altitude) },
                 ],
             },
         };
+        const storedSamples = JSON.parse(JSON.stringify(savedMap.samples));
         mockedApi.get.mockImplementation(async (url: string) => ({
             data: url === '/circuit-map/list' ? { list: [savedMap] } : savedMap,
             status: 200,
@@ -646,7 +653,7 @@ describe('CircuitMaps', () => {
         await userEvent.click(screen.getByRole('tab', { name: 'Bounded Map' }));
         expect(screen.getByText('3 samples')).toBeInTheDocument();
         await userEvent.click(screen.getByRole('button', { name: /save/i }));
-        await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/two-maps', expect.objectContaining({ samples: savedMap.samples })));
+        await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/two-maps', expect.objectContaining({ samples: storedSamples })));
         await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
 
         const canvas = screen.getByLabelText('Bounded map');
@@ -657,9 +664,62 @@ describe('CircuitMaps', () => {
         canvasPointer(canvas, 'pointerup', 450, 444);
         await userEvent.click(screen.getByRole('button', { name: /save/i }));
         await waitFor(() => expect(mockedApi.put).toHaveBeenLastCalledWith('/circuit-map/two-maps', expect.objectContaining({
-            samples: savedMap.samples,
+            samples: storedSamples,
         })));
+        expect(savedMap.samples).toEqual(storedSamples);
         await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+    });
+
+    it.each([
+        { tab: 'Bounded Map', canvas: 'Bounded map' },
+        { tab: 'Centerline Map', canvas: 'Centerline map' },
+    ])('projects live ACC positions and bounds in X/Y in $tab without changing saved XYZ', async ({ tab, canvas }) => {
+        const samples = [
+            { bin: 0, normalized_position: 0, x: 100, y: 1000, z: 700, sample_count: 1 },
+            { bin: 500, normalized_position: 0.5, x: 200, y: 1400, z: -500, sample_count: 1 },
+        ];
+        const savedMap = {
+            id: 'live-preview', game: 'acc', circuit_name: 'Live Preview', resolution: 1000,
+            samples: { left_boundary: samples, middle_line: samples, right_boundary: [], pit_lane: [] },
+        };
+        const storedSamples = JSON.parse(JSON.stringify(savedMap.samples));
+        mockedApi.get.mockImplementation(async (url: string) => ({
+            data: url === '/circuit-map/list' ? { list: [savedMap] } : savedMap, status: 200,
+        } as any));
+        renderCircuitMaps();
+        await userEvent.click(await screen.findByRole('button', { name: 'Live Preview ACC' }));
+        await screen.findByText('2 samples');
+        await userEvent.click(screen.getByRole('tab', { name: tab }));
+        const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
+        const originalPoints = contexts[contexts.length - 1].value.arc.mock.calls;
+        expect(originalPoints[0]).toEqual([383, 42, 4, 0, Math.PI * 2]);
+        expect(originalPoints[1]).toEqual([517, 578, 4, 0, Math.PI * 2]);
+        const publishPosition = (sequence: number, altitude: number, trackY: number) => act(() => liveTelemetryStore.publishFrame({
+            type: 'frame', game: 'acc', sequence, committedSequence: sequence, committedCount: sequence,
+            sample: {
+                ...importedRow, Static_track: 'Live Preview',
+                Graphics_car_id: Array.from({ length: 60 }, (_, slot) => slot === 0 ? 63 : -1),
+                Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
+                    ? { x: 200, y: altitude, z: trackY } : { x: 0, y: 0, z: 0 }),
+            },
+        }));
+        [3, 10000].forEach((altitude, index) => {
+            publishPosition(index + 1, altitude, 1400);
+            const context = contexts[contexts.length - 1].value;
+            expect(context.arc.mock.calls.slice(0, originalPoints.length)).toEqual(originalPoints);
+            expect(context.arc).toHaveBeenLastCalledWith(517, 578, 7, 0, Math.PI * 2);
+        });
+        // A live point outside the stored Y bounds must expand the fit vertically.
+        publishPosition(3, 10000, 1800);
+        const context = contexts[contexts.length - 1].value;
+        expect(context.arc).toHaveBeenNthCalledWith(1, 416.5, 42, 4, 0, Math.PI * 2);
+        expect(context.arc).toHaveBeenNthCalledWith(2, 483.5, 310, 4, 0, Math.PI * 2);
+        expect(context.arc).toHaveBeenLastCalledWith(483.5, 578, 7, 0, Math.PI * 2);
+        clickCanvas(screen.getByLabelText(canvas), 483.5, 310);
+        expect(screen.getByText('Bin 500')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: /save/i }));
+        await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/live-preview', expect.objectContaining({ samples: storedSamples })));
+        expect(savedMap.samples).toEqual(storedSamples);
     });
 
     it('keeps edits in both maps and clears the selection when switching tabs', async () => {
@@ -740,11 +800,14 @@ describe('CircuitMaps', () => {
     });
 
     describe('map navigation', () => {
-        const samples = [
-            { bin: 0, normalized_position: 0, x: 0, y: 0, z: 0, sample_count: 1 },
-            { bin: 500, normalized_position: 0.5, x: 100, y: 0, z: 100, sample_count: 1 },
-        ];
         const openZoomMap = async (game = 'acc') => {
+            const samples = game === 'acc' ? [
+                { bin: 0, normalized_position: 0, x: 0, y: 0, z: -10000, sample_count: 1 },
+                { bin: 500, normalized_position: 0.5, x: 100, y: 100, z: 10000, sample_count: 1 },
+            ] : [
+                { bin: 0, normalized_position: 0, x: 0, y: -10000, z: 0, sample_count: 1 },
+                { bin: 500, normalized_position: 0.5, x: 100, y: 10000, z: 100, sample_count: 1 },
+            ];
             const map = {
                 id: 'zoom-map', game, circuit_name: 'Zoom Circuit', resolution: 1000,
                 samples: { left_boundary: samples, middle_line: samples, right_boundary: [], pit_lane: [] },
@@ -886,11 +949,11 @@ describe('CircuitMaps', () => {
     describe('centerline segments', () => {
         const tagOptions = ['corner', 'slow', 'fast', 'long straight', 'consecutive corners'];
         const samples = [
-            { bin: 0, normalized_position: 0, x: 0, z: 0 },
-            { bin: 250, normalized_position: 0.25, x: 100, z: 0 },
-            { bin: 500, normalized_position: 0.5, x: 100, z: 100 },
-            { bin: 750, normalized_position: 0.75, x: 0, z: 100 },
-        ].map((sample) => ({ ...sample, y: 0, sample_count: 1, updated_at: '2026-10-06' }));
+            { bin: 0, normalized_position: 0, x: 0, y: 0, z: 1000 },
+            { bin: 250, normalized_position: 0.25, x: 100, y: 0, z: -2000 },
+            { bin: 500, normalized_position: 0.5, x: 100, y: 100, z: 3000 },
+            { bin: 750, normalized_position: 0.75, x: 0, y: 100, z: -4000 },
+        ].map((sample) => ({ ...sample, sample_count: 1, updated_at: '2026-10-06' }));
         const tag = { id: 'saved-tag', tags: ['Final corner'], start_position: 0.5, end_position: 0.75 };
         const openTaggedMap = async (
             tags: typeof tag[] = [],

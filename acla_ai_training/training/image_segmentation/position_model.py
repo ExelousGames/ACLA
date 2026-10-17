@@ -108,8 +108,9 @@ class YOLOPositionModel(nn.Module):
         from ultralytics.nn.tasks import SegmentationModel
 
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-        if checkpoint.get("format") != "acla-yolo-position-v2":
-            raise ValueError("Expected an ACLA YOLO position v2 checkpoint; retrain older models with game/map context.")
+        # Format/version labels are informational; reconstruct from the saved model definition.
+        if "categories" not in checkpoint:
+            raise ValueError("Position checkpoint is missing game/map context; retrain older models with game/map context.")
         yolo = SegmentationModel(deepcopy(checkpoint["yolo_yaml"]), verbose=False)
         yolo.names = checkpoint["names"]
         model = cls(yolo, checkpoint["imgsz"], categories=checkpoint["categories"])

@@ -2,6 +2,8 @@ import React from 'react';
 import { act, fireEvent, render as renderComponent, screen, within } from '@testing-library/react';
 import LiveTrackVision, { TrackVisionHandle } from './LiveTrackVision';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
+import { TrackPositionModel } from './track-position-model';
+import * as operationComponents from 'contexts/OperationComponentRefContext';
 import { drawVisionOverlay } from './vision-overlay';
 import { MODEL_LABELS, vision } from './test-fixtures';
 import { VISION_MAX_AGE_MS } from './track-vision-types';
@@ -13,6 +15,7 @@ import { TRACK_VISION_SETTINGS_KEY } from './track-vision-settings';
 import { SessionScreenCaptureControls, SessionScreenCaptureProvider } from '../live-session-recording/SessionScreenCapture';
 
 jest.mock('./vision-overlay', () => ({ drawVisionOverlay: jest.fn() }));
+jest.mock('./track-position-model', () => ({ TrackPositionModel: { load: jest.fn() } }));
 
 jest.mock('./track-vision-model', () => ({
     ...jest.requireActual('./track-vision-model'), TrackVisionModel: { loadBackend: jest.fn(), loadBuiltin: jest.fn() },
@@ -58,6 +61,7 @@ const detection = { task: 'segment' as const, width: 2, height: 2, instances: [{
 beforeEach(() => {
     jest.useFakeTimers();
     window.localStorage.clear();
+    (TrackPositionModel.load as jest.Mock).mockResolvedValue(null);
     liveTelemetryStore.resetSession();
     track = { stop: jest.fn(), onended: null };
     stream = { getTracks: () => [track], getVideoTracks: () => [track] } as unknown as MediaStream;
@@ -1526,4 +1530,125 @@ it('requires the Electron bridge before loading models or offering capture', asy
     expect(screen.queryByRole('button', { name: 'Share game screen' })).not.toBeInTheDocument();
     expect(TrackVisionModel.loadBackend).not.toHaveBeenCalled();
     expect(getDisplayMedia).not.toHaveBeenCalled();
+});
+
+describe('position add-on', () => {
+    const references = { reference: { x: 1, y: -2, z: 3 }, centerline: { x: -4, y: 5, z: 6 } };
+    const prediction = { referenceDelta: [-1, 2, -3], centerlineDelta: [4, -5, 6], inferenceMs: 20 };
+    let addon: { name: string; predict: jest.Mock; dispose: jest.Mock };
+    let mapHandle: { getCircuitMap: jest.Mock; getReferenceLap: jest.Mock; getPositionReferences: jest.Mock };
+    let sequence: number;
+    const telemetry = (position = 0.25, status = 2, game: 'acc' | 'iracing' = 'acc') => act(() => {
+        sequence++;
+        expect(liveTelemetryStore.publishFrame({ type: 'frame', game, sequence, committedSequence: sequence,
+            committedCount: sequence, sample: { Graphics_status: status, Graphics_normalized_car_position: position,
+                Static_track: 'monza', Graphics_player_car_id: 0,
+                Graphics_car_coordinates: Array.from({ length: 60 }, () => ({ x: 900, y: 901, z: 902 })) } })).toBe(true);
+    });
+    beforeEach(() => {
+        sequence = 0;
+        addon = { name: 'position-v1', predict: jest.fn().mockResolvedValue(prediction), dispose: jest.fn().mockResolvedValue(undefined) };
+        (TrackPositionModel.load as jest.Mock).mockResolvedValue(addon);
+        mapHandle = { getCircuitMap: jest.fn().mockReturnValue({ id: 'map', circuit_name: 'Autodromo Nazionale Monza', source_track_key: 'monza' }),
+            getReferenceLap: jest.fn().mockReturnValue({ car: 'car' }), getPositionReferences: jest.fn().mockReturnValue(references) };
+        jest.spyOn(operationComponents, 'useOptionalOperationComponentRefDirectory').mockReturnValue({
+            findComponentRef: (name: string) => name === 'visualization:live-trajectory-map' ? { current: mapHandle } : null,
+        } as any);
+    });
+
+    it('uses capture-time normalized progress with the loaded map and publishes signed offsets', async () => {
+        const pending = deferred<typeof detection>();
+        model.detect.mockReturnValueOnce(pending.promise);
+        const ref = React.createRef<TrackVisionHandle>();
+        const view = render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush();
+        telemetry(0.25);
+        await startCapture();
+        telemetry(0.75);
+        await act(async () => { pending.resolve(detection); });
+        expect(mapHandle.getPositionReferences).toHaveBeenCalledWith(0.25);
+        expect(addon.predict).toHaveBeenCalledWith(expect.any(HTMLCanvasElement), references, {
+            normalized_position: 0.25, game: 'acc', map_name: ['Autodromo Nazionale Monza', 'monza', 'monza'],
+        });
+        expect(ref.current!.getLatestDetection()!.position).toEqual({ ...prediction, references, normalizedPosition: 0.25 });
+        expect(screen.queryByLabelText('Position add-on result')).not.toBeInTheDocument();
+        selectStep("Bird's-eye view");
+        const output = within(screen.getByRole('tabpanel', { name: "Bird's-eye view" })).getByLabelText('Position add-on result');
+        expect(output).toHaveTextContent('Reference ΔXYZ: -1.000, 2.000, -3.000');
+        expect(output).toHaveTextContent('Centerline ΔXYZ: 4.000, -5.000, 6.000');
+        expect(screen.getByRole('img', { name: 'Top-down track boundaries and cars' })).toBeVisible();
+        expect(screen.getByLabelText('Reference lap position marker')).toBeVisible();
+        expect(screen.getByLabelText('Centerline position marker')).toBeVisible();
+        act(() => liveTelemetryStore.resetSession());
+        expect(ref.current!.getLatestDetection()!.position).toBeUndefined();
+        expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Position add-on: waiting for live normalized position, reference lap and centerline.');
+        expect(screen.queryByLabelText('Reference lap position marker')).not.toBeInTheDocument();
+        view.unmount();
+        expect(addon.dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['missing references', 'stale telemetry', 'paused telemetry'])('keeps segmentation available with %s', async (condition) => {
+        const ref = React.createRef<TrackVisionHandle>();
+        render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush();
+        telemetry(0.25, condition === 'paused telemetry' ? 3 : 2);
+        if (condition === 'missing references') mapHandle.getPositionReferences.mockReturnValue(null);
+        if (condition === 'stale telemetry') await act(async () => { jest.advanceTimersByTime(501); });
+        await startCapture();
+        expect(addon.predict).not.toHaveBeenCalled();
+        expect(ref.current!.getLatestDetection()!.detections.segment).toEqual(detection);
+        expect(ref.current!.getLatestDetection()!.position).toBeUndefined();
+        selectStep("Bird's-eye view");
+        expect(screen.queryByLabelText('Reference lap position marker')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('waiting for live normalized position');
+    });
+
+    it('plots XY offsets for iRacing, refreshes the markers and clears stale results when capture stops', async () => {
+        render(<LiveTrackVision name="vision" />);
+        await flush();
+        telemetry(0.25, 2, 'iracing');
+        await startCapture();
+        selectStep("Bird's-eye view");
+        expect(screen.getByRole('img', { name: 'Top-down track boundaries and cars' })).toBeVisible();
+        const firstMarker = screen.getByLabelText('Reference lap position marker').querySelector('circle')!.getAttribute('cx');
+        addon.predict.mockResolvedValue({ ...prediction, referenceDelta: [2, 0, 1] });
+        await act(async () => { jest.advanceTimersByTime(200); });
+        expect(screen.getByLabelText('Reference lap position marker').querySelector('circle')!.getAttribute('cx')).not.toEqual(firstMarker);
+        expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Reference ΔXYZ: 2.000, 0.000, 1.000');
+        model.detect.mockReturnValue(deferred<typeof detection>().promise);
+        await act(async () => { jest.advanceTimersByTime(VISION_MAX_AGE_MS); });
+        expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Last frame (stale)');
+        fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+        expect(screen.queryByLabelText('Reference lap position marker')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Position add-on result')).not.toHaveTextContent('Reference ΔXYZ: 2.000, 0.000, 1.000');
+    });
+
+    it.each(['reset', 'map change', 'reference change'])('discards pending position inference after %s', async (condition) => {
+        const pending = deferred<typeof prediction>();
+        addon.predict.mockReturnValueOnce(pending.promise);
+        const ref = React.createRef<TrackVisionHandle>();
+        render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush();
+        telemetry();
+        await startCapture();
+        expect(addon.predict).toHaveBeenCalledTimes(1);
+        if (condition === 'reset') act(() => liveTelemetryStore.resetSession());
+        if (condition === 'map change') mapHandle.getCircuitMap.mockReturnValue({ id: 'next-map' });
+        if (condition === 'reference change') mapHandle.getReferenceLap.mockReturnValue({ car: 'next-car' });
+        await act(async () => { pending.resolve(prediction); });
+        expect(ref.current!.getLatestDetection()!.position).toBeUndefined();
+    });
+
+    it('retries failed add-on inference without interrupting segmentation', async () => {
+        addon.predict.mockRejectedValueOnce(new Error('Position GPU lost'));
+        const ref = React.createRef<TrackVisionHandle>();
+        render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush();
+        telemetry();
+        await startCapture();
+        expect(ref.current!.getLatestDetection()!.detections.segment).toEqual(detection);
+        expect(screen.getByText('Position GPU lost')).toBeInTheDocument();
+        await act(async () => { jest.advanceTimersByTime(3000); });
+        expect(TrackPositionModel.load).toHaveBeenCalledTimes(2);
+    });
 });

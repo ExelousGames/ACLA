@@ -36,6 +36,7 @@ export const getCircuitMapBin = (
 // Never substitute another car when the player's coordinates are unavailable.
 export const extractCircuitMapCaptureSample = (
     row: StandardTelemetrySample,
+    game: CircuitMapGame,
     resolution = CIRCUIT_MAP_BIN_RESOLUTION
 ): { bin: number; normalizedPosition: number; position: Vec3 } | null => {
     const normalizedPosition = row.Graphics_normalized_car_position;
@@ -62,7 +63,8 @@ export const extractCircuitMapCaptureSample = (
     return {
         bin,
         normalizedPosition,
-        position
+        // Swap ACC's Y/Z axes before map samples are accumulated.
+        position: game === 'acc' ? { x: position.x, y: position.z, z: position.y } : position
     };
 };
 
@@ -123,12 +125,13 @@ export const upsertCaptureModeSample = (
 export const mergeCircuitMapSamples = (
     samples: CircuitMapBinSample[],
     rows: StandardTelemetrySample[],
+    game: CircuitMapGame,
     updatedAt = new Date().toISOString()
 ): { samples: CircuitMapBinSample[]; capturedRows: number } => {
     const bins = new Map(samples.map((sample) => [sample.bin, sample]));
     let capturedRows = 0;
     rows.forEach((row) => {
-        const capture = extractCircuitMapCaptureSample(row);
+        const capture = extractCircuitMapCaptureSample(row, game);
         if (!capture) return;
         const existing = bins.get(capture.bin);
         bins.set(capture.bin, upsertCircuitMapSample(existing ? [existing] : [], capture, updatedAt)[0]);

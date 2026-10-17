@@ -233,12 +233,22 @@ describe('Ultralytics model API (backend only)', () => {
     expect(model.findById).not.toHaveBeenCalled();
   });
 
+  it('accepts task names outside the standard Ultralytics tasks', async () => {
+    const response = await upload(
+      JSON.stringify({ ...metadata, task: 'custom-task' }),
+    ).expect(201);
+    expect(response.body.task).toBe('custom-task');
+    expect(model.create).toHaveBeenCalledWith(
+      expect.objectContaining({ task: 'custom-task' }),
+    );
+    await expectTemporaryFileRemoved();
+  });
+
   it.each([
     'invalid JSON',
     'null',
     '[]',
     JSON.stringify({ ...metadata, name: '' }),
-    JSON.stringify({ ...metadata, task: 'unknown' }),
     JSON.stringify({ ...metadata, classNames: [] }),
     JSON.stringify({ ...metadata, classNames: ['corner', 'corner'] }),
     JSON.stringify({ ...metadata, classNames: [1] }),

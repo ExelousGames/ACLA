@@ -10,7 +10,7 @@ const INPUT_SIZES = [384, 640, 768];
 function validateModel(model) {
   if (!model || typeof model.id !== 'string' || typeof model.sha256 !== 'string'
     || !/^[a-f\d]{24}$/i.test(model.id) || !/^[a-f\d]{64}$/i.test(model.sha256)
-    || model.task !== 'segment' || !Number.isSafeInteger(model.sizeBytes) || model.sizeBytes <= 0
+    || !['segment', 'position'].includes(model.task) || !Number.isSafeInteger(model.sizeBytes) || model.sizeBytes <= 0
     || model.sizeBytes > 512 * 1024 * 1024 || !Array.isArray(model.classNames) || !model.classNames.length
     || !model.classNames.every((label) => typeof label === 'string' && label.trim())
     || new Set(model.classNames).size !== model.classNames.length) {
@@ -40,7 +40,7 @@ function createTrackVisionModelCache({ directory, exportModel }) {
     let manifest;
     try { manifest = manifestBytes ? JSON.parse(manifestBytes.toString()) : null; }
     catch (error) { if (!(error instanceof SyntaxError)) throw error; }
-    if (manifest?.version === CACHE_VERSION && manifest.inputSize === inputSize && manifest.model?.sha256 === model.sha256
+    if (manifest?.version === CACHE_VERSION && manifest.inputSize === inputSize && manifest.model?.task === model.task && manifest.model?.sha256 === model.sha256
       && JSON.stringify(manifest.model.classNames) === JSON.stringify(model.classNames)) {
       const onnx = await readFile(onnxPath);
       if (onnx?.length && hash(onnx) === manifest.onnxSha256) return onnx;
@@ -59,7 +59,7 @@ function createTrackVisionModelCache({ directory, exportModel }) {
       await fs.mkdir(folder, { recursive: true });
       await writeFile(weightsPath, weights);
     }
-    await exportModel(weightsPath, model.classNames, inputSize, onnxPath);
+    await exportModel(weightsPath, model.classNames, inputSize, onnxPath, model.task);
     const onnx = await readFile(onnxPath);
     if (!onnx?.length) throw new Error('Track Vision model export produced no ONNX weights.');
     await writeFile(manifestPath, JSON.stringify({ version: CACHE_VERSION, model, inputSize, onnxSha256: hash(onnx) }));
@@ -68,7 +68,9 @@ function createTrackVisionModelCache({ directory, exportModel }) {
   return {
     async prepare(model, download, inputSize = 768) {
       validateModel(model);
-      if (!INPUT_SIZES.includes(inputSize)) throw new Error('Invalid Track Vision input resolution.');
+      if (model.task === 'position'
+        ? !Number.isInteger(inputSize) || inputSize < 32 || inputSize > 2048 || inputSize % 32 !== 0
+        : !INPUT_SIZES.includes(inputSize)) throw new Error('Invalid Track Vision input resolution.');
       const key = `${model.id}-${model.sha256}`;
       // Multiple panels share the cache; only one export may write a model at a time.
       const operation = (pending.get(key) || Promise.resolve()).catch(() => undefined)
@@ -83,10 +85,11 @@ function createTrackVisionModelCache({ directory, exportModel }) {
 function registerTrackVisionModels({ app, ipcMain, getMainWindow, getPythonExecutable }) {
   const cache = createTrackVisionModelCache({
     directory: () => path.join(app.getPath('userData'), 'track-vision', 'models'),
-    exportModel: (weights, labels, inputSize, output) => new Promise((resolve, reject) => {
+    exportModel: (weights, labels, inputSize, output, task) => new Promise((resolve, reject) => {
+      const filename = task === 'position' ? 'export_track_position_model.py' : 'export_track_vision_model.py';
       const script = app.isPackaged
-        ? path.join(process.resourcesPath, 'py-scripts', 'export_track_vision_model.py')
-        : path.join(app.getAppPath(), 'src', 'py-scripts', 'export_track_vision_model.py');
+        ? path.join(process.resourcesPath, 'py-scripts', filename)
+        : path.join(app.getAppPath(), 'src', 'py-scripts', filename);
       execFile(getPythonExecutable(), [script, '--weights', weights, '--labels', JSON.stringify(labels), '--input-size', String(inputSize), '--output', output], {
         windowsHide: true, timeout: 600000, maxBuffer: 8 * 1024 * 1024,
         env: { ...process.env, YOLO_OFFLINE: 'true', YOLO_AUTOINSTALL: 'false',

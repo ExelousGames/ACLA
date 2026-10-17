@@ -3,7 +3,6 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { performance } = require('perf_hooks');
 const { DESKTOP_GAME_SET } = require('../recording-protocol');
 const { validateSourceFrame } = require('../telemetry-contract');
 
@@ -40,8 +39,7 @@ function streamEnd(stream) {
 }
 
 class RecordingWriter {
-  constructor({ game, recordingDirectory, progressPort, parentSend, onCommitted, fsModule = fs,
-    now = () => performance.now() }) {
+  constructor({ game, recordingDirectory, progressPort, parentSend, onCommitted, fsModule = fs }) {
     if (!DESKTOP_GAME_SET.has(game)) throw new TypeError('Writer game is invalid.');
     if (typeof recordingDirectory !== 'string' || !path.isAbsolute(recordingDirectory)) {
       throw new TypeError('Writer recording directory must be absolute.');
@@ -55,8 +53,6 @@ class RecordingWriter {
     this.parentSend = parentSend;
     this.onCommitted = onCommitted;
     this.fs = fsModule;
-    this.now = now;
-    this.startedAt = null;
     this.stream = null;
     this.filePath = null;
     this.pathPublished = false;
@@ -100,7 +96,6 @@ class RecordingWriter {
           await this.rollback();
           throw new Error('Writer startup was rolled back.');
         }
-        this.startedAt = this.now();
         return this.filePath;
       } catch (error) {
         this.stream = null;
@@ -123,11 +118,7 @@ class RecordingWriter {
       return;
     }
     const sequence = ++this.sequence;
-    // Stamp at receipt so disk batching does not change the recording clock.
-    this.batch.push({ sequence, sample: {
-      ...frame.sample,
-      Graphics_analyst_session_time: (this.now() - this.startedAt) / 1000,
-    } });
+    this.batch.push({ sequence, sample: { ...frame.sample } });
     if (this.batch.length >= MAX_BATCH_SAMPLES) {
       this.flush();
     } else if (this.batchTimer === null) {

@@ -1,7 +1,11 @@
 import React, { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import { NamedOperationComponentHandle, useOptionalOperationComponentRefDirectory, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
+import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
+import { ACC_STATUS } from 'data/live-analysis/live-map-data';
+import type { LiveTrajectoryMapHandle } from '../LiveTrajectoryMap';
 import { useSessionScreenCapture } from '../live-session-recording/SessionScreenCapture';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
+import { TrackPositionModel } from './track-position-model';
 import { MODEL_INPUT_RESOLUTIONS } from './vision-config';
 import { CameraCalibration, DETECTION_TASKS, DetectionTask, TrackVisionDetection, TrackVisionFrame } from './track-vision-types';
 import { reconstructTrack } from './track-reconstruction';
@@ -30,6 +34,16 @@ const GPU_RETRY_DELAY_MS = 3000;
 type DetectorState = { status: 'loading' | 'ready' | 'retrying' | 'error' | 'disabled'; error?: string; classNames?: string[] };
 
 const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name }, forwardedRef) => {
+    const directory = useOptionalOperationComponentRefDirectory();
+    const directoryRef = useRef(directory);
+    directoryRef.current = directory;
+    const getLiveMap = useCallback(() => directoryRef.current?.findComponentRef<LiveTrajectoryMapHandle>(
+        getVisualizationComponentName('live-trajectory-map'))?.current ?? null, []);
+    const positionModel = useRef<TrackPositionModel | null>(null);
+    const positionTelemetry = useRef<{ position: number; receivedAt: number; identity: string; game: string; track?: string } | undefined>(undefined);
+    const positionGeneration = useRef(0);
+    const [positionRetry, setPositionRetry] = useState(0);
+    const [positionState, setPositionState] = useState<DetectorState>({ status: 'loading' });
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const previewRef = useRef<HTMLDialogElement>(null);
@@ -135,6 +149,21 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         listeners.current.forEach((listener) => listener());
     }, []);
     useEffect(() => liveTelemetryStore.subscribeEvents((event) => {
+        const position = event.type === 'frame' ? event.sample.Graphics_normalized_car_position : undefined;
+        const identity = event.type === 'frame' ? JSON.stringify([event.sessionGeneration, event.streamGeneration,
+            event.update.game, event.sample.Static_track, event.sample.Static_car_model]) : '';
+        if (event.type !== 'frame' || event.telemetryStatus !== ACC_STATUS.ACC_LIVE
+            || typeof position !== 'number' || !Number.isFinite(position) || position < 0 || position > 1
+            || (positionTelemetry.current && positionTelemetry.current.identity !== identity)) {
+            positionGeneration.current++;
+            positionTelemetry.current = undefined;
+            if (latest.current?.position) publish({ ...latest.current, position: undefined });
+        }
+        if (event.type === 'frame' && event.telemetryStatus === ACC_STATUS.ACC_LIVE
+            && typeof position === 'number' && Number.isFinite(position) && position >= 0 && position <= 1) {
+            positionTelemetry.current = { position, receivedAt: Date.now(), identity, game: event.update.game,
+                track: event.sample.Static_track };
+        }
         const next = event.type === 'frame' ? readVisionMotion(event.sample, Date.now(), motionGeneration.current) : undefined;
         if (!next && (motion.current || event.type !== 'frame')) {
             motionGeneration.current++;
@@ -179,6 +208,32 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         const canvas = canvasRef.current;
         if (canvas && !canvas.hidden) canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
     }, [releaseFrames]);
+
+    useEffect(() => {
+        if (!window.screenCapture) return;
+        let cancelled = false;
+        let loaded: TrackPositionModel | null = null;
+        setPositionState({ status: 'loading' });
+        void TrackPositionModel.load().then((model) => {
+            if (cancelled) { void model?.dispose().catch(() => undefined); return; }
+            loaded = model;
+            positionModel.current = model;
+            setPositionState({ status: model ? 'ready' : 'disabled' });
+        }).catch((reason) => {
+            if (!cancelled) setPositionState({ status: reason instanceof GpuInferenceError ? 'retrying' : 'error', error: message(reason) });
+        });
+        return () => {
+            cancelled = true;
+            positionModel.current = null;
+            void loaded?.dispose().catch(() => undefined);
+        };
+    }, [positionRetry]);
+
+    useEffect(() => {
+        if (positionState.status !== 'retrying') return;
+        const timer = setTimeout(() => setPositionRetry((current) => current + 1), GPU_RETRY_DELAY_MS);
+        return () => clearTimeout(timer);
+    }, [positionState]);
 
     useEffect(() => () => {
         releaseFrames();
@@ -274,6 +329,17 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             const frameTasks = DETECTION_TASKS.filter(({ id }) => id !== 'depth' || options.current.depthEnabled);
                             const result: TrackVisionFrame = { capturedAt: Date.now(), motion: motion.current,
                                 width: frame.width, height: frame.height, detections: {} };
+                            const telemetry = positionTelemetry.current;
+                            const positionVersion = positionGeneration.current;
+                            const liveMap = getLiveMap();
+                            const circuitMap = liveMap?.getCircuitMap();
+                            const referenceLap = liveMap?.getReferenceLap();
+                            const references = telemetry && result.capturedAt - telemetry.receivedAt <= 500
+                                ? liveMap?.getPositionReferences(telemetry.position) : null;
+                            const addon = positionModel.current;
+                            const positionCurrent = () => positionVersion === positionGeneration.current
+                                && liveMap === getLiveMap() && circuitMap === liveMap?.getCircuitMap()
+                                && referenceLap === liveMap?.getReferenceLap() && addon === positionModel.current;
                             const inference = (async () => {
                                 if (frameTasks.some(({ id }) => !models.current[id])) return;
                                 for (const { id } of frameTasks) {
@@ -297,6 +363,22 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                                             status: 'retrying', error: message(reason),
                                         } }));
                                         return;
+                                    }
+                                }
+                                if (addon && references && telemetry && positionCurrent()
+                                    && version === captureVersion.current && stackVersion === modelVersion.current) {
+                                    try {
+                                        const prediction = await addon.predict(frame, references, {
+                                            normalized_position: telemetry.position, game: telemetry.game,
+                                            map_name: [circuitMap?.circuit_name, circuitMap?.source_track_key, telemetry.track]
+                                                .filter((value): value is string => typeof value === 'string' && Boolean(value)),
+                                        });
+                                        if (positionCurrent()) result.position = { ...prediction, references, normalizedPosition: telemetry.position };
+                                    } catch (reason) {
+                                        if (version !== captureVersion.current || addon !== positionModel.current) return;
+                                        positionModel.current = null;
+                                        void addon.dispose().catch(() => undefined);
+                                        setPositionState({ status: 'retrying', error: message(reason) });
                                     }
                                 }
                             })();
@@ -344,7 +426,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         };
         void start();
         return releaseFrames;
-    }, [stream, publish, releaseFrames, stop]);
+    }, [stream, publish, releaseFrames, stop, getLiveMap]);
 
     if (!window.screenCapture) {
         return <section className="track-vision" aria-label="Track Vision">
@@ -413,11 +495,12 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                         source={hasFrame ? previewFrameRef.current : null} capturedAt={previewCapturedAt} />
                 </div>
                 {step === 'birds-eye' && <BirdsEyeView scene={hasFrame ? previewResult?.birdsEyeScene ?? null : null}
-                    hasReconstructedScene={hasFrame && Boolean(previewResult?.reconstructedScene)} capturedAt={previewResult?.capturedAt} />}
+                    hasReconstructedScene={hasFrame && Boolean(previewResult?.reconstructedScene)} capturedAt={previewResult?.capturedAt}
+                    position={hasFrame ? previewResult?.position : undefined} positionReady={positionState.status === 'ready'} />}
             </div>
             <div className="track-vision__status" role="status">{status}</div>
             {error && <div className="track-vision__error" role="alert">{error}</div>}
-            <details className="track-vision__settings" aria-label="Track Vision settings" open={DETECTION_TASKS.some(({ id }) => Boolean(detectors[id].error))}>
+            <details className="track-vision__settings" aria-label="Track Vision settings" open={Boolean(positionState.error) || DETECTION_TASKS.some(({ id }) => Boolean(detectors[id].error))}>
                 <summary>Settings <span>{DETECTION_TASKS.map(({ id, label }) =>
                     `${label}: ${detectors[id].status}`).join(' · ')}</span></summary>
                 <TrackCalibration source={hasFrame ? previewFrameRef.current : null} draft={cameraDraft} applied={calibration}
@@ -449,6 +532,15 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 </div>
                 <fieldset className="track-vision__stack">
                     <legend>Track models</legend>
+                    <div className="track-vision__detector">
+                        <strong>Position add-on</strong>
+                        <span className="track-vision__detector-state">{positionState.status === 'ready'
+                            ? positionModel.current?.name : positionState.status === 'disabled' ? 'No uploaded model'
+                                : positionState.status === 'loading' ? 'Loading…' : positionState.status === 'retrying' ? 'Retrying GPU…' : 'Unavailable'}</span>
+                        {positionState.error && <div className="track-vision__error" role="alert">{positionState.error}</div>}
+                        {(positionState.status === 'error' || positionState.status === 'disabled') && <button type="button"
+                            onClick={() => setPositionRetry((current) => current + 1)}>Retry position add-on</button>}
+                    </div>
                     {DETECTION_TASKS.map(({ id, label }) => <div className="track-vision__detector" key={id}>
                         <strong>{label}</strong>
                         <span className="track-vision__detector-state">{detectors[id].status === 'ready'

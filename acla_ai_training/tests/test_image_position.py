@@ -335,9 +335,11 @@ def test_all_context_inputs_affect_predictions_with_fixed_image_and_references(t
             assert prediction[0, 0, 0].item() == expected
 
 
-def test_legacy_checkpoint_requires_retraining(position_checkpoint):
+@pytest.mark.parametrize("label", ["acla-yolo-position-v1", "acla-yolo-position-v2", None])
+def test_checkpoint_without_context_requires_retraining(position_checkpoint, label):
     saved = torch.load(position_checkpoint, weights_only=True)
-    saved["format"] = "acla-yolo-position-v1"
+    saved["format"] = label
+    saved.pop("categories")
     torch.save(saved, position_checkpoint)
     with pytest.raises(ValueError, match="retrain older models"):
         YOLOPositionModel.load(position_checkpoint)
@@ -469,7 +471,7 @@ def test_position_upload_streams_original_weights_and_regression_metadata(positi
     }
 
 
-@pytest.mark.parametrize("problem", ["missing", "empty", "extension", "format", "outputs", "weights", "metrics", "name"])
+@pytest.mark.parametrize("problem", ["missing", "empty", "extension", "outputs", "weights", "metrics", "name"])
 def test_invalid_position_upload_never_connects_to_backend(position_checkpoint, problem):
     from training.image_segmentation.position_publication import upload_position_checkpoint
 
@@ -487,7 +489,7 @@ def test_invalid_position_upload_never_connects_to_backend(position_checkpoint, 
     else:
         saved = torch.load(checkpoint, weights_only=True)
         key, value = {
-            "format": ("format", "segmentation"), "outputs": ("output_names", []),
+            "outputs": ("output_names", []),
             "weights": ("state_dict", {}), "metrics": ("metrics", {"val_mae": float("nan")}),
         }[problem]
         saved[key] = value

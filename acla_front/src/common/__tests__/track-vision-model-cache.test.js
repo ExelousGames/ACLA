@@ -33,7 +33,7 @@ it('returns a cache miss without exporting or creating weights', async () => {
 it('saves verified weights and labels and reuses ONNX across cache instances', async () => {
     await expect(makeCache().prepare(model, weights)).resolves.toEqual(Buffer.from([5, 6]));
     expect(await fs.readFile(path.join(folder(), 'weights.pt'))).toEqual(weights);
-    expect(exporter).toHaveBeenCalledWith(path.join(folder(), 'weights.pt'), ['curb', 'track'], 768, path.join(folder(), 'weights-768.onnx'));
+    expect(exporter).toHaveBeenCalledWith(path.join(folder(), 'weights.pt'), ['curb', 'track'], 768, path.join(folder(), 'weights-768.onnx'), 'segment');
     await expect(makeCache().prepare(model)).resolves.toEqual(Buffer.from([5, 6]));
     expect(exporter).toHaveBeenCalledTimes(1);
 });
@@ -84,7 +84,7 @@ it('treats a new backend version as a cache miss and rebuilds changed label meta
     await cache.prepare(model, weights);
     await expect(cache.prepare({ ...model, sha256: 'b'.repeat(64) })).resolves.toBeNull();
     await cache.prepare({ ...model, classNames: ['track', 'curb'] });
-    expect(exporter).toHaveBeenLastCalledWith(path.join(folder(), 'weights.pt'), ['track', 'curb'], 768, path.join(folder(), 'weights-768.onnx'));
+    expect(exporter).toHaveBeenLastCalledWith(path.join(folder(), 'weights.pt'), ['track', 'curb'], 768, path.join(folder(), 'weights-768.onnx'), 'segment');
     expect(exporter).toHaveBeenCalledTimes(2);
 });
 
@@ -115,4 +115,14 @@ it.each([0, 518, 1024, '../outside'])('rejects unsupported input resolution %s b
     await expect(makeCache().prepare(model, weights, inputSize)).rejects.toThrow('input resolution');
     expect(exporter).not.toHaveBeenCalled();
     expect(await fs.readdir(directory)).toEqual([]);
+});
+
+it('exports position checkpoints with their own task and fixed training resolution', async () => {
+    const addon = { ...model, task: 'position' };
+    await makeCache().prepare(addon, weights, 512);
+    expect(exporter).toHaveBeenCalledWith(path.join(folder(), 'weights.pt'), model.classNames, 512,
+        path.join(folder(), 'weights-512.onnx'), 'position');
+    await expect(makeCache().prepare(addon, undefined, 512)).resolves.toEqual(Buffer.from([5, 6]));
+    expect(exporter).toHaveBeenCalledTimes(1);
+    await expect(makeCache().prepare(addon, undefined, 518)).rejects.toThrow('input resolution');
 });

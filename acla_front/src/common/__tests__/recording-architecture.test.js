@@ -105,7 +105,7 @@ describe('shared recording architecture', () => {
         expect(getMainWindow).not.toHaveBeenCalled();
     });
 
-    it('adds recording time without mutating source samples and keeps commit metadata in memory', async () => {
+    it('preserves source samples and keeps commit metadata in memory', async () => {
         const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'acla-writer-'));
         const progress = [];
         const parent = [];
@@ -125,9 +125,7 @@ describe('shared recording architecture', () => {
             const result = await writer.end();
             const rows = fs.readFileSync(filePath, 'utf8').trim().split('\n').map(JSON.parse);
 
-            expect(rows).toEqual(samples.map((sample) => ({
-                ...sample, Graphics_analyst_session_time: expect.any(Number),
-            })));
+            expect(rows).toEqual(samples);
             samples.forEach((sample) => expect(sample).not.toHaveProperty('Graphics_analyst_session_time'));
             expect(rows[0]).not.toHaveProperty('game');
             expect(rows[0]).not.toHaveProperty('sequence');
@@ -145,50 +143,43 @@ describe('shared recording architecture', () => {
         }
     });
 
-    it.each(['acc', 'iracing'])('keeps the %s recording clock independent of game time and disk flushes', async (game) => {
+    it.each(['acc', 'iracing'])('preserves %s reader timestamps through disk flushes and shutdown', async (game) => {
         const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'acla-writer-clock-'));
-        let now = 1000;
         const createWriter = () => new RecordingWriter({
             game, recordingDirectory: directory,
-            progressPort: { postMessage: jest.fn() }, parentSend: jest.fn(), now: () => now,
+            progressPort: { postMessage: jest.fn() }, parentSend: jest.fn(),
         });
         const writer = createWriter();
         let nextWriter;
         try {
-            now = 2500;
             const filePath = await writer.open();
             const samples = [
                 { Graphics_status: 2, Graphics_game_time: 2027.758 },
-                { Graphics_status: 3, Graphics_game_time: 2027.758 },
-                { Graphics_status: 0 },
+                { Graphics_status: 3, Graphics_game_time: 2027.758, Graphics_analyst_session_time: 1.25 },
+                { Graphics_status: 0, Graphics_analyst_session_time: 4 },
                 { Graphics_status: 2, Graphics_game_time: 0, Graphics_analyst_session_time: 999 },
             ];
-            const elapsedSeconds = [0.125, 1.25, 4, 5.5];
-            samples.forEach((sample, index) => {
-                now = 2500 + elapsedSeconds[index] * 1000;
-                writer.acceptFrame({ game, sample });
-            });
-            // Time spent waiting for disk or shutdown must not inflate sample times.
-            now = 15000;
+            samples.forEach((sample) => writer.acceptFrame({ game, sample }));
             const ending = writer.end();
             writer.acceptFrame({ game, sample: { Graphics_status: 2, Graphics_game_time: 10 } });
             const result = await ending;
-            now = 20000;
             writer.acceptFrame({ game, sample: { Graphics_status: 2 } });
             await expect(writer.end()).resolves.toEqual(result);
             expect(result.writtenSamples).toBe(4);
             expect(fs.readFileSync(filePath, 'utf8').trim().split('\n').map(JSON.parse)).toEqual(
-                samples.map((sample, index) => ({ ...sample, Graphics_analyst_session_time: elapsedSeconds[index] })),
+                samples,
             );
             expect(samples[0]).not.toHaveProperty('Graphics_analyst_session_time');
             expect(samples[3].Graphics_analyst_session_time).toBe(999);
 
             nextWriter = createWriter();
             const nextFilePath = await nextWriter.open();
-            nextWriter.acceptFrame({ game, sample: { Graphics_status: 2, Graphics_game_time: 100 } });
+            nextWriter.acceptFrame({ game, sample: {
+                Graphics_status: 2, Graphics_game_time: 100, Graphics_analyst_session_time: 0.5,
+            } });
             await nextWriter.end();
             expect(JSON.parse(fs.readFileSync(nextFilePath, 'utf8'))).toEqual({
-                Graphics_status: 2, Graphics_game_time: 100, Graphics_analyst_session_time: 0,
+                Graphics_status: 2, Graphics_game_time: 100, Graphics_analyst_session_time: 0.5,
             });
         } finally {
             await writer.end();

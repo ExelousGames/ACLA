@@ -2,16 +2,6 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { ObjectId } from 'mongodb';
 import { Schema as MongooseSchema } from 'mongoose';
 
-export const ULTRALYTICS_TASKS = [
-  'detect',
-  'segment',
-  'classify',
-  'pose',
-  'obb',
-  'position',
-] as const;
-export type UltralyticsTask = (typeof ULTRALYTICS_TASKS)[number];
-
 @Schema({ timestamps: true, collection: 'ultralytics_models' })
 export class UltralyticsModel {
   @Prop({ required: true, trim: true })
@@ -23,8 +13,8 @@ export class UltralyticsModel {
   @Prop({ required: true, enum: ['labelme', 'position'], default: 'labelme' })
   annotationFormat: string;
 
-  @Prop({ type: String, required: true, enum: ULTRALYTICS_TASKS })
-  task: UltralyticsTask;
+  @Prop({ type: String, required: true })
+  task: string;
 
   // Array position is the class ID used by the trained weights.
   @Prop({ type: [String], required: true })

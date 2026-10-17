@@ -38,7 +38,7 @@ const invalidRows = [
 ];
 
 describe('live telemetry dataset boundary', () => {
-    it.each(['acc', 'iracing'])('persists game time and adds recording time through the %s writer', async (game) => {
+    it.each(['acc', 'iracing'])('stamps %s reader frames before live delivery and preserves their times on disk', async (game) => {
         const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'acla-session-time-'));
         const child = new EventEmitter();
         child.stdin = new PassThrough();
@@ -48,47 +48,65 @@ describe('live telemetry dataset boundary', () => {
         child.stdin.on('finish', () => setImmediate(() => child.emit('close', 0, null)));
         const lines = new EventEmitter();
         lines.close = jest.fn();
+        let now = 1000;
         const Reader = game === 'acc' ? AccPythonReader : IRacingReader;
         const reader = new Reader({
             runtime: 'python', pythonExecutable: 'python', scriptDirectory: directory, scriptName: 'capture.py',
-        }, { spawn: () => child, createInterface: () => lines });
+        }, { spawn: () => child, createInterface: () => lines, now: () => now });
         const writer = new RecordingWriter({
             game, recordingDirectory: directory, progressPort: { postMessage: jest.fn() }, parentSend: jest.fn(),
         });
         const events = [];
+        const updates = [];
+        const view = new RecordingView({
+            game, updatesPort: { postMessage: (message) => updates.push(message) }, parentSend: jest.fn(),
+        });
         let filePath;
         try {
             filePath = await writer.open();
+            now = 2500;
             const started = reader.start((event) => {
                 events.push(event);
-                if (event.type === 'frame') writer.acceptFrame(event.frame);
+                if (event.type === 'frame') view.acceptFrame(event.frame);
             });
             if (game === 'iracing') {
                 child.stdout.write('{"type":"ready"}\n');
                 await started;
             }
-            for (const [tick, time] of [12.125, 0, undefined].entries()) {
+            const elapsedSeconds = [0.125, 1.25, 4, 5.5];
+            for (const [tick, time] of [12.125, 12.125, undefined, 0].entries()) {
+                now = 2500 + elapsedSeconds[tick] * 1000;
+                const status = [2, 3, 0, 2][tick];
                 if (game === 'acc') {
                     // ACC's Python capture adapter already converts Broadcasting ms to seconds.
-                    lines.emit('line', JSON.stringify({ Graphics_status: 2, Graphics_game_time: time }));
+                    lines.emit('line', JSON.stringify({ Graphics_status: status, Graphics_game_time: time }));
                 } else {
                     child.stdout.write(`${JSON.stringify({ type: 'sample', tick,
-                        values: { IsOnTrack: true, IsReplayPlaying: false, SessionTime: time } })}\n`);
+                        values: { IsOnTrack: status !== 0, IsReplayPlaying: false, SessionTime: time } })}\n`);
                 }
                 await Promise.resolve();
+                if (tick === 1) {
+                    // Reconnecting the simulator must not restart the reader's clock.
+                    if (game === 'acc') lines.emit('line', '{"available":false}');
+                    else child.stdout.write('{"type":"disconnected"}\n');
+                    await Promise.resolve();
+                }
             }
             await started;
             await reader.stop();
+            // Delayed writer receipt and disk flushing must preserve the reader's times.
+            now = 15000;
+            events.forEach((event) => writer.acceptFrame(event.frame));
             await writer.end();
-            expect(events.map((event) => event.type)).toEqual(['frame', 'frame', 'frame']);
+            expect(events.map((event) => event.type)).toEqual(['frame', 'frame', 'frame', 'frame']);
+            expect(events.map((event) => event.frame.sample.Graphics_analyst_session_time)).toEqual(elapsedSeconds);
+            expect(updates.map((update) => update.sample)).toEqual(events.map((event) => event.frame.sample));
             const rows = fs.readFileSync(filePath, 'utf8').trim().split('\n').map(JSON.parse);
-            expect(rows).toEqual(events.map((event) => ({
-                ...event.frame.sample, Graphics_analyst_session_time: expect.any(Number),
-            })));
-            events.forEach((event) => expect(event.frame.sample).not.toHaveProperty('Graphics_analyst_session_time'));
+            expect(rows).toEqual(events.map((event) => event.frame.sample));
             expect(rows[0].Graphics_game_time).toBe(12.125);
-            expect(rows[1].Graphics_game_time).toBe(0);
+            expect(rows[1].Graphics_game_time).toBe(12.125);
             expect(rows[2]).not.toHaveProperty('Graphics_game_time');
+            expect(rows[3].Graphics_game_time).toBe(0);
             expect(rows[0]).not.toHaveProperty('SessionTime');
         } finally {
             await reader.stop();
@@ -129,15 +147,13 @@ describe('live telemetry dataset boundary', () => {
             const updates = { postMessage: jest.fn() };
             const writer = new RecordingWriter({
                 game, recordingDirectory: directory, progressPort: updates, parentSend: jest.fn(),
-                now: () => 1000,
             });
             const view = new RecordingView({ game, updatesPort: updates, parentSend: jest.fn() });
             const filePath = await writer.open();
             writer.acceptFrame({ game, sample });
             view.acceptFrame({ game, sample });
             await writer.end();
-            const recordedSample = { ...sample, Graphics_analyst_session_time: 0 };
-            expect(fs.readFileSync(filePath, 'utf8')).toBe(`${JSON.stringify(recordedSample)}\n`);
+            expect(fs.readFileSync(filePath, 'utf8')).toBe(`${JSON.stringify(sample)}\n`);
             expect(updates.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'frame', sample }));
 
             const rows = [];
@@ -156,7 +172,7 @@ describe('live telemetry dataset boundary', () => {
                 },
             });
             await reader.start();
-            expect(rows).toEqual([recordedSample]);
+            expect(rows).toEqual([sample]);
         } finally {
             fs.rmSync(directory, { recursive: true, force: true });
         }
@@ -198,7 +214,8 @@ describe('live telemetry dataset boundary', () => {
         lines.emit('line', '{"Physics_speed_kmh":120,"Graphics_status":2,"Graphics_normalized_positions":{"1052":0.25}}');
         await started;
         expect(emit).toHaveBeenCalledWith({ type: 'frame', frame: {
-            game: 'acc', sample: { Physics_speed_kmh: 120, Graphics_status: 2, Graphics_normalized_positions: { 1052: 0.25 } },
+            game: 'acc', sample: { Physics_speed_kmh: 120, Graphics_status: 2, Graphics_normalized_positions: { 1052: 0.25 },
+                Graphics_analyst_session_time: expect.any(Number) },
         } });
         lines.emit('line', '{"Physics_speed_kmh":121,"speedKph":121}');
         expect(emit.mock.calls.filter(([event]) => event.type === 'frame')).toHaveLength(1);

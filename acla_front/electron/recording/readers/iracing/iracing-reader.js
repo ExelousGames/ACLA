@@ -2,6 +2,7 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const { performance } = require('perf_hooks');
 const { IRacingAdapter, IRACING_VARIABLES } = require('./iracing-adapter');
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
@@ -15,6 +16,8 @@ class IRacingReader {
     this.game = 'iracing';
     this.options = options;
     this.spawn = dependencies.spawn || spawn;
+    this.now = dependencies.now || (() => performance.now());
+    this.startedAt = null;
     this.adapter = new IRacingAdapter();
     this.child = null;
     this.stopping = false;
@@ -31,6 +34,7 @@ class IRacingReader {
   start(emit) {
     if (this.startPromise) return this.startPromise;
     this.emit = emit;
+    this.startedAt = this.now();
     this.startPromise = new Promise((resolve, reject) => {
       this.resolveStart = resolve;
       this.rejectStart = reject;
@@ -91,7 +95,10 @@ class IRacingReader {
       this.pending = false;
       let delivered;
       if (packet.type === 'sample') {
-        const sample = this.adapter.adapt(packet);
+        const sample = {
+          ...this.adapter.adapt(packet),
+          Graphics_analyst_session_time: (this.now() - this.startedAt) / 1000,
+        };
         delivered = this.emit({ type: 'frame', frame: { game: this.game, sample } });
       } else if (packet.type === 'disconnected') {
         this.adapter.reset();

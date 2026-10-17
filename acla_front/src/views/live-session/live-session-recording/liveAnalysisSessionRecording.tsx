@@ -140,15 +140,11 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             startInFlightRef.current = false;
             return;
         }
-        const rawTrackName = ctx.staticData?.Static_track;
-        const rawCarName = ctx.staticData?.Static_car_model;
-        const trackName = typeof rawTrackName === 'string' && rawTrackName ? rawTrackName : 'Unknown Track';
-        const carName = typeof rawCarName === 'string' && rawCarName ? rawCarName : 'Unknown Car';
         const newSessionName = `Racing Session ${new Date().toLocaleString()}`;
         const metadata: LiveRecordingMetadata = {
             sessionName: newSessionName,
-            mapName: trackName,
-            carName,
+            mapName: '',
+            carName: '',
             gameRecordedFrom: sessionGame,
         };
         setRecordingUnavailable(null);
@@ -299,6 +295,16 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     const openUploadDialog = useCallback(() => {
         if (isUploading) {
             return;
+        }
+        const ctx = analysisContextRef.current;
+        if (ctx.recordingMetadata) {
+            const trackName = ctx.staticData?.Static_track;
+            const carName = ctx.staticData?.Static_car_model;
+            ctx.setRecordingMetadata({
+                ...ctx.recordingMetadata,
+                mapName: typeof trackName === 'string' && trackName ? trackName : ctx.recordingMetadata.mapName || 'Unknown Track',
+                carName: typeof carName === 'string' && carName ? carName : ctx.recordingMetadata.carName || 'Unknown Car',
+            });
         }
         setUploadDialogOpen(true);
     }, [isUploading]);
@@ -520,10 +526,6 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
 
                 </Flex>
                 <div className="live-recording-bar__status">
-                    <div className="live-recording-bar__status-row">
-                        <span className="live-recording-bar__status-label">MAP</span>
-                        <span className="live-recording-bar__status-value">{analysisContext.staticData.Static_track || '—'}</span>
-                    </div>
                     <div className="live-recording-bar__status-row">
                         <span className="live-recording-bar__status-label">SAMPLES</span>
                         <span className="live-recording-bar__status-value live-recording-bar__status-value--mono">

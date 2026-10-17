@@ -11,6 +11,7 @@ import {
     useOptionalOperationComponentSnapshot,
 } from 'contexts/OperationComponentRefContext';
 import type { LiveSessionRuntime } from 'views/live-session/live-session-types';
+import type { Vec3 } from 'views/session-shared/visualization/charts/mapTelemetry';
 import {
     liveTelemetryStore,
     useCurrentTelemetry,
@@ -168,8 +169,8 @@ const CircuitMaps = () => {
     const currentTrackKey = (telemetryGame === game ? getCircuitMapTrackKey(currentTelemetry) : null)
         || (liveSession?.sessionGame === game ? getCircuitMapTrackKey(liveSession.staticData) : null);
     const liveCapture = useMemo(() => (
-        isAccLive ? extractCircuitMapCaptureSample(currentTelemetry) : null
-    ), [currentTelemetry, isAccLive]);
+        isAccLive ? extractCircuitMapCaptureSample(currentTelemetry, game) : null
+    ), [currentTelemetry, game, isAccLive]);
 
     const loadMapList = useCallback(async (nextGame: CircuitMapGame = game) => {
         const requestId = ++listLoadRequestRef.current;
@@ -286,7 +287,7 @@ const CircuitMaps = () => {
                 || event.telemetryStatus !== ACC_STATUS.ACC_LIVE
             ) return;
 
-            const liveCapture = extractCircuitMapCaptureSample(event.sample);
+            const liveCapture = extractCircuitMapCaptureSample(event.sample, game);
             if (!liveCapture) return;
             const signature = `${liveCapture.bin}:${liveCapture.position.x}:${liveCapture.position.y}:${liveCapture.position.z}`;
             if (signature === lastCaptureSignatureRef.current) return;
@@ -377,7 +378,7 @@ const CircuitMaps = () => {
                     }
                     importedTrackKey = trackKey;
                 }
-                const result = mergeCircuitMapSamples(nextSamples, rows, updatedAt);
+                const result = mergeCircuitMapSamples(nextSamples, rows, game, updatedAt);
                 nextSamples = result.samples;
                 capturedRows += result.capturedRows;
             });
@@ -525,45 +526,47 @@ const CircuitMaps = () => {
     }, [selectedPoint]);
 
     const getCanvasProjection = useCallback(() => {
-        const points: { x: number; z: number }[] = [];
+        // Stored ACC coordinates use X/Y for the track plane and Z for altitude.
+        const verticalAxis = isIRacing ? 'z' : 'y';
+        const points: Vec3[] = [];
         visibleModes.forEach(({ value }) => {
-            getSamplesForMode(samplesByMode, value).forEach((sample) => points.push({ x: sample.x, z: sample.z }));
+            getSamplesForMode(samplesByMode, value).forEach((sample) => points.push(sample));
         });
         if (liveCapture) {
-            points.push({ x: liveCapture.position.x, z: liveCapture.position.z });
+            points.push(liveCapture.position);
         }
 
         if (points.length === 0) {
-            points.push({ x: -100, z: -100 }, { x: 100, z: 100 });
+            points.push({ x: -100, y: -100, z: -100 }, { x: 100, y: 100, z: 100 });
         }
 
         let minX = points[0].x;
         let maxX = points[0].x;
-        let minZ = points[0].z;
-        let maxZ = points[0].z;
+        let minVertical = points[0][verticalAxis];
+        let maxVertical = points[0][verticalAxis];
 
         points.forEach((point) => {
             minX = Math.min(minX, point.x);
             maxX = Math.max(maxX, point.x);
-            minZ = Math.min(minZ, point.z);
-            maxZ = Math.max(maxZ, point.z);
+            minVertical = Math.min(minVertical, point[verticalAxis]);
+            maxVertical = Math.max(maxVertical, point[verticalAxis]);
         });
 
         const padding = 42;
         const spanX = Math.max(1, maxX - minX);
-        const spanZ = Math.max(1, maxZ - minZ);
+        const spanVertical = Math.max(1, maxVertical - minVertical);
         const usableWidth = Math.max(1, canvasSize.width - padding * 2);
         const usableHeight = Math.max(1, canvasSize.height - padding * 2);
-        const scale = Math.min(usableWidth / spanX, usableHeight / spanZ) * zoom;
+        const scale = Math.min(usableWidth / spanX, usableHeight / spanVertical) * zoom;
         const centerX = (minX + maxX) / 2;
-        const centerZ = (minZ + maxZ) / 2;
-        // Canvas Y grows downward: keep that Z flip for ACC and undo it for iRacing.
-        const zDirection = isIRacing ? -1 : 1;
+        const centerVertical = (minVertical + maxVertical) / 2;
+        // Canvas Y grows downward; reverse the vertical direction for iRacing.
+        const verticalDirection = isIRacing ? -1 : 1;
 
         return {
-            project: (x: number, z: number) => ({
-                screenX: canvasSize.width / 2 + pan.x + (x - centerX) * scale,
-                screenY: canvasSize.height / 2 + pan.y + (z - centerZ) * scale * zDirection
+            project: (point: Vec3) => ({
+                screenX: canvasSize.width / 2 + pan.x + (point.x - centerX) * scale,
+                screenY: canvasSize.height / 2 + pan.y + (point[verticalAxis] - centerVertical) * scale * verticalDirection
             })
         };
     }, [canvasSize, isIRacing, liveCapture, pan, samplesByMode, visibleModes, zoom]);
@@ -619,7 +622,7 @@ const CircuitMaps = () => {
                 context.globalAlpha = 0.82;
                 context.beginPath();
                 segment.forEach((sample, index) => {
-                    const point = project(sample.x, sample.z);
+                    const point = project(sample);
                     if (index === 0) context.moveTo(point.screenX, point.screenY);
                     else context.lineTo(point.screenX, point.screenY);
                 });
@@ -628,7 +631,7 @@ const CircuitMaps = () => {
             });
 
             samples.forEach((sample) => {
-                const point = project(sample.x, sample.z);
+                const point = project(sample);
                 projectedPoints.push({ ...point, sample, mode: value });
                 const isSelected = selectedPoint?.mode === value && selectedPoint.bin === sample.bin;
 
@@ -660,20 +663,20 @@ const CircuitMaps = () => {
                 context.lineCap = 'round';
                 context.beginPath();
                 samples.forEach((sample, index) => {
-                    const point = project(sample.x, sample.z);
+                    const point = project(sample);
                     if (index === 0) context.moveTo(point.screenX, point.screenY);
                     else context.lineTo(point.screenX, point.screenY);
                 });
                 context.stroke();
                 [samples[0], samples[samples.length - 1]].forEach((sample) => {
-                    const point = project(sample.x, sample.z);
+                    const point = project(sample);
                     context.beginPath();
                     context.arc(point.screenX, point.screenY, 8, 0, Math.PI * 2);
                     context.stroke();
                 });
                 if (label) {
                     const middle = samples[Math.floor(samples.length / 2)];
-                    const point = project(middle.x, middle.z);
+                    const point = project(middle);
                     context.font = 'bold 13px monospace';
                     context.textAlign = 'center';
                     context.fillText(label, point.screenX, point.screenY - 18, 240);
@@ -705,7 +708,7 @@ const CircuitMaps = () => {
         }
 
         if (liveCapture) {
-            const point = project(liveCapture.position.x, liveCapture.position.z);
+            const point = project(liveCapture.position);
             context.save();
             context.fillStyle = '#ffffff';
             context.strokeStyle = '#00e676';

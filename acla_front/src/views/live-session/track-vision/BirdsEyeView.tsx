@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import type { BirdsEyeScene } from './birds-eye-scene';
-import { GroundPoint, VISION_MAX_AGE_MS } from './track-vision-types';
+import { GroundPoint, TrackVisionFrame, VISION_MAX_AGE_MS } from './track-vision-types';
 
-export default function BirdsEyeView({ scene: ground, hasReconstructedScene, capturedAt }: {
+export default function BirdsEyeView({ scene: ground, hasReconstructedScene, capturedAt, position, positionReady }: {
     scene: BirdsEyeScene | null;
     hasReconstructedScene: boolean;
     capturedAt?: number;
+    position?: TrackVisionFrame['position'];
+    positionReady?: boolean;
 }) {
     const [now, setNow] = useState(Date.now);
     useEffect(() => {
@@ -15,18 +17,25 @@ export default function BirdsEyeView({ scene: ground, hasReconstructedScene, cap
         return () => clearTimeout(timer);
     }, [capturedAt]);
     const stale = capturedAt !== undefined && now >= capturedAt + VISION_MAX_AGE_MS;
-    const points = ground ? [...ground.leftBoundary.flat(), ...ground.rightBoundary.flat(), ...ground.centerline.flat(),
-        ...ground.cars.map(({ position }) => position)] : [];
+    const positionMarkers = position ? [
+        { label: 'Reference lap', delta: position.referenceDelta, color: '#ffdf70' },
+        { label: 'Centerline', delta: position.centerlineDelta, color: '#ff8fb3' },
+    ] : [];
+    const points = [...(ground ? [...ground.leftBoundary.flat(), ...ground.rightBoundary.flat(), ...ground.centerline.flat(),
+        ...ground.cars.map(({ position }) => position)] : []), ...positionMarkers.map(({ delta: [x, y, z] }) => ({ x, y, z }))];
     let minX = -10, maxX = 10, maxY = 20;
+    const minY = Math.min(-5, ...positionMarkers.map(({ delta }) => delta[1] - 3));
     for (const { x, y } of points) {
         minX = Math.min(minX, x - 2); maxX = Math.max(maxX, x + 2); maxY = Math.max(maxY, y + 3);
     }
-    const minY = -5, scale = Math.min(620 / (maxX - minX), 370 / (maxY - minY));
+    const scale = Math.min(620 / (maxX - minX), 370 / (maxY - minY));
     const map = ({ x, y }: Pick<GroundPoint, 'x' | 'y'>) => ({
         x: 360 + (x - (minX + maxX) / 2) * scale, y: 230 - (y - (minY + maxY) / 2) * scale,
     });
     const driver = map({ x: 0, y: 0 });
-    const rows = Array.from({ length: Math.floor(maxY / 10) + 1 }, (_, i) => i * 10);
+    const gridStep = Math.max(10, 10 ** Math.floor(Math.log10((maxY - minY) / 4)));
+    const firstRow = Math.ceil(minY / gridStep) * gridStep;
+    const rows = Array.from({ length: Math.floor((maxY - firstRow) / gridStep) + 1 }, (_, i) => firstRow + i * gridStep);
     const hasEdges = Boolean(ground && (ground.leftBoundary.length || ground.rightBoundary.length));
     const hasHistory = Boolean(ground && [...ground.leftBoundary, ...ground.rightBoundary]
         .some((line) => line.some((point) => point.observedAt !== undefined)));
@@ -37,10 +46,11 @@ export default function BirdsEyeView({ scene: ground, hasReconstructedScene, cap
             <span><i style={{ background: '#f4f7ff' }} />Your car</span>
             <span><i style={{ background: '#ffbe57' }} />Car</span>
             <span><i style={{ background: '#ce87ff' }} />Car pack</span>
+            {positionMarkers.map(({ label, color }) => <span key={label}><i style={{ background: color }} />{label} (position add-on)</span>)}
             {hasHistory && <span>Dashed boundaries: estimated from recent frames</span>}
         </div>
         <div className="track-vision__scene" style={{ aspectRatio: '720 / 460' }}>
-            {ground ? <svg viewBox="0 0 720 460" role="img" aria-label="Top-down track boundaries and cars">
+            {ground || position ? <svg viewBox="0 0 720 460" role="img" aria-label="Top-down track boundaries and cars">
                 <title>Estimated top-down scene. Your car is at the origin, with forward pointing up.</title>
                 <g stroke="#ffffff12" fill="#a4adbb" fontSize="11">
                     {rows.map((y) => <g key={y}>
@@ -54,14 +64,14 @@ export default function BirdsEyeView({ scene: ground, hasReconstructedScene, cap
                     fill="none" stroke={side === 'leftBoundary' ? '#37efac' : side === 'rightBoundary' ? '#57b9ff' : '#f4f7ff'}
                     strokeWidth={side === 'centerline' ? 1.5 : 3} strokeDasharray={side === 'centerline' ? '6 5' : undefined}
                     strokeLinecap="round" strokeLinejoin="round">
-                    {ground[side].map((line, index) => <polyline key={index}
+                    {ground?.[side].map((line, index) => <polyline key={index}
                         strokeDasharray={line[0]?.observedAt !== undefined ? '4 5' : undefined}
                         opacity={line[0]?.observedAt !== undefined ? 0.65 : 1} points={line.map((point) => {
                         const { x, y } = map(point); return `${x.toFixed(2)},${y.toFixed(2)}`;
                     }).join(' ')}>{line[0]?.observedAt !== undefined && <title>Estimated from a previous frame</title>}</polyline>)}
                 </g>)}
                 <g aria-label="Top-down traffic">
-                    {ground.cars.map(({ position, pack, confidence }, index) => {
+                    {ground?.cars.map(({ position, pack, confidence }, index) => {
                         const { x, y } = map(position), color = pack ? '#ce87ff' : '#ffbe57';
                         const label = `${pack ? 'Car pack' : 'Car'} ${index + 1}`;
                         return <g key={index} aria-label={label}>
@@ -80,16 +90,35 @@ export default function BirdsEyeView({ scene: ground, hasReconstructedScene, cap
                     <text x={driver.x > 600 ? -13 : 13} y="4" textAnchor={driver.x > 600 ? 'end' : 'start'}
                         fill="#f4f7ff" fontSize="12" stroke="#090d13" strokeWidth="3" paintOrder="stroke">Your car</text>
                 </g>
+                <g aria-label="Position add-on markers">
+                    {positionMarkers.map(({ label, color, delta: [x, y, z] }, index) => {
+                        const point = map({ x, y });
+                        return <g key={label} aria-label={`${label} position marker`}>
+                            <title>{`${label} ΔXYZ: ${[x, y, z].map((value) => value.toFixed(3)).join(', ')} · Z is height`}</title>
+                            <line x1={driver.x} y1={driver.y} x2={point.x} y2={point.y} stroke={color} strokeDasharray="4 4" />
+                            {index === 0 ? <circle cx={point.x} cy={point.y} r="6" fill={color} />
+                                : <path d={`M ${point.x},${point.y - 7} l 7,7 l -7,7 l -7,-7 Z`} fill="none" stroke={color} strokeWidth="2" />}
+                            <text x={point.x} y={point.y + (index === 0 ? -15 : 24)} textAnchor="middle"
+                                fill={color} fontSize="11" stroke="#090d13" strokeWidth="3" paintOrder="stroke">{label}</text>
+                        </g>;
+                    })}
+                </g>
                 <text x="704" y="24" textAnchor="end" fill="#a4adbb" fontSize="12">↑ Forward</text>
             </svg> : <div className="track-vision__empty"><strong>{hasReconstructedScene ? 'Apply camera calibration in Camera position' : 'Waiting for reconstructed scene'}</strong></div>}
         </div>
-        <p className="track-vision__hint" aria-label="Bird's-eye view status">{!hasReconstructedScene ? 'Waiting for scene.' : !ground
-            ? 'Set and apply the camera position to construct the top-down view.'
-            : stale ? 'Showing last frame (stale).'
-                : hasHistory ? 'Nearby track estimated from recent frames and vehicle motion; solid boundaries are visible now.'
-                    : hasEdges ? 'Track boundaries and cars from the reconstructed scene.'
-                    : ground.cars.length ? 'Detected traffic; no projectable track boundaries.' : 'No projectable track boundaries or traffic.'}</p>
+        <p className="track-vision__hint" aria-label="Bird's-eye view status">{(ground || position) && stale ? 'Showing last frame (stale).'
+            : position && !ground ? 'Position add-on offsets; apply camera calibration to include track boundaries and traffic.'
+                : !hasReconstructedScene ? 'Waiting for scene.'
+                    : !ground ? 'Set and apply the camera position to construct the top-down view.'
+                        : hasHistory ? 'Nearby track estimated from recent frames and vehicle motion; solid boundaries are visible now.'
+                            : hasEdges ? 'Track boundaries and cars from the reconstructed scene.'
+                                : ground.cars.length ? 'Detected traffic; no projectable track boundaries.' : 'No projectable track boundaries or traffic.'}</p>
         {ground && <p className="track-vision__hint">Flat-road estimate from camera calibration. Your car is the origin; distances and traffic positions are approximate.</p>}
+        {(position || positionReady) && <div className="track-vision__hint" aria-label="Position add-on result">
+            {position
+                ? `Reference ΔXYZ: ${position.referenceDelta.map((value) => value.toFixed(3)).join(', ')} · Centerline ΔXYZ: ${position.centerlineDelta.map((value) => value.toFixed(3)).join(', ')} · X/Y: ground position; Z: height.${stale ? ' Last frame (stale).' : ''}`
+                : 'Position add-on: waiting for live normalized position, reference lap and centerline.'}
+        </div>}
         {!!ground?.unplacedCars && <p className="track-vision__hint">{ground.unplacedCars} car / car-pack detection(s) could not be placed on the ground.</p>}
     </section>;
 }

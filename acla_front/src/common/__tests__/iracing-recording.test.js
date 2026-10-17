@@ -373,7 +373,7 @@ describe('iRacing recording integration', () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('writes and reads adapted iRacing rows with recording time, with credits after disk writes', async () => {
+  it('writes and reads adapted iRacing rows unchanged, with credits after disk writes', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'acla-iracing-recording-'));
     const committed = jest.fn();
     const writer = new RecordingWriter({ game: 'iracing', recordingDirectory: directory,
@@ -392,9 +392,7 @@ describe('iRacing recording integration', () => {
       expect(rows[0].Physics_velocity_y).toBeCloseTo(0, 10);
       expect(rows[0].Physics_velocity_z).toBeCloseTo(-2, 10);
       // JSON stores signed zero as 0 (for example, the normalized zero roll).
-      const serializedRows = JSON.parse(JSON.stringify(rows)).map((sample) => ({
-        ...sample, Graphics_analyst_session_time: expect.any(Number),
-      }));
+      const serializedRows = JSON.parse(JSON.stringify(rows));
       rows.forEach((sample) => writer.acceptFrame({ game: 'iracing', sample }));
       expect(committed).not.toHaveBeenCalled();
       await writer.flush();

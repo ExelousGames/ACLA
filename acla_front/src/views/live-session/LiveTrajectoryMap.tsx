@@ -7,11 +7,14 @@ import { getAccTelemetryTrackKey } from 'views/session-shared/visualization/char
 import { Vec3 } from 'views/session-shared/visualization/charts/mapTelemetry';
 import { LiveSessionContext } from './LiveSessionContext';
 import { useLiveTelemetrySelector } from './live-telemetry-store';
-import { getLiveMapCars, getLiveMapMiddleLine } from './live-map-data';
+import { getLiveMapCars, getLiveMapMiddleLine, getLiveMapPosition } from './live-map-data';
+import { loadTopLapReferenceModel, TopLapReferenceEntry } from 'services/topLapReferenceService';
+import { getLiveMapReferenceLine, selectLiveMapReference } from './live-map-reference';
 import 'views/session-shared/visualization/charts/MapVisualization.css';
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 
 const PLAYER_COLOR = '#00e676';
+const REFERENCE_COLOR = '#e879f9';
 const OPPONENT_COLORS = ['#29b6f6', '#ffca28', '#ef5350', '#ab47bc', '#ff8a65', '#26c6da'];
 
 type CameraMode = 'driver' | 'fit';
@@ -25,20 +28,23 @@ const getCarColor = (key: string, isPlayer: boolean): string => {
     return OPPONENT_COLORS[Math.abs(hash) % OPPONENT_COLORS.length];
 };
 
-const getBounds = (points: Vec3[]) => {
-    if (points.length === 0) return { minX: -100, maxX: 100, minZ: -100, maxZ: 100, center: { x: 0, y: 0, z: 0 } };
-    const xs = points.map((point) => point.x);
-    const zs = points.map((point) => point.z);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minZ = Math.min(...zs);
-    const maxZ = Math.max(...zs);
+const getBounds = (points: Vec3[], verticalAxis: 'y' | 'z') => {
+    if (points.length === 0) return { minX: -100, maxX: 100, minVertical: -100, maxVertical: 100, center: { x: 0, y: 0, z: 0 } };
+    let minX = Infinity, maxX = -Infinity, minVertical = Infinity, maxVertical = -Infinity;
+    points.forEach((point) => {
+        minX = Math.min(minX, point.x);
+        maxX = Math.max(maxX, point.x);
+        minVertical = Math.min(minVertical, point[verticalAxis]);
+        maxVertical = Math.max(maxVertical, point[verticalAxis]);
+    });
+    const center = { x: (minX + maxX) / 2, y: 0, z: 0 };
+    center[verticalAxis] = (minVertical + maxVertical) / 2;
     return {
         minX,
         maxX,
-        minZ,
-        maxZ,
-        center: { x: (minX + maxX) / 2, y: 0, z: (minZ + maxZ) / 2 },
+        minVertical,
+        maxVertical,
+        center,
     };
 };
 
@@ -67,6 +73,8 @@ export interface LiveTrajectoryMapHandle extends NamedOperationComponentHandle {
     focusDriver(): void;
     fitTrack(): void;
     getCircuitMap(): CircuitMapDto | null;
+    getReferenceLap(): TopLapReferenceEntry | null;
+    getPositionReferences(position: number): { reference: Vec3; centerline: Vec3 } | null;
     subscribeCircuitMap(listener: () => void): () => void;
 }
 
@@ -97,12 +105,19 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     const [cameraMode, setCameraMode] = useState<CameraMode>('fit');
     const [zoom, setZoom] = useState(1);
     const [flipX, setFlipX] = useState(false);
-    const [flipZ, setFlipZ] = useState(false);
+    const [flipVertical, setFlipVertical] = useState(false);
+    const [referenceModel, setReferenceModel] = useState<TopLapReferenceEntry[]>([]);
+    const [referenceStatus, setReferenceStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+    const [referenceRequest, setReferenceRequest] = useState(0);
     const circuitMapRef = useRef<CircuitMapDto | null>(null);
+    const referenceLapRef = useRef<TopLapReferenceEntry | null>(null);
+    const positionLookupRef = useRef<LiveTrajectoryMapHandle['getPositionReferences']>(() => null);
     const mapListenersRef = useRef(new Set<() => void>());
     const handle = useMemo<LiveTrajectoryMapHandle>(() => ({
         getComponentName: () => name,
         getCircuitMap: () => circuitMapRef.current,
+        getReferenceLap: () => referenceLapRef.current,
+        getPositionReferences: (position) => positionLookupRef.current(position),
         subscribeCircuitMap: (listener) => {
             mapListenersRef.current.add(listener);
             return () => { mapListenersRef.current.delete(listener); };
@@ -122,19 +137,49 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     useRegisterOperationComponentRef(registeredHandleRef);
 
     const game = liveSession.sessionGame ?? telemetryGame;
+    // Stored ACC lines use X/Y for the track plane and Z for altitude.
+    const verticalAxis = game === 'acc' ? 'y' : 'z';
     const track = liveSession.staticData.Static_track ?? currentTelemetry.Static_track;
+    const car = liveSession.staticData.Static_car_model ?? currentTelemetry.Static_car_model;
+    const grip = currentTelemetry.Graphics_track_grip_status;
     const trackKey = game === 'acc' ? getAccTelemetryTrackKey(track) || track?.trim() : track?.trim();
     const mapKey = `${game}:${trackKey}`;
     const circuitMap = mapResult?.key === mapKey ? mapResult.map : null;
     circuitMapRef.current = circuitMap;
     const mapStatus = mapResult?.key === mapKey ? mapResult.status : 'loading';
     const middleLine = useMemo(() => getLiveMapMiddleLine(circuitMap), [circuitMap]);
+    const canLoadReference = Boolean(track && car && (game === 'acc' || game === 'iracing'));
+    const referenceLap = useMemo(() => selectLiveMapReference(referenceModel, game, track, car, grip), [referenceModel, game, track, car, grip]);
+    const referenceLine = useMemo(() => getLiveMapReferenceLine(referenceLap), [referenceLap]);
+    const referencePoints = useMemo(() => referenceLine.map((point, index) => ({
+        ...point, normalized_position: referenceLap!.x[index],
+    })), [referenceLine, referenceLap]);
+    referenceLapRef.current = referenceLap;
+    positionLookupRef.current = (position) => {
+        const reference = getLiveMapPosition(referencePoints, position);
+        const centerline = getLiveMapPosition(middleLine, position);
+        return reference && centerline ? { reference, centerline } : null;
+    };
     const live = telemetryStatus === ACC_STATUS.ACC_LIVE;
-    const cars = useMemo(() => live ? getLiveMapCars(currentTelemetry, middleLine) : [], [currentTelemetry, live, middleLine]);
-    const bounds = useMemo(() => getBounds(middleLine), [middleLine]);
+    const cars = useMemo(() => live ? getLiveMapCars(currentTelemetry, middleLine, game) : [], [currentTelemetry, live, middleLine, game]);
+    const bounds = useMemo(() => getBounds([...middleLine, ...referenceLine], verticalAxis), [middleLine, referenceLine, verticalAxis]);
     const playerPosition = cars.find((car) => car.isPlayer)?.position;
 
     useEffect(() => { mapListenersRef.current.forEach((listener) => listener()); }, [circuitMap]);
+
+    useEffect(() => {
+        if (!canLoadReference) return;
+        let cancelled = false;
+        setReferenceStatus('loading');
+        void loadTopLapReferenceModel().then((model) => {
+            if (cancelled) return;
+            setReferenceModel(model);
+            setReferenceStatus('ready');
+        }).catch(() => {
+            if (!cancelled) setReferenceStatus('error');
+        });
+        return () => { cancelled = true; };
+    }, [canLoadReference, referenceRequest]);
 
     useEffect(() => {
         let cancelled = false;
@@ -170,17 +215,17 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
         const center = cameraMode === 'driver' && playerPosition ? playerPosition : bounds.center;
         const padding = Math.max(28, Math.min(canvasSize.width, canvasSize.height) * 0.08);
         const spanX = Math.max(bounds.maxX - bounds.minX, 1);
-        const spanZ = Math.max(bounds.maxZ - bounds.minZ, 1);
+        const spanVertical = Math.max(bounds.maxVertical - bounds.minVertical, 1);
         const fitScale = Math.min(
             Math.max(1, canvasSize.width - padding * 2) / spanX,
-            Math.max(1, canvasSize.height - padding * 2) / spanZ,
+            Math.max(1, canvasSize.height - padding * 2) / spanVertical,
         );
         const scale = fitScale * (cameraMode === 'driver' ? 2.8 : 1) * zoom;
         return {
             x: canvasSize.width / 2 + (point.x - center.x) * scale * (flipX ? -1 : 1),
-            y: canvasSize.height / 2 + (point.z - center.z) * scale * (flipZ ? -1 : 1) * (game === 'iracing' ? -1 : 1),
+            y: canvasSize.height / 2 + (point[verticalAxis] - center[verticalAxis]) * scale * (flipVertical ? -1 : 1) * (game === 'iracing' ? -1 : 1),
         };
-    }, [bounds, cameraMode, canvasSize, playerPosition, flipX, flipZ, game, zoom]);
+    }, [bounds, cameraMode, canvasSize, playerPosition, flipX, flipVertical, game, verticalAxis, zoom]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -213,6 +258,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
             drawPolyline(context, loop, project, 'rgba(77, 82, 91, 0.7)', 12);
             drawPolyline(context, loop, project, 'rgba(255,255,255,.7)', 2);
         }
+        drawPolyline(context, referenceLine, project, REFERENCE_COLOR, 3);
         cars.forEach((car) => {
             const point = project(car.position);
             context.beginPath();
@@ -223,7 +269,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
             context.fill();
             context.shadowBlur = 0;
         });
-    }, [canvasSize, cars, middleLine, project]);
+    }, [canvasSize, cars, middleLine, project, referenceLine]);
 
     const stateMessage = !trackKey || !game
         ? ['Waiting for circuit', 'Start live telemetry to load the circuit map.']
@@ -246,12 +292,23 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
                         <Badge color={live ? 'green' : 'gray'} variant="soft">{live ? 'Live Telemetry' : 'Telemetry Standby'}</Badge>
                         <Text size="1" className="map-visualization__metric">{circuitMap?.circuit_name || track || 'Live Map'}</Text>
                         <Text size="1" className="map-visualization__metric">{cars.filter((car) => !car.isPlayer).length} opponents</Text>
+                        <Text size="1" style={{ color: referenceLine.length > 1 ? REFERENCE_COLOR : undefined }} role="status">
+                            {!canLoadReference ? 'Reference lap: waiting for car and circuit'
+                                : referenceStatus === 'loading' ? 'Loading reference lap model…'
+                                    : referenceStatus === 'error' ? 'Reference lap unavailable'
+                                        : !referenceLap ? 'No reference lap for this car and circuit'
+                                            : referenceLine.length < 2 ? 'Reference lap has no racing line'
+                                                : `Reference lap · ${referenceLap.car} · grip ${referenceLap.avg_grip_int}`}
+                        </Text>
+                        {canLoadReference && referenceStatus === 'error' ? (
+                            <Button size="1" variant="soft" onClick={() => setReferenceRequest((value) => value + 1)}>Retry reference lap</Button>
+                        ) : null}
                     </Flex>
                 </div>
                 <div className="map-visualization__hud map-visualization__hud--camera">
                     <Flex align="center" gap="2" justify="end" wrap="wrap">
                         <Button size="1" variant={flipX ? 'solid' : 'soft'} onClick={() => setFlipX((value) => !value)}>X</Button>
-                        <Button size="1" variant={flipZ ? 'solid' : 'soft'} onClick={() => setFlipZ((value) => !value)}>Z</Button>
+                        <Button size="1" variant={flipVertical ? 'solid' : 'soft'} onClick={() => setFlipVertical((value) => !value)}>{verticalAxis.toUpperCase()}</Button>
                         <Button size="1" variant={cameraMode === 'driver' ? 'solid' : 'soft'} onClick={() => { setCameraMode('driver'); setZoom(1); }}>Driver</Button>
                         <Button size="1" variant={cameraMode === 'fit' ? 'solid' : 'soft'} onClick={() => { setCameraMode('fit'); setZoom(1); }}>Fit</Button>
                         <Button size="1" variant="soft" onClick={() => setZoom((value) => Math.min(6, value * 1.25))}>+</Button>

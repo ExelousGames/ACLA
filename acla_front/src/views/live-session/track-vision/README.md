@@ -33,7 +33,7 @@ Window selection and capture start/stop controls live in the **Session Recording
 
 ## Backend model contract
 
-`GET /ai-model/ultralytics/track-vision` requires the normal JWT and returns the newest uploaded `segment` model, ordered by `createdAt` and `_id`. It returns 404 when none is available. The response contains:
+Track Vision requests `GET /ai-model/ultralytics?name=track-segments` with the normal JWT, filters for the exact `track-segments` name and `segment` task, and selects the newest upload by its parsed `createdAt` timestamp. Equal timestamps use descending `_id` as a deterministic tie-breaker. Selection does not depend on catalogue order or version text in a name; missing or invalid upload dates are reported as an error. If no matching segmentation model is available, loading reports an error. The selected catalogue entry is converted to:
 
 ```json
 {
@@ -47,7 +47,7 @@ Window selection and capture start/stop controls live in the **Session Recording
 }
 ```
 
-`POST /ai-model/ultralytics` publishes a `.pt` checkpoint with metadata. Array positions in `classNames` are class IDs. The frontend checks the metadata when loading a model and uses the authenticated `GET /ai-model/ultralytics/:id/file` route only if that checkpoint is missing locally. Upload a new segmentation model to make it the version selected on the next model load.
+`POST /ai-model/ultralytics` publishes a `.pt` checkpoint with metadata. Array positions in `classNames` are class IDs. The frontend checks the metadata when loading a model and uses the authenticated `GET /ai-model/ultralytics/:id/file` route only if that checkpoint is missing locally. Upload a new segmentation model named `track-segments` to make it the version selected on the next model load. Cache entries use the selected model ID and checksum, so repeated uploads under the same name remain separate versions.
 
 ## Local storage and inference
 
@@ -73,6 +73,50 @@ Inference requires WebGPU for both models. GPU failures retry after three second
 All frames and inference stay on this device. Captured frames run sequentially at up to 5 FPS. GPU initialization, inference, and disposal share one queue across Track Vision panels.
 
 ## Results
+
+### Position add-on
+
+Track Vision also queries the Ultralytics model catalogue for `track-position`,
+filters for that exact name and the `position` task, and selects the newest upload
+by `createdAt` with the same `_id` tie-breaker. Electron verifies and caches its weights, then exports
+the saved network locally without importing the training workspace. Format/version
+labels are informational: new, arbitrary and missing labels are accepted. Compatibility
+comes from the saved architecture, input resolution, reference-coordinate semantics and
+the executable tensor interface. Changing a version label alone never blocks loading;
+changing the network's required inputs still requires their definition and live values.
+The exporter derives the regression head widths and optional context input from the
+checkpoint weights, rather than selecting an implementation by version. The runtime
+warms up the exported graph to verify its executable inputs and outputs.
+It runs on WebGPU at its saved training resolution, independently of the segmentation
+resolution setting. **Settings → Track models → Position add-on** shows loading,
+availability and retry status. A missing add-on does not block segmentation or depth.
+
+Keep **Live Map** open with its reference lap and centerline loaded. For each captured
+image, Track Vision samples fresh live `Graphics_normalized_car_position` and asks
+that map for the corresponding reference-lap and `samples.middle_line` XYZ points.
+Both lookups interpolate by normalized position, including the start/finish seam.
+Map camera zoom, flips and screen coordinates do not affect these inputs. Track Vision
+does not download reference data again and never passes driver XYZ to the add-on.
+
+The model receives the full letterboxed image and `[reference XYZ, centerline XYZ]`
+as a `[1, 2, 3]` tensor. When its graph requests context, it also receives
+`[normalized_position, one-hot game, one-hot map_name]`, using the published category
+vocabulary in its saved order. Progress and game come from the capture-time telemetry;
+map names use the loaded map's display name or simulator key. Unknown category labels
+produce an all-zero one-hot vector. Two-input checkpoints continue without context.
+The final **Bird's-eye view** step plots reference-lap and centerline markers directly
+on the top-down scene relative to your car at the origin, alongside both signed XYZ
+offsets. It uses the output's X/Y values as supplied, with Z as height, without swapping
+axes for either game. The view fits both markers, including negative offsets, and can
+show them before camera calibration. Stale results are labeled; stopping capture or
+resetting telemetry clears the markers. The two signed XYZ output triples are shown here
+and published as `TrackVisionDetection.position.referenceDelta` and `centerlineDelta`,
+with `references`, `normalizedPosition`, and `inferenceMs`. They remain in source
+coordinates: reference XYZ minus inferred driver XYZ. Missing references, paused or
+stale telemetry omit position results; resetting telemetry or changing the loaded
+map/reference during inference discards the pending position prediction.
+
+### Detector results
 
 `TrackVisionModel.loadBackend(inputSize = 768)` loads segmentation through the desktop cache. `TrackVisionModel.loadBuiltin('depth', inputSize = 518)` loads bundled depth weights. `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time, and ordered class names for segmentation. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. Both models scale the shared 768px letterbox coordinates to their selected input resolution to keep masks aligned. Segmentation boxes are normalized using the actual input size. Call `dispose()` when finished.
 

@@ -231,8 +231,8 @@ describe('recording session controls', () => {
 
         await waitFor(() => expect(runtime.startRecordingSession).toHaveBeenCalledWith('acc'));
         expect(runtime.setRecordingMetadata).toHaveBeenCalledWith(expect.objectContaining({
-            mapName: 'Monza',
-            carName: 'GT3',
+            mapName: '',
+            carName: '',
             gameRecordedFrom: 'acc',
         }));
         view.unmount();
@@ -291,7 +291,7 @@ describe('recording session controls', () => {
         view.unmount(); view.host.remove();
     });
 
-    it('gets the floating bar map from Static_track in the live session context', () => {
+    it('omits the map from the floating recording bar', () => {
         const runtime = createRuntime({
             recordingMetadata: {
                 sessionName: 'Race',
@@ -302,11 +302,80 @@ describe('recording session controls', () => {
         });
         const view = renderRecorder(runtime);
 
-        expect(view.host).toHaveTextContent('MAP');
-        expect(view.host).toHaveTextContent('Monza');
+        expect(view.host).not.toHaveTextContent('MAP');
+        expect(view.host).not.toHaveTextContent('Monza');
         expect(view.host).not.toHaveTextContent('Stale Track');
         view.unmount();
         view.host.remove();
+    });
+
+    it.each([RecordingState.RECORDING, RecordingState.UPLOAD_READY])(
+        'sets and uploads late telemetry names when the upload window opens from %s', async (recordingState) => {
+            mockApiPost.mockResolvedValue({ data: { uploadId: 'upload-1' } });
+            const runtime = createRuntime({
+                staticData: {},
+                streamRecordedTelemetry: jest.fn(async (onChunk) => {
+                    await onChunk([{ Physics_speed_kmh: 100 }]);
+                    return { rowCount: 1, totalBytes: 50 };
+                }),
+            });
+            const view = renderRecorder(runtime);
+            fireEvent.click(screen.getByRole('button', { name: 'Start Recording' }));
+            await waitFor(() => expect(runtime.setRecordingMetadata).toHaveBeenCalledTimes(1));
+            const initialMetadata = runtime.setRecordingMetadata.mock.calls[0][0];
+            expect(initialMetadata).toEqual({
+                sessionName: expect.stringMatching(/^Racing Session /),
+                mapName: '', carName: '', gameRecordedFrom: 'acc',
+            });
+
+            const recordedRuntime = {
+                ...runtime,
+                recordingState,
+                recordingFileKey: 'C:\\recordings\\acc.jsonl',
+                recordingMetadata: initialMetadata,
+                staticData: { Static_track: 'Spa', Static_car_model: 'Ferrari 296 GT3' },
+            };
+            act(() => liveTelemetryStore.restoreCommittedSampleCount(1));
+            view.rerenderRuntime(recordedRuntime);
+            expect(runtime.setRecordingMetadata).toHaveBeenCalledTimes(1);
+            if (recordingState === RecordingState.RECORDING) {
+                act(() => runtime.registerRecorderControl.mock.calls[0][0].openUploadFlow());
+            } else {
+                fireEvent.click(screen.getByRole('button', { name: 'Upload Session' }));
+            }
+
+            const uploadMetadata = {
+                ...initialMetadata, mapName: 'Spa', carName: 'Ferrari 296 GT3',
+            };
+            expect(runtime.setRecordingMetadata).toHaveBeenLastCalledWith(uploadMetadata);
+            view.rerenderRuntime({ ...recordedRuntime, recordingMetadata: uploadMetadata });
+            expect(screen.getByText('Spa')).toBeInTheDocument();
+            expect(screen.getByText('Ferrari 296 GT3')).toBeInTheDocument();
+            const buttons = screen.getAllByRole('button', { name: 'Upload Session' });
+            fireEvent.click(buttons[buttons.length - 1]);
+            await waitFor(() => expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1));
+            expect(mockApiPost).toHaveBeenCalledWith('/racing-session/upload/init', {
+                sessionName: initialMetadata.sessionName,
+                mapName: 'Spa', carName: 'Ferrari 296 GT3', game_recorded_from: 'acc', userId: 'user-1',
+            });
+            view.unmount(); view.host.remove();
+        },
+    );
+
+    it('keeps saved names when opening an upload without live telemetry', () => {
+        const recordingMetadata = {
+            sessionName: 'Saved Race', mapName: 'Spa', carName: 'Ferrari 296 GT3', gameRecordedFrom: 'acc',
+        };
+        const runtime = createRuntime({
+            staticData: {}, recordingMetadata,
+            recordingState: RecordingState.UPLOAD_READY, recordingFileKey: 'session.jsonl',
+        });
+        const view = renderRecorder(runtime, 1);
+        fireEvent.click(screen.getByRole('button', { name: 'Upload Session' }));
+        expect(runtime.setRecordingMetadata).toHaveBeenCalledWith(recordingMetadata);
+        expect(screen.getByText('Spa')).toBeInTheDocument();
+        expect(screen.getByText('Ferrari 296 GT3')).toBeInTheDocument();
+        view.unmount(); view.host.remove();
     });
 
     it('drives coming-soon behavior from the discriminated unsupported result', async () => {

@@ -4,11 +4,17 @@ import { VISION_INPUT_SIZE } from './vision-config';
 export interface BackendVisionModel {
     id: string;
     name: string;
-    task: 'segment';
+    task: 'segment' | 'position';
     classNames: string[];
     sizeBytes: number;
     sha256: string;
     downloadPath: string;
+}
+
+interface CatalogueVisionModel extends Omit<BackendVisionModel, 'id' | 'downloadPath'> {
+    _id: string;
+    createdAt: string;
+    metadata: { imgsz: number; categories?: Record<string, string[]> };
 }
 
 declare global {
@@ -21,24 +27,51 @@ declare global {
 
 const pending = new Map<number, Promise<{ bytes: ArrayBuffer; metadata: BackendVisionModel }>>();
 
+async function findLatestModel(name: string, task: BackendVisionModel['task']) {
+    const { data } = await apiService.get<CatalogueVisionModel[]>('/ai-model/ultralytics', { name });
+    if (!Array.isArray(data)) throw new Error('Invalid Track Vision model catalogue.');
+    const candidates = data.filter((model) => model.name === name && model.task === task)
+        .map((model) => ({ model, uploadedAt: Date.parse(model.createdAt) }));
+    if (candidates.some(({ uploadedAt }) => !Number.isFinite(uploadedAt))) {
+        throw new Error('Invalid Track Vision model upload date.');
+    }
+    // Compare upload timestamps, independent of catalogue order or model-name versions.
+    candidates.sort((a, b) => b.uploadedAt - a.uploadedAt || b.model._id.localeCompare(a.model._id));
+    return candidates[0]?.model;
+}
+
+function toMetadata(model: CatalogueVisionModel): BackendVisionModel {
+    return { id: model._id, name: model.name, task: model.task,
+        classNames: model.classNames, sha256: model.sha256, sizeBytes: model.sizeBytes,
+        downloadPath: `/ai-model/ultralytics/${model._id}/file` };
+}
+
+async function prepare(metadata: BackendVisionModel, inputSize: number) {
+    const cache = window.trackVisionModels;
+    if (!cache) throw new Error('Restart the Electron desktop app to enable local Track Vision models.');
+    if (!/^[a-f\d]{24}$/i.test(metadata.id) || !Array.isArray(metadata.classNames) || !metadata.classNames.length
+        || !metadata.classNames.every((label) => typeof label === 'string' && label.trim())
+        || metadata.downloadPath !== `/ai-model/ultralytics/${metadata.id}/file`) {
+        throw new Error('The backend returned invalid Track Vision model metadata.');
+    }
+    let bytes = await cache.prepare(metadata, undefined, inputSize);
+    if (!bytes) {
+        const weights = await apiService.getBinary(metadata.downloadPath, { timeoutMs: 300000 });
+        bytes = await cache.prepare(metadata, weights, inputSize);
+    }
+    if (!bytes?.byteLength) throw new Error('Track Vision model preparation produced no weights.');
+    return { bytes: new Uint8Array(bytes).buffer, metadata };
+}
+
 async function load(inputSize: number) {
     const cache = window.trackVisionModels;
     if (!cache) throw new Error('Restart the Electron desktop app to enable local Track Vision models.');
     try {
-        const { data: metadata } = await apiService.get<BackendVisionModel>('/ai-model/ultralytics/track-vision');
-        if (!metadata || !/^[a-f\d]{24}$/i.test(metadata.id) || metadata.task !== 'segment'
-            || !Array.isArray(metadata.classNames) || !metadata.classNames.length
-            || !metadata.classNames.every((label) => typeof label === 'string' && label.trim())
-            || metadata.downloadPath !== `/ai-model/ultralytics/${metadata.id}/file`) {
-            throw new Error('The backend returned invalid Track Vision model metadata.');
+        const model = await findLatestModel('track-segments', 'segment');
+        if (!model) {
+            throw new Error('No Track Vision segmentation model has been uploaded');
         }
-        let bytes = await cache.prepare(metadata, undefined, inputSize);
-        if (!bytes) {
-            const weights = await apiService.getBinary(metadata.downloadPath, { timeoutMs: 300000 });
-            bytes = await cache.prepare(metadata, weights, inputSize);
-        }
-        if (!bytes?.byteLength) throw new Error('Track Vision model preparation produced no weights.');
-        return { bytes: new Uint8Array(bytes).buffer, metadata };
+        return await prepare(toMetadata(model), inputSize);
     } catch (error) {
         if (error instanceof Error) throw error;
         const failure = error as { message?: string; data?: { message?: string } };
@@ -53,4 +86,22 @@ export function loadBackendVisionModel(inputSize = VISION_INPUT_SIZE) {
         pending.set(inputSize, operation);
     }
     return operation;
+}
+
+async function loadPosition() {
+    const model = await findLatestModel('track-position', 'position');
+    if (!model) return null;
+    const inputSize = model.metadata?.imgsz;
+    // Format labels are descriptive, not a compatibility allowlist. The exporter
+    // and inference runtime check the actual checkpoint and tensor interface.
+    if (!Number.isInteger(inputSize) || inputSize < 32 || inputSize > 2048 || inputSize % 32 !== 0) {
+        throw new Error('Position add-on metadata.imgsz must be an integer from 32 to 2048, divisible by 32.');
+    }
+    return { ...await prepare(toMetadata(model), inputSize), inputSize, categories: model.metadata?.categories };
+}
+
+let positionPending: ReturnType<typeof loadPosition> | undefined;
+export function loadBackendPositionModel() {
+    if (!positionPending) positionPending = loadPosition().finally(() => { positionPending = undefined; });
+    return positionPending;
 }

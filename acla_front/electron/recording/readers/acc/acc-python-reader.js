@@ -3,6 +3,7 @@
 const { spawn: defaultSpawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
+const { performance } = require('perf_hooks');
 const { validateLiveTelemetryRow } = require('../../../../src/data/live-telemetry-dataset');
 
 function errorMessage(error) {
@@ -23,6 +24,8 @@ class AccPythonReader {
     this.options = Object.freeze({ ...options });
     this.spawn = dependencies.spawn || defaultSpawn;
     this.createInterface = dependencies.createInterface || readline.createInterface;
+    this.now = dependencies.now || (() => performance.now());
+    this.startedAt = null;
     this.child = null;
     this.lines = null;
     this.emit = null;
@@ -39,6 +42,7 @@ class AccPythonReader {
       return Promise.reject(new TypeError('ACC reader start requires an event callback.'));
     }
     this.emit = emit;
+    this.startedAt = this.now();
 
     this.startPromise = new Promise((resolve, reject) => {
       let settled = false;
@@ -104,7 +108,10 @@ class AccPythonReader {
           return;
         }
 
-        const frame = { game: 'acc', sample };
+        const frame = { game: 'acc', sample: {
+          ...sample,
+          Graphics_analyst_session_time: (this.now() - this.startedAt) / 1000,
+        } };
         this.emit?.({ type: 'frame', frame });
         resolveStarted();
       });
