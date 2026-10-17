@@ -31,7 +31,7 @@ class PositionFormatTests(unittest.TestCase):
             checkpoint = Path(folder) / 'weights.pt'
             original.save(checkpoint)
             saved = torch.load(checkpoint, weights_only=True)
-            for label in ('acla-yolo-position-v1', 'acla-yolo-position-v2', 'future-v999', None):
+            for label in ('acla-yolo-position-v1', 'acla-yolo-position-v2', 'acla-yolo-position-v3', 'future-v999', None):
                 with self.subTest(format=label):
                     if label is None:
                         saved.pop('format', None)

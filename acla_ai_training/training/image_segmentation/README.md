@@ -384,8 +384,13 @@ Reference lookup uses linear interpolation, including across the start/finish se
 missing axes and invalid or missing reference curves fail instead of becoming
 zero coordinates.
 
-The model freezes all YOLO parameters and BatchNorm statistics and
-trains an MLP on pooled image features, six reference coordinates, and context.
+The model freezes all YOLO parameters and BatchNorm statistics. The position
+addon pools each of the three feature scales feeding the segmentation head to a
+4×4 grid, preserving coarse image layout instead of globally averaging it.
+The flattened grids pass through a trainable 128-feature linear/ReLU position
+encoder. An MLP combines this encoding with six reference coordinates and context
+to predict the signed offsets. Position training updates only the encoder and
+regression head; the segmentation model and its outputs are unchanged.
 Reference inputs are standardized using training-set statistics. Lap progress
 stays in `[0, 1]`; game and map names use separate one-hot vectors. Sorted category
 vocabularies are built from the prepared dataset and saved in each checkpoint.
@@ -507,7 +512,7 @@ After training, `best.pt` is uploaded to the backend using the same authenticati
 and binary storage as segmentation training. The default name is `track-position`;
 use `--upload-name my-position-model` to change it, or `--no-upload` to train
 offline. The backend must include support for the `position` task. Position
-uploads preserve the combined YOLO weights and regression head, category vocabularies,
+uploads preserve the combined YOLO weights, position encoder and regression head, category vocabularies,
 input image size, output definitions, and validation metrics. They are stored with `task: position`
 and do not enter the Track Vision segmentation model selection.
 
@@ -542,13 +547,15 @@ result = model.predict_position(
 ```
 
 For an already loaded top-lap entry, use `PositionCurve.from_top_lap(entry)`.
-Position checkpoints include the original YOLO weights and the added head and
+Position checkpoints include the original YOLO weights, position encoder and added head and
 load through `YOLOPositionModel.load`; they are not standard Ultralytics-only
 checkpoints. Use `upload-position` to store them; the segmentation `upload`
 command continues to accept segmentation checkpoints only. Uploading stores the
 model for later download; the live API does not yet run position inference.
-The current format is `acla-yolo-position-v2`; v1 position checkpoints must be
-retrained from the segmentation checkpoint to include the new context inputs.
+The current format is `acla-yolo-position-v3`. Position checkpoints without the
+spatial encoder (including earlier v1/v2 models) must be retrained from the
+segmentation checkpoint. Format labels remain informational; loading checks the
+saved context and encoder weights.
 
 Accuracy needs evaluation on synchronized held-out sessions, especially when
 camera view, car, track, or reference conditions change. Compare against a
