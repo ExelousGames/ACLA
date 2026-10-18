@@ -3,13 +3,13 @@ import { BackendVisionModel, loadBackendPositionModel } from './backend-vision-m
 
 jest.mock('services/api.service', () => ({ __esModule: true, default: { get: jest.fn(), getBinary: jest.fn() } }));
 const metadata: BackendVisionModel = {
-    id: 'a'.repeat(24), name: 'track-segments', task: 'segment', classNames: ['curb', 'track'],
+    id: 'a'.repeat(24), name: 'track-segments', task: 'segment', filename: 'best.onnx', classNames: ['curb', 'track'],
     sha256: 'b'.repeat(64), sizeBytes: 4, downloadPath: `/ai-model/ultralytics/${'a'.repeat(24)}/file`,
 };
 const catalogueModel = { ...metadata, _id: metadata.id, createdAt: '2026-10-15T12:00:00Z' };
 const positionMetadata: BackendVisionModel = { ...metadata, name: 'track-position', task: 'position' };
 const positionCatalogueModel = { ...catalogueModel, ...positionMetadata,
-    metadata: { format: 'acla-yolo-position-v1', imgsz: 512 } };
+    metadata: { format: 'acla-yolo-position-v3', artifactFormat: 'onnx', imgsz: 512 } };
 const prepare = jest.fn();
 
 beforeEach(() => {
@@ -23,7 +23,7 @@ it('checks the backend version and reuses local weights without downloading', as
     prepare.mockResolvedValue(new Uint8Array([1, 2]));
     const result = await loadBackendPositionModel();
     expect(apiService.get).toHaveBeenCalledWith('/ai-model/ultralytics', { name: 'track-position' });
-    expect(prepare).toHaveBeenCalledWith(positionMetadata, undefined, 512);
+    expect(prepare).toHaveBeenCalledWith(positionMetadata);
     expect(apiService.getBinary).not.toHaveBeenCalled();
     expect(result!.metadata.classNames).toEqual(['curb', 'track']);
     expect(new Uint8Array(result!.bytes)).toEqual(new Uint8Array([1, 2]));
@@ -33,10 +33,10 @@ it('downloads missing weights from the backend and saves them before inference',
     prepare.mockResolvedValueOnce(null).mockResolvedValueOnce(new Uint8Array([7]));
     await loadBackendPositionModel();
     expect(apiService.getBinary).toHaveBeenCalledWith(metadata.downloadPath, { timeoutMs: 300000 });
-    expect(prepare).toHaveBeenLastCalledWith(positionMetadata, new ArrayBuffer(4), 512);
+    expect(prepare).toHaveBeenLastCalledWith(positionMetadata, new ArrayBuffer(4));
 });
 
-it('coalesces simultaneous panel loads into one download and export', async () => {
+it('coalesces simultaneous panel loads into one ONNX download', async () => {
     prepare.mockResolvedValueOnce(null).mockResolvedValueOnce(new Uint8Array([7]));
     const [first, second] = await Promise.all([loadBackendPositionModel(), loadBackendPositionModel()]);
     expect(first).toBe(second);
@@ -51,13 +51,13 @@ it('rejects invalid model IDs without fetching any weights', async () => {
     expect(apiService.getBinary).not.toHaveBeenCalled();
 });
 
-it('preserves conversion errors and never downloads another model as a fallback', async () => {
-    prepare.mockRejectedValue(new Error('Backend labels do not match the model'));
-    await expect(loadBackendPositionModel()).rejects.toThrow('Backend labels do not match');
+it('preserves cache errors and never downloads another model as a fallback', async () => {
+    prepare.mockRejectedValue(new Error('Unable to read cached model'));
+    await expect(loadBackendPositionModel()).rejects.toThrow('Unable to read cached model');
     expect(apiService.getBinary).not.toHaveBeenCalled();
 });
 
-it('loads the newest position checkpoint at its training resolution using the existing cache', async () => {
+it('loads the newest position ONNX at its training resolution using the existing cache', async () => {
     (apiService.get as jest.Mock).mockResolvedValue({ data: [
         { ...positionCatalogueModel, _id: 'd'.repeat(24), createdAt: '2026-10-14T12:00:00Z', metadata: { format: 'acla-yolo-position-v1', imgsz: 768 } },
         { ...catalogueModel, _id: 'c'.repeat(24) },
@@ -68,14 +68,39 @@ it('loads the newest position checkpoint at its training resolution using the ex
     expect(first).toBe(second);
     expect(first).toMatchObject({ inputSize: 512, metadata: { id: metadata.id, task: 'position' } });
     expect(apiService.get).toHaveBeenCalledWith('/ai-model/ultralytics', { name: 'track-position' });
-    expect(prepare).toHaveBeenCalledWith(positionMetadata, undefined, 512);
+    expect(prepare).toHaveBeenCalledWith(positionMetadata);
     expect(apiService.getBinary).not.toHaveBeenCalled();
 });
 
-it('returns no shared checkpoint when only a separate segmentation model exists', async () => {
+it('returns no shared ONNX when only a separate segmentation model exists', async () => {
     (apiService.get as jest.Mock).mockResolvedValue({ data: [catalogueModel] });
     await expect(loadBackendPositionModel()).resolves.toBeNull();
     expect(prepare).not.toHaveBeenCalled();
+});
+
+it('selects the latest ONNX upload even when a newer legacy checkpoint exists', async () => {
+    const legacy = { ...positionCatalogueModel, _id: 'f'.repeat(24), filename: 'best.pt', createdAt: '2026-10-17T12:00:00Z' };
+    const newer = { ...positionCatalogueModel, _id: 'e'.repeat(24), filename: 'BEST.ONNX', createdAt: '2026-10-16T12:00:00Z' };
+    prepare.mockResolvedValueOnce(null).mockResolvedValueOnce(new Uint8Array([7]));
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [legacy, positionCatalogueModel, newer] });
+    await expect(loadBackendPositionModel()).resolves.toMatchObject({ metadata: { id: newer._id, filename: 'BEST.ONNX' } });
+    expect(apiService.getBinary).toHaveBeenCalledWith(`/ai-model/ultralytics/${newer._id}/file`, { timeoutMs: 300000 });
+});
+
+it.each(['best.pt', 'best.PT', 'best.onnx.pt', undefined])(
+    'never loads a non-ONNX artifact (%s), even if metadata claims ONNX', async (filename) => {
+        (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel, filename }] });
+        await expect(loadBackendPositionModel()).resolves.toBeNull();
+        expect(prepare).not.toHaveBeenCalled();
+        expect(apiService.getBinary).not.toHaveBeenCalled();
+    });
+
+it('retries downloading ONNX after a failed checksum verification', async () => {
+    prepare.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('Track Vision model checksum mismatch. Retry the download.'))
+        .mockResolvedValueOnce(null).mockResolvedValueOnce(new Uint8Array([7]));
+    await expect(loadBackendPositionModel()).rejects.toThrow('checksum mismatch');
+    await expect(loadBackendPositionModel()).resolves.toMatchObject({ metadata: positionMetadata });
+    expect(apiService.getBinary).toHaveBeenCalledTimes(2);
 });
 
 it.each(['acla-yolo-position-v1', 'acla-yolo-position-v2', 'future-position-v999', undefined])(
@@ -85,7 +110,7 @@ it.each(['acla-yolo-position-v1', 'acla-yolo-position-v2', 'future-position-v999
         (apiService.get as jest.Mock).mockResolvedValue({ data: [positionCatalogueModel, newer] });
         prepare.mockResolvedValue(new Uint8Array([9]));
         await expect(loadBackendPositionModel()).resolves.toMatchObject({ inputSize: 768, metadata: { id: newer._id } });
-        expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ id: newer._id }), undefined, 768);
+        expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ id: newer._id }));
     });
 
 it.each([undefined, '768', 0, 518, 4096])('identifies an unusable position input size (%s)', async (imgsz) => {
@@ -116,7 +141,7 @@ describe.each([
             await expect(load()).resolves.toMatchObject({ metadata: { id: newer._id, name: model.name, task: model.task } });
             expect(prepare).toHaveBeenLastCalledWith(expect.objectContaining({
                 id: newer._id, downloadPath: `/ai-model/ultralytics/${newer._id}/file`,
-            }), undefined, expect.any(Number));
+            }));
         }
     });
 

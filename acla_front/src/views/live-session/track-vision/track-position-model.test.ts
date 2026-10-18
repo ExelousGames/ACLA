@@ -38,7 +38,9 @@ it('runs the image and ordered raw reference XYZ on GPU and preserves all six si
     const frame = document.createElement('canvas');
     frame.width = 1280; frame.height = 721;
     const result = await model.detect(frame, 0.5, { reference: { x: 10, y: -20, z: 30 }, centerline: { x: -40, y: 50, z: -60 } });
-    expect(runtime.InferenceSession.create).toHaveBeenCalledWith(expect.any(ArrayBuffer), { executionProviders: ['webgpu'] });
+    const downloaded = await (loadBackendPositionModel as jest.Mock).mock.results[0].value;
+    expect((runtime.InferenceSession.create as jest.Mock).mock.calls[0][0]).toBe(downloaded.bytes);
+    expect(runtime.InferenceSession.create).toHaveBeenCalledWith(downloaded.bytes, { executionProviders: ['webgpu'] });
     expect(session.run).toHaveBeenLastCalledWith({
         images: expect.objectContaining({ dims: [1, 3, 512, 512] }),
         references: expect.objectContaining({ dims: [1, 2, 3], data: new Float32Array([10, -20, 30, -40, 50, -60]) }),
@@ -85,7 +87,7 @@ it('validates the segmentation output against the shared checkpoint labels', asy
 
 it('reports a missing shared model without initializing another session', async () => {
     (loadBackendPositionModel as jest.Mock).mockResolvedValue(null);
-    await expect(TrackPositionModel.load()).rejects.toThrow('No track-position model');
+    await expect(TrackPositionModel.load()).rejects.toThrow('No ONNX track-position model');
     expect(runtime.InferenceSession.create).not.toHaveBeenCalled();
 });
 

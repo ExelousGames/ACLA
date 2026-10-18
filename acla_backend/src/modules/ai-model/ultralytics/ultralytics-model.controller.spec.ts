@@ -175,7 +175,9 @@ describe('Ultralytics model API (backend only)', () => {
       .expect('Content-Type', 'application/octet-stream')
       .expect('Content-Length', String(weights.length));
     expect(download.body).toEqual(weights);
-    expect(download.headers['content-disposition']).toContain('best.pt');
+    expect(download.headers['content-disposition']).toBe(
+      "attachment; filename=\"model.pt\"; filename*=UTF-8''best.pt",
+    );
     expect(gridfs.downloadStream).toHaveBeenCalledWith(
       fileId,
       GRIDFS_BUCKETS.ULTRALYTICS_MODELS,
@@ -216,6 +218,112 @@ describe('Ultralytics model API (backend only)', () => {
     await expect(new StoredModel(savedModel).validate()).resolves.toBeUndefined();
     await expectTemporaryFileRemoved();
   });
+
+  it.each(['best.onnx', 'best.ONNX'])(
+    'preserves the published position ONNX contract and binary download: %s',
+    async (filename) => {
+      const positionMetadata = {
+        name: 'track-position',
+        task: 'position',
+        classNames: ['straight', 'corner'],
+        metadata: {
+          format: 'acla-yolo-position-v3',
+          artifactFormat: 'onnx',
+          trainingRunId: 'run-001',
+          imgsz: 640,
+          categories: { game: ['AC', 'ACC'], map_name: ['Monza'] },
+          outputNames: [
+            'reference_delta_x',
+            'reference_delta_y',
+            'reference_delta_z',
+            'centerline_delta_x',
+            'centerline_delta_y',
+            'centerline_delta_z',
+          ],
+          targetDefinition: 'reference_position - current_position',
+          coordinateUnits: 'source_coordinates',
+          metrics: { val_mae: 0.25 },
+          inference: {
+            schemaVersion: 1,
+            opset: 17,
+            inputs: {
+              images: { dtype: 'float32', shape: [1, 3, 640, 640] },
+              references: { dtype: 'float32', shape: [1, 2, 3] },
+              context: { dtype: 'float32', shape: [1, 4] },
+            },
+            outputs: {
+              deltas: { dtype: 'float32', shape: [1, 2, 3] },
+              predictions: { dtype: 'float32', shape: [1, 38, 8400] },
+              prototypes: { dtype: 'float32', shape: [1, 32, 160, 160] },
+            },
+            image: {
+              colorSpace: 'RGB',
+              layout: 'NCHW',
+              scale: 1 / 255,
+              resize: 'letterbox',
+              paddingValue: 114,
+              sizeRounding: 'ties-to-even',
+              paddingPlacement: 'center-floor',
+            },
+            referenceOrder: ['reference', 'centerline'],
+            coordinateOrder: ['x', 'y', 'z'],
+            contextOrder: ['normalized_position', 'game', 'map_name'],
+            categoryEncoding: 'one-hot',
+          },
+        },
+      };
+      const response = await upload(
+        JSON.stringify(positionMetadata),
+        weights,
+        filename,
+      ).expect(201);
+      expect(response.body).toMatchObject({
+        ...positionMetadata,
+        annotationFormat: 'position',
+        filename,
+        sizeBytes: weights.length,
+        sha256: createHash('sha256').update(weights).digest('hex'),
+      });
+      expect(response.body.metadata).toEqual(positionMetadata.metadata);
+      expect(gridfs.uploadStream).toHaveBeenCalledWith(
+        expect.any(Readable),
+        filename,
+        expect.objectContaining({ annotationFormat: 'position' }),
+        GRIDFS_BUCKETS.ULTRALYTICS_MODELS,
+      );
+      const StoredModel = mongooseModel(
+        'PositionOnnxUploadTest',
+        UltralyticsModelSchema,
+      );
+      const document = new StoredModel(savedModel);
+      await expect(document.validate()).resolves.toBeUndefined();
+      expect(document.toObject().metadata).toEqual(positionMetadata.metadata);
+      await expectTemporaryFileRemoved();
+
+      const sort = jest.fn().mockReturnValue({
+        exec: () => Promise.resolve([savedModel]),
+      });
+      model.find.mockReturnValue({ sort });
+      await request(app.getHttpServer())
+        .get('/ai-model/ultralytics?name=track-position')
+        .set('Authorization', 'Bearer backend-test')
+        .expect(200, [response.body]);
+      await request(app.getHttpServer())
+        .get(`/ai-model/ultralytics/${id}`)
+        .set('Authorization', 'Bearer backend-test')
+        .expect(200, response.body);
+      const download = await request(app.getHttpServer())
+        .get(`/ai-model/ultralytics/${id}/file`)
+        .set('Authorization', 'Bearer backend-test')
+        .expect(200)
+        .expect('Content-Type', 'application/octet-stream')
+        .expect('Content-Length', String(weights.length));
+      expect(download.body).toEqual(weights);
+      expect(download.headers['content-disposition']).toBe(
+        `attachment; filename="model.onnx"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      );
+    },
+  );
 
   it('requires authentication for the Ultralytics list instead of treating the family as a generic ID', async () => {
     await request(app.getHttpServer()).get('/ai-model/ultralytics').expect(401);
@@ -282,16 +390,22 @@ describe('Ultralytics model API (backend only)', () => {
     await expectTemporaryFileRemoved();
   });
 
-  it('rejects empty files before writing to GridFS', async () => {
-    await upload(JSON.stringify(metadata), Buffer.alloc(0)).expect(400);
-    expect(gridfs.uploadStream).not.toHaveBeenCalled();
-    await expectTemporaryFileRemoved();
-  });
+  it.each(['best.pt', 'best.onnx'])(
+    'rejects empty files before writing to GridFS: %s',
+    async (filename) => {
+      await upload(JSON.stringify(metadata), Buffer.alloc(0), filename).expect(400);
+      expect(gridfs.uploadStream).not.toHaveBeenCalled();
+      await expectTemporaryFileRemoved();
+    },
+  );
 
-  it('rejects unsupported file extensions', async () => {
-    await upload(JSON.stringify(metadata), weights, 'labels.json').expect(400);
-    expect(gridfs.uploadStream).not.toHaveBeenCalled();
-  });
+  it.each(['labels.json', 'best.onnx.json', 'best.onnx.exe'])(
+    'rejects unsupported file extensions: %s',
+    async (filename) => {
+      await upload(JSON.stringify(metadata), weights, filename).expect(400);
+      expect(gridfs.uploadStream).not.toHaveBeenCalled();
+    },
+  );
 
   it('deletes GridFS weights when saving the metadata fails', async () => {
     model.create.mockRejectedValueOnce(new Error('Database write failed'));

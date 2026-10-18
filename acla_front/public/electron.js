@@ -52,7 +52,7 @@ const devMode = app.isPackaged ? false : isDev;
 let mainWindow;
 const configureScreenCapture = registerScreenCapture({ ipcMain, desktopCapturer, getMainWindow: () => mainWindow });
 registerSessionVideo({ ipcMain, getMainWindow: () => mainWindow, getRecordingDirectory, shell });
-registerTrackVisionModels({ app, ipcMain, getMainWindow: () => mainWindow, getPythonExecutable });
+registerTrackVisionModels({ app, ipcMain, getMainWindow: () => mainWindow });
 let isAppQuitting = false;
 let recordingManager = null;
 let latestDetectedGame = null;

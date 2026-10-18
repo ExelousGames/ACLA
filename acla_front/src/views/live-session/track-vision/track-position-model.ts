@@ -29,7 +29,7 @@ export class TrackPositionModel {
 
     static async load(): Promise<TrackPositionModel> {
         const loaded = await loadBackendPositionModel();
-        if (!loaded) throw new Error('No track-position model has been uploaded for segmentation and position.');
+        if (!loaded) throw new Error('No ONNX track-position model has been uploaded for segmentation and position.');
         if (!('gpu' in navigator) || !navigator.gpu) throw new GpuInferenceError('GPU acceleration is unavailable for Track Vision.');
         return runWithVisionGpuQueue(async () => {
             const runtime = await import('onnxruntime-web/webgpu');

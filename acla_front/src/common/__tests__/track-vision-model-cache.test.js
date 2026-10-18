@@ -6,18 +6,17 @@ const { createTrackVisionModelCache, registerTrackVisionModels } = require('../.
 
 const weights = Buffer.from([1, 2, 3, 4]);
 const model = {
-    id: 'a'.repeat(24), name: 'track', task: 'segment', classNames: ['curb', 'track'],
+    id: 'a'.repeat(24), name: 'track-position', task: 'position', filename: 'best.onnx', classNames: ['curb', 'track'],
     sha256: createHash('sha256').update(weights).digest('hex'), sizeBytes: weights.length,
 };
 let directory;
-let exporter;
-const makeCache = () => createTrackVisionModelCache({ directory: () => directory, exportModel: exporter });
+const makeCache = () => createTrackVisionModelCache({ directory: () => directory });
 const folder = () => path.join(directory, `${model.id}-${model.sha256}`);
 
 beforeEach(async () => {
     directory = await fs.mkdtemp(path.join(os.tmpdir(), 'acla-vision-cache-test-'));
-    exporter = jest.fn(async (_filename, _labels, _inputSize, output) => fs.writeFile(output, Buffer.from([5, 6])));
 });
+
 afterEach(async () => {
     if (path.dirname(directory) !== path.resolve(os.tmpdir()) || !path.basename(directory).startsWith('acla-vision-cache-test-')) {
         throw new Error('Unexpected cache test directory');
@@ -25,116 +24,103 @@ afterEach(async () => {
     await fs.rm(directory, { recursive: true, force: true });
 });
 
-it('returns a cache miss without exporting or creating weights', async () => {
+it('returns a cache miss without creating weights', async () => {
     await expect(makeCache().prepare(model)).resolves.toBeNull();
-    expect(exporter).not.toHaveBeenCalled();
-});
-
-it('saves verified weights and labels and reuses ONNX across cache instances', async () => {
-    await expect(makeCache().prepare(model, weights)).resolves.toEqual(Buffer.from([5, 6]));
-    expect(await fs.readFile(path.join(folder(), 'weights.pt'))).toEqual(weights);
-    expect(exporter).toHaveBeenCalledWith(path.join(folder(), 'weights.pt'), ['curb', 'track'], 768, path.join(folder(), 'weights-768.onnx'), 'segment');
-    await expect(makeCache().prepare(model)).resolves.toEqual(Buffer.from([5, 6]));
-    expect(exporter).toHaveBeenCalledTimes(1);
-});
-
-it('rejects truncated or mismatched downloads before exporting', async () => {
-    await expect(makeCache().prepare(model, Buffer.from([4, 3, 2, 1]))).rejects.toThrow('checksum mismatch');
-    await expect(makeCache().prepare(model, Buffer.from([1]))).rejects.toThrow('checksum mismatch');
-    expect(exporter).not.toHaveBeenCalled();
     expect(await fs.readdir(directory)).toEqual([]);
 });
 
-it('rebuilds damaged ONNX from cached backend weights', async () => {
+it('saves the verified ONNX download unchanged and reuses it across cache instances', async () => {
+    await expect(makeCache().prepare(model, weights)).resolves.toEqual(weights);
+    expect(await fs.readFile(path.join(folder(), 'weights.onnx'))).toEqual(weights);
+    expect(await fs.readdir(folder())).toEqual(['weights.onnx']);
+    await expect(makeCache().prepare(model)).resolves.toEqual(weights);
+});
+
+it.each([
+    ['ArrayBuffer', () => Uint8Array.from(weights).buffer],
+    ['typed array slice', () => Uint8Array.from([0, ...weights, 0]).subarray(1, 5)],
+    ['DataView', () => new DataView(Uint8Array.from([0, ...weights, 0]).buffer, 1, 4)],
+])('preserves the bytes of a %s download', async (_name, download) => {
+    await expect(makeCache().prepare(model, download())).resolves.toEqual(weights);
+});
+
+it.each([Buffer.from([4, 3, 2, 1]), Buffer.from([1]), Buffer.alloc(0)])(
+    'rejects corrupted or truncated downloads before saving', async (download) => {
+        await expect(makeCache().prepare(model, download)).rejects.toThrow('checksum mismatch');
+        expect(await fs.readdir(directory)).toEqual([]);
+    });
+
+it('rejects non-binary downloads', async () => {
+    await expect(makeCache().prepare(model, 'not binary')).rejects.toThrow('Invalid Track Vision model download');
+    expect(await fs.readdir(directory)).toEqual([]);
+});
+
+it.each([Buffer.from([4, 3, 2, 1]), Buffer.from([1]), Buffer.alloc(0)])(
+    'requests a new download when cached ONNX fails checksum or size verification', async (corrupt) => {
+        const cache = makeCache();
+        await cache.prepare(model, weights);
+        await fs.writeFile(path.join(folder(), 'weights.onnx'), corrupt);
+        await expect(cache.prepare(model)).resolves.toBeNull();
+        await expect(cache.prepare(model, weights)).resolves.toEqual(weights);
+        await expect(makeCache().prepare(model)).resolves.toEqual(weights);
+    });
+
+it('ignores legacy checkpoints and locally converted ONNX caches', async () => {
+    await fs.mkdir(folder(), { recursive: true });
+    await fs.writeFile(path.join(folder(), 'weights.pt'), weights);
+    await fs.writeFile(path.join(folder(), 'weights-512.onnx'), weights);
+    await fs.writeFile(path.join(folder(), 'manifest-512.json'), JSON.stringify({ version: 4, model, inputSize: 512,
+        onnxSha256: model.sha256 }));
+    await expect(makeCache().prepare(model)).resolves.toBeNull();
+    await expect(makeCache().prepare(model, weights)).resolves.toEqual(weights);
+    expect(await fs.readFile(path.join(folder(), 'weights.onnx'))).toEqual(weights);
+});
+
+it('serializes simultaneous cache misses and reuses the completed download', async () => {
+    const cache = makeCache();
+    const write = jest.spyOn(fs, 'writeFile');
+    try {
+        await expect(Promise.all([cache.prepare(model, weights), cache.prepare(model, weights), cache.prepare(model)]))
+            .resolves.toEqual([weights, weights, weights]);
+        expect(write).toHaveBeenCalledTimes(1);
+    } finally { write.mockRestore(); }
+});
+
+it('allows a queued valid download after a failed verification', async () => {
+    const cache = makeCache();
+    const failed = expect(cache.prepare(model, Buffer.from([9]))).rejects.toThrow('checksum mismatch');
+    await expect(cache.prepare(model, weights)).resolves.toEqual(weights);
+    await failed;
+});
+
+it('keeps backend versions separate by both model ID and checksum', async () => {
     const cache = makeCache();
     await cache.prepare(model, weights);
-    await fs.writeFile(path.join(folder(), 'weights-768.onnx'), 'corrupt');
-    await expect(cache.prepare(model)).resolves.toEqual(Buffer.from([5, 6]));
-    expect(exporter).toHaveBeenCalledTimes(2);
-});
-
-it('re-exports outdated ONNX from cached checkpoints without another download', async () => {
-    await makeCache().prepare(model, weights);
-    const manifestPath = path.join(folder(), 'manifest-768.json');
-    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-    await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, version: 1 }));
-    exporter.mockImplementationOnce(async (_filename, _labels, _inputSize, output) => fs.writeFile(output, Buffer.from([7, 8])));
-    await expect(makeCache().prepare(model)).resolves.toEqual(Buffer.from([7, 8]));
-    expect(exporter).toHaveBeenCalledTimes(2);
-    await expect(makeCache().prepare(model)).resolves.toEqual(Buffer.from([7, 8]));
-    expect(exporter).toHaveBeenCalledTimes(2);
-});
-
-it('retains downloaded weights after a failed export so retry does not download again', async () => {
-    exporter.mockRejectedValueOnce(new Error('Export failed'));
-    const cache = makeCache();
-    await expect(cache.prepare(model, weights)).rejects.toThrow('Export failed');
-    await expect(cache.prepare(model)).resolves.toEqual(Buffer.from([5, 6]));
-    expect(exporter).toHaveBeenCalledTimes(2);
-});
-
-it('serializes concurrent prepares and exports one copy', async () => {
-    const cache = makeCache();
-    await Promise.all([cache.prepare(model, weights), cache.prepare(model, weights)]);
-    expect(exporter).toHaveBeenCalledTimes(1);
-});
-
-it('treats a new backend version as a cache miss and rebuilds changed label metadata', async () => {
-    const cache = makeCache();
-    await cache.prepare(model, weights);
+    await expect(cache.prepare({ ...model, id: 'b'.repeat(24) })).resolves.toBeNull();
     await expect(cache.prepare({ ...model, sha256: 'b'.repeat(64) })).resolves.toBeNull();
-    await cache.prepare({ ...model, classNames: ['track', 'curb'] });
-    expect(exporter).toHaveBeenLastCalledWith(path.join(folder(), 'weights.pt'), ['track', 'curb'], 768, path.join(folder(), 'weights-768.onnx'), 'segment');
-    expect(exporter).toHaveBeenCalledTimes(2);
+    await expect(cache.prepare(model)).resolves.toEqual(weights);
 });
 
-it('rejects path traversal and non-main renderer requests', async () => {
-    await expect(makeCache().prepare({ ...model, id: '../outside' }, weights)).rejects.toThrow('Invalid Track Vision');
+it.each([
+    { filename: 'best.pt' }, { filename: 'best.onnx.pt' }, { filename: undefined }, { task: 'segment' },
+    { id: '../outside' }, { sha256: 'invalid' }, { sizeBytes: 0 }, { sizeBytes: 512 * 1024 * 1024 + 1 },
+    { classNames: [] }, { classNames: ['track', 'track'] },
+])('rejects unsupported artifacts and invalid metadata (%j)', async (invalid) => {
+    await expect(makeCache().prepare({ ...model, ...invalid }, weights)).rejects.toThrow('Invalid Track Vision model metadata');
+    expect(await fs.readdir(directory)).toEqual([]);
+});
+
+it('accepts case-insensitive ONNX filenames', async () => {
+    await expect(makeCache().prepare({ ...model, filename: 'BEST.ONNX' }, weights)).resolves.toEqual(weights);
+});
+
+it('only serves ONNX models to the main workspace frame', async () => {
     const ipcMain = { handle: jest.fn() };
-    registerTrackVisionModels({ app: {}, ipcMain, getMainWindow: () => null });
+    const mainWindow = { isDestroyed: () => false, webContents: { mainFrame: {} } };
+    registerTrackVisionModels({ app: { getPath: () => directory }, ipcMain, getMainWindow: () => mainWindow });
     const handler = ipcMain.handle.mock.calls[0][1];
     expect(() => handler({}, model, weights)).toThrow('main workspace');
-    expect(exporter).not.toHaveBeenCalled();
-});
-
-it('caches each resolution separately while sharing the verified checkpoint', async () => {
-    exporter.mockImplementation(async (_filename, _labels, inputSize, output) => fs.writeFile(output, Buffer.from(String(inputSize))));
-    const cache = makeCache();
-    await cache.prepare(model, weights, 768);
-    const [low, medium] = await Promise.all([cache.prepare(model, undefined, 384), cache.prepare(model, undefined, 640)]);
-    expect(low.toString()).toBe('384');
-    expect(medium.toString()).toBe('640');
-    for (const inputSize of [384, 640, 768]) {
-        expect((await makeCache().prepare(model, undefined, inputSize)).toString()).toBe(String(inputSize));
-    }
-    expect(exporter).toHaveBeenCalledTimes(3);
-    expect(await fs.readFile(path.join(folder(), 'weights.pt'))).toEqual(weights);
-});
-
-it.each([0, 518, 1024, '../outside'])('rejects unsupported input resolution %s before writing files', async (inputSize) => {
-    await expect(makeCache().prepare(model, weights, inputSize)).rejects.toThrow('input resolution');
-    expect(exporter).not.toHaveBeenCalled();
-    expect(await fs.readdir(directory)).toEqual([]);
-});
-
-it('exports position checkpoints with their own task and fixed training resolution', async () => {
-    const addon = { ...model, task: 'position' };
-    await makeCache().prepare(addon, weights, 512);
-    expect(exporter).toHaveBeenCalledWith(path.join(folder(), 'weights.pt'), model.classNames, 512,
-        path.join(folder(), 'weights-512.onnx'), 'position');
-    await expect(makeCache().prepare(addon, undefined, 512)).resolves.toEqual(Buffer.from([5, 6]));
-    expect(exporter).toHaveBeenCalledTimes(1);
-    await expect(makeCache().prepare(addon, undefined, 518)).rejects.toThrow('input resolution');
-});
-
-it('re-exports old position-only graphs from cached weights without downloading', async () => {
-    const shared = { ...model, task: 'position', name: 'track-position' };
-    await makeCache().prepare(shared, weights, 512);
-    const manifestPath = path.join(folder(), 'manifest-512.json');
-    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-    await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, version: 3 }));
-    await expect(makeCache().prepare(shared, undefined, 512)).resolves.toEqual(Buffer.from([5, 6]));
-    expect(exporter).toHaveBeenCalledTimes(2);
-    await expect(makeCache().prepare(shared, undefined, 512)).resolves.toEqual(Buffer.from([5, 6]));
-    expect(exporter).toHaveBeenCalledTimes(2);
+    expect(() => handler({ sender: mainWindow.webContents, senderFrame: {} }, model, weights)).toThrow('main workspace');
+    await expect(handler({ sender: mainWindow.webContents, senderFrame: mainWindow.webContents.mainFrame }, model, weights))
+        .resolves.toEqual(weights);
 });
