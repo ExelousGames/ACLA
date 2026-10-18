@@ -1,7 +1,7 @@
 # Ultralytics model storage
 
-Backend storage for Ultralytics `.pt` weights trained with LabelMe annotations
-and ACLA YOLO position-regression checkpoints.
+Backend storage for Ultralytics `.pt` weights trained with LabelMe annotations,
+and ACLA YOLO position-regression `.pt` checkpoints and `.onnx` exports.
 `UltralyticsModelModule` stores model metadata in MongoDB's `ultralytics_models`
 collection and the unchanged binary file in the `ultralytics_models` GridFS bucket
 (`ultralytics_models.files` / `ultralytics_models.chunks`). Its endpoints live
@@ -26,7 +26,7 @@ All endpoints require `Authorization: Bearer <backend JWT>`.
 
 Send `multipart/form-data` with exactly these fields:
 
-- `file`: a non-empty `.pt` file, up to 512 MiB.
+- `file`: a non-empty `.pt` or `.onnx` file, up to 512 MiB (extensions are case-insensitive).
 - `metadata`: a JSON-encoded object, up to 1 MiB, as shown below.
 
 ```json
@@ -52,9 +52,20 @@ metrics, dataset details, and run identifiers supplied by the uploader.
 
 For `position`, `classNames` describes the embedded segmentation model; regression
 output names, target definition, coordinate units, and validation metrics belong
-in `metadata`. Position checkpoints use `metadata.format: "acla-yolo-position-v2"`
-and include game/map-name vocabularies in `metadata.categories`. These checkpoints
-load with `YOLOPositionModel.load`, not the standard Ultralytics loader.
+in `metadata`. Current position checkpoints use `metadata.format: "acla-yolo-position-v3"`
+and include game/map-name vocabularies in `metadata.categories`. Python `.pt`
+checkpoints load with `YOLOPositionModel.load`, not the standard Ultralytics loader.
+The `train_position.py` pipeline publishes `best.onnx` with `task: "position"`
+and `metadata.artifactFormat: "onnx"`. The backend preserves `metadata.inference`
+unchanged, including tensor names/shapes, preprocessing, and category/context order.
+Clients can load the downloaded ONNX bytes directly into ONNX Runtime using that
+contract: inputs `images`, `references`, and `context`; outputs `deltas`,
+`predictions`, and `prototypes`.
+
+The trainer exports `best.onnx.json` even with `--no-upload`. That sidecar contains
+the upload metadata except for the user-selected top-level `name`. Publication
+reads the equivalent manifest embedded in the ONNX file and adds `name` before
+sending it in the `metadata` field; no separate JSON file upload is needed.
 The `/ai-model/ultralytics/track-vision` selector only returns `segment` models.
 
 Example request (shell syntax; save the JSON above as `model-metadata.json`):
@@ -65,6 +76,10 @@ curl -X POST http://localhost:7001/ai-model/ultralytics \
   -F "file=@best.pt" \
   -F "metadata=<model-metadata.json"
 ```
+
+For a manual position upload, add `"name": "track-position"` to the top-level
+object from `best.onnx.json`, save it as `model-metadata.json`, and use
+`-F "file=@best.onnx"` in the request above.
 
 The response includes `_id`, the supplied metadata, `framework: "ultralytics"`,
 `annotationFormat` (`"position"` for position tasks, otherwise `"labelme"`),
@@ -78,12 +93,15 @@ SHA-256 checksum. Temporary files are removed after success or failure. If savin
 the metadata fails, the uploaded GridFS file is removed. The GridFS write phase
 has a 60-second timeout and aborts incomplete writes. Downloads stream binary
 bytes rather than JSON or base64.
+Download headers retain the uploaded filename and use a matching `.pt` or `.onnx`
+extension in the fallback filename. The list and individual metadata routes
+return the complete inference metadata alongside the filename and SHA-256 checksum.
 
 Invalid metadata, missing/empty files, unsupported extensions, and invalid IDs
 return 400. Oversized files return 413. Missing records or files return 404.
 The backend stores the artifact as supplied; it does not execute or validate the
-checkpoint contents. Uploading from the training service and runtime model
-selection remain separate integration work.
+checkpoint contents. Runtime model selection and inference remain the client's
+responsibility.
 
 ## Backend verification
 

@@ -44,9 +44,11 @@ export class UltralyticsModelController {
         fieldSize: 1024 * 1024,
       },
       fileFilter: (_req, file, callback) => {
-        if (extname(file.originalname).toLowerCase() !== '.pt') {
+        if (!['.pt', '.onnx'].includes(extname(file.originalname).toLowerCase())) {
           return callback(
-            new BadRequestException('Model file must use the .pt extension'),
+            new BadRequestException(
+              'Model file must use the .pt or .onnx extension',
+            ),
             false,
           );
         }
@@ -98,7 +100,7 @@ export class UltralyticsModelController {
     const { model, stream } = await this.ultralyticsModelService.download(id);
     return new StreamableFile(stream, {
       type: 'application/octet-stream',
-      disposition: `attachment; filename="model.pt"; filename*=UTF-8''${encodeURIComponent(model.filename)}`,
+      disposition: `attachment; filename="model${extname(model.filename).toLowerCase()}"; filename*=UTF-8''${encodeURIComponent(model.filename)}`,
       length: model.sizeBytes,
     });
   }
