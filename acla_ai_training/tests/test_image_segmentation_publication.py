@@ -159,6 +159,8 @@ def test_training_commands_upload_by_default_and_allow_offline_runs(trained, mon
     args = [command, "--upload-name", "race-boundaries"]
     if command == "train":
         args += ["--data", str(trained.data)]
+    else:
+        args += [str(trained.data.parent)]
 
     assert main(args) == 0
     upload.assert_awaited_once_with(trained.checkpoint, name="race-boundaries")

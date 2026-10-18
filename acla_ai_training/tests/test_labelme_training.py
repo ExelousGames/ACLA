@@ -219,13 +219,32 @@ def test_training_uses_dataset_from_saved_assignments(samples, monkeypatch, caps
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda *a, **kw: model))
 
     assert main([
-        "train-labelme", "--no-upload", "--split-file", str(split_file), "--epochs", "1",
+        "train-labelme", str(source), "--no-upload", "--split-file", str(split_file), "--epochs", "1",
     ]) == 0
 
     options = model.train.call_args.kwargs
     assert options["epochs"] == 1 and options["device"] == "0"
     _assert_export(Path(options["data"]), source, manifest)
     assert capsys.readouterr().out.splitlines().count(header) == 2
+
+
+@pytest.mark.parametrize("saved_split", [False, True])
+def test_launcher_requires_source_even_with_saved_split(samples, tmp_path, saved_split):
+    source, split_file = samples
+    if saved_split:
+        prepare_training_dataset(source, split_file=split_file)
+    previous_split = split_file.read_bytes() if saved_split else None
+    exports = list(split_file.parent.glob("dataset_*"))
+
+    result = subprocess.run([
+        sys.executable, str(WORKSPACE_DIR / "scripts/train_labelme.py"),
+        "--split-file", str(split_file), "--prepare-only",
+    ], cwd=tmp_path, capture_output=True, text=True)
+
+    assert result.returncode == 2, result.stderr
+    assert "the following arguments are required: images" in result.stderr
+    assert (split_file.read_bytes() if split_file.exists() else None) == previous_split
+    assert list(split_file.parent.glob("dataset_*")) == exports
 
 
 def test_launcher_prepares_from_any_working_directory(samples, tmp_path):

@@ -22,6 +22,8 @@ def test_default_models_and_runs_stay_in_storage_from_any_cwd(tmp_path, monkeypa
     args = [command, "--no-upload"]
     if command == "train":
         args += ["--data", str(data)]
+    elif command == "train-labelme":
+        args += [str(tmp_path)]
 
     if command == "train_model":
         trainer.train_model(data, upload=False)

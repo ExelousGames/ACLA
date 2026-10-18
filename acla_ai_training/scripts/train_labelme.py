@@ -1,7 +1,7 @@
 """Split nested Labelme annotations, save the sample lists, and start training.
 
-Usage: python scripts/train_labelme.py [path/to/annotations] [--device 0]
-Defaults to storage/annotation_images; run --help for split and training options.
+Usage: python scripts/train_labelme.py path/to/annotations [--device 0]
+An explicit annotation root is required; run --help for split and training options.
 """
 
 import sys

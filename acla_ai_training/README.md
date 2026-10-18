@@ -43,9 +43,9 @@ recreating the training container, launch the editor with
 [Labelme in your browser](http://localhost:6080/vnc.html?autoconnect=true&resize=remote).
 The launcher starts a virtual desktop when no display is available; Ctrl+C stops
 it. Images and annotations under `/app/storage` persist in the host workspace.
-Start training with
-`docker exec -it acla_ai_training_c python3 /app/scripts/train_labelme.py`.
-It recursively reads `storage/annotation_images`, mixes annotated images from all
+Start training with an explicit annotation directory, for example
+`docker exec -it acla_ai_training_c python3 /app/scripts/train_labelme.py /app/storage/annotation_images`.
+It recursively reads the selected directory, mixes annotated images from all
 folders into an 80/20 training/validation split, and saves reusable sample lists in
 `storage/image_segmentation/split.json`. Pass `--prepare-only` to export without
 training, `--device 0` to use a configured GPU, or `--rebuild-split` to include new

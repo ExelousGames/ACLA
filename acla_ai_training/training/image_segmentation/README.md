@@ -209,20 +209,21 @@ Keep the original images alongside their JSON files (image bytes are not embedde
 
 ## Split and start training
 
-Run the companion launcher in the training container:
+Run the companion launcher with an explicit annotation directory in the training container:
 
 ```bash
-docker exec -it acla_ai_training_c python3 /app/scripts/train_labelme.py
+docker exec -it acla_ai_training_c python3 /app/scripts/train_labelme.py /app/storage/annotation_images
 ```
 
 Or run it locally from `acla_ai_training/`:
 
 ```bash
-python scripts/train_labelme.py
+python scripts/train_labelme.py storage/annotation_images
 ```
 
-On the first run it recursively finds Labelme JSON annotations under
-`storage/annotation_images`, shuffles all images together with seed 42, and assigns
+The annotation directory is required on every run, including when reusing a saved
+split. On the first run it recursively finds Labelme JSON annotations under the
+selected directory, shuffles all images together with seed 42, and assigns
 80% to training and 20% to validation. Folder boundaries do not affect the split.
 Only annotated images are included; metadata JSON and images without annotations
 are skipped. An explicitly saved annotation with no shapes is a background sample.
@@ -246,7 +247,8 @@ python scripts/train_labelme.py storage/my_annotations \
 
 Use `--rebuild-split` to replace the saved lists with a new split of all current
 annotations, including newly annotated images. This can change previous sample
-assignments. If the source is omitted, the saved source folder is reused.
+assignments. The selected directory must match the saved source unless you use
+`--rebuild-split` or choose another `--split-file`.
 `--val-fraction` and `--seed` apply only when creating or rebuilding a split.
 Use `--prepare-only` to save the lists and export the dataset without training.
 

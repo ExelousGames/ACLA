@@ -72,8 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         "train-labelme", parents=[train], help="Split nested Labelme annotations and train.",
     )
     automatic.add_argument(
-        "images", type=Path, nargs="?",
-        help="Annotation root (default: saved source or storage/annotation_images).",
+        "images", type=Path,
+        help="Required annotation root; recursively read Labelme annotations from this directory.",
     )
     automatic.add_argument(
         "--split-file", type=Path, default=WORKSPACE_DIR / "storage/image_segmentation/split.json",
