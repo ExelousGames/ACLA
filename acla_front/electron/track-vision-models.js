@@ -7,7 +7,7 @@ const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 function validateModel(model) {
   if (!model || typeof model.id !== 'string' || typeof model.sha256 !== 'string'
     || !/^[a-f\d]{24}$/i.test(model.id) || !/^[a-f\d]{64}$/i.test(model.sha256)
-    || model.task !== 'position' || typeof model.filename !== 'string' || !/\.onnx$/i.test(model.filename)
+    || !['segment', 'position'].includes(model.task) || typeof model.filename !== 'string' || !/\.onnx$/i.test(model.filename)
     || !Number.isSafeInteger(model.sizeBytes) || model.sizeBytes <= 0
     || model.sizeBytes > 512 * 1024 * 1024 || !Array.isArray(model.classNames) || !model.classNames.length
     || !model.classNames.every((label) => typeof label === 'string' && label.trim())

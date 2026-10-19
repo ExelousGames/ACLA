@@ -29,11 +29,12 @@ it('returns a cache miss without creating weights', async () => {
     expect(await fs.readdir(directory)).toEqual([]);
 });
 
-it('saves the verified ONNX download unchanged and reuses it across cache instances', async () => {
-    await expect(makeCache().prepare(model, weights)).resolves.toEqual(weights);
+it.each(['segment', 'position'])('saves and reuses the verified %s ONNX download unchanged', async (task) => {
+    const metadata = { ...model, task };
+    await expect(makeCache().prepare(metadata, weights)).resolves.toEqual(weights);
     expect(await fs.readFile(path.join(folder(), 'weights.onnx'))).toEqual(weights);
     expect(await fs.readdir(folder())).toEqual(['weights.onnx']);
-    await expect(makeCache().prepare(model)).resolves.toEqual(weights);
+    await expect(makeCache().prepare(metadata)).resolves.toEqual(weights);
 });
 
 it.each([
@@ -102,7 +103,7 @@ it('keeps backend versions separate by both model ID and checksum', async () => 
 });
 
 it.each([
-    { filename: 'best.pt' }, { filename: 'best.onnx.pt' }, { filename: undefined }, { task: 'segment' },
+    { filename: 'best.pt' }, { filename: 'best.onnx.pt' }, { filename: undefined }, { task: 'detect' },
     { id: '../outside' }, { sha256: 'invalid' }, { sizeBytes: 0 }, { sizeBytes: 512 * 1024 * 1024 + 1 },
     { classNames: [] }, { classNames: ['track', 'track'] },
 ])('rejects unsupported artifacts and invalid metadata (%j)', async (invalid) => {

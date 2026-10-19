@@ -18,7 +18,7 @@ jest.mock('./vision-overlay', () => ({ drawVisionOverlay: jest.fn() }));
 jest.mock('./track-position-model', () => ({ TrackPositionModel: { load: jest.fn() } }));
 
 jest.mock('./track-vision-model', () => ({
-    ...jest.requireActual('./track-vision-model'), TrackVisionModel: { loadBuiltin: jest.fn() },
+    ...jest.requireActual('./track-vision-model'), TrackVisionModel: { loadBuiltin: jest.fn(), loadBackend: jest.fn() },
 }));
 
 const selectStep = (name: string) => fireEvent.click(screen.getByRole('tab', { name }));
@@ -53,6 +53,7 @@ let track: { stop: jest.Mock; onended: (() => void) | null };
 let stream: MediaStream;
 let getDisplayMedia: jest.Mock;
 let depthModel: { detect: jest.Mock; dispose: jest.Mock; executionProvider: string; name: string; classNames: string[]; inputSize: number };
+let positionModel: { detect: jest.Mock; dispose: jest.Mock; name: string; inputSize: number };
 let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu'; name: string; classNames: string[]; inputSize: number };
 const detection = { task: 'segment' as const, width: 2, height: 2, instances: [{
     classId: 0, confidence: 0.9, box: [0, 0, 1, 1] as [number, number, number, number], mask: new Uint8Array(4).fill(1),
@@ -75,8 +76,10 @@ beforeEach(() => {
         if (!contexts.has(this)) contexts.set(this, { canvas: this, drawImage: jest.fn(), clearRect: jest.fn(), save: jest.fn(), restore: jest.fn(), fillRect: jest.fn(), fillText: jest.fn(), measureText: jest.fn(() => ({ width: 80 })), getImageData: jest.fn((_x, _y, width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), createImageData: jest.fn((width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), putImageData: jest.fn() } as any);
         return contexts.get(this)!;
     });
-    model = { name: 'track-position', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu', inputSize: 768 };
-    (TrackPositionModel.load as jest.Mock).mockResolvedValue(model);
+    model = { name: 'track-segments', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu', inputSize: 768 };
+    (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue(model);
+    positionModel = { name: 'track-position', inputSize: 512, detect: jest.fn(), dispose: jest.fn().mockResolvedValue(undefined) };
+    (TrackPositionModel.load as jest.Mock).mockResolvedValue(positionModel);
     depthModel = { name: 'Depth-Anything-V2-Small', classNames: [], executionProvider: 'webgpu', inputSize: 518, dispose: jest.fn().mockResolvedValue(undefined),
         detect: jest.fn().mockResolvedValue(vision(0).detections.depth) };
     (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depthModel);
@@ -92,7 +95,7 @@ it('shares from the recording controls before Track Vision opens and keeps captu
     const ref = React.createRef<TrackVisionHandle>();
     const view = render(<></>);
     await startCapture();
-    expect(TrackPositionModel.load).not.toHaveBeenCalled();
+    expect(TrackVisionModel.loadBackend).not.toHaveBeenCalled();
     view.rerender(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     await act(async () => { jest.advanceTimersByTime(200); });
@@ -183,7 +186,7 @@ it('restores local settings and applied calibration when Track Vision is reopene
     expect(ref.current!.getLatestDetection()).toBeNull();
     expect(screen.getByRole('button', { name: 'Share game screen' })).toBeDisabled();
     expect(getDisplayMedia).toHaveBeenCalledTimes(1);
-    expect(TrackPositionModel.load).toHaveBeenLastCalledWith();
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith();
     expect(TrackVisionModel.loadBuiltin).toHaveBeenLastCalledWith('depth', 252);
     expect(screen.queryByRole('combobox', { name: 'Segmentation input resolution' })).not.toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Depth input resolution' })).toHaveValue('252');
@@ -196,7 +199,7 @@ it('restores local settings and applied calibration when Track Vision is reopene
     expect(cameraButton('Disable on capture')).toHaveAttribute('aria-pressed', 'true');
     await startCapture();
     expect(ref.current!.getLatestDetection()).toMatchObject({ calibration, filterConfidence: 0.8 });
-    expect(model.detect).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), 0.7, undefined, undefined);
+    expect(model.detect).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), 0.7);
     expect(screen.getByLabelText('Projected ground grid')).toBeVisible();
 });
 
@@ -223,16 +226,16 @@ it.each(['edit', 'clear', 'resize'])('does not restore invalidated calibration a
     expect(screen.getByLabelText('Camera height (m)')).toHaveValue(action === 'edit' ? 1.8 : 1.2);
 });
 
-it('uses the shared checkpoint training resolution even when an old segmentation size was saved', async () => {
+it('uses the segmentation training resolution even when an old segmentation size was saved', async () => {
     window.localStorage.setItem(TRACK_VISION_SETTINGS_KEY, JSON.stringify({ version: 1,
         inputSizes: { segment: 384, depth: 518 }, depthEnabled: false }));
-    (TrackPositionModel.load as jest.Mock).mockResolvedValue({ ...model, inputSize: 512 });
+    (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue({ ...model, inputSize: 512 });
     render(<LiveTrackVision name="vision" />);
     await flush();
-    expect(screen.getByText('track-position · 512 × 512')).toBeInTheDocument();
+    expect(screen.getByText('track-segments · 512 × 512')).toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Segmentation input resolution' })).not.toBeInTheDocument();
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
-    expect(TrackPositionModel.load).toHaveBeenCalledWith();
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledWith();
     expect(TrackVisionModel.loadBuiltin).not.toHaveBeenCalled();
 });
 
@@ -272,7 +275,7 @@ it('reloads only depth at its selected resolution while capture continues', asyn
     await act(async () => { jest.advanceTimersByTime(200); });
     expect(ref.current!.getLatestDetection()?.detections).toHaveProperty('depth');
     expect(ref.current!.getLatestDetection()?.detections).toHaveProperty('segment');
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(2);
     expect(track.stop).not.toHaveBeenCalled();
     expect(getDisplayMedia).toHaveBeenCalledTimes(1);
@@ -393,7 +396,7 @@ it('walks the visual pipeline without restarting capture, reloading models or ch
     expect(depthModel.detect).toHaveBeenCalledTimes(1);
     expect(getDisplayMedia).toHaveBeenCalledTimes(1);
     expect(track.stop).not.toHaveBeenCalled();
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
 });
 
 it('inspects full-map depths at the mouse, refreshes stationary hover and clears unavailable readings', async () => {
@@ -737,7 +740,7 @@ it.each(['restore', 'escape'])('keeps capture and calibration running while expa
     expect(preview).toContainElement(video);
     expect(video.srcObject).toBe(stream);
     expect(getDisplayMedia).toHaveBeenCalledTimes(1);
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(track.stop).not.toHaveBeenCalled();
     expect(model.dispose).not.toHaveBeenCalled();
 
@@ -943,7 +946,7 @@ it('uses the newest calibration after pending inference, clears it on resize and
 
 it('keeps calibration available during detector retry without reviving cleared results', async () => {
     const pending = deferred<typeof model>();
-    (TrackPositionModel.load as jest.Mock).mockRejectedValueOnce(new Error('Backend unavailable')).mockReturnValueOnce(pending.promise);
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValueOnce(new Error('Backend unavailable')).mockReturnValueOnce(pending.promise);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
@@ -1031,7 +1034,7 @@ it('requires an explicit desktop source and grants it before requesting capture'
 
 it('releases a model whose loading finishes after unmount', async () => {
     const pending = deferred<any>();
-    (TrackPositionModel.load as jest.Mock).mockReturnValue(pending.promise);
+    (TrackVisionModel.loadBackend as jest.Mock).mockReturnValue(pending.promise);
     const { unmount } = render(<LiveTrackVision name="vision" />);
     await flush();
     unmount();
@@ -1040,7 +1043,7 @@ it('releases a model whose loading finishes after unmount', async () => {
 });
 
 it('shows model errors and keeps the screen preview available without weights', async () => {
-    (TrackPositionModel.load as jest.Mock).mockRejectedValue(new Error('Backend model unavailable.'));
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValue(new Error('Backend model unavailable.'));
     render(<LiveTrackVision name="vision" />);
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('Backend model unavailable');
@@ -1060,8 +1063,11 @@ it('loads the backend model automatically and detects without a file upload', as
     const ref = React.createRef<TrackVisionHandle>();
     const { unmount } = render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledWith();
     expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
-    expect(TrackPositionModel.load).toHaveBeenCalledWith();
+    expect(screen.getByText('track-segments · 768 × 768')).toBeVisible();
+    expect(screen.getByText('track-position · 512 × 512')).toBeVisible();
     expect(screen.queryByRole('checkbox', { name: 'Allow CPU fallback' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.getByLabelText('Model labels')).toHaveTextContent('track, curb');
@@ -1114,7 +1120,7 @@ it('filters the current and future preview frames without changing detection or 
     expect(selector).toHaveValue('car');
     fireEvent.change(selector, { target: { value: '' } });
     expect(drawVisionOverlay).toHaveBeenLastCalledWith(context, ref.current!.getLatestDetection(), '');
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(model.dispose).not.toHaveBeenCalled();
     expect(track.stop).not.toHaveBeenCalled();
 });
@@ -1131,7 +1137,7 @@ it('disables label selection without segmentation and resets labels missing from
     model.detect.mockRejectedValueOnce(new Error('GPU device lost'));
     await startCapture();
     expect(selector).toBeDisabled();
-    (TrackPositionModel.load as jest.Mock).mockResolvedValue({ ...model, classNames: ['track', 'grass'] });
+    (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue({ ...model, classNames: ['track', 'grass'] });
     fireEvent.click(screen.getByRole('button', { name: 'Retry Segmentation' }));
     await flush();
     expect(selector).toBeEnabled();
@@ -1141,7 +1147,7 @@ it('disables label selection without segmentation and resets labels missing from
 });
 
 it('allows retrying a failed backend load', async () => {
-    (TrackPositionModel.load as jest.Mock).mockRejectedValueOnce(new Error('Backend model unavailable.'));
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValueOnce(new Error('Backend model unavailable.'));
     render(<LiveTrackVision name="vision" />);
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('Backend model unavailable');
@@ -1159,7 +1165,7 @@ it('runs depth alongside backend segmentation and releases both models on unmoun
     const { unmount } = render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth', 518);
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText('Depth inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.queryByRole('group', { name: /Depth range/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('slider', { name: 'Close depth' })).not.toBeInTheDocument();
@@ -1200,7 +1206,7 @@ it('restores disabled depth without loading it and publishes segmentation, scene
     expect(result.reconstructedScene!.cars).toHaveLength(1);
     expect(result.birdsEyeScene!.leftBoundary.length).toBeGreaterThan(0);
     expect(result.birdsEyeScene!.cars).toHaveLength(1);
-    expect(screen.getByText('Running')).toBeVisible();
+    expect(screen.getAllByText('Running')).toHaveLength(2);
     expect(screen.getByRole('status')).toHaveTextContent('Segmentation ·');
     expect(screen.getByRole('status')).not.toHaveTextContent('Depth');
     selectStep('Filtering');
@@ -1239,7 +1245,7 @@ it.each(['segment', 'depth'])('disables depth during pending %s inference and ca
     await act(async () => { jest.advanceTimersByTime(200); });
     expect(ref.current!.getLatestDetection()?.detections).toEqual({ segment: detection });
     expect(depthModel.detect).toHaveBeenCalledTimes(depthCalls);
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
 
     const replacement = { ...depthModel, detect: jest.fn().mockResolvedValue(vision(0).detections.depth), dispose: jest.fn().mockResolvedValue(undefined) };
@@ -1257,7 +1263,7 @@ it.each(['segment', 'depth'])('disables depth during pending %s inference and ca
     expect(ref.current!.getLatestDetection()?.detections).toEqual({ segment: detection, depth: vision(0).detections.depth });
     expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(2);
     expect(TrackVisionModel.loadBuiltin).toHaveBeenLastCalledWith('depth', 518);
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(track.stop).not.toHaveBeenCalled();
     expect(getDisplayMedia).toHaveBeenCalledTimes(1);
 });
@@ -1303,7 +1309,7 @@ it('cancels depth GPU retries when disabled and remembers the choice when reopen
 it('loads depth but waits for masks when backend segmentation cannot load', async () => {
     const depthResult = { task: 'depth', width: 2, height: 2, values: new Float32Array([1, 2, 3, 4]), inferenceMs: 20, classNames: [] };
     const depth = { ...model, detect: jest.fn().mockResolvedValue(depthResult), dispose: jest.fn().mockResolvedValue(undefined) };
-    (TrackPositionModel.load as jest.Mock).mockRejectedValue(new Error('Backend unavailable'));
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValue(new Error('Backend unavailable'));
     (TrackVisionModel.loadBuiltin as jest.Mock).mockResolvedValue(depth);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
@@ -1395,49 +1401,49 @@ it('pauses scene updates and further inference when depth inference fails', asyn
 });
 
 it('automatically retries GPU failures until loading succeeds', async () => {
-    (TrackPositionModel.load as jest.Mock)
+    (TrackVisionModel.loadBackend as jest.Mock)
         .mockRejectedValueOnce(new GpuInferenceError('GPU device lost'))
         .mockRejectedValueOnce(new GpuInferenceError('GPU device lost'));
     render(<LiveTrackVision name="vision" />);
     await flush();
     expect(screen.getByText('Retrying GPU…')).toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(2999); });
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     await act(async () => { jest.advanceTimersByTime(1); });
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(2);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(2);
     expect(screen.getByText('Retrying GPU…')).toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(3000); });
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(3);
-    expect(TrackPositionModel.load).toHaveBeenLastCalledWith();
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(3);
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith();
     expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(6000); });
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(3);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(3);
 });
 
 it('leaves missing weights available for manual retry without automatic loading', async () => {
-    (TrackPositionModel.load as jest.Mock).mockRejectedValue(new Error('Weights unavailable'));
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValue(new Error('Weights unavailable'));
     render(<LiveTrackVision name="vision" />);
     await flush();
     await act(async () => { jest.advanceTimersByTime(10000); });
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: 'Retry Segmentation' })).toBeEnabled();
 });
 
 it('cancels scheduled GPU retries on unmount', async () => {
-    (TrackPositionModel.load as jest.Mock).mockRejectedValue(new GpuInferenceError('GPU device lost'));
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValue(new GpuInferenceError('GPU device lost'));
     const { unmount } = render(<LiveTrackVision name="vision" />);
     await flush();
     unmount();
     await flush();
     await act(async () => { jest.advanceTimersByTime(10000); });
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
 });
 
 it('automatically recovers GPU inference during capture', async () => {
     const recovered = { ...model, detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined) };
     model.detect.mockRejectedValue(new Error('GPU device lost'));
-    (TrackPositionModel.load as jest.Mock).mockResolvedValueOnce(model).mockResolvedValue(recovered);
+    (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValueOnce(model).mockResolvedValue(recovered);
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
@@ -1446,7 +1452,7 @@ it('automatically recovers GPU inference during capture', async () => {
     expect(screen.getByText('Retrying GPU…')).toBeInTheDocument();
     await act(async () => { jest.advanceTimersByTime(3000); });
     await act(async () => { jest.advanceTimersByTime(200); });
-    expect(TrackPositionModel.load).toHaveBeenLastCalledWith();
+    expect(TrackVisionModel.loadBackend).toHaveBeenLastCalledWith();
     expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(detection);
     expect(track.stop).not.toHaveBeenCalled();
 });
@@ -1491,7 +1497,7 @@ it('applies filtering confidence to current and pending frames, reconstruction a
     expect(ref.current!.getLatestDetection()!.geometry).toEqual(initial.geometry);
     expect(ref.current!.getLatestDetection()!.reconstructedScene).toEqual(initial.reconstructedScene);
     expect(ref.current!.getLatestDetection()!.birdsEyeScene).toEqual(initial.birdsEyeScene);
-    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
     expect(model.detect).toHaveBeenCalledTimes(2);
     expect(depthModel.detect).toHaveBeenCalledTimes(2);
@@ -1499,7 +1505,7 @@ it('applies filtering confidence to current and pending frames, reconstruction a
 }, 15000);
 
 it.each(['Segmentation', 'Depth'])('waits for %s to load before running either model and resumes after retry', async (label) => {
-    const loader = label === 'Segmentation' ? TrackPositionModel.load : TrackVisionModel.loadBuiltin;
+    const loader = label === 'Segmentation' ? TrackVisionModel.loadBackend : TrackVisionModel.loadBuiltin;
     (loader as jest.Mock).mockRejectedValueOnce(new Error('Weights unavailable'));
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
@@ -1535,11 +1541,11 @@ it('requires the Electron bridge before loading models or offering capture', asy
     await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('Track Vision is available only in the Electron desktop app.');
     expect(screen.queryByRole('button', { name: 'Share game screen' })).not.toBeInTheDocument();
-    expect(TrackPositionModel.load).not.toHaveBeenCalled();
+    expect(TrackVisionModel.loadBackend).not.toHaveBeenCalled();
     expect(getDisplayMedia).not.toHaveBeenCalled();
 });
 
-describe('shared segmentation and position model', () => {
+describe('separate segmentation and position models', () => {
     const references = { reference: { x: 1, y: -2, z: 3 }, centerline: { x: -4, y: 5, z: 6 } };
     const prediction = { referenceDelta: [-1, 2, -3], centerlineDelta: [4, -5, 6], inferenceMs: 20 };
     let mapHandle: { getCircuitMap: jest.Mock; getReferenceLap: jest.Mock; getPositionReferences: jest.Mock };
@@ -1553,7 +1559,7 @@ describe('shared segmentation and position model', () => {
     });
     beforeEach(() => {
         sequence = 0;
-        model.detect.mockResolvedValue({ ...detection, position: prediction });
+        positionModel.detect.mockResolvedValue(prediction);
         mapHandle = { getCircuitMap: jest.fn().mockReturnValue({ id: 'map', circuit_name: 'Autodromo Nazionale Monza', source_track_key: 'monza' }),
             getReferenceLap: jest.fn().mockReturnValue({ car: 'car' }), getPositionReferences: jest.fn().mockReturnValue(references) };
         jest.spyOn(operationComponents, 'useOptionalOperationComponentRefDirectory').mockReturnValue({
@@ -1561,23 +1567,59 @@ describe('shared segmentation and position model', () => {
         } as any);
     });
 
+    it('keeps segmentation and depth available when the position ONNX is missing', async () => {
+        (TrackPositionModel.load as jest.Mock).mockRejectedValueOnce(new Error('No ONNX track-position model'));
+        const ref = React.createRef<TrackVisionHandle>();
+        render(<LiveTrackVision ref={ref} name="vision" />);
+        fireEvent.click(screen.getByText('Settings'));
+        await flush();
+        expect(screen.getByLabelText('Track Vision settings')).toHaveAttribute('open');
+        expect(screen.getByText(/Position: error/)).toBeVisible();
+        telemetry();
+        await startCapture();
+        expect(ref.current!.getLatestDetection()?.detections).toEqual({ segment: detection, depth: vision(0).detections.depth });
+        expect(ref.current!.getLatestDetection()?.position).toBeUndefined();
+        expect(positionModel.detect).not.toHaveBeenCalled();
+        expect(screen.getByRole('alert')).toHaveTextContent('No ONNX track-position model');
+        fireEvent.click(screen.getByRole('button', { name: 'Retry Position' }));
+        await flush();
+        expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+        expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
+        expect(TrackPositionModel.load).toHaveBeenCalledTimes(2);
+    });
+
+    it('runs segmentation while position is still downloading and disposes a late load after unmount', async () => {
+        const pending = deferred<typeof positionModel>();
+        (TrackPositionModel.load as jest.Mock).mockReturnValueOnce(pending.promise);
+        const ref = React.createRef<TrackVisionHandle>();
+        const view = render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush();
+        telemetry();
+        await startCapture();
+        expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(detection);
+        expect(ref.current!.getLatestDetection()?.position).toBeUndefined();
+        view.unmount();
+        await act(async () => { pending.resolve(positionModel); });
+        expect(positionModel.dispose).toHaveBeenCalledTimes(1);
+    });
+
     it('uses capture-time normalized progress with the loaded map and publishes signed offsets', async () => {
-        const pending = deferred<typeof detection & { position?: typeof prediction }>();
-        model.detect.mockReturnValueOnce(pending.promise);
+        const pending = deferred<typeof prediction>();
+        positionModel.detect.mockReturnValueOnce(pending.promise);
         const ref = React.createRef<TrackVisionHandle>();
         const view = render(<LiveTrackVision ref={ref} name="vision" />);
         await flush();
         telemetry(0.25);
         await startCapture();
         telemetry(0.75);
-        await act(async () => { pending.resolve({ ...detection, position: prediction }); });
+        await act(async () => { pending.resolve(prediction); });
         expect(mapHandle.getPositionReferences).toHaveBeenCalledWith(0.25);
-        expect(model.detect).toHaveBeenCalledWith(expect.any(HTMLCanvasElement), 0.5, references, {
+        expect(positionModel.detect).toHaveBeenCalledWith(expect.any(HTMLCanvasElement), references, {
             normalized_position: 0.25, game: 'acc', map_name: ['Autodromo Nazionale Monza', 'monza', 'monza'],
         });
         expect(ref.current!.getLatestDetection()!.position).toEqual({ ...prediction, references, normalizedPosition: 0.25 });
         expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
-        expect(model.detect).toHaveBeenCalledTimes(1);
+        expect(positionModel.detect).toHaveBeenCalledTimes(1);
         expect(screen.queryByLabelText('Position add-on result')).not.toBeInTheDocument();
         selectStep("Bird's-eye view");
         const output = within(screen.getByRole('tabpanel', { name: "Bird's-eye view" })).getByLabelText('Position add-on result');
@@ -1591,7 +1633,7 @@ describe('shared segmentation and position model', () => {
         expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Position add-on: waiting for live normalized position, reference lap and centerline.');
         expect(screen.queryByLabelText('Reference lap position marker')).not.toBeInTheDocument();
         view.unmount();
-        expect(model.dispose).toHaveBeenCalledTimes(1);
+        expect(positionModel.dispose).toHaveBeenCalledTimes(1);
     });
 
     it.each(['missing references', 'stale telemetry', 'paused telemetry'])('keeps segmentation available with %s', async (condition) => {
@@ -1602,7 +1644,8 @@ describe('shared segmentation and position model', () => {
         if (condition === 'missing references') mapHandle.getPositionReferences.mockReturnValue(null);
         if (condition === 'stale telemetry') await act(async () => { jest.advanceTimersByTime(501); });
         await startCapture();
-        expect(model.detect).toHaveBeenCalledWith(expect.any(HTMLCanvasElement), 0.5, undefined, undefined);
+        expect(positionModel.detect).not.toHaveBeenCalled();
+        expect(model.detect).toHaveBeenCalledWith(expect.any(HTMLCanvasElement), 0.5);
         expect(ref.current!.getLatestDetection()!.detections.segment).toEqual(detection);
         expect(ref.current!.getLatestDetection()!.position).toBeUndefined();
         selectStep("Bird's-eye view");
@@ -1618,11 +1661,11 @@ describe('shared segmentation and position model', () => {
         selectStep("Bird's-eye view");
         expect(screen.getByRole('img', { name: 'Top-down track boundaries and cars' })).toBeVisible();
         const firstMarker = screen.getByLabelText('Reference lap position marker').querySelector('circle')!.getAttribute('cx');
-        model.detect.mockResolvedValue({ ...detection, position: { ...prediction, referenceDelta: [2, 0, 1] } });
+        positionModel.detect.mockResolvedValue({ ...prediction, referenceDelta: [2, 0, 1] });
         await act(async () => { jest.advanceTimersByTime(200); });
         expect(screen.getByLabelText('Reference lap position marker').querySelector('circle')!.getAttribute('cx')).not.toEqual(firstMarker);
         expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Reference ΔXYZ: 2.000, 0.000, 1.000');
-        model.detect.mockReturnValue(deferred<typeof detection & { position?: typeof prediction }>().promise);
+        positionModel.detect.mockReturnValue(deferred<typeof prediction>().promise);
         await act(async () => { jest.advanceTimersByTime(VISION_MAX_AGE_MS); });
         expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Last frame (stale)');
         fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
@@ -1631,32 +1674,35 @@ describe('shared segmentation and position model', () => {
     });
 
     it.each(['reset', 'map change', 'reference change'])('discards pending position inference after %s', async (condition) => {
-        const pending = deferred<typeof detection & { position?: typeof prediction }>();
-        model.detect.mockReturnValueOnce(pending.promise);
+        const pending = deferred<typeof prediction>();
+        positionModel.detect.mockReturnValueOnce(pending.promise);
         const ref = React.createRef<TrackVisionHandle>();
         render(<LiveTrackVision ref={ref} name="vision" />);
         await flush();
         telemetry();
         await startCapture();
-        expect(model.detect).toHaveBeenCalledTimes(1);
+        expect(positionModel.detect).toHaveBeenCalledTimes(1);
         if (condition === 'reset') act(() => liveTelemetryStore.resetSession());
         if (condition === 'map change') mapHandle.getCircuitMap.mockReturnValue({ id: 'next-map' });
         if (condition === 'reference change') mapHandle.getReferenceLap.mockReturnValue({ car: 'next-car' });
-        await act(async () => { pending.resolve({ ...detection, position: prediction }); });
+        await act(async () => { pending.resolve(prediction); });
         expect(ref.current!.getLatestDetection()!.position).toBeUndefined();
     });
 
-    it('retries the shared model after inference fails', async () => {
-        model.detect.mockRejectedValueOnce(new Error('Position GPU lost'));
+    it('retries only position after its inference fails while segmentation continues', async () => {
+        positionModel.detect.mockRejectedValueOnce(new Error('Position GPU lost'));
         const ref = React.createRef<TrackVisionHandle>();
         render(<LiveTrackVision ref={ref} name="vision" />);
         await flush();
         telemetry();
         await startCapture();
-        expect(ref.current!.getLatestDetection()).toBeNull();
-        expect(model.dispose).toHaveBeenCalledTimes(1);
+        expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(detection);
+        expect(ref.current!.getLatestDetection()?.position).toBeUndefined();
+        expect(model.dispose).not.toHaveBeenCalled();
+        expect(positionModel.dispose).toHaveBeenCalledTimes(1);
         expect(screen.getByText('Position GPU lost')).toBeInTheDocument();
         await act(async () => { jest.advanceTimersByTime(3000); });
         expect(TrackPositionModel.load).toHaveBeenCalledTimes(2);
+        expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
     });
 });

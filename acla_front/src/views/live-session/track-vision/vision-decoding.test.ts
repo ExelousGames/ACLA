@@ -22,6 +22,23 @@ it('rejects mismatched class counts so output IDs cannot use the wrong labels', 
     )).toThrow('backend labels');
 });
 
+it('decodes end-to-end segmentation exports with XYXY boxes, class IDs and mask coefficients', () => {
+    const data = new Float32Array([
+        0, 0, 32, 32, 0.9, 0, 1,
+        0, 0, 32, 32, 0.8, 1, -1,
+        0, 0, 32, 32, 0.7, 0, 1,
+        0, 0, 32, 32, 0.1, 1, 1,
+    ]);
+    const predictions = { dims: [1, 4, 7], data };
+    const prototypes = { dims: [1, 1, 2, 2], data: new Float32Array([1, -1, 1, -1]) };
+    const result = decodeSegments(predictions, prototypes, 32, 0.5, 2);
+    expect(result.instances.map(({ classId }) => classId)).toEqual([0, 1, 0]);
+    expect(result.instances[0]).toMatchObject({ box: [0, 0, 1, 1], mask: new Uint8Array([1, 0, 1, 0]) });
+    expect(result.instances[1].mask).toEqual(new Uint8Array([0, 1, 0, 1]));
+    data[5] = 2;
+    expect(() => decodeSegments(predictions, prototypes, 32, 0.5, 2)).toThrow('backend labels');
+});
+
 it.each([[1, 2, 2], [1, 1, 2, 2]])('decodes relative disparity in shape %j with near-to-far ordering and owned data', (...dims) => {
     const data = new Float32Array([1, 2, 3, 4]);
     const result = decodeDepth({ dims, data });

@@ -1,13 +1,14 @@
 import apiService from 'services/api.service';
-import { BackendVisionModel, loadBackendPositionModel } from './backend-vision-model';
+import { BackendVisionModel, loadBackendPositionModel, loadBackendSegmentationModel } from './backend-vision-model';
 
 jest.mock('services/api.service', () => ({ __esModule: true, default: { get: jest.fn(), getBinary: jest.fn() } }));
 const metadata: BackendVisionModel = {
     id: 'a'.repeat(24), name: 'track-segments', task: 'segment', filename: 'best.onnx', classNames: ['curb', 'track'],
     sha256: 'b'.repeat(64), sizeBytes: 4, downloadPath: `/ai-model/ultralytics/${'a'.repeat(24)}/file`,
 };
-const catalogueModel = { ...metadata, _id: metadata.id, createdAt: '2026-10-15T12:00:00Z' };
-const positionMetadata: BackendVisionModel = { ...metadata, name: 'track-position', task: 'position' };
+const catalogueModel = { ...metadata, _id: metadata.id, createdAt: '2026-10-15T12:00:00Z', metadata: { imgsz: 768 } };
+const positionMetadata: BackendVisionModel = { ...metadata, name: 'track-position', task: 'position',
+    classNames: ['reference_delta_x', 'reference_delta_y', 'reference_delta_z', 'centerline_delta_x', 'centerline_delta_y', 'centerline_delta_z'] };
 const positionCatalogueModel = { ...catalogueModel, ...positionMetadata,
     metadata: { format: 'acla-yolo-position-v3', artifactFormat: 'onnx', imgsz: 512 } };
 const prepare = jest.fn();
@@ -25,7 +26,7 @@ it('checks the backend version and reuses local weights without downloading', as
     expect(apiService.get).toHaveBeenCalledWith('/ai-model/ultralytics', { name: 'track-position' });
     expect(prepare).toHaveBeenCalledWith(positionMetadata);
     expect(apiService.getBinary).not.toHaveBeenCalled();
-    expect(result!.metadata.classNames).toEqual(['curb', 'track']);
+    expect(result!.metadata.classNames).toEqual(positionMetadata.classNames);
     expect(new Uint8Array(result!.bytes)).toEqual(new Uint8Array([1, 2]));
 });
 
@@ -72,7 +73,7 @@ it('loads the newest position ONNX at its training resolution using the existing
     expect(apiService.getBinary).not.toHaveBeenCalled();
 });
 
-it('returns no shared ONNX when only a separate segmentation model exists', async () => {
+it('returns no position ONNX when only a segmentation model exists', async () => {
     (apiService.get as jest.Mock).mockResolvedValue({ data: [catalogueModel] });
     await expect(loadBackendPositionModel()).resolves.toBeNull();
     expect(prepare).not.toHaveBeenCalled();
@@ -129,6 +130,7 @@ it('preserves the published category vocabulary and order for position inference
 
 describe.each([
     { task: 'position', model: positionCatalogueModel, load: () => loadBackendPositionModel() },
+    { task: 'segment', model: catalogueModel, load: () => loadBackendSegmentationModel() },
 ])('$task model selection', ({ model, load }) => {
     it('selects the latest upload date for the exact model name and task, regardless of catalogue order', async () => {
         const older = { ...model, _id: 'f'.repeat(24), createdAt: '2026-10-15T12:30:00Z', updatedAt: '2026-10-16T12:00:00Z' };
@@ -168,6 +170,31 @@ describe.each([
         await expect(load()).rejects.toThrow('Invalid Track Vision model upload date');
         expect(prepare).not.toHaveBeenCalled();
     });
+});
+
+it('downloads and coalesces each separate ONNX model at its published resolution', async () => {
+    const position = { ...positionCatalogueModel, _id: 'c'.repeat(24) };
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [catalogueModel, position,
+        { ...catalogueModel, filename: 'best.pt', createdAt: '2026-10-18T12:00:00Z' }] });
+    prepare.mockImplementation(async (_model, bytes) => bytes ? new Uint8Array(bytes) : null);
+    const [segment, sameSegment, regression, sameRegression] = await Promise.all([
+        loadBackendSegmentationModel(), loadBackendSegmentationModel(), loadBackendPositionModel(), loadBackendPositionModel(),
+    ]);
+    expect(segment).toBe(sameSegment);
+    expect(regression).toBe(sameRegression);
+    expect(segment).toMatchObject({ inputSize: 768, metadata });
+    expect(regression).toMatchObject({ inputSize: 512, metadata: { id: position._id, task: 'position' } });
+    expect(apiService.get).toHaveBeenCalledTimes(2);
+    expect(apiService.get).toHaveBeenCalledWith('/ai-model/ultralytics', { name: 'track-segments' });
+    expect(apiService.getBinary).toHaveBeenCalledTimes(2);
+    expect(apiService.getBinary).toHaveBeenCalledWith(metadata.downloadPath, { timeoutMs: 300000 });
+    expect(apiService.getBinary).toHaveBeenCalledWith(`/ai-model/ultralytics/${position._id}/file`, { timeoutMs: 300000 });
+});
+
+it.each([undefined, '768', 0, 518, 4096])('rejects an unusable segmentation input size (%s)', async (imgsz) => {
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...catalogueModel, metadata: { imgsz } }] });
+    await expect(loadBackendSegmentationModel()).rejects.toThrow('metadata.imgsz');
+    expect(prepare).not.toHaveBeenCalled();
 });
 
 it('does not load unrelated model names', async () => {

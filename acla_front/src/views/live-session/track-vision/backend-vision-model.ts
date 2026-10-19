@@ -62,20 +62,26 @@ async function prepare(metadata: BackendVisionModel) {
     return { bytes: new Uint8Array(bytes).buffer, metadata };
 }
 
-async function loadPosition() {
-    const model = await findLatestModel('track-position', 'position');
+async function loadModel(name: string, task: BackendVisionModel['task']) {
+    const model = await findLatestModel(name, task);
     if (!model) return null;
     const inputSize = model.metadata?.imgsz;
     // Format labels are descriptive, not a compatibility allowlist. The inference
     // runtime checks the downloaded ONNX graph's tensor interface.
     if (!Number.isInteger(inputSize) || inputSize < 32 || inputSize > 2048 || inputSize % 32 !== 0) {
-        throw new Error('Track-position metadata.imgsz must be an integer from 32 to 2048, divisible by 32.');
+        throw new Error(`${name} metadata.imgsz must be an integer from 32 to 2048, divisible by 32.`);
     }
     return { ...await prepare(toMetadata(model)), inputSize, categories: model.metadata?.categories };
 }
 
-let positionPending: ReturnType<typeof loadPosition> | undefined;
+let positionPending: ReturnType<typeof loadModel> | undefined;
 export function loadBackendPositionModel() {
-    if (!positionPending) positionPending = loadPosition().finally(() => { positionPending = undefined; });
+    if (!positionPending) positionPending = loadModel('track-position', 'position').finally(() => { positionPending = undefined; });
     return positionPending;
+}
+
+let segmentationPending: ReturnType<typeof loadModel> | undefined;
+export function loadBackendSegmentationModel() {
+    if (!segmentationPending) segmentationPending = loadModel('track-segments', 'segment').finally(() => { segmentationPending = undefined; });
+    return segmentationPending;
 }

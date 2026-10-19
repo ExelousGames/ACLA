@@ -12,6 +12,7 @@ jest.mock('onnxruntime-web/wasm', () => ({
 jest.mock('./backend-vision-model', () => ({ loadBackendPositionModel: jest.fn() }));
 
 type Task = 'first' | 'second' | 'third';
+const references = { reference: { x: 1, y: 2, z: 3 }, centerline: { x: 4, y: 5, z: 6 } };
 const tasks: Task[] = ['first', 'second', 'third'];
 const bytesFor = (task: Task) => new Uint8Array([tasks.indexOf(task)]).buffer;
 const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -20,8 +21,6 @@ const tensor = (dims: number[], data: Float32Array | Uint8Array) => ({
 });
 const outputsFor = (_task: Task) => ({
     deltas: tensor([1, 2, 3], new Float32Array(6)),
-    predictions: tensor([1, 6, 8400], new Float32Array(6 * 8400)),
-    prototypes: tensor([1, 1, 2, 2], new Float32Array(4)),
 });
 let active: number;
 let maxActive: number;
@@ -95,19 +94,19 @@ it('queues live inference, another detector load, and disposal on the same GPU',
     const first = await TrackPositionModel.load();
     const second = await TrackPositionModel.load();
     events = [];
-    const firstResult = first.detect(frame, 0.5);
+    const firstResult = first.detect(frame, references);
     const thirdLoad = TrackPositionModel.load();
-    const secondResult = second.detect(frame, 0.5);
+    const secondResult = second.detect(frame, references);
     const secondDisposal = second.dispose();
     const [firstDetection, third, secondDetection] = await Promise.all([firstResult, thirdLoad, secondResult, secondDisposal]);
-    expect(firstDetection.task).toBe('segment');
-    expect(secondDetection.task).toBe('segment');
+    expect(firstDetection.referenceDelta).toEqual([0, 0, 0]);
+    expect(secondDetection.referenceDelta).toEqual([0, 0, 0]);
     expect(third.name).toBe('third');
     expect(events.indexOf('second:release:start')).toBeGreaterThan(events.indexOf('second:run:end'));
     await Promise.all([first.dispose(), second.dispose(), third.dispose()]);
     expect(sessions.second.release).toHaveBeenCalledTimes(1);
     expect(maxActive).toBe(1);
-    await expect(second.detect(frame, 0.5)).rejects.toThrow('released');
+    await expect(second.detect(frame, references)).rejects.toThrow('released');
 });
 
 it('finishes failed warm-up cleanup before allowing another detector to initialize', async () => {
@@ -128,9 +127,9 @@ it('continues processing other detectors after inference and disposal fail', asy
     const second = await TrackPositionModel.load();
     sessions.first.run.mockImplementationOnce(gpuOperation('first:run', () => { throw new Error('Inference failed'); }));
     sessions.first.release.mockImplementationOnce(gpuOperation('first:release', () => { throw new Error('Release failed'); }));
-    const results = await Promise.allSettled([first.detect(frame, 0.5), second.detect(frame, 0.5), first.dispose()]);
+    const results = await Promise.allSettled([first.detect(frame, references), second.detect(frame, references), first.dispose()]);
     expect(results.map(({ status }) => status)).toEqual(['rejected', 'fulfilled', 'rejected']);
-    await expect(second.detect(frame, 0.5)).resolves.toMatchObject({ task: 'segment' });
+    await expect(second.detect(frame, references)).resolves.toMatchObject({ referenceDelta: [0, 0, 0] });
     await second.dispose();
     expect(maxActive).toBe(1);
 });

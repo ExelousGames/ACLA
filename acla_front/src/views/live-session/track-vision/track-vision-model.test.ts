@@ -3,6 +3,7 @@ import * as cpuRuntime from 'onnxruntime-web/wasm';
 import { readVisionModel } from './vision-assets';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
 import { createWorldMask } from './world-mask';
+import { loadBackendSegmentationModel } from './backend-vision-model';
 
 jest.mock('onnxruntime-web/webgpu', () => ({
     env: { wasm: {}, webgpu: {} }, InferenceSession: { create: jest.fn() }, Tensor: jest.fn(),
@@ -11,6 +12,7 @@ jest.mock('onnxruntime-web/wasm', () => ({
     env: { wasm: {}, webgpu: {} }, InferenceSession: { create: jest.fn() }, Tensor: jest.fn(),
 }), { virtual: true });
 jest.mock('./vision-assets', () => ({ ...jest.requireActual('./vision-assets'), readVisionModel: jest.fn() }));
+jest.mock('./backend-vision-model', () => ({ loadBackendSegmentationModel: jest.fn() }));
 
 const tensor = (dims: number[], data: Float32Array | Uint8Array) => ({ dims, data, type: data instanceof Float32Array ? 'float32' : 'uint8', dispose: jest.fn() });
 const session = () => ({
@@ -19,6 +21,52 @@ const session = () => ({
         output0: tensor([1, 2, 2], new Float32Array(4)),
     }),
     release: jest.fn().mockResolvedValue(undefined),
+});
+
+it('loads segmentation ONNX separately and runs only its image input at its published resolution', async () => {
+    const bytes = new ArrayBuffer(16);
+    (loadBackendSegmentationModel as jest.Mock).mockResolvedValue({ bytes, inputSize: 512,
+        metadata: { name: 'track-segments', classNames: ['track', 'curb'] } });
+    gpu.outputNames = ['output0', 'output1'];
+    const predictions = tensor([1, 7, 1], new Float32Array([256, 256, 256, 256, 0.9, 0, 1]));
+    const prototypes = tensor([1, 1, 4, 4], new Float32Array(16).fill(1));
+    gpu.run.mockResolvedValue({ output1: prototypes, output0: predictions });
+    const drawImage = jest.fn();
+    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+        fillRect: jest.fn(), drawImage, getImageData: () => ({ data: new Uint8ClampedArray(512 * 512 * 4).fill(255) }),
+    } as any);
+    const model = await TrackVisionModel.loadBackend();
+    const frame = document.createElement('canvas');
+    frame.width = 1280; frame.height = 720;
+    const result = await model.detect(frame, 0.5);
+    expect(gpuRuntime.InferenceSession.create).toHaveBeenCalledWith(bytes, { executionProviders: ['webgpu'] });
+    expect(readVisionModel).not.toHaveBeenCalled();
+    expect(gpu.run).toHaveBeenLastCalledWith({ images: expect.objectContaining({ dims: [1, 3, 512, 512] }) });
+    expect(drawImage).toHaveBeenCalledWith(frame, 0, 112, 512, 288);
+    expect(gpu.run.mock.calls[1][0].images.data[0]).toBe(1);
+    expect(result).toMatchObject({ task: 'segment', classNames: ['track', 'curb'], instances: [{
+        classId: 0, box: [0.25, 0.25, 0.75, 0.75], mask: new Uint8Array([0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0]),
+    }] });
+    expect(await model.detect(frame, 0.95)).toMatchObject({ instances: [] });
+    expect(predictions.dispose).toHaveBeenCalledTimes(3);
+    expect(prototypes.dispose).toHaveBeenCalledTimes(3);
+    await model.dispose();
+    expect(gpu.release).toHaveBeenCalledTimes(1);
+});
+
+it('reports missing segmentation independently of position', async () => {
+    (loadBackendSegmentationModel as jest.Mock).mockResolvedValue(null);
+    await expect(TrackVisionModel.loadBackend()).rejects.toThrow('No ONNX track-segments model');
+    expect(gpuRuntime.InferenceSession.create).not.toHaveBeenCalled();
+});
+
+it('releases a segmentation session when its output does not match its labels', async () => {
+    (loadBackendSegmentationModel as jest.Mock).mockResolvedValue({ bytes: new ArrayBuffer(16), inputSize: 512,
+        metadata: { name: 'track-segments', classNames: ['track', 'curb'] } });
+    gpu.outputNames = ['output0', 'output1'];
+    gpu.run.mockResolvedValue({ output0: tensor([1, 8, 1], new Float32Array(8)), output1: tensor([1, 1, 4, 4], new Float32Array(16)) });
+    await expect(TrackVisionModel.loadBackend()).rejects.toThrow('backend labels');
+    expect(gpu.release).toHaveBeenCalledTimes(1);
 });
 let gpu: ReturnType<typeof session>;
 const originalGpu = Object.getOwnPropertyDescriptor(navigator, 'gpu');
