@@ -1,4 +1,4 @@
-"""A spatial position encoder and signed XYZ head on frozen YOLO features."""
+"""A standalone image/context regressor trained from scratch for signed XYZ offsets."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from torch import nn
 from .position_data import OUTPUT_NAMES, encode_position_context, image_tensor, reference_inputs
 
 
-class YOLOPositionModel(nn.Module):
-    """Freeze segmentation weights and learn six unconstrained signed outputs.
+class PositionModel(nn.Module):
+    """Learn image features and six unconstrained signed outputs together.
 
     Input: RGB images, [reference XYZ, centerline XYZ], normalized lap position,
     and one-hot game/map names. Output: the same two XYZ triples minus the
@@ -20,11 +20,10 @@ class YOLOPositionModel(nn.Module):
     The driver's position is deliberately absent from every inference API.
     """
 
-    def __init__(self, yolo, imgsz=768, *, categories):
+    def __init__(self, imgsz=768, *, categories):
         super().__init__()
         if imgsz < 32 or imgsz % 32:
             raise ValueError("Image size must be a positive multiple of 32.")
-        self.yolo = yolo.float().eval().requires_grad_(False)
         self.imgsz = imgsz
         self.categories = {field: list(categories[field]) for field in ("game", "map_name")}
         for field, names in self.categories.items():
@@ -34,50 +33,25 @@ class YOLOPositionModel(nn.Module):
             ):
                 raise ValueError(f"{field} categories must contain unique, nonempty names.")
         self.context_size = 1 + sum(len(names) for names in self.categories.values())
-        # Use all three feature scales feeding the existing segmentation head.
-        self.feature_layers = list(self.yolo.model[-1].f)
+        # Strided convolutions learn visual features directly from position targets.
+        # GroupNorm supports the small batches used for full-frame images.
+        layers = []
+        channels = 3
+        for width in (16, 32, 64, 96, 128):
+            layers.extend((
+                nn.Conv2d(channels, width, kernel_size=3, stride=2, padding=1, bias=False),
+                nn.GroupNorm(8, width), nn.ReLU(),
+            ))
+            channels = width
+        self.image_encoder = nn.Sequential(*layers)
         self.spatial_pool = nn.AdaptiveAvgPool2d((4, 4))
-        with torch.no_grad():
-            device = next(self.yolo.parameters()).device
-            width = self.visual_features(torch.zeros(1, 3, 64, 64, device=device)).shape[1]
         self.register_buffer("position_mean", torch.zeros(6))
         self.register_buffer("position_std", torch.ones(6))
-        self.position_encoder = nn.Sequential(nn.Linear(width, 128), nn.ReLU())
+        self.position_encoder = nn.Sequential(nn.Linear(channels * 4 * 4, 128), nn.ReLU())
         self.head = nn.Sequential(nn.Linear(128 + 6 + self.context_size, 128), nn.ReLU(), nn.Linear(128, 6))
 
-    @classmethod
-    def from_segmentation_checkpoint(cls, checkpoint: Path, imgsz=768, *, categories):
-        from ultralytics import YOLO
-
-        if not checkpoint.is_file():
-            raise FileNotFoundError(f"Existing segmentation checkpoint required: {checkpoint}")
-        network = YOLO(str(checkpoint), task="segment")
-        if network.task != "segment":
-            raise ValueError("Position regression requires a YOLO segmentation checkpoint.")
-        return cls(network.model, imgsz, categories=categories)
-
-    def train(self, mode=True):
-        super().train(mode)
-        # Freeze BatchNorm statistics as well as segmentation parameters.
-        self.yolo.eval()
-        return self
-
     def visual_features(self, images):
-        # Follow YOLO's skip connections, stopping before the segmentation head.
-        # Its embedding API globally averages these maps, losing spatial layout.
-        with torch.no_grad():
-            outputs, grids = [], {}
-            features = images
-            for layer in self.yolo.model[:max(self.feature_layers) + 1]:
-                if layer.f != -1:
-                    features = outputs[layer.f] if isinstance(layer.f, int) else [
-                        features if index == -1 else outputs[index] for index in layer.f
-                    ]
-                features = layer(features)
-                outputs.append(features if layer.i in self.yolo.save else None)
-                if layer.i in self.feature_layers:
-                    grids[layer.i] = self.spatial_pool(features).flatten(1)
-            return torch.cat([grids[index] for index in self.feature_layers], dim=1)
+        return self.spatial_pool(self.image_encoder(images)).flatten(1)
 
     def forward(self, images, references, context):
         if references.shape != (images.shape[0], 2, 3):
@@ -107,11 +81,9 @@ class YOLOPositionModel(nn.Module):
 
     def save(self, path: Path, *, metrics=None):
         torch.save({
-            "format": "acla-yolo-position-v3",
+            "format": "acla-position-cnn-v1",
             "categories": deepcopy(self.categories),
             "imgsz": self.imgsz,
-            "yolo_yaml": deepcopy(self.yolo.yaml),
-            "names": self.yolo.names,
             "state_dict": self.state_dict(),
             "output_names": list(OUTPUT_NAMES),
             "target_definition": "reference_position - current_position",
@@ -121,16 +93,14 @@ class YOLOPositionModel(nn.Module):
 
     @classmethod
     def load(cls, path: Path, device="cpu"):
-        from ultralytics.nn.tasks import SegmentationModel
-
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-        # Format/version labels are informational; reconstruct from the saved model definition.
+        # Format/version labels are informational; check the actual architecture.
         if "categories" not in checkpoint:
             raise ValueError("Position checkpoint is missing game/map context; retrain older models with game/map context.")
+        if "image_encoder.0.weight" not in checkpoint["state_dict"]:
+            raise ValueError("Position checkpoint is missing the standalone image encoder; retrain from scratch with train-position.")
         if "position_encoder.0.weight" not in checkpoint["state_dict"]:
-            raise ValueError("Position checkpoint is missing the spatial encoder; retrain from a segmentation checkpoint for spatial features.")
-        yolo = SegmentationModel(deepcopy(checkpoint["yolo_yaml"]), verbose=False)
-        yolo.names = checkpoint["names"]
-        model = cls(yolo, checkpoint["imgsz"], categories=checkpoint["categories"])
+            raise ValueError("Position checkpoint is missing the spatial encoder; retrain from scratch with train-position.")
+        model = cls(checkpoint["imgsz"], categories=checkpoint["categories"])
         model.load_state_dict(checkpoint["state_dict"])
         return model.to(device).eval()

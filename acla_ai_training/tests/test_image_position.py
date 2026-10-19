@@ -19,7 +19,7 @@ from training.image_segmentation.__main__ import main
 from training.image_segmentation.position_data import (
     PositionCurve, PositionDataset, encode_position_context, load_position_manifest,
 )
-from training.image_segmentation.position_model import YOLOPositionModel
+from training.image_segmentation.position_model import PositionModel
 from training.image_segmentation.position_preparation import signed_targets
 from training.image_segmentation.position_training import train_position_model
 
@@ -152,8 +152,8 @@ def test_prepared_targets_can_only_change_labels(aligned_manifest):
     torch.testing.assert_close(a["context"], torch.tensor([0.25, 1, 0, 1, 0]))
     assert not torch.equal(a["target"], b["target"])
     np.testing.assert_allclose(before["session-a"][0]["target"], [[0.1, -0.2, 0], [0.15, -0.2, 0]], atol=1e-7)
-    assert list(inspect.signature(YOLOPositionModel.forward).parameters) == ["self", "images", "references", "context"]
-    assert "driver_position" not in inspect.signature(YOLOPositionModel.predict_position).parameters
+    assert list(inspect.signature(PositionModel.forward).parameters) == ["self", "images", "references", "context"]
+    assert "driver_position" not in inspect.signature(PositionModel.predict_position).parameters
 
 
 @pytest.mark.parametrize("field, value", [
@@ -264,49 +264,46 @@ def test_existing_top_lap_entries_supply_reference_xyz():
         PositionCurve.from_top_lap(entry)
 
 
-@pytest.fixture
-def tiny_yolo():
-    from ultralytics import YOLO
-
+@pytest.fixture(autouse=True)
+def single_threaded_torch():
     previous = torch.get_num_threads()
     torch.set_num_threads(1)
-    yield YOLO("yolo26n-seg.yaml").model
+    yield
     torch.set_num_threads(previous)
 
 
-def test_regression_trains_without_mutating_yolo_and_roundtrips(tiny_yolo, aligned_manifest, tmp_path):
-    model = YOLOPositionModel(tiny_yolo, imgsz=64, categories=CATEGORIES)
-    before = {key: value.clone() for key, value in model.yolo.state_dict().items()}
+def test_regression_trains_image_encoder_and_head_from_scratch_and_roundtrips(aligned_manifest, tmp_path):
+    model = PositionModel(imgsz=64, categories=CATEGORIES)
+    before = {key: value.clone() for key, value in model.image_encoder.state_dict().items()}
     records = load_position_manifest(aligned_manifest)
     sample = PositionDataset(records["session-a"], 64, CATEGORIES)[0]
     model.train()
-    assert not any(module.training for module in model.yolo.modules())
+    assert all(parameter.requires_grad for parameter in model.parameters())
     encoder_before = {key: value.clone() for key, value in model.position_encoder.state_dict().items()}
     optimizer = torch.optim.Adam((parameter for parameter in model.parameters() if parameter.requires_grad), lr=0.01)
     inputs = tuple(sample[field].unsqueeze(0) for field in ("image", "references", "context"))
-    with torch.no_grad():
-        segmentation_before = model.yolo(inputs[0])
     prediction = model(*inputs)
     assert prediction.shape == (1, 2, 3)
     loss = (prediction - sample["target"]).square().mean()
     loss.backward()
     assert model.head[0].weight.grad.abs().sum() > 0
     assert model.position_encoder[0].weight.grad.abs().sum() > 0
-    assert all(parameter.grad is None for parameter in model.yolo.parameters())
+    assert all(parameter.grad is not None and parameter.grad.abs().sum() > 0
+               for parameter in model.image_encoder.parameters())
     optimizer.step()
     assert any(not torch.equal(value, encoder_before[key]) for key, value in model.position_encoder.state_dict().items())
-    for key, value in model.yolo.state_dict().items():
-        torch.testing.assert_close(value, before[key], rtol=0, atol=0)
-    with torch.no_grad():
-        torch.testing.assert_close(model.yolo(inputs[0]), segmentation_before, rtol=0, atol=0)
+    assert all(not torch.equal(value, before[key]) for key, value in model.image_encoder.state_dict().items())
     model.eval()
     with torch.no_grad():
         expected = model(*inputs)
     checkpoint = tmp_path / "position.pt"
     model.save(checkpoint)
-    restored = YOLOPositionModel.load(checkpoint)
+    restored = PositionModel.load(checkpoint)
     assert restored.categories == CATEGORIES
-    assert not any(parameter.requires_grad for parameter in restored.yolo.parameters())
+    assert all(parameter.requires_grad for parameter in restored.parameters())
+    saved = torch.load(checkpoint, weights_only=True)
+    assert "yolo_yaml" not in saved and "names" not in saved
+    assert not any(key.startswith("yolo.") for key in saved["state_dict"])
     with torch.no_grad():
         actual = restored(*inputs)
     torch.testing.assert_close(actual, expected)
@@ -325,8 +322,8 @@ def test_regression_trains_without_mutating_yolo_and_roundtrips(tiny_yolo, align
 
 
 @pytest.mark.parametrize("image_size", [64, 96])
-def test_position_predictions_distinguish_layouts_with_identical_global_averages(tiny_yolo, image_size):
-    model = YOLOPositionModel(tiny_yolo, imgsz=image_size, categories=CATEGORIES).eval()
+def test_position_predictions_distinguish_layouts_with_identical_global_averages(image_size):
+    model = PositionModel(imgsz=image_size, categories=CATEGORIES).eval()
 
     def spatial_features(module, inputs, output):
         # Identical per-channel means, but opposite left/right layouts in the batch.
@@ -336,7 +333,7 @@ def test_position_predictions_distinguish_layouts_with_identical_global_averages
         torch.testing.assert_close(features[0].mean((-2, -1)), features[1].mean((-2, -1)))
         return features
 
-    handles = [model.yolo.model[index].register_forward_hook(spatial_features) for index in model.feature_layers]
+    handle = model.image_encoder.register_forward_hook(spatial_features)
     try:
         with torch.no_grad():
             # Route one spatial cell through the encoder and regression head.
@@ -352,12 +349,11 @@ def test_position_predictions_distinguish_layouts_with_identical_global_averages
         assert prediction.shape == (2, 2, 3)
         assert prediction[0, 0, 0] > prediction[1, 0, 0]
     finally:
-        for handle in handles:
-            handle.remove()
+        handle.remove()
 
 
-def test_all_context_inputs_affect_predictions_with_fixed_image_and_references(tiny_yolo):
-    model = YOLOPositionModel(tiny_yolo, imgsz=64, categories=CATEGORIES).eval()
+def test_all_context_inputs_affect_predictions_with_fixed_image_and_references():
+    model = PositionModel(imgsz=64, categories=CATEGORIES).eval()
     with torch.no_grad():
         model.head[0].weight.zero_()
         model.head[0].bias.zero_()
@@ -383,7 +379,7 @@ def test_checkpoint_without_context_requires_retraining(position_checkpoint, lab
     saved.pop("categories")
     torch.save(saved, position_checkpoint)
     with pytest.raises(ValueError, match="retrain older models"):
-        YOLOPositionModel.load(position_checkpoint)
+        PositionModel.load(position_checkpoint)
 
 
 def test_checkpoint_without_spatial_encoder_requires_retraining(position_checkpoint):
@@ -392,21 +388,24 @@ def test_checkpoint_without_spatial_encoder_requires_retraining(position_checkpo
         key: value for key, value in saved["state_dict"].items() if not key.startswith("position_encoder.")
     }
     torch.save(saved, position_checkpoint)
-    with pytest.raises(ValueError, match="retrain.*spatial"):
-        YOLOPositionModel.load(position_checkpoint)
+    with pytest.raises(ValueError, match="spatial encoder; retrain from scratch"):
+        PositionModel.load(position_checkpoint)
+
+
+def test_segmentation_based_checkpoint_requires_training_from_scratch(position_checkpoint):
+    saved = torch.load(position_checkpoint, weights_only=True)
+    saved["state_dict"] = {
+        key.replace("image_encoder.", "yolo."): value for key, value in saved["state_dict"].items()
+    }
+    torch.save(saved, position_checkpoint)
+    with pytest.raises(ValueError, match="standalone image encoder; retrain from scratch"):
+        PositionModel.load(position_checkpoint)
 
 
 @pytest.mark.parametrize("use_position_folder", [False, True])
 def test_single_session_training_saves_raw_axis_metrics_and_uses_only_train_reference_statistics(
-    tiny_yolo, aligned_manifest, tmp_path, position_folder, use_position_folder,
+    aligned_manifest, tmp_path, position_folder, use_position_folder,
 ):
-    from ultralytics import YOLO
-
-    # Exercise the real saved YOLO -> regression training path without downloads.
-    segmentation = YOLO("yolo26n-seg.yaml")
-    segmentation.model = tiny_yolo
-    source = tmp_path / "segment.pt"
-    segmentation.save(source)
     path = aligned_manifest.parent / "session-b.position.json"
     frame = json.loads(path.read_text())
     frame["session_id"] = "session-a"
@@ -423,7 +422,7 @@ def test_single_session_training_saves_raw_axis_metrics_and_uses_only_train_refe
     prepared = aligned_manifest.read_bytes()
     output = tmp_path / "run"
     checkpoint = train_position_model(
-        training_input, model=source, output=output,
+        training_input, output=output,
         epochs=2, imgsz=64, batch=1, device="cpu", upload=False,
     )
     assert checkpoint == output / "best.pt"
@@ -441,12 +440,12 @@ def test_single_session_training_saves_raw_axis_metrics_and_uses_only_train_refe
     assert len(history) == 2
     assert len(history[-1]["val_mae_per_axis"]) == 6
     assert all(np.isfinite(row["val_mae"]) for row in history)
-    restored = YOLOPositionModel.load(checkpoint)
+    restored = PositionModel.load(checkpoint)
     assert restored.categories == CATEGORIES
     training_references = load_position_manifest(training_input)["session-a"][0]["references"]
     np.testing.assert_allclose(restored.position_mean.numpy(), training_references.reshape(6))
     with pytest.raises(FileExistsError):
-        train_position_model(aligned_manifest, model=tmp_path / "segment.pt", output=output)
+        train_position_model(aligned_manifest, output=output)
 
 
 @pytest.mark.parametrize("offline", [False, True])
@@ -458,10 +457,11 @@ def test_position_cli_dispatches_without_running_segmentation_training(tmp_path,
     monkeypatch.setattr(position_training, "train_position_model", lambda *args, **kwargs: calls.append((args, kwargs)))
     assert main([
         "train-position", "--manifest", str(tmp_path / "positions.json"),
-        "--model", str(tmp_path / "best.pt"), "--output", str(tmp_path / "run"), *device_args,
+        "--output", str(tmp_path / "run"), *device_args,
         "--val-fraction", "0.3", "--seed", "7",
         "--upload-name", "race-position", *(["--no-upload"] if offline else []),
     ]) == 0
+    assert "model" not in calls[0][1]
     assert calls[0][1]["device"] == expected_device
     assert calls[0][1]["val_fraction"] == 0.3
     assert calls[0][1]["seed"] == 7
@@ -470,9 +470,9 @@ def test_position_cli_dispatches_without_running_segmentation_training(tmp_path,
 
 
 @pytest.fixture
-def position_checkpoint(tiny_yolo, tmp_path):
+def position_checkpoint(tmp_path):
     checkpoint = tmp_path / "best.pt"
-    YOLOPositionModel(tiny_yolo, imgsz=64, categories=CATEGORIES).save(checkpoint, metrics={"val_mae": 0.25})
+    PositionModel(imgsz=64, categories=CATEGORIES).save(checkpoint, metrics={"val_mae": 0.25})
     return checkpoint
 
 
@@ -523,12 +523,12 @@ def test_position_upload_streams_onnx_and_regression_metadata(position_checkpoin
     assert metadata == {"name": "track-position", **manifest}
     inference = metadata["metadata"].pop("inference")
     assert list(inference["inputs"]) == ["images", "references", "context"]
-    assert list(inference["outputs"]) == ["deltas", "predictions", "prototypes"]
+    assert list(inference["outputs"]) == ["deltas"]
     assert metadata == {
         "name": "track-position", "task": "position",
-        "classNames": list(YOLOPositionModel.load(position_checkpoint).yolo.names.values()),
+        "classNames": list(OUTPUT_NAMES),
         "metadata": {
-            "format": "acla-yolo-position-v3", "artifactFormat": "onnx", "trainingRunId": position_checkpoint.parent.name,
+            "format": "acla-position-cnn-v1", "artifactFormat": "onnx", "trainingRunId": position_checkpoint.parent.name,
             "categories": CATEGORIES,
             "imgsz": 64, "outputNames": list(OUTPUT_NAMES),
             "targetDefinition": "reference_position - current_position",
@@ -569,22 +569,22 @@ def test_invalid_position_upload_never_connects_to_backend(position_checkpoint, 
 
 @pytest.mark.parametrize("failed", [False, True])
 def test_position_training_uploads_best_and_preserves_weights_on_failure(
-    tiny_yolo, aligned_manifest, tmp_path, monkeypatch, capsys, failed,
+    aligned_manifest, tmp_path, monkeypatch, capsys, failed,
 ):
-    from training.image_segmentation import position_publication
+    from training.image_segmentation import position_publication, position_training
 
-    network = YOLOPositionModel(tiny_yolo, imgsz=64, categories=CATEGORIES)
+    network = PositionModel(imgsz=64, categories=CATEGORIES)
     encoder_before = {key: value.clone() for key, value in network.position_encoder.state_dict().items()}
     monkeypatch.setattr(
-        YOLOPositionModel, "from_segmentation_checkpoint",
-        lambda checkpoint, imgsz, categories: network,
+        position_training, "PositionModel",
+        lambda imgsz, categories: network,
     )
     upload = AsyncMock(return_value={"_id": "position-model"})
     if failed:
         upload.side_effect = httpx.ReadTimeout("upload timed out")
     monkeypatch.setattr(position_publication, "upload_position_checkpoint", upload)
     output = tmp_path / "run"
-    args = dict(model=tmp_path / "segment.pt", output=output, epochs=1, imgsz=64, batch=1, device="cpu")
+    args = dict(output=output, epochs=1, imgsz=64, batch=1, device="cpu")
     if failed:
         with pytest.raises(RuntimeError, match="Training completed, but backend upload failed") as error:
             train_position_model(aligned_manifest, **args)
@@ -595,7 +595,7 @@ def test_position_training_uploads_best_and_preserves_weights_on_failure(
         assert "Model uploaded to backend: position-model" in capsys.readouterr().out
     upload.assert_awaited_once_with((output / "best.onnx").resolve(), name="track-position")
     assert any(not torch.equal(value, encoder_before[key]) for key, value in network.position_encoder.state_dict().items())
-    YOLOPositionModel.load(output / "best.pt")
+    PositionModel.load(output / "best.pt")
     assert (output / "last.pt").is_file()
     assert (output / "results.json").is_file()
     assert (output / "best.onnx").is_file()
@@ -603,12 +603,12 @@ def test_position_training_uploads_best_and_preserves_weights_on_failure(
 
 
 def test_position_training_preserves_checkpoint_and_skips_upload_when_export_fails(
-    tiny_yolo, aligned_manifest, tmp_path, monkeypatch,
+    aligned_manifest, tmp_path, monkeypatch,
 ):
     from training.image_segmentation import position_publication, position_training
 
-    network = YOLOPositionModel(tiny_yolo, imgsz=64, categories=CATEGORIES)
-    monkeypatch.setattr(YOLOPositionModel, "from_segmentation_checkpoint", lambda *args, **kwargs: network)
+    network = PositionModel(imgsz=64, categories=CATEGORIES)
+    monkeypatch.setattr(position_training, "PositionModel", lambda *args, **kwargs: network)
 
     def fail_export(checkpoint):
         raise RuntimeError("unsupported export operator")
@@ -618,10 +618,10 @@ def test_position_training_preserves_checkpoint_and_skips_upload_when_export_fai
     monkeypatch.setattr(position_publication, "upload_position_checkpoint", upload)
     output = tmp_path / "run"
     with pytest.raises(RuntimeError, match="Training completed, but ONNX export failed") as error:
-        train_position_model(aligned_manifest, model=tmp_path / "segment.pt", output=output,
+        train_position_model(aligned_manifest, output=output,
                              epochs=1, imgsz=64, batch=1, device="cpu")
     assert "upload-position" in str(error.value)
-    YOLOPositionModel.load(output / "best.pt")
+    PositionModel.load(output / "best.pt")
     assert (output / "last.pt").is_file()
     assert not (output / "best.onnx").exists()
     upload.assert_not_awaited()
@@ -687,7 +687,7 @@ def test_two_frames_always_produce_nonempty_training_and_validation(fraction):
 def test_invalid_training_split_fraction_is_rejected(aligned_manifest, tmp_path, fraction):
     with pytest.raises(ValueError, match="Validation fraction"):
         train_position_model(
-            aligned_manifest, model=tmp_path / "missing.pt", output=tmp_path / "run", val_fraction=fraction,
+            aligned_manifest, output=tmp_path / "run", val_fraction=fraction,
         )
     assert not (tmp_path / "run").exists()
 
@@ -698,5 +698,5 @@ def test_single_frame_cannot_be_split_for_training(aligned_manifest, tmp_path):
     aligned_manifest.write_text(json.dumps(manifest))
     assert len(load_position_manifest(aligned_manifest)) == 1
     with pytest.raises(ValueError, match="at least two frames"):
-        train_position_model(aligned_manifest, model=tmp_path / "missing.pt", output=tmp_path / "run")
+        train_position_model(aligned_manifest, output=tmp_path / "run")
     assert not (tmp_path / "run").exists()

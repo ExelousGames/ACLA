@@ -54,9 +54,8 @@ def main(argv: list[str] | None = None) -> int:
     prepared = commands.add_parser("train", parents=[train], help="Train a prepared YOLO dataset.")
     prepared.add_argument("--data", type=Path, required=True, help="Prepared data.yaml file.")
 
-    position = commands.add_parser("train-position", help="Extend a saved YOLO segmentation model with signed XYZ offsets.")
+    position = commands.add_parser("train-position", help="Train a standalone signed XYZ position model from scratch.")
     position.add_argument("--manifest", type=Path, required=True, help="Recursively scan a folder for .position.json files, or read a positions.json index; randomly split frames when training starts.")
-    position.add_argument("--model", type=Path, required=True, help="Existing segmentation .pt checkpoint.")
     position.add_argument("--output", type=Path, required=True, help="New directory for position checkpoints, ONNX, and metrics.")
     position.add_argument("--epochs", type=int, default=100)
     position.add_argument("--imgsz", type=int, default=768)
@@ -86,8 +85,8 @@ def main(argv: list[str] | None = None) -> int:
     automatic.add_argument("--labels", type=Path, default=DEFAULT_LABELS)
     automatic.add_argument("--polyline-width", type=int, default=8)
 
-    upload = commands.add_parser("upload", help="Upload a saved segmentation checkpoint without retraining.")
-    upload.add_argument("checkpoint", type=Path, help="Local trained .pt checkpoint.")
+    upload = commands.add_parser("upload", help="Export and upload a segmentation model as ONNX without retraining.")
+    upload.add_argument("checkpoint", type=Path, help="Local trained .pt checkpoint to export as ONNX.")
     upload.add_argument("--name", default="track-segments", help="Model name in the backend store.")
     upload_position = commands.add_parser("upload-position", help="Export/publish a position model as ONNX without retraining.")
     upload_position.add_argument("checkpoint", type=Path, help="Local position .pt checkpoint or exported .onnx artifact.")
@@ -99,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             checkpoint = train_position_model(
-                args.manifest, model=args.model, output=args.output, epochs=args.epochs,
+                args.manifest, output=args.output, epochs=args.epochs,
                 imgsz=args.imgsz, batch=args.batch, device=args.device, workers=args.workers,
                 val_fraction=args.val_fraction, seed=args.seed,
                 upload=not args.no_upload, upload_name=args.upload_name,

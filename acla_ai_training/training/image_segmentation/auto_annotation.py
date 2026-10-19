@@ -62,7 +62,7 @@ async def download_latest_model(
             raise ValueError("Backend returned invalid segmentation model metadata")
 
         cache_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint = cache_dir / f"{model_id}-{digest}.pt"
+        checkpoint = cache_dir / f"{model_id}-{digest}.onnx"
         if checkpoint.is_file() and checkpoint.stat().st_size == metadata["sizeBytes"]:
             with checkpoint.open("rb") as cached:
                 if hashlib.file_digest(cached, "sha256").hexdigest() == digest:
@@ -98,7 +98,7 @@ class BackendAutoAnnotator:
         if checkpoint != self._checkpoint:
             from ultralytics import YOLO
 
-            network = YOLO(str(checkpoint))
+            network = YOLO(str(checkpoint), task="segment")
             if network.task != "segment":
                 raise ValueError("The backend checkpoint is not a segmentation model")
             self._network = network

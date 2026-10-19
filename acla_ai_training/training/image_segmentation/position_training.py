@@ -1,4 +1,4 @@
-"""Train the position encoder and head with split frames and raw XYZ errors."""
+"""Train a standalone position CNN from scratch with split frames and raw XYZ errors."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from .position_data import OUTPUT_NAMES, PositionDataset, load_position_manifest
 from .position_export import export_position_checkpoint
-from .position_model import YOLOPositionModel
+from .position_model import PositionModel
 
 
 def split_position_frames(records: list[dict], *, val_fraction=0.2, seed=42) -> dict[str, list[dict]]:
@@ -33,7 +33,6 @@ def split_position_frames(records: list[dict], *, val_fraction=0.2, seed=42) -> 
 def train_position_model(
     manifest: Path,
     *,
-    model: Path,
     output: Path,
     epochs=100,
     imgsz=768,
@@ -55,7 +54,7 @@ def train_position_model(
     torch.manual_seed(seed)
     device = f"cuda:{device}" if str(device).isdigit() else device
     categories = {field: sorted({row[field] for row in records}) for field in ("game", "map_name")}
-    network = YOLOPositionModel.from_segmentation_checkpoint(model, imgsz, categories=categories).to(device)
+    network = PositionModel(imgsz, categories=categories).to(device)
     positions = torch.from_numpy(np.stack([row["references"].reshape(6) for row in splits["train"]])).to(device)
     # Standardize XYZ using training references alone; context stays in [0, 1].
     network.position_mean.copy_(positions.mean(0))
@@ -64,7 +63,7 @@ def train_position_model(
         split: DataLoader(PositionDataset(records, imgsz, categories), batch_size=batch, shuffle=split == "train", num_workers=workers)
         for split, records in splits.items()
     }
-    optimizer = torch.optim.Adam((parameter for parameter in network.parameters() if parameter.requires_grad), lr=1e-3)
+    optimizer = torch.optim.Adam(network.parameters(), lr=1e-3)
     loss_function = nn.SmoothL1Loss()
     output.mkdir(parents=True)
     assignments = {split: [str(row["image"]) for row in frames] for split, frames in splits.items()}

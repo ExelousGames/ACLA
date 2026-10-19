@@ -1,4 +1,4 @@
-"""Train image segmentation locally and publish the saved checkpoint to the backend."""
+"""Train image segmentation locally and publish its ONNX export to the backend."""
 
 from __future__ import annotations
 
@@ -67,12 +67,12 @@ def train_model(
         checkpoint = network.trainer.best
         if not checkpoint.is_file():
             checkpoint = network.trainer.last
-        print(f"Uploading trained checkpoint: {checkpoint}", flush=True)
+        print(f"Exporting and uploading trained checkpoint as ONNX: {checkpoint}", flush=True)
         try:
             record = asyncio.run(upload_checkpoint(checkpoint, name=upload_name))
-        except (OSError, ValueError, ImportError, httpx.HTTPError) as exc:
+        except (OSError, ValueError, ImportError, RuntimeError, httpx.HTTPError) as exc:
             raise RuntimeError(
-                f"Training completed, but backend upload failed: {exc}. "
+                f"Training completed, but ONNX export or backend upload failed: {exc}. "
                 f"The local checkpoint is preserved at {checkpoint}. "
                 "Use the upload command to publish it without retraining."
             ) from exc

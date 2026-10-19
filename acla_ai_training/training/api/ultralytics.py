@@ -1,4 +1,4 @@
-"""Publish trained Ultralytics checkpoints through the local training API."""
+"""Publish Ultralytics ONNX models through the local training API."""
 
 from __future__ import annotations
 
@@ -50,9 +50,9 @@ async def upload_model(
     metadata: str = Form(...),
     backend_service=Depends(get_backend_service),
 ) -> dict[str, Any]:
-    """Upload a .pt file and JSON metadata; return the backend's saved record."""
-    if not file.filename or Path(file.filename).suffix.lower() != ".pt":
-        raise HTTPException(status_code=400, detail="Model file must use the .pt extension")
+    """Upload an ONNX file and JSON metadata; return the backend's saved record."""
+    if not file.filename or Path(file.filename).suffix.lower() != ".onnx":
+        raise HTTPException(status_code=400, detail="Model file must use the .onnx extension")
     if not file.size:
         raise HTTPException(status_code=400, detail="Model file must not be empty")
     if file.size > MAX_MODEL_BYTES:

@@ -1,4 +1,4 @@
-"""Publish a saved segmentation checkpoint through the backend model API."""
+"""Export segmentation checkpoints as ONNX for the backend model API."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ async def upload_checkpoint(
     name: str = "track-segments",
     backend_service=None,
 ) -> dict[str, Any]:
-    """Read metadata from local trained weights and upload the unchanged file."""
+    """Read checkpoint metadata, export ONNX, and upload only the exported graph."""
     checkpoint = checkpoint.resolve()
     if checkpoint.suffix.lower() != ".pt":
         raise ValueError("Model file must use the .pt extension")
@@ -36,6 +36,7 @@ async def upload_checkpoint(
         "task": "segment",
         "classNames": [names[index] for index in range(len(names))],
         "metadata": {
+            "artifactFormat": "onnx",
             "trainingRunId": checkpoint.parent.parent.name,
             "baseModel": args.get("model"),
             "epochs": args.get("epochs"),
@@ -44,14 +45,20 @@ async def upload_checkpoint(
             "metrics": model.ckpt.get("train_metrics", {}),
         },
     }
-    # Reject invalid JSON metrics before authentication or transferring weights.
+    # Reject invalid JSON metrics before exporting or transferring the model.
     json.dumps(metadata, allow_nan=False)
+    artifact = Path(model.export(
+        format="onnx", imgsz=args.get("imgsz", 768), batch=1, dynamic=False,
+        device="cpu", opset=17, simplify=False, nms=None,
+    ))
+    if artifact.suffix.lower() != ".onnx" or not artifact.is_file() or not artifact.stat().st_size:
+        raise ValueError(f"ONNX export is missing or empty: {artifact}")
     del model
 
     if backend_service is None:
         from app.integrations.backend.client import backend_service
 
-    with checkpoint.open("rb") as model_file:
+    with artifact.open("rb") as model_file:
         return await upload_ultralytics_model(
-            backend_service, model_file, checkpoint.name, metadata,
+            backend_service, model_file, artifact.name, metadata,
         )

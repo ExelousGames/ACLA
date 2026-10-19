@@ -1,4 +1,4 @@
-"""Split nested Labelme annotations, save the sample lists, and start training.
+"""Split Labelme annotations, train segmentation, and upload an ONNX export.
 
 Usage: python scripts/train_labelme.py path/to/annotations [--device 0]
 An explicit annotation root is required; run --help for split and training options.

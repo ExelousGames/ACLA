@@ -5,6 +5,7 @@ import json
 import sys
 from email import policy
 from email.parser import BytesParser
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,10 +27,13 @@ def trained(tmp_path, monkeypatch):
     checkpoint.write_bytes(b"saved segmentation weights\x00\xff")
     last = weights / "last.pt"
     last.write_bytes(b"last checkpoint")
+    artifact = weights / "best.onnx"
+    artifact.write_bytes(b"exported ONNX graph\x00\xff")
     data = tmp_path / "data.yaml"
     data.write_text("names: [track, car]\n")
     saved_model = SimpleNamespace(
         task="segment", names={1: "car", 0: "track"},
+        export=MagicMock(return_value=str(artifact)),
         ckpt={
             "train_args": {"model": "yolo11n-seg.pt", "epochs": 2, "imgsz": 128, "batch": 2},
             "train_metrics": {"metrics/mAP50(M)": 0.75},
@@ -40,12 +44,12 @@ def trained(tmp_path, monkeypatch):
     factory = MagicMock(side_effect=lambda *args, **kwargs: network if kwargs else saved_model)
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=factory))
     return SimpleNamespace(
-        checkpoint=checkpoint, last=last, data=data, network=network,
+        checkpoint=checkpoint, artifact=artifact, last=last, data=data, network=network,
         saved_model=saved_model, factory=factory,
     )
 
 
-def test_checkpoint_upload_sends_binary_class_id_order_metadata_and_auth(trained, monkeypatch):
+def test_checkpoint_upload_sends_onnx_class_id_order_metadata_and_auth(trained, monkeypatch):
     backend = SimpleNamespace(
         base_url="http://backend", base_port="7001",
         ensure_connection=AsyncMock(return_value=True),
@@ -67,6 +71,11 @@ def test_checkpoint_upload_sends_binary_class_id_order_metadata_and_auth(trained
     ))
 
     assert record == {"_id": "saved-model"}
+    export_options = trained.saved_model.export.call_args.kwargs
+    assert export_options["format"] == "onnx"
+    assert export_options["imgsz"] == 128
+    assert export_options["batch"] == 1
+    assert export_options["dynamic"] is False
     assert len(requests) == 1
     request = requests[0]
     assert str(request.url) == "http://backend:7001/ai-model/ultralytics"
@@ -76,11 +85,12 @@ def test_checkpoint_upload_sends_binary_class_id_order_metadata_and_auth(trained
     )
     parts = {part.get_param("name", header="content-disposition"): part for part in message.iter_parts()}
     assert set(parts) == {"file", "metadata"}
-    assert parts["file"].get_filename() == "best.pt"
-    assert parts["file"].get_payload(decode=True) == trained.checkpoint.read_bytes()
+    assert parts["file"].get_filename() == "best.onnx"
+    assert parts["file"].get_payload(decode=True) == trained.artifact.read_bytes()
     assert json.loads(parts["metadata"].get_payload(decode=True)) == {
         "name": "race-boundaries", "task": "segment", "classNames": ["track", "car"],
         "metadata": {
+            "artifactFormat": "onnx",
             "trainingRunId": "train7", "baseModel": "yolo11n-seg.pt",
             "epochs": 2, "imgsz": 128, "batch": 2,
             "metrics": {"metrics/mAP50(M)": 0.75},
@@ -109,6 +119,27 @@ def test_invalid_checkpoint_fails_before_backend_connection(trained, problem):
     with pytest.raises(ValueError):
         asyncio.run(publication.upload_checkpoint(checkpoint, name=name, backend_service=backend))
     backend.ensure_connection.assert_not_awaited()
+    trained.saved_model.export.assert_not_called()
+
+
+@pytest.mark.parametrize("problem", ["missing", "empty", "pt", "failure"])
+def test_failed_export_never_uploads_checkpoint(trained, problem):
+    backend = SimpleNamespace(ensure_connection=AsyncMock())
+    before = trained.checkpoint.read_bytes()
+    if problem == "missing":
+        trained.artifact.unlink()
+    elif problem == "empty":
+        trained.artifact.write_bytes(b"")
+    elif problem == "pt":
+        trained.saved_model.export.return_value = str(trained.checkpoint)
+    else:
+        trained.saved_model.export.side_effect = RuntimeError("export failed")
+
+    with pytest.raises((ValueError, RuntimeError)):
+        asyncio.run(publication.upload_checkpoint(trained.checkpoint, backend_service=backend))
+
+    backend.ensure_connection.assert_not_awaited()
+    assert trained.checkpoint.read_bytes() == before
 
 
 @pytest.mark.parametrize("best_exists", [True, False])
@@ -136,12 +167,13 @@ def test_failed_training_never_uploads(trained, monkeypatch):
     upload.assert_not_awaited()
 
 
-def test_upload_failure_reports_preserved_checkpoint_without_retry(trained, monkeypatch):
+@pytest.mark.parametrize("failure", [httpx.ReadTimeout("upload timed out"), RuntimeError("export failed")])
+def test_publication_failure_reports_preserved_checkpoint_without_retry(trained, monkeypatch, failure):
     before = trained.checkpoint.read_bytes()
-    upload = AsyncMock(side_effect=httpx.ReadTimeout("upload timed out"))
+    upload = AsyncMock(side_effect=failure)
     monkeypatch.setattr(publication, "upload_checkpoint", upload)
 
-    with pytest.raises(RuntimeError, match="Training completed, but backend upload failed") as error:
+    with pytest.raises(RuntimeError, match="Training completed, but ONNX export or backend upload failed") as error:
         train_model(trained.data)
 
     assert str(trained.checkpoint) in str(error.value)
@@ -176,6 +208,34 @@ def test_upload_command_publishes_without_retraining(trained, monkeypatch, capsy
     upload.assert_awaited_once_with(trained.checkpoint, name="race-boundaries")
     trained.network.train.assert_not_called()
     assert "saved-model" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["train", "train-labelme", "upload"])
+def test_all_segmentation_publication_paths_send_only_onnx(trained, monkeypatch, command):
+    from training.image_segmentation import splits
+
+    monkeypatch.setattr(splits, "prepare_training_dataset", lambda *args, **kwargs: trained.data)
+    backend = SimpleNamespace()
+    monkeypatch.setitem(sys.modules, "app.integrations.backend.client", SimpleNamespace(backend_service=backend))
+    sent = []
+
+    async def send(service, model_file, filename, metadata):
+        sent.append((filename, model_file.read(), metadata))
+        return {"_id": "saved-model"}
+
+    monkeypatch.setattr(publication, "upload_ultralytics_model", send)
+    args = {
+        "train": ["--data", str(trained.data)],
+        "train-labelme": [str(trained.data.parent)],
+        "upload": [str(trained.checkpoint)],
+    }[command]
+    assert main([command, *args]) == 0
+    assert len(sent) == 1
+    filename, content, metadata = sent[0]
+    assert Path(filename).suffix == ".onnx"
+    assert content == trained.artifact.read_bytes()
+    assert content != trained.checkpoint.read_bytes()
+    assert metadata["metadata"]["artifactFormat"] == "onnx"
 
 
 @pytest.mark.parametrize("command", ["upload", "train"])

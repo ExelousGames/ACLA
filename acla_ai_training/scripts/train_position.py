@@ -1,4 +1,7 @@
-"""Train the local YOLO position-regression extension.
+"""Train the standalone position-regression CNN from scratch.
+
+All image encoder and regression weights are initialized and trained together.
+No pretrained or segmentation checkpoint is used.
 
 The input folder and its subfolders are scanned for .position.json files holding
 reference-lap/centerline XYZ, game, map name, normalized lap position, and signed
@@ -9,12 +12,12 @@ when training starts, regardless of their source sessions.
 Preparation aligns images to telemetry using Graphics_analyst_session_time.
 No driver telemetry is read during training.
 Uses the first GPU by default; use --device cpu for CPU training.
-Exports best.onnx and best.onnx.json for direct Track Vision inference, preserving
+Exports only signed position deltas in best.onnx, with best.onnx.json for inference, preserving
 best.pt and last.pt for Python use. Uploads best.onnx to the backend by default;
 use --no-upload to export locally without publishing
 or --upload-name to change the backend name (default: track-position).
 
-Usage: python scripts/train_position.py --manifest storage/session_downloads --model best.pt --output position-runs/run-1
+Usage: python scripts/train_position.py --manifest storage/session_downloads --output position-runs/run-1
 Run --help for training options.
 """
 

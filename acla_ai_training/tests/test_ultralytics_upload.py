@@ -61,7 +61,7 @@ def api(monkeypatch):
         app.dependency_overrides.pop(ultralytics.get_backend_service, None)
 
 
-def upload(client, *, content=b"checkpoint", filename="best.pt", metadata=None):
+def upload(client, *, content=b"checkpoint", filename="best.onnx", metadata=None):
     return client.post(
         "/models/ultralytics/upload",
         data={"metadata": json.dumps(METADATA) if metadata is None else metadata},
@@ -69,11 +69,12 @@ def upload(client, *, content=b"checkpoint", filename="best.pt", metadata=None):
     )
 
 
-def test_upload_forwards_binary_metadata_and_service_authentication(api):
+@pytest.mark.parametrize("filename", ["best.onnx", "best.ONNX"])
+def test_upload_forwards_binary_metadata_and_service_authentication(api, filename):
     client, backend = api
     # Exceed the spool threshold to exercise an on-disk multipart upload.
     weights = bytes(range(256)) * 5000
-    response = upload(client, content=weights)
+    response = upload(client, content=weights, filename=filename)
 
     assert response.status_code == 201
     assert response.json() == RECORD
@@ -82,7 +83,7 @@ def test_upload_forwards_binary_metadata_and_service_authentication(api):
     assert str(request.url) == "http://backend:7001/ai-model/ultralytics"
     assert request.headers["Authorization"] == "Bearer service-token"
     assert set(parts) == {"file", "metadata"}
-    assert parts["file"].get_filename() == "best.pt"
+    assert parts["file"].get_filename() == filename
     assert parts["file"].get_payload(decode=True) == weights
     assert json.loads(parts["metadata"].get_payload(decode=True)) == METADATA
 
@@ -114,7 +115,10 @@ def test_position_task_is_forwarded_without_becoming_segmentation(api):
     assert json.loads(parts["metadata"].get_payload(decode=True)) == metadata
 
 
-@pytest.mark.parametrize("filename,content", [("best.json", b"weights"), ("best.pt", b"")])
+@pytest.mark.parametrize("filename,content", [
+    ("best.json", b"weights"), ("best.onnx", b""),
+    ("best.pt", b"weights"), ("best.PT", b"weights"), ("best.onnx.pt", b"weights"),
+])
 def test_invalid_checkpoint_is_rejected_without_backend_call(api, filename, content):
     client, backend = api
     assert upload(client, filename=filename, content=content).status_code == 400
@@ -155,7 +159,7 @@ def test_file_and_metadata_are_required(api, missing):
     response = client.post(
         "/models/ultralytics/upload",
         data={} if missing == "metadata" else {"metadata": json.dumps(METADATA)},
-        files={} if missing == "file" else {"file": ("best.pt", b"checkpoint")},
+        files={} if missing == "file" else {"file": ("best.onnx", b"checkpoint")},
     )
     assert response.status_code == 422
     assert not backend.requests

@@ -61,6 +61,7 @@ def download(backend, tmp_path):
 
 def test_latest_is_checked_each_time_and_verified_weights_are_reused(backend, tmp_path):
     first, metadata = download(backend, tmp_path)
+    assert first.suffix == ".onnx"
     assert first.read_bytes() == backend.weights
     assert metadata == backend.metadata
     second, _ = download(backend, tmp_path)
@@ -82,7 +83,7 @@ def test_corrupt_cached_weights_are_downloaded_again(backend, tmp_path):
 
 
 def test_existing_local_backend_version_skips_weight_download(backend, tmp_path):
-    checkpoint = tmp_path / f"{backend.metadata['id']}-{backend.metadata['sha256']}.pt"
+    checkpoint = tmp_path / f"{backend.metadata['id']}-{backend.metadata['sha256']}.onnx"
     checkpoint.write_bytes(backend.weights)
 
     assert download(backend, tmp_path)[0] == checkpoint
@@ -171,7 +172,7 @@ def predictor(tmp_path, monkeypatch):
     network.predict.return_value = [result]
     factory = MagicMock(return_value=network)
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=factory))
-    fetch = AsyncMock(return_value=(tmp_path / "latest.pt", {"name": "track-segments", "id": "a" * 24}))
+    fetch = AsyncMock(return_value=(tmp_path / "latest.onnx", {"name": "track-segments", "id": "a" * 24}))
     monkeypatch.setattr(auto_annotation, "download_latest_model", fetch)
     return auto_annotation.BackendAutoAnnotator(), network, factory, fetch
 
@@ -186,10 +187,10 @@ def test_predictions_use_checkpoint_labels_and_original_image_polygons(predictor
     assert annotator.predict(image, ["track", "grass"]) == expected
     assert annotator.predict(image, ["track", "grass"]) == expected
     assert fetch.await_count == 2
-    factory.assert_called_once()
+    factory.assert_called_once_with(str(fetch.return_value[0]), task="segment")
     network.predict.assert_called_with(image, conf=0.25, retina_masks=True, verbose=False)
 
-    fetch.return_value = (fetch.return_value[0].with_name("newer.pt"), fetch.return_value[1])
+    fetch.return_value = (fetch.return_value[0].with_name("newer.onnx"), fetch.return_value[1])
     annotator.predict(image, ["track", "grass"])
     assert factory.call_count == 2
 

@@ -93,7 +93,7 @@ the position files. Close it or toggle **View > Position Context** to hide it;
 Labelme remembers its window visibility and layout between launches.
 
 Click **Custom Annotate** in the toolbar (or **Edit > Custom Annotate**) to add
-polygons for the current image using the newest segmentation checkpoint uploaded
+polygons for the current image using the newest segmentation ONNX model uploaded
 to the backend. Each click compares the latest model ID, size, and SHA-256 with
 the local cache before downloading. Matching weights are reused; missing or
 corrupt weights are downloaded, verified, and cached under
@@ -101,7 +101,8 @@ corrupt weights are downloaded, verified, and cached under
 must have uploaded a model first. This uses the same backend URL and AI service
 credentials as training uploads; for a local desktop, also set
 `PYTHONPATH=../acla_ai_service` so the shared backend client can be imported.
-Local installations need Ultralytics as well as Labelme.
+Local installations need Ultralytics, ONNX Runtime, and Labelme. Republish an older
+`.pt` backend model with the `upload` command below to export it as ONNX.
 
 Click **YOLO26x Annotate** in the same toolbar or Edit menu to use pretrained
 `yolo26x-seg.pt` without the backend. It checks for local weights in
@@ -352,17 +353,19 @@ Checkpoints and metrics go under `storage/image_segmentation/runs/train*/`, incl
 location. In Docker these defaults live under `/app/storage/image_segmentation/`
 and persist in the host's `acla_ai_training/storage/image_segmentation/` directory.
 After successful training, both `train` and `train-labelme` (including
-`scripts/train_labelme.py`) upload the actual run's `best.pt` to
-`POST /ai-model/ultralytics`, falling back to `last.pt` if there is no best
-checkpoint. Local checkpoints are preserved. Use `--upload-name track-segments`
-to set the backend model name (default: `track-segments`), or `--no-upload` to
-train offline without publishing.
+`scripts/train_labelme.py`) export the actual run's `best.pt` to `best.onnx` and
+upload only that ONNX graph to `POST /ai-model/ultralytics`. If there is no best
+checkpoint, `last.pt` is exported to `last.onnx` instead. Exports use ONNX opset 17,
+fixed batch size 1, and the training image size, with raw segmentation outputs.
+Local checkpoints and ONNX exports are preserved; `.pt` files are never uploaded.
+Use `--upload-name track-segments` to set the backend model name
+(default: `track-segments`), or `--no-upload` to
+train offline without exporting or publishing.
 
 ## Predict signed position differences from images
 
-`train-position` extends an existing YOLO segmentation checkpoint with a small
-regression head. It combines the image features feeding YOLO's segmentation
-head with two XYZ positions, normalized lap position, and one-hot encoded game
+`train-position` trains a standalone position CNN from scratch. It combines
+learned image features with two XYZ positions, normalized lap position, and one-hot encoded game
 and map names. The XYZ positions are looked up during preparation at the frame's
 normalized lap position. The output is exactly six signed values, ordered as:
 
@@ -386,13 +389,13 @@ Reference lookup uses linear interpolation, including across the start/finish se
 missing axes and invalid or missing reference curves fail instead of becoming
 zero coordinates.
 
-The model freezes all YOLO parameters and BatchNorm statistics. The position
-addon pools each of the three feature scales feeding the segmentation head to a
-4×4 grid, preserving coarse image layout instead of globally averaging it.
-The flattened grids pass through a trainable 128-feature linear/ReLU position
-encoder. An MLP combines this encoding with six reference coordinates and context
-to predict the signed offsets. Position training updates only the encoder and
-regression head; the segmentation model and its outputs are unchanged.
+The image encoder uses five stride-2 convolution/GroupNorm/ReLU blocks with
+16, 32, 64, 96, and 128 channels. A 4×4 adaptive pooling grid preserves coarse
+image layout, followed by a 128-feature linear/ReLU position encoder. An MLP
+combines this encoding with six standardized reference coordinates and context
+to predict the signed offsets. All encoder and regression weights are randomly
+initialized and trained together. No pretrained weights, segmentation model,
+or segmentation labels are used.
 Reference inputs are standardized using training-set statistics. Lap progress
 stays in `[0, 1]`; game and map names use separate one-hot vectors. Sorted category
 vocabularies are built from the prepared dataset and saved in each checkpoint.
@@ -434,9 +437,8 @@ Once preparation succeeds, open each reported `annotation_directories` folder
 with `python scripts/open_labelme.py PATH`. Save Labelme JSON beside the images.
 Pass the folder containing the image/position pairs to `train-position` below.
 The position trainer reads images, reference XYZ, game/map context, lap progress, and
-prepared targets. It does not read source telemetry or Labelme polygons; use a
-segmentation checkpoint trained on the new region labels if they should inform
-its frozen image features.
+prepared targets. It does not read source telemetry or Labelme polygons; its
+image features are learned directly from the position targets.
 
 For other images, prepare both reference XYZ inputs and signed offset targets
 synchronized to each image. Provide at least two frames for training to split;
@@ -487,7 +489,6 @@ service package with `PYTHONPATH=../acla_ai_service` as for other training comma
 ```bash
 python scripts/train_position.py \
   --manifest storage/session_downloads \
-  --model storage/image_segmentation/runs/train/weights/best.pt \
   --output storage/image_segmentation/position-runs/run-1 \
   --epochs 100 --imgsz 768 --batch 8 --device 0
 ```
@@ -497,7 +498,7 @@ In the training container, use
 with the same arguments. The script forwards to
 `python -m training.image_segmentation train-position`.
 
-Use your actual segmentation checkpoint and a new output directory. The first GPU
+Use a new output directory; every run trains from scratch. The first GPU
 is the default if `--device` is omitted; use `--device cpu` for CPU training.
 Before the first epoch, training shuffles individual
 frames reproducibly with `--seed 42` and assigns `--val-fraction 0.2` to validation by
@@ -516,7 +517,7 @@ After export, `best.onnx` is uploaded to the backend using the same authenticati
 and binary storage as segmentation training. The default name is `track-position`;
 use `--upload-name my-position-model` to change it, or `--no-upload` to train
 and export offline. Position uploads contain one self-contained ONNX graph with
-the combined segmentation and position outputs. They are stored with
+only the signed position outputs. They are stored with
 `task: position` and `metadata.artifactFormat: onnx` and do not enter the Track
 Vision segmentation model selection.
 
@@ -549,8 +550,9 @@ model** below. Successful uploads print the backend model ID.
 The graph uses ONNX opset 17 and fixed batch size 1 at the checkpoint's training
 image size. All inputs and outputs are float32. `metadata.inference` describes
 the names, exact shapes, preprocessing, and context order; its `schemaVersion`
-is 1. This interface is independent of the informational checkpoint `format`
-label. Internal model changes can keep this interface unchanged.
+is 2. Image, reference, context, and delta tensors retain their previous names,
+shapes, and meanings; segmentation `predictions` and `prototypes` are removed.
+The interface is independent of the informational checkpoint `format` label.
 
 | Tensor | Shape | Meaning |
 | --- | --- | --- |
@@ -558,12 +560,12 @@ label. Internal model changes can keep this interface unchanged.
 | Input `references` | `[1, 2, 3]` | Reference-lap XYZ, then centerline XYZ, in source coordinates. Learned standardization is inside the graph. |
 | Input `context` | `[1, 1 + len(game) + len(map_name)]` | Normalized lap position, then game and map-name one-hot vectors in `metadata.categories` order. |
 | Output `deltas` | `[1, 2, 3]` | Reference XYZ minus driver XYZ, then centerline XYZ minus driver XYZ. |
-| Output `predictions` | `[1, 4 + class_count + mask_channels, anchors]` | Raw YOLO one-to-many predictions: center XY/width/height in image pixels, class scores, then mask coefficients. |
-| Output `prototypes` | `[1, mask_channels, height, width]` | Segmentation mask prototypes; dimensions are recorded in the manifest. |
 
 The frontend must validate finite reference coordinates, lap position in `[0, 1]`,
 and known category values; Python's input validation is not part of the graph.
-`classNames`, category vocabularies, coordinate/output definitions, and training
+The shared model store's required `classNames` field contains the six regression
+axis names from `outputNames`, rather than segmentation classes.
+Category vocabularies, coordinate/output definitions, and training
 metrics accompany the graph in the upload metadata. The same metadata (without
 the user-selected upload `name`) is saved in `best.onnx.json` and as JSON in the
 ONNX custom metadata property `acla.track-position`.
@@ -574,12 +576,12 @@ For inference, load your reference-lap XYZ points and backend circuit-map export
 import json
 from pathlib import Path
 from training.image_segmentation.position_data import PositionCurve
-from training.image_segmentation.position_model import YOLOPositionModel
+from training.image_segmentation.position_model import PositionModel
 
 reference = PositionCurve.from_points(json.loads(Path("reference-lap.json").read_text()))
 circuit_map = json.loads(Path("circuit-map.json").read_text())
 centerline = PositionCurve.from_points(circuit_map["samples"]["middle_line"])
-model = YOLOPositionModel.load(Path("position-runs/run-1/best.pt"))
+model = PositionModel.load(Path("position-runs/run-1/best.pt"))
 result = model.predict_position(
     Path("frame.jpg"), 0.25, reference, centerline,
     game=circuit_map["game"], map_name=circuit_map["circuit_name"],
@@ -588,15 +590,15 @@ result = model.predict_position(
 ```
 
 For an already loaded top-lap entry, use `PositionCurve.from_top_lap(entry)`.
-Position checkpoints include the original YOLO weights, position encoder and added head and
-load through `YOLOPositionModel.load`; they are not standard Ultralytics-only
-checkpoints. Use `upload-position` to export and store their ONNX graph; the segmentation `upload`
+Position checkpoints include only the image encoder, position encoder, regression
+head, reference normalization, and category vocabulary. Load them through
+`PositionModel.load`. Use `upload-position` to export and store their ONNX graph; the segmentation `upload`
 command continues to accept segmentation checkpoints only. Uploading stores the
 model for later download; the live API does not yet run position inference.
-The current format is `acla-yolo-position-v3`. Position checkpoints without the
-spatial encoder (including earlier v1/v2 models) must be retrained from the
-segmentation checkpoint. Format labels remain informational; loading checks the
-saved context and encoder weights.
+The current format is `acla-position-cnn-v1`. Previous YOLO-based position
+checkpoints must be retrained from scratch using the same prepared position
+dataset. Format labels remain informational; loading checks the saved context
+and standalone encoder weights.
 
 Accuracy needs evaluation on synchronized held-out sessions, especially when
 camera view, car, track, or reference conditions change. Compare against a
@@ -619,16 +621,17 @@ exact racing target:
 ## Upload a trained model
 
 The publication component in `publication.py` reads class names in class-ID order,
-training parameters, and metrics from the saved checkpoint, then streams its
-unchanged bytes through the existing authenticated backend uploader. The shared
-backend client uses `BACKEND_SERVER_IP`, `BACKEND_PROXY_PORT`,
+training parameters, and metrics from the saved checkpoint, exports it to ONNX,
+then streams the ONNX bytes through the existing authenticated backend uploader.
+Upload metadata includes `artifactFormat: onnx`. The shared backend client uses
+`BACKEND_SERVER_IP`, `BACKEND_PROXY_PORT`,
 `AI_SERVICE_USERNAME`, and `AI_SERVICE_PASSWORD`. Docker configures these from
 the training service's environment. When running locally, make the shared
 runtime package available with `export PYTHONPATH=../acla_ai_service` from
 `acla_ai_training`, and configure the backend environment variables there.
 
-To publish an existing trained checkpoint without retraining or starting the
-local API:
+To export and publish an existing trained checkpoint without retraining or
+starting the local API:
 
 ```bash
 python -m training.image_segmentation upload \
@@ -636,14 +639,14 @@ python -m training.image_segmentation upload \
 ```
 
 Use the actual run directory (`train`, `train2`, etc.). Successful uploads print
-the backend model ID. An upload failure exits with a nonzero status and preserves
-the local weights; after resolving the failure, use the command above to upload
-them without retraining. A timeout may occur after the backend saved the record,
-so check its model list before repeating an uncertain upload.
+the backend model ID. An export or upload failure exits with a nonzero status and
+preserves the local checkpoint; after resolving the failure, use the command above
+to export and upload it without retraining. A timeout may occur after the backend
+saved the record, so check its model list before repeating an uncertain upload.
 
 ### Upload through the local FastAPI endpoint
 
-For clients that supply a checkpoint and their own metadata, the existing local
+For clients that supply an ONNX export and their own metadata, the existing local
 training API remains available. Start it from the training Python environment:
 
 ```bash
@@ -663,6 +666,7 @@ Save `model-metadata.json` with the class names from the trained dataset's
   "task": "segment",
   "classNames": ["track", "curb", "grass", "car", "other", "fence", "car pack", "sand", "Outfield asphalt road"],
   "metadata": {
+    "artifactFormat": "onnx",
     "baseModel": "yolo26n-seg.pt",
     "epochs": 100,
     "trainingRunId": "train"
@@ -670,28 +674,31 @@ Save `model-metadata.json` with the class names from the trained dataset's
 }
 ```
 
-Upload the checkpoint and metadata to FastAPI:
+Upload the ONNX export and metadata to FastAPI:
 
 ```bash
 curl --fail-with-body http://127.0.0.1:8002/models/ultralytics/upload \
-  -F "file=@storage/image_segmentation/runs/train/weights/best.pt" \
+  -F "file=@storage/image_segmentation/runs/train/weights/best.onnx" \
   -F "metadata=<model-metadata.json"
 ```
 
 Use the actual run directory (`train`, `train2`, etc.) and training parameters.
-The route accepts a non-empty `.pt` file up to 512 MiB and a JSON metadata field
-up to 1 MiB. It forwards binary weights to `POST /ai-model/ultralytics` and returns
-the saved backend record with HTTP 201, including `_id`, `modelFileId`, and
-`sha256`. It does not load or execute the checkpoint. Each successful upload
+The route accepts only a non-empty `.onnx` file up to 512 MiB and a JSON metadata
+field up to 1 MiB; `.pt` uploads are rejected. It forwards binary models to
+`POST /ai-model/ultralytics` and returns the saved backend record with HTTP 201,
+including `_id`, `modelFileId`, and
+`sha256`. It does not load or execute the model. Each successful upload
 creates a new record, even when the name matches an existing model.
 
 Backend storage does not activate a model or add live inference. Validation and
 backend errors return non-success HTTP statuses. This raw-file endpoint does not
-inspect checkpoint contents; the training publication component and `upload`
-command load local trusted checkpoints to obtain their metadata automatically.
+inspect graph contents; the training publication component and `upload`
+command load local trusted checkpoints to obtain their metadata and export ONNX
+automatically.
 
 References: [Labelme](https://github.com/wkentaro/labelme),
 [noVNC](https://github.com/novnc/noVNC),
 [Ultralytics polygon format](https://docs.ultralytics.com/datasets/segment/),
 [Ultralytics mask overlap setting](https://docs.ultralytics.com/usage/cfg/#train-settings),
+[Ultralytics ONNX export](https://docs.ultralytics.com/integrations/onnx/),
 [Ultralytics segmentation training](https://docs.ultralytics.com/tasks/segment/).

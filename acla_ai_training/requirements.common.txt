@@ -18,7 +18,7 @@ mcp>=1.19
 
 # Track-image polygon segmentation (kept out of the live AI service).
 ultralytics>=8.4,<9
-# Export the Track Vision position model during training/publication.
+# Export segmentation and position models during publication.
 onnx>=1.16,<2
 -r training/image_segmentation/requirements-labelme.txt
 # Browser access to Labelme in the headless training container.

@@ -52,10 +52,11 @@ training, `--device 0` to use a configured GPU, or `--rebuild-split` to include 
 annotations in a fresh split. See the workflow guide for the full options.
 Downloaded pretrained weights live in `storage/image_segmentation/pretrained/`;
 training checkpoints and metrics live in `storage/image_segmentation/runs/train*/`.
-Successful training uploads the saved checkpoint to `POST /ai-model/ultralytics`.
+Successful training exports the saved checkpoint as ONNX and uploads only the
+`.onnx` file to `POST /ai-model/ultralytics`; `.pt` checkpoints stay local.
 Pass `--no-upload` for offline training or `--upload-name` to set the backend model
-name. The workflow guide also describes uploading existing `.pt` checkpoints
-without retraining and the local FastAPI upload endpoint.
+name. The workflow guide also describes exporting and publishing existing `.pt`
+checkpoints without retraining and the ONNX-only local FastAPI upload endpoint.
 
 ## Prepare images, telemetry, and position references
 
