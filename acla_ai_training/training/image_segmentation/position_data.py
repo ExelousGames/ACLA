@@ -11,7 +11,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
-OUTPUT_NAMES = tuple(f"{reference}_delta_{axis}" for reference in ("reference", "centerline") for axis in "xyz")
+OUTPUT_NAMES = tuple(f"reference_delta_{axis}" for axis in "xyz")
 
 
 def position_context(normalized_position, game, map_name):
@@ -95,8 +95,8 @@ def reference_inputs(normalized_position, reference_lap: PositionCurve, centerli
 def load_position_manifest(path: Path) -> dict[str, list[dict]]:
     """Read a position-file folder or dataset index, grouped by session without splitting.
 
-    Each frame contains image, game, map_name, normalized_position, and two
-    (2, 3) arrays: references and target.
+    Each frame contains image, game, map_name, normalized_position, references,
+    and target. Arrays contain reference-lap XYZ and optionally centerline XYZ.
     Image paths are relative to their JSON file. No telemetry or curve files are read.
     """
     path = path.resolve()
@@ -141,8 +141,8 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
         record = {"image": image, **position_context(frame["normalized_position"], frame["game"], frame["map_name"])}
         for field in ("references", "target"):
             values = np.asarray(frame[field], dtype=np.float32)
-            if values.shape != (2, 3) or not np.isfinite(values).all():
-                raise ValueError(f"Frame {field} must contain two finite XYZ triples: {image}")
+            if values.shape not in ((1, 3), (2, 3)) or not np.isfinite(values).all():
+                raise ValueError(f"Frame {field} must contain one or two finite XYZ triples: {image}")
             record[field] = values
         sessions.setdefault(session_id, []).append(record)
     if not sessions or not all(sessions.values()):
@@ -171,12 +171,13 @@ class PositionDataset(Dataset):
 
     def __getitem__(self, index):
         row = self.records[index]
+        # Use only the reference lap; prepared files may also contain centerline XYZ.
         # Keep inputs and targets separate. No raw telemetry is returned to the trainer.
         return {
             "image": image_tensor(row["image"], self.imgsz),
-            "references": torch.from_numpy(row["references"]),
+            "references": torch.from_numpy(row["references"][:1]),
             "context": torch.from_numpy(encode_position_context(
                 row["normalized_position"], row["game"], row["map_name"], self.categories,
             )),
-            "target": torch.from_numpy(row["target"]),
+            "target": torch.from_numpy(row["target"][:1]),
         }

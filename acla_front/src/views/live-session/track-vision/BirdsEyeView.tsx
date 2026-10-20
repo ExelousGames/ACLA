@@ -19,7 +19,6 @@ export default function BirdsEyeView({ scene: ground, hasReconstructedScene, cap
     const stale = capturedAt !== undefined && now >= capturedAt + VISION_MAX_AGE_MS;
     const positionMarkers = position ? [
         { label: 'Reference lap', delta: position.referenceDelta, color: '#ffdf70' },
-        { label: 'Centerline', delta: position.centerlineDelta, color: '#ff8fb3' },
     ] : [];
     const points = [...(ground ? [...ground.leftBoundary.flat(), ...ground.rightBoundary.flat(), ...ground.centerline.flat(),
         ...ground.cars.map(({ position }) => position)] : []), ...positionMarkers.map(({ delta: [x, y, z] }) => ({ x, y, z }))];
@@ -91,14 +90,13 @@ export default function BirdsEyeView({ scene: ground, hasReconstructedScene, cap
                         fill="#f4f7ff" fontSize="12" stroke="#090d13" strokeWidth="3" paintOrder="stroke">Your car</text>
                 </g>
                 <g aria-label="Position add-on markers">
-                    {positionMarkers.map(({ label, color, delta: [x, y, z] }, index) => {
+                    {positionMarkers.map(({ label, color, delta: [x, y, z] }) => {
                         const point = map({ x, y });
                         return <g key={label} aria-label={`${label} position marker`}>
                             <title>{`${label} ΔXYZ: ${[x, y, z].map((value) => value.toFixed(3)).join(', ')} · Z is height`}</title>
                             <line x1={driver.x} y1={driver.y} x2={point.x} y2={point.y} stroke={color} strokeDasharray="4 4" />
-                            {index === 0 ? <circle cx={point.x} cy={point.y} r="6" fill={color} />
-                                : <path d={`M ${point.x},${point.y - 7} l 7,7 l -7,7 l -7,-7 Z`} fill="none" stroke={color} strokeWidth="2" />}
-                            <text x={point.x} y={point.y + (index === 0 ? -15 : 24)} textAnchor="middle"
+                            <circle cx={point.x} cy={point.y} r="6" fill={color} />
+                            <text x={point.x} y={point.y - 15} textAnchor="middle"
                                 fill={color} fontSize="11" stroke="#090d13" strokeWidth="3" paintOrder="stroke">{label}</text>
                         </g>;
                     })}
@@ -116,8 +114,8 @@ export default function BirdsEyeView({ scene: ground, hasReconstructedScene, cap
         {ground && <p className="track-vision__hint">Flat-road estimate from camera calibration. Your car is the origin; distances and traffic positions are approximate.</p>}
         {(position || positionReady) && <div className="track-vision__hint" aria-label="Position add-on result">
             {position
-                ? `Reference ΔXYZ: ${position.referenceDelta.map((value) => value.toFixed(3)).join(', ')} · Centerline ΔXYZ: ${position.centerlineDelta.map((value) => value.toFixed(3)).join(', ')} · X/Y: ground position; Z: height.${stale ? ' Last frame (stale).' : ''}`
-                : 'Position add-on: waiting for live normalized position, reference lap and centerline.'}
+                ? `Reference ΔXYZ: ${position.referenceDelta.map((value) => value.toFixed(3)).join(', ')} · X/Y: ground position; Z: height.${stale ? ' Last frame (stale).' : ''}`
+                : 'Position add-on: waiting for live normalized position and reference lap.'}
         </div>}
         {!!ground?.unplacedCars && <p className="track-vision__hint">{ground.unplacedCars} car / car-pack detection(s) could not be placed on the ground.</p>}
     </section>;

@@ -74,7 +74,7 @@ export interface LiveTrajectoryMapHandle extends NamedOperationComponentHandle {
     fitTrack(): void;
     getCircuitMap(): CircuitMapDto | null;
     getReferenceLap(): TopLapReferenceEntry | null;
-    getPositionReferences(position: number): { reference: Vec3; centerline: Vec3 } | null;
+    getPositionReferences(position: number): { reference: Vec3 } | null;
     subscribeCircuitMap(listener: () => void): () => void;
 }
 
@@ -157,8 +157,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     referenceLapRef.current = referenceLap;
     positionLookupRef.current = (position) => {
         const reference = getLiveMapPosition(referencePoints, position);
-        const centerline = getLiveMapPosition(middleLine, position);
-        return reference && centerline ? { reference, centerline } : null;
+        return reference ? { reference } : null;
     };
     const live = telemetryStatus === ACC_STATUS.ACC_LIVE;
     const cars = useMemo(() => live ? getLiveMapCars(currentTelemetry, middleLine, game) : [], [currentTelemetry, live, middleLine, game]);

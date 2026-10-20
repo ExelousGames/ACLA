@@ -18,7 +18,7 @@ class PositionFormatTests(unittest.TestCase):
         torch.set_num_threads(1)
         categories = {"game": ["acc"], "map_name": ["monza", "nurburgring_24h"]}
         original = PositionModel(imgsz=64, categories=categories).eval()
-        image, references = torch.rand(1, 3, 64, 64), torch.rand(1, 2, 3)
+        image, references = torch.rand(1, 3, 64, 64), torch.rand(1, 1, 3)
         context = torch.tensor([[0.25, 1., 1., 0.]])
         with torch.no_grad():
             expected = original(image, references, context)

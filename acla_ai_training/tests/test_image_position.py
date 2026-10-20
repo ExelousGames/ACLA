@@ -154,6 +154,32 @@ def test_prepared_targets_can_only_change_labels(aligned_manifest):
     np.testing.assert_allclose(before["session-a"][0]["target"], [[0.1, -0.2, 0], [0.15, -0.2, 0]], atol=1e-7)
     assert list(inspect.signature(PositionModel.forward).parameters) == ["self", "images", "references", "context"]
     assert "driver_position" not in inspect.signature(PositionModel.predict_position).parameters
+    assert "centerline" not in inspect.signature(PositionModel.predict_position).parameters
+
+
+@pytest.mark.parametrize("remove_centerline", [False, True])
+def test_centerline_data_is_not_used_as_a_model_input_or_target(aligned_manifest, remove_centerline):
+    before = load_position_manifest(aligned_manifest)
+    path = aligned_manifest.parent / "session-a.position.json"
+    frame = json.loads(path.read_text())
+    for field in ("references", "target"):
+        if remove_centerline:
+            frame[field] = frame[field][:1]
+        else:
+            frame[field][1] = [1e6, -1e6, 1e6]
+    path.write_text(json.dumps(frame))
+    after = load_position_manifest(aligned_manifest)
+    a, b = (PositionDataset(records["session-a"], 64, CATEGORIES)[0] for records in (before, after))
+    for field in a:
+        torch.testing.assert_close(a[field], b[field])
+    torch.testing.assert_close(a["references"], torch.tensor([[0.2, -0.1, 0.1]]))
+    torch.testing.assert_close(a["target"], torch.tensor([[0.1, -0.2, 0]]))
+
+
+def test_model_rejects_centerline_input():
+    model = PositionModel(imgsz=64, categories=CATEGORIES)
+    with pytest.raises(ValueError, match="reference-lap XYZ"):
+        model(torch.zeros(1, 3, 64, 64), torch.zeros(1, 2, 3), torch.zeros(1, model.context_size))
 
 
 @pytest.mark.parametrize("field, value", [
@@ -283,7 +309,7 @@ def test_regression_trains_image_encoder_and_head_from_scratch_and_roundtrips(al
     optimizer = torch.optim.Adam((parameter for parameter in model.parameters() if parameter.requires_grad), lr=0.01)
     inputs = tuple(sample[field].unsqueeze(0) for field in ("image", "references", "context"))
     prediction = model(*inputs)
-    assert prediction.shape == (1, 2, 3)
+    assert prediction.shape == (1, 1, 3)
     loss = (prediction - sample["target"]).square().mean()
     loss.backward()
     assert model.head[0].weight.grad.abs().sum() > 0
@@ -309,16 +335,16 @@ def test_regression_trains_image_encoder_and_head_from_scratch_and_roundtrips(al
     torch.testing.assert_close(actual, expected)
     curve = PositionCurve([0, 0.5], [[0, 0, 0], [1, 2, 3]])
     prediction = restored.predict_position(
-        records["session-b"][0]["image"], 0.25, curve, curve, game="iracing", map_name="Other Track",
+        records["session-b"][0]["image"], 0.25, curve, game="iracing", map_name="Other Track",
     )
     assert set(prediction) == {
-        "reference_delta", "centerline_delta",
+        "reference_delta",
     }
     assert prediction == model.predict_position(
-        records["session-b"][0]["image"], 0.25, curve, curve, game="iracing", map_name="Other Track",
+        records["session-b"][0]["image"], 0.25, curve, game="iracing", map_name="Other Track",
     )
     with pytest.raises(ValueError, match="Unknown map_name"):
-        restored.predict_position(tmp_path / "missing.png", 0.25, curve, curve, game="acc", map_name="Unknown")
+        restored.predict_position(tmp_path / "missing.png", 0.25, curve, game="acc", map_name="Unknown")
 
 
 @pytest.mark.parametrize("image_size", [64, 96])
@@ -343,10 +369,10 @@ def test_position_predictions_distinguish_layouts_with_identical_global_averages
             model.head[0].weight[0, 0] = 1
             model.head[2].weight[0, 0] = 1
             prediction = model(
-                torch.zeros(2, 3, image_size, image_size), torch.zeros(2, 2, 3),
+                torch.zeros(2, 3, image_size, image_size), torch.zeros(2, 1, 3),
                 torch.tensor([[0.25, 1, 0, 1, 0]]).repeat(2, 1),
             )
-        assert prediction.shape == (2, 2, 3)
+        assert prediction.shape == (2, 1, 3)
         assert prediction[0, 0, 0] > prediction[1, 0, 0]
     finally:
         handle.remove()
@@ -368,7 +394,7 @@ def test_all_context_inputs_affect_predictions_with_fixed_image_and_references()
             (0.25, "acc", "Other Track", 18.25),
         ):
             context = torch.from_numpy(encode_position_context(position, game, map_name, CATEGORIES)).unsqueeze(0)
-            prediction = model(torch.zeros(1, 3, 64, 64), torch.zeros(1, 2, 3), context)
+            prediction = model(torch.zeros(1, 3, 64, 64), torch.zeros(1, 1, 3), context)
             assert prediction[0, 0, 0].item() == expected
 
 
@@ -392,6 +418,18 @@ def test_checkpoint_without_spatial_encoder_requires_retraining(position_checkpo
         PositionModel.load(position_checkpoint)
 
 
+def test_checkpoint_with_centerline_input_requires_retraining(position_checkpoint):
+    saved = torch.load(position_checkpoint, weights_only=True)
+    state = saved["state_dict"]
+    state["head.0.weight"] = torch.zeros(128, state["head.0.weight"].shape[1] + 3)
+    state["head.2.weight"] = torch.zeros(6, 128)
+    state["head.2.bias"] = torch.zeros(6)
+    state["position_mean"], state["position_std"] = torch.zeros(6), torch.ones(6)
+    torch.save(saved, position_checkpoint)
+    with pytest.raises(ValueError, match="centerline inputs; retrain from scratch"):
+        PositionModel.load(position_checkpoint)
+
+
 def test_segmentation_based_checkpoint_requires_training_from_scratch(position_checkpoint):
     saved = torch.load(position_checkpoint, weights_only=True)
     saved["state_dict"] = {
@@ -404,7 +442,7 @@ def test_segmentation_based_checkpoint_requires_training_from_scratch(position_c
 
 @pytest.mark.parametrize("use_position_folder", [False, True])
 def test_single_session_training_saves_raw_axis_metrics_and_uses_only_train_reference_statistics(
-    aligned_manifest, tmp_path, position_folder, use_position_folder,
+    aligned_manifest, tmp_path, position_folder, use_position_folder, capsys,
 ):
     path = aligned_manifest.parent / "session-b.position.json"
     frame = json.loads(path.read_text())
@@ -438,14 +476,150 @@ def test_single_session_training_saves_raw_axis_metrics_and_uses_only_train_refe
     assert aligned_manifest.read_bytes() == prepared
     history = json.loads((output / "results.json").read_text())
     assert len(history) == 2
-    assert len(history[-1]["val_mae_per_axis"]) == 6
+    assert len(history[-1]["val_mae_per_axis"]) == 3
     assert all(np.isfinite(row["val_mae"]) for row in history)
+    for row in history:
+        buckets = row["val_errors_by_offset_length"]
+        assert list(buckets) == ["<0.1", "0.1-0.25", "0.25-0.5", "0.5-1", "1-2", "2-5", ">=5"]
+        assert buckets["0.5-1"]["mean_distance_error"] >= 0
+        assert 0 <= buckets["0.5-1"]["mean_direction_error_deg"] <= 180
+        assert buckets["0.5-1"]["count"] == buckets["0.5-1"]["direction_valid_count"] == 1
+        assert all(bucket == {
+            "count": 0, "mean_distance_error": None,
+            "mean_direction_error_deg": None, "direction_valid_count": 0,
+        } for name, bucket in buckets.items() if name != "0.5-1")
+        assert not any(key.endswith("_per_reference") for key in row)
+    assert torch.load(output / "last.pt", weights_only=True)["metrics"] == history[-1]
+    best_metrics = torch.load(checkpoint, weights_only=True)["metrics"]
+    assert json.loads((output / "best.onnx.json").read_text())["metadata"]["metrics"] == best_metrics
+    log = capsys.readouterr().out
+    assert "reference: mean distance error=" not in log
+    assert log.count("actual offset length 0.5-1:") == 2
+    assert "centerline" not in log
+    assert log.count("mean direction error=") == 14
+    assert log.count("mean distance error=n/a") == 12
     restored = PositionModel.load(checkpoint)
     assert restored.categories == CATEGORIES
     training_references = load_position_manifest(training_input)["session-a"][0]["references"]
-    np.testing.assert_allclose(restored.position_mean.numpy(), training_references.reshape(6))
+    np.testing.assert_allclose(restored.position_mean.numpy(), training_references[0])
     with pytest.raises(FileExistsError):
         train_position_model(aligned_manifest, output=output)
+
+
+@pytest.mark.parametrize("batch", [3, 4])
+@pytest.mark.parametrize("scale", [1.0, 1e-25])
+@pytest.mark.parametrize("zero_targets", [False, True])
+def test_position_validation_measures_distance_and_direction_with_zero_vectors_and_uneven_batches(
+    aligned_manifest, tmp_path, monkeypatch, capsys, batch, scale, zero_targets,
+):
+    from training.image_segmentation import position_training
+
+    predictions = torch.tensor([
+        [[2, 0, 0], [1, 2, 3]],
+        [[0, 1, 0], [0, 2, 0]],
+        [[-1, 0, 0], [0, 2, 0]],
+        [[0, 0, 0], [0, 0, 0]],
+    ], dtype=torch.float32) * scale
+    targets = torch.tensor([
+        [[1, 0, 0], [1, 2, 3]],
+        [[0, 0, 1], [0, 0, 3]],
+        [[1, 0, 0], [0, 0, 0]],
+        [[3, 4, 0], [0, 0, 0]],
+    ], dtype=torch.float32) * scale
+    if zero_targets:
+        targets.zero_()
+
+    # Supply known validation predictions through the reference inputs.
+    def split(records, **kwargs):
+        return {
+            "train": records[:1],
+            "val": [dict(records[0], references=prediction.numpy(), target=target.numpy())
+                    for prediction, target in zip(predictions, targets)],
+        }
+
+    network = PositionModel(imgsz=64, categories=CATEGORIES)
+    network.register_forward_hook(lambda module, inputs, output: output if module.training else inputs[1])
+    monkeypatch.setattr(position_training, "PositionModel", lambda *args, **kwargs: network)
+    monkeypatch.setattr(position_training, "split_position_frames", split)
+    monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
+    output = tmp_path / "run"
+    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", upload=False)
+    metrics = json.loads((output / "results.json").read_text())[0]
+    buckets = metrics["val_errors_by_offset_length"]
+    expected = {name: {
+        "count": 0, "mean_distance_error": None,
+        "mean_direction_error_deg": None, "direction_valid_count": 0,
+    } for name in ("<0.1", "0.1-0.25", "0.25-0.5", "0.5-1", "1-2", "2-5", ">=5")}
+    if zero_targets or scale < 0.1:
+        expected["<0.1"] = {
+            "count": 4,
+            "mean_distance_error": scale if zero_targets else (8 + np.sqrt(2)) / 4 * scale,
+            "mean_direction_error_deg": None if zero_targets else 90,
+            "direction_valid_count": 0 if zero_targets else 3,
+        }
+    else:
+        expected["1-2"] = {
+            "count": 3, "mean_distance_error": (3 + np.sqrt(2)) / 3,
+            "mean_direction_error_deg": 90, "direction_valid_count": 3,
+        }
+        expected[">=5"] = {
+            "count": 1, "mean_distance_error": 5,
+            "mean_direction_error_deg": None, "direction_valid_count": 0,
+        }
+    assert buckets.keys() == expected.keys()
+    for name, bucket in expected.items():
+        assert buckets[name] == pytest.approx(bucket, rel=1e-6, abs=0)
+    json.dumps(metrics, allow_nan=False)
+    assert torch.load(output / "best.pt", weights_only=True)["metrics"] == metrics
+    log = capsys.readouterr().out
+    if zero_targets:
+        assert log.count("mean direction error=n/a (0/4 valid)") == 1
+    elif scale < 0.1:
+        assert "mean direction error=90 deg (3/4 valid)" in log
+    else:
+        assert "mean direction error=90 deg (3/3 valid)" in log
+        assert "mean direction error=n/a (0/1 valid)" in log
+
+
+@pytest.mark.parametrize("batch", [3, 14])
+def test_position_validation_groups_by_actual_offset_length_at_every_boundary(
+    aligned_manifest, tmp_path, monkeypatch, batch,
+):
+    from training.image_segmentation import position_training
+
+    below = lambda value: float(np.nextafter(np.float32(value), np.float32(0)))
+    # Each pair belongs to one range, including its lower boundary and excluding its upper boundary.
+    ranges = {
+        "<0.1": (0, below(0.1)),
+        "0.1-0.25": (0.1, below(0.25)),
+        "0.25-0.5": (0.25, below(0.5)),
+        "0.5-1": (0.5, below(1)),
+        "1-2": (1, below(2)),
+        "2-5": (2, below(5)),
+        ">=5": (5, 6),
+    }
+    targets = [np.array([[0, 0, length]], dtype=np.float32) for pair in ranges.values() for length in pair]
+
+    def split(records, **kwargs):
+        return {
+            "train": records[:1],
+            "val": [dict(records[0], references=-2 * target, target=target) for target in targets],
+        }
+
+    network = PositionModel(imgsz=64, categories=CATEGORIES)
+    network.register_forward_hook(lambda module, inputs, output: output if module.training else inputs[1])
+    monkeypatch.setattr(position_training, "PositionModel", lambda *args, **kwargs: network)
+    monkeypatch.setattr(position_training, "split_position_frames", split)
+    monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
+    output = tmp_path / "run"
+    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", upload=False)
+    metrics = json.loads((output / "results.json").read_text())[0]
+    assert list(metrics["val_errors_by_offset_length"]) == list(ranges)
+    for name, lengths in ranges.items():
+        assert metrics["val_errors_by_offset_length"][name] == pytest.approx({
+            "count": 2, "mean_distance_error": 3 * sum(lengths) / 2,
+            "mean_direction_error_deg": 180, "direction_valid_count": 1 if name == "<0.1" else 2,
+        })
 
 
 @pytest.mark.parametrize("offline", [False, True])
@@ -528,7 +702,7 @@ def test_position_upload_streams_onnx_and_regression_metadata(position_checkpoin
         "name": "track-position", "task": "position",
         "classNames": list(OUTPUT_NAMES),
         "metadata": {
-            "format": "acla-position-cnn-v1", "artifactFormat": "onnx", "trainingRunId": position_checkpoint.parent.name,
+            "format": "acla-position-cnn-v2", "artifactFormat": "onnx", "trainingRunId": position_checkpoint.parent.name,
             "categories": CATEGORIES,
             "imgsz": 64, "outputNames": list(OUTPUT_NAMES),
             "targetDefinition": "reference_position - current_position",
@@ -558,7 +732,7 @@ def test_invalid_position_upload_never_connects_to_backend(position_checkpoint, 
             "outputs": ("output_names", []),
             "weights": ("state_dict", {}), "metrics": ("metrics", {"val_mae": float("nan")}),
             "target": ("target_definition", "wrong sign"), "units": ("coordinate_units", "meters"),
-            "std": ("state_dict", {**saved["state_dict"], "position_std": torch.zeros(6)}),
+            "std": ("state_dict", {**saved["state_dict"], "position_std": torch.zeros(3)}),
         }[problem]
         saved[key] = value
         torch.save(saved, checkpoint)

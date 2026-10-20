@@ -54,8 +54,10 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
     if not checkpoint.is_file() or not checkpoint.stat().st_size:
         raise ValueError(f"Checkpoint is missing or empty: {checkpoint}")
     saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    if not isinstance(saved, dict) or saved.get("output_names") != list(OUTPUT_NAMES) or not saved.get("state_dict"):
-        raise ValueError("Position checkpoint is missing its weights or signed XYZ outputs.")
+    if not isinstance(saved, dict) or not saved.get("state_dict"):
+        raise ValueError("Position checkpoint is missing its weights.")
+    if saved.get("output_names") != list(OUTPUT_NAMES):
+        raise ValueError("Position checkpoint must predict only reference-lap XYZ deltas; retrain from scratch with train-position.")
     if saved.get("target_definition") != "reference_position - current_position":
         raise ValueError("Position target_definition must be reference_position - current_position.")
     if saved.get("coordinate_units") != "source_coordinates":
@@ -83,7 +85,7 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
     del saved
     inputs = (
         torch.zeros(1, 3, position.imgsz, position.imgsz),
-        torch.zeros(1, 2, 3),
+        torch.zeros(1, 1, 3),
         torch.zeros(1, position.context_size),
     )
     position.spatial_pool = _ExportSpatialPool(position.spatial_pool.output_size)
@@ -110,11 +112,11 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
         input_specs, output_specs = tensors(graph.graph.input), tensors(graph.graph.output)
         if (
             [spec["shape"] for spec in input_specs.values()] != [list(value.shape) for value in inputs]
-            or output_specs != {"deltas": {"dtype": "float32", "shape": [1, 2, 3]}}
+            or output_specs != {"deltas": {"dtype": "float32", "shape": [1, 1, 3]}}
         ):
             raise ValueError("Unexpected Track Vision ONNX inputs or outputs.")
         metadata["metadata"]["inference"] = {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "opset": OPSET_VERSION,
             "inputs": input_specs,
             "outputs": output_specs,
@@ -123,7 +125,7 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
                 "resize": "letterbox", "paddingValue": 114,
                 "sizeRounding": "ties-to-even", "paddingPlacement": "center-floor",
             },
-            "referenceOrder": ["reference", "centerline"],
+            "referenceOrder": ["reference"],
             "coordinateOrder": ["x", "y", "z"],
             "contextOrder": ["normalized_position", "game", "map_name"],
             "categoryEncoding": "one-hot",

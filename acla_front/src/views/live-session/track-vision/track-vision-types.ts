@@ -93,13 +93,11 @@ export const VISION_MAX_AGE_MS = 2000;
 
 export interface PositionReferences {
     reference: { x: number; y: number; z: number };
-    centerline: { x: number; y: number; z: number };
 }
 
 export interface TrackPositionResult {
     /** Signed reference XYZ minus inferred driver XYZ, in unchanged source coordinates. */
     referenceDelta: [number, number, number];
-    centerlineDelta: [number, number, number];
     inferenceMs: number;
 }
 

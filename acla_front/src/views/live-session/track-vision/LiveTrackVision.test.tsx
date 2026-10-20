@@ -1546,8 +1546,8 @@ it('requires the Electron bridge before loading models or offering capture', asy
 });
 
 describe('separate segmentation and position models', () => {
-    const references = { reference: { x: 1, y: -2, z: 3 }, centerline: { x: -4, y: 5, z: 6 } };
-    const prediction = { referenceDelta: [-1, 2, -3], centerlineDelta: [4, -5, 6], inferenceMs: 20 };
+    const references = { reference: { x: 1, y: -2, z: 3 } };
+    const prediction = { referenceDelta: [-1, 2, -3], inferenceMs: 20 };
     let mapHandle: { getCircuitMap: jest.Mock; getReferenceLap: jest.Mock; getPositionReferences: jest.Mock };
     let sequence: number;
     const telemetry = (position = 0.25, status = 2, game: 'acc' | 'iracing' = 'acc') => act(() => {
@@ -1624,13 +1624,13 @@ describe('separate segmentation and position models', () => {
         selectStep("Bird's-eye view");
         const output = within(screen.getByRole('tabpanel', { name: "Bird's-eye view" })).getByLabelText('Position add-on result');
         expect(output).toHaveTextContent('Reference ΔXYZ: -1.000, 2.000, -3.000');
-        expect(output).toHaveTextContent('Centerline ΔXYZ: 4.000, -5.000, 6.000');
+        expect(output).not.toHaveTextContent('Centerline');
         expect(screen.getByRole('img', { name: 'Top-down track boundaries and cars' })).toBeVisible();
         expect(screen.getByLabelText('Reference lap position marker')).toBeVisible();
-        expect(screen.getByLabelText('Centerline position marker')).toBeVisible();
+        expect(screen.queryByLabelText('Centerline position marker')).not.toBeInTheDocument();
         act(() => liveTelemetryStore.resetSession());
         expect(ref.current!.getLatestDetection()!.position).toBeUndefined();
-        expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Position add-on: waiting for live normalized position, reference lap and centerline.');
+        expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Position add-on: waiting for live normalized position and reference lap.');
         expect(screen.queryByLabelText('Reference lap position marker')).not.toBeInTheDocument();
         view.unmount();
         expect(positionModel.dispose).toHaveBeenCalledTimes(1);

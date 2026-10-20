@@ -31,8 +31,8 @@ def test_export_preserves_position_without_segmentation_with_small_uneven_and_ev
         torch.manual_seed(3)
         categories = {"game": ["acc"], "map_name": ["monza", "spa"]}
         model = PositionModel(imgsz=imgsz, categories=categories).eval()
-        model.position_mean.copy_(torch.arange(6))
-        model.position_std.copy_(torch.arange(1, 7))
+        model.position_mean.copy_(torch.arange(3))
+        model.position_std.copy_(torch.arange(1, 4))
         checkpoint = tmp_path / "best.pt"
         model.save(checkpoint, metrics={"val_mae": 0.25})
         original = checkpoint.read_bytes()
@@ -47,6 +47,7 @@ def test_export_preserves_position_without_segmentation_with_small_uneven_and_ev
         assert manifest["task"] == "position"
         assert manifest["classNames"] == manifest["metadata"]["outputNames"]
         metadata = manifest["metadata"]
+        assert metadata["outputNames"] == ["reference_delta_x", "reference_delta_y", "reference_delta_z"]
         assert metadata["artifactFormat"] == "onnx"
         assert metadata["categories"] == categories
         assert metadata["imgsz"] == imgsz
@@ -54,11 +55,12 @@ def test_export_preserves_position_without_segmentation_with_small_uneven_and_ev
         contract = metadata["inference"]
         assert contract["inputs"] == {
             "images": {"dtype": "float32", "shape": [1, 3, imgsz, imgsz]},
-            "references": {"dtype": "float32", "shape": [1, 2, 3]},
+            "references": {"dtype": "float32", "shape": [1, 1, 3]},
             "context": {"dtype": "float32", "shape": [1, 4]},
         }
-        assert contract["schemaVersion"] == 2
-        assert contract["outputs"] == {"deltas": {"dtype": "float32", "shape": [1, 2, 3]}}
+        assert contract["schemaVersion"] == 3
+        assert contract["referenceOrder"] == ["reference"]
+        assert contract["outputs"] == {"deltas": {"dtype": "float32", "shape": [1, 1, 3]}}
         assert [value.name for value in graph.graph.output] == ["deltas"]
         assert not any("yolo" in tensor.name for tensor in graph.graph.initializer)
         assert contract["image"]["paddingValue"] == 114
@@ -68,7 +70,7 @@ def test_export_preserves_position_without_segmentation_with_small_uneven_and_ev
         options.intra_op_num_threads = options.inter_op_num_threads = 1
         session = ort.InferenceSession(str(output), sess_options=options, providers=["CPUExecutionProvider"])
         image = torch.rand(1, 3, imgsz, imgsz)
-        references = torch.tensor([[[10., -20., 30.], [-40., 50., -60.]]])
+        references = torch.tensor([[[10., -20., 30.]]])
         context = torch.tensor([[0.25, 1., 1., 0.]])
         results = []
         for points, values in [(references, context), (references + 4, context),

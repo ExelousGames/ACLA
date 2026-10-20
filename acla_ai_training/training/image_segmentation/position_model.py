@@ -8,14 +8,14 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from .position_data import OUTPUT_NAMES, encode_position_context, image_tensor, reference_inputs
+from .position_data import OUTPUT_NAMES, encode_position_context, image_tensor
 
 
 class PositionModel(nn.Module):
-    """Learn image features and six unconstrained signed outputs together.
+    """Learn image features and three unconstrained signed outputs together.
 
-    Input: RGB images, [reference XYZ, centerline XYZ], normalized lap position,
-    and one-hot game/map names. Output: the same two XYZ triples minus the
+    Input: RGB images, reference-lap XYZ, normalized lap position,
+    and one-hot game/map names. Output: reference-lap XYZ minus the
     driver's position, in unchanged source coordinates.
     The driver's position is deliberately absent from every inference API.
     """
@@ -45,17 +45,17 @@ class PositionModel(nn.Module):
             channels = width
         self.image_encoder = nn.Sequential(*layers)
         self.spatial_pool = nn.AdaptiveAvgPool2d((4, 4))
-        self.register_buffer("position_mean", torch.zeros(6))
-        self.register_buffer("position_std", torch.ones(6))
+        self.register_buffer("position_mean", torch.zeros(3))
+        self.register_buffer("position_std", torch.ones(3))
         self.position_encoder = nn.Sequential(nn.Linear(channels * 4 * 4, 128), nn.ReLU())
-        self.head = nn.Sequential(nn.Linear(128 + 6 + self.context_size, 128), nn.ReLU(), nn.Linear(128, 6))
+        self.head = nn.Sequential(nn.Linear(128 + 3 + self.context_size, 128), nn.ReLU(), nn.Linear(128, 3))
 
     def visual_features(self, images):
         return self.spatial_pool(self.image_encoder(images)).flatten(1)
 
     def forward(self, images, references, context):
-        if references.shape != (images.shape[0], 2, 3):
-            raise ValueError("References must have shape (batch, 2, 3): reference XYZ, centerline XYZ.")
+        if references.shape != (images.shape[0], 1, 3):
+            raise ValueError("References must have shape (batch, 1, 3): reference-lap XYZ.")
         if not torch.isfinite(references).all():
             raise ValueError("Reference coordinates must be finite.")
         if context.shape != (images.shape[0], self.context_size):
@@ -64,24 +64,24 @@ class PositionModel(nn.Module):
             raise ValueError("Position context values must be finite and between 0 and 1.")
         positions = (references.flatten(1) - self.position_mean) / self.position_std
         visual = self.position_encoder(self.visual_features(images))
-        return self.head(torch.cat((visual, positions, context), dim=1)).reshape(-1, 2, 3)
+        return self.head(torch.cat((visual, positions, context), dim=1)).reshape(-1, 1, 3)
 
     @torch.no_grad()
-    def predict_position(self, image: Path, normalized_position, reference_lap, centerline, *, game, map_name):
+    def predict_position(self, image: Path, normalized_position, reference_lap, *, game, map_name):
         self.eval()
         device = next(self.parameters()).device
         context = torch.from_numpy(encode_position_context(
             normalized_position, game, map_name, self.categories,
         )).unsqueeze(0).to(device)
         references = torch.as_tensor(
-            reference_inputs(normalized_position, reference_lap, centerline), dtype=torch.float32, device=device,
-        ).unsqueeze(0)
+            reference_lap.at(normalized_position), dtype=torch.float32, device=device,
+        ).reshape(1, 1, 3)
         prediction = self(image_tensor(image, self.imgsz).unsqueeze(0).to(device), references, context)[0].cpu().tolist()
-        return {"reference_delta": prediction[0], "centerline_delta": prediction[1]}
+        return {"reference_delta": prediction[0]}
 
     def save(self, path: Path, *, metrics=None):
         torch.save({
-            "format": "acla-position-cnn-v1",
+            "format": "acla-position-cnn-v2",
             "categories": deepcopy(self.categories),
             "imgsz": self.imgsz,
             "state_dict": self.state_dict(),
@@ -102,5 +102,7 @@ class PositionModel(nn.Module):
         if "position_encoder.0.weight" not in checkpoint["state_dict"]:
             raise ValueError("Position checkpoint is missing the spatial encoder; retrain from scratch with train-position.")
         model = cls(checkpoint["imgsz"], categories=checkpoint["categories"])
+        if checkpoint["state_dict"]["head.0.weight"].shape != model.head[0].weight.shape:
+            raise ValueError("Position checkpoint uses centerline inputs; retrain from scratch with train-position.")
         model.load_state_dict(checkpoint["state_dict"])
         return model.to(device).eval()

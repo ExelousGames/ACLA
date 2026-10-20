@@ -41,7 +41,7 @@ export class TrackPositionModel {
                 session = await runtime.InferenceSession.create(loaded.bytes, { executionProviders: ['webgpu'] });
                 const model = new TrackPositionModel(runtime, session, loaded.metadata.name, loaded.inputSize, loaded.categories);
                 // Run the actual graph instead of inferring compatibility from a version or input count.
-                await model.run(new Float32Array(3 * loaded.inputSize ** 2), new Float32Array(6), { normalized_position: 0 });
+                await model.run(new Float32Array(3 * loaded.inputSize ** 2), new Float32Array(3), { normalized_position: 0 });
                 return model;
             } catch (error) {
                 await session?.release().catch(() => undefined);
@@ -69,17 +69,16 @@ export class TrackPositionModel {
             feeds.context = new this.runtime.Tensor('float32', new Float32Array(values), [1, values.length]);
         }
         const images = new this.runtime.Tensor('float32', image, [1, 3, this.inputSize, this.inputSize]);
-        const points = new this.runtime.Tensor('float32', references, [1, 2, 3]);
+        const points = new this.runtime.Tensor('float32', references, [1, 1, 3]);
         feeds.images = images;
         feeds.references = points;
         let outputs: InferenceSession.ReturnType | undefined;
         try {
             outputs = await this.session.run(feeds);
             const result = outputs.deltas;
-            if (result?.dims.join(',') !== '1,2,3' || !(result.data instanceof Float32Array)
-                || result.data.length !== 6 || !result.data.every(Number.isFinite)) throw new Error('Invalid track-position output.');
-            return { referenceDelta: Array.from(result.data.slice(0, 3)) as [number, number, number],
-                centerlineDelta: Array.from(result.data.slice(3, 6)) as [number, number, number] };
+            if (result?.dims.join(',') !== '1,1,3' || !(result.data instanceof Float32Array)
+                || result.data.length !== 3 || !result.data.every(Number.isFinite)) throw new Error('Invalid track-position output.');
+            return { referenceDelta: Array.from(result.data) as [number, number, number] };
         } finally {
             Object.values(feeds).forEach((input) => input.dispose());
             if (outputs) Object.values(outputs).forEach((output) => output.dispose());
@@ -89,8 +88,7 @@ export class TrackPositionModel {
     async detect(frame: HTMLCanvasElement, references: PositionReferences, positionContext?: PositionContext): Promise<TrackPositionResult> {
         if (this.disposed) throw new Error('The track-position model has been released.');
         if (this.busy) throw new Error('Track Vision inference is already running.');
-        const points = new Float32Array([references.reference.x, references.reference.y, references.reference.z,
-            references.centerline.x, references.centerline.y, references.centerline.z]);
+        const points = new Float32Array([references.reference.x, references.reference.y, references.reference.z]);
         if (!points.every(Number.isFinite) || !frame.width || !frame.height) throw new Error('Position inference requires a frame and finite reference points.');
         this.busy = true;
         const operation = (async () => {

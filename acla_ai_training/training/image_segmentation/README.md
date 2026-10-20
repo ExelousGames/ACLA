@@ -365,26 +365,28 @@ train offline without exporting or publishing.
 ## Predict signed position differences from images
 
 `train-position` trains a standalone position CNN from scratch. It combines
-learned image features with two XYZ positions, normalized lap position, and one-hot encoded game
-and map names. The XYZ positions are looked up during preparation at the frame's
-normalized lap position. The output is exactly six signed values, ordered as:
+learned image features with reference-lap XYZ, normalized lap position, and one-hot encoded game
+and map names. Reference-lap XYZ is looked up during preparation at the frame's
+normalized lap position. The output is exactly three signed values:
 
 ```text
-reference_delta_xyz  = reference_lap_xyz(s) - driver_xyz
-centerline_delta_xyz = centerline_map_xyz(s) - driver_xyz
+reference_delta_xyz = reference_lap_xyz(s) - driver_xyz
 ```
 
 These are direct component-wise differences in the original coordinate system.
 There is no conversion to meters, Euclidean distance, absolute value, or
 lateral/longitudinal transformation. Normalized position `s` is a lookup key and
-a model input in `[0, 1]`. All three XYZ sources must use the same coordinate frame and
-scale; use the map's stored XYZ, not its rendered screen coordinates.
+a model input in `[0, 1]`. Reference-lap and driver XYZ must use the same coordinate frame and
+scale; use stored XYZ, not rendered screen coordinates.
 
 Driver XYZ is required **only during preparation to construct training labels**.
 Each image's `.position.json` contains its filename, session ID, reference coordinates,
 game, map name, normalized lap position, and targets; it excludes driver XYZ.
-The model receives the image, two reference XYZ triples, and encoded context;
+The model receives the image, one reference-lap XYZ triple, and encoded context;
 targets provide supervision and error metrics. Inference requires the same inputs.
+Prepared files may still contain centerline coordinates and targets for compatibility
+with the preparation workflow. Training ignores those rows; files with only the
+reference-lap row are also accepted. Centerline data is not an inference input or output.
 Reference lookup uses linear interpolation, including across the start/finish seam when needed;
 missing axes and invalid or missing reference curves fail instead of becoming
 zero coordinates.
@@ -392,7 +394,7 @@ zero coordinates.
 The image encoder uses five stride-2 convolution/GroupNorm/ReLU blocks with
 16, 32, 64, 96, and 128 channels. A 4×4 adaptive pooling grid preserves coarse
 image layout, followed by a 128-feature linear/ReLU position encoder. An MLP
-combines this encoding with six standardized reference coordinates and context
+combines this encoding with three standardized reference coordinates and context
 to predict the signed offsets. All encoder and regression weights are randomly
 initialized and trained together. No pretrained weights, segmentation model,
 or segmentation labels are used.
@@ -509,7 +511,17 @@ Prepared position files and the dataset index are not changed.
 
 Training also writes `best.pt`, `last.pt`, and
 `results.json`, including validation MAE for every reference/axis in raw
-coordinates. The best checkpoint is selected by mean validation MAE. It then
+coordinates. Each epoch also prints and saves mean 3D distance error
+(`||prediction - target||`) and mean direction error (the angle between the
+predicted and actual offset vectors, from 0 to 180 degrees), grouped by the
+actual reference-lap offset length (`||target||`): `<0.1`, `0.1-0.25`,
+`0.25-0.5`, `0.5-1`, `1-2`, `2-5`, and `>=5`. Ranges include their lower
+bound and exclude their upper bound. Length and distance use source coordinate
+units. `val_errors_by_offset_length` stores each range's frame count,
+mean distance error, mean direction error in degrees, and valid direction count.
+Direction averages exclude pairs where either vector is zero. Empty ranges and
+undefined direction averages are printed as `n/a` and saved as `null`.
+The best checkpoint is selected by mean validation MAE. It then
 exports that checkpoint to `best.onnx` and `best.onnx.json`, including with
 `--no-upload`. The `.pt` checkpoints remain available for Python inference.
 
@@ -550,27 +562,28 @@ model** below. Successful uploads print the backend model ID.
 The graph uses ONNX opset 17 and fixed batch size 1 at the checkpoint's training
 image size. All inputs and outputs are float32. `metadata.inference` describes
 the names, exact shapes, preprocessing, and context order; its `schemaVersion`
-is 2. Image, reference, context, and delta tensors retain their previous names,
-shapes, and meanings; segmentation `predictions` and `prototypes` are removed.
+is 3. Reference and delta tensors each contain only the reference-lap XYZ triple.
+The graph has no segmentation `predictions` or `prototypes` outputs.
 The interface is independent of the informational checkpoint `format` label.
 
 | Tensor | Shape | Meaning |
 | --- | --- | --- |
 | Input `images` | `[1, 3, imgsz, imgsz]` | RGB, NCHW, divided by 255. Letterbox the full frame, round resized dimensions ties-to-even, center with floor offsets, and pad with RGB 114. |
-| Input `references` | `[1, 2, 3]` | Reference-lap XYZ, then centerline XYZ, in source coordinates. Learned standardization is inside the graph. |
+| Input `references` | `[1, 1, 3]` | Reference-lap XYZ in source coordinates. Learned standardization is inside the graph. |
 | Input `context` | `[1, 1 + len(game) + len(map_name)]` | Normalized lap position, then game and map-name one-hot vectors in `metadata.categories` order. |
-| Output `deltas` | `[1, 2, 3]` | Reference XYZ minus driver XYZ, then centerline XYZ minus driver XYZ. |
+| Output `deltas` | `[1, 1, 3]` | Reference-lap XYZ minus driver XYZ. |
 
 The frontend must validate finite reference coordinates, lap position in `[0, 1]`,
 and known category values; Python's input validation is not part of the graph.
-The shared model store's required `classNames` field contains the six regression
+The shared model store's required `classNames` field contains the three regression
 axis names from `outputNames`, rather than segmentation classes.
 Category vocabularies, coordinate/output definitions, and training
 metrics accompany the graph in the upload metadata. The same metadata (without
 the user-selected upload `name`) is saved in `best.onnx.json` and as JSON in the
 ONNX custom metadata property `acla.track-position`.
 
-For inference, load your reference-lap XYZ points and backend circuit-map export:
+For inference, load your reference-lap XYZ points and use game/map names from the
+model's saved vocabulary:
 
 ```python
 import json
@@ -579,14 +592,12 @@ from training.image_segmentation.position_data import PositionCurve
 from training.image_segmentation.position_model import PositionModel
 
 reference = PositionCurve.from_points(json.loads(Path("reference-lap.json").read_text()))
-circuit_map = json.loads(Path("circuit-map.json").read_text())
-centerline = PositionCurve.from_points(circuit_map["samples"]["middle_line"])
 model = PositionModel.load(Path("position-runs/run-1/best.pt"))
 result = model.predict_position(
-    Path("frame.jpg"), 0.25, reference, centerline,
-    game=circuit_map["game"], map_name=circuit_map["circuit_name"],
+    Path("frame.jpg"), 0.25, reference,
+    game="acc", map_name="Monza",
 )
-# {"reference_delta": [dx, dy, dz], "centerline_delta": [dx, dy, dz]}
+# {"reference_delta": [dx, dy, dz]}
 ```
 
 For an already loaded top-lap entry, use `PositionCurve.from_top_lap(entry)`.
@@ -595,16 +606,14 @@ head, reference normalization, and category vocabulary. Load them through
 `PositionModel.load`. Use `upload-position` to export and store their ONNX graph; the segmentation `upload`
 command continues to accept segmentation checkpoints only. Uploading stores the
 model for later download; the live API does not yet run position inference.
-The current format is `acla-position-cnn-v1`. Previous YOLO-based position
-checkpoints must be retrained from scratch using the same prepared position
+The current format is `acla-position-cnn-v2`. Previous checkpoints that used
+centerline inputs or YOLO encoders must be retrained from scratch using the same prepared position
 dataset. Format labels remain informational; loading checks the saved context
-and standalone encoder weights.
+and architecture, including the reference input width.
 
 Accuracy needs evaluation on synchronized held-out sessions, especially when
 camera view, car, track, or reference conditions change. Compare against a
 position-only baseline to establish whether the images improve prediction.
-The two predictions are learned outputs, so their mutual geometric consistency
-is not guaranteed by this independent six-output head.
 
 Related research supports the components of this approach, rather than this
 exact racing target:
@@ -616,7 +625,7 @@ exact racing target:
   feature concatenation used here; its experiments concern visual reasoning.
 - [TransFuser (CVPR 2021)](https://arxiv.org/abs/2104.09224) combines image and
   LiDAR representations for driving and waypoint prediction. It is evidence
-  for multimodal fusion, not a study of this exact pair of XYZ inputs.
+  for multimodal fusion, not a study of this exact XYZ input.
 
 ## Upload a trained model
 

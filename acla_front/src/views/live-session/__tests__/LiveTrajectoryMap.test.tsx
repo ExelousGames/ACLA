@@ -177,7 +177,7 @@ describe('reference lap overlay', () => {
         expect(ref.current!.getCircuitMap()).toBe(map);
         expect(ref.current!.getReferenceLap()).toBe(reference);
         expect(ref.current!.getPositionReferences(0.5)).toEqual({
-            reference: { x: 20, y: 400, z: 4 }, centerline: { x: 20, y: 400, z: 4 },
+            reference: { x: 20, y: 400, z: 4 },
         });
         expect(map.samples.middle_line[1]).toMatchObject({ x: 20, y: 0, z: 3 + altitude });
         expect(reference.y).toEqual([[0, 0, 3], [20, 400, 4], [0, 0, 3 + altitude]]);
@@ -268,22 +268,19 @@ describe('reference lap overlay', () => {
         expect(loadTopLapReferenceModel).not.toHaveBeenCalled();
     });
 
-    it('shares loaded reference and centerline XYZ interpolated by lap progress, including the seam', async () => {
+    it('shares reference XYZ interpolated by lap progress without a centerline, including the seam', async () => {
         const reference = { ...fixtures.expected, x: [0.25, 0.75],
             target_features: ['expert_optimal_player_pos_z', 'expert_optimal_player_pos_x', 'expert_optimal_player_pos_y'],
             y: [[30, 10, 20], [70, 50, 60]] };
         (loadTopLapReferenceModel as jest.Mock).mockResolvedValue([reference]);
         (useCircuitMaps as jest.Mock).mockReturnValue({ getCircuitMapByTrack: jest.fn().mockResolvedValue({
-            ...circuitMap(), samples: { middle_line: [
-                { normalized_position: 0.25, x: 100, y: 200, z: 300 },
-                { normalized_position: 0.75, x: 500, y: 600, z: 700 },
-            ] },
+            ...circuitMap(), samples: { middle_line: [] },
         }) });
         const ref = React.createRef<LiveTrajectoryMapHandle>();
         const view = render(<LiveTrajectoryMap name="live-map" ref={ref} />);
         expect(ref.current!.getPositionReferences(0.5)).toBeNull();
         await screen.findByText('Reference lap · car-a · grip 2');
-        const points = { reference: { x: 30, y: 40, z: 50 }, centerline: { x: 300, y: 400, z: 500 } };
+        const points = { reference: { x: 30, y: 40, z: 50 } };
         expect(ref.current!.getReferenceLap()).toBe(reference);
         expect(ref.current!.getPositionReferences(0.5)).toEqual(points);
         expect(ref.current!.getPositionReferences(0)).toEqual(points);

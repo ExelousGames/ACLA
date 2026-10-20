@@ -87,34 +87,38 @@ Position runs separately on WebGPU at its saved training resolution.
 **Settings → Track models → Position** shows its loading, availability and retry status.
 A missing position ONNX model leaves segmentation, depth and screen preview available.
 
-Keep **Live Map** open with its reference lap and centerline loaded. For each captured
+Keep **Live Map** open with its reference lap loaded. For each captured
 image, Track Vision samples fresh live `Graphics_normalized_car_position` and asks
-that map for the corresponding reference-lap and `samples.middle_line` XYZ points.
-Both lookups interpolate by normalized position, including the start/finish seam.
+that map for the corresponding reference-lap XYZ point.
+The lookup interpolates by normalized position, including the start/finish seam.
 Map camera zoom, flips and screen coordinates do not affect these inputs. Track Vision
 does not download reference data again and never passes driver XYZ to the model.
 
-The model receives the full letterboxed image and `[reference XYZ, centerline XYZ]`
-as a `[1, 2, 3]` tensor. When its graph requests context, it also receives
+The model receives the full letterboxed image and reference-lap XYZ
+as a `[1, 1, 3]` tensor. Centerline points are not required for position inference.
+When its graph requests context, it also receives
 `[normalized_position, one-hot game, one-hot map_name]`, using the published category
 vocabulary in its saved order. Progress and game come from the capture-time telemetry;
 map names use the loaded map's display name or simulator key. Unknown category labels
 produce an all-zero one-hot vector. Two-input ONNX graphs run without context.
-The final **Bird's-eye view** step plots reference-lap and centerline markers directly
-on the top-down scene relative to your car at the origin, alongside both signed XYZ
-offsets. It uses the output's X/Y values as supplied, with Z as height, without swapping
-axes for either game. The view fits both markers, including negative offsets, and can
-show them before camera calibration. Stale results are labeled; stopping capture or
-resetting telemetry clears the markers. The two signed XYZ output triples are shown here
-and published as `TrackVisionDetection.position.referenceDelta` and `centerlineDelta`,
-with `references`, `normalizedPosition`, and `inferenceMs`. They remain in source
+The final **Bird's-eye view** step plots the reference-lap marker directly
+on the top-down scene relative to your car at the origin, alongside its signed XYZ
+offset. It uses the output's X/Y values as supplied, with Z as height, without swapping
+axes for either game. The view fits the marker, including negative offsets, and can
+show it before camera calibration. Stale results are labeled; stopping capture or
+resetting telemetry clears the marker. The signed XYZ output triple is shown here
+and published as `TrackVisionDetection.position.referenceDelta`,
+with `references`, `normalizedPosition`, and `inferenceMs`. It remains in source
 coordinates: reference XYZ minus inferred driver XYZ. Missing references, paused or
 stale telemetry skip position inference while image-only segmentation continues; resetting telemetry or changing the loaded
 map/reference during inference discards the pending position prediction.
 
+The browser loads segmentation predictions and prototypes from its separate
+segmentation graph. The standalone `train-position` export supplies position deltas.
+
 ### Detector results
 
-`TrackVisionModel.loadBackend()` loads the segmentation graph through the desktop cache. Its `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time and ordered class names. `TrackPositionModel.load()` separately loads the position graph; `detect(canvas, references, context?)` returns the two signed position delta triples and inference time. Position inference runs only with fresh telemetry and reference points. `TrackVisionModel.loadBuiltin('depth', inputSize = 518)` loads bundled depth weights. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. All models letterbox the full capture into their square inputs. Segmentation boxes are normalized using the training input size. Call `dispose()` when finished.
+`TrackVisionModel.loadBackend()` loads the segmentation graph through the desktop cache. Its `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time and ordered class names. `TrackPositionModel.load()` separately loads the position graph; `detect(canvas, references, context?)` returns the signed reference-lap XYZ delta triple and inference time. Position inference runs only with fresh telemetry and reference points. `TrackVisionModel.loadBuiltin('depth', inputSize = 518)` loads bundled depth weights. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. All models letterbox the full capture into their square inputs. Segmentation boxes are normalized using the training input size. Call `dispose()` when finished.
 
 `LiveTrackVision` registers a `TrackVisionHandle` as `visualization:track-vision`. Consumers use `getLatestDetection()` or `subscribeDetection(listener)`. Results include the source timestamp and dimensions, successful segmentation under `detections.segment`, and depth under `detections.depth`. Masks, boxes, and depth maps refer to the letterboxed model input; drawing segmentation removes its padding. Results clear on stop, configuration changes, and unmount. Depth values remain available to detection consumers; the Label depths tab visualizes retained label depths as a heatmap.
 

@@ -12,7 +12,7 @@ jest.mock('onnxruntime-web/wasm', () => ({
 jest.mock('./backend-vision-model', () => ({ loadBackendPositionModel: jest.fn() }));
 
 type Task = 'first' | 'second' | 'third';
-const references = { reference: { x: 1, y: 2, z: 3 }, centerline: { x: 4, y: 5, z: 6 } };
+const references = { reference: { x: 1, y: 2, z: 3 } };
 const tasks: Task[] = ['first', 'second', 'third'];
 const bytesFor = (task: Task) => new Uint8Array([tasks.indexOf(task)]).buffer;
 const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -20,7 +20,7 @@ const tensor = (dims: number[], data: Float32Array | Uint8Array) => ({
     dims, data, type: data instanceof Float32Array ? 'float32' : 'uint8', dispose: jest.fn(),
 });
 const outputsFor = (_task: Task) => ({
-    deltas: tensor([1, 2, 3], new Float32Array(6)),
+    deltas: tensor([1, 1, 3], new Float32Array(3)),
 });
 let active: number;
 let maxActive: number;
