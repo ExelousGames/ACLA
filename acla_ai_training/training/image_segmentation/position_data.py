@@ -95,7 +95,7 @@ def reference_inputs(normalized_position, reference_lap: PositionCurve, centerli
 def load_position_manifest(path: Path) -> dict[str, list[dict]]:
     """Read a position-file folder or dataset index, grouped by session without splitting.
 
-    Each frame contains image, game, map_name, normalized_position, references,
+    Each frame contains session_id, image, game, map_name, normalized_position, references,
     and target. Arrays contain reference-lap XYZ and optionally centerline XYZ.
     Image paths are relative to their JSON file. No telemetry or curve files are read.
     """
@@ -138,7 +138,10 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
         if not image.is_file():
             raise FileNotFoundError(f"Image does not exist: {image}")
         images.add(image)
-        record = {"image": image, **position_context(frame["normalized_position"], frame["game"], frame["map_name"])}
+        record = {
+            "session_id": session_id, "image": image,
+            **position_context(frame["normalized_position"], frame["game"], frame["map_name"]),
+        }
         for field in ("references", "target"):
             values = np.asarray(frame[field], dtype=np.float32)
             if values.shape not in ((1, 3), (2, 3)) or not np.isfinite(values).all():
@@ -174,6 +177,8 @@ class PositionDataset(Dataset):
         # Use only the reference lap; prepared files may also contain centerline XYZ.
         # Keep inputs and targets separate. No raw telemetry is returned to the trainer.
         return {
+            "game": row["game"],
+            "map_name": row["map_name"],
             "image": image_tensor(row["image"], self.imgsz),
             "references": torch.from_numpy(row["references"][:1]),
             "context": torch.from_numpy(encode_position_context(

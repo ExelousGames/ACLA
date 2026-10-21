@@ -391,8 +391,9 @@ Reference lookup uses linear interpolation, including across the start/finish se
 missing axes and invalid or missing reference curves fail instead of becoming
 zero coordinates.
 
-The image encoder uses five stride-2 convolution/GroupNorm/ReLU blocks with
-16, 32, 64, 96, and 128 channels. A 4×4 adaptive pooling grid preserves coarse
+The image encoder uses five convolution/GroupNorm/ReLU blocks with
+16, 32, 64, 96, and 128 channels and strides (2, 2, 2, 1, 1), respectively.
+A 4×4 adaptive pooling grid preserves coarse
 image layout, followed by a 128-feature linear/ReLU position encoder. An MLP
 combines this encoding with three standardized reference coordinates and context
 to predict the signed offsets. All encoder and regression weights are randomly
@@ -403,8 +404,19 @@ stays in `[0, 1]`; game and map names use separate one-hot vectors. Sorted categ
 vocabularies are built from the prepared dataset and saved in each checkpoint.
 The context order is normalized position, game vector, then map-name vector.
 Inference reuses the saved order and rejects names absent from the vocabulary.
-Outputs and losses stay in raw coordinate units, with an unconstrained linear output layer
-and Smooth L1 training loss. Image preparation letterboxes the entire frame;
+Outputs stay in raw coordinate units, with an unconstrained linear output layer.
+Training loss adds mean component Smooth L1 to mean weighted `1 - cos(angle)`
+between predicted and target XYZ offsets. The unweighted direction penalty is
+0 for aligned vectors, 1 for perpendicular vectors, and 2 for opposite vectors.
+Each penalty is multiplied by `min(||target|| / 0.1, 1)^2`: it fades quadratically
+near zero and retains full weight at target lengths of 0.1 or more in source
+coordinate units. This reduces the influence of large angles caused by tiny
+offset differences. The weighted penalties are averaged over nonzero targets,
+not divided by the sum of weights, so batches containing only small offsets
+still receive the fade. An all-zero-target batch uses only Smooth L1. Vector
+norms are clamped to `1e-8` for numerical stability, so zero predictions still
+receive a corrective gradient for nonzero targets.
+Image preparation letterboxes the entire frame;
 there are no flips, crops, mosaics, or other geometric training augmentations
 that would invalidate its position target.
 
@@ -443,8 +455,8 @@ prepared targets. It does not read source telemetry or Labelme polygons; its
 image features are learned directly from the position targets.
 
 For other images, prepare both reference XYZ inputs and signed offset targets
-synchronized to each image. Provide at least two frames for training to split;
-they can come from a single session. Save each position file
+synchronized to each image. Provide at least two sessions for each game/map;
+a single map is sufficient. Save each position file
 beside its image, using the same stem with `.position.json`, for example
 `frame_000120.position.json`:
 
@@ -460,8 +472,8 @@ beside its image, using the same stem with `.position.json`, for example
 }
 ```
 
-Folder input discovers `.position.json` files recursively and pools their frames
-for a random train/validation split; Labelme annotations are ignored. The image
+Folder input discovers `.position.json` files recursively and groups their frames
+by session for a split balanced by frame count within each game/map; Labelme annotations are ignored. The image
 filename is relative to its position file, so these pairs can be moved together. A dataset index instead
 contains sessions with `id` and `frames`, where each frame has a `position_file`
 path relative to the index. Inline frame data and preset session `split`
@@ -502,16 +514,27 @@ with the same arguments. The script forwards to
 
 Use a new output directory; every run trains from scratch. The first GPU
 is the default if `--device` is omitted; use `--device cpu` for CPU training.
-Before the first epoch, training shuffles individual
-frames reproducibly with `--seed 42` and assigns `--val-fraction 0.2` to validation by
-default. The validation count is rounded and clamped to leave at least one frame
-in each split. Frames from the same session can appear in both splits.
-The run's `split.json` records the seed, fraction, and train/validation image paths.
+After image extraction and before the first epoch, training assigns whole sessions
+from each `(game, map_name)` to validation, targeting `--val-fraction 0.2` of that
+map's frames using `--seed 42` by default. It chooses the closest achievable frame
+count, accounting for unequal session sizes; equally balanced session choices
+are randomized by the seed. The rest go to training, so every map appears in both
+sets. Each set receives at least one session per map; maps with fewer than two
+sessions are rejected. Sessions must each belong to one game/map. Frames from the
+same session never cross splits, and all frames are retained. An exact target
+fraction may be impossible with whole sessions. Images from all maps and sessions are shuffled
+within each split, and training batches are reshuffled each epoch.
+The training and validation maps are printed before the first epoch.
+The run's `split.json` records the seed, target frame fraction, map lists, and image paths.
 Prepared position files and the dataset index are not changed.
 
 Training also writes `best.pt`, `last.pt`, and
-`results.json`, including validation MAE for every reference/axis in raw
-coordinates. Each epoch also prints and saves mean 3D distance error
+`results.json`, including `train_mae` and validation MAE for every reference/axis
+in raw coordinates. Each epoch prints training and validation MAE together.
+Training MAE averages absolute XYZ errors over all training frames using the
+predictions from the training pass, before each optimizer update. Frames receive
+equal weight even when the final batch is smaller.
+Each epoch also prints and saves mean 3D distance error
 (`||prediction - target||`) and mean direction error (the angle between the
 predicted and actual offset vectors, from 0 to 180 degrees), grouped by the
 actual reference-lap offset length (`||target||`): `<0.1`, `0.1-0.25`,
@@ -519,8 +542,15 @@ actual reference-lap offset length (`||target||`): `<0.1`, `0.1-0.25`,
 bound and exclude their upper bound. Length and distance use source coordinate
 units. `val_errors_by_offset_length` stores each range's frame count,
 mean distance error, mean direction error in degrees, and valid direction count.
+The console shows a separate validation section for each `(game, map_name)`,
+including its frame count, MAE, and offset-length breakdown. `val_by_map` in
+`results.json` and checkpoint metrics saves these sections with `game`, `map_name`,
+`count`, `val_mae`, `val_mae_per_axis`, and `val_errors_by_offset_length`.
+The top-level metrics remain aggregated across all validation frames.
 Direction averages exclude pairs where either vector is zero. Empty ranges and
 undefined direction averages are printed as `n/a` and saved as `null`.
+Reported angles are unweighted; near-zero offsets can have a large angle error
+despite a small distance error, so interpret the two together.
 The best checkpoint is selected by mean validation MAE. It then
 exports that checkpoint to `best.onnx` and `best.onnx.json`, including with
 `--no-upload`. The `.pt` checkpoints remain available for Python inference.

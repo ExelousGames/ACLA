@@ -19,7 +19,8 @@ Annotate those regions continuously and annotate the cars separately.
 Enable View > Position Context for a separate top-down map window. Prepared
 .position.json files supply the centerline, reference lap and driver trajectory
 across 100 frames before and after the current image; adjust the range and axes
-in that window. It follows image navigation without changing annotations.
+in that window. The current frame's world X/Y/Z coordinates appear below the map
+for all three paths. It follows image navigation without changing annotations.
 """
 
 import sys

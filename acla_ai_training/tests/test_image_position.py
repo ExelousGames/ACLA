@@ -21,7 +21,7 @@ from training.image_segmentation.position_data import (
 )
 from training.image_segmentation.position_model import PositionModel
 from training.image_segmentation.position_preparation import signed_targets
-from training.image_segmentation.position_training import train_position_model
+from training.image_segmentation.position_training import position_regression_loss, train_position_model
 
 
 CATEGORIES = {"game": ["acc", "iracing"], "map_name": ["Display Name", "Other Track"]}
@@ -52,6 +52,25 @@ def aligned_manifest(tmp_path):
 
 
 @pytest.fixture
+def training_manifest(aligned_manifest):
+    manifest = json.loads(aligned_manifest.read_text())
+    for session in list(manifest["sessions"]):
+        position = aligned_manifest.parent / session["frames"][0]["position_file"]
+        frame = json.loads(position.read_text())
+        image = aligned_manifest.parent / frame["image"]
+        frame["image"] = f"{session['id']}-extra.png"
+        frame["session_id"] = f"{session['id']}-extra"
+        (aligned_manifest.parent / frame["image"]).write_bytes(image.read_bytes())
+        extra = position.with_name(f"{session['id']}-extra.position.json")
+        extra.write_text(json.dumps(frame))
+        manifest["sessions"].append({
+            "id": frame["session_id"], "frames": [{"position_file": extra.name}],
+        })
+    aligned_manifest.write_text(json.dumps(manifest))
+    return aligned_manifest
+
+
+@pytest.fixture
 def position_folder(aligned_manifest):
     folder = aligned_manifest.parent / "pairs"
     folder.mkdir()
@@ -76,6 +95,7 @@ def test_position_folder_scans_root_and_nested_folders(position_folder):
     (nested / "metadata.json").write_text("{}")
 
     sessions = load_position_manifest(position_folder)
+    assert all(row["session_id"] == session_id for session_id, frames in sessions.items() for row in frames)
     assert {row["image"] for frames in sessions.values() for row in frames} == {
         position_folder / "session-a.png", nested / "session-b.png",
     }
@@ -145,7 +165,8 @@ def test_prepared_targets_can_only_change_labels(aligned_manifest):
     path.write_text(json.dumps(frame))
     after = load_position_manifest(aligned_manifest)
     a, b = (PositionDataset(records["session-a"], 64, CATEGORIES)[0] for records in (before, after))
-    assert set(a) == {"image", "references", "context", "target"}
+    assert set(a) == {"image", "references", "context", "target", "game", "map_name"}
+    assert (a["game"], a["map_name"]) == (b["game"], b["map_name"]) == ("acc", "Display Name")
     torch.testing.assert_close(a["image"], b["image"])
     torch.testing.assert_close(a["references"], b["references"])
     torch.testing.assert_close(a["context"], b["context"])
@@ -170,7 +191,8 @@ def test_centerline_data_is_not_used_as_a_model_input_or_target(aligned_manifest
     path.write_text(json.dumps(frame))
     after = load_position_manifest(aligned_manifest)
     a, b = (PositionDataset(records["session-a"], 64, CATEGORIES)[0] for records in (before, after))
-    for field in a:
+    assert (a["game"], a["map_name"]) == (b["game"], b["map_name"])
+    for field in ("image", "references", "context", "target"):
         torch.testing.assert_close(a[field], b[field])
     torch.testing.assert_close(a["references"], torch.tensor([[0.2, -0.1, 0.1]]))
     torch.testing.assert_close(a["target"], torch.tensor([[0.1, -0.2, 0]]))
@@ -298,6 +320,150 @@ def single_threaded_torch():
     torch.set_num_threads(previous)
 
 
+@pytest.mark.parametrize("prediction, penalty", [
+    ([1, 0, 0], 0),
+    ([2, 0, 0], 0),
+    ([1, 1, 0], 1 - 1 / np.sqrt(2)),
+    ([0, 2, 0], 1),
+    ([0, 0, 2], 1),
+    ([-2, 0, 0], 2),
+])
+@pytest.mark.parametrize("prediction_scale, target_scale", [(1, 1), (0.001, 10), (4, 0.1)])
+def test_position_loss_keeps_full_direction_weight_at_or_above_point_one(prediction, penalty, prediction_scale, target_scale):
+    prediction = torch.tensor([[prediction]], dtype=torch.float32) * prediction_scale
+    target = torch.tensor([[[target_scale, 0, 0]]], dtype=torch.float32)
+    component_loss = torch.nn.functional.smooth_l1_loss(prediction, target)
+    assert position_regression_loss(prediction, target).item() == pytest.approx(component_loss.item() + penalty)
+
+
+@pytest.mark.parametrize("target_length, direction_penalty", [
+    (0, 0), (0.001, 0.0001), (0.01, 0.01), (0.05, 0.25), (0.1, 1),
+])
+@pytest.mark.parametrize("prediction_length", [0.001, 1])
+def test_position_loss_fades_direction_for_small_targets(target_length, direction_penalty, prediction_length):
+    prediction = torch.tensor([[[0., prediction_length, 0]]])
+    target = torch.tensor([[[target_length, 0., 0]]])
+    component_loss = torch.nn.functional.smooth_l1_loss(prediction, target)
+    assert position_regression_loss(prediction, target).item() == pytest.approx(
+        component_loss.item() + direction_penalty,
+    )
+
+
+def test_position_loss_does_not_renormalize_small_target_weights_in_mixed_batches():
+    prediction = torch.tensor([[[0., 1, 0]], [[-0.008, 0.006, 0]], [[1., 0, 0]]])
+    target = torch.tensor([[[1., 0, 0]], [[0.006, 0.008, 0]], [[0., 0, 0]]])
+    component_loss = torch.nn.functional.smooth_l1_loss(prediction, target)
+    # Perpendicular targets have lengths 1 and 0.01; the zero target is excluded.
+    assert position_regression_loss(prediction, target).item() == pytest.approx(
+        component_loss.item() + (1 + 0.01) / 2,
+    )
+
+
+@pytest.mark.parametrize("length", [1e-3, 1e-6, 1e-12])
+def test_direction_gradient_fades_when_prediction_and_target_approach_zero(length):
+    prediction = torch.tensor([[[0., length, 0]]], requires_grad=True)
+    target = torch.tensor([[[length, 0., 0]]])
+    direction_loss = position_regression_loss(prediction, target) - torch.nn.functional.smooth_l1_loss(prediction, target)
+    direction_loss.backward()
+    assert torch.isfinite(prediction.grad).all()
+    assert prediction.grad[0, 0, 0] < 0
+    assert prediction.grad.norm().item() <= 101 * length
+
+
+@pytest.mark.parametrize("zero_targets", [False, True])
+def test_position_loss_excludes_zero_targets_from_direction_average(zero_targets):
+    prediction = torch.tensor([[[2., 0, 0]], [[0, 1, 0]], [[-1, 0, 0]]], requires_grad=True)
+    target = torch.tensor([[[0., 0, 0]], [[1, 0, 0]], [[1, 0, 0]]])
+    if zero_targets:
+        target.zero_()
+    loss = position_regression_loss(prediction, target)
+    component_loss = torch.nn.functional.smooth_l1_loss(prediction, target)
+    assert loss.item() == pytest.approx(component_loss.item() + (0 if zero_targets else 1.5))
+    loss.backward()
+    assert torch.isfinite(prediction.grad).all()
+
+
+@pytest.mark.parametrize("prediction_length", [0, 1e-12])
+@pytest.mark.parametrize("zero_target", [False, True])
+def test_position_loss_has_finite_gradients_near_zero(prediction_length, zero_target):
+    prediction = torch.tensor([[[prediction_length, 0, 0]]], dtype=torch.float32, requires_grad=True)
+    target = torch.tensor([[[0., 0, 0] if zero_target else [0., 1, 0]]])
+    loss = position_regression_loss(prediction, target)
+    component_loss = torch.nn.functional.smooth_l1_loss(prediction, target)
+    assert loss.item() == pytest.approx(component_loss.item() + (0 if zero_target else 1))
+    loss.backward()
+    assert torch.isfinite(prediction.grad).all()
+    if not zero_target:
+        assert prediction.grad[0, 0, 1] < 0
+
+
+def test_direction_penalty_gradient_rotates_prediction_towards_target():
+    prediction = torch.tensor([[[0., 1, 0]]], requires_grad=True)
+    target = torch.tensor([[[1., 0, 0]]])
+    direction_loss = position_regression_loss(prediction, target) - torch.nn.functional.smooth_l1_loss(prediction, target)
+    direction_loss.backward()
+    assert torch.isfinite(prediction.grad).all()
+    updated = prediction.detach() - 0.1 * prediction.grad
+    assert torch.nn.functional.cosine_similarity(updated, target, dim=-1).item() > 0
+
+
+def test_position_training_optimizes_component_and_direction_errors(training_manifest, tmp_path, monkeypatch):
+    from training.image_segmentation import position_training
+
+    network = PositionModel(imgsz=64, categories=CATEGORIES)
+    with torch.no_grad():
+        # Perpendicular to the training target [0.1, -0.2, 0].
+        network.head[2].bias.copy_(torch.tensor([0.2, 0.1, 0]))
+    network.register_forward_hook(
+        lambda module, inputs, output: module.head[2].bias.reshape(1, 1, 3).expand_as(output),
+    )
+    monkeypatch.setattr(position_training, "PositionModel", lambda *args, **kwargs: network)
+    monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
+    output = tmp_path / "run"
+    train_position_model(training_manifest, output=output, epochs=1, imgsz=64, batch=2, device="cpu", upload=False)
+
+    metrics = json.loads((output / "results.json").read_text())[0]
+    assert metrics["train_loss"] == pytest.approx(1 / 60 + 1)
+    assert metrics["train_mae"] == pytest.approx(0.4 / 3)
+
+
+@pytest.mark.parametrize("batch", [3, 4])
+def test_position_training_mae_weights_frames_and_resets_each_epoch(
+    aligned_manifest, tmp_path, monkeypatch, capsys, batch,
+):
+    from training.image_segmentation import position_training
+
+    # Absolute XYZ errors sum to 6, 5, 6, and 11 for these four frames.
+    predictions = [[2, -1, 0], [-3, 0, 2], [0, 0, 0], [1, 5, -4]]
+    targets = [[1, 2, -2], [0, -1, 1], [1, -2, 3], [-2, 1, 0]]
+
+    def split(records, **kwargs):
+        return {
+            "train": [
+                dict(records[0], references=np.array([prediction], dtype=np.float32),
+                     target=np.array([target], dtype=np.float32))
+                for prediction, target in zip(predictions, targets)
+            ],
+            "val": records[:1],
+        }
+
+    network = PositionModel(imgsz=64, categories=CATEGORIES)
+    # Supply fixed predictions while retaining a gradient path for training.
+    network.register_forward_hook(lambda module, inputs, output: inputs[1] + output * 0)
+    monkeypatch.setattr(position_training, "PositionModel", lambda *args, **kwargs: network)
+    monkeypatch.setattr(position_training, "split_position_frames", split)
+    monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
+    output = tmp_path / "run"
+    train_position_model(aligned_manifest, output=output, epochs=2, imgsz=64, batch=batch, device="cpu", upload=False)
+
+    history = json.loads((output / "results.json").read_text())
+    assert [row["train_mae"] for row in history] == pytest.approx([7 / 3, 7 / 3])
+    for name in ("best.pt", "last.pt"):
+        metrics = torch.load(output / name, weights_only=True)["metrics"]
+        assert metrics["train_mae"] == pytest.approx(7 / 3)
+    assert capsys.readouterr().out.count("train MAE=2.33333, val MAE=") == 2
+
+
 def test_regression_trains_image_encoder_and_head_from_scratch_and_roundtrips(aligned_manifest, tmp_path):
     model = PositionModel(imgsz=64, categories=CATEGORIES)
     before = {key: value.clone() for key, value in model.image_encoder.state_dict().items()}
@@ -310,7 +476,7 @@ def test_regression_trains_image_encoder_and_head_from_scratch_and_roundtrips(al
     inputs = tuple(sample[field].unsqueeze(0) for field in ("image", "references", "context"))
     prediction = model(*inputs)
     assert prediction.shape == (1, 1, 3)
-    loss = (prediction - sample["target"]).square().mean()
+    loss = position_regression_loss(prediction, sample["target"].unsqueeze(0))
     loss.backward()
     assert model.head[0].weight.grad.abs().sum() > 0
     assert model.position_encoder[0].weight.grad.abs().sum() > 0
@@ -441,22 +607,19 @@ def test_segmentation_based_checkpoint_requires_training_from_scratch(position_c
 
 
 @pytest.mark.parametrize("use_position_folder", [False, True])
-def test_single_session_training_saves_raw_axis_metrics_and_uses_only_train_reference_statistics(
+def test_session_training_saves_raw_axis_metrics_and_uses_only_train_reference_statistics(
     aligned_manifest, tmp_path, position_folder, use_position_folder, capsys,
 ):
     path = aligned_manifest.parent / "session-b.position.json"
     frame = json.loads(path.read_text())
-    frame["session_id"] = "session-a"
+    frame.update(game="acc", map_name="Display Name")
     frame["references"] = [[0.3, -0.4, 0.5], [0.35, -0.4, 0.5]]
     frame["target"] = [[0.2, -0.5, 0.4], [0.25, -0.5, 0.4]]
     path.write_text(json.dumps(frame))
     if use_position_folder:
         (position_folder / path.name).write_bytes(path.read_bytes())
-    manifest = json.loads(aligned_manifest.read_text())
-    manifest["sessions"][0]["frames"].extend(manifest["sessions"].pop()["frames"])
-    aligned_manifest.write_text(json.dumps(manifest))
     training_input = position_folder if use_position_folder else aligned_manifest
-    assert len(load_position_manifest(training_input)) == 1
+    assert len(load_position_manifest(training_input)) == 2
     prepared = aligned_manifest.read_bytes()
     output = tmp_path / "run"
     checkpoint = train_position_model(
@@ -471,6 +634,10 @@ def test_single_session_training_saves_raw_axis_metrics_and_uses_only_train_refe
     image_folder = position_folder if use_position_folder else aligned_manifest.parent
     assert split == {
         "seed": 42, "val_fraction": 0.2,
+        "maps": {
+            "train": [{"game": "acc", "map_name": "Display Name"}],
+            "val": [{"game": "acc", "map_name": "Display Name"}],
+        },
         "train": [str(image_folder / "session-a.png")], "val": [str(image_folder / "session-b.png")],
     }
     assert aligned_manifest.read_bytes() == prepared
@@ -488,18 +655,25 @@ def test_single_session_training_saves_raw_axis_metrics_and_uses_only_train_refe
             "count": 0, "mean_distance_error": None,
             "mean_direction_error_deg": None, "direction_valid_count": 0,
         } for name, bucket in buckets.items() if name != "0.5-1")
+        assert row["val_by_map"] == [{
+            "game": "acc", "map_name": "Display Name", "count": 1,
+            "val_mae": row["val_mae"], "val_mae_per_axis": row["val_mae_per_axis"],
+            "val_errors_by_offset_length": buckets,
+        }]
         assert not any(key.endswith("_per_reference") for key in row)
     assert torch.load(output / "last.pt", weights_only=True)["metrics"] == history[-1]
     best_metrics = torch.load(checkpoint, weights_only=True)["metrics"]
     assert json.loads((output / "best.onnx.json").read_text())["metadata"]["metrics"] == best_metrics
     log = capsys.readouterr().out
+    assert "Training maps: acc/Display Name" in log
+    assert "Validation maps: acc/Display Name" in log
     assert "reference: mean distance error=" not in log
     assert log.count("actual offset length 0.5-1:") == 2
     assert "centerline" not in log
     assert log.count("mean direction error=") == 14
     assert log.count("mean distance error=n/a") == 12
     restored = PositionModel.load(checkpoint)
-    assert restored.categories == CATEGORIES
+    assert restored.categories == {"game": ["acc"], "map_name": ["Display Name"]}
     training_references = load_position_manifest(training_input)["session-a"][0]["references"]
     np.testing.assert_allclose(restored.position_mean.numpy(), training_references[0])
     with pytest.raises(FileExistsError):
@@ -620,6 +794,78 @@ def test_position_validation_groups_by_actual_offset_length_at_every_boundary(
             "count": 2, "mean_distance_error": 3 * sum(lengths) / 2,
             "mean_direction_error_deg": 180, "direction_valid_count": 1 if name == "<0.1" else 2,
         })
+
+
+@pytest.mark.parametrize("batch", [2, 4, 6])
+def test_position_validation_reports_each_game_and_map_separately(
+    aligned_manifest, tmp_path, monkeypatch, capsys, batch,
+):
+    from training.image_segmentation import position_training
+
+    # Interleave maps with unequal frame counts, including the same map name in two games.
+    frames = [
+        ("acc", "Display Name", [2, 0, 0], [1, 0, 0]),
+        ("iracing", "Display Name", [1, 0, 0], [0, 0, 0]),
+        ("acc", "Other Track", [-1, 0, 0], [1, 0, 0]),
+        ("acc", "Display Name", [0, 0, 0], [1, 0, 0]),
+        ("acc", "Display Name", [0, 1, 0], [1, 0, 0]),
+        ("acc", "Other Track", [3, 0, 0], [1, 0, 0]),
+    ]
+
+    def split(records, **kwargs):
+        return {
+            "train": records[:1],
+            "val": [
+                dict(records[0], game=game, map_name=map_name,
+                     references=np.array([prediction], dtype=np.float32),
+                     target=np.array([target], dtype=np.float32))
+                for game, map_name, prediction, target in frames
+            ],
+        }
+
+    network = PositionModel(imgsz=64, categories=CATEGORIES)
+    network.register_forward_hook(lambda module, inputs, output: output if module.training else inputs[1])
+    monkeypatch.setattr(position_training, "PositionModel", lambda *args, **kwargs: network)
+    monkeypatch.setattr(position_training, "split_position_frames", split)
+    monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
+    output = tmp_path / "run"
+    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", upload=False)
+    metrics = json.loads((output / "results.json").read_text())[0]
+    assert metrics["val_mae"] == pytest.approx(0.5)
+    assert metrics["val_errors_by_offset_length"]["1-2"] == pytest.approx({
+        "count": 5, "mean_distance_error": (6 + np.sqrt(2)) / 5,
+        "mean_direction_error_deg": 67.5, "direction_valid_count": 4,
+    })
+    expected = [
+        ("acc", "Display Name", 3, [1, 1 / 3, 0], "1-2", (2 + np.sqrt(2)) / 3, 45, 2),
+        ("acc", "Other Track", 2, [2, 0, 0], "1-2", 2, 90, 2),
+        ("iracing", "Display Name", 1, [1, 0, 0], "<0.1", 1, None, 0),
+    ]
+    assert len(metrics["val_by_map"]) == len(expected)
+    log = capsys.readouterr().out
+    for actual, (game, map_name, count, axes, length_range, distance, direction, valid_count) in zip(
+        metrics["val_by_map"], expected,
+    ):
+        assert (actual["game"], actual["map_name"], actual["count"]) == (game, map_name, count)
+        assert actual["val_mae"] == pytest.approx(sum(axes) / 3)
+        assert actual["val_mae_per_axis"] == pytest.approx(dict(zip(
+            ("reference_delta_x", "reference_delta_y", "reference_delta_z"), axes,
+        )))
+        assert actual["val_errors_by_offset_length"][length_range] == pytest.approx({
+            "count": count, "mean_distance_error": distance,
+            "mean_direction_error_deg": direction, "direction_valid_count": valid_count,
+        })
+        assert all(bucket == {
+            "count": 0, "mean_distance_error": None,
+            "mean_direction_error_deg": None, "direction_valid_count": 0,
+        } for name, bucket in actual["val_errors_by_offset_length"].items() if name != length_range)
+        heading = f"Validation map {game}/{map_name}: {count} frames, val MAE="
+        assert heading in log
+        section = log.split(heading, 1)[1].split("Validation map ", 1)[0]
+        angle = "n/a" if direction is None else f"{direction:.6g} deg"
+        assert f"mean direction error={angle} ({valid_count}/{count} valid)" in section
+        assert section.count("actual offset length ") == 7
+    assert torch.load(output / "best.pt", weights_only=True)["metrics"] == metrics
 
 
 @pytest.mark.parametrize("offline", [False, True])
@@ -743,7 +989,7 @@ def test_invalid_position_upload_never_connects_to_backend(position_checkpoint, 
 
 @pytest.mark.parametrize("failed", [False, True])
 def test_position_training_uploads_best_and_preserves_weights_on_failure(
-    aligned_manifest, tmp_path, monkeypatch, capsys, failed,
+    training_manifest, tmp_path, monkeypatch, capsys, failed,
 ):
     from training.image_segmentation import position_publication, position_training
 
@@ -761,11 +1007,11 @@ def test_position_training_uploads_best_and_preserves_weights_on_failure(
     args = dict(output=output, epochs=1, imgsz=64, batch=1, device="cpu")
     if failed:
         with pytest.raises(RuntimeError, match="Training completed, but backend upload failed") as error:
-            train_position_model(aligned_manifest, **args)
+            train_position_model(training_manifest, **args)
         assert str(output / "best.pt") in str(error.value)
         assert "upload-position" in str(error.value)
     else:
-        assert train_position_model(aligned_manifest, **args) == output / "best.pt"
+        assert train_position_model(training_manifest, **args) == output / "best.pt"
         assert "Model uploaded to backend: position-model" in capsys.readouterr().out
     upload.assert_awaited_once_with((output / "best.onnx").resolve(), name="track-position")
     assert any(not torch.equal(value, encoder_before[key]) for key, value in network.position_encoder.state_dict().items())
@@ -774,10 +1020,15 @@ def test_position_training_uploads_best_and_preserves_weights_on_failure(
     assert (output / "results.json").is_file()
     assert (output / "best.onnx").is_file()
     assert (output / "best.onnx.json").is_file()
+    split = json.loads((output / "split.json").read_text())
+    assert split["maps"]["train"] == split["maps"]["val"] == [
+        {"game": "acc", "map_name": "Display Name"},
+        {"game": "iracing", "map_name": "Other Track"},
+    ]
 
 
 def test_position_training_preserves_checkpoint_and_skips_upload_when_export_fails(
-    aligned_manifest, tmp_path, monkeypatch,
+    training_manifest, tmp_path, monkeypatch,
 ):
     from training.image_segmentation import position_publication, position_training
 
@@ -792,7 +1043,7 @@ def test_position_training_preserves_checkpoint_and_skips_upload_when_export_fai
     monkeypatch.setattr(position_publication, "upload_position_checkpoint", upload)
     output = tmp_path / "run"
     with pytest.raises(RuntimeError, match="Training completed, but ONNX export failed") as error:
-        train_position_model(aligned_manifest, output=output,
+        train_position_model(training_manifest, output=output,
                              epochs=1, imgsz=64, batch=1, device="cpu")
     assert "upload-position" in str(error.value)
     PositionModel.load(output / "best.pt")
@@ -826,35 +1077,117 @@ def test_position_upload_command_can_retry_without_training(tmp_path, monkeypatc
     upload.assert_awaited_once_with(checkpoint, name="race-position")
 
 
-def test_training_split_randomizes_frames_reproducibly_across_sessions():
+@pytest.mark.parametrize("fraction", [0.2, 0.3, 0.8])
+def test_training_split_keeps_sessions_together_and_balances_frames_per_map(fraction):
     from training.image_segmentation.position_training import split_position_frames
 
     records = [
-        {"image": Path(f"session-{session}/frame-{frame}.png"), "session_id": session}
-        for session in range(10) for frame in range(session + 1)
+        {
+            "image": Path(f"map-{track}/session-{session}/frame-{frame}.png"),
+            "session_id": f"map-{track}-session-{session}",
+            "game": "acc", "map_name": f"map-{track}",
+        }
+        for track in range(10) for session in range(10) for frame in range((track + 1) * (session + 1))
     ]
     original = list(records)
-    split = split_position_frames(records)
-    assert len(split["train"]) == 44
-    assert len(split["val"]) == 11
+    split = split_position_frames(records, val_fraction=fraction)
+    train_maps = {(row["game"], row["map_name"]) for row in split["train"]}
+    val_maps = {(row["game"], row["map_name"]) for row in split["val"]}
+    assert train_maps == val_maps == {("acc", f"map-{track}") for track in range(10)}
+    for track in range(10):
+        total = 55 * (track + 1)
+        val_count = sum(row["map_name"] == f"map-{track}" for row in split["val"])
+        assert abs(val_count - total * fraction) <= (track + 1) / 2
+        assert sum(row["map_name"] == f"map-{track}" for row in split["train"]) == total - val_count
     train_images = {row["image"] for row in split["train"]}
     val_images = {row["image"] for row in split["val"]}
     assert train_images.isdisjoint(val_images)
     assert train_images | val_images == {row["image"] for row in records}
-    assert {row["session_id"] for row in split["train"]} & {row["session_id"] for row in split["val"]}
-    assert split_position_frames(list(reversed(records))) == split
-    assert split_position_frames(records, seed=7) != split
-    assert len(split_position_frames(records, val_fraction=0.3)["val"]) == round(len(records) * 0.3)
+    assert len(split["train"]) + len(split["val"]) == len(records)
+    assert {row["session_id"] for row in split["train"]}.isdisjoint(row["session_id"] for row in split["val"])
+    assert split["train"] != sorted(split["train"], key=lambda row: str(row["image"]))
+    assert split_position_frames(list(reversed(records)), val_fraction=fraction) == split
+    assert {row["image"] for row in split_position_frames(records, val_fraction=fraction, seed=7)["val"]} != val_images
     assert records == original
 
 
 @pytest.mark.parametrize("fraction", [0.01, 0.2, 0.99])
-def test_two_frames_always_produce_nonempty_training_and_validation(fraction):
+@pytest.mark.parametrize("maps", [
+    [("acc", "map-a")],
+    [("acc", "map-a"), ("iracing", "map-a")],
+    [("acc", "map-a"), ("acc", "map-b")],
+])
+def test_two_sessions_per_map_always_put_each_map_in_both_sets(fraction, maps):
     from training.image_segmentation.position_training import split_position_frames
 
-    split = split_position_frames([{"image": Path("a.png")}, {"image": Path("b.png")}], val_fraction=fraction)
-    assert len(split["train"]) == len(split["val"]) == 1
-    assert split["train"][0]["image"] != split["val"][0]["image"]
+    split = split_position_frames([
+        {
+            "image": Path(f"{game}/{map_name}/{index}.png"), "game": game, "map_name": map_name,
+            "session_id": f"{game}/{map_name}/{index}",
+        }
+        for game, map_name in maps for index in range(2)
+    ], val_fraction=fraction)
+    assert len(split["train"]) == len(split["val"]) == len(maps)
+    assert {(row["game"], row["map_name"]) for row in split["train"]} == set(maps)
+    assert {(row["game"], row["map_name"]) for row in split["val"]} == set(maps)
+    assert {row["image"] for row in split["train"]}.isdisjoint(row["image"] for row in split["val"])
+
+
+@pytest.mark.parametrize("sizes", [(80, 5, 5, 5, 5), (65, 15, 10, 10), (60, 40), (9, 8, 7, 6)])
+@pytest.mark.parametrize("fraction", [0.01, 0.2, 0.49, 0.8, 0.99])
+def test_session_split_chooses_closest_possible_frame_count(sizes, fraction):
+    from itertools import combinations
+    from training.image_segmentation.position_training import split_position_frames
+
+    records = [
+        {
+            "image": Path(f"{session}/{frame}.png"), "session_id": str(session),
+            "game": "acc", "map_name": "map-a",
+        }
+        for session, size in enumerate(sizes) for frame in range(size)
+    ]
+    target = sum(sizes) * fraction
+    best_error = min(
+        abs(sum(subset) - target)
+        for count in range(1, len(sizes)) for subset in combinations(sizes, count)
+    )
+    for seed in (0, 7, 42):
+        split = split_position_frames(records, val_fraction=fraction, seed=seed)
+        assert abs(len(split["val"]) - target) == pytest.approx(best_error)
+        assert {row["session_id"] for row in split["train"]}.isdisjoint(row["session_id"] for row in split["val"])
+        assert len(split["train"]) + len(split["val"]) == len(records)
+
+
+def test_session_split_randomizes_equally_sized_session_choices():
+    from training.image_segmentation.position_training import split_position_frames
+
+    records = [
+        {
+            "image": Path(f"{session}/{frame}.png"), "session_id": str(session),
+            "game": "acc", "map_name": "map-a",
+        }
+        for session in range(5) for frame in range(10)
+    ]
+    selections = {
+        frozenset(row["session_id"] for row in split_position_frames(records, seed=seed)["val"])
+        for seed in range(10)
+    }
+    assert len(selections) > 1
+    assert all(len(selection) == 1 for selection in selections)
+
+
+def test_session_spanning_maps_is_rejected_instead_of_leaking():
+    from training.image_segmentation.position_training import split_position_frames
+
+    records = [
+        {
+            "image": Path(f"{map_name}/{session}.png"), "session_id": str(session),
+            "game": "acc", "map_name": map_name,
+        }
+        for map_name in ("a", "b") for session in range(2)
+    ]
+    with pytest.raises(ValueError, match="multiple game/map"):
+        split_position_frames(records)
 
 
 @pytest.mark.parametrize("fraction", [-0.1, 0, 1, 1.1, float("nan"), float("inf")])
@@ -866,11 +1199,19 @@ def test_invalid_training_split_fraction_is_rejected(aligned_manifest, tmp_path,
     assert not (tmp_path / "run").exists()
 
 
-def test_single_frame_cannot_be_split_for_training(aligned_manifest, tmp_path):
+@pytest.mark.parametrize("single_map", [False, True])
+def test_map_with_only_one_session_cannot_be_split_for_training(aligned_manifest, tmp_path, single_map):
     manifest = json.loads(aligned_manifest.read_text())
-    manifest["sessions"] = manifest["sessions"][:1]
-    aligned_manifest.write_text(json.dumps(manifest))
-    assert len(load_position_manifest(aligned_manifest)) == 1
-    with pytest.raises(ValueError, match="at least two frames"):
-        train_position_model(aligned_manifest, output=tmp_path / "run")
+    if single_map:
+        position = aligned_manifest.parent / "session-b.position.json"
+        frame = json.loads(position.read_text())
+        frame.update(session_id="session-a", game="acc", map_name="Display Name")
+        position.write_text(json.dumps(frame))
+        manifest["sessions"][0]["frames"].extend(manifest["sessions"].pop()["frames"])
+        aligned_manifest.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="at least two sessions per map"):
+        train_position_model(
+            aligned_manifest, output=tmp_path / "run",
+            epochs=1, imgsz=64, device="cpu", upload=False,
+        )
     assert not (tmp_path / "run").exists()

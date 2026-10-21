@@ -147,6 +147,11 @@ class PositionPanel(QtWidgets.QWidget):
             return
         count = len(self.context.frames) - self.context.skipped
         message = f"{self.image.name} · {count} frames · dots mark the current frame"
+        current = self.context.frames[self.context.current_index]
+        message += "\nCurrent frame (world coordinates):"
+        for label, xyz in (("Centerline", current.centerline), ("Reference lap", current.reference), ("Driver", current.driver)):
+            x, y, z = xyz
+            message += f"\n{label}: X={x:.3f}, Y={y:.3f}, Z={z:.3f}"
         if self.context.skipped:
             message += f"\nSkipped {self.context.skipped} unavailable, invalid or other-session frames."
         self.status.setText(message)

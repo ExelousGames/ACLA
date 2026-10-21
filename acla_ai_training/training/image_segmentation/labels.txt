@@ -30,3 +30,4 @@ forest right
 buildings left
 buildings right
 back mirror
+pit lane

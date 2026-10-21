@@ -33,13 +33,14 @@ class PositionModel(nn.Module):
             ):
                 raise ValueError(f"{field} categories must contain unique, nonempty names.")
         self.context_size = 1 + sum(len(names) for names in self.categories.values())
-        # Strided convolutions learn visual features directly from position targets.
+        # Convolutions learn visual features directly from position targets.
         # GroupNorm supports the small batches used for full-frame images.
         layers = []
         channels = 3
-        for width in (16, 32, 64, 96, 128):
+        strides = (2, 2, 2, 1, 1)
+        for width, stride in zip((16, 32, 64, 96, 128), strides):
             layers.extend((
-                nn.Conv2d(channels, width, kernel_size=3, stride=2, padding=1, bias=False),
+                nn.Conv2d(channels, width, kernel_size=3, stride=stride, padding=1, bias=False),
                 nn.GroupNorm(8, width), nn.ReLU(),
             ))
             channels = width

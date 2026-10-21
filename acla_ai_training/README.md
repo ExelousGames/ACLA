@@ -74,9 +74,10 @@ docker exec -it acla_ai_training_c python3 /app/scripts/prepare_position_dataset
 The prompts query `/racing-session/with-videos` and list the configured account's
 video sessions with their creation dates in the machine's local timezone.
 Choose **Today**, **Yesterday**, **Last 2 days**, **Last 3 days**,
-**Last week**, or **Pick a session** (by listed number or ID). Last 2/3 days and
+**Last week**, **Pick a session** (by listed number or ID), or **All sessions with videos**
+(regardless of creation date). Last 2/3 days and
 last week include today; last week means seven calendar days. Preparation accepts
-one or more sessions without assigning splits; training requires at least two.
+one or more sessions without assigning splits; training requires at least two sessions per map.
 Press Enter to finish picking individual sessions or accept an option's default.
 Review the settings before choosing Start; no sessions are downloaded before
 then, and Ctrl+C cancels. Preparation downloads the selected sessions, extracts
@@ -229,12 +230,17 @@ python scripts/train_position.py \
 Folder input includes all `.position.json` files recursively. To train on a subset,
 pass a folder containing only those image/position pairs to `--manifest`.
 
-Training randomly shuffles individual frames before the first epoch, using
-`--val-fraction 0.2` and `--seed 42` by default. The fraction applies to frame count,
-with at least one frame in each split. Frames from the same session can appear in
-both splits; a single session with at least two frames is sufficient.
-The run's `split.json` records the image paths, fraction, and seed. The same
-image paths and seed reproduce the assignments. Position data must use adjacent
+After image extraction, training assigns whole sessions from each
+`(game, map_name)` to validation and the rest to training, using
+`--val-fraction 0.2` and `--seed 42` by default. Every map appears in both sets.
+Each map needs at least two sessions. Validation uses the session combination
+whose total frame count is closest to the requested fraction, accounting for
+unequal session sizes; the seed randomizes equally balanced choices.
+Sessions never cross splits, and all frames are retained. Images from all maps
+are shuffled within each split. A single map is sufficient.
+The training and validation maps are printed and saved in the run's `split.json`,
+along with image paths, target frame fraction, and seed. The same inputs and seed reproduce
+the assignments. Position data must use adjacent
 `.position.json` files. Indexes containing inline frame data or preset `split`
 assignments are rejected; rerun preparation and pass the folder of prepared pairs.
 

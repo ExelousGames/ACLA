@@ -190,9 +190,11 @@ def test_driver_xyz_and_other_telemetry_never_become_training_inputs(dataset):
             path.unlink()
     prepare(dataset)
     after = load_position_manifest(dataset.downloads)["a" * 24][0]
-    assert set(before) == set(after) == {"image", "references", "target", "game", "map_name", "normalized_position"}
+    assert set(before) == set(after) == {
+        "session_id", "image", "references", "target", "game", "map_name", "normalized_position",
+    }
     assert before["image"] == after["image"]
-    for field in ("game", "map_name", "normalized_position"):
+    for field in ("session_id", "game", "map_name", "normalized_position"):
         assert before[field] == after[field]
     np.testing.assert_array_equal(before["references"], after["references"])
     np.testing.assert_allclose(before["target"], [[0.9, 1.7, 2.8], [-1.1, 1.7, -3.2]])
@@ -967,6 +969,7 @@ def test_guided_listing_failure_stops_before_download(downloadable_dataset, caps
 @pytest.mark.parametrize("choice, expected", [
     ("Today", "ab"), ("Yesterday", "cd"), ("Last 2 days", "abcd"),
     ("Last 3 days", "abcde"), ("Last week", "abcdef"), ("Pick a session", "1"),
+    ("All sessions with videos", "abcdef12"), ("7", "abcdef12"),
 ])
 def test_date_selection_uses_local_calendar_boundaries_including_dst(monkeypatch, capsys, choice, expected):
     class FixedDatetime(datetime):
@@ -1006,10 +1009,11 @@ def test_date_selection_uses_local_calendar_boundaries_including_dst(monkeypatch
     backend.call_backend_function.assert_awaited_once_with("racing-session/with-videos")
 
 
-def test_guided_range_can_select_all_sessions_without_splitting(downloadable_dataset, monkeypatch, capsys):
+@pytest.mark.parametrize("choice", ["last week", "All sessions with videos", "7"])
+def test_guided_range_can_select_all_sessions_without_splitting(downloadable_dataset, monkeypatch, capsys, choice):
     data = downloadable_dataset
     answers = iter([
-        "last week",  # Select every available session for preparation.
+        choice,  # Select every available session for preparation.
         "", "", "", "1",
     ])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))

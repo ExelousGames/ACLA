@@ -55,15 +55,15 @@ def main(argv: list[str] | None = None) -> int:
     prepared.add_argument("--data", type=Path, required=True, help="Prepared data.yaml file.")
 
     position = commands.add_parser("train-position", help="Train a standalone signed XYZ position model from scratch.")
-    position.add_argument("--manifest", type=Path, required=True, help="Recursively scan a folder for .position.json files, or read a positions.json index; randomly split frames when training starts.")
+    position.add_argument("--manifest", type=Path, required=True, help="Recursively scan a folder for .position.json files, or read a positions.json index; split whole sessions within each game/map, balancing frame counts.")
     position.add_argument("--output", type=Path, required=True, help="New directory for position checkpoints, ONNX, and metrics.")
     position.add_argument("--epochs", type=int, default=100)
     position.add_argument("--imgsz", type=int, default=768)
     position.add_argument("--batch", type=int, default=8)
     position.add_argument("--device", default="0", help="0 for the first GPU (default), cpu, or mps.")
     position.add_argument("--workers", type=int, default=0)
-    position.add_argument("--val-fraction", type=float, default=0.2, help="Validation share of frames (default: 0.2).")
-    position.add_argument("--seed", type=int, default=42, help="Random frame split and training seed (default: 42).")
+    position.add_argument("--val-fraction", type=float, default=0.2, help="Target validation share of frames per game/map (default: 0.2), using whole sessions; at least two sessions per map are required.")
+    position.add_argument("--seed", type=int, default=42, help="Random session split, frame shuffle, and training seed (default: 42).")
     position.add_argument("--no-upload", action="store_true", help="Export ONNX locally without uploading.")
     position.add_argument("--upload-name", default="track-position", help="Model name in the backend store.")
 

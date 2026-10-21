@@ -4,7 +4,7 @@ Run without arguments for step-by-step prompts, or pass flags for unattended use
 Telemetry is used during preparation; the trainer receives only prepared inputs
 and targets in a .position.json file beside each image, discovered recursively
 during training. Per-image telemetry is never saved to disk.
-Individual frames are randomly split later, when training starts.
+Images are randomly split within each game/map when training starts, with 20% for validation.
 Reference lines and centerline maps are downloaded from the backend.
 Game and map names come from the selected centerline map's game and circuit_name.
 """
@@ -309,7 +309,13 @@ def _prompt_sessions(label: str, sessions: list[tuple[str, datetime]], selected:
     while True:
         period = _prompt_choice("Which days do you want to download?", [
             "Today", "Yesterday", "Last 2 days", "Last 3 days", "Last week", "Pick a session",
+            "All sessions with videos",
         ])
+        if period == 7:
+            matches = [session_id for session_id, _ in sessions if session_id not in selected]
+            selected.update(matches)
+            print(f"Selected all {len(matches)} available video session(s): {', '.join(matches)}")
+            return matches
         if period == 6:
             break
         end = today - timedelta(days=1) if period == 2 else today

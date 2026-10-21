@@ -1,4 +1,4 @@
-"""Train a standalone position CNN from scratch with split frames and raw XYZ errors."""
+"""Train a standalone position CNN from scratch with per-map session splits and raw XYZ errors."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import random
 import httpx
 import numpy as np
 import torch
-from torch import nn
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from .position_data import OUTPUT_NAMES, PositionDataset, load_position_manifest
@@ -29,16 +29,69 @@ OFFSET_LENGTH_RANGES = (
 )
 
 
+def position_regression_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Smooth L1 plus direction loss fading quadratically below target length 0.1."""
+    component_loss = F.smooth_l1_loss(prediction, target)
+    # A zero target has no direction; zero predictions still receive a gradient.
+    valid_direction = target.ne(0).any(-1)
+    direction_weights = (torch.linalg.vector_norm(target, dim=-1) / 0.1).clamp(max=1).square()
+    cosine = F.cosine_similarity(prediction, target, dim=-1, eps=1e-8).clamp(-1, 1)
+    # Divide by the valid count so all-small-target batches retain the fade.
+    direction_loss = ((1 - cosine) * direction_weights).sum() / valid_direction.sum().clamp_min(1)
+    return component_loss + direction_loss
+
+
 def split_position_frames(records: list[dict], *, val_fraction=0.2, seed=42) -> dict[str, list[dict]]:
-    """Shuffle individual frames reproducibly, regardless of their source sessions."""
+    """Split whole sessions per map, choosing the closest validation frame count."""
     if not 0 < val_fraction < 1:
         raise ValueError("Validation fraction must be between 0 and 1 (exclusive).")
-    if len(records) < 2:
-        raise ValueError("Position training requires at least two frames for training and validation.")
-    frames = sorted(records, key=lambda row: str(row["image"]))
-    random.Random(seed).shuffle(frames)
-    count = max(1, min(len(frames) - 1, round(len(frames) * val_fraction)))
-    return {"train": frames[count:], "val": frames[:count]}
+    if not records:
+        raise ValueError("Position training requires prepared frames.")
+    maps, session_maps = {}, {}
+    for row in sorted(records, key=lambda row: str(row["image"])):
+        key = (row["game"], row["map_name"])
+        session_id = row["session_id"]
+        if session_maps.setdefault(session_id, key) != key:
+            raise ValueError(f"Session {session_id!r} contains multiple game/map pairs.")
+        maps.setdefault(key, {}).setdefault(session_id, []).append(row)
+    rng = random.Random(seed)
+    splits = {"train": [], "val": []}
+    for (game, map_name), sessions in sorted(maps.items()):
+        if len(sessions) < 2:
+            raise ValueError(
+                f"Position training requires at least two sessions per map; {game}/{map_name} has {len(sessions)}."
+            )
+        groups = [sessions[session_id] for session_id in sorted(sessions)]
+        rng.shuffle(groups)
+        total = sum(len(frames) for frames in groups)
+        target = total * val_fraction
+        # Bit n records whether n frames can be formed from whole sessions.
+        # Keep each prefix so the chosen count can be traced back to sessions.
+        reachable = [1]
+        for frames in groups:
+            reachable.append(reachable[-1] | (reachable[-1] << len(frames)))
+        possible = reachable[-1] & ((1 << total) - 2)  # Exclude empty train/val sets.
+        boundary = int(target) + 1
+        below = possible & ((1 << boundary) - 1)
+        above = possible >> boundary
+        candidates = []
+        if below:
+            candidates.append(below.bit_length() - 1)
+        if above:
+            candidates.append(boundary + (above & -above).bit_length() - 1)
+        rng.shuffle(candidates)
+        count = min(candidates, key=lambda value: abs(value - target))
+        # Prefer earlier shuffled sessions when several subsets achieve the count.
+        for index in reversed(range(len(groups))):
+            frames = groups[index]
+            if reachable[index] & (1 << count):
+                splits["train"].extend(frames)
+            else:
+                splits["val"].extend(frames)
+                count -= len(frames)
+    for frames in splits.values():
+        rng.shuffle(frames)
+    return splits
 
 
 def train_position_model(
@@ -75,11 +128,15 @@ def train_position_model(
         for split, records in splits.items()
     }
     optimizer = torch.optim.Adam(network.parameters(), lr=1e-4)
-    loss_function = nn.SmoothL1Loss()
     output.mkdir(parents=True)
     assignments = {split: [str(row["image"]) for row in frames] for split, frames in splits.items()}
+    maps = {
+        split: [{"game": game, "map_name": map_name}
+                for game, map_name in sorted({(row["game"], row["map_name"]) for row in frames})]
+        for split, frames in splits.items()
+    }
     (output / "split.json").write_text(
-        json.dumps({"seed": seed, "val_fraction": val_fraction, **assignments}, indent=2) + "\n",
+        json.dumps({"seed": seed, "val_fraction": val_fraction, "maps": maps, **assignments}, indent=2) + "\n",
         encoding="utf-8",
     )
     print(
@@ -87,30 +144,38 @@ def train_position_model(
         f"({len(splits['train'])} training frames, {len(splits['val'])} validation frames)",
         flush=True,
     )
+    for split, label in (("train", "Training"), ("val", "Validation")):
+        names = ", ".join(f"{row['game']}/{row['map_name']}" for row in maps[split])
+        print(f"{label} maps: {names}", flush=True)
+    # Row zero holds all validation frames; subsequent rows hold individual maps.
+    map_indices = {(row["game"], row["map_name"]): index for index, row in enumerate(maps["val"], 1)}
+    group_count = 1 + len(map_indices)
     best, history = float("inf"), []
     for epoch in range(1, epochs + 1):
         network.train()
         loss_total = 0.0
+        train_error_total = torch.zeros((), dtype=torch.float64, device=device)
         for sample in loaders["train"]:
             optimizer.zero_grad()
             prediction = network(sample["image"].to(device), sample["references"].to(device), sample["context"].to(device))
-            loss = loss_function(prediction, sample["target"].to(device))
+            target = sample["target"].to(device)
+            loss = position_regression_loss(prediction, target)
+            train_error_total += (prediction.detach().double() - target.double()).abs().sum()
             loss.backward()
             optimizer.step()
             loss_total += loss.item() * len(prediction)
         network.eval()
-        errors = torch.zeros(1, 3, dtype=torch.float64, device=device)
-        distance_errors = torch.zeros(len(OFFSET_LENGTH_RANGES), dtype=torch.float64, device=device)
-        distance_counts = torch.zeros(len(OFFSET_LENGTH_RANGES), dtype=torch.int64, device=device)
-        direction_errors = torch.zeros(len(OFFSET_LENGTH_RANGES), dtype=torch.float64, device=device)
-        direction_counts = torch.zeros(len(OFFSET_LENGTH_RANGES), dtype=torch.int64, device=device)
+        errors = torch.zeros(group_count, 3, dtype=torch.float64, device=device)
+        distance_errors = torch.zeros(group_count, len(OFFSET_LENGTH_RANGES), dtype=torch.float64, device=device)
+        distance_counts = torch.zeros_like(distance_errors, dtype=torch.int64)
+        direction_errors = torch.zeros_like(distance_errors)
+        direction_counts = torch.zeros_like(distance_counts)
         with torch.no_grad():
             for sample in loaders["val"]:
                 # Compute vector geometry in double precision, including tiny offsets.
                 prediction = network(sample["image"].to(device), sample["references"].to(device), sample["context"].to(device)).double()
                 target = sample["target"].to(device=device, dtype=torch.float64)
                 difference = prediction - target
-                errors += difference.abs().sum(0)
                 distances = torch.linalg.vector_norm(difference, dim=-1)
                 actual_lengths = torch.linalg.vector_norm(target, dim=-1)
                 valid_direction = prediction.ne(0).any(-1) & target.ne(0).any(-1)
@@ -118,35 +183,55 @@ def train_position_model(
                     torch.linalg.vector_norm(torch.cross(prediction, target, dim=-1), dim=-1),
                     (prediction * target).sum(-1),
                 ))
-                for index, (_, lower, upper) in enumerate(OFFSET_LENGTH_RANGES):
-                    in_range = (actual_lengths >= lower) & (actual_lengths < upper)
-                    distance_errors[index] += distances[in_range].sum()
-                    distance_counts[index] += in_range.sum()
-                    direction_errors[index] += angles[in_range & valid_direction].sum()
-                    direction_counts[index] += (in_range & valid_direction).sum()
-        per_axis = (errors / len(splits["val"])).flatten().cpu().tolist()
-        offset_metrics = {
-            name: {
+                sample_maps = [map_indices[key] for key in zip(sample["game"], sample["map_name"])]
+                for group in {0, *sample_maps}:
+                    in_map = torch.tensor([group == 0 or index == group for index in sample_maps], device=device)
+                    errors[group] += difference[in_map].abs().sum((0, 1))
+                    for index, (_, lower, upper) in enumerate(OFFSET_LENGTH_RANGES):
+                        in_range = in_map[:, None] & (actual_lengths >= lower) & (actual_lengths < upper)
+                        distance_errors[group, index] += distances[in_range].sum()
+                        distance_counts[group, index] += in_range.sum()
+                        direction_errors[group, index] += angles[in_range & valid_direction].sum()
+                        direction_counts[group, index] += (in_range & valid_direction).sum()
+        validation_metrics = []
+        for axes, distances, counts, directions, valid_counts in zip(
+            errors.cpu().tolist(), distance_errors.cpu().tolist(), distance_counts.cpu().tolist(),
+            direction_errors.cpu().tolist(), direction_counts.cpu().tolist(),
+        ):
+            count = sum(counts)
+            per_axis = [error / count for error in axes]
+            validation_metrics.append({
                 "count": count,
-                "mean_distance_error": distance / count if count else None,
-                "mean_direction_error_deg": direction / valid_count if valid_count else None,
-                "direction_valid_count": valid_count,
-            }
-            for (name, _, _), distance, count, direction, valid_count in zip(
-                OFFSET_LENGTH_RANGES, distance_errors.cpu().tolist(), distance_counts.cpu().tolist(),
-                direction_errors.cpu().tolist(), direction_counts.cpu().tolist(),
-            )
-        }
+                "val_mae": sum(per_axis) / len(OUTPUT_NAMES),
+                "val_mae_per_axis": dict(zip(OUTPUT_NAMES, per_axis)),
+                "val_errors_by_offset_length": {
+                    name: {
+                        "count": bucket_count,
+                        "mean_distance_error": distance / bucket_count if bucket_count else None,
+                        "mean_direction_error_deg": direction / valid_count if valid_count else None,
+                        "direction_valid_count": valid_count,
+                    }
+                    for (name, _, _), distance, bucket_count, direction, valid_count in zip(
+                        OFFSET_LENGTH_RANGES, distances, counts, directions, valid_counts,
+                    )
+                },
+            })
+        overall = validation_metrics[0]
         metrics = {
             "epoch": epoch,
             "train_loss": loss_total / len(splits["train"]),
-            "val_mae": sum(per_axis) / len(OUTPUT_NAMES),
-            "val_mae_per_axis": dict(zip(OUTPUT_NAMES, per_axis)),
-            "val_errors_by_offset_length": offset_metrics,
+            "train_mae": train_error_total.item() / (len(splits["train"]) * len(OUTPUT_NAMES)),
+            "val_mae": overall["val_mae"],
+            "val_mae_per_axis": overall["val_mae_per_axis"],
+            "val_errors_by_offset_length": overall["val_errors_by_offset_length"],
+            "val_by_map": [{**row, **values} for row, values in zip(maps["val"], validation_metrics[1:])],
         }
         if not np.isfinite([
-            metrics["train_loss"], *per_axis,
-            *(value for bucket in offset_metrics.values() for value in bucket.values() if value is not None),
+            metrics["train_loss"],
+            metrics["train_mae"],
+            *(value for group in validation_metrics for value in group["val_mae_per_axis"].values()),
+            *(value for group in validation_metrics for bucket in group["val_errors_by_offset_length"].values()
+              for value in bucket.values() if value is not None),
         ]).all():
             raise RuntimeError("Position training produced non-finite loss or errors.")
         history.append(metrics)
@@ -155,17 +240,27 @@ def train_position_model(
             best = metrics["val_mae"]
             network.save(output / "best.pt", metrics=metrics)
         (output / "results.json").write_text(json.dumps(history, indent=2) + "\n", encoding="utf-8")
-        print(f"Epoch {epoch}/{epochs}: loss={metrics['train_loss']:.6g}, val MAE={metrics['val_mae']:.6g} (raw coordinates)", flush=True)
-        for name, bucket in offset_metrics.items():
-            distance = bucket["mean_distance_error"]
-            distance_text = "n/a" if distance is None else f"{distance:.6g} (raw coordinates)"
-            direction = bucket["mean_direction_error_deg"]
-            angle = "n/a" if direction is None else f"{direction:.6g} deg"
+        print(
+            f"Epoch {epoch}/{epochs}: loss={metrics['train_loss']:.6g}, "
+            f"train MAE={metrics['train_mae']:.6g}, val MAE={metrics['val_mae']:.6g} (raw coordinates)",
+            flush=True,
+        )
+        for row in metrics["val_by_map"]:
             print(
-                f"  actual offset length {name}: mean distance error={distance_text}, "
-                f"mean direction error={angle} ({bucket['direction_valid_count']}/{bucket['count']} valid)",
+                f"  Validation map {row['game']}/{row['map_name']}: {row['count']} frames, "
+                f"val MAE={row['val_mae']:.6g} (raw coordinates)",
                 flush=True,
             )
+            for name, bucket in row["val_errors_by_offset_length"].items():
+                distance = bucket["mean_distance_error"]
+                distance_text = "n/a" if distance is None else f"{distance:.6g} (raw coordinates)"
+                direction = bucket["mean_direction_error_deg"]
+                angle = "n/a" if direction is None else f"{direction:.6g} deg"
+                print(
+                    f"    actual offset length {name}: mean distance error={distance_text}, "
+                    f"mean direction error={angle} ({bucket['direction_valid_count']}/{bucket['count']} valid)",
+                    flush=True,
+                )
     checkpoint = output / "best.pt"
     print(f"Exporting Track Vision ONNX: {checkpoint}", flush=True)
     try:

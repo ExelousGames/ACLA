@@ -365,6 +365,9 @@ def test_position_window_follows_images_and_keeps_annotations_separate(editor):
     assert len(panel.context.frames) == 3
     assert panel.context.current_index == 0
     assert len(panel.map.scene().items()) == 6  # Three paths and three current markers.
+    assert "Centerline: X=0.000, Y=0.000, Z=6.000" in panel.status.text()
+    assert "Reference lap: X=0.000, Y=0.000, Z=2.000" in panel.status.text()
+    assert "Driver: X=0.000, Y=0.000, Z=0.000" in panel.status.text()
     markers = [item for item in panel.map.scene().items() if isinstance(item, QtWidgets.QGraphicsEllipseItem)]
     assert sorted((item.pos().x(), item.pos().y()) for item in markers) == [(0, -6), (0, -2), (0, 0)]
     assert window._canvas_widgets.canvas.shapes == []
@@ -381,18 +384,24 @@ def test_position_window_follows_images_and_keeps_annotations_separate(editor):
     assert panel.context.current_index == 1
     assert panel.context.frames[1].driver == (10, 0, 0)
     assert "frame_2.png" in panel.status.text()
+    assert "Centerline: X=10.000, Y=0.000, Z=6.000" in panel.status.text()
+    assert "Reference lap: X=10.000, Y=0.000, Z=2.000" in panel.status.text()
+    assert "Driver: X=10.000, Y=0.000, Z=0.000" in panel.status.text()
 
+    coordinates = panel.status.text()
     panel.radius.setValue(0)
     assert len(panel.context.frames) == 1
     assert panel.context.current_index == 0
     panel.axes.setCurrentIndex(1)
     assert len(panel.map.scene().items()) == 6
+    assert panel.status.text().splitlines()[1:] == coordinates.splitlines()[1:]
     floating.close()
     assert not action.isChecked()
     action.trigger()
     window.close_file()
     assert panel.context is None
     assert panel.map.scene().items() == []
+    assert "X=" not in panel.status.text()
     assert annotation.read_bytes() == saved
     assert [image.with_suffix(".position.json").read_bytes() for image in images] == original_positions
 
@@ -416,6 +425,7 @@ def test_position_window_clears_stale_paths_when_data_is_unavailable(editor, pos
     assert window._position_panel.context is None
     assert window._position_panel.map.scene().items() == []
     assert "position data" in window._position_panel.status.text()
+    assert "X=" not in window._position_panel.status.text()
     assert window._canvas_widgets.canvas.isEnabled()
 
 
