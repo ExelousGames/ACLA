@@ -12,12 +12,14 @@ import {
     GlobeIcon,
     LapTimerIcon,
     PersonIcon,
+    RocketIcon,
 } from "@radix-ui/react-icons";
 import SessionAnalysis from "views/recorded-session/session-analysis";
 import ProtectedComponent from "components/ProtectedComponent";
 import UserSummary from "views/user-summary/user-summary";
 import CircuitMaps from "views/circuit-maps/circuit-maps";
 import LiveSessionView from "views/live-session/LiveSessionView";
+import AiDrivingTraining from "views/ai-driving-training/AiDrivingTraining";
 import { useEnvironment } from "contexts/EnvironmentContext";
 import {
     DASHBOARD_TABS,
@@ -33,6 +35,7 @@ type SideMainMenuProps = {
 
 const TAB_ICONS: Record<string, React.ComponentType<React.ComponentProps<typeof LapTimerIcon>>> = {
     [DASHBOARD_TABS.LIVE_SESSION]: LapTimerIcon,
+    [DASHBOARD_TABS.AI_DRIVING_TRAINING]: RocketIcon,
     [DASHBOARD_TABS.ANALYSIS]: BarChartIcon,
     [DASHBOARD_TABS.USER_SUMMARY]: PersonIcon,
     [DASHBOARD_TABS.CIRCUIT_MAPS]: GlobeIcon,
@@ -169,9 +172,15 @@ const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
             </Tooltip.Provider>
 
             <Box className="Container">
-                {environment === 'electron' && isOpened('liveSession') ? (
+                {environment === 'electron' && (isOpened('liveSession') || isOpened(DASHBOARD_TABS.AI_DRIVING_TRAINING)) ? (
                     <Tabs.Content className="TabsContent" value="liveSession" forceMount>
                         <LiveSessionView name={OPERATION_COMPONENT_NAMES.LIVE_SESSION} />
+                    </Tabs.Content>
+                ) : null}
+
+                {environment === 'electron' && isOpened(DASHBOARD_TABS.AI_DRIVING_TRAINING) ? (
+                    <Tabs.Content className="TabsContent" value={DASHBOARD_TABS.AI_DRIVING_TRAINING} forceMount>
+                        <AiDrivingTraining onOpenLiveSession={() => handleTabChange(DASHBOARD_TABS.LIVE_SESSION)} />
                     </Tabs.Content>
                 ) : null}
 

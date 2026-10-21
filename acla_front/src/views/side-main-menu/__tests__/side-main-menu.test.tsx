@@ -44,6 +44,7 @@ jest.mock('views/recorded-session/session-analysis', () => ({ source }: any) => 
 jest.mock('views/user-summary/user-summary', () => () => <div>User Summary Content</div>);
 jest.mock('views/circuit-maps/circuit-maps', () => () => <div>Circuit Maps Content</div>);
 jest.mock('views/live-session/LiveSessionView', () => () => <div>Live Session Content</div>);
+jest.mock('views/ai-driving-training/AiDrivingTraining', () => () => <div>AI Training Content</div>);
 jest.mock('components/ProtectedComponent', () => ({ children }: any) => <>{children}</>);
 
 describe('SideMainMenu', () => {
@@ -66,10 +67,18 @@ describe('SideMainMenu', () => {
 
         expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
             'Live Session',
+            'AI Self-Driving Training',
             'Analysis',
             'User Summary',
             'Circuit Maps',
         ]);
+    });
+
+    it('mounts training and keeps the live data source available when training is selected directly', () => {
+        mockUseEnvironment.mockReturnValue('electron');
+        render(<SideMainMenu activeTab="aiDrivingTraining" />);
+        expect(screen.getByText('AI Training Content')).toBeInTheDocument();
+        expect(screen.getByText('Live Session Content')).toBeInTheDocument();
     });
 
     it('renders a distinct icon and tooltip for every menu option', () => {

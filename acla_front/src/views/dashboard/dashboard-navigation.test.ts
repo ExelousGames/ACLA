@@ -4,6 +4,7 @@ describe('dashboard navigation', () => {
     it('puts Live Session first and selects it by default in Electron', () => {
         expect(getDashboardTabs('electron').map((tab) => tab.label)).toEqual([
             'Live Session',
+            'AI Self-Driving Training',
             'Analysis',
             'User Summary',
             'Circuit Maps',

@@ -304,6 +304,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             const frameConfidence = options.current.confidence;
                             const frameTasks = DETECTION_TASKS.filter(({ id }) => id !== 'depth' || options.current.depthEnabled);
                             const result: TrackVisionFrame = { capturedAt: Date.now(), motion: motion.current,
+                                telemetry: liveTelemetryStore.getSnapshot(),
                                 width: frame.width, height: frame.height, detections: {} };
                             const telemetry = positionTelemetry.current;
                             const positionVersion = positionGeneration.current;

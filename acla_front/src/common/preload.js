@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const { DESKTOP_GAME_SET, isRecordingStartFailure } = require('../../electron/recording/recording-protocol');
 const { validateLiveTelemetryRow } = require('../data/live-telemetry-dataset');
+contextBridge.exposeInMainWorld('virtualController', {
+    connect: (options) => ipcRenderer.invoke('virtual-controller-connect', options),
+    apply: (action) => ipcRenderer.invoke('virtual-controller-apply', action),
+    disconnect: () => ipcRenderer.invoke('virtual-controller-disconnect'),
+});
 contextBridge.exposeInMainWorld('trackVisionModels', {
     prepare: (model, bytes) => ipcRenderer.invoke('track-vision-model-prepare', model, bytes),
 });

@@ -140,6 +140,11 @@ input {
     transition: opacity 0.12s ease;
 }
 
+.TabsTrigger[aria-label="AI Self-Driving Training"] .TabsTriggerLabel {
+    white-space: normal;
+    line-height: 1.5;
+}
+
 .TabsTrigger:first-child { border-top-left-radius: var(--lp-radius-sm); }
 .TabsTrigger:last-child { border-bottom-right-radius: var(--lp-radius-sm); }
 

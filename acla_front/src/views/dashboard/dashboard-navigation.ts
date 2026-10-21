@@ -2,6 +2,7 @@ import { Environment } from 'utils/environment';
 
 export const DASHBOARD_TABS = Object.freeze({
     LIVE_SESSION: 'liveSession',
+    AI_DRIVING_TRAINING: 'aiDrivingTraining',
     ANALYSIS: 'analysis',
     USER_SUMMARY: 'userSummary',
     CIRCUIT_MAPS: 'circuitMaps',
@@ -20,7 +21,8 @@ const WEB_TABS: DashboardTab[] = [
 
 export const getDashboardTabs = (environment: Environment): DashboardTab[] => (
     environment === 'electron'
-        ? [{ value: DASHBOARD_TABS.LIVE_SESSION, label: 'Live Session' }, ...WEB_TABS]
+        ? [{ value: DASHBOARD_TABS.LIVE_SESSION, label: 'Live Session' },
+            { value: DASHBOARD_TABS.AI_DRIVING_TRAINING, label: 'AI Self-Driving Training' }, ...WEB_TABS]
         : WEB_TABS
 );
 

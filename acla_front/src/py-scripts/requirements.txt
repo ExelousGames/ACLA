@@ -7,3 +7,5 @@ pydantic==2.5.0
 pydantic-settings==2.1.0
 joblib==1.3.2
 scipy==1.11.1
+# Required by AI Self-Driving Training on Windows.
+-r ../../scripts/controller-requirements.txt

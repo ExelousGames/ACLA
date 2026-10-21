@@ -36,6 +36,121 @@ If broadcasting is disabled or unavailable, shared-memory recording continues
 and the new field is omitted. UDP samples are requested every 100 ms; individual
 car positions expire after two seconds without an update.
 
+## AI Self-Driving Training (Windows desktop)
+
+The sidebar's **AI Self-Driving Training** page trains a local, continuous-action
+actor–critic neural policy against the running simulator. Start live telemetry,
+add **Live Map** with a matching reference lap, and add **Track Vision** with
+position and segmentation models and screen capture enabled. The training page
+reports any missing inputs. Live Session stays mounted when switching tabs.
+
+### Wheel / joystick output (ACC and iRacing)
+
+Select **Wheel / joystick (vJoy)** for a simulator using wheel controls. This creates
+standard DirectInput axes independently of the physical wheel brand (MOZA, Fanatec,
+Logitech, Thrustmaster, etc.). It does not intercept a physical wheel or automatically
+replace that wheel's bindings. The simulator must be bound to the virtual device
+for AI driving; restore your normal controls when returning to manual driving.
+
+1. Install the signed Windows 10/11 [vJoy driver](https://github.com/BrunnerInnovation/vJoy/releases).
+   It is separate from the bundled Xbox driver. In **Configure vJoy**, enable a free
+   device with **X**, **Y**, and **Z** axes, then select its device number in the app.
+2. Connect before launching the simulator (or restart it if the device is missing).
+   Map **X → steering**, **Y → throttle**, **Z → brake**. Steering uses the full signed
+   range; each pedal has its own independent axis. Check that neutral shows zero
+   throttle/brake and centered steering; invert a pedal in the simulator if needed.
+3. **ACC:** use **Options → Controls → Wheel**, save your existing preset, and create
+   a separate training preset with those vJoy axes.
+4. **iRacing:** use **Configure Controls**, or **Settings → Driving → Input Calibration**,
+   and calibrate the vJoy steering and pedal axes. Follow the
+   [iRacing calibration guide](https://support.iracing.com/support/solutions/articles/31000133335).
+   Keep your manual controller configuration available for switching back.
+
+The **Test … in 5 seconds** buttons allow time to switch to the simulator's controls
+screen. They hold the chosen axis for 10 seconds and then release it, even while the
+simulator has focus. Pedals test full travel. For steering calibration, use **Full
+left**, **Full right**, then **Center**; for iRacing's 90° left measurement, use
+**20% left** to calibrate a 900° total range. Accept the measurement while the timed
+input is active. **Stop**, Escape in the app, disconnect, or leaving the training
+page cancels a pending/active test. The hold buttons release when the app loses focus.
+
+**Connected** confirms only that the output device accepted initialization. Check
+the simulator's input meters before training. This bridge does not relay physical
+wheel input or force feedback. Both simulators use the same output backend; their
+bindings and calibration are configured separately.
+
+No extra Python package is needed for vJoy: the bridge loads the installed SDK DLL
+matching the Python architecture from `Program Files\vJoy\x64` (or `x86`). For a
+custom installation, set `ACLA_VJOY_DLL` to the absolute `vJoyInterface.dll` path
+before launching the app. Missing drivers/axes, busy devices, and rejected writes
+are reported as errors. The watchdog and disconnect reset pedals to zero and
+steering to center before relinquishing the device.
+
+### Xbox gamepad output
+
+The virtual Xbox controller is included with the Windows application. Choose
+**Xbox gamepad (XInput)** when using the simulator's gamepad controls. Python setup
+installs [vgamepad](https://github.com/yannbouteiller/vgamepad) into the managed
+development and production environments. The Windows application installer bundles
+[ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0) and installs
+it when no working controller driver is present. Approve the Windows administrator
+prompt and restart Windows if setup requests it. No separate pip command or
+internet connection is needed on the target PC during application installation.
+
+`electron-builder` downloads and verifies the pinned driver installer before
+packaging, caching it in `.venv/controller-driver`. Building the app does not
+install a system driver on the build machine. Ordinary app startup does not
+install drivers either. Uninstalling the app leaves the shared driver available
+for other applications.
+
+Python setup uses the checksum-pinned upstream vgamepad 0.1.3 GitHub archive,
+because that release is not published on PyPI. It supports skipping the legacy
+driver installer while building the Python package. Build machines need GitHub
+access; a Git executable is not required.
+
+For development, run `npm run setup:python` and install the official ViGEmBus
+release linked above once. If `ACLA_PYTHON_PATH` points to a custom Python
+environment, install the controller requirements there as well:
+
+```powershell
+$env:VGAMEPAD_SKIP_VIGEMBUS_INSTALL = 'true'
+& $env:ACLA_PYTHON_PATH -m pip install -r scripts/controller-requirements.txt
+```
+
+If Connect reports a missing driver in an installed application, rerun application
+setup to retry driver installation.
+
+Connect the controller and use the timed tests to bind right trigger to throttle,
+left trigger to brake, and left stick X to steering in the simulator.
+
+### Training
+
+Once the simulator responds to the selected output, start a
+practice session with automatic shifting configured, position the car near the
+reference line, then select **Start training**. The policy only controls these
+three axes; repositioning, restarting laps and changing gears are not automated.
+**Run trained model** uses deterministic inference without updating weights.
+
+The observation includes track-frame velocity XYZ (m/s), speed (km/h), game/car/map
+category encodings, cyclic normalized lap position, rotation (radians), current
+steering/pedals, the position model's reference XYZ delta (m), and a 4×4 pooled
+segmentation mask per class. Telemetry is paired with the image before inference;
+stale or mismatched sessions are rejected. Policies have a 32-unit tanh hidden
+layer, a three-dimensional Gaussian actor and a TD(0) value head. Positive
+progress close to the reference and smooth reductions in position error earn
+reward; abrupt controls, excessive yaw/attitude changes, pedal overlap, distance
+from the line and standing still incur penalties. New policies are untrained;
+successful driving is an empirical training outcome, not a built-in capability.
+
+Only observations captured after a controller acknowledgement can train that
+action, and each image is learned from at most once. Session changes, telemetry
+older than 500 ms, images older than 1.5 s, invalid inputs and large position jumps
+stop the episode. A separate Python watchdog releases controls after 600 ms
+without a command and requires reconnection. **Stop** and Escape in the app release
+controls; Escape is not a global simulator hotkey. Checkpoints save locally every
+50 learning steps and at stop, and can be imported/exported as JSON. A checkpoint
+must match the current game, car, map and segmentation classes.
+
 ## Python environments for desktop scripts
 
 All Electron-only Python entry points live under `src/py-scripts/`. We manage their dependencies with
@@ -47,7 +162,7 @@ virtual environments so that development and production builds are reproducible.
 | Production (packaged app) | `acla_front/.venv/py-scripts-prod` (bundled as `resources/python-env`) | `npm run build:electron` (via pre script) or `npm run setup:python -- --mode=prod` |
 
 The managed environments install everything from `src/py-scripts/requirements.txt`, including
-scikit-learn and pandas.
+scikit-learn, pandas and the Windows virtual controller package.
 
 ### One-time manual setup
 

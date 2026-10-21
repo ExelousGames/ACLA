@@ -101,7 +101,10 @@ function ensureVenv(systemPython, envPath) {
 
 function installRequirements(envPython) {
     runCommand(envPython, ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel']);
-    runCommand(envPython, ['-m', 'pip', 'install', '-r', requirementsPath]);
+    runCommand(envPython, ['-m', 'pip', 'install', '-r', requirementsPath], {
+        // Provision the system driver on the end user's PC, not on the build host.
+        env: { ...process.env, VGAMEPAD_SKIP_VIGEMBUS_INSTALL: 'true' },
+    });
 }
 
 function writeManifest(envPath) {

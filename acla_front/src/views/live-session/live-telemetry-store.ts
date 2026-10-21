@@ -8,6 +8,8 @@ import type {
 } from './live-session-types';
 
 export interface LiveTelemetrySnapshot {
+    /** Wall-clock receipt time; absent until the first live frame. */
+    receivedAt?: number;
     game: RecordingViewUpdate['game'] | null;
     graphicsTelemetry: StandardTelemetrySample;
     physicsTelemetry: StandardTelemetrySample;
@@ -188,6 +190,7 @@ export const createLiveTelemetryStore = (): LiveTelemetryStore => {
             });
             const telemetryStatus = normalizeStatus(graphicsTelemetry.Graphics_status);
             snapshot = {
+                receivedAt: Date.now(),
                 game: update.game,
                 graphicsTelemetry,
                 physicsTelemetry,
