@@ -1,7 +1,7 @@
 import type { DrivingAction } from './driving-observation';
 
 export interface ControllerOutput {
-    backend: 'vjoy' | 'xbox';
+    backend: 'vjoy';
     deviceId?: number;
 }
 export interface VirtualController {

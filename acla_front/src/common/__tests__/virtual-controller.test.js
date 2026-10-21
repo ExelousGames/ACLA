@@ -37,8 +37,8 @@ it('restricts IPC to the main frame and reports startup failures', async () => {
     await expect(run.handlers['virtual-controller-connect']({ ...run.event, senderFrame: {} })).rejects.toThrow(/main workspace/);
     expect(run.spawnProcess).not.toHaveBeenCalled();
     const result = run.handlers['virtual-controller-connect'](run.event);
-    run.child.stdout.write(JSON.stringify({ type: 'error', error: 'Install vgamepad.' }) + '\n');
-    await expect(result).rejects.toThrow('Install vgamepad');
+    run.child.stdout.write(JSON.stringify({ type: 'error', error: 'Install vJoy.' }) + '\n');
+    await expect(result).rejects.toThrow('Install vJoy');
 });
 
 it('routes wheel output to vJoy and requires disconnect before changing devices', async () => {
@@ -48,11 +48,11 @@ it('routes wheel output to vJoy and requires disconnect before changing devices'
         expect.arrayContaining(['--backend', 'vjoy', '--device-id', '3']), expect.anything());
     await run.handlers['virtual-controller-connect'](run.event, { backend: 'vjoy', deviceId: 3 });
     expect(run.spawnProcess).toHaveBeenCalledTimes(1);
-    await expect(run.handlers['virtual-controller-connect'](run.event, { backend: 'xbox' })).rejects.toThrow(/Disconnect/);
+    await expect(run.handlers['virtual-controller-connect'](run.event, { backend: 'vjoy', deviceId: 4 })).rejects.toThrow(/Disconnect/);
     run.handlers['virtual-controller-disconnect'](run.event);
 });
 
-it.each([null, { backend: 'moza' }, { backend: 'vjoy', deviceId: 0 },
+it.each([null, { backend: 'xbox' }, { backend: 'moza' }, { backend: 'vjoy', deviceId: 0 },
     { backend: 'vjoy', deviceId: 17 }, { backend: 'vjoy', deviceId: 1.5 },
     { backend: 'vjoy', deviceId: '1' }])('rejects invalid output options before starting a process: %j', async (options) => {
     const run = setup();
@@ -60,9 +60,11 @@ it.each([null, { backend: 'moza' }, { backend: 'vjoy', deviceId: 0 },
     expect(run.spawnProcess).not.toHaveBeenCalled();
 });
 
-it('waits for actual device acknowledgement and uses a hidden child process', async () => {
+it('defaults to vJoy, waits for device acknowledgement and uses a hidden child process', async () => {
     const run = setup(); await run.connect();
-    expect(run.spawnProcess).toHaveBeenCalledWith('python', expect.arrayContaining(['-u']), expect.objectContaining({ windowsHide: true }));
+    expect(run.spawnProcess).toHaveBeenCalledWith('python',
+        ['-u', expect.stringContaining('virtual_controller.py'), '--backend', 'vjoy', '--device-id', '1'],
+        expect.objectContaining({ windowsHide: true }));
     expect(run.contents.setBackgroundThrottling).toHaveBeenCalledWith(false);
     const action = { throttle: 0.4, brake: 0, steering: -0.2 };
     const applied = run.handlers['virtual-controller-apply'](run.event, action);

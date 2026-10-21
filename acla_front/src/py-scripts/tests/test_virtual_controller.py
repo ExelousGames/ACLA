@@ -2,29 +2,28 @@ import queue
 import os
 import sys
 import unittest
+from io import StringIO
 from unittest.mock import Mock, patch, call
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from virtual_controller import XboxController, create_controller, serve, valid_action
+from virtual_controller import main, serve, valid_action
 from virtual_wheel import AXES, VJoyController
 
 
 class ControllerTests(unittest.TestCase):
     def test_applies_controls_and_releases_on_eof(self):
-        gamepad = Mock()
+        controller = Mock()
         commands = queue.Queue()
         commands.put({"id": 1, "action": {"throttle": 0.4, "brake": 0.1, "steering": -0.5}})
         commands.put(None)
         messages = []
-        serve(XboxController(gamepad), commands, messages.append)
-        gamepad.right_trigger_float.assert_called_once_with(value_float=0.4)
-        gamepad.left_trigger_float.assert_called_once_with(value_float=0.1)
-        gamepad.left_joystick_float.assert_called_once_with(x_value_float=-0.5, y_value_float=0.0)
-        self.assertEqual(gamepad.reset.call_count, 2)
+        serve(controller, commands, messages.append)
+        self.assertEqual(controller.mock_calls, [call.reset(),
+            call.apply({"throttle": 0.4, "brake": 0.1, "steering": -0.5}), call.reset(), call.close()])
         self.assertEqual(messages[-1], {"type": "applied", "id": 1})
 
     def test_watchdog_resets_without_new_commands(self):
-        gamepad = Mock()
+        controller = Mock()
 
         class StalledQueue:
             now = 0
@@ -37,9 +36,10 @@ class ControllerTests(unittest.TestCase):
 
         commands = StalledQueue()
         with self.assertRaisesRegex(RuntimeError, "watchdog"):
-            serve(XboxController(gamepad), commands, lambda _: None, lambda: commands.now)
-        self.assertEqual(gamepad.reset.call_count, 2)
-        self.assertEqual(gamepad.update.call_count, 3)
+            serve(controller, commands, lambda _: None, lambda: commands.now)
+        self.assertEqual(controller.reset.call_count, 2)
+        controller.apply.assert_called_once()
+        controller.close.assert_called_once()
 
     def test_invalid_commands_reset_device(self):
         for value in [float("nan"), float("inf"), -0.1, 2, True, "0.5"]:
@@ -47,10 +47,38 @@ class ControllerTests(unittest.TestCase):
             self.assertFalse(valid_action(action))
             commands = queue.Queue()
             commands.put({"action": action})
-            gamepad = Mock()
+            controller = Mock()
             with self.assertRaises(ValueError):
-                serve(XboxController(gamepad), commands, lambda _: None)
-            self.assertEqual(gamepad.reset.call_count, 2)
+                serve(controller, commands, lambda _: None)
+            self.assertEqual(controller.reset.call_count, 2)
+            controller.apply.assert_not_called()
+            controller.close.assert_called_once()
+
+    def test_starts_wheel_by_default_and_with_selected_device(self):
+        for args, device_id in [([], 1), (["--backend", "vjoy", "--device-id", "4"], 4)]:
+            with self.subTest(args=args), patch.object(sys, "argv", ["virtual_controller.py", *args]), \
+                    patch.object(sys, "stdin", StringIO()), patch("virtual_controller.VJoyController") as wheel, \
+                    patch.object(sys, "stdout", StringIO()):
+                self.assertEqual(main(), 0)
+                wheel.assert_called_once_with(device_id)
+                self.assertEqual(wheel.return_value.reset.call_count, 2)
+                wheel.return_value.close.assert_called_once()
+
+    def test_rejects_xbox_backend_before_creating_device(self):
+        with patch.object(sys, "argv", ["virtual_controller.py", "--backend", "xbox"]), \
+                patch.object(sys, "stderr", StringIO()), patch("virtual_controller.VJoyController") as wheel:
+            with self.assertRaises(SystemExit) as error:
+                main()
+            self.assertEqual(error.exception.code, 2)
+            wheel.assert_not_called()
+
+    def test_reports_wheel_setup_failure(self):
+        with patch.object(sys, "argv", ["virtual_controller.py"]), \
+                patch("virtual_controller.VJoyController", side_effect=RuntimeError("Driver missing")), \
+                patch("virtual_controller.emit") as emit:
+            self.assertEqual(main(), 1)
+            self.assertEqual(emit.call_args.args[0]["type"], "error")
+            self.assertIn("Install vJoy", emit.call_args.args[0]["error"])
 
 
 def wheel_sdk(low=0, high=32768):
@@ -69,11 +97,6 @@ def wheel_sdk(low=0, high=32768):
 
 
 class WheelControllerTests(unittest.TestCase):
-    def test_wheel_backend_does_not_create_an_xbox_device(self):
-        with patch("virtual_wheel.VJoyController") as wheel, patch.dict(sys.modules, {"vgamepad": None}):
-            self.assertIs(create_controller("vjoy", 4), wheel.return_value)
-            wheel.assert_called_once_with(4)
-
     def test_independent_pedals_full_steering_range_and_neutral(self):
         sdk = wheel_sdk()
         controller = VJoyController(3, sdk)

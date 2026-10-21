@@ -6,7 +6,7 @@ import type { TrackVisionHandle } from 'views/live-session/track-vision/LiveTrac
 import { DrivingAction, NEUTRAL, ObservationResult, readDrivingObservation } from './driving-observation';
 import { DrivingPolicy } from './driving-policy';
 import { DrivingTrainingLoop, initialTrainingState } from './driving-training-loop';
-import type { ControllerOutput, VirtualController } from './virtual-controller';
+import type { VirtualController } from './virtual-controller';
 import './AiDrivingTraining.css';
 
 const STORAGE_KEY = 'acla.self-driving.policy.v1';
@@ -23,7 +23,6 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const connectingGeneration = useRef(0);
     const testTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
     const testMode = useRef<'hold' | 'timed' | null>(null);
-    const [backend, setBackend] = useState<ControllerOutput['backend']>('vjoy');
     const [deviceId, setDeviceId] = useState(1);
     const [steeringTest, setSteeringTest] = useState(1);
     const [testStatus, setTestStatus] = useState('');
@@ -119,7 +118,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         setConnecting(true); setError('');
         try {
             if (!controller.current) throw new Error('Virtual control requires the Windows desktop app.');
-            await controller.current.connect({ backend, deviceId: backend === 'vjoy' ? deviceId : 1 });
+            await controller.current.connect({ backend: 'vjoy', deviceId });
             if (mounted.current && generation === connectingGeneration.current) setConnected(true);
         } catch (reason) { if (mounted.current) setError(errorMessage(reason)); }
         finally { if (mounted.current && generation === connectingGeneration.current) setConnecting(false); }
@@ -226,31 +225,23 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <p className="driving-note">The policy uses velocity XYZ, speed, game, car, map, normalized position, rotation, current controls, position-model deltas and segmentation masks.</p>
             </section>
             <section className="driving-card">
-                <div className="driving-card-title"><h2>Virtual controller</h2><span>{connected ? 'Connected' : 'Disconnected'}</span></div>
+                <div className="driving-card-title"><h2>Steering wheel (vJoy)</h2><span>{connected ? 'Connected' : 'Disconnected'}</span></div>
                 <div className="driving-output-options">
-                    <label htmlFor="driving-output">Controller output</label>
-                    <select id="driving-output" value={backend} disabled={connected || connecting}
-                        onChange={(event) => setBackend(event.target.value as ControllerOutput['backend'])}>
-                        <option value="vjoy">Wheel / joystick (vJoy) — ACC, iRacing</option>
-                        <option value="xbox">Xbox gamepad (XInput)</option>
+                    <label htmlFor="driving-device">vJoy device</label>
+                    <select id="driving-device" value={deviceId} disabled={connected || connecting}
+                        onChange={(event) => setDeviceId(Number(event.target.value))}>
+                        {Array.from({ length: 16 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
                     </select>
-                    {backend === 'vjoy' && <><label htmlFor="driving-device">vJoy device</label>
-                        <select id="driving-device" value={deviceId} disabled={connected || connecting}
-                            onChange={(event) => setDeviceId(Number(event.target.value))}>
-                            {Array.from({ length: 16 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
-                        </select></>}
                 </div>
-                {backend === 'vjoy' ? <>
-                    <p>Works independently of your physical wheel brand. Bind vJoy X → steering, Y → throttle, Z → brake in the simulator.</p>
-                    <p className="driving-note">Install vJoy separately and enable X, Y and Z on the selected device in Configure vJoy. In ACC, use Wheel controls and save a separate training preset. In iRacing, use Configure Controls or Settings → Driving → Input Calibration. Your physical wheel bindings do not automatically switch to vJoy.</p>
-                </> : <p>Xbox controller: right trigger → throttle, left trigger → brake, left stick X → steering. Use the simulator’s gamepad input mode and bind these axes.</p>}
+                <p>Works independently of your physical wheel brand. Bind vJoy X → steering, Y → throttle, Z → brake in the simulator.</p>
+                <p className="driving-note">Install vJoy separately and enable X, Y and Z on the selected device in Configure vJoy. In ACC, use Wheel controls and save a separate training preset. In iRacing, use Configure Controls or Settings → Driving → Input Calibration. Your physical wheel bindings do not automatically switch to vJoy.</p>
                 <div className="driving-controls">
                     {(['throttle', 'brake', 'steering'] as const).map((key) => <div key={key}>
                         <div><label htmlFor={`driving-${key}`}>{key}</label><output>{output[key].toFixed(3)}</output></div>
                         <meter id={`driving-${key}`} min={key === 'steering' ? -1 : 0} max={1} value={output[key]} />
                     </div>)}
                 </div>
-                <div className="driving-buttons"><button onClick={() => { void connect(); }} disabled={connected || connecting}>{connecting ? 'Connecting…' : 'Connect controller'}</button>
+                <div className="driving-buttons"><button onClick={() => { void connect(); }} disabled={connected || connecting}>{connecting ? 'Connecting…' : 'Connect wheel'}</button>
                     <button onClick={() => { void disconnect().catch((reason) => setError(errorMessage(reason))); }} disabled={!connected}>Disconnect</button></div>
                 <div className="driving-buttons" aria-label="Test controller axes">
                     {(['throttle', 'brake', 'steering'] as const).map((key) => <button key={key} disabled={!connected || running || testMode.current === 'timed'}
@@ -278,7 +269,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 </div>
                 <p className="driving-note">Use timed tests in the simulator’s controls setup: switch windows during the 5-second countdown. Each input stays active for 10 seconds, then releases. Pedal tests use the full range. For iRacing steering calibration, test full left, full right, then center; use 20% left for its 90° step with a 900° range.</p>
                 {testStatus && <p role="status">{testStatus}</p>}
-                <p className="driving-note">Connected means the virtual device is ready; verify the simulator’s input meters before training. Stop or Escape in this app cancels tests. Training controls release on stale input or capture loss. The Windows installer includes the Xbox driver; vJoy requires separate setup.</p>
+                <p className="driving-note">Connected means the virtual device is ready; verify the simulator’s input meters before training. Stop or Escape in this app cancels tests. Training controls release on stale input or capture loss.</p>
             </section>
             <section className="driving-card">
                 <h2>Reinforcement learning model</h2>

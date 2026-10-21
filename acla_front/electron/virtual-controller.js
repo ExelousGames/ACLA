@@ -38,11 +38,11 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
   ipcMain.handle('virtual-controller-connect', async (event, options = {}) => {
     const contents = owner(event);
     if (platform !== 'win32') throw new Error('Virtual controllers currently require Windows.');
-    const backend = options?.backend ?? 'xbox';
+    const backend = options?.backend ?? 'vjoy';
     const deviceId = options?.deviceId ?? 1;
     if (!options || typeof options !== 'object' || Array.isArray(options)
-      || !['xbox', 'vjoy'].includes(backend) || !Number.isInteger(deviceId) || deviceId < 1 || deviceId > 16) {
-      throw new Error('Invalid controller output. Choose Xbox or vJoy with a device ID from 1 to 16.');
+      || backend !== 'vjoy' || !Number.isInteger(deviceId) || deviceId < 1 || deviceId > 16) {
+      throw new Error('Invalid controller output. Use a vJoy steering wheel with a device ID from 1 to 16.');
     }
     if (active) {
       if (active.backend !== backend || active.deviceId !== deviceId) throw new Error('Disconnect before changing controller output.');

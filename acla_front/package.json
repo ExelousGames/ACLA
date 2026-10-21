@@ -84,12 +84,8 @@
   "build": {
     "appId": "com.example.myapp",
     "productName": "Kestrel Motorsport Analyst",
-    "beforePack": "scripts/prepare-controller-driver.js",
     "win": {
       "target": "nsis"
-    },
-    "nsis": {
-      "include": "assets/installer.nsh"
     },
     "files": [
       "build/**/*",

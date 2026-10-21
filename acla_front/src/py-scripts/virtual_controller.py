@@ -1,4 +1,4 @@
-"""JSON-lines Xbox/DirectInput controller bridge with an independent dead-man timeout."""
+"""JSON-lines vJoy steering wheel bridge with an independent dead-man timeout."""
 import argparse
 import json
 import math
@@ -6,6 +6,8 @@ import queue
 import sys
 import threading
 import time
+
+from virtual_wheel import VJoyController
 
 WATCHDOG_SECONDS = 0.6
 
@@ -19,32 +21,6 @@ def valid_action(action):
 
 def emit(message):
     print(json.dumps(message), flush=True)
-
-
-class XboxController:
-    def __init__(self, gamepad):
-        self.gamepad = gamepad
-
-    def apply(self, action):
-        self.gamepad.left_joystick_float(x_value_float=action["steering"], y_value_float=0.0)
-        self.gamepad.right_trigger_float(value_float=action["throttle"])
-        self.gamepad.left_trigger_float(value_float=action["brake"])
-        self.gamepad.update()
-
-    def reset(self):
-        self.gamepad.reset()
-        self.gamepad.update()
-
-    def close(self):
-        pass  # vgamepad destroys the device when the bridge process exits.
-
-
-def create_controller(backend, device_id):
-    if backend == "vjoy":
-        from virtual_wheel import VJoyController
-        return VJoyController(device_id)
-    import vgamepad
-    return XboxController(vgamepad.VX360Gamepad())
 
 
 def serve(controller, commands, emit_message=emit, clock=time.monotonic):
@@ -78,17 +54,14 @@ def serve(controller, commands, emit_message=emit, clock=time.monotonic):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", choices=("xbox", "vjoy"), default="xbox")
+    parser.add_argument("--backend", choices=("vjoy",), default="vjoy")
     parser.add_argument("--device-id", type=int, choices=range(1, 17), default=1)
     args = parser.parse_args()
     try:
-        controller = create_controller(args.backend, args.device_id)
+        controller = VJoyController(args.device_id)
     except Exception as error:
         message = ("Virtual wheel unavailable. Install vJoy and enable X, Y and Z axes on device "
-                   f"{args.device_id} in Configure vJoy. See README for setup. " if args.backend == "vjoy" else
-                   "Virtual Xbox controller unavailable. Restart Windows if setup requested it, "
-              "or rerun the application installer to install the controller driver. For development or a custom "
-              "Python environment, install the controller requirements and ViGEmBus (see README). ")
+                   f"{args.device_id} in Configure vJoy. See README for setup. ")
         emit({"type": "error", "error": message + str(error)})
         return 1
     commands = queue.Queue(maxsize=8)

@@ -27,7 +27,7 @@ it('keeps training disabled until the controller and all live inputs are ready',
     expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Open Live Session' }));
     expect(openLive).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Connect controller' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
     mockInput = { observation: trainingFixture(Date.now()).observation };
     act(() => { jest.advanceTimersByTime(250); });
@@ -41,30 +41,34 @@ it('keeps training disabled until the controller and all live inputs are ready',
 });
 
 it('shows driver setup errors without claiming the controller is connected', async () => {
-    (window.virtualController!.connect as jest.Mock).mockRejectedValue(new Error('Install vgamepad and ViGEmBus.'));
+    (window.virtualController!.connect as jest.Mock).mockRejectedValue(new Error('Install vJoy and enable X, Y and Z axes.'));
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Connect controller' })); await flush();
-    expect(screen.getByRole('alert')).toHaveTextContent('Install vgamepad');
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('Install vJoy');
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeDisabled();
 });
 
-it('connects the selected wheel device and preserves the Xbox output option', async () => {
+it('offers only wheel output and reconnects to the selected vJoy device', async () => {
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
-    expect(screen.getByRole('combobox', { name: 'Controller output' })).toHaveValue('vjoy');
+    expect(screen.getByRole('heading', { name: 'Steering wheel (vJoy)' })).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Controller output' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Xbox|XInput|gamepad/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'vJoy device' })).toHaveValue('1');
     fireEvent.change(screen.getByRole('combobox', { name: 'vJoy device' }), { target: { value: '3' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Connect controller' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     expect(window.virtualController!.connect).toHaveBeenLastCalledWith({ backend: 'vjoy', deviceId: 3 });
-    expect(screen.getByRole('combobox', { name: 'Controller output' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'vJoy device' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' })); await flush();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Controller output' }), { target: { value: 'xbox' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Connect controller' })); await flush();
-    expect(window.virtualController!.connect).toHaveBeenLastCalledWith({ backend: 'xbox', deviceId: 1 });
+    expect(screen.getByRole('combobox', { name: 'vJoy device' })).toBeEnabled();
+    fireEvent.change(screen.getByRole('combobox', { name: 'vJoy device' }), { target: { value: '4' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    expect(window.virtualController!.connect).toHaveBeenLastCalledWith({ backend: 'vjoy', deviceId: 4 });
 });
 
 it('keeps a timed binding test alive in the simulator and releases automatically', async () => {
     const api = window.virtualController!;
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Connect controller' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Test throttle in 5 seconds' })); await flush();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Hold to test steering' })).toBeDisabled();
@@ -85,7 +89,7 @@ it('keeps a timed binding test alive in the simulator and releases automatically
 it.each(['Stop', 'Escape', 'Disconnect'])('cancels a pending timed test with %s', async (stop) => {
     const api = window.virtualController!;
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Connect controller' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Test brake in 5 seconds' })); await flush();
     if (stop === 'Escape') fireEvent.keyDown(window, { key: 'Escape' });
     else fireEvent.click(screen.getByRole('button', { name: stop }));
@@ -96,7 +100,7 @@ it.each(['Stop', 'Escape', 'Disconnect'])('cancels a pending timed test with %s'
 
 it.each([-1, -0.2, 0, 0.2, 1])('supports steering calibration position %s', async (position) => {
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Connect controller' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     fireEvent.change(screen.getByRole('combobox', { name: 'Timed steering position' }), { target: { value: String(position) } });
     fireEvent.click(screen.getByRole('button', { name: 'Test steering in 5 seconds' })); await flush();
     act(() => { jest.advanceTimersByTime(4900); }); await flush();
@@ -107,7 +111,7 @@ it.each([-1, -0.2, 0, 0.2, 1])('supports steering calibration position %s', asyn
 it('cancels a timed test on unmount before any non-neutral input is sent', async () => {
     const api = window.virtualController!;
     const { unmount } = render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Connect controller' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Test throttle in 5 seconds' })); await flush();
     unmount();
     act(() => { jest.advanceTimersByTime(16000); }); await flush();
@@ -118,7 +122,7 @@ it('cancels a timed test on unmount before any non-neutral input is sent', async
 it('stops timed tests and reports a rejected device write', async () => {
     const api = window.virtualController!;
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Connect controller' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     (api.apply as jest.Mock).mockRejectedValueOnce(new Error('vJoy device disconnected.'));
     fireEvent.click(screen.getByRole('button', { name: 'Test brake in 5 seconds' })); await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('vJoy device disconnected');
@@ -131,7 +135,7 @@ it('stops timed tests and reports a rejected device write', async () => {
 it('releases a held test axis on Escape and disconnects on unmount', async () => {
     const api = window.virtualController!;
     const { unmount } = render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Connect controller' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     fireEvent.keyDown(screen.getByRole('button', { name: 'Hold to test throttle' }), { key: ' ' }); await flush();
     expect(api.apply).toHaveBeenLastCalledWith({ throttle: 0.25, brake: 0, steering: 0 });
     fireEvent.keyDown(window, { key: 'Escape' }); await flush();

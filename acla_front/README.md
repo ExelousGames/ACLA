@@ -44,17 +44,17 @@ add **Live Map** with a matching reference lap, and add **Track Vision** with
 position and segmentation models and screen capture enabled. The training page
 reports any missing inputs. Live Session stays mounted when switching tabs.
 
-### Wheel / joystick output (ACC and iRacing)
+### Steering wheel output (ACC and iRacing)
 
-Select **Wheel / joystick (vJoy)** for a simulator using wheel controls. This creates
-standard DirectInput axes independently of the physical wheel brand (MOZA, Fanatec,
-Logitech, Thrustmaster, etc.). It does not intercept a physical wheel or automatically
+AI driving uses **Steering wheel (vJoy)** output with standard DirectInput axes
+independently of the physical wheel brand (MOZA, Fanatec, Logitech, Thrustmaster,
+etc.). It does not intercept a physical wheel or automatically
 replace that wheel's bindings. The simulator must be bound to the virtual device
 for AI driving; restore your normal controls when returning to manual driving.
 
 1. Install the signed Windows 10/11 [vJoy driver](https://github.com/BrunnerInnovation/vJoy/releases).
-   It is separate from the bundled Xbox driver. In **Configure vJoy**, enable a free
-   device with **X**, **Y**, and **Z** axes, then select its device number in the app.
+   In **Configure vJoy**, enable a free device with **X**, **Y**, and **Z** axes,
+   then select its device number in the app.
 2. Connect before launching the simulator (or restart it if the device is missing).
    Map **X → steering**, **Y → throttle**, **Z → brake**. Steering uses the full signed
    range; each pedal has its own independent axis. Check that neutral shows zero
@@ -86,46 +86,9 @@ before launching the app. Missing drivers/axes, busy devices, and rejected write
 are reported as errors. The watchdog and disconnect reset pedals to zero and
 steering to center before relinquishing the device.
 
-### Xbox gamepad output
-
-The virtual Xbox controller is included with the Windows application. Choose
-**Xbox gamepad (XInput)** when using the simulator's gamepad controls. Python setup
-installs [vgamepad](https://github.com/yannbouteiller/vgamepad) into the managed
-development and production environments. The Windows application installer bundles
-[ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0) and installs
-it when no working controller driver is present. Approve the Windows administrator
-prompt and restart Windows if setup requests it. No separate pip command or
-internet connection is needed on the target PC during application installation.
-
-`electron-builder` downloads and verifies the pinned driver installer before
-packaging, caching it in `.venv/controller-driver`. Building the app does not
-install a system driver on the build machine. Ordinary app startup does not
-install drivers either. Uninstalling the app leaves the shared driver available
-for other applications.
-
-Python setup uses the checksum-pinned upstream vgamepad 0.1.3 GitHub archive,
-because that release is not published on PyPI. It supports skipping the legacy
-driver installer while building the Python package. Build machines need GitHub
-access; a Git executable is not required.
-
-For development, run `npm run setup:python` and install the official ViGEmBus
-release linked above once. If `ACLA_PYTHON_PATH` points to a custom Python
-environment, install the controller requirements there as well:
-
-```powershell
-$env:VGAMEPAD_SKIP_VIGEMBUS_INSTALL = 'true'
-& $env:ACLA_PYTHON_PATH -m pip install -r scripts/controller-requirements.txt
-```
-
-If Connect reports a missing driver in an installed application, rerun application
-setup to retry driver installation.
-
-Connect the controller and use the timed tests to bind right trigger to throttle,
-left trigger to brake, and left stick X to steering in the simulator.
-
 ### Training
 
-Once the simulator responds to the selected output, start a
+Once the simulator responds to the virtual wheel, start a
 practice session with automatic shifting configured, position the car near the
 reference line, then select **Start training**. The policy only controls these
 three axes; repositioning, restarting laps and changing gears are not automated.
@@ -162,7 +125,8 @@ virtual environments so that development and production builds are reproducible.
 | Production (packaged app) | `acla_front/.venv/py-scripts-prod` (bundled as `resources/python-env`) | `npm run build:electron` (via pre script) or `npm run setup:python -- --mode=prod` |
 
 The managed environments install everything from `src/py-scripts/requirements.txt`, including
-scikit-learn, pandas and the Windows virtual controller package.
+scikit-learn and pandas. Steering wheel output uses the separately installed vJoy driver
+and does not require an additional Python package.
 
 ### One-time manual setup
 
