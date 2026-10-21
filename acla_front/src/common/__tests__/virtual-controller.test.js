@@ -2,10 +2,12 @@ const { EventEmitter } = require('events');
 const { PassThrough, Writable } = require('stream');
 const { registerVirtualController } = require('../../../electron/virtual-controller');
 
-function setup() {
+function setup(platform = 'win32') {
     const handlers = {};
     const app = new EventEmitter();
     app.getAppPath = () => '/app';
+    app.getPath = jest.fn(() => '/redirected/documents');
+    const installAccPreset = jest.fn().mockResolvedValue({ name: 'ACLA AI Training - vJoy 3', path: '/preset.json', deviceId: 3 });
     const contents = new EventEmitter();
     contents.mainFrame = {};
     contents.isDestroyed = () => false;
@@ -18,9 +20,9 @@ function setup() {
     const spawnProcess = jest.fn(() => child);
     registerVirtualController({ app, ipcMain: { handle: (key, handler) => { handlers[key] = handler; } },
         getMainWindow: () => ({ isDestroyed: () => false, webContents: contents }), getPythonExecutable: () => 'python',
-        spawnProcess, platform: 'win32' });
+        spawnProcess, installAccPreset, platform });
     const event = { sender: contents, senderFrame: contents.mainFrame };
-    return { handlers, event, contents, child, writes, spawnProcess,
+    return { handlers, event, contents, child, writes, spawnProcess, installAccPreset, app,
         connect: async (options) => {
             const connected = handlers['virtual-controller-connect'](event, options);
             child.stdout.write(JSON.stringify({ type: 'ready' }) + '\n');
@@ -39,6 +41,29 @@ it('restricts IPC to the main frame and reports startup failures', async () => {
     const result = run.handlers['virtual-controller-connect'](run.event);
     run.child.stdout.write(JSON.stringify({ type: 'error', error: 'Install vJoy.' }) + '\n');
     await expect(result).rejects.toThrow('Install vJoy');
+});
+
+it('installs an ACC preset only for the main frame using the Windows Documents path', async () => {
+    const run = setup();
+    const install = run.handlers['virtual-controller-install-acc-preset'];
+    await expect(install({ sender: {} }, 3)).rejects.toThrow(/main workspace/);
+    await expect(install({ ...run.event, senderFrame: {} }, 3)).rejects.toThrow(/main workspace/);
+    for (const id of [0, 17, 1.5, '3', null]) await expect(install(run.event, id)).rejects.toThrow(/device ID/);
+    expect(run.installAccPreset).not.toHaveBeenCalled();
+    await expect(install(run.event, 3)).resolves.toEqual({ name: 'ACLA AI Training - vJoy 3', path: '/preset.json', deviceId: 3 });
+    expect(run.app.getPath).toHaveBeenCalledWith('documents');
+    expect(run.installAccPreset).toHaveBeenCalledWith('/redirected/documents', 3);
+    expect(run.spawnProcess).not.toHaveBeenCalled();
+});
+
+it('rejects a preset for a different connected device or an unsupported platform', async () => {
+    const run = setup(); await run.connect({ deviceId: 3 });
+    await expect(run.handlers['virtual-controller-install-acc-preset'](run.event, 1)).rejects.toThrow(/connected vJoy device/);
+    expect(run.installAccPreset).not.toHaveBeenCalled();
+    run.handlers['virtual-controller-disconnect'](run.event);
+    const other = setup('linux');
+    await expect(other.handlers['virtual-controller-install-acc-preset'](other.event, 1)).rejects.toThrow(/Windows/);
+    expect(other.installAccPreset).not.toHaveBeenCalled();
 });
 
 it('routes wheel output to vJoy and requires disconnect before changing devices', async () => {

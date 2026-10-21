@@ -6,7 +6,7 @@ import type { TrackVisionHandle } from 'views/live-session/track-vision/LiveTrac
 import { DrivingAction, NEUTRAL, ObservationResult, readDrivingObservation } from './driving-observation';
 import { DrivingPolicy } from './driving-policy';
 import { DrivingTrainingLoop, initialTrainingState } from './driving-training-loop';
-import type { VirtualController } from './virtual-controller';
+import type { AccControlPreset, VirtualController } from './virtual-controller';
 import './AiDrivingTraining.css';
 
 const STORAGE_KEY = 'acla.self-driving.policy.v1';
@@ -28,6 +28,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const [testStatus, setTestStatus] = useState('');
     const [connected, setConnected] = useState(false);
     const [connecting, setConnecting] = useState(false);
+    const [installingPreset, setInstallingPreset] = useState(false);
+    const [accPreset, setAccPreset] = useState<AccControlPreset | null>(null);
     const [state, setState] = useState(initialTrainingState);
     const [inputs, setInputs] = useState<ObservationResult>({ error: 'Waiting for Live Session inputs.' });
     const [modelSteps, setModelSteps] = useState<number | null>(null);
@@ -122,6 +124,15 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             if (mounted.current && generation === connectingGeneration.current) setConnected(true);
         } catch (reason) { if (mounted.current) setError(errorMessage(reason)); }
         finally { if (mounted.current && generation === connectingGeneration.current) setConnecting(false); }
+    };
+    const installAccPreset = async () => {
+        setInstallingPreset(true); setAccPreset(null); setError('');
+        try {
+            if (!window.virtualController?.installAccPreset) throw new Error('ACC preset installation requires the updated Windows desktop app. Restart the app after updating.');
+            const preset = await window.virtualController.installAccPreset(deviceId);
+            if (mounted.current) setAccPreset(preset);
+        } catch (reason) { if (mounted.current) setError(errorMessage(reason)); }
+        finally { if (mounted.current) setInstallingPreset(false); }
     };
     const stopTest = () => {
         clearInterval(testTimer.current); testTimer.current = undefined; setTestAction(NEUTRAL);
@@ -228,13 +239,18 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <div className="driving-card-title"><h2>Steering wheel (vJoy)</h2><span>{connected ? 'Connected' : 'Disconnected'}</span></div>
                 <div className="driving-output-options">
                     <label htmlFor="driving-device">vJoy device</label>
-                    <select id="driving-device" value={deviceId} disabled={connected || connecting}
-                        onChange={(event) => setDeviceId(Number(event.target.value))}>
+                    <select id="driving-device" value={deviceId} disabled={connected || connecting || installingPreset}
+                        onChange={(event) => { setDeviceId(Number(event.target.value)); setAccPreset(null); }}>
                         {Array.from({ length: 16 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
                     </select>
                 </div>
                 <p>Works independently of your physical wheel brand. Bind vJoy X → steering, Y → throttle, Z → brake in the simulator.</p>
-                <p className="driving-note">Install vJoy separately and enable X, Y and Z on the selected device in Configure vJoy. In ACC, use Wheel controls and save a separate training preset. In iRacing, use Configure Controls or Settings → Driving → Input Calibration. Your physical wheel bindings do not automatically switch to vJoy.</p>
+                <p className="driving-note">vJoy is included with the Windows installer. Restart Windows if setup requests it, then enable X, Y and Z on the selected device in Configure vJoy. In iRacing, use Configure Controls or Settings → Driving → Input Calibration.</p>
+                <div className="driving-buttons"><button onClick={() => { void installAccPreset(); }}
+                    disabled={installingPreset || connecting || running || Boolean(testTimer.current)}>
+                    {installingPreset ? 'Installing ACC preset…' : 'Install ACC preset'}</button></div>
+                <p className="driving-note">For ACC, save your current controls, install the training preset, then load it in Options → Controls → Wheel. This binds the selected vJoy device automatically. If the preset is missing, restart ACC. Load your normal preset again for manual driving.</p>
+                {accPreset && <p role="status">Installed “{accPreset.name}”. In ACC, open Options → Controls → Wheel and load this preset, then check all three input meters with the timed tests.</p>}
                 <div className="driving-controls">
                     {(['throttle', 'brake', 'steering'] as const).map((key) => <div key={key}>
                         <div><label htmlFor={`driving-${key}`}>{key}</label><output>{output[key].toFixed(3)}</output></div>

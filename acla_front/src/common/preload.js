@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('virtualController', {
     connect: (options) => ipcRenderer.invoke('virtual-controller-connect', options),
     apply: (action) => ipcRenderer.invoke('virtual-controller-apply', action),
     disconnect: () => ipcRenderer.invoke('virtual-controller-disconnect'),
+    installAccPreset: (deviceId) => ipcRenderer.invoke('virtual-controller-install-acc-preset', deviceId),
 });
 contextBridge.exposeInMainWorld('trackVisionModels', {
     prepare: (model, bytes) => ipcRenderer.invoke('track-vision-model-prepare', model, bytes),

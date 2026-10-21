@@ -44,6 +44,7 @@
     "eject": "react-scripts eject",
     "electron": "electron .",
     "setup:python": "node scripts/setup-python.js",
+    "setup:vjoy": "node scripts/prepare-vjoy.js",
     "setup:vision": "node scripts/prepare-vision-runtime.js",
     "setup:vision-models": "node scripts/setup-vision-models.js",
     "prestart:electron": "node scripts/prepare-vision-runtime.js && node scripts/setup-python.js --mode=dev",
@@ -84,8 +85,17 @@
   "build": {
     "appId": "com.example.myapp",
     "productName": "Kestrel Motorsport Analyst",
+    "beforePack": "./scripts/prepare-vjoy.js",
     "win": {
-      "target": "nsis"
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "extraResources": [
+        { "from": "assets/vjoy", "to": "vjoy", "filter": ["vJoySetup.exe", "LICENSE.txt"] }
+      ]
+    },
+    "nsis": {
+      "include": "assets/installer.nsh",
+      "oneClick": false,
+      "perMachine": true
     },
     "files": [
       "build/**/*",

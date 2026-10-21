@@ -28,8 +28,13 @@ test('both managed Python environments install desktop requirements without game
         assert.doesNotMatch(requirements, /vgamepad|vigem|controller-requirements/i);
     }
     const config = require('../../package.json').build;
-    assert.equal(config.beforePack, undefined);
-    assert.equal(config.nsis?.include, undefined);
+    assert.equal(config.beforePack, './scripts/prepare-vjoy.js');
+    assert.equal(config.nsis?.include, 'assets/installer.nsh');
+    assert.equal(config.nsis.perMachine, true);
+    assert.equal(config.nsis.oneClick, false);
+    assert.deepEqual(config.win.target, [{ target: 'nsis', arch: ['x64'] }]);
+    assert.ok(config.win.extraResources.some(({ from, to, filter }) => from === 'assets/vjoy' && to === 'vjoy'
+        && filter.includes('vJoySetup.exe') && filter.includes('LICENSE.txt')));
     assert.ok(config.extraResources.some(({ from, to }) => from === '.venv/py-scripts-prod' && to === 'python-env'));
     assert.ok(config.extraResources.some(({ from, to }) => from === 'src/py-scripts' && to === 'py-scripts'));
 });

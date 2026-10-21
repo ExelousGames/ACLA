@@ -17,9 +17,37 @@ beforeEach(() => {
     localStorage.clear();
     mockInput = { error: 'Waiting for live telemetry.' };
     window.virtualController = { connect: jest.fn().mockResolvedValue(undefined), apply: jest.fn().mockResolvedValue(undefined),
-        disconnect: jest.fn().mockResolvedValue(undefined) };
+        disconnect: jest.fn().mockResolvedValue(undefined),
+        installAccPreset: jest.fn().mockImplementation(async (deviceId) => ({
+            name: `ACLA AI Training - vJoy ${deviceId}`, path: '/preset.json', deviceId,
+        })) };
 });
 afterEach(() => { delete window.virtualController; jest.useRealTimers(); });
+
+it('installs an ACC preset for the selected device and explains how to activate it', async () => {
+    render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'vJoy device' }), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Install ACC preset' })); await flush();
+    expect(window.virtualController!.installAccPreset).toHaveBeenCalledWith(3);
+    expect(screen.getByText(/Installed “ACLA AI Training - vJoy 3”/)).toHaveTextContent('load this preset');
+    expect(window.virtualController!.connect).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
+    fireEvent.change(screen.getByRole('combobox', { name: 'vJoy device' }), { target: { value: '2' } });
+    expect(screen.queryByText(/Installed “/)).not.toBeInTheDocument();
+});
+
+it('locks the device choice during installation and reports failures without claiming success', async () => {
+    let rejectInstall!: (reason: Error) => void;
+    (window.virtualController!.installAccPreset as jest.Mock).mockImplementation(() => new Promise((_, reject) => { rejectInstall = reject; }));
+    render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Install ACC preset' }));
+    expect(screen.getByRole('button', { name: 'Installing ACC preset…' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'vJoy device' })).toBeDisabled();
+    await act(async () => { rejectInstall(new Error('ACC controls were not found.')); });
+    expect(screen.getByRole('alert')).toHaveTextContent('ACC controls were not found');
+    expect(screen.queryByText(/Installed “/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Install ACC preset' })).toBeEnabled();
+});
 
 it('keeps training disabled until the controller and all live inputs are ready', async () => {
     const openLive = jest.fn();
@@ -33,6 +61,7 @@ it('keeps training disabled until the controller and all live inputs are ready',
     act(() => { jest.advanceTimersByTime(250); });
     expect(screen.getByRole('button', { name: 'Start training' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
+    expect(screen.getByRole('button', { name: 'Install ACC preset' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
@@ -70,6 +99,7 @@ it('keeps a timed binding test alive in the simulator and releases automatically
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Test throttle in 5 seconds' })); await flush();
+    expect(screen.getByRole('button', { name: 'Install ACC preset' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Hold to test steering' })).toBeDisabled();
     expect(api.apply).toHaveBeenLastCalledWith({ throttle: 0, brake: 0, steering: 0 });

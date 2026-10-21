@@ -9,6 +9,14 @@ export interface VirtualController {
     apply(action: DrivingAction): Promise<void>;
     disconnect(): Promise<void>;
 }
+export interface AccControlPreset {
+    name: string;
+    path: string;
+    deviceId: number;
+}
+export interface VirtualControllerApi extends VirtualController {
+    installAccPreset(deviceId: number): Promise<AccControlPreset>;
+}
 declare global {
-    interface Window { virtualController?: VirtualController }
+    interface Window { virtualController?: VirtualControllerApi }
 }

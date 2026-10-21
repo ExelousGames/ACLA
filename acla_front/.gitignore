@@ -5,6 +5,8 @@
 /public/vision-runtime
 /public/vision-models/*.onnx
 /public/vision-models/*.tmp
+/assets/vjoy/*.exe
+/assets/vjoy/*.tmp
 
 # Logs
 logs

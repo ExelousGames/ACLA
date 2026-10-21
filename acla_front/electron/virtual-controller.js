@@ -1,6 +1,7 @@
 const { spawn } = require('child_process');
 const readline = require('readline');
 const path = require('path');
+const { installAccControlPreset } = require('./acc-control-preset');
 
 function validAction(action) {
   return action && Object.keys(action).length === 3 && ['throttle', 'brake', 'steering'].every((key) =>
@@ -8,7 +9,8 @@ function validAction(action) {
       && action[key] >= (key === 'steering' ? -1 : 0));
 }
 
-function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecutable, spawnProcess = spawn, platform = process.platform }) {
+function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecutable, spawnProcess = spawn,
+  installAccPreset = installAccControlPreset, platform = process.platform }) {
   let active = null;
   const owner = (event) => {
     const window = getMainWindow();
@@ -103,6 +105,13 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
     });
   });
   ipcMain.handle('virtual-controller-disconnect', (event) => { owner(event); close(active); });
+  ipcMain.handle('virtual-controller-install-acc-preset', async (event, deviceId) => {
+    owner(event);
+    if (platform !== 'win32') throw new Error('ACC control presets currently require Windows.');
+    if (!Number.isInteger(deviceId) || deviceId < 1 || deviceId > 16) throw new Error('Select a vJoy device ID from 1 to 16.');
+    if (active && active.deviceId !== deviceId) throw new Error('Select the connected vJoy device for the ACC preset.');
+    return installAccPreset(app.getPath('documents'), deviceId);
+  });
   app.on('before-quit', () => close(active));
 }
 

@@ -52,15 +52,25 @@ etc.). It does not intercept a physical wheel or automatically
 replace that wheel's bindings. The simulator must be bound to the virtual device
 for AI driving; restore your normal controls when returning to manual driving.
 
-1. Install the signed Windows 10/11 [vJoy driver](https://github.com/BrunnerInnovation/vJoy/releases).
-   In **Configure vJoy**, enable a free device with **X**, **Y**, and **Z** axes,
+1. The Windows x64 app installer includes the signed Windows 10/11
+   [vJoy driver](https://github.com/BrunnerInnovation/vJoy/releases/tag/v2.2.2.0)
+   and installs it automatically with administrator approval. Restart Windows if
+   prompted. For development, install vJoy manually. In **Configure vJoy**,
+   enable a free device with **X**, **Y**, and **Z** axes,
    then select its device number in the app.
 2. Connect before launching the simulator (or restart it if the device is missing).
    Map **X → steering**, **Y → throttle**, **Z → brake**. Steering uses the full signed
    range; each pedal has its own independent axis. Check that neutral shows zero
    throttle/brake and centered steering; invert a pedal in the simulator if needed.
-3. **ACC:** use **Options → Controls → Wheel**, save your existing preset, and create
-   a separate training preset with those vJoy axes.
+3. **ACC:** save your existing controls preset, then select **Install ACC preset**
+   in AI Self-Driving Training. In **Options → Controls → Wheel**, load the displayed
+   **ACLA AI Training - vJoy N** preset. Restart ACC if the new preset is not listed.
+   The app reads ACC's saved device GUID, binds X/Y/Z to steering/throttle/brake,
+   and saves the training preset under your Windows Documents folder in
+   `Assetto Corsa Competizione/Customs/Controls`. It leaves active controls and
+   existing presets intact; conflicting driving axes are removed only in the new
+   preset. If ACC has not recorded the selected vJoy device yet, enable it, restart
+   ACC, save your controls, and retry. Load your normal preset to return to manual driving.
 4. **iRacing:** use **Configure Controls**, or **Settings → Driving → Input Calibration**,
    and calibrate the vJoy steering and pedal axes. Follow the
    [iRacing calibration guide](https://support.iracing.com/support/solutions/articles/31000133335).
@@ -125,7 +135,7 @@ virtual environments so that development and production builds are reproducible.
 | Production (packaged app) | `acla_front/.venv/py-scripts-prod` (bundled as `resources/python-env`) | `npm run build:electron` (via pre script) or `npm run setup:python -- --mode=prod` |
 
 The managed environments install everything from `src/py-scripts/requirements.txt`, including
-scikit-learn and pandas. Steering wheel output uses the separately installed vJoy driver
+scikit-learn and pandas. Steering wheel output uses the vJoy driver bundled with the Windows installer
 and does not require an additional Python package.
 
 ### One-time manual setup
@@ -163,6 +173,20 @@ This command:
 1. Creates/refreshes the production env in `.venv/py-scripts-prod`
 2. Installs requirements inside that env
 3. Builds the React bundle and packages Electron via `electron-builder`
+4. Downloads and verifies the pinned vJoy 2.2.2.0 installer in the Windows
+   `beforePack` hook, then includes it and its MIT license in `resources/vjoy`
+
+The Windows installer targets x64, installs for all users, and requests administrator
+access to install the driver. End users do not need an internet connection for vJoy
+setup. Existing installations with both the driver service and SDK in the standard
+location are preserved. Driver failures stop setup with an error and a log at
+`%TEMP%\Kestrel-vJoy-setup.log`; restart requests appear on the finish page without
+forcing a reboot (silent setup returns 3010). Uninstalling Kestrel leaves the shared
+vJoy driver installed. Simulator axis bindings still need to be configured as above.
+
+Use `npm run setup:vjoy` to cache the driver before an offline build. The binary is
+git-ignored; every Windows packaging run checks its SHA-256 and fails if it differs
+from the pinned release. Direct `electron-builder` invocations use the same hook.
 
 The packaged app ships with the Python runtime under `resources/python-env`. The Electron
 main process automatically selects that interpreter; override it with the environment variable
