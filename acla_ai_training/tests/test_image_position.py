@@ -879,14 +879,13 @@ def test_position_cli_dispatches_without_running_segmentation_training(tmp_path,
         "train-position", "--manifest", str(tmp_path / "positions.json"),
         "--output", str(tmp_path / "run"), *device_args,
         "--val-fraction", "0.3", "--seed", "7",
-        "--upload-name", "race-position", *(["--no-upload"] if offline else []),
+        *(["--no-upload"] if offline else []),
     ]) == 0
     assert "model" not in calls[0][1]
     assert calls[0][1]["device"] == expected_device
     assert calls[0][1]["val_fraction"] == 0.3
     assert calls[0][1]["seed"] == 7
     assert calls[0][1]["upload"] is not offline
-    assert calls[0][1]["upload_name"] == "race-position"
 
 
 @pytest.fixture
@@ -1013,7 +1012,7 @@ def test_position_training_uploads_best_and_preserves_weights_on_failure(
     else:
         assert train_position_model(training_manifest, **args) == output / "best.pt"
         assert "Model uploaded to backend: position-model" in capsys.readouterr().out
-    upload.assert_awaited_once_with((output / "best.onnx").resolve(), name="track-position")
+    upload.assert_awaited_once_with((output / "best.onnx").resolve())
     assert any(not torch.equal(value, encoder_before[key]) for key, value in network.position_encoder.state_dict().items())
     PositionModel.load(output / "best.pt")
     assert (output / "last.pt").is_file()
@@ -1053,7 +1052,12 @@ def test_position_training_preserves_checkpoint_and_skips_upload_when_export_fai
 
 
 @pytest.mark.parametrize("failed", [False, True])
-def test_position_upload_command_can_retry_without_training(tmp_path, monkeypatch, capsys, failed):
+@pytest.mark.parametrize("command, suffix, name_flag", [
+    (["upload-position"], ".pt", "--name"),
+    (["upload-position"], ".onnx", "--name"),
+    (["train-position", "--upload-model"], ".onnx", None),
+])
+def test_position_upload_command_can_retry_without_training(tmp_path, monkeypatch, capsys, failed, command, suffix, name_flag):
     from training.image_segmentation import position_publication, position_training
 
     def no_training(*args, **kwargs):
@@ -1064,8 +1068,8 @@ def test_position_upload_command_can_retry_without_training(tmp_path, monkeypatc
     if failed:
         upload.side_effect = ConnectionError("offline")
     monkeypatch.setattr(position_publication, "upload_position_checkpoint", upload)
-    checkpoint = tmp_path / "best.pt"
-    args = ["upload-position", str(checkpoint), "--name", "race-position"]
+    checkpoint = tmp_path / f"best{suffix}"
+    args = [*command, str(checkpoint), *([name_flag, "race-position"] if name_flag else [])]
     if failed:
         with pytest.raises(SystemExit) as error:
             main(args)
@@ -1074,7 +1078,20 @@ def test_position_upload_command_can_retry_without_training(tmp_path, monkeypatc
     else:
         assert main(args) == 0
         assert "position-model" in capsys.readouterr().out
-    upload.assert_awaited_once_with(checkpoint, name="race-position")
+    upload.assert_awaited_once_with(checkpoint, name="race-position" if name_flag else "track-position")
+
+
+@pytest.mark.parametrize("args, message", [
+    ([], "--manifest, --output"),
+    (["--manifest", "positions.json"], "--output"),
+    (["--output", "run"], "--manifest"),
+    (["--upload-model", "best.onnx", "--no-upload"], "not allowed with argument"),
+])
+def test_position_cli_requires_training_inputs_or_upload_model(args, message, capsys):
+    with pytest.raises(SystemExit) as error:
+        main(["train-position", *args])
+    assert error.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("fraction", [0.2, 0.3, 0.8])

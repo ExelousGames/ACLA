@@ -556,9 +556,9 @@ exports that checkpoint to `best.onnx` and `best.onnx.json`, including with
 `--no-upload`. The `.pt` checkpoints remain available for Python inference.
 
 After export, `best.onnx` is uploaded to the backend using the same authentication
-and binary storage as segmentation training. The default name is `track-position`;
-use `--upload-name my-position-model` to change it, or `--no-upload` to train
-and export offline. Position uploads contain one self-contained ONNX graph with
+and binary storage as segmentation training. The name is `track-position`;
+use `--no-upload` to train and export offline.
+Position uploads contain one self-contained ONNX graph with
 only the signed position outputs. They are stored with
 `task: position` and `metadata.artifactFormat: onnx` and do not enter the Track
 Vision segmentation model selection.
@@ -583,6 +583,17 @@ python -m training.image_segmentation upload-position \
 Passing `best.onnx` instead publishes the existing export without exporting
 again. Publication reads metadata embedded in the ONNX file, so the JSON sidecar
 is not required for upload.
+
+The training script can also publish an existing ONNX model through the same
+uploader, skipping all training steps:
+
+```bash
+python scripts/train_position.py \
+  --upload-model storage/image_segmentation/position-runs/run-1/best.onnx
+```
+
+`--manifest` and `--output` are not required in this mode. `--upload-model`
+cannot be combined with `--no-upload`.
 
 Use the same backend environment configuration described under **Upload a trained
 model** below. Successful uploads print the backend model ID.
