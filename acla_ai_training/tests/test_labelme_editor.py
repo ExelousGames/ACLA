@@ -350,6 +350,7 @@ def test_position_window_follows_images_and_keeps_annotations_separate(editor):
             "session_id": "session-a", "image": image.name,
             "references": [[index * 10, 0, 2], [index * 10, 0, 6]],
             "target": [[0, 0, 2], [0, 0, 6]],
+            "driver_position": [index * 10, 0, 0],
         }))
     original_positions = [image.with_suffix(".position.json").read_bytes() for image in images]
     window._load_file(str(images[0]))
@@ -414,6 +415,7 @@ def test_position_window_clears_stale_paths_when_data_is_unavailable(editor, pos
     position.write_text(json.dumps({
         "session_id": "a", "image": image.name,
         "references": [[0, 0, 0], [0, 0, 0]], "target": [[0, 0, 0], [0, 0, 0]],
+        "driver_position": [0, 0, 0],
     }))
     window._load_file(str(image))
     assert window._position_panel.context is not None

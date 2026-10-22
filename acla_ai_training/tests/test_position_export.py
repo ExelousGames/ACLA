@@ -58,7 +58,10 @@ def test_export_preserves_position_without_segmentation_with_small_uneven_and_ev
             "references": {"dtype": "float32", "shape": [1, 1, 3]},
             "context": {"dtype": "float32", "shape": [1, 4]},
         }
-        assert contract["schemaVersion"] == 3
+        assert contract["schemaVersion"] == 4
+        assert metadata["targetDefinition"] == "inverse_world_rotation @ (reference_position - current_position)"
+        assert metadata["coordinateFrame"] == "car_local"
+        assert metadata["coordinateAxes"] == ["right", "forward", "up"]
         assert contract["referenceOrder"] == ["reference"]
         assert contract["outputs"] == {"deltas": {"dtype": "float32", "shape": [1, 1, 3]}}
         assert [value.name for value in graph.graph.output] == ["deltas"]

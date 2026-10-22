@@ -370,18 +370,22 @@ and map names. Reference-lap XYZ is looked up during preparation at the frame's
 normalized lap position. The output is exactly three signed values:
 
 ```text
-reference_delta_xyz = reference_lap_xyz(s) - driver_xyz
+reference_delta_xyz = inverse_world_rotation @ (reference_lap_xyz(s) - driver_xyz)
 ```
 
-These are direct component-wise differences in the original coordinate system.
-There is no conversion to meters, Euclidean distance, absolute value, or
-lateral/longitudinal transformation. Normalized position `s` is a lookup key and
-a model input in `[0, 1]`. Reference-lap and driver XYZ must use the same coordinate frame and
-scale; use stored XYZ, not rendered screen coordinates.
+Targets use car-local **X right, Y forward, Z up**, keeping the source coordinate
+units. Preparation uses `Physics_heading`, `Physics_pitch`, and `Physics_roll`
+in radians to invert the car's world rotation, accounting for the ACC world Y/Z
+axis swap. All three angles must be finite; missing rotation is an error.
+Normalized position `s` is a lookup key and a model input in `[0, 1]`.
+Reference-lap and driver XYZ must use the same world frame and scale before
+subtraction. This preparation currently supports ACC only: iRacing sessions are
+skipped because their recorded position and heading fields use different frames.
 
-Driver XYZ is required **only during preparation to construct training labels**.
+Driver XYZ and world rotation are required **only during preparation to construct training labels**.
 Each image's `.position.json` contains its filename, session ID, reference coordinates,
-game, map name, normalized lap position, and targets; it excludes driver XYZ.
+game, map name, normalized lap position, local targets, and `coordinate_frame: car_local`.
+It also retains `driver_position` for the annotation map; the training loader ignores it.
 The model receives the image, one reference-lap XYZ triple, and encoded context;
 targets provide supervision and error metrics. Inference requires the same inputs.
 Prepared files may still contain centerline coordinates and targets for compatibility
@@ -405,17 +409,7 @@ vocabularies are built from the prepared dataset and saved in each checkpoint.
 The context order is normalized position, game vector, then map-name vector.
 Inference reuses the saved order and rejects names absent from the vocabulary.
 Outputs stay in raw coordinate units, with an unconstrained linear output layer.
-Training loss adds mean component Smooth L1 to mean weighted `1 - cos(angle)`
-between predicted and target XYZ offsets. The unweighted direction penalty is
-0 for aligned vectors, 1 for perpendicular vectors, and 2 for opposite vectors.
-Each penalty is multiplied by `min(||target|| / 0.1, 1)^2`: it fades quadratically
-near zero and retains full weight at target lengths of 0.1 or more in source
-coordinate units. This reduces the influence of large angles caused by tiny
-offset differences. The weighted penalties are averaged over nonzero targets,
-not divided by the sum of weights, so batches containing only small offsets
-still receive the fade. An all-zero-target batch uses only Smooth L1. Vector
-norms are clamped to `1e-8` for numerical stability, so zero predictions still
-receive a corrective gradient for nonzero targets.
+Training uses mean component Smooth L1 between predicted and target XYZ offsets.
 Image preparation letterboxes the entire frame;
 there are no flips, crops, mosaics, or other geometric training augmentations
 that would invalidate its position target.
@@ -468,6 +462,8 @@ beside its image, using the same stem with `.position.json`, for example
   "map_name": "Spa-Francorchamps",
   "normalized_position": 0.25,
   "references": [[0.2, 0.0, 0.5], [0.25, 0.0, 0.5]],
+  "coordinate_frame": "car_local",
+  "driver_position": [0.13, -0.02, 0.41],
   "target": [[0.07, 0.02, 0.09], [0.12, 0.02, 0.09]]
 }
 ```
@@ -481,10 +477,11 @@ assignments are rejected; regenerate these datasets with the preparation command
 
 Each `references` and `target` array must have shape `(2, 3)` and finite values.
 Row 0 is the reference lap; row 1 is the centerline. Targets are the corresponding
-reference XYZ minus driver XYZ, calculated before discarding driver coordinates.
+reference-minus-driver vectors rotated into car-local right/forward/up coordinates
+(the example above has zero rotation). The world-space target is no longer saved.
 The trainer does no reference lookup or target calculation. `game` and `map_name`
 must be nonempty strings and `normalized_position` must be finite and in `[0, 1]`.
-Older position files missing these inputs must be regenerated. Preparation skips
+Files without `coordinate_frame: car_local` must be regenerated. Preparation skips
 existing session folders, so move the affected folders out of the download cache
 before selecting those sessions again; preserve any annotations you need.
 
@@ -530,7 +527,7 @@ Prepared position files and the dataset index are not changed.
 
 Training also writes `best.pt`, `last.pt`, and
 `results.json`, including `train_mae` and validation MAE for every reference/axis
-in raw coordinates. Each epoch prints training and validation MAE together.
+in car-local coordinates and source units. Each epoch prints training and validation MAE together.
 Training MAE averages absolute XYZ errors over all training frames using the
 predictions from the training pass, before each optimizer update. Frames receive
 equal weight even when the final batch is smaller.
@@ -546,6 +543,24 @@ The console shows a separate validation section for each `(game, map_name)`,
 including its frame count, MAE, and offset-length breakdown. `val_by_map` in
 `results.json` and checkpoint metrics saves these sections with `game`, `map_name`,
 `count`, `val_mae`, `val_mae_per_axis`, and `val_errors_by_offset_length`.
+Each map also saves `val_errors_by_normalized_position`, an array of 20 sections
+in lap order: `[0.00, 0.05)`, `[0.05, 0.10)`, ..., `[0.95, 1.00]`.
+These use the prepared normalized lap position, include the lower bound, and
+exclude the upper bound except for `1.0` in the last section. Each section contains:
+
+- `normalized_position_start` and `normalized_position_end`: the section's lap bounds.
+- `count`: the number of validation frames in this section for this game/map.
+- `val_mae` and `val_mae_per_axis`: mean absolute XYZ error in car-local source units.
+- `mean_distance_error`: mean 3D distance between predicted and target offsets, in source units.
+- `weakness_rank`: populated sections ranked by descending mean distance error within
+  this game/map; `1` identifies the weakest section. Ties follow lap order.
+
+Section metrics weight each frame equally across batches and reset each epoch.
+Sections without validation frames retain `count: 0` and `null` errors and rank;
+they do not indicate perfect prediction. Higher errors identify weaker sections;
+these regression metrics are not percentage accuracy. Check sample counts when
+comparing sections. This breakdown is saved in `results.json`, checkpoint metrics,
+and the exported best model's metadata.
 The top-level metrics remain aggregated across all validation frames.
 Direction averages exclude pairs where either vector is zero. Empty ranges and
 undefined direction averages are printed as `n/a` and saved as `null`.
@@ -603,7 +618,9 @@ model** below. Successful uploads print the backend model ID.
 The graph uses ONNX opset 17 and fixed batch size 1 at the checkpoint's training
 image size. All inputs and outputs are float32. `metadata.inference` describes
 the names, exact shapes, preprocessing, and context order; its `schemaVersion`
-is 3. Reference and delta tensors each contain only the reference-lap XYZ triple.
+is 4. Reference and delta tensors each contain only the reference-lap XYZ triple.
+References remain in world coordinates; deltas use local right/forward/up axes,
+identified by `metadata.coordinateFrame` and `metadata.coordinateAxes`.
 The graph has no segmentation `predictions` or `prototypes` outputs.
 The interface is independent of the informational checkpoint `format` label.
 
@@ -612,7 +629,7 @@ The interface is independent of the informational checkpoint `format` label.
 | Input `images` | `[1, 3, imgsz, imgsz]` | RGB, NCHW, divided by 255. Letterbox the full frame, round resized dimensions ties-to-even, center with floor offsets, and pad with RGB 114. |
 | Input `references` | `[1, 1, 3]` | Reference-lap XYZ in source coordinates. Learned standardization is inside the graph. |
 | Input `context` | `[1, 1 + len(game) + len(map_name)]` | Normalized lap position, then game and map-name one-hot vectors in `metadata.categories` order. |
-| Output `deltas` | `[1, 1, 3]` | Reference-lap XYZ minus driver XYZ. |
+| Output `deltas` | `[1, 1, 3]` | Car-local reference offset: right, forward, up. |
 
 The frontend must validate finite reference coordinates, lap position in `[0, 1]`,
 and known category values; Python's input validation is not part of the graph.

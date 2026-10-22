@@ -1,9 +1,13 @@
-"""Prepare image/XYZ, game, map name, and normalized-position inputs with offset targets.
+"""Prepare image/world XYZ and track context with car-local offset targets.
 
 Run without arguments for step-by-step prompts, or pass flags for unattended use.
 Telemetry is used during preparation; the trainer receives only prepared inputs
 and targets in a .position.json file beside each image, discovered recursively
-during training. Per-image telemetry is never saved to disk.
+during training. Heading/pitch/roll rotate reference-minus-driver offsets into
+local XYZ (right, forward, up). Driver world XYZ is retained only for the
+annotation map; neither driver XYZ nor rotation is a model input.
+Local targets currently support ACC only; iRacing sessions are skipped because
+their recorded position and heading fields use different world frames.
 Images are randomly split within each game/map when training starts, with 20% for validation.
 Reference lines and centerline maps are downloaded from the backend.
 Game and map names come from the selected centerline map's game and circuit_name.

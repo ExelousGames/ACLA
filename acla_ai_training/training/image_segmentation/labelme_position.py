@@ -35,17 +35,17 @@ def _read_position(path):
     image = path.parent / name
     if not image.is_file():
         raise FileNotFoundError(f"Image is missing: {image.name}")
-    for field in ("references", "target"):
-        values = data.get(field)
+    for field in ("references", "driver_position"):
+        values = data.get(field) if field == "references" else [data.get(field)]
         if not (
-            isinstance(values, list) and len(values) == 2
+            isinstance(values, list) and len(values) == (2 if field == "references" else 1)
             and all(isinstance(row, list) and len(row) == 3 for row in values)
             and all(type(value) in (int, float) and math.isfinite(value) for row in values for value in row)
         ):
-            raise ValueError(f"{field} must contain two finite XYZ triples: {path.name}")
+            raise ValueError(f"{field} must contain finite world XYZ coordinates: {path.name}")
     reference, centerline = data["references"]
-    # Preparation saves target = reference - driver, in the same world axes.
-    driver = tuple(value - delta for value, delta in zip(reference, data["target"][0]))
+    # Local targets cannot be subtracted from world references to recover the driver.
+    driver = tuple(data["driver_position"])
     return PositionFrame(image, data["session_id"], tuple(reference), tuple(centerline), driver)
 
 

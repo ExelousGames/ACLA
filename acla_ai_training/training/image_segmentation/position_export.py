@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 import torch
 from torch import nn
 
-from .position_data import OUTPUT_NAMES
+from .position_data import COORDINATE_AXES, COORDINATE_FRAME, OUTPUT_NAMES, TARGET_DEFINITION
 from .position_model import PositionModel
 
 
@@ -58,8 +58,10 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
         raise ValueError("Position checkpoint is missing its weights.")
     if saved.get("output_names") != list(OUTPUT_NAMES):
         raise ValueError("Position checkpoint must predict only reference-lap XYZ deltas; retrain from scratch with train-position.")
-    if saved.get("target_definition") != "reference_position - current_position":
-        raise ValueError("Position target_definition must be reference_position - current_position.")
+    if (saved.get("target_definition") != TARGET_DEFINITION
+            or saved.get("coordinate_frame") != COORDINATE_FRAME
+            or saved.get("coordinate_axes") != list(COORDINATE_AXES)):
+        raise ValueError("Position targets must be car-local right/forward/up reference offsets.")
     if saved.get("coordinate_units") != "source_coordinates":
         raise ValueError("Position coordinate_units must be source_coordinates.")
     position = PositionModel.load(checkpoint).float().eval().requires_grad_(False)
@@ -78,6 +80,8 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
             "outputNames": list(OUTPUT_NAMES),
             "targetDefinition": saved["target_definition"],
             "coordinateUnits": saved["coordinate_units"],
+            "coordinateFrame": saved["coordinate_frame"],
+            "coordinateAxes": saved["coordinate_axes"],
             "metrics": saved.get("metrics", {}),
         },
     }
@@ -116,7 +120,7 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
         ):
             raise ValueError("Unexpected Track Vision ONNX inputs or outputs.")
         metadata["metadata"]["inference"] = {
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "opset": OPSET_VERSION,
             "inputs": input_specs,
             "outputs": output_specs,

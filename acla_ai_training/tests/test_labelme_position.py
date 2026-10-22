@@ -13,6 +13,7 @@ def position_frame(folder, number, *, session="session-a", references=None):
         "image": image.name,
         "references": references,
         "target": [[1, 2, 3], [1, 22, 23]],
+        "driver_position": [value - delta for value, delta in zip(references[0], [1, 2, 3])],
     }))
     return image
 
@@ -42,6 +43,15 @@ def test_context_stops_at_folder_edges_and_preserves_coordinate_precision(tmp_pa
     assert load_position_context(tmp_path / "frame_2.jpg").current_index == 1
 
 
+def test_local_targets_are_not_subtracted_from_world_reference(tmp_path):
+    image = position_frame(tmp_path, 1)
+    path = image.with_suffix(".position.json")
+    data = json.loads(path.read_text())
+    data["target"] = [[-2, 1, 3], [-22, 1, 23]]
+    path.write_text(json.dumps(data))
+    assert load_position_context(image).frames[0].driver == (0, 18, 27)
+
+
 def test_context_keeps_gaps_for_other_sessions_bad_files_and_missing_images(tmp_path):
     position_frame(tmp_path, 1, session="session-b")
     position_frame(tmp_path, 2).with_suffix(".position.json").write_text("{broken")
@@ -63,7 +73,7 @@ def test_context_keeps_gaps_for_other_sessions_bad_files_and_missing_images(tmp_
 
 @pytest.mark.parametrize("change", [
     {"references": [[1, 2, 3]]},
-    {"target": [[1, 2, 3], [4, float("nan"), 6]]},
+    {"driver_position": [1, 2, float("nan")]},
     {"references": [[1, True, 3], [4, 5, 6]]},
     {"session_id": ""},
     {"image": "another.jpg"},

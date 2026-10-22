@@ -1,4 +1,4 @@
-"""Train a standalone position CNN from scratch with per-map session splits and raw XYZ errors."""
+"""Train a position CNN with per-map session splits and car-local XYZ errors."""
 
 from __future__ import annotations
 
@@ -27,18 +27,12 @@ OFFSET_LENGTH_RANGES = (
     ("2-5", 2, 5),
     (">=5", 5, float("inf")),
 )
+NORMALIZED_POSITION_BINS = 20
 
 
 def position_regression_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Smooth L1 plus direction loss fading quadratically below target length 0.1."""
-    component_loss = F.smooth_l1_loss(prediction, target)
-    # A zero target has no direction; zero predictions still receive a gradient.
-    valid_direction = target.ne(0).any(-1)
-    direction_weights = (torch.linalg.vector_norm(target, dim=-1) / 0.1).clamp(max=1).square()
-    cosine = F.cosine_similarity(prediction, target, dim=-1, eps=1e-8).clamp(-1, 1)
-    # Divide by the valid count so all-small-target batches retain the fade.
-    direction_loss = ((1 - cosine) * direction_weights).sum() / valid_direction.sum().clamp_min(1)
-    return component_loss + direction_loss
+    """Mean Smooth L1 over the predicted and target XYZ offsets."""
+    return F.smooth_l1_loss(prediction, target)
 
 
 def split_position_frames(records: list[dict], *, val_fraction=0.2, seed=42) -> dict[str, list[dict]]:
@@ -149,6 +143,11 @@ def train_position_model(
     # Row zero holds all validation frames; subsequent rows hold individual maps.
     map_indices = {(row["game"], row["map_name"]): index for index, row in enumerate(maps["val"], 1)}
     group_count = 1 + len(map_indices)
+    section_boundaries = torch.tensor(
+        [index / NORMALIZED_POSITION_BINS for index in range(1, NORMALIZED_POSITION_BINS)],
+        dtype=torch.float64, device=device,
+    )
+    section_count = len(map_indices) * NORMALIZED_POSITION_BINS
     best, history = float("inf"), []
     for epoch in range(1, epochs + 1):
         network.train()
@@ -169,6 +168,9 @@ def train_position_model(
         distance_counts = torch.zeros_like(distance_errors, dtype=torch.int64)
         direction_errors = torch.zeros_like(distance_errors)
         direction_counts = torch.zeros_like(distance_counts)
+        section_errors = torch.zeros(section_count, 3, dtype=torch.float64, device=device)
+        section_distances = torch.zeros(section_count, dtype=torch.float64, device=device)
+        section_counts = torch.zeros(section_count, dtype=torch.int64, device=device)
         with torch.no_grad():
             for sample in loaders["val"]:
                 # Compute vector geometry in double precision, including tiny offsets.
@@ -183,6 +185,13 @@ def train_position_model(
                     (prediction * target).sum(-1),
                 ))
                 sample_maps = [map_indices[key] for key in zip(sample["game"], sample["map_name"])]
+                # Use the original lap position, before float32 context encoding.
+                # Internal boundaries belong to the next section; 1.0 stays in the last.
+                section_indices = torch.bucketize(sample["normalized_position"].to(device), section_boundaries, right=True)
+                section_indices += (torch.tensor(sample_maps, device=device) - 1) * NORMALIZED_POSITION_BINS
+                section_errors.index_add_(0, section_indices, difference.abs().sum(1))
+                section_distances.index_add_(0, section_indices, distances.squeeze(1))
+                section_counts.index_add_(0, section_indices, torch.ones_like(section_indices))
                 for group in {0, *sample_maps}:
                     in_map = torch.tensor([group == 0 or index == group for index in sample_maps], device=device)
                     errors[group] += difference[in_map].abs().sum((0, 1))
@@ -215,6 +224,28 @@ def train_position_model(
                     )
                 },
             })
+        for map_metrics, axes_by_section, distances, counts in zip(
+            validation_metrics[1:],
+            section_errors.view(-1, NORMALIZED_POSITION_BINS, 3).cpu().tolist(),
+            section_distances.view(-1, NORMALIZED_POSITION_BINS).cpu().tolist(),
+            section_counts.view(-1, NORMALIZED_POSITION_BINS).cpu().tolist(),
+        ):
+            sections = []
+            for index, (axes, distance, count) in enumerate(zip(axes_by_section, distances, counts)):
+                sections.append({
+                    "normalized_position_start": index / NORMALIZED_POSITION_BINS,
+                    "normalized_position_end": (index + 1) / NORMALIZED_POSITION_BINS,
+                    "count": count,
+                    "val_mae": sum(axes) / (count * len(OUTPUT_NAMES)) if count else None,
+                    "val_mae_per_axis": {name: error / count if count else None for name, error in zip(OUTPUT_NAMES, axes)},
+                    "mean_distance_error": distance / count if count else None,
+                    "weakness_rank": None,
+                })
+            ranked = sorted((section for section in sections if section["count"]),
+                            key=lambda section: section["mean_distance_error"], reverse=True)
+            for rank, section in enumerate(ranked, 1):
+                section["weakness_rank"] = rank
+            map_metrics["val_errors_by_normalized_position"] = sections
         overall = validation_metrics[0]
         metrics = {
             "epoch": epoch,
@@ -241,18 +272,18 @@ def train_position_model(
         (output / "results.json").write_text(json.dumps(history, indent=2) + "\n", encoding="utf-8")
         print(
             f"Epoch {epoch}/{epochs}: loss={metrics['train_loss']:.6g}, "
-            f"train MAE={metrics['train_mae']:.6g}, val MAE={metrics['val_mae']:.6g} (raw coordinates)",
+            f"train MAE={metrics['train_mae']:.6g}, val MAE={metrics['val_mae']:.6g} (local coordinates)",
             flush=True,
         )
         for row in metrics["val_by_map"]:
             print(
                 f"  Validation map {row['game']}/{row['map_name']}: {row['count']} frames, "
-                f"val MAE={row['val_mae']:.6g} (raw coordinates)",
+                f"val MAE={row['val_mae']:.6g} (local coordinates)",
                 flush=True,
             )
             for name, bucket in row["val_errors_by_offset_length"].items():
                 distance = bucket["mean_distance_error"]
-                distance_text = "n/a" if distance is None else f"{distance:.6g} (raw coordinates)"
+                distance_text = "n/a" if distance is None else f"{distance:.6g} (local coordinates)"
                 direction = bucket["mean_direction_error_deg"]
                 angle = "n/a" if direction is None else f"{direction:.6g} deg"
                 print(

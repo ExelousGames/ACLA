@@ -20,7 +20,7 @@ from training.top_laps.reference import ExpertFeatureCatalog, TopLapEntry, TopLa
 from scripts import prepare_position_dataset as script
 from scripts.prepare_position_dataset import extract_session_frames
 from training.image_segmentation.position_data import load_position_manifest
-from training.image_segmentation.position_preparation import _prepare_session, driver_position, prepare_position_dataset
+from training.image_segmentation.position_preparation import _prepare_session, driver_position, local_targets, prepare_position_dataset
 from training.top_laps.serialization import serialize_top_lap_store
 
 
@@ -88,6 +88,7 @@ def dataset(tmp_path):
             "Graphics_analyst_session_time": 100 + index / 4,
             "Static_track": "test_track", "Static_car_model": "car",
             "Graphics_track_grip_status": 2, "Graphics_normalized_car_position": index / 4,
+            "Physics_heading": 0, "Physics_pitch": 0, "Physics_roll": 0,
             "Graphics_active_cars": 2, "Graphics_player_car_id": 7, "Graphics_car_id": [44, 7],
             "Graphics_car_coordinates": [{"x": 99, "y": 99, "z": 99}, {"x": 0.1, "y": 0.2, "z": 0.3}],
         } for index in range(3)])
@@ -128,6 +129,53 @@ def change_pair(data, update):
     update(data.extractions[0]["frames"][0])
 
 
+@pytest.mark.parametrize("rotation, offset, expected", [
+    ([0, 0, 0], [2, 3, 4], [2, 3, 4]),
+    ([np.pi / 2, 0, 0], [2, 3, 4], [-3, 2, 4]),
+    ([-np.pi / 2, 0, 0], [2, 3, 4], [3, -2, 4]),
+    ([0, np.pi / 2, 0], [2, 3, 4], [2, -4, 3]),
+    ([0, 0, np.pi / 2], [2, 3, 4], [4, 3, -2]),
+    ([np.pi / 2, np.pi / 2, np.pi / 2], [2, 3, 4], [2, -4, 3]),
+    ([1, 2, 3], [0, 0, 0], [0, 0, 0]),
+])
+def test_local_targets_invert_world_rotation_in_right_forward_up_order(rotation, offset, expected):
+    targets = local_targets([offset], rotation)
+    np.testing.assert_allclose(targets, [expected], atol=1e-6)
+    assert targets.dtype == np.float32
+    assert np.linalg.norm(targets) == pytest.approx(np.linalg.norm(offset))
+
+
+def test_same_local_offset_has_same_target_after_world_heading_changes():
+    offset = np.array([[2, 3, 4], [-1, -5, -2]], dtype=np.float64)
+    # A positive quarter turn maps world (x, forward) to (forward, -x).
+    turned = np.column_stack((offset[:, 1], -offset[:, 0], offset[:, 2]))
+    np.testing.assert_allclose(local_targets(offset, [0, 0, 0]), local_targets(turned, [np.pi / 2, 0, 0]))
+
+
+@pytest.mark.parametrize("rotation", [[0, 0], [0, 0, float("nan")], [float("inf"), 0, 0]])
+def test_local_targets_reject_invalid_rotation(rotation):
+    with pytest.raises(ValueError, match="World rotation"):
+        local_targets([[1, 2, 3]], rotation)
+
+
+def test_preparation_rotation_changes_only_targets_and_preserves_world_geometry(dataset):
+    prepare(dataset)
+    before = load_position_manifest(dataset.downloads)["a" * 24][1]
+    for pair in dataset.extractions[0]["frames"]:
+        pair["telemetry"]["Physics_heading"] = np.pi / 2
+    for path in dataset.downloads.rglob("*.position.json"):
+        path.unlink()
+    prepare(dataset)
+    after = load_position_manifest(dataset.downloads)["a" * 24][1]
+    np.testing.assert_array_equal(before["references"], after["references"])
+    np.testing.assert_allclose(after["target"], [[-2.7, 1.9, 3.8], [-2.7, -2.1, -4.2]])
+    for field in ("image", "game", "map_name", "normalized_position"):
+        assert before[field] == after[field]
+    saved = json.loads(after["image"].with_suffix(".position.json").read_text())
+    assert saved["driver_position"] == [0.1, 0.3, 0.2]
+    assert "world_rotation" not in saved
+
+
 def test_preparation_accepts_one_session_without_assigning_a_split(dataset):
     result = asyncio.run(prepare_position_dataset(dataset.backend, dataset.extractions[:1]))
     assert result["frames"] == 3
@@ -154,7 +202,10 @@ def test_session_game_controls_driver_coordinate_order(dataset, game, expected, 
 
     session = _prepare_session(extraction)
 
-    assert all(frame["driver_position"] == expected for frame in session["frames"])
+    if game == "acc":
+        assert all(frame["driver_position"] == expected for frame in session["frames"])
+    else:
+        assert session is None
     assert json.dumps(extraction["frames"]) == original_frames
 
 
@@ -186,28 +237,16 @@ def test_extracted_frames_become_offline_trainable_dataset_with_signed_targets(d
 
 
 @pytest.mark.parametrize("source", ["iracing", "iracing_live", "iracing_recorded"])
-def test_context_comes_from_each_selected_map_detail(dataset, source):
+def test_preparation_skips_iracing_until_world_heading_matches_positions(dataset, source, caplog):
     dataset.extractions[1]["session"]["game_recorded_from"] = source
-    reference = dataset.store.entries[("acc", "test_track", "car", 2)]
-    dataset.store.entries[(source, "test_track", "car", 2)] = TopLapEntry(
-        game=source, track=reference.track, car=reference.car, avg_grip_int=2,
-        x=reference.x, y=reference.y, target_features=reference.target_features,
-    )
-    dataset.model.modelData = serialize_top_lap_store(dataset.store)
-    dataset.responses["circuit-map/list?game=iracing"] = {"list": [{
-        "id": "iracing-map", "source_track_key": "Test Track", "circuit_name": "Old Display Name",
-    }]}
-    dataset.responses["circuit-map/iracing-map"] = {
-        **dataset.responses["circuit-map/map-id"], "id": "iracing-map",
-        "game": "iracing", "circuit_name": "iRacing Display Name",
-    }
-
-    assert prepare(dataset)["frames"] == 6
+    result = prepare(dataset)
+    assert result["frames"] == 3
+    assert result["skipped_sessions"] == [dataset.folders[1].name]
+    assert "ACC only" in caplog.text
     records = load_position_manifest(dataset.downloads)
-    for session_id, game, map_name in (
-        ("a" * 24, "acc", "Display Name"), ("b" * 24, "iracing", "iRacing Display Name"),
-    ):
-        assert all(row["game"] == game and row["map_name"] == map_name for row in records[session_id])
+    assert list(records) == ["a" * 24]
+    assert all(row["game"] == "acc" and row["map_name"] == "Display Name" for row in records["a" * 24])
+    assert not list(dataset.folders[1].rglob("*.position.json"))
 
 
 @pytest.mark.parametrize("name", [None, " ", 7])
@@ -376,6 +415,8 @@ def test_legacy_player_coordinates_are_ignored(legacy):
     ("Graphics_car_coordinates", []),
     ("Graphics_normalized_car_position", 1.1), ("Graphics_normalized_car_position", None),
     ("Graphics_track_grip_status", None), ("Graphics_track_grip_status", 7),
+    ("Physics_heading", None), ("Physics_heading", float("nan")),
+    ("Physics_pitch", True), ("Physics_roll", float("inf")),
     ("Static_track", "another_track"), ("Static_car_model", ""),
 ])
 def test_invalid_telemetry_fails_before_download_without_partial_output(dataset, field, value):
@@ -663,7 +704,9 @@ def test_one_command_downloads_extracts_and_prepares_before_annotation(downloada
             assert row["image"].is_relative_to(folder)
             assert not row["image"].with_suffix(".json").exists()
             position = json.loads(row["image"].with_suffix(".position.json").read_text())
-            assert set(position) == {"session_id", "image", "references", "target", "game", "map_name", "normalized_position"}
+            assert set(position) == {"session_id", "image", "references", "target", "game", "map_name",
+                                     "normalized_position", "coordinate_frame", "driver_position"}
+            assert position["coordinate_frame"] == "car_local"
             assert position["game"] == row["game"] == "acc"
             assert position["map_name"] == row["map_name"] == "Display Name"
             assert position["normalized_position"] == row["normalized_position"]

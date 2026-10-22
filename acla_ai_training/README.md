@@ -207,10 +207,16 @@ XYZ is selected by first reading `Graphics_active_cars`, trimming both
 `Graphics_player_car_id` in the active IDs and reading the corresponding coordinate.
 This applies to single-car sessions too. Zero active cars or a missing or ambiguous
 player ID match skips the frame; legacy `Graphics_player_pos_x/y/z` fields are not used.
-All coordinates retain their source axes and scale; curves must cover the lap and share the
-telemetry coordinate system. Preparation uses driver XYZ only to calculate the
-six signed targets (`reference XYZ - driver XYZ` and `centerline XYZ - driver XYZ`)
-and excludes it from the prepared position files.
+Reference coordinates retain their world axes and scale; curves must cover the lap
+and share the telemetry coordinate system. For ACC, preparation aligns the raw
+driver Y/Z axes with the stored references, then uses `Physics_heading`,
+`Physics_pitch`, and `Physics_roll` (radians) to rotate each reference-minus-driver
+vector into car-local XYZ: **right, forward, up**. The position files mark these
+targets with `coordinate_frame: car_local`; no world-space targets are saved.
+Driver world XYZ is retained only for the annotation map. Training keeps reference
+world XYZ as input and uses neither driver XYZ nor rotation as model inputs.
+All three rotation fields must be finite. iRacing sessions are currently skipped
+because their recorded position and heading fields use different world frames.
 
 After preparation succeeds, annotate the images in each reported directory:
 

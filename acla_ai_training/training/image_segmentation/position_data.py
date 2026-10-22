@@ -12,6 +12,9 @@ from torch.utils.data import Dataset
 
 
 OUTPUT_NAMES = tuple(f"reference_delta_{axis}" for axis in "xyz")
+COORDINATE_FRAME = "car_local"
+COORDINATE_AXES = ("right", "forward", "up")
+TARGET_DEFINITION = "inverse_world_rotation @ (reference_position - current_position)"
 
 
 def position_context(normalized_position, game, map_name):
@@ -96,7 +99,8 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
     """Read a position-file folder or dataset index, grouped by session without splitting.
 
     Each frame contains session_id, image, game, map_name, normalized_position, references,
-    and target. Arrays contain reference-lap XYZ and optionally centerline XYZ.
+    and target. References contain world XYZ; targets contain car-local
+    right/forward/up offsets, for the reference lap and optionally the centerline.
     Image paths are relative to their JSON file. No telemetry or curve files are read.
     """
     path = path.resolve()
@@ -127,6 +131,8 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
             raise ValueError(f"Position file belongs to another session: {position_path}")
         if "references" not in frame or "target" not in frame:
             raise ValueError("Position files require references and target arrays; rerun prepare_position_dataset.py.")
+        if frame.get("coordinate_frame") != COORDINATE_FRAME:
+            raise ValueError("Position targets must use coordinate_frame car_local; regenerate the dataset.")
         if not {"game", "map_name", "normalized_position"} <= frame.keys():
             raise ValueError(
                 "Position files require game, map_name, and normalized_position; "
@@ -179,6 +185,7 @@ class PositionDataset(Dataset):
         return {
             "game": row["game"],
             "map_name": row["map_name"],
+            "normalized_position": row["normalized_position"],
             "image": image_tensor(row["image"], self.imgsz),
             "references": torch.from_numpy(row["references"][:1]),
             "context": torch.from_numpy(encode_position_context(

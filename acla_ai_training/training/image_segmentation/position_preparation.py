@@ -11,18 +11,33 @@ import numpy as np
 import pandas as pd
 
 from training.top_laps.reference import bucket_key_from_dataframe, deserialize_top_lap_store
-from .position_data import PositionCurve, load_position_manifest, position_context, reference_inputs
+from .position_data import COORDINATE_FRAME, PositionCurve, load_position_manifest, position_context, reference_inputs
 
 
 logger = logging.getLogger(__name__)
 
 
-def signed_targets(references, driver_position):
-    driver = np.asarray(driver_position, dtype=np.float64)
-    if driver.shape != (3,) or not np.isfinite(driver).all():
-        raise ValueError("Driver position must be a finite XYZ triple (training targets only).")
-    # Subtract before converting to float32 so small raw-coordinate differences survive.
-    return (references - driver).astype(np.float32)
+def local_targets(world_offsets, world_rotation):
+    """Rotate ACC reference offsets into car-local right/forward/up coordinates.
+
+    Prepared ACC world coordinates are X/Z/Y relative to the raw Y-up SDK.
+    Heading, pitch, roll are radians; body-to-world is Ry(heading) Rx(pitch)
+    Rz(roll) in SDK axes. Row vectors multiply by that matrix to invert it.
+    Keep the subtraction and rotation in float64 until the targets are complete.
+    """
+    offsets = np.asarray(world_offsets, dtype=np.float64)
+    rotation = np.asarray(world_rotation, dtype=np.float64)
+    if offsets.ndim != 2 or offsets.shape[1] != 3 or not np.isfinite(offsets).all():
+        raise ValueError("World offsets must contain finite XYZ triples.")
+    if rotation.shape != (3,) or not np.isfinite(rotation).all():
+        raise ValueError("World rotation must be finite heading, pitch, roll in radians.")
+    ch, cp, cr = np.cos(rotation)
+    sh, sp, sr = np.sin(rotation)
+    yaw = np.array([[ch, 0, sh], [0, 1, 0], [-sh, 0, ch]])
+    pitch = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
+    roll = np.array([[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]])
+    local = offsets[:, [0, 2, 1]] @ (yaw @ pitch @ roll)
+    return local[:, [0, 2, 1]].astype(np.float32)
 
 
 def _number(value, name):
@@ -75,6 +90,12 @@ def _prepare_session(extraction: dict) -> dict | None:
     games = {"acc": "acc", "iracing": "iracing", "iracing_live": "iracing", "iracing_recorded": "iracing"}
     if source not in games:
         raise ValueError(f"Session {session_id} has unsupported game_recorded_from: {source!r}")
+    if source != "acc":
+        logger.warning(
+            "Skipping session %s: car-local position targets currently support ACC only; "
+            "iRacing heading and recorded positions use different world frames.", session_id,
+        )
+        return None
     frames, rows = [], {}
     video = extraction["videos"][0]
     video_folder = _local_path(folder, video["output_folder"])
@@ -111,6 +132,10 @@ def _prepare_session(extraction: dict) -> dict | None:
                 "image": _local_path(video_folder, pair["image"]),
                 "normalized_position": position,
                 "driver_position": driver_xyz,
+                "world_rotation": [
+                    _number(row.get(f"Physics_{axis}"), f"Physics_{axis}")
+                    for axis in ("heading", "pitch", "roll")
+                ],
             })
             # Frame sampling must not reweight a telemetry row's grip.
             rows[pair["telemetry_row_index"]] = row
@@ -210,7 +235,11 @@ async def prepare_position_dataset(backend, extractions: list[dict]) -> dict:
                 "image": frame["image"],
                 **position_context(frame["normalized_position"], circuit_map["game"], circuit_map["map_name"]),
                 "references": references.tolist(),
-                "target": signed_targets(references, frame["driver_position"]).tolist(),
+                "driver_position": frame["driver_position"],
+                "target": local_targets(
+                    references - np.asarray(frame["driver_position"], dtype=np.float64),
+                    frame["world_rotation"],
+                ).tolist(),
             })
         session["frames"] = prepared_frames
         prepared_sessions.append(session)
@@ -231,6 +260,8 @@ async def prepare_position_dataset(backend, extractions: list[dict]) -> dict:
                         "game": frame["game"], "map_name": frame["map_name"],
                         "normalized_position": frame["normalized_position"],
                         "references": frame["references"], "target": frame["target"],
+                        "coordinate_frame": COORDINATE_FRAME,
+                        "driver_position": frame["driver_position"],
                     }, target, indent=2, allow_nan=False)
                     target.write("\n")
         # Validate the saved position files and images through folder discovery.

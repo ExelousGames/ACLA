@@ -8,15 +8,15 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from .position_data import OUTPUT_NAMES, encode_position_context, image_tensor
+from .position_data import COORDINATE_AXES, COORDINATE_FRAME, OUTPUT_NAMES, TARGET_DEFINITION, encode_position_context, image_tensor
 
 
 class PositionModel(nn.Module):
     """Learn image features and three unconstrained signed outputs together.
 
     Input: RGB images, reference-lap XYZ, normalized lap position,
-    and one-hot game/map names. Output: reference-lap XYZ minus the
-    driver's position, in unchanged source coordinates.
+    and one-hot game/map names. Output: the offset from the driver to the
+    reference lap in car-local XYZ (right, forward, up), in source units.
     The driver's position is deliberately absent from every inference API.
     """
 
@@ -82,12 +82,14 @@ class PositionModel(nn.Module):
 
     def save(self, path: Path, *, metrics=None):
         torch.save({
-            "format": "acla-position-cnn-v2",
+            "format": "acla-position-cnn-v3",
             "categories": deepcopy(self.categories),
             "imgsz": self.imgsz,
             "state_dict": self.state_dict(),
             "output_names": list(OUTPUT_NAMES),
-            "target_definition": "reference_position - current_position",
+            "target_definition": TARGET_DEFINITION,
+            "coordinate_frame": COORDINATE_FRAME,
+            "coordinate_axes": list(COORDINATE_AXES),
             "coordinate_units": "source_coordinates",
             "metrics": metrics or {},
         }, path)

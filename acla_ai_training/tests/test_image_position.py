@@ -20,7 +20,7 @@ from training.image_segmentation.position_data import (
     PositionCurve, PositionDataset, encode_position_context, load_position_manifest,
 )
 from training.image_segmentation.position_model import PositionModel
-from training.image_segmentation.position_preparation import signed_targets
+from training.image_segmentation.position_preparation import local_targets
 from training.image_segmentation.position_training import position_regression_loss, train_position_model
 
 
@@ -39,6 +39,7 @@ def aligned_manifest(tmp_path):
             "game": "acc" if session_id == "session-a" else "iracing",
             "map_name": "Display Name" if session_id == "session-a" else "Other Track",
             "normalized_position": 0.25,
+            "coordinate_frame": "car_local",
             "references": [[0.2, -0.1, 0.1], [0.25, -0.1, 0.1]],
             "target": [[0.1, -0.2, 0], [0.15, -0.2, 0]],
         }))
@@ -122,12 +123,21 @@ def test_position_folder_rejects_invalid_pairs(position_folder, fault):
         load_position_manifest(position_folder)
 
 
-def test_signed_xyz_targets_use_raw_subtraction_without_units_or_norm():
+def test_local_targets_preserve_offset_units_and_length_at_zero_rotation():
     references = np.array([[0.003, -0.002, 0.005], [0.001, 0.004, -0.007]])
     np.testing.assert_allclose(
-        signed_targets(references, [0.002, 0.001, 0.003]),
+        local_targets(references - [0.002, 0.001, 0.003], [0, 0, 0]),
         [[0.001, -0.003, 0.002], [-0.001, 0.003, -0.010]], rtol=1e-6,
     )
+
+
+def test_training_rejects_world_space_targets(aligned_manifest):
+    path = aligned_manifest.parent / "session-a.position.json"
+    frame = json.loads(path.read_text())
+    frame["coordinate_frame"] = "world"
+    path.write_text(json.dumps(frame))
+    with pytest.raises(ValueError, match="car_local"):
+        load_position_manifest(aligned_manifest)
 
 
 def test_lookup_interpolates_all_axes_and_wraps_start_finish():
@@ -165,8 +175,9 @@ def test_prepared_targets_can_only_change_labels(aligned_manifest):
     path.write_text(json.dumps(frame))
     after = load_position_manifest(aligned_manifest)
     a, b = (PositionDataset(records["session-a"], 64, CATEGORIES)[0] for records in (before, after))
-    assert set(a) == {"image", "references", "context", "target", "game", "map_name"}
+    assert set(a) == {"image", "references", "context", "target", "game", "map_name", "normalized_position"}
     assert (a["game"], a["map_name"]) == (b["game"], b["map_name"]) == ("acc", "Display Name")
+    assert a["normalized_position"] == b["normalized_position"] == 0.25
     torch.testing.assert_close(a["image"], b["image"])
     torch.testing.assert_close(a["references"], b["references"])
     torch.testing.assert_close(a["context"], b["context"])
@@ -320,67 +331,17 @@ def single_threaded_torch():
     torch.set_num_threads(previous)
 
 
-@pytest.mark.parametrize("prediction, penalty", [
-    ([1, 0, 0], 0),
-    ([2, 0, 0], 0),
-    ([1, 1, 0], 1 - 1 / np.sqrt(2)),
-    ([0, 2, 0], 1),
-    ([0, 0, 2], 1),
-    ([-2, 0, 0], 2),
+@pytest.mark.parametrize("target", [
+    [0, 0, 0], [1, 0, 0], [0, 0.05, 0], [-1, 2, -3],
 ])
-@pytest.mark.parametrize("prediction_scale, target_scale", [(1, 1), (0.001, 10), (4, 0.1)])
-def test_position_loss_keeps_full_direction_weight_at_or_above_point_one(prediction, penalty, prediction_scale, target_scale):
-    prediction = torch.tensor([[prediction]], dtype=torch.float32) * prediction_scale
-    target = torch.tensor([[[target_scale, 0, 0]]], dtype=torch.float32)
-    component_loss = torch.nn.functional.smooth_l1_loss(prediction, target)
-    assert position_regression_loss(prediction, target).item() == pytest.approx(component_loss.item() + penalty)
-
-
-@pytest.mark.parametrize("target_length, direction_penalty", [
-    (0, 0), (0.001, 0.0001), (0.01, 0.01), (0.05, 0.25), (0.1, 1),
-])
-@pytest.mark.parametrize("prediction_length", [0.001, 1])
-def test_position_loss_fades_direction_for_small_targets(target_length, direction_penalty, prediction_length):
-    prediction = torch.tensor([[[0., prediction_length, 0]]])
-    target = torch.tensor([[[target_length, 0., 0]]])
-    component_loss = torch.nn.functional.smooth_l1_loss(prediction, target)
-    assert position_regression_loss(prediction, target).item() == pytest.approx(
-        component_loss.item() + direction_penalty,
-    )
-
-
-def test_position_loss_does_not_renormalize_small_target_weights_in_mixed_batches():
-    prediction = torch.tensor([[[0., 1, 0]], [[-0.008, 0.006, 0]], [[1., 0, 0]]])
-    target = torch.tensor([[[1., 0, 0]], [[0.006, 0.008, 0]], [[0., 0, 0]]])
-    component_loss = torch.nn.functional.smooth_l1_loss(prediction, target)
-    # Perpendicular targets have lengths 1 and 0.01; the zero target is excluded.
-    assert position_regression_loss(prediction, target).item() == pytest.approx(
-        component_loss.item() + (1 + 0.01) / 2,
-    )
-
-
-@pytest.mark.parametrize("length", [1e-3, 1e-6, 1e-12])
-def test_direction_gradient_fades_when_prediction_and_target_approach_zero(length):
-    prediction = torch.tensor([[[0., length, 0]]], requires_grad=True)
-    target = torch.tensor([[[length, 0., 0]]])
-    direction_loss = position_regression_loss(prediction, target) - torch.nn.functional.smooth_l1_loss(prediction, target)
-    direction_loss.backward()
-    assert torch.isfinite(prediction.grad).all()
-    assert prediction.grad[0, 0, 0] < 0
-    assert prediction.grad.norm().item() <= 101 * length
-
-
-@pytest.mark.parametrize("zero_targets", [False, True])
-def test_position_loss_excludes_zero_targets_from_direction_average(zero_targets):
-    prediction = torch.tensor([[[2., 0, 0]], [[0, 1, 0]], [[-1, 0, 0]]], requires_grad=True)
-    target = torch.tensor([[[0., 0, 0]], [[1, 0, 0]], [[1, 0, 0]]])
-    if zero_targets:
-        target.zero_()
+def test_position_loss_depends_only_on_xyz_differences(target):
+    target = torch.tensor([[target]], dtype=torch.float32)
+    prediction = (target + torch.tensor([0.5, -2., 0.25])).requires_grad_()
     loss = position_regression_loss(prediction, target)
-    component_loss = torch.nn.functional.smooth_l1_loss(prediction, target)
-    assert loss.item() == pytest.approx(component_loss.item() + (0 if zero_targets else 1.5))
+    # Fixed component errors have the same loss and gradient for every direction.
+    assert loss.item() == pytest.approx((0.125 + 1.5 + 0.03125) / 3)
     loss.backward()
-    assert torch.isfinite(prediction.grad).all()
+    torch.testing.assert_close(prediction.grad, torch.tensor([[[1 / 6, -1 / 3, 1 / 12]]]))
 
 
 @pytest.mark.parametrize("prediction_length", [0, 1e-12])
@@ -390,24 +351,14 @@ def test_position_loss_has_finite_gradients_near_zero(prediction_length, zero_ta
     target = torch.tensor([[[0., 0, 0] if zero_target else [0., 1, 0]]])
     loss = position_regression_loss(prediction, target)
     component_loss = torch.nn.functional.smooth_l1_loss(prediction, target)
-    assert loss.item() == pytest.approx(component_loss.item() + (0 if zero_target else 1))
+    assert loss.item() == pytest.approx(component_loss.item())
     loss.backward()
     assert torch.isfinite(prediction.grad).all()
     if not zero_target:
         assert prediction.grad[0, 0, 1] < 0
 
 
-def test_direction_penalty_gradient_rotates_prediction_towards_target():
-    prediction = torch.tensor([[[0., 1, 0]]], requires_grad=True)
-    target = torch.tensor([[[1., 0, 0]]])
-    direction_loss = position_regression_loss(prediction, target) - torch.nn.functional.smooth_l1_loss(prediction, target)
-    direction_loss.backward()
-    assert torch.isfinite(prediction.grad).all()
-    updated = prediction.detach() - 0.1 * prediction.grad
-    assert torch.nn.functional.cosine_similarity(updated, target, dim=-1).item() > 0
-
-
-def test_position_training_optimizes_component_and_direction_errors(training_manifest, tmp_path, monkeypatch):
+def test_position_training_optimizes_only_component_errors(training_manifest, tmp_path, monkeypatch):
     from training.image_segmentation import position_training
 
     network = PositionModel(imgsz=64, categories=CATEGORIES)
@@ -423,7 +374,7 @@ def test_position_training_optimizes_component_and_direction_errors(training_man
     train_position_model(training_manifest, output=output, epochs=1, imgsz=64, batch=2, device="cpu", upload=False)
 
     metrics = json.loads((output / "results.json").read_text())[0]
-    assert metrics["train_loss"] == pytest.approx(1 / 60 + 1)
+    assert metrics["train_loss"] == pytest.approx(1 / 60)
     assert metrics["train_mae"] == pytest.approx(0.4 / 3)
 
 
@@ -655,10 +606,19 @@ def test_session_training_saves_raw_axis_metrics_and_uses_only_train_reference_s
             "count": 0, "mean_distance_error": None,
             "mean_direction_error_deg": None, "direction_valid_count": 0,
         } for name, bucket in buckets.items() if name != "0.5-1")
+        sections = row["val_by_map"][0]["val_errors_by_normalized_position"]
+        assert len(sections) == 20
+        assert sections[5] == {
+            "normalized_position_start": 0.25, "normalized_position_end": 0.3,
+            "count": 1, "val_mae": row["val_mae"],
+            "val_mae_per_axis": row["val_mae_per_axis"],
+            "mean_distance_error": buckets["0.5-1"]["mean_distance_error"], "weakness_rank": 1,
+        }
         assert row["val_by_map"] == [{
             "game": "acc", "map_name": "Display Name", "count": 1,
             "val_mae": row["val_mae"], "val_mae_per_axis": row["val_mae_per_axis"],
             "val_errors_by_offset_length": buckets,
+            "val_errors_by_normalized_position": sections,
         }]
         assert not any(key.endswith("_per_reference") for key in row)
     assert torch.load(output / "last.pt", weights_only=True)["metrics"] == history[-1]
@@ -868,6 +828,105 @@ def test_position_validation_reports_each_game_and_map_separately(
     assert torch.load(output / "best.pt", weights_only=True)["metrics"] == metrics
 
 
+@pytest.mark.parametrize("batch", [7, 40])
+def test_position_validation_sections_include_each_boundary_once(
+    aligned_manifest, tmp_path, monkeypatch, batch,
+):
+    from training.image_segmentation import position_training
+
+    # Adjacent values can become identical in the float32 model context. Reporting
+    # must retain the prepared normalized position when assigning sections.
+    positions = [value for index in range(20)
+                 for value in (index / 20, float(np.nextafter((index + 1) / 20, 0)))] + [1.0]
+
+    def split(records, **kwargs):
+        return {
+            "train": records[:1],
+            "val": [dict(records[0], normalized_position=position) for position in positions],
+        }
+
+    monkeypatch.setattr(position_training, "split_position_frames", split)
+    monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
+    output = tmp_path / "run"
+    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", upload=False)
+    metrics = json.loads((output / "results.json").read_text())[0]
+    sections = metrics["val_by_map"][0]["val_errors_by_normalized_position"]
+    assert len(sections) == 20
+    assert [section["count"] for section in sections] == [2] * 19 + [3]
+    assert sum(section["count"] for section in sections) == metrics["val_by_map"][0]["count"] == 41
+    for index, section in enumerate(sections):
+        assert section["normalized_position_start"] == index / 20
+        assert section["normalized_position_end"] == (index + 1) / 20
+
+
+@pytest.mark.parametrize("batch", [2, 4, 5])
+def test_position_validation_sections_rank_errors_within_each_game_and_map(
+    aligned_manifest, tmp_path, monkeypatch, batch,
+):
+    from training.image_segmentation import position_training
+
+    # Unequal section sizes across batches, interleaved maps, and a shared map name
+    # across games expose averaging and grouping errors. Training frames are excluded.
+    frames = [
+        ("acc", "Display Name", 0.25, [3, 4, 0]),
+        ("iracing", "Display Name", 0.25, [0, 0, 12]),
+        ("acc", "Display Name", 0.9, [0, 0, 6]),
+        ("acc", "Other Track", 0.25, [0, 0, 0]),
+        ("acc", "Display Name", 0.26, [0, 0, 0]),
+        ("acc", "Display Name", 0.28, [-3, -4, 0]),
+    ]
+
+    def split(records, **kwargs):
+        return {
+            "train": records[:1],
+            "val": [
+                dict(records[0], game=game, map_name=map_name, normalized_position=position,
+                     references=np.array([prediction], dtype=np.float32),
+                     target=np.zeros((1, 3), dtype=np.float32))
+                for game, map_name, position, prediction in frames
+            ],
+        }
+
+    network = PositionModel(imgsz=64, categories=CATEGORIES)
+    network.register_forward_hook(lambda module, inputs, output: output if module.training else inputs[1])
+    monkeypatch.setattr(position_training, "PositionModel", lambda *args, **kwargs: network)
+    monkeypatch.setattr(position_training, "split_position_frames", split)
+    monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
+    output = tmp_path / "run"
+    train_position_model(aligned_manifest, output=output, epochs=2, imgsz=64, batch=batch, device="cpu", upload=False)
+    history = json.loads((output / "results.json").read_text())
+    expected = {
+        ("acc", "Display Name"): {5: (3, [2, 8 / 3, 0], 10 / 3, 2), 18: (1, [0, 0, 6], 6, 1)},
+        ("acc", "Other Track"): {5: (1, [0, 0, 0], 0, 1)},
+        ("iracing", "Display Name"): {5: (1, [0, 0, 12], 12, 1)},
+    }
+    for metrics in history:
+        assert len(metrics["val_by_map"]) == 3
+        for row in metrics["val_by_map"]:
+            populated = expected[(row["game"], row["map_name"])]
+            sections = row["val_errors_by_normalized_position"]
+            assert len(sections) == 20
+            assert sum(section["count"] for section in sections) == row["count"]
+            for index, section in enumerate(sections):
+                if index in populated:
+                    count, axes, distance, rank = populated[index]
+                    assert section["count"] == count
+                    assert section["val_mae"] == pytest.approx(sum(axes) / 3)
+                    assert section["val_mae_per_axis"] == pytest.approx(dict(zip(
+                        ("reference_delta_x", "reference_delta_y", "reference_delta_z"), axes,
+                    )))
+                    assert section["mean_distance_error"] == pytest.approx(distance)
+                    assert section["weakness_rank"] == rank
+                else:
+                    assert section["count"] == 0
+                    assert section["val_mae"] is None
+                    assert all(value is None for value in section["val_mae_per_axis"].values())
+                    assert section["mean_distance_error"] is None
+                    assert section["weakness_rank"] is None
+        json.dumps(metrics, allow_nan=False)
+    assert torch.load(output / "last.pt", weights_only=True)["metrics"] == history[-1]
+
+
 @pytest.mark.parametrize("offline", [False, True])
 @pytest.mark.parametrize("device_args, expected_device", [([], "0"), (["--device", "cpu"], "cpu"), (["--device", "1"], "1")])
 def test_position_cli_dispatches_without_running_segmentation_training(tmp_path, monkeypatch, offline, device_args, expected_device):
@@ -947,10 +1006,11 @@ def test_position_upload_streams_onnx_and_regression_metadata(position_checkpoin
         "name": "track-position", "task": "position",
         "classNames": list(OUTPUT_NAMES),
         "metadata": {
-            "format": "acla-position-cnn-v2", "artifactFormat": "onnx", "trainingRunId": position_checkpoint.parent.name,
+            "format": "acla-position-cnn-v3", "artifactFormat": "onnx", "trainingRunId": position_checkpoint.parent.name,
             "categories": CATEGORIES,
             "imgsz": 64, "outputNames": list(OUTPUT_NAMES),
-            "targetDefinition": "reference_position - current_position",
+            "targetDefinition": "inverse_world_rotation @ (reference_position - current_position)",
+            "coordinateFrame": "car_local", "coordinateAxes": ["right", "forward", "up"],
             "coordinateUnits": "source_coordinates", "metrics": {"val_mae": 0.25},
         },
     }
