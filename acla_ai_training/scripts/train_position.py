@@ -36,11 +36,13 @@ from direction averages, with valid counts reported. Empty averages show n/a.
 Near zero, a large direction error can accompany a small distance error.
 Uses the first GPU by default; use --device cpu for CPU training.
 Exports only signed position deltas in best.onnx, with best.onnx.json for inference, preserving
-best.pt and last.pt for Python use. Uploads best.onnx to the backend by default;
-use --no-upload to export locally without publishing
-or --upload-name to change the backend name (default: track-position).
+best.pt and last.pt for Python use. Uploads best.onnx to the backend as
+track-position by default; use --no-upload to export locally without publishing.
+Use --upload-model path/to/best.onnx to skip training and publish an existing
+ONNX model through the same uploader; --manifest and --output are not needed.
 
 Usage: python scripts/train_position.py --manifest storage/session_downloads --output position-runs/run-1
+Upload: python scripts/train_position.py --upload-model position-runs/run-1/best.onnx
 Run --help for training options.
 """
 

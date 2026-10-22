@@ -72,7 +72,7 @@ class PositionCurve:
 
     @classmethod
     def from_top_lap(cls, entry):
-        from app.shared.expert_features import ExpertFeatureCatalog
+        from training.top_laps.reference import ExpertFeatureCatalog
 
         features = ExpertFeatureCatalog.ExpertOptimalFeature
         names = [getattr(features, f"EXPERT_OPTIMAL_PLAYER_POS_{a.upper()}").value for a in "xyz"]

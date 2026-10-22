@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from app.integrations.backend import client as backend_client
+from training.integrations import backend as backend_client
 from training.storage.session_download import download_session_pair
 
 

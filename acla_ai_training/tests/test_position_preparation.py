@@ -5,6 +5,9 @@ from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
+import textwrap
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -13,8 +16,7 @@ import cv2
 import numpy as np
 import pytest
 
-from app.shared.expert_features import ExpertFeatureCatalog
-from app.top_laps.model import TopLapEntry, TopLapStore
+from training.top_laps.reference import ExpertFeatureCatalog, TopLapEntry, TopLapStore
 from scripts import prepare_position_dataset as script
 from scripts.prepare_position_dataset import extract_session_frames
 from training.image_segmentation.position_data import load_position_manifest
@@ -24,6 +26,44 @@ from training.top_laps.serialization import serialize_top_lap_store
 
 def write_json(path, data):
     path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_preparation_runs_without_the_service_package(tmp_path):
+    training_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", textwrap.dedent("""
+            import sys
+
+            class BlockServiceImports:
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname == "app" or fullname.startswith("app."):
+                        raise ModuleNotFoundError(f"Service package is unavailable: {fullname}")
+
+            sys.meta_path.insert(0, BlockServiceImports())
+            sys.path.insert(0, sys.argv[1])
+
+            from scripts.prepare_position_dataset import main
+            from training.image_segmentation.position_data import PositionCurve
+            from training.image_segmentation.position_preparation import prepare_position_dataset
+            from training.top_laps.reference import TopLapEntry, TopLapStore, deserialize_top_lap_store
+            from training.top_laps.serialization import serialize_top_lap_store
+
+            store = TopLapStore()
+            store.entries[("acc", "track", "car", 2)] = TopLapEntry(
+                track="track", car="car", avg_grip_int=2,
+                x=[0, 1], y=[[1, 2, 3], [3, 4, 5]],
+                target_features=[f"expert_optimal_player_pos_{axis}" for axis in "xyz"],
+            )
+            restored = deserialize_top_lap_store(serialize_top_lap_store(store))
+            curve = PositionCurve.from_top_lap(restored.entries[("acc", "track", "car", 2)])
+            assert curve.at(0.5).tolist() == [2, 3, 4]
+            assert main(["--sessions", sys.argv[2]]) == 0
+            assert not any(name == "app" or name.startswith("app.") for name in sys.modules)
+        """), str(training_root), str(tmp_path)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["skipped_sessions"] == [str(tmp_path)]
 
 
 @pytest.fixture
@@ -202,7 +242,7 @@ def test_driver_xyz_and_other_telemetry_never_become_training_inputs(dataset):
 
 
 def test_cli_skips_existing_ids_and_custom_frame_folders(dataset, monkeypatch, capsys):
-    from app.integrations.backend import client
+    from training.integrations import backend as client
 
     monkeypatch.setattr(client, "backend_service", dataset.backend)
     monkeypatch.setattr(script, "SESSION_DOWNLOAD_DIR", dataset.folders[0].parent)
@@ -505,7 +545,7 @@ def test_empty_extraction_skips_session_with_a_clear_reason(dataset, caplog, inc
 @pytest.fixture
 def downloadable_dataset(dataset, monkeypatch, tmp_path):
     """Serve the real fixture MP4s and telemetry through the download interface."""
-    from app.integrations.backend import client
+    from training.integrations import backend as client
 
     source = {folder.name: folder for folder in dataset.folders}
     requests = []
@@ -860,7 +900,7 @@ def test_cli_requires_sessions(options):
 
 
 def test_guided_preparation_skips_existing_local_sessions(dataset, monkeypatch, capsys):
-    from app.integrations.backend import client
+    from training.integrations import backend as client
 
     monkeypatch.setattr(client, "backend_service", dataset.backend)
     monkeypatch.setattr(script, "SESSION_DOWNLOAD_DIR", dataset.folders[0].parent)

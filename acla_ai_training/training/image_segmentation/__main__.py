@@ -55,8 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     prepared.add_argument("--data", type=Path, required=True, help="Prepared data.yaml file.")
 
     position = commands.add_parser("train-position", help="Train a standalone signed XYZ position model from scratch.")
-    position.add_argument("--manifest", type=Path, required=True, help="Recursively scan a folder for .position.json files, or read a positions.json index; split whole sessions within each game/map, balancing frame counts.")
-    position.add_argument("--output", type=Path, required=True, help="New directory for position checkpoints, ONNX, and metrics.")
+    position.add_argument("--manifest", type=Path, help="Required for training: recursively scan a folder for .position.json files, or read a positions.json index; split whole sessions within each game/map, balancing frame counts.")
+    position.add_argument("--output", type=Path, help="Required for training: new directory for position checkpoints, ONNX, and metrics.")
     position.add_argument("--epochs", type=int, default=100)
     position.add_argument("--imgsz", type=int, default=768)
     position.add_argument("--batch", type=int, default=8)
@@ -64,8 +64,9 @@ def main(argv: list[str] | None = None) -> int:
     position.add_argument("--workers", type=int, default=0)
     position.add_argument("--val-fraction", type=float, default=0.2, help="Target validation share of frames per game/map (default: 0.2), using whole sessions; at least two sessions per map are required.")
     position.add_argument("--seed", type=int, default=42, help="Random session split, frame shuffle, and training seed (default: 42).")
-    position.add_argument("--no-upload", action="store_true", help="Export ONNX locally without uploading.")
-    position.add_argument("--upload-name", default="track-position", help="Model name in the backend store.")
+    position_upload = position.add_mutually_exclusive_group()
+    position_upload.add_argument("--no-upload", action="store_true", help="Export ONNX locally without uploading.")
+    position_upload.add_argument("--upload-model", type=Path, help="Upload an existing position .onnx model without training.")
 
     automatic = commands.add_parser(
         "train-labelme", parents=[train], help="Split nested Labelme annotations and train.",
@@ -93,7 +94,16 @@ def main(argv: list[str] | None = None) -> int:
     upload_position.add_argument("--name", default="track-position", help="Model name in the backend store.")
     args = parser.parse_args(argv)
 
+    if args.command == "train-position" and args.upload_model is not None:
+        args.command = "upload-position"
+        args.checkpoint = args.upload_model
+        args.name = "track-position"
+
     if args.command == "train-position":
+        missing = [flag for flag in ("manifest", "output") if getattr(args, flag) is None]
+        if missing:
+            parser.error("the following arguments are required for training: " + ", ".join(f"--{flag}" for flag in missing))
+
         from .position_training import train_position_model
 
         try:
@@ -101,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.manifest, output=args.output, epochs=args.epochs,
                 imgsz=args.imgsz, batch=args.batch, device=args.device, workers=args.workers,
                 val_fraction=args.val_fraction, seed=args.seed,
-                upload=not args.no_upload, upload_name=args.upload_name,
+                upload=not args.no_upload,
             )
         except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             parser.error(str(exc))

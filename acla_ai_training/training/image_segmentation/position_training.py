@@ -106,7 +106,6 @@ def train_position_model(
     val_fraction=0.2,
     seed=42,
     upload=True,
-    upload_name="track-position",
 ):
     if epochs < 1 or batch < 1 or workers < 0:
         raise ValueError("Epochs and batch must be positive; workers must be nonnegative.")
@@ -277,7 +276,7 @@ def train_position_model(
 
         print(f"Uploading Track Vision ONNX: {artifact}", flush=True)
         try:
-            record = asyncio.run(upload_position_checkpoint(artifact, name=upload_name))
+            record = asyncio.run(upload_position_checkpoint(artifact))
         except (OSError, ValueError, ImportError, KeyError, TypeError, RuntimeError, httpx.HTTPError) as exc:
             raise RuntimeError(
                 f"Training completed, but backend upload failed: {exc}. "
