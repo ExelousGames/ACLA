@@ -160,7 +160,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
         return reference ? { reference } : null;
     };
     const live = telemetryStatus === ACC_STATUS.ACC_LIVE;
-    const cars = useMemo(() => live ? getLiveMapCars(currentTelemetry, middleLine, game) : [], [currentTelemetry, live, middleLine, game]);
+    const cars = useMemo(() => live ? getLiveMapCars(currentTelemetry, middleLine) : [], [currentTelemetry, live, middleLine]);
     const bounds = useMemo(() => getBounds([...middleLine, ...referenceLine], verticalAxis), [middleLine, referenceLine, verticalAxis]);
     const playerPosition = cars.find((car) => car.isPlayer)?.position;
 

@@ -45,3 +45,60 @@ it('rejects corrupt checkpoints and invalid observations', () => {
     expect(() => DrivingPolicy.restore(checkpoint)).toThrow(/checkpoint/);
     expect(() => model.decide([NaN], true)).toThrow(/observation/);
 });
+
+it.each([[0.1, 0], [0.7, 1], [0.95, 2]])('samples a mutually exclusive gear choice with draw %s', (draw, shift) => {
+    const { observation } = trainingFixture();
+    const model = new DrivingPolicy(observation.context, observation.features.length, () => draw);
+    const decision = model.decide(observation.features, true);
+    expect(decision.shift).toBe(shift);
+    expect(decision.action).toMatchObject({ shiftUp: shift === 1, shiftDown: shift === 2 });
+    expect(decision.shiftProbabilities.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1);
+});
+
+it.each([0.1, 0.7, 0.95])('reinforces or discourages the sampled gear choice according to reward (draw %s)', (draw) => {
+    const { observation } = trainingFixture();
+    const model = new DrivingPolicy(observation.context, observation.features.length, () => draw);
+    const negative = DrivingPolicy.restore(model.checkpoint());
+    const decision = model.decide(observation.features, true);
+    const before = decision.shiftProbabilities[decision.shift];
+    model.learn(decision, decision.value + 1, observation.features, 0.2, true);
+    negative.learn(decision, decision.value - 1, observation.features, 0.2, true);
+    expect(model.decide(observation.features, false).shiftProbabilities[decision.shift]).toBeGreaterThan(before);
+    expect(negative.decide(observation.features, false).shiftProbabilities[decision.shift]).toBeLessThan(before);
+});
+
+it('does not sample or train masked gear choices, including cooldown-forced holds', () => {
+    const { observation } = trainingFixture();
+    const model = new DrivingPolicy(observation.context, observation.features.length, () => 0.99);
+    const before = model.checkpoint();
+    const held = model.decide(observation.features, true, { up: false, down: false });
+    expect(held.shiftProbabilities).toEqual([1, 0, 0]);
+    expect(held.action).toMatchObject({ shiftUp: false, shiftDown: false });
+    model.learn(held, held.value + 1, observation.features, 0.2, true);
+    expect(model.checkpoint().outputWeights.slice(4)).toEqual(before.outputWeights.slice(4));
+    const upOnly = model.decide(observation.features, true, { up: true, down: false });
+    expect(upOnly.shift).toBe(1);
+    expect(upOnly.shiftProbabilities[2]).toBe(0);
+    model.learn(upOnly, upOnly.value + 1, observation.features, 0.2, true);
+    expect(model.checkpoint().outputWeights[6]).toEqual(before.outputWeights[6]);
+});
+
+it.each([1, 2])('restores deterministic shifting choice %s and respects masks at evaluation', (shift) => {
+    const { observation } = trainingFixture();
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
+    checkpoint.outputWeights.slice(4).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === shift ? 4 : 0; });
+    const model = DrivingPolicy.restore(JSON.parse(JSON.stringify(checkpoint)));
+    const decision = model.decide(observation.features, false);
+    expect(decision.shift).toBe(shift);
+    expect(decision.action).toMatchObject({ shiftUp: shift === 1, shiftDown: shift === 2 });
+    expect(DrivingPolicy.restore(model.checkpoint()).decide(observation.features, false)).toEqual(decision);
+    expect(model.decide(observation.features, false, { up: false, down: false }).shift).toBe(0);
+});
+
+it('rejects legacy checkpoints and incomplete shifting heads', () => {
+    const { observation } = trainingFixture();
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
+    expect(() => DrivingPolicy.restore({ ...checkpoint, version: 1 })).toThrow(/predates learned gear shifting/);
+    expect(() => DrivingPolicy.restore({ ...checkpoint, inputs: checkpoint.inputs - 2 })).toThrow(/checkpoint/);
+    expect(() => DrivingPolicy.restore({ ...checkpoint, outputWeights: checkpoint.outputWeights.slice(0, 4) })).toThrow(/checkpoint/);
+});

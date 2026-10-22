@@ -6,34 +6,38 @@
  * Usage:
  *   node scripts/setup-python.js --mode=dev
  *   node scripts/setup-python.js --mode=prod
+ *   node scripts/setup-python.js --mode=vision
  */
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-if (process.platform === 'darwin') {
+const args = process.argv.slice(2);
+const modeArg = args.find((arg) => arg.startsWith('--mode='));
+const mode = modeArg ? modeArg.split('=')[1] : 'dev';
+const isProd = mode === 'prod' || mode === 'production';
+const isVision = mode === 'vision';
+
+if (process.platform === 'darwin' && !isVision) {
     console.log("macOS detected. Skipping Python setup since this device is only used for building the UI.");
     process.exit(0);
 }
 
 const projectRoot = path.resolve(__dirname, '..');
-const requirementsPath = path.join(projectRoot, 'src', 'py-scripts', 'requirements.txt');
+const requirementsPath = isVision
+    ? path.join(projectRoot, 'scripts', 'vision-requirements.txt')
+    : path.join(projectRoot, 'src', 'py-scripts', 'requirements.txt');
 
 if (!fs.existsSync(requirementsPath)) {
     console.error(`Unable to find Python requirements at ${requirementsPath}`);
     process.exit(1);
 }
 
-const args = process.argv.slice(2);
-const modeArg = args.find((arg) => arg.startsWith('--mode='));
-const mode = modeArg ? modeArg.split('=')[1] : 'dev';
-const isProd = mode === 'prod' || mode === 'production';
-
 const envDir = path.join(
     projectRoot,
     '.venv',
-    isProd ? 'py-scripts-prod' : 'py-scripts'
+    isVision ? 'track-vision' : isProd ? 'py-scripts-prod' : 'py-scripts'
 );
 
 const pythonCandidates = [process.env.PYTHON, 'python3.10', 'python3.9', 'python3.8', 'python3.11', 'python3', 'python', 'py'];

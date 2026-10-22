@@ -140,3 +140,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_training/training/pipelines/scripts/debug_output/
 /acla_ai_training/scripts/output/
 **/*.egg-info/
+/acla_front/tmp

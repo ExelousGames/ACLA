@@ -43,6 +43,7 @@
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "electron": "electron .",
+    "setup:all": "node scripts/setup-all.js",
     "setup:python": "node scripts/setup-python.js",
     "setup:vjoy": "node scripts/prepare-vjoy.js",
     "setup:vision": "node scripts/prepare-vision-runtime.js",
@@ -118,7 +119,10 @@
         "from": "src/py-scripts",
         "to": "py-scripts",
         "filter": [
-          "**/*"
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/*.pyo"
         ]
       }
     ],

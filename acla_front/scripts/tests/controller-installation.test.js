@@ -6,8 +6,12 @@ const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '../..');
 
-test('both managed Python environments install desktop requirements without gamepad dependencies', () => {
-    for (const mode of ['dev', 'prod']) {
+test('managed Python environments keep desktop and vision requirements separate', () => {
+    for (const [mode, directory, requirementsFile] of [
+        ['dev', 'py-scripts', 'src/py-scripts/requirements.txt'],
+        ['prod', 'py-scripts-prod', 'src/py-scripts/requirements.txt'],
+        ['vision', 'track-vision', 'scripts/vision-requirements.txt'],
+    ]) {
         const calls = [];
         vm.runInNewContext(fs.readFileSync(path.join(root, 'scripts/setup-python.js'), 'utf8'), {
             __dirname: path.join(root, 'scripts'),
@@ -22,8 +26,8 @@ test('both managed Python environments install desktop requirements without game
             }[name]),
         });
         const install = calls.find(({ args }) => args.includes('-r'));
-        assert.equal(install.command, path.join(root, '.venv', mode === 'prod' ? 'py-scripts-prod' : 'py-scripts', 'Scripts/python.exe'));
-        assert.deepEqual(Array.from(install.args), ['-m', 'pip', 'install', '-r', path.join(root, 'src/py-scripts/requirements.txt')]);
+        assert.equal(install.command, path.join(root, '.venv', directory, 'Scripts/python.exe'));
+        assert.deepEqual(Array.from(install.args), ['-m', 'pip', 'install', '-r', path.join(root, requirementsFile)]);
         const requirements = fs.readFileSync(install.args.at(-1), 'utf8');
         assert.doesNotMatch(requirements, /vgamepad|vigem|controller-requirements/i);
     }

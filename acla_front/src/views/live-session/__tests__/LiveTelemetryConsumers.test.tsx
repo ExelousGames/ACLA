@@ -58,8 +58,14 @@ const circuitMap: CircuitMapDto = {
     id: 'monza-map', game: 'acc', circuit_name: 'Monza', source_track_key: 'monza', resolution: 1000,
     samples: { middle_line: [
         { bin: 0, normalized_position: 0, x: 0, y: 0, z: 0, sample_count: 1, updated_at: '' },
-        { bin: 500, normalized_position: 0.5, x: 100, y: 0, z: 100, sample_count: 1, updated_at: '' },
+        { bin: 500, normalized_position: 0.5, x: 100, y: 100, z: 100, sample_count: 1, updated_at: '' },
     ] },
+};
+
+const rawCarPositions = {
+    Graphics_player_car_id: 1052,
+    Graphics_car_id: Array.from({ length: 60 }, (_, index) => index === 1 ? 1052 : index),
+    Graphics_car_coordinates: Array.from({ length: 60 }, () => ({ x: -200, y: 500, z: -400 })),
 };
 
 const renderMap = (game: 'acc' | 'iracing' = 'acc', track = 'monza') => render(
@@ -121,7 +127,7 @@ describe('live telemetry latest-value and map consumers', () => {
         act(() => {
             for (let sequence = 1; sequence <= 120; sequence += 1) {
                 publishPositions(sequence, {
-                    Graphics_player_car_id: 1052,
+                    ...rawCarPositions,
                     Graphics_normalized_car_position: sequence / 240,
                     Graphics_normalized_positions: { 63: 0, 1052: 0.9 },
                 }, game);
@@ -131,7 +137,7 @@ describe('live telemetry latest-value and map consumers', () => {
         expect(screen.getByText('1 opponents')).toBeInTheDocument();
         const context = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results.slice(-1)[0].value;
         expect(context.arc).toHaveBeenCalledTimes(2);
-        // The fit projection uses only the downloaded 100 x 100 middle line.
+        // The fixture spans 100 x 100 in both ACC's X/Y and iRacing's X/Z planes.
         const padding = 520 * 0.08;
         const playerMarker = context.arc.mock.calls.find((call: number[]) => call[2] === 6);
         expect(playerMarker[0]).toBeCloseTo(400 + (520 - padding * 2) / 2);
@@ -143,8 +149,10 @@ describe('live telemetry latest-value and map consumers', () => {
         await screen.findByText('Waiting for live positions');
         act(() => { publishPositions(1, { Graphics_normalized_car_position: 0.5 }); });
         expect(screen.queryByText('Waiting for live positions')).not.toBeInTheDocument();
-        act(() => { publishPositions(2, {}); });
+        act(() => { expect(publishPositions(2, rawCarPositions)).toBe(true); });
         expect(screen.getByText('Waiting for live positions')).toBeInTheDocument();
+        const context = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results.slice(-1)[0].value;
+        expect(context.arc).not.toHaveBeenCalled();
         act(() => { publishPositions(3, { Graphics_normalized_car_position: 0.5, Graphics_status: ACC_STATUS.ACC_PAUSE }); });
         expect(screen.getByText('Waiting for live positions')).toBeInTheDocument();
         act(() => { publishPositions(4, { Graphics_normalized_car_position: 0.5 }); });
@@ -169,7 +177,10 @@ describe('live telemetry latest-value and map consumers', () => {
     it.each([null, { ...circuitMap, samples: { left_boundary: circuitMap.samples.middle_line } }])('requires a middle line to plot normalized positions', async (map) => {
         mockGetCircuitMapByTrack.mockResolvedValue(map);
         renderMap();
-        act(() => { publishPositions(1, { Graphics_normalized_car_position: 0.5 }); });
+        act(() => { publishPositions(1, {
+            ...rawCarPositions,
+            Graphics_normalized_car_position: 0.5,
+        }); });
         expect(await screen.findByText('Circuit middle line unavailable')).toBeInTheDocument();
         const context = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results.slice(-1)[0].value;
         expect(context.arc).not.toHaveBeenCalled();

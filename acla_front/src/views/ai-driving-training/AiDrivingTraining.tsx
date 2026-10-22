@@ -3,13 +3,20 @@ import { useOptionalOperationComponentRefDirectory } from 'contexts/OperationCom
 import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import type { TrackVisionHandle } from 'views/live-session/track-vision/LiveTrackVision';
-import { DrivingAction, NEUTRAL, ObservationResult, readDrivingObservation } from './driving-observation';
+import { NEUTRAL, ObservationResult, readDrivingObservation } from './driving-observation';
 import { DrivingPolicy } from './driving-policy';
 import { DrivingTrainingLoop, initialTrainingState } from './driving-training-loop';
-import type { AccControlPreset, VirtualController } from './virtual-controller';
+import type { AccControlPreset, ControllerAction, VirtualController } from './virtual-controller';
 import './AiDrivingTraining.css';
 
-const STORAGE_KEY = 'acla.self-driving.policy.v1';
+const STORAGE_KEY = 'acla.self-driving.policy.v2';
+const TEST_CONTROLS = [
+    { key: 'throttle', label: 'throttle', value: 0.25 },
+    { key: 'brake', label: 'brake', value: 0.25 },
+    { key: 'steering', label: 'steering', value: 0.25 },
+    { key: 'shiftDown', label: 'shift down', value: true },
+    { key: 'shiftUp', label: 'shift up', value: true },
+] as const;
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Self-driving training failed.';
 
 export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSession: () => void }) {
@@ -35,7 +42,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const [modelSteps, setModelSteps] = useState<number | null>(null);
     const [error, setError] = useState('');
     const [saved, setSaved] = useState(false);
-    const [testAction, setTestAction] = useState(NEUTRAL);
+    const [testAction, setTestAction] = useState<ControllerAction>(NEUTRAL);
     const running = state.mode !== 'idle';
 
     const save = () => {
@@ -58,6 +65,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 policy.current = DrivingPolicy.restore(JSON.parse(savedModel));
                 setModelSteps(policy.current.steps);
                 setSaved(true);
+            } else if (localStorage.getItem('acla.self-driving.policy.v1')) {
+                setError('The saved model predates learned gear shifting. Create a new model to train with gear changes. The old checkpoint is preserved.');
             }
         } catch { setError('The saved model is incompatible. Create a new model or import a checkpoint.'); }
         const api = window.virtualController;
@@ -174,7 +183,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             policy.current = imported; setModelSteps(imported.steps); setError(''); save();
         } catch (reason) { setError(errorMessage(reason)); }
     };
-    const test = (action: DrivingAction) => {
+    const test = (action: ControllerAction) => {
         if (running || !connected || testTimer.current) return;
         testMode.current = 'hold';
         setTestAction(action);
@@ -185,18 +194,19 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         }); };
         apply(); testTimer.current = setInterval(apply, 100);
     };
-    const timedTest = (axis: keyof DrivingAction) => {
+    const timedTest = ({ key, label, value }: typeof TEST_CONTROLS[number]) => {
         if (running || !connected || testTimer.current) return;
         testMode.current = 'timed';
         setError('');
         const startsAt = Date.now() + 5000;
-        const action = { ...NEUTRAL, [axis]: axis === 'steering' ? steeringTest : 1 };
+        const action = { ...NEUTRAL, [key]: typeof value === 'boolean' ? true : key === 'steering' ? steeringTest : 1 };
+        const duration = typeof value === 'boolean' ? 300 : 10000;
         let busy = false;
         const tick = () => {
             const elapsed = Date.now() - startsAt;
-            if (elapsed >= 10000) { stopTest(); return; }
-            setTestStatus(elapsed < 0 ? `${axis} test starts in ${Math.ceil(-elapsed / 1000)}s — switch to simulator controls.`
-                : `${axis} test releases in ${Math.ceil((10000 - elapsed) / 1000)}s.`);
+            if (elapsed >= duration) { stopTest(); return; }
+            setTestStatus(elapsed < 0 ? `${label} test starts in ${Math.ceil(-elapsed / 1000)}s — switch to simulator controls.`
+                : `${label} test releases in ${Math.ceil((duration - elapsed) / 1000)}s.`);
             if (busy) return;
             const next = elapsed < 0 ? NEUTRAL : action;
             setTestAction(next);
@@ -208,7 +218,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         };
         tick(); testTimer.current = setInterval(tick, 100);
     };
-    const output = running ? state.action : testAction;
+    const output: ControllerAction = running ? state.action : testAction;
     const observation = inputs.observation;
     const mismatched = observation && policy.current && !policy.current.matches(observation);
 
@@ -229,11 +239,12 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <dt>Game / car</dt><dd>{observation ? `${observation.context.game} / ${observation.context.car}` : 'Waiting'}</dd>
                     <dt>Map</dt><dd>{observation?.context.map ?? 'Waiting'}</dd>
                     <dt>Speed</dt><dd>{observation ? `${observation.speed.toFixed(1)} km/h` : '—'}</dd>
+                    <dt>Gear / RPM</dt><dd>{observation ? `${observation.gear < 0 ? 'R' : observation.gear === 0 ? 'N' : observation.gear} / ${observation.rpm}` : '—'}</dd>
                     <dt>Lap position</dt><dd>{observation ? `${(observation.normalizedPosition * 100).toFixed(1)}%` : '—'}</dd>
                     <dt>Reference error</dt><dd>{observation ? `${observation.referenceDistance.toFixed(2)} m` : '—'}</dd>
                     <dt>Position + segmentation</dt><dd>{observation ? `${observation.context.classes.length} classes · ${observation.features.length} features` : 'Waiting'}</dd>
                 </dl>
-                <p className="driving-note">The policy uses velocity XYZ, speed, game, car, map, normalized position, rotation, current controls, position-model deltas and segmentation masks.</p>
+                <p className="driving-note">The policy uses velocity XYZ, speed, current gear, engine RPM, game, car, map, normalized position, rotation, current controls, position-model deltas and segmentation masks.</p>
             </section>
             <section className="driving-card">
                 <div className="driving-card-title"><h2>Steering wheel (vJoy)</h2><span>{connected ? 'Connected' : 'Disconnected'}</span></div>
@@ -244,31 +255,36 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                         {Array.from({ length: 16 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
                     </select>
                 </div>
-                <p>Works independently of your physical wheel brand. Bind vJoy X → steering, Y → throttle, Z → brake in the simulator.</p>
-                <p className="driving-note">vJoy is included with the Windows installer. Restart Windows if setup requests it, then enable X, Y and Z on the selected device in Configure vJoy. In iRacing, use Configure Controls or Settings → Driving → Input Calibration.</p>
+                <p>Works independently of your physical wheel brand. Bind vJoy X → steering, Y → throttle, Z → brake, button 1 → shift up, and button 2 → shift down in the simulator.</p>
+                <p className="driving-note">vJoy is included with the Windows installer. Restart Windows if setup requests it, then enable X, Y, Z and at least 2 buttons on the selected device in Configure vJoy. In iRacing, use Configure Controls or Settings → Driving → Input Calibration.</p>
                 <div className="driving-buttons"><button onClick={() => { void installAccPreset(); }}
                     disabled={installingPreset || connecting || running || Boolean(testTimer.current)}>
                     {installingPreset ? 'Installing ACC preset…' : 'Install ACC preset'}</button></div>
-                <p className="driving-note">For ACC, save your current controls, install the training preset, then load it in Options → Controls → Wheel. This binds the selected vJoy device automatically. If the preset is missing, restart ACC. Load your normal preset again for manual driving.</p>
-                {accPreset && <p role="status">Installed “{accPreset.name}”. In ACC, open Options → Controls → Wheel and load this preset, then check all three input meters with the timed tests.</p>}
+                <p className="driving-note">For ACC, save your current controls, install the training preset, then load it in Options → Controls → Wheel. This automatically maps steering, throttle, brake, shift up (button 1), and shift down (button 2) on the selected vJoy device. If the preset is missing, restart ACC. Load your normal preset again for manual driving.</p>
+                {accPreset && <p role="status">Installed “{accPreset.name}”. In ACC, open Options → Controls → Wheel and load this preset, then check all three input meters and both shift buttons with the timed tests.</p>}
                 <div className="driving-controls">
                     {(['throttle', 'brake', 'steering'] as const).map((key) => <div key={key}>
                         <div><label htmlFor={`driving-${key}`}>{key}</label><output>{output[key].toFixed(3)}</output></div>
                         <meter id={`driving-${key}`} min={key === 'steering' ? -1 : 0} max={1} value={output[key]} />
                     </div>)}
+                    {(['shiftDown', 'shiftUp'] as const).map((key) => <div key={key}>
+                        <div><span>{key === 'shiftUp' ? 'Shift up · button 1' : 'Shift down · button 2'}</span>
+                            <output aria-label={key === 'shiftUp' ? 'Shift up output' : 'Shift down output'}>{output[key] ? 'Pressed' : 'Released'}</output></div>
+                    </div>)}
                 </div>
                 <div className="driving-buttons"><button onClick={() => { void connect(); }} disabled={connected || connecting}>{connecting ? 'Connecting…' : 'Connect wheel'}</button>
                     <button onClick={() => { void disconnect().catch((reason) => setError(errorMessage(reason))); }} disabled={!connected}>Disconnect</button></div>
-                <div className="driving-buttons" aria-label="Test controller axes">
-                    {(['throttle', 'brake', 'steering'] as const).map((key) => <button key={key} disabled={!connected || running || testMode.current === 'timed'}
-                        onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); test({ ...NEUTRAL, [key]: 0.25 }); }}
+                <div className="driving-buttons" aria-label="Test controller controls">
+                    {TEST_CONTROLS.map(({ key, label, value }) => <button key={key} disabled={!connected || running || testMode.current === 'timed'}
+                        aria-pressed={typeof value === 'boolean' ? Boolean(output[key]) : undefined}
+                        onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); test({ ...NEUTRAL, [key]: value }); }}
                         onPointerUp={() => { if (testMode.current === 'hold') stopTest(); }}
                         onPointerCancel={() => { if (testMode.current === 'hold') stopTest(); }}
                         onLostPointerCapture={() => { if (testMode.current === 'hold') stopTest(); }}
                         onBlur={() => { if (testMode.current === 'hold') stopTest(); }}
-                        onKeyDown={(event) => { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); test({ ...NEUTRAL, [key]: 0.25 }); } }}
+                        onKeyDown={(event) => { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); test({ ...NEUTRAL, [key]: value }); } }}
                         onKeyUp={(event) => { if (testMode.current === 'hold' && (event.key === ' ' || event.key === 'Enter')) stopTest(); }}>
-                        Hold to test {key}</button>)}
+                        Hold to test {label}</button>)}
                 </div>
                 <div className="driving-output-options">
                     <label htmlFor="driving-steering-test">Timed steering position</label>
@@ -280,16 +296,17 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     </select>
                 </div>
                 <div className="driving-buttons" aria-label="Timed controller tests">
-                    {(['throttle', 'brake', 'steering'] as const).map((key) => <button key={key}
-                        disabled={!connected || running || Boolean(testTimer.current)} onClick={() => timedTest(key)}>Test {key} in 5 seconds</button>)}
+                    {TEST_CONTROLS.map((control) => <button key={control.key}
+                        disabled={!connected || running || Boolean(testTimer.current)} onClick={() => timedTest(control)}>Test {control.label} in 5 seconds</button>)}
                 </div>
-                <p className="driving-note">Use timed tests in the simulator’s controls setup: switch windows during the 5-second countdown. Each input stays active for 10 seconds, then releases. Pedal tests use the full range. For iRacing steering calibration, test full left, full right, then center; use 20% left for its 90° step with a 900° range.</p>
+                <p className="driving-note">Use timed tests in the simulator’s controls setup: switch windows during the 5-second countdown. Axes stay active for 10 seconds; shift buttons press once for 0.3 seconds, then release. Pedal tests use the full range. For iRacing steering calibration, test full left, full right, then center; use 20% left for its 90° step with a 900° range.</p>
                 {testStatus && <p role="status">{testStatus}</p>}
                 <p className="driving-note">Connected means the virtual device is ready; verify the simulator’s input meters before training. Stop or Escape in this app cancels tests. Training controls release on stale input or capture loss.</p>
             </section>
             <section className="driving-card">
                 <h2>Reinforcement learning model</h2>
-                <p>Online actor–critic · 32 hidden units · continuous throttle, brake and steering.</p>
+                <p>Online actor–critic · 32 hidden units · continuous throttle, brake and steering, plus learned hold gear, shift up and shift down.</p>
+                <p className="driving-note">Disable automatic gears in the simulator and bind both shift buttons before training. The model learns gear choices from driving rewards. Shifts use 0.1-second presses with at least 0.5 seconds between shifts. Downshifts are allowed in every gear, including neutral and reverse.</p>
                 <div className="driving-metrics"><div><strong>{modelSteps ?? 0}</strong><span>Learning steps</span></div>
                     <div><strong>{state.episodeReward.toFixed(2)}</strong><span>Episode reward</span></div></div>
                 {mismatched && <p className="driving-error">This model belongs to different inputs. Create a new model or import a matching checkpoint.</p>}
@@ -309,9 +326,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             <section className="driving-card">
                 <h2>Reward signal</h2>
                 <dl className="driving-rewards">
+                    <div><dt>Drive fast</dt><dd>{state.reward?.speed.toFixed(3) ?? '0.000'}</dd><p>Covering the same section faster earns a larger speed bonus. It requires forward lap progress and decreases farther from the reference line.</p></div>
                     <div><dt>Follow the reference line</dt><dd>{state.reward?.line.toFixed(3) ?? '0.000'}</dd><p>Forward lap progress earns more reward closer to the reference line. Standing still earns no progress reward.</p></div>
                     <div><dt>Converge smoothly</dt><dd>{state.reward?.convergence.toFixed(3) ?? '0.000'}</dd><p>Reducing position error earns reward, weighted by how smoothly the car approaches the line.</p></div>
-                    <div><dt>Penalize instability</dt><dd>{state.reward?.instability.toFixed(3) ?? '0.000'}</dd><p>Abrupt steering or pedal changes, excessive yaw, pitch and roll changes, and overlapping pedals reduce reward.</p></div>
+                    <div><dt>Penalize instability</dt><dd>{state.reward?.instability.toFixed(3) ?? '0.000'}</dd><p>Excessive yaw, pitch and roll changes, and overlapping pedals reduce reward.</p></div>
                 </dl>
                 <p className="driving-note">Rewards use the position model’s reference delta. Stop or input loss ends the episode; learning resumes only after Start training.</p>
             </section>

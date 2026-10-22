@@ -156,8 +156,8 @@ describe('reference lap overlay', () => {
         telemetry.currentTelemetry = { ...telemetry.currentTelemetry,
             Graphics_player_car_id: 1052,
             Graphics_car_id: [63, 1052],
-            // Raw ACC Y is altitude; Z is the second ground-plane axis.
-            Graphics_car_coordinates: [{ x: 900, y: 901, z: 902 }, { x: 20, y: 4 + altitude, z: 400 }],
+            // Raw coordinates deliberately disagree with normalized map positions.
+            Graphics_car_coordinates: [{ x: 900, y: 901, z: 902 }, { x: -200, y: 4 + altitude, z: -400 }],
             Graphics_normalized_positions: { 63: 0.25 },
         };
         context.arc.mockClear();
@@ -181,7 +181,7 @@ describe('reference lap overlay', () => {
         });
         expect(map.samples.middle_line[1]).toMatchObject({ x: 20, y: 0, z: 3 + altitude });
         expect(reference.y).toEqual([[0, 0, 3], [20, 400, 4], [0, 0, 3 + altitude]]);
-        expect(telemetry.currentTelemetry.Graphics_car_coordinates![1]).toEqual({ x: 20, y: 4 + altitude, z: 400 });
+        expect(telemetry.currentTelemetry.Graphics_car_coordinates![1]).toEqual({ x: -200, y: 4 + altitude, z: -400 });
     });
 
     it('preserves the iRacing X/Z projection, vertical direction and Z flip control', async () => {

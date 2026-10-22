@@ -1,13 +1,15 @@
 """Brand-independent DirectInput axes via the installed vJoy SDK (no Python package).
 
 ABI: https://github.com/shauleiz/vJoy/blob/master/SDK/inc/vjoyinterface.h
-X = steering, Y = throttle, Z = brake. This is a separate device, not physical wheel input.
+X = steering, Y = throttle, Z = brake; buttons 1/2 = shift up/down.
+This is a separate device, not physical wheel input.
 """
 import ctypes
 import os
 from pathlib import Path
 
 AXES = {"steering": 0x30, "throttle": 0x31, "brake": 0x32}
+BUTTONS = {"shiftUp": 1, "shiftDown": 2}
 
 
 def load_vjoy():
@@ -32,6 +34,8 @@ def load_vjoy():
         ("GetVJDAxisMin", boolean, [uint, uint, ctypes.POINTER(long)]),
         ("GetVJDAxisMax", boolean, [uint, uint, ctypes.POINTER(long)]),
         ("SetAxis", boolean, [long, uint, uint]),
+        ("GetVJDButtonNumber", ctypes.c_int, [uint]),
+        ("SetBtn", boolean, [boolean, uint, ctypes.c_ubyte]),
     ]:
         function = getattr(dll, name)
         function.restype = result
@@ -59,6 +63,8 @@ class VJoyController:
                     or not self.sdk.GetVJDAxisMax(device_id, axis, ctypes.byref(high)) or high.value <= low.value):
                 raise RuntimeError(f"Enable X, Y and Z axes on vJoy device {device_id}; {name} is unavailable.")
             self.ranges[name] = (low.value, high.value)
+        if self.sdk.GetVJDButtonNumber(device_id) < max(BUTTONS.values()):
+            raise RuntimeError(f"Enable at least 2 buttons on vJoy device {device_id} for shift up and shift down.")
         if not self.sdk.AcquireVJD(device_id):
             raise RuntimeError(f"Could not acquire vJoy device {device_id}. Close other feeders or select another device.")
         self.acquired = True
@@ -70,17 +76,31 @@ class VJoyController:
         if not self.sdk.SetAxis(position, self.device_id, AXES[name]):
             raise RuntimeError(f"vJoy device {self.device_id} stopped accepting {name} input. Reconnect to continue.")
 
+    def _set_button(self, name, pressed):
+        if not self.sdk.SetBtn(pressed, self.device_id, BUTTONS[name]):
+            raise RuntimeError(f"vJoy device {self.device_id} stopped accepting {name} input. Reconnect to continue.")
+
     def apply(self, action):
         for name in AXES:
             self._set_axis(name, action[name])
+        # Release the opposite paddle first when switching directions.
+        for pressed in (False, True):
+            for name in BUTTONS:
+                if action.get(name, False) == pressed:
+                    self._set_button(name, pressed)
 
     def reset(self):
         # ResetVJD centers every axis, which would leave both pedals half pressed.
-        # Attempt all axes even if one fails, so working pedals are still released.
+        # Attempt all controls even if one fails, so pedals and paddles are still released.
         error = None
         for name in AXES:
             try:
                 self._set_axis(name, 0)
+            except RuntimeError as reason:
+                error = reason
+        for name in BUTTONS:
+            try:
+                self._set_button(name, False)
             except RuntimeError as reason:
                 error = reason
         if error:

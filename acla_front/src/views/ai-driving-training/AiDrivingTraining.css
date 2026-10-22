@@ -1,4 +1,5 @@
-.driving-training { box-sizing: border-box; padding: 28px; max-width: 1500px; margin: auto; color: var(--lp-white, #edf3f2); }
+.driving-training { box-sizing: border-box; height: 100%; overflow-y: auto; padding: 28px; max-width: 1500px; margin: auto; color: var(--lp-white, #edf3f2); }
+.driving-training * { max-height: none; }
 .driving-training-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 22px; }
 .driving-eyebrow { color: var(--lp-green, #00e676); font-size: 11px; letter-spacing: .16em; }
 .driving-training h1 { font-size: 26px; line-height: 1.25; margin: 8px 0; }

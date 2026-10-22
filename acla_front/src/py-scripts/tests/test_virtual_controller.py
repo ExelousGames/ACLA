@@ -54,6 +54,20 @@ class ControllerTests(unittest.TestCase):
             controller.apply.assert_not_called()
             controller.close.assert_called_once()
 
+    def test_shift_commands_are_boolean_and_mutually_exclusive(self):
+        neutral = {"throttle": 0, "brake": 0, "steering": 0}
+        for buttons in [{}, {"shiftUp": True}, {"shiftDown": True}, {"shiftUp": False, "shiftDown": False}]:
+            self.assertTrue(valid_action({**neutral, **buttons}))
+        for buttons in [{"shiftUp": True, "shiftDown": True}, {"shiftUp": 1}, {"shiftDown": 0},
+                        {"shiftUp": None}, {"shiftDown": "true"}, {"unknown": False}]:
+            commands, controller = queue.Queue(), Mock()
+            commands.put({"action": {**neutral, **buttons}})
+            with self.assertRaises(ValueError):
+                serve(controller, commands, lambda _: None)
+            controller.apply.assert_not_called()
+            self.assertEqual(controller.reset.call_count, 2)
+            controller.close.assert_called_once()
+
     def test_starts_wheel_by_default_and_with_selected_device(self):
         for args, device_id in [([], 1), (["--backend", "vjoy", "--device-id", "4"], 4)]:
             with self.subTest(args=args), patch.object(sys, "argv", ["virtual_controller.py", *args]), \
@@ -84,6 +98,7 @@ class ControllerTests(unittest.TestCase):
 def wheel_sdk(low=0, high=32768):
     sdk = Mock()
     sdk.GetVJDStatus.return_value = 1
+    sdk.GetVJDButtonNumber.return_value = 2
 
     def limit(value):
         def write(_device, _axis, pointer):
@@ -97,6 +112,19 @@ def wheel_sdk(low=0, high=32768):
 
 
 class WheelControllerTests(unittest.TestCase):
+    def test_shift_paddles_use_distinct_buttons_and_axis_only_commands_release_them(self):
+        sdk = wheel_sdk()
+        controller = VJoyController(3, sdk)
+        neutral = {"steering": 0, "throttle": 0, "brake": 0}
+        controller.apply({**neutral, "shiftDown": True})
+        controller.apply({**neutral, "shiftUp": True})
+        controller.apply(neutral)
+        self.assertEqual(sdk.SetBtn.call_args_list, [
+            call(False, 3, 1), call(True, 3, 2),
+            call(False, 3, 2), call(True, 3, 1),
+            call(False, 3, 1), call(False, 3, 2),
+        ])
+
     def test_independent_pedals_full_steering_range_and_neutral(self):
         sdk = wheel_sdk()
         controller = VJoyController(3, sdk)
@@ -118,19 +146,21 @@ class WheelControllerTests(unittest.TestCase):
     def test_resets_before_ready_and_releases_on_eof(self):
         sdk = wheel_sdk()
         commands = queue.Queue()
-        commands.put({"id": 12, "action": {"steering": 0.5, "throttle": 1, "brake": 0}})
+        commands.put({"id": 12, "action": {"steering": 0.5, "throttle": 1, "brake": 0, "shiftUp": True}})
         commands.put(None)
         messages = []
 
         def receive(message):
             if message["type"] == "ready":
                 self.assertEqual(sdk.SetAxis.call_count, 3)
+                self.assertEqual(sdk.SetBtn.call_args_list, [call(False, 1, 1), call(False, 1, 2)])
             messages.append(message)
 
         serve(VJoyController(1, sdk), commands, receive)
         self.assertEqual(messages, [{"type": "ready"}, {"type": "applied", "id": 12}])
-        self.assertEqual(sdk.mock_calls[-4:], [call.SetAxis(16384, 1, 0x30), call.SetAxis(0, 1, 0x31),
-                                             call.SetAxis(0, 1, 0x32), call.RelinquishVJD(1)])
+        self.assertEqual(sdk.mock_calls[-6:], [call.SetAxis(16384, 1, 0x30), call.SetAxis(0, 1, 0x31),
+                                             call.SetAxis(0, 1, 0x32), call.SetBtn(False, 1, 1),
+                                             call.SetBtn(False, 1, 2), call.RelinquishVJD(1)])
 
     def test_watchdog_neutralizes_and_relinquishes_wheel(self):
         class StalledQueue:
@@ -139,18 +169,21 @@ class WheelControllerTests(unittest.TestCase):
             def get(self, timeout):
                 self.now += 0.1
                 if self.now == 0.1:
-                    return {"action": {"steering": 1, "throttle": 1, "brake": 0}}
+                    return {"action": {"steering": 0, "throttle": 0, "brake": 0, "shiftDown": True}}
                 raise queue.Empty
 
         sdk, commands = wheel_sdk(), StalledQueue()
         with self.assertRaisesRegex(RuntimeError, "watchdog"):
             serve(VJoyController(1, sdk), commands, lambda _: None, lambda: commands.now)
-        self.assertEqual(sdk.mock_calls[-4:], [call.SetAxis(16384, 1, 0x30), call.SetAxis(0, 1, 0x31),
-                                             call.SetAxis(0, 1, 0x32), call.RelinquishVJD(1)])
+        self.assertEqual(sdk.mock_calls[-6:], [call.SetAxis(16384, 1, 0x30), call.SetAxis(0, 1, 0x31),
+                                             call.SetAxis(0, 1, 0x32), call.SetBtn(False, 1, 1),
+                                             call.SetBtn(False, 1, 2), call.RelinquishVJD(1)])
 
     def test_driver_and_axis_failures_do_not_claim_device(self):
         for method, value, message in [("vJoyEnabled", False, "disabled"), ("GetVJDStatus", 2, "busy"),
-                                       ("GetVJDAxisExist", False, "Enable X"), ("AcquireVJD", False, "acquire")]:
+                                       ("GetVJDAxisExist", False, "Enable X"), ("AcquireVJD", False, "acquire"),
+                                       ("GetVJDButtonNumber", 0, "at least 2 buttons"),
+                                       ("GetVJDButtonNumber", 1, "at least 2 buttons")]:
             sdk = wheel_sdk()
             getattr(sdk, method).return_value = value
             with self.assertRaisesRegex(RuntimeError, message):
@@ -168,7 +201,21 @@ class WheelControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "stopped accepting"):
             serve(VJoyController(1, sdk), commands, messages.append)
         self.assertEqual(messages, [{"type": "ready"}])
-        self.assertEqual(sdk.mock_calls[-3:], [call.SetAxis(0, 1, 0x31), call.SetAxis(0, 1, 0x32), call.RelinquishVJD(1)])
+        self.assertEqual(sdk.mock_calls[-5:], [call.SetAxis(0, 1, 0x31), call.SetAxis(0, 1, 0x32),
+                                             call.SetBtn(False, 1, 1), call.SetBtn(False, 1, 2), call.RelinquishVJD(1)])
+
+    def test_failed_button_write_releases_other_controls_and_is_not_acknowledged(self):
+        sdk = wheel_sdk()
+        sdk.SetBtn.side_effect = [True, True, True, False, False, True]
+        commands = queue.Queue()
+        commands.put({"id": 3, "action": {"steering": 0, "throttle": 0, "brake": 0, "shiftUp": True}})
+        messages = []
+        with self.assertRaisesRegex(RuntimeError, "stopped accepting shiftUp"):
+            serve(VJoyController(1, sdk), commands, messages.append)
+        self.assertEqual(messages, [{"type": "ready"}])
+        self.assertEqual(sdk.mock_calls[-6:], [call.SetAxis(16384, 1, 0x30), call.SetAxis(0, 1, 0x31),
+                                             call.SetAxis(0, 1, 0x32), call.SetBtn(False, 1, 1),
+                                             call.SetBtn(False, 1, 2), call.RelinquishVJD(1)])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,9 @@ import { DrivingAction, DrivingObservation, DrivingReward, drivingReward, NEUTRA
 import { DrivingPolicy, PolicyDecision } from './driving-policy';
 import type { VirtualController } from './virtual-controller';
 
+const SHIFT_PULSE_MS = 100;
+const SHIFT_COOLDOWN_MS = 500;
+
 export interface TrainingState {
     mode: 'idle' | 'training' | 'evaluation';
     status: string;
@@ -17,10 +20,12 @@ export const initialTrainingState: TrainingState = {
 
 export class DrivingTrainingLoop {
     state = { ...initialTrainingState };
-    private previous?: { observation: DrivingObservation; decision: PolicyDecision; appliedAt: number; previousAction: DrivingAction };
+    private previous?: { observation: DrivingObservation; decision: PolicyDecision; appliedAt: number };
     private generation = 0;
     private busy = false;
     private timer?: ReturnType<typeof setInterval>;
+    private shiftReleaseAt = 0;
+    private nextShiftAt = 0;
 
     constructor(private controller: VirtualController, private read: () => ObservationResult,
         private publish: (state: TrainingState) => void, private now = Date.now) {}
@@ -31,6 +36,8 @@ export class DrivingTrainingLoop {
         if (!input.observation) throw new Error(input.error);
         if (!policy.matches(input.observation)) throw new Error('Model inputs differ from this game, car, map or segmentation model. Create a new model.');
         this.previous = undefined;
+        this.shiftReleaseAt = 0;
+        this.nextShiftAt = 0;
         this.generation++;
         this.state = { ...initialTrainingState, mode: train ? 'training' : 'evaluation', steps: policy.steps,
             status: train ? 'Training • online actor–critic' : 'Driving • fixed policy' };
@@ -57,6 +64,14 @@ export class DrivingTrainingLoop {
         this.busy = true;
         const generation = this.generation;
         try {
+            // Release paddles on the control clock, even if no new image has arrived.
+            if ((this.state.action.shiftUp || this.state.action.shiftDown) && this.now() >= this.shiftReleaseAt) {
+                const released = { ...this.state.action, shiftUp: false, shiftDown: false };
+                await this.controller.apply(released);
+                if (generation !== this.generation) return;
+                this.state = { ...this.state, action: released };
+                this.publish(this.state);
+            }
             const input = this.read();
             if (!input.observation) throw new Error(input.error);
             const observation = input.observation;
@@ -64,24 +79,28 @@ export class DrivingTrainingLoop {
             const previous = this.previous;
             if (previous && observation.session !== previous.observation.session) throw new Error('Live session changed. Start a new episode.');
             // Refresh the hardware watchdog, but never learn twice from the same image or from a capture predating the action.
-            if (previous && observation.capturedAt <= previous.appliedAt) {
+            if (previous && (observation.capturedAt <= previous.appliedAt || this.state.action.shiftUp || this.state.action.shiftDown)) {
                 await this.controller.apply(this.state.action);
                 return;
             }
             if (previous) {
-                const reward = drivingReward(previous.observation, observation, previous.decision.action, previous.previousAction);
-                const terminal = observation.referenceDistance > 25;
-                if (terminal) reward.total = -10;
+                const reward = drivingReward(previous.observation, observation, previous.decision.action);
                 if (this.state.mode === 'training') policy.learn(previous.decision, reward.total, observation.features,
-                    (observation.capturedAt - previous.observation.capturedAt) / 1000, terminal);
+                    (observation.capturedAt - previous.observation.capturedAt) / 1000);
                 this.state = { ...this.state, steps: policy.steps, reward, episodeReward: this.state.episodeReward + reward.total };
-                if (terminal) throw new Error('Car is too far from the reference line. Reposition it and start a new episode.');
             }
-            if (observation.referenceDistance > 25) throw new Error('Position the car within 25 m of the reference line before starting.');
-            const decision = policy.decide(observation.features, this.state.mode === 'training');
+            const canShift = this.now() >= this.nextShiftAt;
+            const decision = policy.decide(observation.features, this.state.mode === 'training', {
+                up: canShift, down: canShift,
+            });
             await this.controller.apply(decision.action);
             if (generation !== this.generation) return;
-            this.previous = { observation, decision, appliedAt: this.now(), previousAction: this.state.action };
+            const appliedAt = this.now();
+            if (decision.action.shiftUp || decision.action.shiftDown) {
+                this.shiftReleaseAt = appliedAt + SHIFT_PULSE_MS;
+                this.nextShiftAt = appliedAt + SHIFT_COOLDOWN_MS;
+            }
+            this.previous = { observation, decision, appliedAt };
             this.state = { ...this.state, action: decision.action };
             this.publish(this.state);
         } catch (error) {

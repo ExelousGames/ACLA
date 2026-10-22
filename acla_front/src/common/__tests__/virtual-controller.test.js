@@ -107,6 +107,28 @@ it.each([NaN, Infinity, 1.2, -0.1])('rejects invalid pedal value %s and closes t
     expect(run.child.stdin.writableEnded).toBe(true);
 });
 
+it.each(['shiftUp', 'shiftDown'])('forwards %s presses and neutral releases to the wheel bridge', async (key) => {
+    const run = setup(); await run.connect();
+    const neutral = { throttle: 0, brake: 0, steering: 0 };
+    for (const action of [{ ...neutral, [key]: true }, neutral]) {
+        const applied = run.handlers['virtual-controller-apply'](run.event, action);
+        const command = run.writes[run.writes.length - 1];
+        expect(command.action).toEqual(action);
+        run.child.stdout.write(JSON.stringify({ type: 'applied', id: command.id }) + '\n');
+        await applied;
+    }
+    run.handlers['virtual-controller-disconnect'](run.event);
+});
+
+it.each([{ shiftUp: 1 }, { shiftDown: 0 }, { shiftUp: null }, { shiftDown: 'true' },
+    { shiftUp: true, shiftDown: true }, { unknown: false }])('rejects invalid shift controls %j and closes the device', async (buttons) => {
+    const run = setup(); await run.connect();
+    await expect(run.handlers['virtual-controller-apply'](run.event,
+        { throttle: 0, brake: 0, steering: 0, ...buttons })).rejects.toThrow(/shift buttons/);
+    expect(run.writes).toEqual([]);
+    expect(run.child.stdin.writableEnded).toBe(true);
+});
+
 it('rejects pending commands on renderer loss, and times out an unresponsive device', async () => {
     const run = setup(); await run.connect();
     const action = { throttle: 0.1, brake: 0, steering: 0 };

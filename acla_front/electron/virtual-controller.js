@@ -4,9 +4,14 @@ const path = require('path');
 const { installAccControlPreset } = require('./acc-control-preset');
 
 function validAction(action) {
-  return action && Object.keys(action).length === 3 && ['throttle', 'brake', 'steering'].every((key) =>
+  const axes = ['throttle', 'brake', 'steering'];
+  const buttons = ['shiftUp', 'shiftDown'];
+  return action && typeof action === 'object' && !Array.isArray(action)
+    && Object.keys(action).every((key) => axes.includes(key) || buttons.includes(key)) && axes.every((key) =>
     typeof action[key] === 'number' && Number.isFinite(action[key]) && action[key] <= 1
-      && action[key] >= (key === 'steering' ? -1 : 0));
+      && action[key] >= (key === 'steering' ? -1 : 0))
+    && buttons.every((key) => !(key in action) || typeof action[key] === 'boolean')
+    && !(action.shiftUp && action.shiftDown);
 }
 
 function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecutable, spawnProcess = spawn,
@@ -92,7 +97,7 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
     owner(event);
     if (!validAction(action)) {
       close(active, 'Invalid controller inputs.');
-      throw new Error('Controller inputs must be finite: pedals 0–1 and steering −1–1.');
+      throw new Error('Controller inputs must be finite: pedals 0–1 and steering −1–1; shift buttons must be booleans with only one pressed at a time.');
     }
     const connection = active;
     if (!connection?.started || connection.closed) throw new Error('Connect the virtual controller first.');

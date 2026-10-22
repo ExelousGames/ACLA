@@ -13,10 +13,13 @@ WATCHDOG_SECONDS = 0.6
 
 
 def valid_action(action):
-    return isinstance(action, dict) and set(action) == {"throttle", "brake", "steering"} and all(
-        type(value) in (int, float) and math.isfinite(value)
-        and (-1 if key == "steering" else 0) <= value <= 1 for key, value in action.items()
-    )
+    axes = {"throttle", "brake", "steering"}
+    buttons = {"shiftUp", "shiftDown"}
+    return (isinstance(action, dict) and axes <= set(action) <= axes | buttons
+            and all(type(action[key]) in (int, float) and math.isfinite(action[key])
+                    and (-1 if key == "steering" else 0) <= action[key] <= 1 for key in axes)
+            and all(type(action.get(key, False)) is bool for key in buttons)
+            and not (action.get("shiftUp", False) and action.get("shiftDown", False)))
 
 
 def emit(message):
@@ -60,7 +63,7 @@ def main():
     try:
         controller = VJoyController(args.device_id)
     except Exception as error:
-        message = ("Virtual wheel unavailable. Install vJoy and enable X, Y and Z axes on device "
+        message = ("Virtual wheel unavailable. Install vJoy and enable X, Y and Z axes and at least 2 buttons on device "
                    f"{args.device_id} in Configure vJoy. See README for setup. ")
         emit({"type": "error", "error": message + str(error)})
         return 1

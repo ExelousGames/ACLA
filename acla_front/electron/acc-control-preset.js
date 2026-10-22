@@ -2,6 +2,7 @@ const fs = require('fs/promises');
 const path = require('path');
 
 const DRIVING_AXES = ['Steer', 'Gas', 'Brake'];
+const SHIFT_BUTTONS = ['GearUp', 'GearDown'];
 
 function validateDeviceId(deviceId) {
   if (!Number.isInteger(deviceId) || deviceId < 1 || deviceId > 16) {
@@ -12,7 +13,8 @@ function validateDeviceId(deviceId) {
 function buildAccControlPreset(controls, deviceId) {
   validateDeviceId(deviceId);
   if (!controls || !Array.isArray(controls.commandDevices)
-    || controls.commandDevices.some((device) => !device || !Array.isArray(device.raceCommandAxisList))) {
+    || controls.commandDevices.some((device) => !device || !Array.isArray(device.raceCommandAxisList)
+      || (device.raceCommandButtonList !== undefined && !Array.isArray(device.raceCommandButtonList)))) {
     throw new Error('ACC controls have an unsupported format. Save your controls in ACC and try again.');
   }
   // Use ACC's own device identity; GUIDs vary between Windows installations.
@@ -38,6 +40,16 @@ function buildAccControlPreset(controls, deviceId) {
       raceCommandAxisList: DRIVING_AXES.map((axisCode, axisIndex) => ({
         axisIndex, axisCode, minRange: -1, maxRange: 1, isCombined: false,
       })),
+      // ACC uses zero-based DirectInput button indices; vJoy SetBtn uses 1/2.
+      raceCommandButtonList: [
+        ...(device.raceCommandButtonList || []).filter((button) =>
+          ![0, 1].includes(button.buttonIndex) && !SHIFT_BUTTONS.includes(button.instantActionCode)),
+        ...SHIFT_BUTTONS.map((instantActionCode, buttonIndex) => ({
+          buttonIndex, powIndex: -1, powValue: 0, keyName: 'None', gamepadButtonName: 'None',
+          instantActionCode, extendedActionCode: 'None', extendedTime: 1,
+          pinkieInstanceActionCode: 'None', pinkieExtendedActionCode: 'None',
+        })),
+      ],
     });
   }
   return preset;

@@ -6,7 +6,8 @@ This package contains the React UI and the Electron desktop shell that executes 
 
 - Node.js 18+
 - npm 9+
-- Python 3.10 or newer (system interpreter used to create virtual environments)
+- Python 3.10 or 3.11 (system interpreter used to create virtual environments;
+  the pinned desktop NumPy packages require Python below 3.12)
 
 ## ACC per-car track positions
 
@@ -38,7 +39,7 @@ car positions expire after two seconds without an update.
 
 ## AI Self-Driving Training (Windows desktop)
 
-The sidebar's **AI Self-Driving Training** page trains a local, continuous-action
+The sidebar's **AI Self-Driving Training** page trains a local, mixed-action
 actor–critic neural policy against the running simulator. Start live telemetry,
 add **Live Map** with a matching reference lap, and add **Track Vision** with
 position and segmentation models and screen capture enabled. The training page
@@ -55,17 +56,19 @@ for AI driving; restore your normal controls when returning to manual driving.
 1. The Windows x64 app installer includes the signed Windows 10/11
    [vJoy driver](https://github.com/BrunnerInnovation/vJoy/releases/tag/v2.2.2.0)
    and installs it automatically with administrator approval. Restart Windows if
-   prompted. For development, install vJoy manually. In **Configure vJoy**,
-   enable a free device with **X**, **Y**, and **Z** axes,
+   prompted. For development, run `npm run setup:all` to install vJoy. In **Configure vJoy**,
+   enable a free device with **X**, **Y**, and **Z** axes and at least **2 buttons**,
    then select its device number in the app.
 2. Connect before launching the simulator (or restart it if the device is missing).
-   Map **X → steering**, **Y → throttle**, **Z → brake**. Steering uses the full signed
+   Map **X → steering**, **Y → throttle**, **Z → brake**, **button 1 → shift up**,
+   and **button 2 → shift down**. Steering uses the full signed
    range; each pedal has its own independent axis. Check that neutral shows zero
    throttle/brake and centered steering; invert a pedal in the simulator if needed.
 3. **ACC:** save your existing controls preset, then select **Install ACC preset**
    in AI Self-Driving Training. In **Options → Controls → Wheel**, load the displayed
    **ACLA AI Training - vJoy N** preset. Restart ACC if the new preset is not listed.
-   The app reads ACC's saved device GUID, binds X/Y/Z to steering/throttle/brake,
+   The app reads ACC's saved device GUID, binds X/Y/Z to steering/throttle/brake
+   and buttons 1/2 to shift up/down,
    and saves the training preset under your Windows Documents folder in
    `Assetto Corsa Competizione/Customs/Controls`. It leaves active controls and
    existing presets intact; conflicting driving axes are removed only in the new
@@ -77,12 +80,16 @@ for AI driving; restore your normal controls when returning to manual driving.
    Keep your manual controller configuration available for switching back.
 
 The **Test … in 5 seconds** buttons allow time to switch to the simulator's controls
-screen. They hold the chosen axis for 10 seconds and then release it, even while the
-simulator has focus. Pedals test full travel. For steering calibration, use **Full
+screen. They hold the chosen axis for 10 seconds, or press a shift button once for
+0.3 seconds, and then release it, even while the simulator has focus. Pedals test
+full travel. For steering calibration, use **Full
 left**, **Full right**, then **Center**; for iRacing's 90° left measurement, use
 **20% left** to calibrate a 900° total range. Accept the measurement while the timed
 input is active. **Stop**, Escape in the app, disconnect, or leaving the training
 page cancels a pending/active test. The hold buttons release when the app loses focus.
+Shift controls are available for manual testing, simulator binding and learned
+gear changes. Disable automatic gears in the simulator during autonomous training
+so gear changes come from the policy.
 
 **Connected** confirms only that the output device accepted initialization. Check
 the simulator's input meters before training. This bridge does not relay physical
@@ -94,24 +101,35 @@ matching the Python architecture from `Program Files\vJoy\x64` (or `x86`). For a
 custom installation, set `ACLA_VJOY_DLL` to the absolute `vJoyInterface.dll` path
 before launching the app. Missing drivers/axes, busy devices, and rejected writes
 are reported as errors. The watchdog and disconnect reset pedals to zero and
-steering to center before relinquishing the device.
+steering to center, and release both shift buttons before relinquishing the device.
 
 ### Training
 
 Once the simulator responds to the virtual wheel, start a
-practice session with automatic shifting configured, position the car near the
-reference line, then select **Start training**. The policy only controls these
-three axes; repositioning, restarting laps and changing gears are not automated.
+practice session with manual gears configured and both shift buttons bound,
+position the car near the reference line, then select **Start training**. The policy
+controls throttle, brake, steering and the choice to hold gear, shift up or shift
+down. Repositioning and restarting laps are not automated.
 **Run trained model** uses deterministic inference without updating weights.
+
+Gear choices learn from the same driving reward as the continuous controls.
+Each shift presses one paddle for 100 ms (released on the next control tick)
+with at least 500 ms between shifts. Downshifts are allowed in every gear,
+including neutral and reverse. Both shift directions are masked during cooldown
+before sampling, so training uses the action actually selected for output.
+Button releases continue even while waiting for a new camera frame.
 
 The observation includes track-frame velocity XYZ (m/s), speed (km/h), game/car/map
 category encodings, cyclic normalized lap position, rotation (radians), current
-steering/pedals, the position model's reference XYZ delta (m), and a 4×4 pooled
+steering/pedals, current gear, engine RPM, the position model's reference XYZ delta (m), and a 4×4 pooled
 segmentation mask per class. Telemetry is paired with the image before inference;
 stale or mismatched sessions are rejected. Policies have a 32-unit tanh hidden
-layer, a three-dimensional Gaussian actor and a TD(0) value head. Positive
-progress close to the reference and smooth reductions in position error earn
-reward; abrupt controls, excessive yaw/attitude changes, pedal overlap, distance
+layer, a three-dimensional Gaussian actor, a three-way categorical shifting head
+and a TD(0) value head. A speed bonus multiplies forward lap progress (capped at
+0.02 per observation) by speed in km/h and `exp(-referenceDistance / 3)`, so
+covering the same section faster earns more reward. No forward progress means no
+speed bonus. Positive progress close to the reference and smooth reductions in
+position error also earn reward; excessive yaw/attitude changes, pedal overlap, distance
 from the line and standing still incur penalties. New policies are untrained;
 successful driving is an empirical training outcome, not a built-in capability.
 
@@ -123,6 +141,9 @@ without a command and requires reconnection. **Stop** and Escape in the app rele
 controls; Escape is not a global simulator hotkey. Checkpoints save locally every
 50 learning steps and at stop, and can be imported/exported as JSON. A checkpoint
 must match the current game, car, map and segmentation classes.
+Gear and RPM must be present in telemetry. Version 2 checkpoints include learned
+shifting; older three-axis checkpoints require a new model. The previous local
+checkpoint is preserved separately when saving a version 2 model.
 
 ## Python environments for desktop scripts
 
@@ -138,7 +159,32 @@ The managed environments install everything from `src/py-scripts/requirements.tx
 scikit-learn and pandas. Steering wheel output uses the vJoy driver bundled with the Windows installer
 and does not require an additional Python package.
 
-### One-time manual setup
+### One-command setup
+
+With Node.js, npm and Python installed, run from `acla_front`:
+
+```bash
+npm run setup:all
+```
+
+This installs Node dependencies (including development/build tools), the desktop
+Python packages in `.venv/py-scripts`, and the vision packages from
+`scripts/vision-requirements.txt` in a separate `.venv/track-vision` environment.
+It also prepares the local vision runtime and downloads/exports the bundled depth
+models using that vision environment. The first run requires internet access and
+can take several minutes; subsequent runs reuse existing environments and models.
+
+On Windows x64, it downloads and verifies the pinned vJoy installer, then installs
+the driver with a Windows administrator prompt. Existing driver/SDK installations
+are preserved. Setup waits for installation to finish, reports failures, and tells
+you if a restart is needed without restarting Windows automatically. Enable the
+device's X/Y/Z axes in **Configure vJoy** and configure simulator bindings as above.
+Other operating systems skip the vJoy driver; macOS also skips desktop Python setup.
+
+`setup:all` prepares the development environment. `build:electron` still prepares
+the separate production Python environment when packaging the app.
+
+### Individual setup commands
 
 ```bash
 # Install Node dependencies
@@ -146,6 +192,10 @@ npm install
 
 # Prepare the development Python environment (optional – start:electron runs it automatically)
 npm run setup:python -- --mode=dev
+
+# Prepare the isolated vision Python environment and depth models
+npm run setup:python -- --mode=vision
+npm run setup:vision-models
 ```
 
 > **Tip:** Set `PYTHON=/path/to/python3` if your system Python command is named differently.

@@ -4,9 +4,10 @@ export interface ControllerOutput {
     backend: 'vjoy';
     deviceId?: number;
 }
+export type ControllerAction = DrivingAction;
 export interface VirtualController {
     connect(options?: ControllerOutput): Promise<void>;
-    apply(action: DrivingAction): Promise<void>;
+    apply(action: ControllerAction): Promise<void>;
     disconnect(): Promise<void>;
 }
 export interface AccControlPreset {

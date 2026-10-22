@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import AiDrivingTraining from './AiDrivingTraining';
 import type { ObservationResult } from './driving-observation';
 import { trainingFixture } from './training-fixtures';
+import { DrivingPolicy } from './driving-policy';
 
 let mockInput: ObservationResult;
 jest.mock('./driving-observation', () => ({
@@ -63,10 +64,51 @@ it('keeps training disabled until the controller and all live inputs are ready',
     fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
     expect(screen.getByRole('button', { name: 'Install ACC preset' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Hold to test shift up' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Test shift down in 5 seconds' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
     expect(window.virtualController!.apply).toHaveBeenLastCalledWith({ throttle: 0, brake: 0, steering: 0 });
-    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v1')!).algorithm).toBe('online-actor-critic');
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v2')!)).toMatchObject({ algorithm: 'online-actor-critic', version: 2 });
+});
+
+it('preserves an older local model and explains that learned shifting needs a new one', async () => {
+    const legacy = JSON.stringify({ version: 1, steps: 123 });
+    localStorage.setItem('acla.self-driving.policy.v1', legacy);
+    render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('predates learned gear shifting');
+    fireEvent.click(screen.getByRole('button', { name: 'New model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    mockInput = { observation: trainingFixture(Date.now()).observation };
+    act(() => { jest.advanceTimersByTime(250); });
+    fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v2')!).version).toBe(2);
+    expect(localStorage.getItem('acla.self-driving.policy.v1')).toBe(legacy);
+});
+
+it.each([1, 2])('shows and releases a saved model’s learned shift choice %s', async (shift) => {
+    const { observation } = trainingFixture(Date.now());
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
+    checkpoint.steps = 10;
+    checkpoint.outputWeights.slice(4).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === shift ? 4 : 0; });
+    localStorage.setItem('acla.self-driving.policy.v2', JSON.stringify(checkpoint));
+    mockInput = { observation };
+    render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    act(() => { jest.advanceTimersByTime(250); });
+    expect(screen.getByText('3 / 6000')).toBeInTheDocument();
+    expect(screen.getByText(/Disable automatic gears/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Run trained model' })); await flush();
+    expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: shift === 1, shiftDown: shift === 2 }));
+    const label = shift === 1 ? 'Shift up output' : 'Shift down output';
+    expect(screen.getByLabelText(label)).toHaveTextContent('Pressed');
+    act(() => { jest.advanceTimersByTime(100); }); await flush();
+    expect(screen.getByLabelText(label)).toHaveTextContent('Released');
+    expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: false, shiftDown: false }));
+    fireEvent.keyDown(window, { key: 'Escape' }); await flush();
+    expect(window.virtualController!.apply).toHaveBeenLastCalledWith({ throttle: 0, brake: 0, steering: 0 });
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v2')!)).toEqual(checkpoint);
 });
 
 it('shows driver setup errors without claiming the controller is connected', async () => {
@@ -178,4 +220,69 @@ it('releases a held test axis on Escape and disconnects on unmount', async () =>
     expect(api.apply).toHaveBeenLastCalledWith({ throttle: 0, brake: 0, steering: 0 });
     unmount();
     expect(api.disconnect).toHaveBeenCalled();
+});
+
+it.each([
+    ['shiftUp', 'shift up', 'Shift up output'], ['shiftDown', 'shift down', 'Shift down output'],
+])('presses and releases %s from pointer and keyboard controls', async (key, label, outputLabel) => {
+    const api = window.virtualController!;
+    render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    const button = screen.getByRole('button', { name: `Hold to test ${label}` });
+    expect(button).toBeDisabled();
+    expect(screen.getByRole('button', { name: `Test ${label} in 5 seconds` })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    button.setPointerCapture = jest.fn();
+    const neutral = { throttle: 0, brake: 0, steering: 0 };
+    fireEvent.pointerDown(button, { pointerId: 1 }); await flush();
+    expect(api.apply).toHaveBeenLastCalledWith({ ...neutral, [key]: true });
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByLabelText(outputLabel)).toHaveTextContent('Pressed');
+    fireEvent.pointerUp(button); await flush();
+    expect(api.apply).toHaveBeenLastCalledWith(neutral);
+    expect(button).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByLabelText(outputLabel)).toHaveTextContent('Released');
+    fireEvent.keyDown(button, { key: 'Enter' }); await flush();
+    expect(api.apply).toHaveBeenLastCalledWith({ ...neutral, [key]: true });
+    fireEvent.keyUp(button, { key: 'Enter' }); await flush();
+    expect(api.apply).toHaveBeenLastCalledWith(neutral);
+});
+
+it.each([['shiftUp', 'shift up'], ['shiftDown', 'shift down']])('pulses %s once after the countdown while the simulator has focus', async (key, label) => {
+    const api = window.virtualController!;
+    render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: `Test ${label} in 5 seconds` })); await flush();
+    const neutral = { throttle: 0, brake: 0, steering: 0 };
+    fireEvent.blur(window); await flush();
+    expect(screen.getByRole('button', { name: 'Hold to test shift up' })).toBeDisabled();
+    act(() => { jest.advanceTimersByTime(4900); }); await flush();
+    expect(api.apply).toHaveBeenLastCalledWith(neutral);
+    act(() => { jest.advanceTimersByTime(100); }); await flush();
+    expect(api.apply).toHaveBeenLastCalledWith({ ...neutral, [key]: true });
+    act(() => { jest.advanceTimersByTime(300); }); await flush();
+    expect(api.apply).toHaveBeenLastCalledWith(neutral);
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
+    const count = (api.apply as jest.Mock).mock.calls.length;
+    act(() => { jest.advanceTimersByTime(10000); }); await flush();
+    expect(api.apply).toHaveBeenCalledTimes(count);
+});
+
+it.each(['Stop', 'Escape', 'Disconnect', 'blur', 'pointerCancel', 'lostPointerCapture', 'unmount'])('releases a held shift button on %s', async (stop) => {
+    const api = window.virtualController!;
+    const { unmount } = render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    const button = screen.getByRole('button', { name: 'Hold to test shift down' });
+    fireEvent.keyDown(button, { key: ' ' }); await flush();
+    expect(api.apply).toHaveBeenLastCalledWith({ throttle: 0, brake: 0, steering: 0, shiftDown: true });
+    if (stop === 'unmount') unmount();
+    else if (stop === 'Escape') fireEvent.keyDown(window, { key: 'Escape' });
+    else if (stop === 'blur') fireEvent.blur(window);
+    else if (stop === 'pointerCancel') fireEvent.pointerCancel(button);
+    else if (stop === 'lostPointerCapture') fireEvent.lostPointerCapture(button);
+    else fireEvent.click(screen.getByRole('button', { name: stop }));
+    await flush();
+    expect(api.apply).toHaveBeenLastCalledWith({ throttle: 0, brake: 0, steering: 0 });
+    const count = (api.apply as jest.Mock).mock.calls.length;
+    act(() => { jest.advanceTimersByTime(1000); }); await flush();
+    expect(api.apply).toHaveBeenCalledTimes(count);
 });

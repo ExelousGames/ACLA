@@ -2,7 +2,7 @@ import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import type { LiveTelemetrySnapshot } from 'views/live-session/live-telemetry-store';
 import type { TrackVisionDetection } from 'views/live-session/track-vision/track-vision-types';
 
-export interface DrivingAction { throttle: number; brake: number; steering: number }
+export interface DrivingAction { throttle: number; brake: number; steering: number; shiftUp?: boolean; shiftDown?: boolean }
 export const NEUTRAL: DrivingAction = { throttle: 0, brake: 0, steering: 0 };
 export const clamp = (value: number, low = -1, high = 1) => Math.max(low, Math.min(high, value));
 export interface DrivingObservation {
@@ -13,6 +13,9 @@ export interface DrivingObservation {
     normalizedPosition: number;
     referenceDistance: number;
     speed: number;
+    /** Forward gears start at 1; neutral is 0 and reverse is -1. */
+    gear: number;
+    rpm: number;
     heading: number;
     pitch: number;
     roll: number;
@@ -50,6 +53,12 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
     const rotation = [sample.Physics_heading, sample.Physics_pitch, sample.Physics_roll];
     const controls = [sample.Physics_gas, sample.Physics_brake, sample.Physics_steer_angle];
     const speed = sample.Physics_speed_kmh, position = sample.Graphics_normalized_car_position;
+    const gear = sample.Physics_gear, rpm = sample.Physics_rpm;
+    // Both readers use ACC indexing: reverse = 0, neutral = 1, first = 2.
+    if (!finite(gear) || !Number.isInteger(gear) || gear < 0 || !finite(rpm) || !Number.isInteger(rpm) || rpm < 0) {
+        return { error: 'Valid current gear and engine RPM are required for learned shifting.' };
+    }
+    if (sample.Physics_autoshifter_on === true) return { error: 'Disable automatic gear shifting in the simulator so the model can learn gear changes.' };
     if (![...velocity, ...rotation, ...controls, speed, position].every(finite)) {
         return { error: 'Velocity, speed, rotation, steering, throttle, brake and normalized position are required.' };
     }
@@ -93,17 +102,18 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
             Math.sin(2 * Math.PI * position!), Math.cos(2 * Math.PI * position!),
             ...[heading, pitch, roll].flatMap((angle) => [Math.sin(angle), Math.cos(angle)]),
             ...controls as number[], ...prediction.referenceDelta.map((v) => clamp(v / 20)),
+            clamp((gear - 1) / 8), clamp(rpm / 20000, 0, 1),
             ...pooled.map((v) => clamp(v, 0, 1)),
         ],
         normalizedPosition: position!, referenceDistance: Math.hypot(...prediction.referenceDelta),
-        speed: speed!, heading, pitch, roll, controls: action,
+        speed: speed!, gear: gear - 1, rpm, heading, pitch, roll, controls: action,
     } };
 }
 
-export interface DrivingReward { line: number; convergence: number; instability: number; total: number }
+export interface DrivingReward { speed: number; line: number; convergence: number; instability: number; total: number }
 export const angleDifference = (a: number, b: number) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
-    action: DrivingAction, previousAction: DrivingAction): DrivingReward {
+    action: DrivingAction): DrivingReward {
     const dt = (current.capturedAt - previous.capturedAt) / 1000;
     if (dt <= 0 || dt > 1.5 || previous.session !== current.session) throw new Error('Training transition crossed a session boundary or data gap.');
     let progress = current.normalizedPosition - previous.normalizedPosition;
@@ -111,20 +121,19 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     if (progress > 0.5) progress -= 1;
     if (Math.abs(progress) > 0.1) throw new Error('Lap position jumped. Reposition the car and start a new episode.');
     const proximity = Math.exp(-current.referenceDistance / 3);
+    // Weight forward lap progress by km/h so the same section pays more at higher speed.
+    const speed = clamp(progress, 0, 0.02) * current.speed * proximity;
     // Reward forward progress on the reference; sitting still never earns line reward.
     const line = 100 * clamp(progress, -0.02, 0.02) * proximity
         - 0.15 * Math.min(current.referenceDistance / 3, 4) * dt - (current.speed < 1 ? 0.1 * dt : 0);
-    const controlRate = (Math.abs(action.steering - previousAction.steering)
-        + 0.5 * Math.abs(action.throttle - previousAction.throttle)
-        + 0.5 * Math.abs(action.brake - previousAction.brake)) / dt;
     const yawRate = Math.abs(angleDifference(current.heading, previous.heading)) / dt;
     const attitude = Math.abs(angleDifference(current.roll, previous.roll)) / dt
         + Math.abs(angleDifference(current.pitch, previous.pitch)) / dt;
-    const stability = 1 / (1 + controlRate + Math.max(0, yawRate - 0.8) + attitude);
-    // Decreasing distance earns less when the correction is abrupt; divergence is always penalized.
+    const stability = 1 / (1 + Math.max(0, yawRate - 0.8) + attitude);
+    // Decreasing distance earns less when the car is unstable; divergence is always penalized.
     const improvement = clamp(previous.referenceDistance - current.referenceDistance, -3, 3);
     const convergence = 0.4 * improvement * (improvement > 0 ? stability : 1);
-    const instability = -dt * (0.08 * controlRate ** 2 + 0.4 * Math.max(0, yawRate - 0.8) ** 2
+    const instability = -dt * (0.4 * Math.max(0, yawRate - 0.8) ** 2
         + 0.15 * attitude ** 2 + 0.5 * action.throttle * action.brake);
-    return { line, convergence, instability, total: clamp(line + convergence + instability, -10, 10) };
+    return { speed, line, convergence, instability, total: clamp(speed + line + convergence + instability, -10, 10) };
 }
