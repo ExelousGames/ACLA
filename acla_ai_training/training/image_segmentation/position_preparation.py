@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from app.top_laps.shared import bucket_key_from_dataframe, deserialize_top_lap_store
+from training.top_laps.reference import bucket_key_from_dataframe, deserialize_top_lap_store
 from .position_data import PositionCurve, load_position_manifest, position_context, reference_inputs
 
 

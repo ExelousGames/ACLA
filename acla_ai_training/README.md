@@ -65,7 +65,6 @@ frame sampling, and alignment settings:
 
 ```bash
 # From acla_ai_training/:
-export PYTHONPATH=../acla_ai_service
 python scripts/prepare_position_dataset.py
 # Or in the training container:
 docker exec -it acla_ai_training_c python3 /app/scripts/prepare_position_dataset.py
@@ -102,11 +101,17 @@ exit with a nonzero status, remove the failed stage's temporary output, and
 preserve completed stages. To retry an incomplete session, move its entire
 session folder out of the download directory first.
 
-The command uses the shared authenticated `backend_service`. Configure
+Preparation is self-contained in `acla_ai_training`: its backend client,
+reference-lap reader, and feature definitions are local copies. It does not
+import `acla_ai_service` or need that folder on `PYTHONPATH`. For a standalone
+environment, install `python -m pip install -r requirements.position.txt`.
+
+The command uses the training-local authenticated `backend_service`. Configure
 `BACKEND_SERVER_IP`, `BACKEND_PROXY_PORT`, `AI_SERVICE_USERNAME`, and
-`AI_SERVICE_PASSWORD` as for other training commands. No separate FastAPI server
-or manual access token is needed. The training container already supplies the
-shared package and backend settings. Video endpoints require the configured
+`AI_SERVICE_PASSWORD` in the environment or a `.env` file in the working directory,
+as for other training commands. No separate FastAPI server or manual access token
+is needed. The training container already supplies the dependencies and backend
+settings. Video endpoints require the configured
 account to own the session; the AI service account cannot download another
 user's recordings.
 

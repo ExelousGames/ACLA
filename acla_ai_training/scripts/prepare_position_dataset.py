@@ -352,7 +352,7 @@ def _prompt_sessions(label: str, sessions: list[tuple[str, datetime]], selected:
 
 
 async def _interactive_options(args: argparse.Namespace) -> bool:
-    from app.integrations.backend.client import backend_service
+    from training.integrations.backend import backend_service
 
     print("Position dataset preparation. Press Enter to accept defaults; Ctrl+C to cancel.\n")
     sessions = await _list_video_sessions(backend_service)
@@ -415,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.sessions:
             parser.error("--sessions is required for image preparation")
 
-        from app.integrations.backend.client import backend_service
+        from training.integrations.backend import backend_service
 
         result = await prepare_sessions(
             backend_service, args.sessions,

@@ -7,7 +7,7 @@ import io
 import pickle
 from typing import Any, Dict
 
-from app.top_laps.model import TopLapStore
+from .reference import TopLapStore
 
 
 def encode_components(data: Dict[str, Any]) -> str:
