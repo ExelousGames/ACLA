@@ -15,6 +15,26 @@ it('uses all telemetry inputs and separate spatial segmentation channels from th
         .observation?.speed).toBe(108);
 });
 
+it.each([0, Math.PI / 2, -Math.PI / 2, Math.PI])('uses local offsets directly at heading %s', (heading) => {
+    const { live, vision, referenceLap, observation: before } = trainingFixture();
+    Object.assign(vision.telemetry!.currentTelemetry, { Physics_heading: heading, Physics_pitch: 0.2, Physics_roll: -0.1 });
+    vision.position!.referenceDelta = [-3, 4, -12];
+    const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
+    // These feature slots retain right/forward/up signs, without a second rotation or world translation.
+    expect(observation.features.slice(63, 66)).toEqual([-3 / 20, 4 / 20, -12 / 20]);
+    expect(observation.referenceDistance).toBe(13);
+    const after = { ...observation, capturedAt: 1200, normalizedPosition: 0.252 };
+    const reward = drivingReward(before, after, NEUTRAL);
+    expect(reward.speed).toBeCloseTo(0.002 * observation.speed * Math.exp(-13 / 3));
+    expect(reward.line).toBeCloseTo(0.2 * Math.exp(-13 / 3) - 0.15 * 4 * 0.2);
+});
+
+it.each([undefined, 'world'])('rejects a position result without car-local semantics (%s)', (coordinateFrame) => {
+    const { live, vision, referenceLap } = trainingFixture();
+    Object.assign(vision.position!, { coordinateFrame });
+    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/car-local/);
+});
+
 it.each(['telemetry', 'capture', 'session', 'position', 'segmentation', 'velocity', 'rotation', 'gear', 'rpm', 'nonfinite'])(
     'rejects unusable %s instead of training on fabricated defaults', (fault) => {
         const { live, vision, referenceLap } = trainingFixture();

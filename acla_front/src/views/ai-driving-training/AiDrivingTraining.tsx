@@ -11,7 +11,7 @@ import { aggressionRadius } from './driving-reference';
 import type { AccControlPreset, ControllerAction, VirtualController } from './virtual-controller';
 import './AiDrivingTraining.css';
 
-const STORAGE_KEY = 'acla.self-driving.policy.v3';
+const STORAGE_KEY = 'acla.self-driving.policy.v4';
 const AGGRESSION_KEY = 'acla.self-driving.aggression';
 function readAggression(): number {
     try {
@@ -282,7 +282,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                             .map((value, index) => <td key={index}>{value === undefined ? '—' : `${(value * 100).toFixed(1)}%`}</td>)}
                     </tr>)}</tbody>
                 </table>
-                <p className="driving-note">The policy uses velocity XYZ, speed, current gear, engine RPM, game, car, map, normalized position, rotation, current controls, position-model deltas, segmentation masks, aggression and target pedals. It generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights.</p>
+                <p className="driving-note">The policy uses velocity XYZ, speed, current gear, engine RPM, game, car, map, normalized position, rotation, current controls, car-local reference offsets (right, forward, up), segmentation masks, aggression and target pedals. It generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights.</p>
             </section>
             <section className="driving-card">
                 <div className="driving-card-title"><h2>Steering wheel (vJoy)</h2><span>{connected ? 'Connected' : 'Disconnected'}</span></div>
@@ -372,7 +372,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <div><dt>Follow the reference line</dt><dd>{state.reward?.line.toFixed(3) ?? '0.000'}</dd><p>Forward lap progress earns more reward closer to the reference line. Standing still earns no progress reward.</p></div>
                     <div><dt>Penalize instability</dt><dd>{state.reward?.instability.toFixed(3) ?? '0.000'}</dd><p>Excessive yaw, pitch and roll changes, and overlapping pedals reduce reward.</p></div>
                 </dl>
-                <p className="driving-note">Rewards use the position model’s reference delta. Stop or input loss ends the episode; learning resumes only after Start training.</p>
+                <p className="driving-note">Rewards use the distance to the reference lap from the position model’s car-local offset. Policies trained with world-space offsets need to be trained again. Stop or input loss ends the episode; learning resumes only after Start training.</p>
             </section>
         </div>
     </section>;

@@ -1547,7 +1547,7 @@ it('requires the Electron bridge before loading models or offering capture', asy
 
 describe('separate segmentation and position models', () => {
     const references = { reference: { x: 1, y: -2, z: 3 } };
-    const prediction = { referenceDelta: [-1, 2, -3], inferenceMs: 20 };
+    const prediction = { coordinateFrame: 'car_local' as const, referenceDelta: [-1, 2, -3], inferenceMs: 20 };
     let mapHandle: { getCircuitMap: jest.Mock; getReferenceLap: jest.Mock; getPositionReferences: jest.Mock };
     let sequence: number;
     const telemetry = (position = 0.25, status = 2, game: 'acc' | 'iracing' = 'acc') => act(() => {
@@ -1603,7 +1603,7 @@ describe('separate segmentation and position models', () => {
         expect(positionModel.dispose).toHaveBeenCalledTimes(1);
     });
 
-    it('uses capture-time normalized progress with the loaded map and publishes signed offsets', async () => {
+    it('uses capture-time normalized progress with the loaded map and publishes signed car-local offsets', async () => {
         const pending = deferred<typeof prediction>();
         positionModel.detect.mockReturnValueOnce(pending.promise);
         const ref = React.createRef<TrackVisionHandle>();
@@ -1624,7 +1624,7 @@ describe('separate segmentation and position models', () => {
         expect(screen.queryByLabelText('Position add-on result')).not.toBeInTheDocument();
         selectStep("Bird's-eye view");
         const output = within(screen.getByRole('tabpanel', { name: "Bird's-eye view" })).getByLabelText('Position add-on result');
-        expect(output).toHaveTextContent('Reference ΔXYZ: -1.000, 2.000, -3.000');
+        expect(output).toHaveTextContent('Reference local ΔXYZ: -1.000, 2.000, -3.000');
         expect(output).not.toHaveTextContent('Centerline');
         expect(screen.getByRole('img', { name: 'Top-down track boundaries and cars' })).toBeVisible();
         expect(screen.getByLabelText('Reference lap position marker')).toBeVisible();
@@ -1665,13 +1665,13 @@ describe('separate segmentation and position models', () => {
         positionModel.detect.mockResolvedValue({ ...prediction, referenceDelta: [2, 0, 1] });
         await act(async () => { jest.advanceTimersByTime(200); });
         expect(screen.getByLabelText('Reference lap position marker').querySelector('circle')!.getAttribute('cx')).not.toEqual(firstMarker);
-        expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Reference ΔXYZ: 2.000, 0.000, 1.000');
+        expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Reference local ΔXYZ: 2.000, 0.000, 1.000');
         positionModel.detect.mockReturnValue(deferred<typeof prediction>().promise);
         await act(async () => { jest.advanceTimersByTime(VISION_MAX_AGE_MS); });
         expect(screen.getByLabelText('Position add-on result')).toHaveTextContent('Last frame (stale)');
         fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
         expect(screen.queryByLabelText('Reference lap position marker')).not.toBeInTheDocument();
-        expect(screen.getByLabelText('Position add-on result')).not.toHaveTextContent('Reference ΔXYZ: 2.000, 0.000, 1.000');
+        expect(screen.getByLabelText('Position add-on result')).not.toHaveTextContent('Reference local ΔXYZ: 2.000, 0.000, 1.000');
     });
 
     it.each(['reset', 'map change', 'reference change'])('discards pending position inference after %s', async (condition) => {

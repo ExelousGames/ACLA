@@ -48,7 +48,7 @@ Track Vision requests `GET /ai-model/ultralytics?name=track-segments` and `GET /
 }
 ```
 
-`POST /ai-model/ultralytics` publishes a `.onnx` model with metadata. For segmentation, array positions in `classNames` are class IDs; position metadata uses the six regression axis names. The frontend checks the metadata when loading a model and uses the authenticated `GET /ai-model/ultralytics/:id/file` route only if verified ONNX bytes are missing locally. Upload a new ONNX model named `track-segments` or `track-position` to update that model on the next load. Cache entries use the selected model ID and checksum, so repeated uploads under the same name remain separate versions.
+`POST /ai-model/ultralytics` publishes a `.onnx` model with metadata. For segmentation, array positions in `classNames` are class IDs; position metadata uses the three reference-delta regression axis names. The frontend checks the metadata when loading a model and uses the authenticated `GET /ai-model/ultralytics/:id/file` route only if verified ONNX bytes are missing locally. Upload a new ONNX model named `track-segments` or `track-position` to update that model on the next load. Cache entries use the selected model ID and checksum, so repeated uploads under the same name remain separate versions.
 
 ## Local storage and inference
 
@@ -59,7 +59,7 @@ Electron stores the original backend ONNX bytes under:
   weights.onnx
 ```
 
-Downloads and cached files are checked against the backend byte length and SHA-256 before use. Each downloaded model goes directly into its own ONNX Runtime Web session at its published `metadata.imgsz` training resolution, with no local conversion or Python dependency. `track-segments` takes only the image and returns segmentation predictions and mask prototypes (Ultralytics `output0`/`output1`, in graph output order). Both raw and end-to-end segmentation outputs are supported. `track-position` returns only signed `deltas`; its regression labels are never used for segmentation.
+Downloads and cached files are checked against the backend byte length and SHA-256 before use. Each downloaded model goes directly into its own ONNX Runtime Web session at its published `metadata.imgsz` training resolution, with no local conversion or Python dependency. `track-segments` takes only the image and returns segmentation predictions and mask prototypes (Ultralytics `output0`/`output1`, in graph output order). Both raw and end-to-end segmentation outputs are supported. `track-position` returns only signed car-local `deltas`; its regression labels are never used for segmentation.
 
 Verified ONNX files survive app restarts; damaged files trigger a fresh download. Both models’ metadata is requested from the backend when loading, so Track Vision requires a backend connection. Depth loads independently from the bundled `public/vision-models/depth-anything-v2-small.onnx` and needs no backend connection.
 
@@ -82,7 +82,11 @@ Format/version labels are informational: new, arbitrary and missing labels are a
 Compatibility comes from the published graph, input resolution, reference-coordinate semantics and
 its executable tensor interface. Changing a version label alone never blocks loading;
 changing the network's required inputs still requires their definition and live values.
-The runtime warms up the downloaded graph to verify its executable inputs and outputs.
+Position metadata must declare `coordinateFrame: "car_local"` and
+`coordinateAxes: ["right", "forward", "up"]`. Older world-space exports and exports
+without these declarations are rejected before loading weights: their tensor shapes
+alone cannot identify the coordinate frame. Retrain and upload a car-local ONNX model.
+The runtime also warms up the downloaded graph to verify its executable inputs and outputs.
 Position runs separately on WebGPU at its saved training resolution.
 **Settings → Track models → Position** shows its loading, availability and retry status.
 A missing position ONNX model leaves segmentation, depth and screen preview available.
@@ -102,23 +106,33 @@ vocabulary in its saved order. Progress and game come from the capture-time tele
 map names use the loaded map's display name or simulator key. Unknown category labels
 produce an all-zero one-hot vector. Two-input ONNX graphs run without context.
 The final **Bird's-eye view** step plots the reference-lap marker directly
-on the top-down scene relative to your car at the origin, alongside its signed XYZ
-offset. It uses the output's X/Y values as supplied, with Z as height, without swapping
-axes for either game. The view fits the marker, including negative offsets, and can
+on the top-down scene relative to your car at the origin, alongside its signed local XYZ
+offset. X points right, Y forward, and Z up. It uses these outputs directly, without
+adding the world reference point, swapping axes, or rotating by telemetry again. The view fits the marker, including negative offsets, and can
 show it before camera calibration. Stale results are labeled; stopping capture or
 resetting telemetry clears the marker. The signed XYZ output triple is shown here
 and published as `TrackVisionDetection.position.referenceDelta`,
-with `references`, `normalizedPosition`, and `inferenceMs`. It remains in source
-coordinates: reference XYZ minus inferred driver XYZ. Missing references, paused or
+with `coordinateFrame: "car_local"`, `references`, `normalizedPosition`, and `inferenceMs`.
+The offset is `inverse_world_rotation @ (reference_position - current_position)`
+in source coordinate units. The model learns this local offset; driver XYZ and world
+rotation are used only to prepare training targets, never as position-model inputs.
+The `references` input remains in world/source XYZ coordinates. Missing references, paused or
 stale telemetry skip position inference while image-only segmentation continues; resetting telemetry or changing the loaded
 map/reference during inference discards the pending position prediction.
 
 The browser loads segmentation predictions and prototypes from its separate
-segmentation graph. The standalone `train-position` export supplies position deltas.
+segmentation graph. The standalone `train-position` export supplies car-local position deltas.
+
+Self-driving training consumes the signed right/forward/up values directly as policy
+features and uses their Euclidean distance for reference proximity rewards. The
+distance reward is unchanged by rotation. Driving checkpoints now use version 4
+and `acla.self-driving.policy.v4` storage because the input axes have changed meaning.
+Older checkpoints cannot be imported; existing local checkpoints remain untouched,
+and a new policy must be trained using the car-local inputs.
 
 ### Detector results
 
-`TrackVisionModel.loadBackend()` loads the segmentation graph through the desktop cache. Its `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time and ordered class names. `TrackPositionModel.load()` separately loads the position graph; `detect(canvas, references, context?)` returns the signed reference-lap XYZ delta triple and inference time. Position inference runs only with fresh telemetry and reference points. `TrackVisionModel.loadBuiltin('depth', inputSize = 518)` loads bundled depth weights. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. All models letterbox the full capture into their square inputs. Segmentation boxes are normalized using the training input size. Call `dispose()` when finished.
+`TrackVisionModel.loadBackend()` loads the segmentation graph through the desktop cache. Its `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time and ordered class names. `TrackPositionModel.load()` separately loads the position graph; `detect(canvas, references, context?)` returns the signed car-local reference-lap XYZ delta triple, `coordinateFrame: "car_local"`, and inference time. Position inference runs only with fresh telemetry and reference points. `TrackVisionModel.loadBuiltin('depth', inputSize = 518)` loads bundled depth weights. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. All models letterbox the full capture into their square inputs. Segmentation boxes are normalized using the training input size. Call `dispose()` when finished.
 
 `LiveTrackVision` registers a `TrackVisionHandle` as `visualization:track-vision`. Consumers use `getLatestDetection()` or `subscribeDetection(listener)`. Results include the source timestamp and dimensions, successful segmentation under `detections.segment`, and depth under `detections.depth`. Masks, boxes, and depth maps refer to the letterboxed model input; drawing segmentation removes its padding. Results clear on stop, configuration changes, and unmount. Depth values remain available to detection consumers; the Label depths tab visualizes retained label depths as a heatmap.
 

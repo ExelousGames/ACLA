@@ -16,7 +16,8 @@ export interface PolicyDecision {
     action: DrivingAction;
 }
 export interface PolicyCheckpoint {
-    version: 3;
+    /** Version 4 uses car-local right/forward/up position features. */
+    version: 4;
     algorithm: 'online-actor-critic';
     context: DrivingObservation['context'];
     inputs: number;
@@ -95,7 +96,7 @@ export class DrivingPolicy {
     }
 
     checkpoint(): PolicyCheckpoint {
-        return { version: 3, algorithm: 'online-actor-critic', context: this.context, inputs: this.inputs, steps: this.steps,
+        return { version: 4, algorithm: 'online-actor-critic', context: this.context, inputs: this.inputs, steps: this.steps,
             hiddenWeights: this.hiddenWeights.map((row) => row.slice()), outputWeights: this.outputWeights.map((row) => row.slice()) };
     }
 
@@ -103,7 +104,7 @@ export class DrivingPolicy {
         const data = value as PolicyCheckpoint;
         const matrix = (rows: unknown, height: number, width: number) => Array.isArray(rows) && rows.length === height
             && rows.every((row) => Array.isArray(row) && row.length === width && row.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 5));
-        if (!data || data.version !== 3 || data.algorithm !== 'online-actor-critic'
+        if (!data || data.version !== 4 || data.algorithm !== 'online-actor-critic'
             || !Number.isInteger(data.inputs) || data.inputs < 1 || data.inputs > 1200
             || !Number.isSafeInteger(data.steps) || data.steps < 0
             || !data.context || !['game', 'car', 'map'].every((key) => typeof (data.context as any)[key] === 'string' && (data.context as any)[key].length > 0)

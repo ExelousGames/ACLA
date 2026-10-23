@@ -14,7 +14,8 @@ export interface BackendVisionModel {
 interface CatalogueVisionModel extends Omit<BackendVisionModel, 'id' | 'downloadPath'> {
     _id: string;
     createdAt: string;
-    metadata: { imgsz: number; categories?: Record<string, string[]> };
+    metadata: { imgsz: number; categories?: Record<string, string[]>;
+        coordinateFrame?: string; coordinateAxes?: string[] };
 }
 
 declare global {
@@ -70,6 +71,13 @@ async function loadModel(name: string, task: BackendVisionModel['task']) {
     // runtime checks the downloaded ONNX graph's tensor interface.
     if (!Number.isInteger(inputSize) || inputSize < 32 || inputSize > 2048 || inputSize % 32 !== 0) {
         throw new Error(`${name} metadata.imgsz must be an integer from 32 to 2048, divisible by 32.`);
+    }
+    // World-space exports have the same tensor shape, so a warm-up cannot distinguish them.
+    if (task === 'position' && (model.metadata.coordinateFrame !== 'car_local'
+        || !Array.isArray(model.metadata.coordinateAxes)
+        || model.metadata.coordinateAxes.length !== 3
+        || model.metadata.coordinateAxes.join(',') !== 'right,forward,up')) {
+        throw new Error('Track-position model must declare car-local right/forward/up offsets. Upload a newly trained car-local ONNX model.');
     }
     return { ...await prepare(toMetadata(model)), inputSize, categories: model.metadata?.categories };
 }

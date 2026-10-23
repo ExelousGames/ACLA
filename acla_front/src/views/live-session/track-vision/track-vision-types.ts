@@ -92,11 +92,13 @@ export interface TrackGeometry {
 export const VISION_MAX_AGE_MS = 2000;
 
 export interface PositionReferences {
+    /** Reference-lap XYZ in unchanged world/source coordinates, used only as model input. */
     reference: { x: number; y: number; z: number };
 }
 
 export interface TrackPositionResult {
-    /** Signed reference XYZ minus inferred driver XYZ, in unchanged source coordinates. */
+    coordinateFrame: 'car_local';
+    /** Driver-to-reference offset in car-local X right, Y forward, Z up, in source units. */
     referenceDelta: [number, number, number];
     inferenceMs: number;
 }

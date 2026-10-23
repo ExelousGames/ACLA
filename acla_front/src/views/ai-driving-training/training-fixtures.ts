@@ -28,7 +28,7 @@ export function trainingFixture(now = 1000, aggression = 50, referenceLap = refe
     } });
     const live = { ...store.getSnapshot(), receivedAt: now, currentTelemetry: { ...store.getSnapshot().currentTelemetry } };
     const vision: TrackVisionDetection = { capturedAt: now, width: 4, height: 4, telemetry: { ...live },
-        position: { referenceDelta: [2, 0, 0], normalizedPosition: 0.25, references: { reference: { x: 3, y: 0, z: 0 } }, inferenceMs: 1, referenceLap },
+        position: { coordinateFrame: 'car_local', referenceDelta: [2, 0, 0], normalizedPosition: 0.25, references: { reference: { x: 3, y: 0, z: 0 } }, inferenceMs: 1, referenceLap },
         detections: { segment: { task: 'segment', width: 4, height: 4, classNames: ['road', 'car'], inferenceMs: 1,
             instances: [{ classId: 0, confidence: 1, box: [0, 0, 1, 1], mask: new Uint8Array(16).fill(1) }] } },
         reconstruction: null, geometry: null };

@@ -93,7 +93,7 @@ export default function BirdsEyeView({ scene: ground, hasReconstructedScene, cap
                     {positionMarkers.map(({ label, color, delta: [x, y, z] }) => {
                         const point = map({ x, y });
                         return <g key={label} aria-label={`${label} position marker`}>
-                            <title>{`${label} ΔXYZ: ${[x, y, z].map((value) => value.toFixed(3)).join(', ')} · Z is height`}</title>
+                            <title>{`${label} local ΔXYZ: ${[x, y, z].map((value) => value.toFixed(3)).join(', ')} · X right, Y forward, Z up`}</title>
                             <line x1={driver.x} y1={driver.y} x2={point.x} y2={point.y} stroke={color} strokeDasharray="4 4" />
                             <circle cx={point.x} cy={point.y} r="6" fill={color} />
                             <text x={point.x} y={point.y - 15} textAnchor="middle"
@@ -114,7 +114,7 @@ export default function BirdsEyeView({ scene: ground, hasReconstructedScene, cap
         {ground && <p className="track-vision__hint">Flat-road estimate from camera calibration. Your car is the origin; distances and traffic positions are approximate.</p>}
         {(position || positionReady) && <div className="track-vision__hint" aria-label="Position add-on result">
             {position
-                ? `Reference ΔXYZ: ${position.referenceDelta.map((value) => value.toFixed(3)).join(', ')} · X/Y: ground position; Z: height.${stale ? ' Last frame (stale).' : ''}`
+                ? `Reference local ΔXYZ: ${position.referenceDelta.map((value) => value.toFixed(3)).join(', ')} · X right, Y forward, Z up relative to your car.${stale ? ' Last frame (stale).' : ''}`
                 : 'Position add-on: waiting for live normalized position and reference lap.'}
         </div>}
         {!!ground?.unplacedCars && <p className="track-vision__hint">{ground.unplacedCars} car / car-pack detection(s) could not be placed on the ground.</p>}

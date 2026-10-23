@@ -72,9 +72,10 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
     if (position! < 0 || position! > 1 || speed! < 0 || controls[0]! < 0 || controls[0]! > 1
         || controls[1]! < 0 || controls[1]! > 1 || Math.abs(controls[2]!) > 1) return { error: 'Telemetry inputs are outside their valid ranges.' };
     const prediction = vision.position;
-    if (!prediction || prediction.referenceDelta.length !== 3 || !prediction.referenceDelta.every(finite)
+    if (!prediction || prediction.coordinateFrame !== 'car_local'
+        || prediction.referenceDelta.length !== 3 || !prediction.referenceDelta.every(finite)
         || !finite(prediction.normalizedPosition) || Math.abs(prediction.normalizedPosition - position!) > 0.0001) {
-        return { error: 'Track Vision needs position-model output and a matching Live Map reference line.' };
+        return { error: 'Track Vision needs car-local position-model output and a matching Live Map reference line.' };
     }
     if (referenceLap && !selectLiveMapReference([referenceLap], game, map, car, sample.Graphics_track_grip_status)) {
         return { error: 'Live Map reference lap does not match the current game, car or circuit. Load a matching reference lap in Live Session.' };
@@ -118,11 +119,13 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
             ...category(game), ...category(car), ...category(map),
             Math.sin(2 * Math.PI * position!), Math.cos(2 * Math.PI * position!),
             ...[heading, pitch, roll].flatMap((angle) => [Math.sin(angle), Math.cos(angle)]),
+            // Signed right/forward/up offsets are already relative to the car.
             ...controls as number[], ...prediction.referenceDelta.map((v) => clamp(v / 20)),
             clamp((gear - 1) / 8), clamp(rpm / 20000, 0, 1),
             ...pooled.map((v) => clamp(v, 0, 1)),
             normalizedAggression(aggression), pedals.target.throttle, pedals.target.brake,
         ],
+        // Rotation preserves distance, so the same proximity reward applies in local axes.
         normalizedPosition: position!, referenceDistance: Math.hypot(...prediction.referenceDelta),
         speed: speed!, gear: gear - 1, rpm, heading, pitch, roll, controls: action,
         reference, aggression, pedals,

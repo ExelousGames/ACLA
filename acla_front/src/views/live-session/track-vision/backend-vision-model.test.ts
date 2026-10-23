@@ -8,9 +8,10 @@ const metadata: BackendVisionModel = {
 };
 const catalogueModel = { ...metadata, _id: metadata.id, createdAt: '2026-10-15T12:00:00Z', metadata: { imgsz: 768 } };
 const positionMetadata: BackendVisionModel = { ...metadata, name: 'track-position', task: 'position',
-    classNames: ['reference_delta_x', 'reference_delta_y', 'reference_delta_z', 'centerline_delta_x', 'centerline_delta_y', 'centerline_delta_z'] };
+    classNames: ['reference_delta_x', 'reference_delta_y', 'reference_delta_z'] };
+const localCoordinates = { coordinateFrame: 'car_local', coordinateAxes: ['right', 'forward', 'up'] };
 const positionCatalogueModel = { ...catalogueModel, ...positionMetadata,
-    metadata: { format: 'acla-yolo-position-v3', artifactFormat: 'onnx', imgsz: 512 } };
+    metadata: { format: 'acla-position-cnn-v3', artifactFormat: 'onnx', imgsz: 512, ...localCoordinates } };
 const prepare = jest.fn();
 
 beforeEach(() => {
@@ -107,7 +108,7 @@ it('retries downloading ONNX after a failed checksum verification', async () => 
 it.each(['acla-yolo-position-v1', 'acla-yolo-position-v2', 'future-position-v999', undefined])(
     'loads the newest position model regardless of its format label (%s)', async (format) => {
         const newer = { ...positionCatalogueModel, _id: 'e'.repeat(24), createdAt: '2026-10-16T19:22:34Z',
-            metadata: { format, imgsz: 768 } };
+            metadata: { format, imgsz: 768, ...localCoordinates } };
         (apiService.get as jest.Mock).mockResolvedValue({ data: [positionCatalogueModel, newer] });
         prepare.mockResolvedValue(new Uint8Array([9]));
         await expect(loadBackendPositionModel()).resolves.toMatchObject({ inputSize: 768, metadata: { id: newer._id } });
@@ -123,9 +124,23 @@ it.each([undefined, '768', 0, 518, 4096])('identifies an unusable position input
 it('preserves the published category vocabulary and order for position inference', async () => {
     const categories = { game: ['iracing', 'acc'], map_name: ['nurburgring_24h', 'Autodromo Nazionale Monza'] };
     (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel,
-        metadata: { format: 'arbitrary-future-version', imgsz: 768, categories } }] });
+        metadata: { format: 'arbitrary-future-version', imgsz: 768, categories, ...localCoordinates } }] });
     prepare.mockResolvedValue(new Uint8Array([9]));
     await expect(loadBackendPositionModel()).resolves.toMatchObject({ categories });
+});
+
+it.each([
+    {},
+    { ...localCoordinates, coordinateFrame: 'world' },
+    { ...localCoordinates, coordinateAxes: ['right', 'up', 'forward'] },
+    { ...localCoordinates, coordinateAxes: ['right', 'forward'] },
+    { ...localCoordinates, coordinateAxes: 'right,forward,up' },
+])('rejects missing or incompatible position coordinates before loading weights (%j)', async (coordinates) => {
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel,
+        metadata: { imgsz: 512, ...coordinates } }] });
+    await expect(loadBackendPositionModel()).rejects.toThrow('car-local right/forward/up offsets');
+    expect(prepare).not.toHaveBeenCalled();
+    expect(apiService.getBinary).not.toHaveBeenCalled();
 });
 
 describe.each([

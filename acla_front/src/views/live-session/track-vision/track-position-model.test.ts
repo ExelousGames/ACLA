@@ -29,7 +29,7 @@ afterEach(() => {
     else Reflect.deleteProperty(navigator, 'gpu');
 });
 
-it('runs the image and ordered raw reference XYZ on GPU and preserves all three signed reference-lap outputs', async () => {
+it('runs the image and ordered raw reference XYZ on GPU and preserves all three signed car-local reference offsets', async () => {
     const model = (await TrackPositionModel.load())!;
     const frame = document.createElement('canvas');
     frame.width = 1280; frame.height = 721;
@@ -43,7 +43,7 @@ it('runs the image and ordered raw reference XYZ on GPU and preserves all three 
     });
     expect(drawImage).toHaveBeenCalledWith(frame, 0, 112, 512, 288);
     expect(session.run.mock.calls[1][0].images.data[0]).toBe(1);
-    expect(result).toEqual({ referenceDelta: [-1, 2, -3], inferenceMs: expect.any(Number) });
+    expect(result).toEqual({ coordinateFrame: 'car_local', referenceDelta: [-1, 2, -3], inferenceMs: expect.any(Number) });
     expect(session.run).toHaveBeenCalledTimes(2); // One warm-up and one position inference.
     expect(session.run.mock.calls[1][0].references.dispose).toHaveBeenCalledTimes(1);
     await model.dispose();

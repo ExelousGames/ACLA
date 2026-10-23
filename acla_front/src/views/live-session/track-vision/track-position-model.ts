@@ -78,7 +78,8 @@ export class TrackPositionModel {
             const result = outputs.deltas;
             if (result?.dims.join(',') !== '1,1,3' || !(result.data instanceof Float32Array)
                 || result.data.length !== 3 || !result.data.every(Number.isFinite)) throw new Error('Invalid track-position output.');
-            return { referenceDelta: Array.from(result.data) as [number, number, number] };
+            // The model already predicts local axes; do not rotate by telemetry again.
+            return { coordinateFrame: 'car_local' as const, referenceDelta: Array.from(result.data) as [number, number, number] };
         } finally {
             Object.values(feeds).forEach((input) => input.dispose());
             if (outputs) Object.values(outputs).forEach((output) => output.dispose());

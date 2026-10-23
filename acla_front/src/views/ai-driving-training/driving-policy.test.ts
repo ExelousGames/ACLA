@@ -102,7 +102,7 @@ it('rejects incorrect input dimensions and incomplete shifting heads', () => {
     expect(() => DrivingPolicy.restore({ ...checkpoint, outputWeights: checkpoint.outputWeights.slice(0, 4) })).toThrow(/checkpoint/);
 });
 
-it.each([1, 2, 4])('rejects unsupported checkpoint version %s', (version) => {
+it.each([1, 2, 3, 5])('rejects unsupported checkpoint version %s', (version) => {
     const { observation } = trainingFixture();
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
     expect(() => DrivingPolicy.restore({ ...checkpoint, version })).toThrow(/checkpoint/);
