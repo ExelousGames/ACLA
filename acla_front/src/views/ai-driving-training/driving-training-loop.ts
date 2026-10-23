@@ -74,12 +74,14 @@ export class DrivingTrainingLoop {
             }
             const input = this.read();
             if (!input.observation) throw new Error(input.error);
-            const observation = input.observation;
+            const observation = { ...input.observation };
             if (!policy.matches(observation)) throw new Error('Game, car, map or segmentation model changed. Start a new episode.');
             const previous = this.previous;
             if (previous && observation.session !== previous.observation.session) throw new Error('Live session changed. Start a new episode.');
+            if (previous && observation.reference !== previous.observation.reference) throw new Error('Live Map reference changed. Start a new episode.');
             // Refresh the hardware watchdog, but never learn twice from the same image or from a capture predating the action.
-            if (previous && (observation.capturedAt <= previous.appliedAt || this.state.action.shiftUp || this.state.action.shiftDown)) {
+            if (previous && (observation.capturedAt <= previous.appliedAt || observation.measuredAt <= previous.appliedAt
+                || this.state.action.shiftUp || this.state.action.shiftDown)) {
                 await this.controller.apply(this.state.action);
                 return;
             }

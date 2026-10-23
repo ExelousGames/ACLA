@@ -1,12 +1,16 @@
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import type { LiveTelemetrySnapshot } from 'views/live-session/live-telemetry-store';
 import type { TrackVisionDetection } from 'views/live-session/track-vision/track-vision-types';
+import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
+import { selectLiveMapReference } from 'views/live-session/live-map-reference';
+import { DrivingReference, inspectDrivingReference, normalizedAggression, Pedals, ReferencePedalTargets, referencePedalTargets } from './driving-reference';
 
 export interface DrivingAction { throttle: number; brake: number; steering: number; shiftUp?: boolean; shiftDown?: boolean }
 export const NEUTRAL: DrivingAction = { throttle: 0, brake: 0, steering: 0 };
 export const clamp = (value: number, low = -1, high = 1) => Math.max(low, Math.min(high, value));
 export interface DrivingObservation {
     capturedAt: number;
+    measuredAt: number;
     session: string;
     context: { game: string; car: string; map: string; classes: string[] };
     features: number[];
@@ -20,6 +24,9 @@ export interface DrivingObservation {
     pitch: number;
     roll: number;
     controls: DrivingAction;
+    reference: DrivingReference;
+    aggression: number;
+    pedals: ReferencePedalTargets;
 }
 export type ObservationResult = { observation: DrivingObservation; error?: never } | { error: string; observation?: never };
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
@@ -32,7 +39,7 @@ function category(value: string): number[] {
 }
 
 export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: TrackVisionDetection | null,
-    now = Date.now()): ObservationResult {
+    referenceLap: TopLapReferenceEntry | null, aggression = 50, now = Date.now()): ObservationResult {
     if (live.telemetryStatus !== ACC_STATUS.ACC_LIVE || !finite(live.receivedAt)
         || now - live.receivedAt > 500 || now < live.receivedAt) return { error: 'Waiting for fresh, running live telemetry.' };
     if (!vision || !finite(vision.capturedAt) || now - vision.capturedAt > 1500 || now < vision.capturedAt) {
@@ -69,6 +76,15 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         || !finite(prediction.normalizedPosition) || Math.abs(prediction.normalizedPosition - position!) > 0.0001) {
         return { error: 'Track Vision needs position-model output and a matching Live Map reference line.' };
     }
+    if (referenceLap && !selectLiveMapReference([referenceLap], game, map, car, sample.Graphics_track_grip_status)) {
+        return { error: 'Live Map reference lap does not match the current game, car or circuit. Load a matching reference lap in Live Session.' };
+    }
+    const prepared = inspectDrivingReference(referenceLap);
+    if (!prepared.reference) return { error: prepared.error };
+    const reference = prepared.reference;
+    if (prediction.referenceLap !== referenceLap) return { error: 'Live Map reference changed. Waiting for matching Track Vision inputs.' };
+    if (!finite(aggression) || aggression < 0 || aggression > 100) return { error: 'Driving aggression must be between 0 and 100.' };
+    const pedals = referencePedalTargets(reference, position!, aggression);
     const segment = vision.detections.segment;
     if (!segment || segment.task !== 'segment' || !Number.isInteger(segment.width) || !Number.isInteger(segment.height)
         || segment.width < 1 || segment.height < 1 || segment.width * segment.height > 4194304
@@ -94,6 +110,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
     const action = { throttle: controls[0]!, brake: controls[1]!, steering: controls[2]! };
     return { observation: {
         capturedAt: vision.capturedAt,
+        measuredAt: paired.receivedAt,
         session: JSON.stringify([paired.sessionGeneration, paired.streamGeneration, game, car, map]),
         context: { game, car, map, classes: segment.classNames },
         features: [
@@ -104,13 +121,18 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
             ...controls as number[], ...prediction.referenceDelta.map((v) => clamp(v / 20)),
             clamp((gear - 1) / 8), clamp(rpm / 20000, 0, 1),
             ...pooled.map((v) => clamp(v, 0, 1)),
+            normalizedAggression(aggression), pedals.target.throttle, pedals.target.brake,
         ],
         normalizedPosition: position!, referenceDistance: Math.hypot(...prediction.referenceDelta),
         speed: speed!, gear: gear - 1, rpm, heading, pitch, roll, controls: action,
+        reference, aggression, pedals,
     } };
 }
 
-export interface DrivingReward { speed: number; line: number; convergence: number; instability: number; total: number }
+export interface DrivingReward {
+    speed: number; line: number; instability: number; referencePedal: number; total: number;
+    pedalComparison: ReferencePedalTargets & { measured: Pedals; aggression: number };
+}
 export const angleDifference = (a: number, b: number) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
     action: DrivingAction): DrivingReward {
@@ -120,20 +142,26 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     if (progress < -0.5) progress += 1;
     if (progress > 0.5) progress -= 1;
     if (Math.abs(progress) > 0.1) throw new Error('Lap position jumped. Reposition the car and start a new episode.');
+    if (previous.reference !== current.reference) throw new Error('Live Map reference changed. Start a new episode.');
     const proximity = Math.exp(-current.referenceDistance / 3);
+    const forwardProgress = clamp(progress, 0, 0.02);
     // Weight forward lap progress by km/h so the same section pays more at higher speed.
-    const speed = clamp(progress, 0, 0.02) * current.speed * proximity;
+    const speed = forwardProgress * current.speed * proximity;
+    // Score measured pedals at the new position using the preceding action's settings.
+    const pedals = referencePedalTargets(previous.reference, current.normalizedPosition, previous.aggression);
+    const error = (Math.abs(current.controls.throttle - pedals.target.throttle)
+        + Math.abs(current.controls.brake - pedals.target.brake)) / 2;
+    const referencePedal = current.speed > 0 && current.gear >= 0
+        ? 100 * forwardProgress * proximity * (1 - 2 * error) : 0;
     // Reward forward progress on the reference; sitting still never earns line reward.
     const line = 100 * clamp(progress, -0.02, 0.02) * proximity
         - 0.15 * Math.min(current.referenceDistance / 3, 4) * dt - (current.speed < 1 ? 0.1 * dt : 0);
     const yawRate = Math.abs(angleDifference(current.heading, previous.heading)) / dt;
     const attitude = Math.abs(angleDifference(current.roll, previous.roll)) / dt
         + Math.abs(angleDifference(current.pitch, previous.pitch)) / dt;
-    const stability = 1 / (1 + Math.max(0, yawRate - 0.8) + attitude);
-    // Decreasing distance earns less when the car is unstable; divergence is always penalized.
-    const improvement = clamp(previous.referenceDistance - current.referenceDistance, -3, 3);
-    const convergence = 0.4 * improvement * (improvement > 0 ? stability : 1);
     const instability = -dt * (0.4 * Math.max(0, yawRate - 0.8) ** 2
         + 0.15 * attitude ** 2 + 0.5 * action.throttle * action.brake);
-    return { speed, line, convergence, instability, total: clamp(speed + line + convergence + instability, -10, 10) };
+    return { speed, line, instability, referencePedal,
+        pedalComparison: { ...pedals, measured: { throttle: current.controls.throttle, brake: current.controls.brake }, aggression: previous.aggression },
+        total: clamp(speed + line + instability + referencePedal, -10, 10) };
 }

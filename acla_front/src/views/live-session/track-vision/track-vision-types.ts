@@ -105,7 +105,8 @@ export interface TrackVisionFrame {
     capturedAt: number;
     /** Immutable telemetry paired with the image before asynchronous inference. */
     telemetry?: import('../live-telemetry-store').LiveTelemetrySnapshot;
-    position?: TrackPositionResult & { normalizedPosition: number; references: PositionReferences };
+    position?: TrackPositionResult & { normalizedPosition: number; references: PositionReferences;
+        referenceLap?: import('services/topLapReferenceService').TopLapReferenceEntry };
     /** Motion sampled at capture time, before inference; contains no simulator position. */
     motion?: import('./track-history').VisionMotion;
     width: number;

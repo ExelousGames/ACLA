@@ -128,8 +128,8 @@ layer, a three-dimensional Gaussian actor, a three-way categorical shifting head
 and a TD(0) value head. A speed bonus multiplies forward lap progress (capped at
 0.02 per observation) by speed in km/h and `exp(-referenceDistance / 3)`, so
 covering the same section faster earns more reward. No forward progress means no
-speed bonus. Positive progress close to the reference and smooth reductions in
-position error also earn reward; excessive yaw/attitude changes, pedal overlap, distance
+speed bonus. Positive progress close to the reference also earns reward;
+excessive yaw/attitude changes, pedal overlap, distance
 from the line and standing still incur penalties. New policies are untrained;
 successful driving is an empirical training outcome, not a built-in capability.
 

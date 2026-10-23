@@ -1617,7 +1617,8 @@ describe('separate segmentation and position models', () => {
         expect(positionModel.detect).toHaveBeenCalledWith(expect.any(HTMLCanvasElement), references, {
             normalized_position: 0.25, game: 'acc', map_name: ['Autodromo Nazionale Monza', 'monza', 'monza'],
         });
-        expect(ref.current!.getLatestDetection()!.position).toEqual({ ...prediction, references, normalizedPosition: 0.25 });
+        expect(ref.current!.getLatestDetection()!.position).toEqual({ ...prediction, references, normalizedPosition: 0.25,
+            referenceLap: mapHandle.getReferenceLap() });
         expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
         expect(positionModel.detect).toHaveBeenCalledTimes(1);
         expect(screen.queryByLabelText('Position add-on result')).not.toBeInTheDocument();

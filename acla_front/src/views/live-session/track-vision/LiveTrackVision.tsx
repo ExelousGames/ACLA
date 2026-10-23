@@ -352,7 +352,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                                             map_name: [circuitMap?.circuit_name, circuitMap?.source_track_key, telemetry.track]
                                                 .filter((value): value is string => typeof value === 'string' && Boolean(value)),
                                         });
-                                        if (positionCurrent()) result.position = { ...position, references, normalizedPosition: telemetry.position };
+                                        if (positionCurrent()) result.position = { ...position, references, normalizedPosition: telemetry.position,
+                                            referenceLap: referenceLap ?? undefined };
                                     } catch (reason) {
                                         if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
                                         delete models.current.position;

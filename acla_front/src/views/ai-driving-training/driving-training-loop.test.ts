@@ -2,6 +2,7 @@ import { DrivingTrainingLoop } from './driving-training-loop';
 import { DrivingPolicy } from './driving-policy';
 import { NEUTRAL, ObservationResult } from './driving-observation';
 import { trainingFixture } from './training-fixtures';
+import { normalizedAggression, referencePedalTargets } from './driving-reference';
 
 const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
 beforeEach(() => { jest.useFakeTimers(); });
@@ -16,7 +17,10 @@ function setup() {
     const policy = new DrivingPolicy(fixture.observation.context, fixture.observation.features.length, () => 0.7);
     const loop = new DrivingTrainingLoop(controller, () => input, publish, () => now);
     return { fixture, controller, policy, loop, publish,
-        input: (next: ObservationResult, time: number) => { input = next; now = time; } };
+        input: (next: ObservationResult, time: number, measuredAt = next.observation?.capturedAt) => {
+            input = next.observation ? { observation: { ...next.observation, measuredAt: measuredAt! } } : next;
+            now = time;
+        } };
 }
 
 it('waits for the effect of an acknowledged action and learns only once per new captured image', async () => {
@@ -31,7 +35,7 @@ it('waits for the effect of an acknowledged action and learns only once per new 
     expect(run.policy.steps).toBe(1);
     const reward = run.loop.state.reward!;
     expect(reward.speed).toBeGreaterThan(0);
-    expect(reward.total).toBeCloseTo(reward.speed + reward.line + reward.convergence + reward.instability);
+    expect(reward.total).toBeCloseTo(reward.speed + reward.line + reward.instability + reward.referencePedal);
     expect(learn).toHaveBeenLastCalledWith(expect.anything(), reward.total, run.fixture.observation.features, 0.2);
     expect(run.loop.state.episodeReward).toBe(reward.total);
     jest.advanceTimersByTime(100); await flush();
@@ -79,26 +83,25 @@ it('does not resume after Stop races with an in-flight controller acknowledgemen
     expect(run.policy.steps).toBe(0);
 });
 
-it.each([true, false])('continues beyond 25 m from the reference line with training=%s', async (train) => {
+it.each([true, false])('continues beyond 25 coordinate units from the reference line with training=%s', async (train) => {
     const run = setup();
     run.loop.start(run.policy, train); await flush();
     run.input({ observation: { ...run.fixture.observation, capturedAt: 1200, referenceDistance: 30 } }, 1200);
     jest.advanceTimersByTime(100); await flush();
     expect(run.loop.state.mode).toBe(train ? 'training' : 'evaluation');
     expect(run.loop.state.reward?.line).toBeLessThan(0);
-    expect(run.loop.state.reward?.convergence).toBeLessThan(0);
     expect(run.controller.apply).toHaveBeenLastCalledWith(run.loop.state.action);
     expect(run.loop.state.action).not.toEqual(NEUTRAL);
     expect(run.policy.steps).toBe(train ? 1 : 0);
     run.input({ observation: { ...run.fixture.observation, capturedAt: 1400, referenceDistance: 28 } }, 1400);
     jest.advanceTimersByTime(100); await flush();
     expect(run.loop.state.mode).toBe(train ? 'training' : 'evaluation');
-    expect(run.loop.state.reward?.convergence).toBeGreaterThan(0);
+    expect(run.loop.state.reward?.line).toBeLessThan(0);
     expect(run.policy.steps).toBe(train ? 2 : 0);
     await run.loop.stop();
 });
 
-it.each([true, false])('starts beyond 25 m from the reference line with training=%s', async (train) => {
+it.each([true, false])('starts beyond 25 coordinate units from the reference line with training=%s', async (train) => {
     const run = setup();
     run.input({ observation: { ...run.fixture.observation, referenceDistance: 30 } }, 1000);
     run.loop.start(run.policy, train); await flush();
@@ -200,4 +203,87 @@ it('does not send another action when Stop races with a paddle release', async (
     expect(run.loop.state).toMatchObject({ mode: 'idle', action: NEUTRAL });
     expect(run.controller.apply).toHaveBeenLastCalledWith(NEUTRAL);
     expect(run.policy.steps).toBe(0);
+});
+
+it.each([true, false])('attributes reward to the action’s aggression while the next policy input follows the live slider (training=%s)', async (train) => {
+    const run = setup();
+    const observation = run.fixture.observation;
+    const withAggression = (aggression: number, capturedAt: number, position: number) => {
+        const pedals = referencePedalTargets(observation.reference, position, aggression);
+        return { ...observation, aggression, capturedAt, normalizedPosition: position, pedals,
+            features: [...observation.features.slice(0, -3), normalizedAggression(aggression), pedals.target.throttle, pedals.target.brake] };
+    };
+    run.policy = new DrivingPolicy(observation.context, observation.features.length, () => 0.1);
+    const before = run.policy.checkpoint();
+    const learn = jest.spyOn(run.policy, 'learn');
+    const decide = jest.spyOn(run.policy, 'decide');
+    run.input({ observation: withAggression(0, 1000, 0.25) }, 1000);
+    let acknowledge!: () => void;
+    run.controller.apply.mockImplementationOnce(() => new Promise<void>((resolve) => { acknowledge = resolve; }));
+    run.loop.start(run.policy, train);
+    const sent = run.controller.apply.mock.calls[0][0];
+    expect(sent).toEqual(decide.mock.results[0].value.action);
+    expect(sent.brake).not.toBe(1); // Targets never replace policy commands.
+    run.input({ observation: withAggression(100, 1000, 0.25) }, 1100);
+    acknowledge(); await flush();
+    jest.advanceTimersByTime(100); await flush();
+    expect(learn).not.toHaveBeenCalled();
+    const next = withAggression(100, 1200, 0.252);
+    run.input({ observation: { ...next, controls: { ...NEUTRAL, throttle: 0, brake: 1 } } }, 1200);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.reward!.pedalComparison).toMatchObject({ aggression: 0, target: { throttle: 0, brake: 1 } });
+    expect(run.loop.state.reward!.referencePedal).toBeCloseTo(0.2 * Math.exp(-2 / 3));
+    expect(decide).toHaveBeenLastCalledWith(next.features, train, expect.anything());
+    if (train) expect(learn.mock.calls[0][0].features.slice(-3)[0]).toBe(-1);
+    else expect(run.policy.checkpoint()).toEqual(before);
+    const last = withAggression(100, 1400, 0.254);
+    run.input({ observation: { ...last, controls: { ...NEUTRAL, ...last.pedals.target } } }, 1400);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.reward!.pedalComparison.aggression).toBe(100);
+    expect(run.loop.state.reward!.pedalComparison.target.brake).toBeCloseTo(0.04);
+    expect(run.loop.state.reward!.referencePedal).toBeCloseTo(0.2 * Math.exp(-2 / 3));
+    expect(run.policy.steps).toBe(train ? 2 : 0);
+    if (!train) expect(run.policy.checkpoint()).toEqual(before);
+    await run.loop.stop();
+    expect(run.controller.apply).toHaveBeenLastCalledWith(NEUTRAL);
+});
+
+it('waits for both the image and measured pedals to follow acknowledgement', async () => {
+    const run = setup();
+    run.loop.start(run.policy, true); await flush();
+    const freshImage = { ...run.fixture.observation, capturedAt: 1200, normalizedPosition: 0.252 };
+    run.input({ observation: freshImage }, 1200, 1000);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.policy.steps).toBe(0);
+    run.input({ observation: freshImage }, 1300, 1200);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.policy.steps).toBe(1);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.policy.steps).toBe(1);
+    await run.loop.stop();
+});
+
+it.each([true, false])('ends the episode and releases controls on a reference change before reusing an image (training=%s)', async (train) => {
+    const run = setup();
+    run.loop.start(run.policy, train); await flush();
+    run.input({ observation: { ...run.fixture.observation, reference: trainingFixture().observation.reference } }, 1000);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state).toMatchObject({ mode: 'idle', action: NEUTRAL });
+    expect(run.loop.state.status).toMatch(/reference changed/);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(NEUTRAL);
+    expect(run.policy.steps).toBe(0);
+});
+
+it('blocks starting and stops an active episode when reference data is unavailable', async () => {
+    const run = setup();
+    run.input({ error: 'Live Map needs a reference lap with usable raw XYZ coordinates, normalized positions, throttle and brake.' }, 1000);
+    expect(() => run.loop.start(run.policy, true)).toThrow(/reference lap/);
+    expect(run.controller.apply).not.toHaveBeenCalled();
+    run.input({ observation: run.fixture.observation }, 1000);
+    run.loop.start(run.policy, true); await flush();
+    run.input({ error: 'Live Map reference changed. Waiting for matching Track Vision inputs.' }, 1200);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.mode).toBe('idle');
+    expect(run.policy.steps).toBe(0);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(NEUTRAL);
 });

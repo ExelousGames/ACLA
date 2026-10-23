@@ -95,10 +95,15 @@ it.each([1, 2])('restores deterministic shifting choice %s and respects masks at
     expect(model.decide(observation.features, false, { up: false, down: false }).shift).toBe(0);
 });
 
-it('rejects legacy checkpoints and incomplete shifting heads', () => {
+it('rejects incorrect input dimensions and incomplete shifting heads', () => {
     const { observation } = trainingFixture();
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
-    expect(() => DrivingPolicy.restore({ ...checkpoint, version: 1 })).toThrow(/predates learned gear shifting/);
     expect(() => DrivingPolicy.restore({ ...checkpoint, inputs: checkpoint.inputs - 2 })).toThrow(/checkpoint/);
     expect(() => DrivingPolicy.restore({ ...checkpoint, outputWeights: checkpoint.outputWeights.slice(0, 4) })).toThrow(/checkpoint/);
+});
+
+it.each([1, 2, 4])('rejects unsupported checkpoint version %s', (version) => {
+    const { observation } = trainingFixture();
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
+    expect(() => DrivingPolicy.restore({ ...checkpoint, version })).toThrow(/checkpoint/);
 });

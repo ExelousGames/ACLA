@@ -3,13 +3,23 @@ import { useOptionalOperationComponentRefDirectory } from 'contexts/OperationCom
 import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import type { TrackVisionHandle } from 'views/live-session/track-vision/LiveTrackVision';
+import type { LiveTrajectoryMapHandle } from 'views/live-session/LiveTrajectoryMap';
 import { NEUTRAL, ObservationResult, readDrivingObservation } from './driving-observation';
 import { DrivingPolicy } from './driving-policy';
 import { DrivingTrainingLoop, initialTrainingState } from './driving-training-loop';
+import { aggressionRadius } from './driving-reference';
 import type { AccControlPreset, ControllerAction, VirtualController } from './virtual-controller';
 import './AiDrivingTraining.css';
 
-const STORAGE_KEY = 'acla.self-driving.policy.v2';
+const STORAGE_KEY = 'acla.self-driving.policy.v3';
+const AGGRESSION_KEY = 'acla.self-driving.aggression';
+function readAggression(): number {
+    try {
+        const stored = localStorage.getItem(AGGRESSION_KEY);
+        const value: unknown = stored === null ? 50 : JSON.parse(stored);
+        return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100 ? value : 50;
+    } catch { return 50; }
+}
 const TEST_CONTROLS = [
     { key: 'throttle', label: 'throttle', value: 0.25 },
     { key: 'brake', label: 'brake', value: 0.25 },
@@ -42,6 +52,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const [modelSteps, setModelSteps] = useState<number | null>(null);
     const [error, setError] = useState('');
     const [saved, setSaved] = useState(false);
+    const [aggression, setAggression] = useState(readAggression);
+    const aggressionRef = useRef(aggression);
     const [testAction, setTestAction] = useState<ControllerAction>(NEUTRAL);
     const running = state.mode !== 'idle';
 
@@ -54,7 +66,16 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     };
     const read = (): ObservationResult => {
         const vision = directoryRef.current?.findComponentRef<TrackVisionHandle>(getVisualizationComponentName('track-vision'))?.current;
-        return readDrivingObservation(liveTelemetryStore.getSnapshot(), vision?.getLatestDetection() ?? null);
+        const map = directoryRef.current?.findComponentRef<LiveTrajectoryMapHandle>(getVisualizationComponentName('live-trajectory-map'))?.current;
+        return readDrivingObservation(liveTelemetryStore.getSnapshot(), vision?.getLatestDetection() ?? null,
+            map?.getReferenceLap() ?? null, aggressionRef.current);
+    };
+    const changeAggression = (value: number) => {
+        aggressionRef.current = value;
+        setAggression(value);
+        setInputs(read());
+        try { localStorage.setItem(AGGRESSION_KEY, JSON.stringify(value)); }
+        catch { setError('Driving aggression could not be saved on this device.'); }
     };
 
     useEffect(() => {
@@ -65,8 +86,6 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 policy.current = DrivingPolicy.restore(JSON.parse(savedModel));
                 setModelSteps(policy.current.steps);
                 setSaved(true);
-            } else if (localStorage.getItem('acla.self-driving.policy.v1')) {
-                setError('The saved model predates learned gear shifting. Create a new model to train with gear changes. The old checkpoint is preserved.');
             }
         } catch { setError('The saved model is incompatible. Create a new model or import a checkpoint.'); }
         const api = window.virtualController;
@@ -235,16 +254,35 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <h2>Live inputs</h2>
                 <p>Start live telemetry, add Live Map and Track Vision, then start screen capture in Live Session.</p>
                 <div className="driving-input-status" data-ready={Boolean(observation)}>{observation ? 'All model inputs ready' : inputs.error}</div>
+                <div className="driving-aggression">
+                    <div><label htmlFor="driving-aggression">Driving aggression</label><output htmlFor="driving-aggression">{aggression}</output></div>
+                    <input id="driving-aggression" type="range" min="0" max="100" step="1" value={aggression}
+                        aria-describedby="driving-aggression-meaning" onChange={(event) => changeAggression(Number(event.target.value))} />
+                    <div className="driving-aggression-scale"><span>0 · Cautious</span><span>50 · Reference</span><span>100 · Aggressive</span></div>
+                    <p id="driving-aggression-meaning">{aggression < 50 ? 'Reward earlier braking and later throttle.'
+                        : aggression > 50 ? 'Reward later braking and earlier throttle.' : 'Reward matching the reference pedals.'}
+                        {' '}Window radius: {aggressionRadius(aggression).toFixed(1)} coordinate units (maximum 20).</p>
+                    <button onClick={() => changeAggression(50)}>Reset to reference</button>
+                </div>
                 <dl className="driving-details">
                     <dt>Game / car</dt><dd>{observation ? `${observation.context.game} / ${observation.context.car}` : 'Waiting'}</dd>
                     <dt>Map</dt><dd>{observation?.context.map ?? 'Waiting'}</dd>
                     <dt>Speed</dt><dd>{observation ? `${observation.speed.toFixed(1)} km/h` : '—'}</dd>
                     <dt>Gear / RPM</dt><dd>{observation ? `${observation.gear < 0 ? 'R' : observation.gear === 0 ? 'N' : observation.gear} / ${observation.rpm}` : '—'}</dd>
                     <dt>Lap position</dt><dd>{observation ? `${(observation.normalizedPosition * 100).toFixed(1)}%` : '—'}</dd>
-                    <dt>Reference error</dt><dd>{observation ? `${observation.referenceDistance.toFixed(2)} m` : '—'}</dd>
+                    <dt>Reference error</dt><dd>{observation ? `${observation.referenceDistance.toFixed(2)} coordinate units` : '—'}</dd>
                     <dt>Position + segmentation</dt><dd>{observation ? `${observation.context.classes.length} classes · ${observation.features.length} features` : 'Waiting'}</dd>
                 </dl>
-                <p className="driving-note">The policy uses velocity XYZ, speed, current gear, engine RPM, game, car, map, normalized position, rotation, current controls, position-model deltas and segmentation masks.</p>
+                <table className="driving-pedals">
+                    <caption>Live pedals · current aggression</caption>
+                    <thead><tr><th scope="col">Pedal</th><th scope="col">Reference</th><th scope="col">Target</th><th scope="col">Measured</th></tr></thead>
+                    <tbody>{(['throttle', 'brake'] as const).map((pedal) => <tr key={pedal}>
+                        <th scope="row">{pedal === 'throttle' ? 'Throttle' : 'Brake'}</th>
+                        {[observation?.pedals.reference[pedal], observation?.pedals.target[pedal], observation?.controls[pedal]]
+                            .map((value, index) => <td key={index}>{value === undefined ? '—' : `${(value * 100).toFixed(1)}%`}</td>)}
+                    </tr>)}</tbody>
+                </table>
+                <p className="driving-note">The policy uses velocity XYZ, speed, current gear, engine RPM, game, car, map, normalized position, rotation, current controls, position-model deltas, segmentation masks, aggression and target pedals. It generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights.</p>
             </section>
             <section className="driving-card">
                 <div className="driving-card-title"><h2>Steering wheel (vJoy)</h2><span>{connected ? 'Connected' : 'Disconnected'}</span></div>
@@ -326,9 +364,12 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             <section className="driving-card">
                 <h2>Reward signal</h2>
                 <dl className="driving-rewards">
+                    <div><dt>Reference pedal reward</dt><dd>{state.reward?.referencePedal.toFixed(3) ?? '0.000'}</dd>
+                        <p>Measured throttle and brake earn more reward when they match the targets, weighted by forward progress and reference proximity. Stationary or reverse driving earns no pedal bonus.</p>
+                        {state.reward && <p>Last scored at aggression {state.reward.pedalComparison.aggression}: throttle {(state.reward.pedalComparison.measured.throttle * 100).toFixed(1)}% / target {(state.reward.pedalComparison.target.throttle * 100).toFixed(1)}%; brake {(state.reward.pedalComparison.measured.brake * 100).toFixed(1)}% / target {(state.reward.pedalComparison.target.brake * 100).toFixed(1)}%.</p>}
+                    </div>
                     <div><dt>Drive fast</dt><dd>{state.reward?.speed.toFixed(3) ?? '0.000'}</dd><p>Covering the same section faster earns a larger speed bonus. It requires forward lap progress and decreases farther from the reference line.</p></div>
                     <div><dt>Follow the reference line</dt><dd>{state.reward?.line.toFixed(3) ?? '0.000'}</dd><p>Forward lap progress earns more reward closer to the reference line. Standing still earns no progress reward.</p></div>
-                    <div><dt>Converge smoothly</dt><dd>{state.reward?.convergence.toFixed(3) ?? '0.000'}</dd><p>Reducing position error earns reward, weighted by how smoothly the car approaches the line.</p></div>
                     <div><dt>Penalize instability</dt><dd>{state.reward?.instability.toFixed(3) ?? '0.000'}</dd><p>Excessive yaw, pitch and roll changes, and overlapping pedals reduce reward.</p></div>
                 </dl>
                 <p className="driving-note">Rewards use the position model’s reference delta. Stop or input loss ends the episode; learning resumes only after Start training.</p>

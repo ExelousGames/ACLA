@@ -18,6 +18,17 @@
 .driving-output-options select:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
 .driving-input-status { font-size: 13px; color: #e8c783; padding: 10px 12px; border-radius: 6px; background: #d5a3450c; }
 .driving-input-status[data-ready="true"] { color: #61e8a3; background: #00e6760c; }
+.driving-aggression { margin-top: 22px; font-size: 13px; }
+.driving-aggression > div { display: flex; justify-content: space-between; gap: 8px; }
+.driving-aggression output { font-variant-numeric: tabular-nums; }
+.driving-aggression input { display: block; box-sizing: border-box; width: 100%; margin: 12px 0; accent-color: #00e676; }
+.driving-aggression input:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
+.driving-aggression-scale { font-size: 11px; color: #a3adb7; }
+.driving-pedals { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.driving-pedals caption { text-align: left; color: #a3adb7; margin: 16px 0 8px; }
+.driving-pedals th, .driving-pedals td { padding: 8px 2px; text-align: right; overflow-wrap: anywhere; border-bottom: 1px solid #ffffff0d; }
+.driving-pedals th { font-weight: 500; }
+.driving-pedals th:first-child { text-align: left; }
 .driving-details { display: grid; grid-template-columns: auto 1fr; gap: 12px 18px; font-size: 13px; margin-top: 22px; }
 .driving-details dt { color: #a3adb7; }
 .driving-details dd { margin: 0; text-align: right; overflow-wrap: anywhere; }

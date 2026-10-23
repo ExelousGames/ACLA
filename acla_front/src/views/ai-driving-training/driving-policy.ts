@@ -16,7 +16,7 @@ export interface PolicyDecision {
     action: DrivingAction;
 }
 export interface PolicyCheckpoint {
-    version: 2;
+    version: 3;
     algorithm: 'online-actor-critic';
     context: DrivingObservation['context'];
     inputs: number;
@@ -95,25 +95,22 @@ export class DrivingPolicy {
     }
 
     checkpoint(): PolicyCheckpoint {
-        return { version: 2, algorithm: 'online-actor-critic', context: this.context, inputs: this.inputs, steps: this.steps,
+        return { version: 3, algorithm: 'online-actor-critic', context: this.context, inputs: this.inputs, steps: this.steps,
             hiddenWeights: this.hiddenWeights.map((row) => row.slice()), outputWeights: this.outputWeights.map((row) => row.slice()) };
     }
 
     static restore(value: unknown): DrivingPolicy {
-        if ((value as { version?: number } | null)?.version === 1) {
-            throw new Error('This checkpoint predates learned gear shifting. Create a new model.');
-        }
         const data = value as PolicyCheckpoint;
         const matrix = (rows: unknown, height: number, width: number) => Array.isArray(rows) && rows.length === height
             && rows.every((row) => Array.isArray(row) && row.length === width && row.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 5));
-        if (!data || data.version !== 2 || data.algorithm !== 'online-actor-critic'
+        if (!data || data.version !== 3 || data.algorithm !== 'online-actor-critic'
             || !Number.isInteger(data.inputs) || data.inputs < 1 || data.inputs > 1200
             || !Number.isSafeInteger(data.steps) || data.steps < 0
             || !data.context || !['game', 'car', 'map'].every((key) => typeof (data.context as any)[key] === 'string' && (data.context as any)[key].length > 0)
             || !Array.isArray(data.context.classes) || !data.context.classes.length || data.context.classes.length > 64
             || data.context.classes.some((name) => typeof name !== 'string' || !name)
             || new Set(data.context.classes).size !== data.context.classes.length
-            || data.inputs !== 68 + data.context.classes.length * 16
+            || data.inputs !== 71 + data.context.classes.length * 16
             || !matrix(data.hiddenWeights, HIDDEN, data.inputs + 1) || !matrix(data.outputWeights, 7, HIDDEN + 1)) {
             throw new Error('Invalid or incompatible self-driving model checkpoint.');
         }
