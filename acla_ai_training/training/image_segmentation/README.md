@@ -376,7 +376,9 @@ reference_delta_xyz = inverse_world_rotation @ (reference_lap_xyz(s) - driver_xy
 Targets use car-local **X right, Y forward, Z up**, keeping the source coordinate
 units. Preparation uses `Physics_heading`, `Physics_pitch`, and `Physics_roll`
 in radians to invert the car's world rotation, accounting for the ACC world Y/Z
-axis swap. All three angles must be finite; missing rotation is an error.
+axis swap. The SDK-axis body-to-world matrix is `Ry(-heading) Rx(-pitch) Rz(-roll)`;
+world-offset row vectors multiply by this matrix to obtain local offsets.
+All three angles must be finite; missing rotation is an error.
 Normalized position `s` is a lookup key and a model input in `[0, 1]`.
 Reference-lap and driver XYZ must use the same world frame and scale before
 subtraction. This preparation currently supports ACC only: iRacing sessions are

@@ -4,7 +4,8 @@ Run without arguments for step-by-step prompts, or pass flags for unattended use
 Telemetry is used during preparation; the trainer receives only prepared inputs
 and targets in a .position.json file beside each image, discovered recursively
 during training. Heading/pitch/roll rotate reference-minus-driver offsets into
-local XYZ (right, forward, up). Driver world XYZ is retained only for the
+local XYZ (right, forward, up), using negative ACC heading, pitch, and roll
+in the SDK-axis rotation matrices. Driver world XYZ is retained only for the
 annotation map; neither driver XYZ nor rotation is a model input.
 Local targets currently support ACC only; iRacing sessions are skipped because
 their recorded position and heading fields use different world frames.

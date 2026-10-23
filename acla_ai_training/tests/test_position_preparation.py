@@ -131,14 +131,16 @@ def change_pair(data, update):
 
 @pytest.mark.parametrize("rotation, offset, expected", [
     ([0, 0, 0], [2, 3, 4], [2, 3, 4]),
-    ([np.pi / 2, 0, 0], [2, 3, 4], [-3, 2, 4]),
-    ([-np.pi / 2, 0, 0], [2, 3, 4], [3, -2, 4]),
-    ([0, np.pi / 2, 0], [2, 3, 4], [2, -4, 3]),
-    ([0, 0, np.pi / 2], [2, 3, 4], [4, 3, -2]),
-    ([np.pi / 2, np.pi / 2, np.pi / 2], [2, 3, 4], [2, -4, 3]),
+    ([np.pi / 2, 0, 0], [2, 3, 4], [3, -2, 4]),
+    ([-np.pi / 2, 0, 0], [2, 3, 4], [-3, 2, 4]),
+    ([0, np.pi / 2, 0], [2, 3, 4], [2, 4, -3]),
+    ([0, -np.pi / 2, 0], [2, 3, 4], [2, -4, 3]),
+    ([0, 0, np.pi / 2], [2, 3, 4], [-4, 3, 2]),
+    ([0, 0, -np.pi / 2], [2, 3, 4], [4, 3, -2]),
+    ([np.pi / 2, np.pi / 2, np.pi / 2], [2, 3, 4], [-2, 4, 3]),
     ([1, 2, 3], [0, 0, 0], [0, 0, 0]),
 ])
-def test_local_targets_invert_world_rotation_in_right_forward_up_order(rotation, offset, expected):
+def test_local_targets_use_acc_angle_signs_in_right_forward_up_order(rotation, offset, expected):
     targets = local_targets([offset], rotation)
     np.testing.assert_allclose(targets, [expected], atol=1e-6)
     assert targets.dtype == np.float32
@@ -147,8 +149,8 @@ def test_local_targets_invert_world_rotation_in_right_forward_up_order(rotation,
 
 def test_same_local_offset_has_same_target_after_world_heading_changes():
     offset = np.array([[2, 3, 4], [-1, -5, -2]], dtype=np.float64)
-    # A positive quarter turn maps world (x, forward) to (forward, -x).
-    turned = np.column_stack((offset[:, 1], -offset[:, 0], offset[:, 2]))
+    # A positive ACC heading quarter turn maps body (right, forward) to (-forward, right).
+    turned = np.column_stack((-offset[:, 1], offset[:, 0], offset[:, 2]))
     np.testing.assert_allclose(local_targets(offset, [0, 0, 0]), local_targets(turned, [np.pi / 2, 0, 0]))
 
 
@@ -168,7 +170,7 @@ def test_preparation_rotation_changes_only_targets_and_preserves_world_geometry(
     prepare(dataset)
     after = load_position_manifest(dataset.downloads)["a" * 24][1]
     np.testing.assert_array_equal(before["references"], after["references"])
-    np.testing.assert_allclose(after["target"], [[-2.7, 1.9, 3.8], [-2.7, -2.1, -4.2]])
+    np.testing.assert_allclose(after["target"], [[2.7, -1.9, 3.8], [2.7, 2.1, -4.2]])
     for field in ("image", "game", "map_name", "normalized_position"):
         assert before[field] == after[field]
     saved = json.loads(after["image"].with_suffix(".position.json").read_text())

@@ -21,8 +21,9 @@ def local_targets(world_offsets, world_rotation):
     """Rotate ACC reference offsets into car-local right/forward/up coordinates.
 
     Prepared ACC world coordinates are X/Z/Y relative to the raw Y-up SDK.
-    Heading, pitch, roll are radians; body-to-world is Ry(heading) Rx(pitch)
-    Rz(roll) in SDK axes. Row vectors multiply by that matrix to invert it.
+    Heading, pitch, roll are ACC radians; body-to-world is Ry(-heading)
+    Rx(-pitch) Rz(-roll) in SDK axes. Row vectors multiply by that matrix
+    to invert it.
     Keep the subtraction and rotation in float64 until the targets are complete.
     """
     offsets = np.asarray(world_offsets, dtype=np.float64)
@@ -31,8 +32,8 @@ def local_targets(world_offsets, world_rotation):
         raise ValueError("World offsets must contain finite XYZ triples.")
     if rotation.shape != (3,) or not np.isfinite(rotation).all():
         raise ValueError("World rotation must be finite heading, pitch, roll in radians.")
-    ch, cp, cr = np.cos(rotation)
-    sh, sp, sr = np.sin(rotation)
+    ch, cp, cr = np.cos(-rotation)
+    sh, sp, sr = np.sin(-rotation)
     yaw = np.array([[ch, 0, sh], [0, 1, 0], [-sh, 0, ch]])
     pitch = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
     roll = np.array([[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]])
