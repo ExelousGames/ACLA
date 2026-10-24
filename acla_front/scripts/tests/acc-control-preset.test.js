@@ -50,7 +50,7 @@ test('binds the selected device using ACC identity, independent of device order'
     })));
     assert.deepEqual(preset.commandDevices[1].raceCommandAxisList, [{ axisCode: 'Clutch', axisIndex: 3 }]);
     assert.deepEqual(preset.commandDevices[2].raceCommandAxisList, []);
-    assert.deepEqual(preset.commandDevices[1].raceCommandButtonList, original.commandDevices[1].raceCommandButtonList);
+    assert.deepEqual(preset.commandDevices[1].raceCommandButtonList, []);
     assert.deepEqual(preset.keyboardSettings, original.keyboardSettings);
     assert.deepEqual(preset.gamepadSettings, original.gamepadSettings);
     assert.equal(JSON.stringify(original), before);
@@ -70,9 +70,37 @@ test('replaces conflicting shift bindings on the selected device and preserves u
     assert.deepEqual(preset.commandDevices[0].raceCommandButtonList.map(({ buttonIndex, instantActionCode }) =>
         ({ buttonIndex, instantActionCode })), [look,
         { buttonIndex: 0, instantActionCode: 'GearUp' }, { buttonIndex: 1, instantActionCode: 'GearDown' }]);
-    assert.deepEqual(preset.commandDevices[1].raceCommandButtonList, original.commandDevices[1].raceCommandButtonList);
+    assert.deepEqual(preset.commandDevices[1].raceCommandButtonList, []);
     assert.equal(JSON.stringify(original), before);
     assert.deepEqual(buildAccControlPreset(preset, 3), preset);
+});
+
+test('moves both shifts off other vJoy devices and physical wheels regardless of device order', () => {
+    for (const reverse of [false, true]) {
+        const original = controls();
+        const look = { buttonIndex: 5, instantActionCode: 'LookLeft' };
+        original.commandDevices[1].raceCommandButtonList.push(
+            { buttonIndex: 6, instantActionCode: 'GearDown' }, look);
+        original.commandDevices[2].raceCommandButtonList = [
+            { buttonIndex: 0, instantActionCode: 'GearUp' },
+            { buttonIndex: 1, instantActionCode: 'GearDown' }, look,
+        ];
+        if (reverse) original.commandDevices.reverse();
+        const before = JSON.stringify(original);
+        const preset = buildAccControlPreset(original, 3);
+        const shifts = preset.commandDevices.flatMap((device) => (device.raceCommandButtonList || [])
+            .filter(({ instantActionCode }) => ['GearUp', 'GearDown'].includes(instantActionCode))
+            .map(({ instantActionCode, buttonIndex }) => ({ device: device.productName, instantActionCode, buttonIndex })));
+        assert.deepEqual(shifts, [
+            { device: 'vJoy Device 3', instantActionCode: 'GearUp', buttonIndex: 0 },
+            { device: 'vJoy Device 3', instantActionCode: 'GearDown', buttonIndex: 1 },
+        ]);
+        for (const device of preset.commandDevices.filter(({ productName }) => productName !== 'vJoy Device 3')) {
+            assert.deepEqual(device.raceCommandButtonList, [look]);
+        }
+        assert.equal(JSON.stringify(original), before);
+        assert.deepEqual(buildAccControlPreset(preset, 3), preset);
+    }
 });
 
 test('recognizes the unnumbered first device without falling back to it for other IDs', () => {

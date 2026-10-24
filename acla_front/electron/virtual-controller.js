@@ -45,21 +45,20 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
   ipcMain.handle('virtual-controller-connect', async (event, options = {}) => {
     const contents = owner(event);
     if (platform !== 'win32') throw new Error('Virtual controllers currently require Windows.');
-    const backend = options?.backend ?? 'vjoy';
     const deviceId = options?.deviceId ?? 1;
     if (!options || typeof options !== 'object' || Array.isArray(options)
-      || backend !== 'vjoy' || !Number.isInteger(deviceId) || deviceId < 1 || deviceId > 16) {
+      || !Number.isInteger(deviceId) || deviceId < 1 || deviceId > 16) {
       throw new Error('Invalid controller output. Use a vJoy steering wheel with a device ID from 1 to 16.');
     }
     if (active) {
-      if (active.backend !== backend || active.deviceId !== deviceId) throw new Error('Disconnect before changing controller output.');
+      if (active.deviceId !== deviceId) throw new Error('Disconnect before changing controller output.');
       return active.ready;
     }
     const script = app.isPackaged ? path.join(process.resourcesPath, 'py-scripts', 'virtual_controller.py')
       : path.join(app.getAppPath(), 'src', 'py-scripts', 'virtual_controller.py');
-    const child = spawnProcess(getPythonExecutable(), ['-u', script, '--backend', backend, '--device-id', String(deviceId)],
+    const child = spawnProcess(getPythonExecutable(), ['-u', script, '--device-id', String(deviceId)],
       { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    const connection = { child, contents, backend, deviceId, pending: new Map(), sequence: 0, closed: false, started: false,
+    const connection = { child, contents, deviceId, pending: new Map(), sequence: 0, closed: false, started: false,
       backgroundThrottling: contents.getBackgroundThrottling() };
     // The simulator owns foreground focus while the controller is active.
     contents.setBackgroundThrottling(false);
@@ -81,9 +80,9 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
         connection.started = true;
         connection.resolveReady();
       } else if (message.type === 'error') close(connection, message.error || 'Virtual controller failed.');
-      else if (message.type === 'applied') {
+      else if (message.type === 'applied' || message.type === 'physical') {
         const pending = connection.pending.get(message.id);
-        if (pending) { clearTimeout(pending.timer); connection.pending.delete(message.id); pending.resolve(); }
+        if (pending) { clearTimeout(pending.timer); connection.pending.delete(message.id); pending.resolve(message.devices); }
       }
     });
     let stderr = '';
@@ -93,12 +92,7 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
     child.on('exit', () => close(connection, stderr.trim() || 'Virtual controller process ended. Reconnect to continue.'));
     return connection.ready;
   });
-  ipcMain.handle('virtual-controller-apply', async (event, action) => {
-    owner(event);
-    if (!validAction(action)) {
-      close(active, 'Invalid controller inputs.');
-      throw new Error('Controller inputs must be finite: pedals 0–1 and steering −1–1; shift buttons must be booleans with only one pressed at a time.');
-    }
+  const request = (command) => {
     const connection = active;
     if (!connection?.started || connection.closed) throw new Error('Connect the virtual controller first.');
     if (connection.pending.size >= 4) { close(connection, 'Controller command queue overflow.'); throw new Error('Controller is not responding.'); }
@@ -106,8 +100,20 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => close(connection, 'Virtual controller stopped responding.'), 1000);
       connection.pending.set(id, { resolve, reject, timer });
-      connection.child.stdin.write(JSON.stringify({ id, action }) + '\n', (error) => { if (error) close(connection, error.message); });
+      connection.child.stdin.write(JSON.stringify({ id, ...command }) + '\n', (error) => { if (error) close(connection, error.message); });
     });
+  };
+  ipcMain.handle('virtual-controller-apply', async (event, action) => {
+    owner(event);
+    if (!validAction(action)) {
+      close(active, 'Invalid controller inputs.');
+      throw new Error('Controller inputs must be finite: pedals 0–1 and steering −1–1; shift buttons must be booleans with only one pressed at a time.');
+    }
+    return request({ action });
+  });
+  ipcMain.handle('virtual-controller-read-physical', async (event) => {
+    owner(event);
+    return request({ type: 'read-physical' });
   });
   ipcMain.handle('virtual-controller-disconnect', (event) => { owner(event); close(active); });
   ipcMain.handle('virtual-controller-install-acc-preset', async (event, deviceId) => {

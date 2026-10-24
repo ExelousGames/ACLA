@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const { DESKTOP_GAME_SET, isRecordingStartFailure } = require('../../electron/recording/recording-protocol');
 const { validateLiveTelemetryRow } = require('../data/live-telemetry-dataset');
 contextBridge.exposeInMainWorld('virtualController', {
+    readPhysicalControls: () => ipcRenderer.invoke('virtual-controller-read-physical'),
     connect: (options) => ipcRenderer.invoke('virtual-controller-connect', options),
     apply: (action) => ipcRenderer.invoke('virtual-controller-apply', action),
     disconnect: () => ipcRenderer.invoke('virtual-controller-disconnect'),

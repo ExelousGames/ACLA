@@ -1,4 +1,5 @@
 import { clamp, DrivingAction, DrivingObservation } from './driving-observation';
+import { DRIVING_MEMORY_INPUTS } from './driving-memory';
 
 const HIDDEN = 32;
 const SIGMA = 0.25;
@@ -16,8 +17,8 @@ export interface PolicyDecision {
     action: DrivingAction;
 }
 export interface PolicyCheckpoint {
-    /** Version 4 uses car-local right/forward/up position features. */
-    version: 4;
+    /** Version 8 adds three seconds of timestamped driving history. */
+    version: 8;
     algorithm: 'online-actor-critic';
     context: DrivingObservation['context'];
     inputs: number;
@@ -30,10 +31,12 @@ export interface PolicyCheckpoint {
 export class DrivingPolicy {
     private hiddenWeights: number[][];
     private outputWeights: number[][];
+    readonly inputs: number;
     steps = 0;
 
-    constructor(readonly context: DrivingObservation['context'], readonly inputs: number,
+    constructor(readonly context: DrivingObservation['context'], readonly observationInputs: number,
         private random: () => number = Math.random) {
+        const inputs = this.inputs = observationInputs + DRIVING_MEMORY_INPUTS;
         this.hiddenWeights = Array.from({ length: HIDDEN }, () => Array.from({ length: inputs + 1 },
             () => (random() * 2 - 1) / Math.sqrt(inputs)));
         this.outputWeights = Array.from({ length: 7 }, (_, i) => Array.from({ length: HIDDEN + 1 },
@@ -41,7 +44,7 @@ export class DrivingPolicy {
     }
 
     matches(observation: DrivingObservation): boolean {
-        return observation.features.length === this.inputs && JSON.stringify(this.context) === JSON.stringify(observation.context);
+        return observation.features.length === this.observationInputs && JSON.stringify(this.context) === JSON.stringify(observation.context);
     }
 
     decide(features: number[], explore: boolean, shifts: ShiftAvailability = { up: true, down: true }): PolicyDecision {
@@ -83,6 +86,30 @@ export class DrivingPolicy {
         gradients.push(0.001 * advantage);
         gradients.push(...decision.shiftProbabilities.map((probability, i) =>
             0.0003 * advantage * ((i === decision.shift ? 1 : 0) - probability)));
+        this.update(decision, gradients);
+        return advantage;
+    }
+
+    /** Behavior cloning uses the applied human action as a target, never as another input.
+     * Human actions are off-policy: do not apply the on-policy reward gradient to them. */
+    learnDemonstration(features: number[], action: DrivingAction, shifts: ShiftAvailability): void {
+        if (![action.throttle, action.brake, action.steering].every(Number.isFinite)
+            || action.throttle < 0 || action.throttle > 1 || action.brake < 0 || action.brake > 1
+            || Math.abs(action.steering) > 1 || (action.shiftUp && action.shiftDown)) {
+            throw new Error('Invalid demonstration action.');
+        }
+        const decision = this.decide(features, false, shifts);
+        const logit = (value: number) => { const p = clamp(value, 0.001, 0.999); return Math.log(p / (1 - p)); };
+        const targets = [logit(action.throttle), logit(action.brake), Math.atanh(clamp(action.steering, -0.999, 0.999))];
+        const gradients = targets.map((target, i) => 0.001 * clamp(target - decision.means[i], -5, 5));
+        const shift = action.shiftUp ? 1 : action.shiftDown ? 2 : 0;
+        gradients.push(0); // Demonstrations supervise the actor; no fabricated reward for the critic.
+        gradients.push(...decision.shiftProbabilities.map((probability, i) =>
+            0.001 * ((i === shift ? 1 : 0) - probability)));
+        this.update(decision, gradients);
+    }
+
+    private update(decision: PolicyDecision, gradients: number[]): void {
         const hiddenGradient = decision.hidden.map((value, j) => (1 - value ** 2)
             * gradients.reduce((sum, gradient, i) => sum + gradient * this.outputWeights[i][j], 0));
         this.outputWeights.forEach((row, i) => row.forEach((value, j) => {
@@ -92,11 +119,10 @@ export class DrivingPolicy {
             row[j] = clamp(value + hiddenGradient[i] * (j === this.inputs ? 1 : decision.features[j]), -5, 5);
         }));
         this.steps++;
-        return advantage;
     }
 
     checkpoint(): PolicyCheckpoint {
-        return { version: 4, algorithm: 'online-actor-critic', context: this.context, inputs: this.inputs, steps: this.steps,
+        return { version: 8, algorithm: 'online-actor-critic', context: this.context, inputs: this.inputs, steps: this.steps,
             hiddenWeights: this.hiddenWeights.map((row) => row.slice()), outputWeights: this.outputWeights.map((row) => row.slice()) };
     }
 
@@ -104,18 +130,18 @@ export class DrivingPolicy {
         const data = value as PolicyCheckpoint;
         const matrix = (rows: unknown, height: number, width: number) => Array.isArray(rows) && rows.length === height
             && rows.every((row) => Array.isArray(row) && row.length === width && row.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 5));
-        if (!data || data.version !== 4 || data.algorithm !== 'online-actor-critic'
-            || !Number.isInteger(data.inputs) || data.inputs < 1 || data.inputs > 1200
+        if (!data || data.version !== 8 || data.algorithm !== 'online-actor-critic'
+            || !Number.isInteger(data.inputs) || data.inputs < 1 || data.inputs > 1200 + DRIVING_MEMORY_INPUTS
             || !Number.isSafeInteger(data.steps) || data.steps < 0
             || !data.context || !['game', 'car', 'map'].every((key) => typeof (data.context as any)[key] === 'string' && (data.context as any)[key].length > 0)
             || !Array.isArray(data.context.classes) || !data.context.classes.length || data.context.classes.length > 64
             || data.context.classes.some((name) => typeof name !== 'string' || !name)
             || new Set(data.context.classes).size !== data.context.classes.length
-            || data.inputs !== 71 + data.context.classes.length * 16
+            || data.inputs !== 68 + data.context.classes.length * 16 + DRIVING_MEMORY_INPUTS
             || !matrix(data.hiddenWeights, HIDDEN, data.inputs + 1) || !matrix(data.outputWeights, 7, HIDDEN + 1)) {
             throw new Error('Invalid or incompatible self-driving model checkpoint.');
         }
-        const policy = new DrivingPolicy(data.context, data.inputs);
+        const policy = new DrivingPolicy(data.context, data.inputs - DRIVING_MEMORY_INPUTS);
         policy.hiddenWeights = data.hiddenWeights.map((row) => row.slice());
         policy.outputWeights = data.outputWeights.map((row) => row.slice());
         policy.steps = data.steps;

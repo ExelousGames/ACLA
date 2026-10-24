@@ -11,6 +11,38 @@ from virtual_wheel import AXES, VJoyController
 
 
 class ControllerTests(unittest.TestCase):
+    def test_physical_reads_do_not_refresh_output_watchdog(self):
+        controller, physical = Mock(), Mock()
+        physical.read.return_value = [{"id": "wheel", "axes": {"axis0": 0.5}, "buttons": []}]
+
+        class ReadingQueue:
+            now = 0
+
+            def get(self, timeout):
+                self.now += 0.1
+                if self.now == 0.1:
+                    return {"id": 1, "action": {"throttle": 0.8, "brake": 0, "steering": 0}}
+                return {"id": 2, "type": "read-physical"}
+
+        commands, messages = ReadingQueue(), []
+        with self.assertRaisesRegex(RuntimeError, "watchdog"):
+            serve(controller, commands, messages.append, lambda: commands.now, physical)
+        self.assertIn({"type": "physical", "id": 2, "devices": physical.read.return_value}, messages)
+        controller.apply.assert_called_once()
+        self.assertEqual(controller.reset.call_count, 2)
+        controller.close.assert_called_once()
+        physical.close.assert_called_once()
+
+    def test_physical_read_failure_releases_output_and_input_handles(self):
+        controller, physical, commands = Mock(), Mock(), queue.Queue()
+        physical.read.side_effect = RuntimeError('Controller input failed')
+        commands.put({'type': 'read-physical', 'id': 1})
+        with self.assertRaisesRegex(RuntimeError, 'Controller input failed'):
+            serve(controller, commands, lambda _: None, physical=physical)
+        self.assertEqual(controller.reset.call_count, 2)
+        controller.close.assert_called_once()
+        physical.close.assert_called_once()
+
     def test_applies_controls_and_releases_on_eof(self):
         controller = Mock()
         commands = queue.Queue()
@@ -69,7 +101,7 @@ class ControllerTests(unittest.TestCase):
             controller.close.assert_called_once()
 
     def test_starts_wheel_by_default_and_with_selected_device(self):
-        for args, device_id in [([], 1), (["--backend", "vjoy", "--device-id", "4"], 4)]:
+        for args, device_id in [([], 1), (["--device-id", "4"], 4)]:
             with self.subTest(args=args), patch.object(sys, "argv", ["virtual_controller.py", *args]), \
                     patch.object(sys, "stdin", StringIO()), patch("virtual_controller.VJoyController") as wheel, \
                     patch.object(sys, "stdout", StringIO()):
@@ -78,13 +110,15 @@ class ControllerTests(unittest.TestCase):
                 self.assertEqual(wheel.return_value.reset.call_count, 2)
                 wheel.return_value.close.assert_called_once()
 
-    def test_rejects_xbox_backend_before_creating_device(self):
-        with patch.object(sys, "argv", ["virtual_controller.py", "--backend", "xbox"]), \
-                patch.object(sys, "stderr", StringIO()), patch("virtual_controller.VJoyController") as wheel:
-            with self.assertRaises(SystemExit) as error:
-                main()
-            self.assertEqual(error.exception.code, 2)
-            wheel.assert_not_called()
+    def test_rejects_invalid_device_ids_before_creating_device(self):
+        for device_id in ["0", "17", "1.5", "invalid"]:
+            with self.subTest(device_id=device_id), \
+                    patch.object(sys, "argv", ["virtual_controller.py", "--device-id", device_id]), \
+                    patch.object(sys, "stderr", StringIO()), patch("virtual_controller.VJoyController") as wheel:
+                with self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(error.exception.code, 2)
+                wheel.assert_not_called()
 
     def test_reports_wheel_setup_failure(self):
         with patch.object(sys, "argv", ["virtual_controller.py"]), \

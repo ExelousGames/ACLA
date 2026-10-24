@@ -5,14 +5,83 @@ import { getLiveMapReferenceLine } from 'views/live-session/live-map-reference';
 
 it('uses all telemetry inputs and separate spatial segmentation channels from the capture time', () => {
     const { live, vision, referenceLap, observation } = trainingFixture();
-    expect(observation.features).toHaveLength(103);
+    expect(observation.features).toHaveLength(100);
     expect(observation).toMatchObject({ gear: 3, rpm: 6000 });
-    expect(observation.features.slice(66, 68)).toEqual([3 / 8, 6000 / 20000]);
+    expect(observation.features.slice(60, 62)).toEqual([3 / 8, 6000 / 20000]);
     expect(observation.features.slice(-35, -19)).toEqual(new Array(16).fill(1));
     expect(observation.features.slice(-19, -3)).toEqual(new Array(16).fill(0));
     // Later telemetry must not replace the sample paired with the image.
     expect(readDrivingObservation({ ...live, currentTelemetry: { ...live.currentTelemetry, Physics_speed_kmh: 200 } }, vision, referenceLap, 50, 1000)
         .observation?.speed).toBe(108);
+});
+
+it('keeps motion values and policy inputs paired with the captured image', () => {
+    const { live, vision, referenceLap } = trainingFixture();
+    Object.assign(vision.telemetry!.currentTelemetry, {
+        Physics_local_velocity_x: -12, Physics_local_velocity_y: 2.5, Physics_local_velocity_z: 40,
+        Physics_velocity_x: 40, Physics_velocity_y: 2.5, Physics_velocity_z: 12,
+        Physics_heading: Math.PI / 2, Physics_pitch: -0.2, Physics_roll: 0.3,
+        Physics_local_angular_vel_x: -Math.PI / 2, Physics_local_angular_vel_y: 0, Physics_local_angular_vel_z: Math.PI / 4,
+    });
+    const later = { ...live, currentTelemetry: { ...live.currentTelemetry,
+        Physics_local_velocity_x: 90, Physics_heading: 0, Physics_local_angular_vel_x: 1 } };
+    const observation = readDrivingObservation(later, vision, referenceLap, 50, 1000).observation!;
+    expect(observation).toMatchObject({ localVelocity: [-12, 2.5, 40],
+        heading: Math.PI / 2, pitch: -0.2, roll: 0.3, rotationRates: [-Math.PI / 2, 0, Math.PI / 4] });
+    expect(observation.features.slice(0, 3)).toEqual([-0.12, 0.025, 0.4]);
+    expect(observation.features.slice(62, 65)).toEqual([-0.5, 0, 0.25]);
+});
+
+it('ignores world-space velocity when building policy inputs', () => {
+    const { live, vision, referenceLap, observation: before } = trainingFixture();
+    // The fixture has local velocity only; world-space telemetry is optional and unused.
+    expect(before.localVelocity).toEqual([1, 0, 30]);
+    Object.assign(vision.telemetry!.currentTelemetry, {
+        Physics_velocity_x: -30, Physics_velocity_y: NaN, Physics_velocity_z: Infinity,
+    });
+    const after = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
+    expect(after.localVelocity).toEqual(before.localVelocity);
+    expect(after.features).toEqual(before.features);
+});
+
+describe.each(['x', 'y', 'z'])('local velocity %s validation', (axis) => {
+    it.each([undefined, NaN, Infinity, -Infinity, '0'])('rejects invalid velocity %s even with valid world-space velocity', (velocity) => {
+        const { live, vision, referenceLap } = trainingFixture();
+        Object.assign(vision.telemetry!.currentTelemetry, {
+            [`Physics_local_velocity_${axis}`]: velocity,
+            Physics_velocity_x: 1, Physics_velocity_y: 0, Physics_velocity_z: 30,
+        });
+        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/Local velocity/);
+    });
+});
+
+it('excludes orientation from policy inputs while retaining it for the instability reward', () => {
+    const { live, vision, referenceLap, observation: before } = trainingFixture();
+    Object.assign(vision.telemetry!.currentTelemetry, { Physics_heading: 1.2, Physics_pitch: -0.2, Physics_roll: 0.3 });
+    const after = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
+    expect(after.features).toEqual(before.features);
+    expect(after).toMatchObject({ heading: 1.2, pitch: -0.2, roll: 0.3 });
+    const stable = drivingReward(before, { ...before, capturedAt: 1200 }, NEUTRAL);
+    const unstable = drivingReward(before, { ...after, capturedAt: 1200 }, NEUTRAL);
+    expect(unstable.instability).toBeLessThan(stable.instability);
+});
+
+it('bounds rotation-rate features while retaining measured values', () => {
+    const { live, vision, referenceLap } = trainingFixture();
+    Object.assign(vision.telemetry!.currentTelemetry, {
+        Physics_local_angular_vel_x: -4 * Math.PI, Physics_local_angular_vel_y: 0, Physics_local_angular_vel_z: 4 * Math.PI,
+    });
+    const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
+    expect(observation.rotationRates).toEqual([-4 * Math.PI, 0, 4 * Math.PI]);
+    expect(observation.features.slice(62, 65)).toEqual([-1, 0, 1]);
+});
+
+describe.each(['x', 'y', 'z'])('rotation rate %s validation', (axis) => {
+    it.each([undefined, NaN, Infinity, -Infinity, '0'])('rejects invalid rate %s', (rate) => {
+        const { live, vision, referenceLap } = trainingFixture();
+        Object.assign(vision.telemetry!.currentTelemetry, { [`Physics_local_angular_vel_${axis}`]: rate });
+        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/rotation rates/);
+    });
 });
 
 it.each([0, Math.PI / 2, -Math.PI / 2, Math.PI])('uses local offsets directly at heading %s', (heading) => {
@@ -21,7 +90,7 @@ it.each([0, Math.PI / 2, -Math.PI / 2, Math.PI])('uses local offsets directly at
     vision.position!.referenceDelta = [-3, 4, -12];
     const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
     // These feature slots retain right/forward/up signs, without a second rotation or world translation.
-    expect(observation.features.slice(63, 66)).toEqual([-3 / 20, 4 / 20, -12 / 20]);
+    expect(observation.features.slice(57, 60)).toEqual([-3 / 20, 4 / 20, -12 / 20]);
     expect(observation.referenceDistance).toBe(13);
     const after = { ...observation, capturedAt: 1200, normalizedPosition: 0.252 };
     const reward = drivingReward(before, after, NEUTRAL);
@@ -43,7 +112,7 @@ it.each(['telemetry', 'capture', 'session', 'position', 'segmentation', 'velocit
         if (fault === 'session') live.streamGeneration++;
         if (fault === 'position') delete vision.position;
         if (fault === 'segmentation') delete vision.detections.segment;
-        if (fault === 'velocity') delete live.currentTelemetry.Physics_velocity_x;
+        if (fault === 'velocity') delete live.currentTelemetry.Physics_local_velocity_x;
         if (fault === 'rotation') delete live.currentTelemetry.Physics_roll;
         if (fault === 'gear') delete live.currentTelemetry.Physics_gear;
         if (fault === 'rpm') delete live.currentTelemetry.Physics_rpm;

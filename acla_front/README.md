@@ -51,7 +51,8 @@ AI driving uses **Steering wheel (vJoy)** output with standard DirectInput axes
 independently of the physical wheel brand (MOZA, Fanatec, Logitech, Thrustmaster,
 etc.). It does not intercept a physical wheel or automatically
 replace that wheel's bindings. The simulator must be bound to the virtual device
-for AI driving; restore your normal controls when returning to manual driving.
+for AI driving and controller takeover during training. Restore your normal controls
+when driving outside the training page.
 
 1. The Windows x64 app installer includes the signed Windows 10/11
    [vJoy driver](https://github.com/BrunnerInnovation/vJoy/releases/tag/v2.2.2.0)
@@ -71,9 +72,9 @@ for AI driving; restore your normal controls when returning to manual driving.
    and buttons 1/2 to shift up/down,
    and saves the training preset under your Windows Documents folder in
    `Assetto Corsa Competizione/Customs/Controls`. It leaves active controls and
-   existing presets intact; conflicting driving axes are removed only in the new
-   preset. If ACC has not recorded the selected vJoy device yet, enable it, restart
-   ACC, save your controls, and retry. Load your normal preset to return to manual driving.
+   existing presets intact; conflicting driving axes and shift bindings on other
+   devices are removed only in the new preset. If ACC has not recorded the selected vJoy device yet, enable it, restart
+   ACC, save your controls, and retry. Keep this preset loaded for controller takeover.
 4. **iRacing:** use **Configure Controls**, or **Settings → Driving → Input Calibration**,
    and calibrate the vJoy steering and pedal axes. Follow the
    [iRacing calibration guide](https://support.iracing.com/support/solutions/articles/31000133335).
@@ -87,13 +88,16 @@ left**, **Full right**, then **Center**; for iRacing's 90° left measurement, us
 **20% left** to calibrate a 900° total range. Accept the measurement while the timed
 input is active. **Stop**, Escape in the app, disconnect, or leaving the training
 page cancels a pending/active test. The hold buttons release when the app loses focus.
+If ACC steering and pedals work but shifts do not, check that both shift bindings
+use the same vJoy device as the axes. Install and load a fresh training preset to
+replace old or duplicate shift bindings, then use the timed shift tests with ACC focused.
 Shift controls are available for manual testing, simulator binding and learned
 gear changes. Disable automatic gears in the simulator during autonomous training
 so gear changes come from the policy.
 
 **Connected** confirms only that the output device accepted initialization. Check
-the simulator's input meters before training. This bridge does not relay physical
-wheel input or force feedback. Both simulators use the same output backend; their
+the simulator's input meters before training. Controller takeover can relay physical
+wheel input; force feedback is not relayed. Both simulators use the same output backend; their
 bindings and calibration are configured separately.
 
 No extra Python package is needed for vJoy: the bridge loads the installed SDK DLL
@@ -102,6 +106,84 @@ custom installation, set `ACLA_VJOY_DLL` to the absolute `vJoyInterface.dll` pat
 before launching the app. Missing drivers/axes, busy devices, and rejected writes
 are reported as errors. The watchdog and disconnect reset pedals to zero and
 steering to center, and release both shift buttons before relinquishing the device.
+
+### Shared human / AI control
+
+The control panel has two input sources, **Human takeover** and **AI driver**, feeding
+one shared vJoy output. The control owner indicator shows which source currently
+owns steering, pedals and shifts. Both sources use the same simulator bindings.
+
+After connecting vJoy, use **Human takeover** to map physical steering,
+throttle and brake axes from a physical gamepad, wheel, joystick or separate pedals.
+USB and Bluetooth controllers recognized by SDL are supported without a brand-specific
+mapping preset. Center the wheel or stick and release pedals, triggers and buttons,
+click **Detect** beside a control, then follow its prompt: steer right, press a pedal
+or trigger, or press and hold a button until
+detected. The device, axis/button and axis direction are filled in automatically.
+Detection ignores small axis jitter and already-held buttons, and can be cancelled
+or retried after its 15-second timeout. Manual selections remain available.
+Map shift paddles and one **Take over / Return to AI** button to switch while the simulator
+has focus. Each press switches control once; release before pressing again. The UI offers
+one button that changes between **Take over** and **Return to AI**. Existing mappings use
+the previous Take over binding, or the Return to AI binding if no Take over binding was saved.
+Check the live axis values,
+invert pedals if they read 1 at rest, and calibrate ranges in Windows controller
+settings. Enable controller takeover, then choose **Start human driving** to drive
+without a model, telemetry or screen capture. You can also enable takeover before
+starting AI training or evaluation. Mappings save
+locally; enabling takeover is explicit each time the page opens.
+
+Takeover is latched and owns steering, both pedals and shifts until an explicit
+return to AI. Starting training or evaluation while you are driving arms the AI
+and keeps human ownership; use **Return to AI** when ready. A return requires an
+active AI session with matching, valid observations. A blocked return press is consumed;
+release and press again when AI is ready. Recovery of missing observations never
+transfers ownership automatically.
+The native bridge polls SDL joystick input (HID, DirectInput and XInput) while the
+simulator has focus, and excludes vJoy input devices to prevent feedback. It exposes
+all reported axes and buttons, plus hat/D-pad directions as extra buttons (up, right,
+down, left). Connecting or disconnecting devices refreshes detection automatically.
+SDL and its Python bindings are installed by `npm run setup:python` and bundled in
+the desktop build. After upgrading from the old WinMM reader, detect your bindings
+again because device and axis identifiers have changed.
+Controllers must expose independent pedal axes; combined-trigger configurations
+need a suitable Windows driver configuration. Force feedback is not forwarded.
+
+The design uses a **single-writer arbiter with revocable ownership leases**:
+
+```text
+Physical controller → Human input adapter ─┐
+                                          ├→ Control selector → Output lease → vJoy → Simulator
+Live observations → AI driving policy ─────┘                          ↑
+Calibration tests (only while stopped) ───────────────────────────────┘
+```
+
+`DrivingControlSelector` handles latched ownership and physical button edges.
+`DrivingControlOutput` serializes every write, including calibration and Stop.
+Each handoff revokes the old lease, drops its queued commands, and releases the
+outgoing controls before writing the new driver's action. Stop revokes ownership
+immediately and queues neutral after any in-flight write, so a late acknowledgement
+cannot restart driving. The Electron/Python bridge retains its independent watchdog.
+`DrivingTrainingLoop` schedules the active source and keeps learning separate from
+output ownership. Human control updates on the control clock even between camera
+frames. Training samples acknowledged
+actions once per fresh observation: AI actions use actor–critic learning, while
+human actions supervise the existing actor through behavior cloning. Handover
+discards the pending transition and waits for a fresh observation before learning
+or resuming AI output, avoiding mixed-driver reward attribution. Human controller
+state and driver identity are **not added to model inputs**; the existing telemetry
+controls still describe what the simulator received. Version-4 checkpoints remain
+compatible. Evaluation does not update weights from either source.
+
+Disconnecting any mapped device while takeover is enabled stops the session,
+even if AI currently owns the controls. Telemetry/capture loss while AI is driving
+neutralizes vJoy controls and retries automatically without ending the session or
+resetting model progress. Fresh, matching observations resume AI driving. During human control, missing or
+mismatched AI observations pause learning and discard the pending transition;
+physical input keeps driving vJoy. Valid observations can resume learning, but
+returning to AI still requires an explicit handoff. Stop, Escape in the app and
+disconnect release both sources. Calibration tests are exclusive and cannot run
+during either human or AI driving.
 
 ### Training
 
@@ -119,10 +201,12 @@ including neutral and reverse. Both shift directions are masked during cooldown
 before sampling, so training uses the action actually selected for output.
 Button releases continue even while waiting for a new camera frame.
 
-The observation includes track-frame velocity XYZ (m/s), speed (km/h), game/car/map
-category encodings, cyclic normalized lap position, rotation (radians), current
+The observation includes car-local velocity XYZ (m/s), speed (km/h), game/car/map
+category encodings, cyclic normalized lap position,
+car-local rotation rates XYZ (pitch/yaw/roll in rad/s, normalized by π and clamped to ±1), current
 steering/pedals, current gear, engine RPM, the position model's reference XYZ delta (m), and a 4×4 pooled
-segmentation mask per class. Telemetry is paired with the image before inference;
+segmentation mask per class. Heading, pitch and roll are retained solely for the
+instability reward and are not policy features. Telemetry is paired with the image before inference;
 stale or mismatched sessions are rejected. Policies have a 32-unit tanh hidden
 layer, a three-dimensional Gaussian actor, a three-way categorical shifting head
 and a TD(0) value head. A speed bonus multiplies forward lap progress (capped at
@@ -136,14 +220,17 @@ successful driving is an empirical training outcome, not a built-in capability.
 Only observations captured after a controller acknowledgement can train that
 action, and each image is learned from at most once. Session changes, telemetry
 older than 500 ms, images older than 1.5 s, invalid inputs and large position jumps
-stop the episode. A separate Python watchdog releases controls after 600 ms
+pause learning and discard the pending transition while the loop waits and retries.
+AI controls stay neutral until fresh inputs match the model, original session and
+reference. Recovery starts a new learning transition without using the interrupted sample.
+A separate Python watchdog releases controls after 600 ms
 without a command and requires reconnection. **Stop** and Escape in the app release
 controls; Escape is not a global simulator hotkey. Checkpoints save locally every
 50 learning steps and at stop, and can be imported/exported as JSON. A checkpoint
 must match the current game, car, map and segmentation classes.
-Gear and RPM must be present in telemetry. Version 2 checkpoints include learned
-shifting; older three-axis checkpoints require a new model. The previous local
-checkpoint is preserved separately when saving a version 2 model.
+Gear, RPM, all three local velocity components and all three rotation rates must be present in telemetry. Version 7
+checkpoints use car-local velocity instead of world-space velocity; older checkpoints require a new model.
+Previous local checkpoints are preserved separately when saving a version 7 model.
 
 ## Python environments for desktop scripts
 
