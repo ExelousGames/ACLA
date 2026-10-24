@@ -129,6 +129,36 @@ it('preserves the published category vocabulary and order for position inference
     await expect(loadBackendPositionModel()).resolves.toMatchObject({ categories });
 });
 
+const temporal = { type: 'gru', sequenceLength: 4, order: 'oldest-to-newest', targetFrame: 'last',
+    padding: 'repeat-first', state: 'reset-per-window' };
+
+it('passes the published GRU window length to position inference', async () => {
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel,
+        metadata: { ...positionCatalogueModel.metadata, format: 'acla-position-cnn-gru-v1',
+            inference: { schemaVersion: 5, temporal } } }] });
+    prepare.mockResolvedValue(new Uint8Array([9]));
+    await expect(loadBackendPositionModel()).resolves.toMatchObject({ sequenceLength: 4 });
+    expect(prepare).toHaveBeenCalledWith(positionMetadata);
+});
+
+it('keeps single-frame inference when no temporal metadata is published', async () => {
+    prepare.mockResolvedValue(new Uint8Array([9]));
+    await expect(loadBackendPositionModel()).resolves.toMatchObject({ sequenceLength: 1 });
+});
+
+it.each([
+    undefined, null, { ...temporal, sequenceLength: 0 }, { ...temporal, sequenceLength: 1 },
+    { ...temporal, sequenceLength: 2.5 }, { ...temporal, sequenceLength: '4' },
+    { ...temporal, type: 'lstm' }, { ...temporal, order: 'newest-to-oldest' },
+    { ...temporal, targetFrame: 'first' }, { ...temporal, padding: 'zeros' },
+    { ...temporal, state: 'persistent' },
+])('rejects unsupported temporal metadata before preparing weights (%j)', async (configuration) => {
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel,
+        metadata: { ...positionCatalogueModel.metadata, inference: { schemaVersion: 5, temporal: configuration } } }] });
+    await expect(loadBackendPositionModel()).rejects.toThrow('metadata.inference.temporal');
+    expect(prepare).not.toHaveBeenCalled();
+});
+
 it.each([
     {},
     { ...localCoordinates, coordinateFrame: 'world' },

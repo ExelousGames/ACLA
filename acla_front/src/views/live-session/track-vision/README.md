@@ -98,13 +98,39 @@ The lookup interpolates by normalized position, including the start/finish seam.
 Map camera zoom, flips and screen coordinates do not affect these inputs. Track Vision
 does not download reference data again and never passes driver XYZ to the model.
 
-The model receives the full letterboxed image and reference-lap XYZ
-as a `[1, 1, 3]` tensor. Centerline points are not required for position inference.
+Single-frame models receive the full letterboxed image as `[1, 3, H, W]` and
+reference-lap XYZ as `[1, 1, 3]`. Centerline points are not required for position inference.
 When its graph requests context, it also receives
 `[normalized_position, one-hot game, one-hot map_name]`, using the published category
 vocabulary in its saved order. Progress and game come from the capture-time telemetry;
 map names use the loaded map's display name or simulator key. Unknown category labels
 produce an all-zero one-hot vector. Two-input ONNX graphs run without context.
+
+Temporal GRU exports (inference schema 5) use the published
+`metadata.inference.temporal.sequenceLength` as their window length `T` (training defaults to 4).
+Track Vision keeps each captured image aligned with its own reference XYZ and context:
+
+| Input | Shape |
+| --- | --- |
+| `images` | `[1, T, 3, H, W]` |
+| `references` | `[1, T, 1, 3]` |
+| `context` | `[1, T, 1 + len(game) + len(map_name)]` |
+
+Frames are ordered oldest to newest; short windows repeat the earliest captured frame
+on the left. Each image uses the same letterbox preprocessing as single-frame inference.
+The graph resets its GRU state for every window and returns only the final frame's
+`deltas` as `[1, 1, 3]`; there is no hidden-state tensor to carry between calls.
+Warm-up frames never enter live history. Unsupported temporal ordering, padding or
+state semantics are rejected when loading. Models without temporal metadata retain
+the single-frame input shapes, including schema 4 exports from `--sequence-length 1`.
+
+History clears on capture stop/restart, telemetry session or recording stream reset,
+game/session/map/reference changes, video seeking or a backwards simulator clock,
+and missing references, paused or stale telemetry. In-flight predictions cannot
+restore cleared history. No extra user setting is needed: upload the temporal
+`track-position` ONNX and reopen Track Vision to load the newest upload. Use
+**Settings → Track models → Retry Position** if the previous load failed.
+
 The final **Bird's-eye view** step plots the reference-lap marker directly
 on the top-down scene relative to your car at the origin, alongside its signed local XYZ
 offset. X points right, Y forward, and Z up. It uses these outputs directly, without
@@ -132,7 +158,7 @@ and a new policy must be trained using the car-local inputs.
 
 ### Detector results
 
-`TrackVisionModel.loadBackend()` loads the segmentation graph through the desktop cache. Its `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time and ordered class names. `TrackPositionModel.load()` separately loads the position graph; `detect(canvas, references, context?)` returns the signed car-local reference-lap XYZ delta triple, `coordinateFrame: "car_local"`, and inference time. Position inference runs only with fresh telemetry and reference points. `TrackVisionModel.loadBuiltin('depth', inputSize = 518)` loads bundled depth weights. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. All models letterbox the full capture into their square inputs. Segmentation boxes are normalized using the training input size. Call `dispose()` when finished.
+`TrackVisionModel.loadBackend()` loads the segmentation graph through the desktop cache. Its `detect(canvas, confidence)` returns instance masks, normalized boxes, class IDs, inference time and ordered class names. `TrackPositionModel.load()` separately loads the position graph; `detect(canvas, references, context?)` returns the signed car-local reference-lap XYZ delta triple, `coordinateFrame: "car_local"`, and inference time. It retains at most `sequenceLength` aligned frames; callers must call `resetHistory()` at session, recording, game/map/reference, seek or input-continuity boundaries. Position inference runs only with fresh telemetry and reference points. `TrackVisionModel.loadBuiltin('depth', inputSize = 518)` loads bundled depth weights. Depth requires `detect(canvas, confidence, region)`, where `region` covers the full same-frame segmentation grid, including car interior, and returns a copied float32 map with `scale: 'relative'` and excluded pixels zeroed. Disparity is converted to `1 / (1 + disparity)` so smaller values remain nearer and zero disparity remains finite; these values are not meters. All models letterbox the full capture into their square inputs. Segmentation boxes are normalized using the training input size. Call `dispose()` when finished.
 
 `LiveTrackVision` registers a `TrackVisionHandle` as `visualization:track-vision`. Consumers use `getLatestDetection()` or `subscribeDetection(listener)`. Results include the source timestamp and dimensions, successful segmentation under `detections.segment`, and depth under `detections.depth`. Masks, boxes, and depth maps refer to the letterboxed model input; drawing segmentation removes its padding. Results clear on stop, configuration changes, and unmount. Depth values remain available to detection consumers; the Label depths tab visualizes retained label depths as a heatmap.
 

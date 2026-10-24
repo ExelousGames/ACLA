@@ -101,3 +101,78 @@ it('waits for an in-flight prediction before releasing its GPU session', async (
     await disposed;
     expect(session.release).toHaveBeenCalledTimes(1);
 });
+
+describe('temporal position inference', () => {
+    let pixel: number;
+    beforeEach(() => {
+        pixel = 0;
+        session.inputNames = ['images', 'references', 'context'];
+        (loadBackendPositionModel as jest.Mock).mockResolvedValue({ bytes: new ArrayBuffer(8), inputSize: 32,
+            sequenceLength: 3, metadata: { name: 'track-position' }, categories: { game: ['acc'], map_name: ['monza'] } });
+        (HTMLCanvasElement.prototype.getContext as jest.Mock).mockReturnValue({ fillRect: jest.fn(), drawImage,
+            getImageData: () => ({ data: new Uint8ClampedArray(32 * 32 * 4).fill(pixel) }) });
+    });
+
+    const detect = (model: TrackPositionModel, step: number) => {
+        pixel = step * 32;
+        return model.detect(document.createElement('canvas'), { reference: { x: step, y: -step, z: step * 10 } },
+            { normalized_position: step / 10, game: 'acc', map_name: 'monza' });
+    };
+    const expectWindow = (call: number, steps: number[]) => {
+        const { images, references, context } = session.run.mock.calls[call][0];
+        expect(images.dims).toEqual([1, 3, 3, 32, 32]);
+        expect(references).toMatchObject({ dims: [1, 3, 1, 3],
+            data: new Float32Array(steps.flatMap((step) => [step, -step, step * 10])) });
+        expect(context).toMatchObject({ dims: [1, 3, 3],
+            data: new Float32Array(steps.flatMap((step) => [step / 10, 1, 1])) });
+        steps.forEach((step, index) => {
+            expect(images.data[index * 3 * 32 * 32]).toBeCloseTo(step * 32 / 255);
+            expect(images.data[(index + 1) * 3 * 32 * 32 - 1]).toBeCloseTo(step * 32 / 255);
+        });
+    };
+
+    it('pads, aligns and rolls the frame window without retaining warm-up samples', async () => {
+        const model = await TrackPositionModel.load();
+        expect(session.run.mock.calls[0][0].images.dims).toEqual([1, 3, 3, 32, 32]);
+        for (let step = 1; step <= 4; step++) await detect(model, step);
+        expectWindow(1, [1, 1, 1]);
+        expectWindow(2, [1, 1, 2]);
+        expectWindow(3, [1, 2, 3]);
+        expectWindow(4, [2, 3, 4]);
+        for (const [feeds] of session.run.mock.calls) {
+            for (const input of Object.values(feeds) as ReturnType<typeof tensor>[]) expect(input.dispose).toHaveBeenCalledTimes(1);
+        }
+        await model.dispose();
+    });
+
+    it('does not restore history when a prediction finishes after a reset', async () => {
+        const model = await TrackPositionModel.load();
+        await detect(model, 1);
+        let finish!: (value: unknown) => void;
+        session.run.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+        const pending = detect(model, 2);
+        await Promise.resolve();
+        model.resetHistory();
+        finish({ deltas: tensor([1, 1, 3], new Float32Array(3)) });
+        await pending;
+        await detect(model, 3);
+        expectWindow(2, [1, 1, 2]);
+        expectWindow(3, [3, 3, 3]);
+        await model.dispose();
+    });
+
+    it('clears interrupted history after invalid inputs or failed inference', async () => {
+        const model = await TrackPositionModel.load();
+        await detect(model, 1);
+        await expect(model.detect(document.createElement('canvas'), { reference: { x: NaN, y: 0, z: 0 } }))
+            .rejects.toThrow('finite reference points');
+        await detect(model, 2);
+        expectWindow(2, [2, 2, 2]);
+        session.run.mockRejectedValueOnce(new Error('GPU failure'));
+        await expect(detect(model, 3)).rejects.toThrow('GPU failure');
+        expect(session.run.mock.calls[3][0].images.dispose).toHaveBeenCalledTimes(1);
+        await detect(model, 4);
+        expectWindow(4, [4, 4, 4]);
+        await model.dispose();
+    });
+});

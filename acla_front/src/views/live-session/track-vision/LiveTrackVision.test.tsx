@@ -53,7 +53,7 @@ let track: { stop: jest.Mock; onended: (() => void) | null };
 let stream: MediaStream;
 let getDisplayMedia: jest.Mock;
 let depthModel: { detect: jest.Mock; dispose: jest.Mock; executionProvider: string; name: string; classNames: string[]; inputSize: number };
-let positionModel: { detect: jest.Mock; dispose: jest.Mock; name: string; inputSize: number };
+let positionModel: { detect: jest.Mock; dispose: jest.Mock; resetHistory: jest.Mock; name: string; inputSize: number };
 let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu'; name: string; classNames: string[]; inputSize: number };
 const detection = { task: 'segment' as const, width: 2, height: 2, instances: [{
     classId: 0, confidence: 0.9, box: [0, 0, 1, 1] as [number, number, number, number], mask: new Uint8Array(4).fill(1),
@@ -78,7 +78,7 @@ beforeEach(() => {
     });
     model = { name: 'track-segments', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu', inputSize: 768 };
     (TrackVisionModel.loadBackend as jest.Mock).mockResolvedValue(model);
-    positionModel = { name: 'track-position', inputSize: 512, detect: jest.fn(), dispose: jest.fn().mockResolvedValue(undefined) };
+    positionModel = { name: 'track-position', inputSize: 512, detect: jest.fn(), resetHistory: jest.fn(), dispose: jest.fn().mockResolvedValue(undefined) };
     (TrackPositionModel.load as jest.Mock).mockResolvedValue(positionModel);
     depthModel = { name: 'Depth-Anything-V2-Small', classNames: [], executionProvider: 'webgpu', inputSize: 518, dispose: jest.fn().mockResolvedValue(undefined),
         detect: jest.fn().mockResolvedValue(vision(0).detections.depth) };
@@ -1550,10 +1550,11 @@ describe('separate segmentation and position models', () => {
     const prediction = { coordinateFrame: 'car_local' as const, referenceDelta: [-1, 2, -3], inferenceMs: 20 };
     let mapHandle: { getCircuitMap: jest.Mock; getReferenceLap: jest.Mock; getPositionReferences: jest.Mock };
     let sequence: number;
-    const telemetry = (position = 0.25, status = 2, game: 'acc' | 'iracing' = 'acc') => act(() => {
+    const telemetry = (position = 0.25, status = 2, game: 'acc' | 'iracing' = 'acc', gameTime?: number) => act(() => {
         sequence++;
         expect(liveTelemetryStore.publishFrame({ type: 'frame', game, sequence, committedSequence: sequence,
             committedCount: sequence, sample: { Graphics_status: status, Graphics_normalized_car_position: position,
+                ...(gameTime === undefined ? {} : { Graphics_game_time: gameTime }),
                 Static_track: 'monza', Graphics_player_car_id: 0,
                 Graphics_car_coordinates: Array.from({ length: 60 }, () => ({ x: 900, y: 901, z: 902 })) } })).toBe(true);
     });
@@ -1674,20 +1675,67 @@ describe('separate segmentation and position models', () => {
         expect(screen.getByLabelText('Position add-on result')).not.toHaveTextContent('Reference local ΔXYZ: 2.000, 0.000, 1.000');
     });
 
-    it.each(['reset', 'map change', 'reference change'])('discards pending position inference after %s', async (condition) => {
+    it.each(['reset', 'stream reset', 'game change', 'map change', 'reference change', 'seek', 'clock rewind'])(
+        'discards pending position inference and resets memory after %s', async (condition) => {
         const pending = deferred<typeof prediction>();
         positionModel.detect.mockReturnValueOnce(pending.promise);
         const ref = React.createRef<TrackVisionHandle>();
-        render(<LiveTrackVision ref={ref} name="vision" />);
+        const view = render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush();
+        telemetry(0.25, 2, 'acc', 100);
+        await startCapture();
+        expect(positionModel.detect).toHaveBeenCalledTimes(1);
+        positionModel.resetHistory.mockClear();
+        if (condition === 'reset') act(() => liveTelemetryStore.resetSession());
+        if (condition === 'stream reset') act(() => liveTelemetryStore.beginStream());
+        if (condition === 'game change') telemetry(0.25, 2, 'iracing');
+        if (condition === 'map change') mapHandle.getCircuitMap.mockReturnValue({ id: 'next-map' });
+        if (condition === 'reference change') mapHandle.getReferenceLap.mockReturnValue({ car: 'next-car' });
+        if (condition === 'seek') fireEvent.seeking(view.container.querySelector('video')!);
+        if (condition === 'clock rewind') telemetry(0.2, 2, 'acc', 90);
+        await act(async () => { pending.resolve(prediction); });
+        expect(ref.current!.getLatestDetection()!.position).toBeUndefined();
+        expect(positionModel.resetHistory).toHaveBeenCalled();
+    });
+
+    it.each(['map change', 'reference change', 'missing references', 'stale telemetry', 'paused telemetry'])(
+        'clears completed position history on %s before the next prediction', async (condition) => {
+        render(<LiveTrackVision name="vision" />);
         await flush();
         telemetry();
         await startCapture();
-        expect(positionModel.detect).toHaveBeenCalledTimes(1);
-        if (condition === 'reset') act(() => liveTelemetryStore.resetSession());
+        positionModel.resetHistory.mockClear();
+        positionModel.detect.mockClear();
         if (condition === 'map change') mapHandle.getCircuitMap.mockReturnValue({ id: 'next-map' });
         if (condition === 'reference change') mapHandle.getReferenceLap.mockReturnValue({ car: 'next-car' });
-        await act(async () => { pending.resolve(prediction); });
-        expect(ref.current!.getLatestDetection()!.position).toBeUndefined();
+        if (condition === 'missing references') mapHandle.getPositionReferences.mockReturnValue(null);
+        if (condition === 'paused telemetry') telemetry(0.25, 3);
+        const ticks = condition === 'stale telemetry' ? 3 : 1;
+        for (let tick = 0; tick < ticks; tick++) await act(async () => { jest.advanceTimersByTime(200); });
+        expect(positionModel.resetHistory).toHaveBeenCalled();
+        if (condition === 'map change' || condition === 'reference change') {
+            expect(positionModel.resetHistory.mock.invocationCallOrder[0]).toBeLessThan(positionModel.detect.mock.invocationCallOrder[0]);
+        }
+        mapHandle.getPositionReferences.mockReturnValue(references);
+        telemetry();
+        await act(async () => { jest.advanceTimersByTime(200); });
+        expect(positionModel.detect).toHaveBeenCalled();
+        expect(positionModel.resetHistory.mock.invocationCallOrder[0])
+            .toBeLessThan(positionModel.detect.mock.invocationCallOrder[positionModel.detect.mock.calls.length - 1]);
+    });
+
+    it('clears position history when capture stops and restarts', async () => {
+        render(<LiveTrackVision name="vision" />);
+        await flush();
+        telemetry();
+        await startCapture();
+        positionModel.resetHistory.mockClear();
+        fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+        expect(positionModel.resetHistory).toHaveBeenCalled();
+        positionModel.resetHistory.mockClear();
+        await startCapture();
+        expect(positionModel.resetHistory).toHaveBeenCalled();
+        expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
     });
 
     it('retries only position after its inference fails while segmentation continues', async () => {

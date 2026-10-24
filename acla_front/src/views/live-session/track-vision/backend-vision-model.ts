@@ -15,7 +15,10 @@ interface CatalogueVisionModel extends Omit<BackendVisionModel, 'id' | 'download
     _id: string;
     createdAt: string;
     metadata: { imgsz: number; categories?: Record<string, string[]>;
-        coordinateFrame?: string; coordinateAxes?: string[] };
+        coordinateFrame?: string; coordinateAxes?: string[];
+        inference?: { schemaVersion?: number; temporal?: {
+            type: string; sequenceLength: number; order: string; targetFrame: string; padding: string; state: string;
+        } } };
 }
 
 declare global {
@@ -79,7 +82,17 @@ async function loadModel(name: string, task: BackendVisionModel['task']) {
         || model.metadata.coordinateAxes.join(',') !== 'right,forward,up')) {
         throw new Error('Track-position model must declare car-local right/forward/up offsets. Upload a newly trained car-local ONNX model.');
     }
-    return { ...await prepare(toMetadata(model)), inputSize, categories: model.metadata?.categories };
+    const inference = task === 'position' ? model.metadata.inference : undefined;
+    const temporal = inference?.temporal;
+    if ((inference?.schemaVersion === 5 && !temporal) || (temporal && (
+        temporal.type !== 'gru' || !Number.isSafeInteger(temporal.sequenceLength) || temporal.sequenceLength < 2
+        || temporal.order !== 'oldest-to-newest' || temporal.targetFrame !== 'last'
+        || temporal.padding !== 'repeat-first' || temporal.state !== 'reset-per-window'
+    ))) {
+        throw new Error('Track-position model has unsupported metadata.inference.temporal.');
+    }
+    return { ...await prepare(toMetadata(model)), inputSize, categories: model.metadata?.categories,
+        sequenceLength: temporal?.sequenceLength ?? 1 };
 }
 
 let positionPending: ReturnType<typeof loadModel> | undefined;

@@ -41,7 +41,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     directoryRef.current = directory;
     const getLiveMap = useCallback(() => directoryRef.current?.findComponentRef<LiveTrajectoryMapHandle>(
         getVisualizationComponentName('live-trajectory-map'))?.current ?? null, []);
-    const positionTelemetry = useRef<{ position: number; receivedAt: number; identity: string; game: string; track?: string } | undefined>(undefined);
+    const positionTelemetry = useRef<{ position: number; receivedAt: number; identity: string; game: string;
+        track?: string; gameTime?: number } | undefined>(undefined);
     const positionGeneration = useRef(0);
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -148,21 +149,28 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         if (!result) setDepthPointer(null);
         listeners.current.forEach((listener) => listener());
     }, []);
+    const resetPositionHistory = useCallback(() => {
+        positionGeneration.current++;
+        models.current.position?.resetHistory();
+        if (latest.current?.position) publish({ ...latest.current, position: undefined });
+    }, [publish]);
     useEffect(() => liveTelemetryStore.subscribeEvents((event) => {
         const position = event.type === 'frame' ? event.sample.Graphics_normalized_car_position : undefined;
+        const gameTime = event.type === 'frame' ? event.sample.Graphics_game_time : undefined;
         const identity = event.type === 'frame' ? JSON.stringify([event.sessionGeneration, event.streamGeneration,
-            event.update.game, event.sample.Static_track, event.sample.Static_car_model]) : '';
+            event.update.game, event.sample.Static_track, event.sample.Static_car_model, event.sample.Graphics_session_index]) : '';
+        const previous = positionTelemetry.current;
         if (event.type !== 'frame' || event.telemetryStatus !== ACC_STATUS.ACC_LIVE
             || typeof position !== 'number' || !Number.isFinite(position) || position < 0 || position > 1
-            || (positionTelemetry.current && positionTelemetry.current.identity !== identity)) {
-            positionGeneration.current++;
+            || (previous && (previous.identity !== identity || Date.now() - previous.receivedAt > 500
+                || (gameTime !== undefined && previous.gameTime !== undefined && gameTime < previous.gameTime)))) {
+            resetPositionHistory();
             positionTelemetry.current = undefined;
-            if (latest.current?.position) publish({ ...latest.current, position: undefined });
         }
         if (event.type === 'frame' && event.telemetryStatus === ACC_STATUS.ACC_LIVE
             && typeof position === 'number' && Number.isFinite(position) && position >= 0 && position <= 1) {
             positionTelemetry.current = { position, receivedAt: Date.now(), identity, game: event.update.game,
-                track: event.sample.Static_track };
+                track: event.sample.Static_track, gameTime };
         }
         const next = event.type === 'frame' ? readVisionMotion(event.sample, Date.now(), motionGeneration.current) : undefined;
         if (!next && (motion.current || event.type !== 'frame')) {
@@ -171,7 +179,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
             trackHistory.current.reset();
             if (latest.current) publish({ ...latest.current, motion: undefined });
         } else motion.current = next;
-    }), [publish]);
+    }), [publish, resetPositionHistory]);
     const updateCalibration = (camera?: CameraCalibration) => {
         const frame = previewFrameRef.current;
         const result = latest.current;
@@ -194,6 +202,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
 
     const releaseFrames = useCallback(() => {
         captureVersion.current++;
+        models.current.position?.resetHistory();
         clearTimeout(timerRef.current);
         previewFrameRef.current = null;
         setPreviewCapturedAt(undefined);
@@ -290,6 +299,9 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 if (version !== captureVersion.current) return;
                 setCaptureState('active');
                 const frame = document.createElement('canvas');
+                let previousMap = getLiveMap();
+                let previousCircuit = previousMap?.getCircuitMap();
+                let previousReferenceLap = previousMap?.getReferenceLap();
                 const tick = async () => {
                     if (version !== captureVersion.current) return;
                     const started = performance.now();
@@ -314,6 +326,12 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             const references = telemetry && result.capturedAt - telemetry.receivedAt <= 500
                                 ? liveMap?.getPositionReferences(telemetry.position) : null;
                             const positionModel = models.current.position;
+                            if (!references || previousMap !== liveMap || previousCircuit !== circuitMap || previousReferenceLap !== referenceLap) {
+                                positionModel?.resetHistory();
+                            }
+                            previousMap = liveMap;
+                            previousCircuit = circuitMap;
+                            previousReferenceLap = referenceLap;
                             const positionCurrent = () => positionVersion === positionGeneration.current
                                 && liveMap === getLiveMap() && circuitMap === liveMap?.getCircuitMap()
                                 && referenceLap === liveMap?.getReferenceLap() && positionModel === models.current.position;
@@ -361,7 +379,10 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                                         setDetectors((current) => ({ ...current, position: { status: 'retrying', error: message(reason) } }));
                                     }
                                 }
-                                if (!positionCurrent()) delete result.position;
+                                if (!positionCurrent()) {
+                                    positionModel?.resetHistory();
+                                    delete result.position;
+                                }
                             })();
                             inferenceRef.current = inference;
                             await inference;
@@ -451,7 +472,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 </div>
                 <dialog ref={previewRef} open hidden={isSceneStep || step === 'birds-eye'} className={`track-vision__preview${hasFrame && step === 'calibration' && showCalibrationOnCapture ? ' track-vision__preview--calibrated' : ''}`}
                     aria-label="Capture preview" onCancel={(event) => { event.preventDefault(); togglePreviewSize(); }}>
-                    <video ref={videoRef} muted playsInline hidden />
+                    <video ref={videoRef} muted playsInline hidden onSeeking={resetPositionHistory} />
                     <canvas ref={canvasRef} aria-label="Captured game frame with vision detections" hidden={!hasFrame}
                         className={step === 'depth-map' ? 'track-vision__depth-map' : undefined}
                         onMouseMove={step === 'depth-map' ? (event) => setDepthPointer({ clientX: event.clientX, clientY: event.clientY }) : undefined}

@@ -45,6 +45,12 @@ add **Live Map** with a matching reference lap, and add **Track Vision** with
 position and segmentation models and screen capture enabled. The training page
 reports any missing inputs. Live Session stays mounted when switching tabs.
 
+Track Vision supports temporal GRU position exports: it reads the model's saved
+window length and keeps aligned image, reference-lap and telemetry history automatically.
+Single-frame position models remain supported. See the
+[position model usage](src/views/live-session/track-vision/README.md#position-model)
+for the ONNX input contract and history reset behavior.
+
 ### Steering wheel output (ACC and iRacing)
 
 AI driving uses **Steering wheel (vJoy)** output with standard DirectInput axes
