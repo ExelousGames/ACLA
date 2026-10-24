@@ -17,7 +17,7 @@ from PIL import Image
 
 from training.image_segmentation.__main__ import main
 from training.image_segmentation.position_data import (
-    PositionCurve, PositionDataset, encode_position_context, load_position_manifest,
+    TARGET_DEFINITION, PositionCurve, PositionDataset, encode_position_context, load_position_manifest,
 )
 from training.image_segmentation.position_model import PositionModel
 from training.image_segmentation.position_preparation import local_targets
@@ -40,6 +40,7 @@ def aligned_manifest(tmp_path):
             "map_name": "Display Name" if session_id == "session-a" else "Other Track",
             "normalized_position": 0.25,
             "coordinate_frame": "car_local",
+            "target_definition": TARGET_DEFINITION,
             "references": [[0.2, -0.1, 0.1], [0.25, -0.1, 0.1]],
             "target": [[0.1, -0.2, 0], [0.15, -0.2, 0]],
         }))
@@ -127,7 +128,7 @@ def test_local_targets_preserve_offset_units_and_length_at_zero_rotation():
     references = np.array([[0.003, -0.002, 0.005], [0.001, 0.004, -0.007]])
     np.testing.assert_allclose(
         local_targets(references - [0.002, 0.001, 0.003], [0, 0, 0]),
-        [[0.001, -0.003, 0.002], [-0.001, 0.003, -0.010]], rtol=1e-6,
+        [[-0.001, -0.003, 0.002], [0.001, 0.003, -0.010]], rtol=1e-6,
     )
 
 
@@ -137,6 +138,19 @@ def test_training_rejects_world_space_targets(aligned_manifest):
     frame["coordinate_frame"] = "world"
     path.write_text(json.dumps(frame))
     with pytest.raises(ValueError, match="car_local"):
+        load_position_manifest(aligned_manifest)
+
+
+@pytest.mark.parametrize("definition", [None, "inverse_world_rotation @ (reference_position - current_position)"])
+def test_training_rejects_unmigrated_local_targets(aligned_manifest, definition):
+    path = aligned_manifest.parent / "session-a.position.json"
+    frame = json.loads(path.read_text())
+    if definition is None:
+        frame.pop("target_definition")
+    else:
+        frame["target_definition"] = definition
+    path.write_text(json.dumps(frame))
+    with pytest.raises(ValueError, match="migrate_position_targets"):
         load_position_manifest(aligned_manifest)
 
 
@@ -371,7 +385,7 @@ def test_position_training_optimizes_only_component_errors(training_manifest, tm
     monkeypatch.setattr(position_training, "PositionModel", lambda *args, **kwargs: network)
     monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
     output = tmp_path / "run"
-    train_position_model(training_manifest, output=output, epochs=1, imgsz=64, batch=2, device="cpu", upload=False)
+    train_position_model(training_manifest, output=output, epochs=1, imgsz=64, batch=2, device="cpu", sequence_length=1, upload=False)
 
     metrics = json.loads((output / "results.json").read_text())[0]
     assert metrics["train_loss"] == pytest.approx(1 / 60)
@@ -405,7 +419,7 @@ def test_position_training_mae_weights_frames_and_resets_each_epoch(
     monkeypatch.setattr(position_training, "split_position_frames", split)
     monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
     output = tmp_path / "run"
-    train_position_model(aligned_manifest, output=output, epochs=2, imgsz=64, batch=batch, device="cpu", upload=False)
+    train_position_model(aligned_manifest, output=output, epochs=2, imgsz=64, batch=batch, device="cpu", sequence_length=1, upload=False)
 
     history = json.loads((output / "results.json").read_text())
     assert [row["train_mae"] for row in history] == pytest.approx([7 / 3, 7 / 3])
@@ -559,8 +573,18 @@ def test_segmentation_based_checkpoint_requires_training_from_scratch(position_c
 
 @pytest.mark.parametrize("use_position_folder", [False, True])
 def test_session_training_saves_raw_axis_metrics_and_uses_only_train_reference_statistics(
-    aligned_manifest, tmp_path, position_folder, use_position_folder, capsys,
+    aligned_manifest, tmp_path, position_folder, use_position_folder, capsys, monkeypatch,
 ):
+    from training.image_segmentation import position_training
+
+    datasets = []
+
+    def dataset(*args, **kwargs):
+        result = PositionDataset(*args, **kwargs)
+        datasets.append(result)
+        return result
+
+    monkeypatch.setattr(position_training, "PositionDataset", dataset)
     path = aligned_manifest.parent / "session-b.position.json"
     frame = json.loads(path.read_text())
     frame.update(game="acc", map_name="Display Name")
@@ -575,7 +599,7 @@ def test_session_training_saves_raw_axis_metrics_and_uses_only_train_reference_s
     output = tmp_path / "run"
     checkpoint = train_position_model(
         training_input, output=output,
-        epochs=2, imgsz=64, batch=1, device="cpu", upload=False,
+        epochs=2, imgsz=64, batch=1, device="cpu", sequence_length=1, upload=False,
     )
     assert checkpoint == output / "best.pt"
     assert (output / "last.pt").is_file()
@@ -584,12 +608,15 @@ def test_session_training_saves_raw_axis_metrics_and_uses_only_train_reference_s
     split = json.loads((output / "split.json").read_text())
     image_folder = position_folder if use_position_folder else aligned_manifest.parent
     assert split == {
-        "seed": 42, "val_fraction": 0.2,
+        "seed": 42, "val_fraction": 0.2, "sequence_length": 1,
         "maps": {
             "train": [{"game": "acc", "map_name": "Display Name"}],
             "val": [{"game": "acc", "map_name": "Display Name"}],
         },
         "train": [str(image_folder / "session-a.png")], "val": [str(image_folder / "session-b.png")],
+    }
+    assert {str(row["image"]): dataset.augment for dataset in datasets for row in dataset.records} == {
+        **dict.fromkeys(split["train"], True), **dict.fromkeys(split["val"], False),
     }
     assert aligned_manifest.read_bytes() == prepared
     history = json.loads((output / "results.json").read_text())
@@ -677,7 +704,7 @@ def test_position_validation_measures_distance_and_direction_with_zero_vectors_a
     monkeypatch.setattr(position_training, "split_position_frames", split)
     monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
     output = tmp_path / "run"
-    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", upload=False)
+    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", sequence_length=1, upload=False)
     metrics = json.loads((output / "results.json").read_text())[0]
     buckets = metrics["val_errors_by_offset_length"]
     expected = {name: {
@@ -746,7 +773,7 @@ def test_position_validation_groups_by_actual_offset_length_at_every_boundary(
     monkeypatch.setattr(position_training, "split_position_frames", split)
     monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
     output = tmp_path / "run"
-    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", upload=False)
+    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", sequence_length=1, upload=False)
     metrics = json.loads((output / "results.json").read_text())[0]
     assert list(metrics["val_errors_by_offset_length"]) == list(ranges)
     for name, lengths in ranges.items():
@@ -789,7 +816,7 @@ def test_position_validation_reports_each_game_and_map_separately(
     monkeypatch.setattr(position_training, "split_position_frames", split)
     monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
     output = tmp_path / "run"
-    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", upload=False)
+    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", sequence_length=1, upload=False)
     metrics = json.loads((output / "results.json").read_text())[0]
     assert metrics["val_mae"] == pytest.approx(0.5)
     assert metrics["val_errors_by_offset_length"]["1-2"] == pytest.approx({
@@ -848,7 +875,7 @@ def test_position_validation_sections_include_each_boundary_once(
     monkeypatch.setattr(position_training, "split_position_frames", split)
     monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
     output = tmp_path / "run"
-    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", upload=False)
+    train_position_model(aligned_manifest, output=output, epochs=1, imgsz=64, batch=batch, device="cpu", sequence_length=1, upload=False)
     metrics = json.loads((output / "results.json").read_text())[0]
     sections = metrics["val_by_map"][0]["val_errors_by_normalized_position"]
     assert len(sections) == 20
@@ -893,7 +920,7 @@ def test_position_validation_sections_rank_errors_within_each_game_and_map(
     monkeypatch.setattr(position_training, "split_position_frames", split)
     monkeypatch.setattr(position_training, "export_position_checkpoint", lambda checkpoint: checkpoint.with_suffix(".onnx"))
     output = tmp_path / "run"
-    train_position_model(aligned_manifest, output=output, epochs=2, imgsz=64, batch=batch, device="cpu", upload=False)
+    train_position_model(aligned_manifest, output=output, epochs=2, imgsz=64, batch=batch, device="cpu", sequence_length=1, upload=False)
     history = json.loads((output / "results.json").read_text())
     expected = {
         ("acc", "Display Name"): {5: (3, [2, 8 / 3, 0], 10 / 3, 2), 18: (1, [0, 0, 6], 6, 1)},
@@ -1009,7 +1036,7 @@ def test_position_upload_streams_onnx_and_regression_metadata(position_checkpoin
             "format": "acla-position-cnn-v3", "artifactFormat": "onnx", "trainingRunId": position_checkpoint.parent.name,
             "categories": CATEGORIES,
             "imgsz": 64, "outputNames": list(OUTPUT_NAMES),
-            "targetDefinition": "inverse_world_rotation @ (reference_position - current_position)",
+            "targetDefinition": TARGET_DEFINITION,
             "coordinateFrame": "car_local", "coordinateAxes": ["right", "forward", "up"],
             "coordinateUnits": "source_coordinates", "metrics": {"val_mae": 0.25},
         },
@@ -1056,14 +1083,14 @@ def test_position_training_uploads_best_and_preserves_weights_on_failure(
     encoder_before = {key: value.clone() for key, value in network.position_encoder.state_dict().items()}
     monkeypatch.setattr(
         position_training, "PositionModel",
-        lambda imgsz, categories: network,
+        lambda imgsz, categories, sequence_length: network,
     )
     upload = AsyncMock(return_value={"_id": "position-model"})
     if failed:
         upload.side_effect = httpx.ReadTimeout("upload timed out")
     monkeypatch.setattr(position_publication, "upload_position_checkpoint", upload)
     output = tmp_path / "run"
-    args = dict(output=output, epochs=1, imgsz=64, batch=1, device="cpu")
+    args = dict(output=output, epochs=1, imgsz=64, batch=1, device="cpu", sequence_length=1)
     if failed:
         with pytest.raises(RuntimeError, match="Training completed, but backend upload failed") as error:
             train_position_model(training_manifest, **args)
@@ -1103,7 +1130,7 @@ def test_position_training_preserves_checkpoint_and_skips_upload_when_export_fai
     output = tmp_path / "run"
     with pytest.raises(RuntimeError, match="Training completed, but ONNX export failed") as error:
         train_position_model(training_manifest, output=output,
-                             epochs=1, imgsz=64, batch=1, device="cpu")
+                             epochs=1, imgsz=64, batch=1, device="cpu", sequence_length=1)
     assert "upload-position" in str(error.value)
     PositionModel.load(output / "best.pt")
     assert (output / "last.pt").is_file()
@@ -1289,6 +1316,6 @@ def test_map_with_only_one_session_cannot_be_split_for_training(aligned_manifest
     with pytest.raises(ValueError, match="at least two sessions per map"):
         train_position_model(
             aligned_manifest, output=tmp_path / "run",
-            epochs=1, imgsz=64, device="cpu", upload=False,
+            epochs=1, imgsz=64, device="cpu", sequence_length=1, upload=False,
         )
     assert not (tmp_path / "run").exists()

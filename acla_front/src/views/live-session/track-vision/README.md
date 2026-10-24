@@ -113,7 +113,7 @@ show it before camera calibration. Stale results are labeled; stopping capture o
 resetting telemetry clears the marker. The signed XYZ output triple is shown here
 and published as `TrackVisionDetection.position.referenceDelta`,
 with `coordinateFrame: "car_local"`, `references`, `normalizedPosition`, and `inferenceMs`.
-The offset is `inverse_world_rotation @ (reference_position - current_position)`
+The offset is `diag(-1, 1, 1) @ inverse_world_rotation @ (reference_position - current_position)`
 in source coordinate units. The model learns this local offset; driver XYZ and world
 rotation are used only to prepare training targets, never as position-model inputs.
 The `references` input remains in world/source XYZ coordinates. Missing references, paused or

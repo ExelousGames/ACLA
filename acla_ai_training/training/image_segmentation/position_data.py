@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
+import re
 
 import numpy as np
 import torch
@@ -14,7 +16,22 @@ from torch.utils.data import Dataset
 OUTPUT_NAMES = tuple(f"reference_delta_{axis}" for axis in "xyz")
 COORDINATE_FRAME = "car_local"
 COORDINATE_AXES = ("right", "forward", "up")
-TARGET_DEFINITION = "inverse_world_rotation @ (reference_position - current_position)"
+TARGET_DEFINITION = "diag(-1, 1, 1) @ inverse_world_rotation @ (reference_position - current_position)"
+# Normalized (left, top, right, bottom), from the annotated 1252 x 720 HUD.
+HUD_REGIONS = tuple(
+    (x / 1252, y / 720, (x + width) / 1252, (y + height) / 720)
+    for x, y, width, height in (
+        (2, 1, 1245, 15),
+        (20, 41, 211, 98),
+        (547, 19, 170, 21),
+        (1186, 38, 38, 109),
+        (23, 652, 262, 49),
+        (441, 435, 434, 238),
+        (849, 523, 147, 188),
+        (999, 618, 60, 90),
+        (1057, 551, 194, 168),
+    )
+)
 
 
 def position_context(normalized_position, game, map_name):
@@ -133,6 +150,11 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
             raise ValueError("Position files require references and target arrays; rerun prepare_position_dataset.py.")
         if frame.get("coordinate_frame") != COORDINATE_FRAME:
             raise ValueError("Position targets must use coordinate_frame car_local; regenerate the dataset.")
+        if frame.get("target_definition") != TARGET_DEFINITION:
+            raise ValueError(
+                f"Position targets must use corrected right/forward/up axes: {position_path}. "
+                "Run scripts/migrate_position_targets.py for ACC local targets, or regenerate the dataset."
+            )
         if not {"game", "map_name", "normalized_position"} <= frame.keys():
             raise ValueError(
                 "Position files require game, map_name, and normalized_position; "
@@ -159,10 +181,28 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
     return sessions
 
 
-def image_tensor(path: Path, imgsz: int) -> torch.Tensor:
-    """Letterbox the complete RGB frame without changing its camera geometry."""
+def hud_coarse_dropout(image: Image.Image) -> Image.Image:
+    """With 50% probability, fully cover 1-9 HUD panels with RGB colors or noise."""
+    # Use Torch's RNG so the training seed and DataLoader worker seeds apply.
+    if torch.rand(()).item() >= 0.5:
+        return image
+    pixels = np.array(image)
+    count = torch.randint(1, len(HUD_REGIONS) + 1, ()).item()
+    for index in torch.randperm(len(HUD_REGIONS))[:count].tolist():
+        x1, y1, x2, y2 = HUD_REGIONS[index]
+        left, top = math.floor(x1 * image.width), math.floor(y1 * image.height)
+        right, bottom = math.ceil(x2 * image.width), math.ceil(y2 * image.height)
+        shape = (3,) if torch.rand(()).item() < 0.5 else (bottom - top, right - left, 3)
+        pixels[top:bottom, left:right] = torch.randint(0, 256, shape, dtype=torch.uint8).numpy()
+    return Image.fromarray(pixels)
+
+
+def image_tensor(path: Path, imgsz: int, *, augment=False) -> torch.Tensor:
+    """Optionally obscure the HUD, then letterbox without changing camera geometry."""
     with Image.open(path) as source:
         image = source.convert("RGB")
+    if augment:
+        image = hud_coarse_dropout(image)
     ratio = min(imgsz / image.width, imgsz / image.height)
     image = image.resize((max(1, round(image.width * ratio)), max(1, round(image.height * ratio))))
     canvas = Image.new("RGB", (imgsz, imgsz), (114, 114, 114))
@@ -171,25 +211,63 @@ def image_tensor(path: Path, imgsz: int) -> torch.Tensor:
 
 
 class PositionDataset(Dataset):
-    def __init__(self, records, imgsz, categories):
+    def __init__(self, records, imgsz, categories, *, augment=False, sequence_length=1):
+        if isinstance(sequence_length, bool) or not isinstance(sequence_length, int) or sequence_length < 1:
+            raise ValueError("Sequence length must be a positive integer.")
         self.records, self.imgsz = records, imgsz
         self.categories = categories
+        self.augment = augment
+        self.sequence_length = sequence_length
+        self.windows = {}
+        if sequence_length > 1:
+            recordings = {}
+            for index, row in enumerate(records):
+                key = (row["session_id"], row["image"].parent, row["game"], row["map_name"])
+                recordings.setdefault(key, []).append(index)
+            for indices in recordings.values():
+                if len(indices) > 1:
+                    names = [re.fullmatch(r"(.*?)(\d+)", records[index]["image"].stem) for index in indices]
+                    if any(name is None for name in names) or len({name[1] for name in names}) != 1:
+                        raise ValueError(
+                            "Temporal training requires numbered image filenames within each recording "
+                            "(for example frame_000123.jpg); use --sequence-length 1 for unordered images."
+                        )
+                    ordered = sorted((int(name[2]), index) for name, index in zip(names, indices))
+                    if len({number for number, _ in ordered}) != len(ordered):
+                        raise ValueError("Temporal training requires unique frame numbers within each recording.")
+                    indices = [index for _, index in ordered]
+                for end, index in enumerate(indices):
+                    window = indices[max(0, end + 1 - sequence_length):end + 1]
+                    self.windows[index] = [window[0]] * (sequence_length - len(window)) + window
 
     def __len__(self):
         return len(self.records)
 
     def __getitem__(self, index):
         row = self.records[index]
+        indices = self.windows[index] if self.sequence_length > 1 else [index]
+        # Load padding frames once so repeated history has identical augmentation.
+        frames = {
+            i: {
+                "image": image_tensor(self.records[i]["image"], self.imgsz, augment=self.augment),
+                "references": torch.from_numpy(self.records[i]["references"][:1]),
+                "context": torch.from_numpy(encode_position_context(
+                    self.records[i]["normalized_position"], self.records[i]["game"],
+                    self.records[i]["map_name"], self.categories,
+                )),
+            }
+            for i in dict.fromkeys(indices)
+        }
+        inputs = {
+            field: torch.stack([frames[i][field] for i in indices]) if self.sequence_length > 1 else frames[index][field]
+            for field in ("image", "references", "context")
+        }
         # Use only the reference lap; prepared files may also contain centerline XYZ.
         # Keep inputs and targets separate. No raw telemetry is returned to the trainer.
         return {
             "game": row["game"],
             "map_name": row["map_name"],
             "normalized_position": row["normalized_position"],
-            "image": image_tensor(row["image"], self.imgsz),
-            "references": torch.from_numpy(row["references"][:1]),
-            "context": torch.from_numpy(encode_position_context(
-                row["normalized_position"], row["game"], row["map_name"], self.categories,
-            )),
+            **inputs,
             "target": torch.from_numpy(row["target"][:1]),
         }

@@ -92,6 +92,9 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
         torch.zeros(1, 1, 3),
         torch.zeros(1, position.context_size),
     )
+    temporal = position.sequence_length > 1
+    if temporal:
+        inputs = tuple(value.unsqueeze(1).repeat(1, position.sequence_length, *([1] * (value.ndim - 1))) for value in inputs)
     position.spatial_pool = _ExportSpatialPool(position.spatial_pool.output_size)
     output = checkpoint.with_suffix(".onnx")
     with TemporaryDirectory(prefix=".position-export-", dir=checkpoint.parent) as folder:
@@ -120,12 +123,12 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
         ):
             raise ValueError("Unexpected Track Vision ONNX inputs or outputs.")
         metadata["metadata"]["inference"] = {
-            "schemaVersion": 4,
+            "schemaVersion": 5 if temporal else 4,
             "opset": OPSET_VERSION,
             "inputs": input_specs,
             "outputs": output_specs,
             "image": {
-                "colorSpace": "RGB", "layout": "NCHW", "scale": 1 / 255,
+                "colorSpace": "RGB", "layout": "NTCHW" if temporal else "NCHW", "scale": 1 / 255,
                 "resize": "letterbox", "paddingValue": 114,
                 "sizeRounding": "ties-to-even", "paddingPlacement": "center-floor",
             },
@@ -134,6 +137,13 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
             "contextOrder": ["normalized_position", "game", "map_name"],
             "categoryEncoding": "one-hot",
         }
+        if temporal:
+            metadata["metadata"]["inference"]["temporal"] = {
+                "type": "gru", "sequenceLength": position.sequence_length,
+                "order": "oldest-to-newest", "targetFrame": "last",
+                "padding": "repeat-first", "state": "reset-per-window",
+                "resetHistoryOn": ["session-change", "recording-change", "game-change", "map-change", "seek"],
+            }
         manifest = json.dumps(metadata, indent=2, allow_nan=False) + "\n"
         onnx.helper.set_model_props(graph, {METADATA_KEY: manifest})
         onnx.save_model(graph, str(temporary), save_as_external_data=False)

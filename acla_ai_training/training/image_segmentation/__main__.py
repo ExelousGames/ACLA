@@ -60,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     position.add_argument("--epochs", type=int, default=100)
     position.add_argument("--imgsz", type=int, default=768)
     position.add_argument("--batch", type=int, default=8)
+    position.add_argument("--sequence-length", type=int, default=4,
+                          help="Causal history window including the current frame (default: 4); 1 disables temporal memory. Batch counts windows.")
     position.add_argument("--device", default="0", help="0 for the first GPU (default), cpu, or mps.")
     position.add_argument("--workers", type=int, default=0)
     position.add_argument("--val-fraction", type=float, default=0.2, help="Target validation share of frames per game/map (default: 0.2), using whole sessions; at least two sessions per map are required.")
@@ -110,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint = train_position_model(
                 args.manifest, output=args.output, epochs=args.epochs,
                 imgsz=args.imgsz, batch=args.batch, device=args.device, workers=args.workers,
+                sequence_length=args.sequence_length,
                 val_fraction=args.val_fraction, seed=args.seed,
                 upload=not args.no_upload,
             )

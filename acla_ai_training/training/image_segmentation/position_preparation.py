@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from training.top_laps.reference import bucket_key_from_dataframe, deserialize_top_lap_store
-from .position_data import COORDINATE_FRAME, PositionCurve, load_position_manifest, position_context, reference_inputs
+from .position_data import COORDINATE_FRAME, TARGET_DEFINITION, PositionCurve, load_position_manifest, position_context, reference_inputs
 
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,8 @@ def local_targets(world_offsets, world_rotation):
     Prepared ACC world coordinates are X/Z/Y relative to the raw Y-up SDK.
     Heading, pitch, roll are ACC radians; body-to-world is Ry(-heading)
     Rx(-pitch) Rz(-roll) in SDK axes. Row vectors multiply by that matrix
-    to invert it.
+    to invert it. ACC local X points left, so negate it after rotation to
+    produce right/forward/up rather than left/forward/up.
     Keep the subtraction and rotation in float64 until the targets are complete.
     """
     offsets = np.asarray(world_offsets, dtype=np.float64)
@@ -38,6 +39,7 @@ def local_targets(world_offsets, world_rotation):
     pitch = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
     roll = np.array([[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]])
     local = offsets[:, [0, 2, 1]] @ (yaw @ pitch @ roll)
+    local[:, 0] *= -1
     return local[:, [0, 2, 1]].astype(np.float32)
 
 
@@ -262,6 +264,7 @@ async def prepare_position_dataset(backend, extractions: list[dict]) -> dict:
                         "normalized_position": frame["normalized_position"],
                         "references": frame["references"], "target": frame["target"],
                         "coordinate_frame": COORDINATE_FRAME,
+                        "target_definition": TARGET_DEFINITION,
                         "driver_position": frame["driver_position"],
                     }, target, indent=2, allow_nan=False)
                     target.write("\n")

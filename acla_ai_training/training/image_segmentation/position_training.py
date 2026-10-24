@@ -95,6 +95,7 @@ def train_position_model(
     epochs=100,
     imgsz=768,
     batch=8,
+    sequence_length=4,
     device="0",
     workers=0,
     val_fraction=0.2,
@@ -111,13 +112,16 @@ def train_position_model(
     torch.manual_seed(seed)
     device = f"cuda:{device}" if str(device).isdigit() else device
     categories = {field: sorted({row[field] for row in records}) for field in ("game", "map_name")}
-    network = PositionModel(imgsz, categories=categories).to(device)
+    network = PositionModel(imgsz, categories=categories, sequence_length=sequence_length).to(device)
     positions = torch.from_numpy(np.stack([row["references"][0] for row in splits["train"]])).to(device)
     # Standardize XYZ using training references alone; context stays in [0, 1].
     network.position_mean.copy_(positions.mean(0))
     network.position_std.copy_(positions.std(0, unbiased=False).clamp_min(1.0))
     loaders = {
-        split: DataLoader(PositionDataset(records, imgsz, categories), batch_size=batch, shuffle=split == "train", num_workers=workers)
+        split: DataLoader(
+            PositionDataset(records, imgsz, categories, augment=split == "train", sequence_length=sequence_length),
+            batch_size=batch, shuffle=split == "train", num_workers=workers,
+        )
         for split, records in splits.items()
     }
     optimizer = torch.optim.Adam(network.parameters(), lr=1e-4)
@@ -129,7 +133,8 @@ def train_position_model(
         for split, frames in splits.items()
     }
     (output / "split.json").write_text(
-        json.dumps({"seed": seed, "val_fraction": val_fraction, "maps": maps, **assignments}, indent=2) + "\n",
+        json.dumps({"seed": seed, "val_fraction": val_fraction, "sequence_length": sequence_length,
+                    "maps": maps, **assignments}, indent=2) + "\n",
         encoding="utf-8",
     )
     print(
@@ -140,6 +145,7 @@ def train_position_model(
     for split, label in (("train", "Training"), ("val", "Validation")):
         names = ", ".join(f"{row['game']}/{row['map_name']}" for row in maps[split])
         print(f"{label} maps: {names}", flush=True)
+    print(f"Temporal window: {sequence_length} frame(s), oldest first; predicting the final frame", flush=True)
     # Row zero holds all validation frames; subsequent rows hold individual maps.
     map_indices = {(row["game"], row["map_name"]): index for index, row in enumerate(maps["val"], 1)}
     group_count = 1 + len(map_indices)

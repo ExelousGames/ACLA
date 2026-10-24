@@ -11,7 +11,7 @@ Use Ctrl+Shift+L to initialize a polygon from a polyline.
 Corners are rounded with multiple editable points along both edges.
 Set its total width in pixels with Edit > Set Polyline Polygon Width.
 Use the left/right variants of curb, grass, fence, sand, Outfield asphalt road,
-racing track white line, forest, and buildings when labeling a specific side.
+racing track white line, forest, buildings, and pit lane when labeling a specific side.
 The original labels remain available.
 Track, grass, fence, curb, sand, sky, and racing track white line regions may
 continue behind car or car pack polygons where their hidden extent is clear.

@@ -31,3 +31,5 @@ buildings left
 buildings right
 back mirror
 pit lane
+pit lane left
+pit lane right

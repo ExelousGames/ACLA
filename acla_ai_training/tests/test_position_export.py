@@ -12,6 +12,18 @@ from training.image_segmentation.position_export import METADATA_KEY, export_pos
 from training.image_segmentation.position_model import PositionModel
 
 
+def test_legacy_left_positive_checkpoint_cannot_be_loaded_or_exported_as_right_positive(tmp_path):
+    checkpoint = tmp_path / "old.pt"
+    PositionModel(imgsz=32, categories={"game": ["acc"], "map_name": ["monza"]}).save(checkpoint)
+    saved = torch.load(checkpoint, weights_only=True)
+    saved["target_definition"] = "inverse_world_rotation @ (reference_position - current_position)"
+    torch.save(saved, checkpoint)
+    for operation in (PositionModel.load, export_position_checkpoint):
+        with pytest.raises(ValueError, match="right/forward/up"):
+            operation(checkpoint)
+    assert not checkpoint.with_suffix(".onnx").exists()
+
+
 @pytest.mark.parametrize("legacy_export_api", [False, True])
 @pytest.mark.parametrize("imgsz", [32, 64, 96, 128])
 def test_export_preserves_position_without_segmentation_with_small_uneven_and_even_grids(
@@ -59,7 +71,7 @@ def test_export_preserves_position_without_segmentation_with_small_uneven_and_ev
             "context": {"dtype": "float32", "shape": [1, 4]},
         }
         assert contract["schemaVersion"] == 4
-        assert metadata["targetDefinition"] == "inverse_world_rotation @ (reference_position - current_position)"
+        assert metadata["targetDefinition"] == "diag(-1, 1, 1) @ inverse_world_rotation @ (reference_position - current_position)"
         assert metadata["coordinateFrame"] == "car_local"
         assert metadata["coordinateAxes"] == ["right", "forward", "up"]
         assert contract["referenceOrder"] == ["reference"]
