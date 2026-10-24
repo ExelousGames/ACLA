@@ -30,8 +30,13 @@ function buildAccControlPreset(controls, deviceId) {
   preset.configurationName = `ACLA AI Training - vJoy ${deviceId}`;
   preset.carControllerMode = 0; // ACC Wheel input mode.
   for (const device of preset.commandDevices) {
-    // A physical wheel must not compete for the three AI-controlled inputs.
+    // Keep driving inputs on one device. Duplicate shifts can leave ACC using
+    // another vJoy device or the physical wheel when it loads the preset.
     device.raceCommandAxisList = device.raceCommandAxisList.filter((axis) => !DRIVING_AXES.includes(axis.axisCode));
+    if (device.raceCommandButtonList) {
+      device.raceCommandButtonList = device.raceCommandButtonList.filter((button) =>
+        !SHIFT_BUTTONS.includes(button.instantActionCode));
+    }
     if (device.instanceGuid !== matches[0].instanceGuid) continue;
     Object.assign(device, {
       isGamePad: 0, isPedals: 0, forceFeedbackGain: 0,
@@ -42,8 +47,7 @@ function buildAccControlPreset(controls, deviceId) {
       })),
       // ACC uses zero-based DirectInput button indices; vJoy SetBtn uses 1/2.
       raceCommandButtonList: [
-        ...(device.raceCommandButtonList || []).filter((button) =>
-          ![0, 1].includes(button.buttonIndex) && !SHIFT_BUTTONS.includes(button.instantActionCode)),
+        ...(device.raceCommandButtonList || []).filter((button) => ![0, 1].includes(button.buttonIndex)),
         ...SHIFT_BUTTONS.map((instantActionCode, buttonIndex) => ({
           buttonIndex, powIndex: -1, powValue: 0, keyName: 'None', gamepadButtonName: 'None',
           instantActionCode, extendedActionCode: 'None', extendedTime: 1,

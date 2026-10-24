@@ -30,6 +30,10 @@ test('managed Python environments keep desktop and vision requirements separate'
         assert.deepEqual(Array.from(install.args), ['-m', 'pip', 'install', '-r', path.join(root, requirementsFile)]);
         const requirements = fs.readFileSync(install.args.at(-1), 'utf8');
         assert.doesNotMatch(requirements, /vgamepad|vigem|controller-requirements/i);
+        if (mode !== 'vision') {
+            assert.match(requirements, /^PySDL2==0\.9\.17$/m);
+            assert.match(requirements, /^pysdl2-dll==2\.32\.10$/m);
+        }
     }
     const config = require('../../package.json').build;
     assert.equal(config.beforePack, './scripts/prepare-vjoy.js');

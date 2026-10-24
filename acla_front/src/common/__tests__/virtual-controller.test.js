@@ -30,6 +30,20 @@ function setup(platform = 'win32') {
         } };
 }
 
+it('reads physical controllers through the owned bridge without writing a wheel action', async () => {
+    const run = setup();
+    const read = run.handlers['virtual-controller-read-physical'];
+    await expect(read({ sender: {} })).rejects.toThrow(/main workspace/);
+    await expect(read(run.event)).rejects.toThrow(/Connect/);
+    await run.connect();
+    const pending = read(run.event);
+    expect(run.writes).toEqual([{ id: 1, type: 'read-physical' }]);
+    const devices = [{ id: 'wheel', name: 'Wheel', axes: { axis0: 0.5 }, buttons: [false] }];
+    run.child.stdout.write(JSON.stringify({ type: 'physical', id: 1, devices }) + '\n');
+    await expect(pending).resolves.toEqual(devices);
+    run.handlers['virtual-controller-disconnect'](run.event);
+});
+
 beforeEach(() => jest.useFakeTimers());
 afterEach(() => { jest.runOnlyPendingTimers(); jest.useRealTimers(); });
 
@@ -68,27 +82,26 @@ it('rejects a preset for a different connected device or an unsupported platform
 
 it('routes wheel output to vJoy and requires disconnect before changing devices', async () => {
     const run = setup();
-    await run.connect({ backend: 'vjoy', deviceId: 3 });
+    await run.connect({ deviceId: 3 });
     expect(run.spawnProcess).toHaveBeenCalledWith('python',
-        expect.arrayContaining(['--backend', 'vjoy', '--device-id', '3']), expect.anything());
-    await run.handlers['virtual-controller-connect'](run.event, { backend: 'vjoy', deviceId: 3 });
+        ['-u', expect.stringContaining('virtual_controller.py'), '--device-id', '3'], expect.anything());
+    await run.handlers['virtual-controller-connect'](run.event, { deviceId: 3 });
     expect(run.spawnProcess).toHaveBeenCalledTimes(1);
-    await expect(run.handlers['virtual-controller-connect'](run.event, { backend: 'vjoy', deviceId: 4 })).rejects.toThrow(/Disconnect/);
+    await expect(run.handlers['virtual-controller-connect'](run.event, { deviceId: 4 })).rejects.toThrow(/Disconnect/);
     run.handlers['virtual-controller-disconnect'](run.event);
 });
 
-it.each([null, { backend: 'xbox' }, { backend: 'moza' }, { backend: 'vjoy', deviceId: 0 },
-    { backend: 'vjoy', deviceId: 17 }, { backend: 'vjoy', deviceId: 1.5 },
-    { backend: 'vjoy', deviceId: '1' }])('rejects invalid output options before starting a process: %j', async (options) => {
+it.each([null, [], '3', { deviceId: 0 }, { deviceId: 17 }, { deviceId: 1.5 },
+    { deviceId: '1' }])('rejects invalid output options before starting a process: %j', async (options) => {
     const run = setup();
     await expect(run.handlers['virtual-controller-connect'](run.event, options)).rejects.toThrow(/controller output/);
     expect(run.spawnProcess).not.toHaveBeenCalled();
 });
 
-it('defaults to vJoy, waits for device acknowledgement and uses a hidden child process', async () => {
+it('defaults to vJoy device 1, waits for device acknowledgement and uses a hidden child process', async () => {
     const run = setup(); await run.connect();
     expect(run.spawnProcess).toHaveBeenCalledWith('python',
-        ['-u', expect.stringContaining('virtual_controller.py'), '--backend', 'vjoy', '--device-id', '1'],
+        ['-u', expect.stringContaining('virtual_controller.py'), '--device-id', '1'],
         expect.objectContaining({ windowsHide: true }));
     expect(run.contents.setBackgroundThrottling).toHaveBeenCalledWith(false);
     const action = { throttle: 0.4, brake: 0, steering: -0.2 };

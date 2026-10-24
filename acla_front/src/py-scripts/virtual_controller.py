@@ -8,6 +8,7 @@ import threading
 import time
 
 from virtual_wheel import VJoyController
+from physical_controller import PhysicalControllers
 
 WATCHDOG_SECONDS = 0.6
 
@@ -26,7 +27,7 @@ def emit(message):
     print(json.dumps(message), flush=True)
 
 
-def serve(controller, commands, emit_message=emit, clock=time.monotonic):
+def serve(controller, commands, emit_message=emit, clock=time.monotonic, physical=None):
     armed = False
     last_command = clock()
     try:
@@ -41,6 +42,12 @@ def serve(controller, commands, emit_message=emit, clock=time.monotonic):
                 continue
             if command is None:
                 break
+            if isinstance(command, dict) and command.get("type") == "read-physical":
+                if physical is None:
+                    physical = PhysicalControllers()
+                emit_message({"type": "physical", "id": command.get("id"), "devices": physical.read()})
+                # Reading inputs must not refresh the output watchdog.
+                continue
             action = command.get("action") if isinstance(command, dict) else None
             if not valid_action(action):
                 raise ValueError("Invalid controller action. Inputs released.")
@@ -52,12 +59,15 @@ def serve(controller, commands, emit_message=emit, clock=time.monotonic):
         try:
             controller.reset()
         finally:
-            controller.close()
+            try:
+                controller.close()
+            finally:
+                if physical is not None:
+                    physical.close()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", choices=("vjoy",), default="vjoy")
     parser.add_argument("--device-id", type=int, choices=range(1, 17), default=1)
     args = parser.parse_args()
     try:

@@ -17,9 +17,14 @@ export interface DrivingObservation {
     normalizedPosition: number;
     referenceDistance: number;
     speed: number;
+    /** Car-local X/Y/Z velocity in m/s. */
+    localVelocity: [number, number, number];
+    /** Car-local X/Y/Z angular velocity (pitch/yaw/roll) in rad/s. */
+    rotationRates: [number, number, number];
     /** Forward gears start at 1; neutral is 0 and reverse is -1. */
     gear: number;
     rpm: number;
+    /** Orientation is retained for the instability reward only, not policy features. */
     heading: number;
     pitch: number;
     roll: number;
@@ -56,8 +61,9 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
     const sample = paired.currentTelemetry;
     const game = paired.game, car = sample.Static_car_model, map = sample.Static_track;
     if (!game || !car || !map) return { error: 'Game, car and map are required.' };
-    const velocity = [sample.Physics_velocity_x, sample.Physics_velocity_y, sample.Physics_velocity_z];
+    const velocity = [sample.Physics_local_velocity_x, sample.Physics_local_velocity_y, sample.Physics_local_velocity_z];
     const rotation = [sample.Physics_heading, sample.Physics_pitch, sample.Physics_roll];
+    const rotationRates = [sample.Physics_local_angular_vel_x, sample.Physics_local_angular_vel_y, sample.Physics_local_angular_vel_z];
     const controls = [sample.Physics_gas, sample.Physics_brake, sample.Physics_steer_angle];
     const speed = sample.Physics_speed_kmh, position = sample.Graphics_normalized_car_position;
     const gear = sample.Physics_gear, rpm = sample.Physics_rpm;
@@ -66,8 +72,11 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         return { error: 'Valid current gear and engine RPM are required for learned shifting.' };
     }
     if (sample.Physics_autoshifter_on === true) return { error: 'Disable automatic gear shifting in the simulator so the model can learn gear changes.' };
-    if (![...velocity, ...rotation, ...controls, speed, position].every(finite)) {
-        return { error: 'Velocity, speed, rotation, steering, throttle, brake and normalized position are required.' };
+    if (![...velocity, ...rotationRates, ...controls, speed, position].every(finite)) {
+        return { error: 'Local velocity, speed, rotation rates, steering, throttle, brake and normalized position are required.' };
+    }
+    if (!rotation.every(finite)) {
+        return { error: 'Heading, pitch and roll telemetry are required to calculate the instability reward.' };
     }
     if (position! < 0 || position! > 1 || speed! < 0 || controls[0]! < 0 || controls[0]! > 1
         || controls[1]! < 0 || controls[1]! > 1 || Math.abs(controls[2]!) > 1) return { error: 'Telemetry inputs are outside their valid ranges.' };
@@ -118,16 +127,18 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
             ...(velocity as number[]).map((v) => clamp(v / 100)), clamp(speed! / 360, 0, 1),
             ...category(game), ...category(car), ...category(map),
             Math.sin(2 * Math.PI * position!), Math.cos(2 * Math.PI * position!),
-            ...[heading, pitch, roll].flatMap((angle) => [Math.sin(angle), Math.cos(angle)]),
             // Signed right/forward/up offsets are already relative to the car.
             ...controls as number[], ...prediction.referenceDelta.map((v) => clamp(v / 20)),
             clamp((gear - 1) / 8), clamp(rpm / 20000, 0, 1),
+            // Normalize signed local rotation rates by half a revolution per second.
+            ...(rotationRates as number[]).map((rate) => clamp(rate / Math.PI)),
             ...pooled.map((v) => clamp(v, 0, 1)),
             normalizedAggression(aggression), pedals.target.throttle, pedals.target.brake,
         ],
         // Rotation preserves distance, so the same proximity reward applies in local axes.
         normalizedPosition: position!, referenceDistance: Math.hypot(...prediction.referenceDelta),
         speed: speed!, gear: gear - 1, rpm, heading, pitch, roll, controls: action,
+        localVelocity: velocity as [number, number, number], rotationRates: rotationRates as [number, number, number],
         reference, aggression, pedals,
     } };
 }
@@ -136,11 +147,12 @@ export interface DrivingReward {
     speed: number; line: number; instability: number; referencePedal: number; total: number;
     pedalComparison: ReferencePedalTargets & { measured: Pedals; aggression: number };
 }
+export const MAX_TRAINING_TRANSITION_SECONDS = 1.5;
 export const angleDifference = (a: number, b: number) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
     action: DrivingAction): DrivingReward {
     const dt = (current.capturedAt - previous.capturedAt) / 1000;
-    if (dt <= 0 || dt > 1.5 || previous.session !== current.session) throw new Error('Training transition crossed a session boundary or data gap.');
+    if (dt <= 0 || dt > MAX_TRAINING_TRANSITION_SECONDS || previous.session !== current.session) throw new Error('Training transition crossed a session boundary or data gap.');
     let progress = current.normalizedPosition - previous.normalizedPosition;
     if (progress < -0.5) progress += 1;
     if (progress > 0.5) progress -= 1;

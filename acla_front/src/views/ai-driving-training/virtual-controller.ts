@@ -1,7 +1,7 @@
 import type { DrivingAction } from './driving-observation';
+import type { PhysicalController } from './driving-control';
 
 export interface ControllerOutput {
-    backend: 'vjoy';
     deviceId?: number;
 }
 export type ControllerAction = DrivingAction;
@@ -16,6 +16,7 @@ export interface AccControlPreset {
     deviceId: number;
 }
 export interface VirtualControllerApi extends VirtualController {
+    readPhysicalControls?(): Promise<PhysicalController[]>;
     installAccPreset(deviceId: number): Promise<AccControlPreset>;
 }
 declare global {
