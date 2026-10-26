@@ -47,6 +47,24 @@ def set_active_pipeline_id(pid: Optional[str]) -> None:
         st.session_state[_ACTIVE_KEY] = pid
 
 
+def _remove_pipeline(pipeline_id: str) -> None:
+    delete_pipeline(pipeline_id)
+    set_active_pipeline_id(None)
+    for key in (
+        "pipeline_picker",
+        "active_view",
+        "pipeline_routed_view",
+        "pipeline_active_node_id",
+        "pipeline_training_node",
+        "pipeline_annotation_key",
+        "pipeline_session_key",
+    ):
+        st.session_state.pop(key, None)
+    if "pipeline" in st.query_params:
+        del st.query_params["pipeline"]
+    _clear_route_query()
+
+
 def render_pipeline_sidebar(store: Any) -> Optional[Pipeline]:
     """Render the sidebar and return the active Pipeline (or None)."""
     st.header("Pipelines")
@@ -75,6 +93,15 @@ def render_pipeline_sidebar(store: Any) -> Optional[Pipeline]:
             _clear_route_query()
             active_id = chosen
             st.rerun()
+        st.button(
+            "Remove pipeline",
+            key="remove_pipeline",
+            type="secondary",
+            width="stretch",
+            help="Remove the selected pipeline definition. Datasets are kept.",
+            on_click=_remove_pipeline,
+            args=(chosen,),
+        )
     else:
         st.caption("No pipelines yet — create one below.")
 
@@ -107,18 +134,5 @@ def render_pipeline_sidebar(store: Any) -> Optional[Pipeline]:
         st.error(f"Pipeline `{active_id}` no longer on disk.")
         set_active_pipeline_id(None)
         return None
-
-    # ── Maintenance ─────────────────────────────────────────────────────
-    st.markdown("---")
-    with st.expander("Maintenance"):
-        if st.button("🗑️ Delete this pipeline", type="secondary",
-                     width="stretch"):
-            delete_pipeline(pipeline.id)
-            set_active_pipeline_id(None)
-            if "pipeline" in st.query_params:
-                del st.query_params["pipeline"]
-            _clear_route_query()
-            st.success(f"Deleted pipeline `{pipeline.id}`.")
-            st.rerun()
 
     return pipeline
