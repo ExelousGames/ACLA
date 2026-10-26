@@ -28,7 +28,7 @@ const sample = (eta: number, start = 0.125, id = '2'): StandardTelemetrySample =
 const linkedMap = (wrap = false, corner: 'left' | 'right' = 'right') => {
     const map = circuitMap('slow', true);
     map.samples.middle_line!.forEach((point) => { point.normalized_position = normalize(point.normalized_position + 0.025 + (wrap ? 0.90625 : 0)); });
-    if (corner === 'left') map.samples.middle_line!.forEach((point) => { point.z *= -1; });
+    if (corner === 'left') map.samples.middle_line!.forEach((point) => { point.y *= -1; });
     map.centerline_segments = [
         { id: 'first', tags: ['corner', 'slow'], start_position: 0.125, end_position: 0.225 },
         { id: 'second', tags: ['corner', 'fast'], start_position: 0.235, end_position: 0.335 },

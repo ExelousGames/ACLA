@@ -2,6 +2,7 @@ import { useContext } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import apiService from 'services/api.service';
+import type { RecordedSessionSource } from 'data/live-analysis/live-analysis-type';
 import { AnalysisContext } from '../../analysis-context';
 import { RecordedSessionDataProvider } from '../../data/RecordedSessionDataProvider';
 import MapVisualization from './MapVisualization';
@@ -23,14 +24,16 @@ const rows = [0, 1].map((index) => ({
     Physics_speed_kmh: 180 + index,
 }));
 
-const Harness = ({ local = true, telemetry = rows, selected = true }: {
+const Harness = ({ local = true, telemetry = rows, selected = true, game }: {
     local?: boolean;
     telemetry?: Record<string, any>[];
     selected?: boolean;
+    game?: RecordedSessionSource;
 }) => {
     const defaults = useContext(AnalysisContext);
     const session = selected ? {
         storage: local ? 'local' as const : 'cloud' as const,
+        game_recorded_from: game,
         SessionId: local ? 'local-ibt:1' : 'cloud-1', session_name: 'spa.ibt',
         map: 'spa', car: 'GT3', user_id: '', points: [], data: local ? telemetry : [],
     } : null;
@@ -90,6 +93,71 @@ it('plays cloud rows from the shared table when selected-session metadata has no
         canvas.mockRestore();
         global.ResizeObserver = originalObserver;
     }
+});
+
+describe('recorded map coordinate planes', () => {
+    const originalObserver = global.ResizeObserver;
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        global.ResizeObserver = originalObserver;
+    });
+
+    it.each([
+        ['acc', false, 'y', 'z'],
+        ['iracing', false, 'z', 'y'],
+        ['iracing_live', false, 'z', 'y'],
+        ['iracing_recorded', true, 'z', 'y'],
+        [undefined, false, 'y', 'z'],
+        [undefined, true, 'z', 'y'],
+    ] as const)('projects %s (local=%s) on X/%s with altitude on %s', async (game, local, verticalAxis, depthAxis) => {
+        mockGetCircuitMap.mockClear();
+        global.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as any;
+        const context = {
+            setTransform: jest.fn(), clearRect: jest.fn(), fillRect: jest.fn(),
+            createLinearGradient: jest.fn(() => ({ addColorStop: jest.fn() })),
+            save: jest.fn(), restore: jest.fn(), beginPath: jest.fn(), closePath: jest.fn(),
+            moveTo: jest.fn(), lineTo: jest.fn(), stroke: jest.fn(), fill: jest.fn(),
+            setLineDash: jest.fn(), translate: jest.fn(), arc: jest.fn(), fillText: jest.fn(),
+        };
+        jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as any);
+        // Both cars share X and altitude, so only the ground-plane axis separates them.
+        const position = (vertical: number, altitude = 7) => ({
+            x: 10, y: 0, z: 0, [verticalAxis]: vertical, [depthAxis]: altitude,
+        });
+        const telemetry = [{
+            ...rows[0], Graphics_car_id: [0, 1],
+            Graphics_car_coordinates: [position(0), position(20)],
+        }];
+        (apiService.post as jest.Mock).mockReset()
+            .mockResolvedValueOnce({ data: { downloadId: 'axes', sessionMetadata: [{ sessionId: 'cloud-1', chunkCount: 1 }] } })
+            .mockResolvedValueOnce({ data: telemetry });
+        render(<Harness local={local} game={game} telemetry={telemetry} />);
+        await screen.findByText('1 samples');
+        if (verticalAxis === 'z') expect(mockGetCircuitMap).not.toHaveBeenCalled();
+        else expect(mockGetCircuitMap).toHaveBeenCalledWith('acc', 'spa');
+
+        const markerPositions = () => context.translate.mock.calls.slice(-2);
+        const originalPositions = markerPositions();
+        expect(originalPositions).toHaveLength(2);
+        expect(originalPositions[0][0]).toBe(originalPositions[1][0]);
+        expect(originalPositions[0][1]).not.toBe(originalPositions[1][1]);
+        // Grid lines must span both screen dimensions on the same plane as the cars.
+        const gridStart = context.moveTo.mock.calls.slice(-22);
+        const gridEnd = context.lineTo.mock.calls.slice(-22);
+        expect(gridStart[0][0]).toBeCloseTo(gridEnd[0][0]);
+        expect(gridStart[0][1]).not.toBeCloseTo(gridEnd[0][1]);
+        expect(gridStart[1][0]).not.toBeCloseTo(gridEnd[1][0]);
+        expect(gridStart[1][1]).toBeCloseTo(gridEnd[1][1]);
+
+        fireEvent.click(screen.getByRole('button', { name: `Flip ${depthAxis.toUpperCase()} axis` }));
+        expect(markerPositions()).toEqual(originalPositions);
+        fireEvent.click(screen.getByRole('button', { name: `Flip ${verticalAxis.toUpperCase()} axis` }));
+        const flippedPositions = markerPositions();
+        expect(flippedPositions[0]).toEqual(originalPositions[0]);
+        expect(flippedPositions[1][1] - flippedPositions[0][1])
+            .toBeCloseTo(-(originalPositions[1][1] - originalPositions[0][1]));
+    });
 });
 
 describe('recorded telemetry overview playback', () => {

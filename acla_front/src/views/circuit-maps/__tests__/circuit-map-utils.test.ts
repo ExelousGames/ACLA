@@ -9,7 +9,7 @@ import {
     mergeCircuitMapSamples,
     upsertCircuitMapSample
 } from '../circuit-map-utils';
-import { CircuitMapBinSample, CircuitMapGame } from '../circuit-map-types';
+import { CircuitMapBinSample } from '../circuit-map-types';
 import type { StandardTelemetrySample } from 'views/live-session/live-session-types';
 
 const makeTelemetryRow = (normalizedPosition: number) => ({
@@ -38,22 +38,19 @@ describe('circuit map utilities', () => {
         expect(samples.map((sample) => sample.normalized_position)).toEqual([0.5, 0, 0.75, 0.25, 1]);
     });
 
-    it.each<[CircuitMapGame, number, number]>([
-        ['acc', 45, 3],
-        ['iracing', 3, 45],
-    ])('merges %s player coordinates across chunks and preserves locked bins', (game, y, z) => {
+    it('merges normalized player coordinates across chunks and preserves locked bins', () => {
         const row = { ...makeTelemetryRow(0.25), Graphics_status: 2 };
-        const first = mergeCircuitMapSamples([], [row], game);
+        const first = mergeCircuitMapSamples([], [row]);
         const locked = { ...first.samples[0], bin: 500, locked: true };
         const result = mergeCircuitMapSamples([...first.samples, locked], [
             { ...row, Graphics_car_coordinates: [{ x: 20, y: 4, z: 60 }] },
             { ...row, Graphics_normalized_car_position: 0.5 },
             { ...row, Graphics_normalized_car_position: 1, Graphics_player_car_id: 63,
                 Graphics_car_id: [63, -1], Graphics_car_coordinates: [{ x: 0, y: 0, z: 0 }] },
-        ], game);
+        ]);
         expect(result.capturedRows).toBe(3);
         expect(result.samples).toEqual([
-            expect.objectContaining({ bin: 250, x: 15, y, z, sample_count: 2 }),
+            expect.objectContaining({ bin: 250, x: 15, y: 3, z: 45, sample_count: 2 }),
             locked,
             expect.objectContaining({ bin: 999, x: 0, y: 0, z: 0, sample_count: 1 }),
         ]);
@@ -76,8 +73,8 @@ describe('circuit map utilities', () => {
         { Graphics_car_coordinates: [{ x: NaN, y: 0, z: 0 }] },
     ])('rejects unusable player samples in both live and file capture: %o', (fields) => {
         const row = { ...makeTelemetryRow(0.25), ...fields } as unknown as StandardTelemetrySample;
-        expect(extractCircuitMapCaptureSample(row, 'acc')).toBeNull();
-        const result = mergeCircuitMapSamples([], [row], 'iracing');
+        expect(extractCircuitMapCaptureSample(row)).toBeNull();
+        const result = mergeCircuitMapSamples([], [row]);
         expect(result).toEqual({ samples: [], capturedRows: 0 });
     });
 
@@ -89,19 +86,16 @@ describe('circuit map utilities', () => {
         expect(getCircuitMapBin(1.1)).toBeNull();
     });
 
-    it.each<[CircuitMapGame, number, number]>([
-        ['acc', -30, 2],
-        ['iracing', 2, -30],
-    ])('extracts %s map axes without changing the telemetry coordinates', (game, y, z) => {
+    it('preserves normalized map axes without changing the telemetry coordinates', () => {
         const row = makeTelemetryRow(0.25);
         row.Graphics_player_car_id = 99;
         row.Graphics_car_coordinates[1] = { x: 10, y: 2, z: -30 };
-        const capture = extractCircuitMapCaptureSample(row, game);
+        const capture = extractCircuitMapCaptureSample(row);
 
         expect(capture).toEqual({
             bin: 250,
             normalizedPosition: 0.25,
-            position: { x: 10, y, z }
+            position: { x: 10, y: 2, z: -30 }
         });
         expect(row.Graphics_car_coordinates).toEqual([{ x: 10, y: 2, z: 30 }, { x: 10, y: 2, z: -30 }]);
     });
@@ -116,7 +110,7 @@ describe('circuit map utilities', () => {
 
     it.each([undefined, null, '', ' ', false, true, 'bad', NaN, Infinity, -0.1, 1.1])(
         'rejects capture without a valid normalized position: %s', (position) => {
-            expect(extractCircuitMapCaptureSample({ ...makeTelemetryRow(0.25), Graphics_normalized_car_position: position } as unknown as StandardTelemetrySample, 'acc')).toBeNull();
+            expect(extractCircuitMapCaptureSample({ ...makeTelemetryRow(0.25), Graphics_normalized_car_position: position } as unknown as StandardTelemetrySample)).toBeNull();
         }
     );
 

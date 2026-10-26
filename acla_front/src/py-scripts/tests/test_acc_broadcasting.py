@@ -9,6 +9,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from pyaccsharedmemory import ACC_STATUS, Vector3f
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from acc_broadcasting import ACCBroadcasting, Packet, broadcasting_config_path
@@ -291,14 +292,21 @@ class ACCExtractorBroadcastingTests(unittest.TestCase):
 
     def test_emits_broadcast_positions_alongside_shared_memory_on_one_json_line(self):
         self.recorder.broadcasting.poll.return_value = {'7': 0.25, '1052': 0.5}
-        self.assertEqual(self.record(), {'Graphics_status': 2, 'Graphics_normalized_car_position': 0.4,
-                                        'Graphics_normalized_positions': {'7': 0.25, '1052': 0.5}})
+        self.assertEqual(self.record(), {
+            'type': 'sample',
+            'sharedMemory': {'Graphics': {'status': 2, 'normalized_car_position': 0.4}},
+            'broadcasting': {'positions': {'7': 0.25, '1052': 0.5}, 'sessionTime': None},
+        })
 
     def test_unavailable_broadcasting_preserves_shared_memory_capture(self):
         self.recorder.broadcasting.poll.return_value = None
-        self.assertEqual(self.record(), {'Graphics_status': 2, 'Graphics_normalized_car_position': 0.4})
+        self.assertEqual(self.record(), {
+            'type': 'sample',
+            'sharedMemory': {'Graphics': {'status': 2, 'normalized_car_position': 0.4}},
+            'broadcasting': {'positions': None, 'sessionTime': None},
+        })
 
-    def test_adapts_native_broadcast_session_time_to_elapsed_seconds(self):
+    def test_preserves_native_broadcast_session_time_in_milliseconds(self):
         client = ACCBroadcasting()
         client.connection_id = 7
         self.recorder.broadcasting = client
@@ -306,17 +314,34 @@ class ACCExtractorBroadcastingTests(unittest.TestCase):
             for elapsed in (12125.0, 12375.0, 0.0):
                 client._handle(session_update(elapsed=elapsed), client.clock())
                 row = self.record()
-                self.assertEqual(row['Graphics_game_time'], elapsed / 1000.0)
-                self.assertEqual(row['Graphics_normalized_car_position'], 0.4)
-                self.assertNotIn('SessionTime', row)
+                self.assertEqual(row['broadcasting']['sessionTime'], elapsed)
+                self.assertEqual(row['sharedMemory']['Graphics']['normalized_car_position'], 0.4)
+                self.assertNotIn('Graphics_game_time', row)
             client._handle(session_update(replay=True), client.clock())
-            self.assertNotIn('Graphics_game_time', self.record())
+            self.assertIsNone(self.record()['broadcasting']['sessionTime'])
+
+    def test_preserves_nested_sdk_values_and_strings_for_the_adapter(self):
+        self.recorder.asm.read_shared_memory.return_value = SimpleNamespace(
+            Graphics=SimpleNamespace(status=ACC_STATUS.ACC_LIVE, car_coordinates=[Vector3f(1, 2, 3)]),
+            Static=SimpleNamespace(player_name='André\0', player_nick='', player_surname=None),
+        )
+        self.recorder.broadcasting.poll.return_value = None
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.recorder.recordOnce(self.scheduler, None)
+        self.assertEqual(len(output.getvalue().splitlines()), 1)
+        self.assertEqual(json.loads(output.getvalue())['sharedMemory'], {
+            'Graphics': {'status': 2, 'car_coordinates': [{'x': 1, 'y': 2, 'z': 3}]},
+            'Static': {'player_name': 'André\0', 'player_nick': '', 'player_surname': None},
+        })
 
     def test_nonlive_and_missing_shared_memory_keep_polling_without_closing(self):
+        self.recorder.broadcasting.poll.return_value = {'7': 0.25}
+        self.recorder.broadcasting.get_session_time.return_value = 12125
         for status in (0, 1, 3):
             row = self.record(status)
-            self.assertNotIn('Graphics_normalized_positions', row)
-            self.assertNotIn('Graphics_game_time', row)
+            self.assertEqual(row['sharedMemory']['Graphics']['status'], status)
+            self.assertEqual(row['broadcasting'], {'positions': {'7': 0.25}, 'sessionTime': 12125})
         self.assertEqual(self.record(None), {'available': False})
         self.assertEqual(self.recorder.broadcasting.poll.call_count, 4)
         self.recorder.broadcasting.close.assert_not_called()
@@ -343,16 +368,16 @@ class ACCExtractorBroadcastingTests(unittest.TestCase):
             self.assertEqual(client.connection_id, 7)
 
             row = self.record()
-            self.assertEqual(row['Graphics_normalized_positions'], {'1052': 0.25})
-            self.assertEqual(row['Graphics_game_time'], 12.125)
+            self.assertEqual(row['broadcasting']['positions'], {'1052': 0.25})
+            self.assertEqual(row['broadcasting']['sessionTime'], 12125)
 
             clock.return_value = 30.0
             self.record(3)
             self.record(None)
             sock.queue.extend([session_update(elapsed=32125), car_update(position=0.5)])
             row = self.record()
-            self.assertEqual(row['Graphics_normalized_positions'], {'1052': 0.5})
-            self.assertEqual(row['Graphics_game_time'], 32.125)
+            self.assertEqual(row['broadcasting']['positions'], {'1052': 0.5})
+            self.assertEqual(row['broadcasting']['sessionTime'], 32125)
             self.assertFalse(sock.closed)
             factory.assert_called_once()
             self.assertNotIn(struct.pack('<Bi', 9, 7), sock.sent)

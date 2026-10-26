@@ -42,7 +42,8 @@ export function createPhraseMapContext(map: CircuitMapDto | null) {
     }, 0);
     // Bound lookahead to 150 m and at most 3% of a lap on sparse maps.
     const lookahead = Math.min(0.03, trackLength > 0 ? 150 / trackLength : 0);
-    const geometry = new Map(corners.map((corner) => [corner, getPhraseCornerGeometry(line, corner)]));
+    const groundAxis = map?.game === 'acc' ? 'y' : 'z';
+    const geometry = new Map(corners.map((corner) => [corner, getPhraseCornerGeometry(line, corner, groundAxis)]));
     const sequences = tags.filter((tag) => labels(tag).includes('consecutive corners')).map((area) => {
         const members = corners.filter((corner) =>
             distance(area.start_position, corner.start_position) + segmentSpan(corner) <= segmentSpan(area) + 1e-9)
@@ -133,7 +134,7 @@ export function createPhraseMapContext(map: CircuitMapDto | null) {
                 longStraightAfterCorner: longStraightAfterCorner ? 1 : 0,
                 cornerShape: geometry.get(corner)?.shape,
                 cornerGeometry: geometry.get(corner),
-                // Match the game-specific X/Z orientation used by LiveTrajectoryMap.
+                // Match the game-specific ground plane and orientation used by LiveTrajectoryMap.
                 cornerDirection: turn === undefined ? undefined
                     : turn * (map?.game === 'iracing' ? -1 : 1) > 0 ? 'right' : 'left',
                 linkedOpposite: linked && turn !== followingTurn ? 1 : 0,

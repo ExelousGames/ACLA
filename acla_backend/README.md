@@ -44,6 +44,39 @@ Trained Ultralytics model storage: see the [Ultralytics model API contract](src/
 
 `created_date` is the session creation timestamp in ISO 8601 format. If no sessions match, the response is `{ "list": [] }`. Use `GET /racing-session/:id/videos` to list a session's available recordings.
 
+## Migrate stored ACC Y/Z axes
+
+`npm run migrate:acc-yz -- --before <UTC-cutoff>` previews ACC sessions recorded
+before the adapter change. Set `MONGODB_URI` (including the database name), or use
+the running backend's `MONGO_CLIENTNAME`, `MONGO_CLIENTPASSWORD`, and `MONGO_URL`.
+The default dry run inspects metadata only; `--apply` transforms and verifies
+every JSON chunk before publishing each session. `--verify` compares every
+migrated chunk against its original and fails if eligible sessions remain.
+
+```bash
+docker exec acla_backend_c node scripts/migrate-acc-yz.js --before 2026-10-26T16:40:52Z --dry-run
+docker exec acla_backend_c node scripts/migrate-acc-yz.js --before 2026-10-26T16:40:52Z --apply
+docker exec acla_backend_c node scripts/migrate-acc-yz.js --before 2026-10-26T16:40:52Z --verify
+npm run test:migrate:acc-yz
+```
+
+The migration swaps all flattened `_y`/`_z` fields and each
+`Graphics_car_coordinates` entry. It preserves chunk order, other telemetry,
+session metadata, and video attachments. Choose a cutoff preceding the first
+normalized capture; never extend it to include new recordings. Legacy sessions
+without `created_date` use their ObjectId timestamp, and source chunk upload
+dates must also precede the cutoff.
+
+Each session atomically receives its replacement file IDs and a
+`telemetryMigrations.acc_yz_v1` marker, so reruns skip completed sessions.
+Original GridFS files remain available through the marker's
+`originalChunkFileIds` for recovery. Allow space for a second copy of the selected
+telemetry. Interrupted sessions keep their original references; rerunning can
+leave unused staged copies identified by `metadata.telemetryMigration` in
+`racing_sessions.files`. No original or staged files are automatically deleted.
+To recover a session, restore its ordered `originalChunkFileIds` and remove the
+marker in one conditional update after checking its current references.
+
 ## Project setup
 
 ```bash

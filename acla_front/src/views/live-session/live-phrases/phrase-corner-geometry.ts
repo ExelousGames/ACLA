@@ -15,7 +15,7 @@ export const segmentSpan = (segment: CircuitMapCenterlineSegment) => segment.end
 
 /** Clip the actual centerline, then sample at equal distances to avoid capture-density bias. */
 export function getPhraseCornerGeometry(
-    line: CircuitMapBinSample[], segment: CircuitMapCenterlineSegment,
+    line: CircuitMapBinSample[], segment: CircuitMapCenterlineSegment, groundAxis: 'y' | 'z',
 ): PhraseCornerGeometry | undefined {
     const span = segmentSpan(segment);
     const start = getLiveMapPosition(line, segment.start_position);
@@ -29,13 +29,13 @@ export function getPhraseCornerGeometry(
     const points: NonNullable<typeof start>[] = [];
     for (const point of [start, ...interior, end]) {
         const previous = points[points.length - 1];
-        if (!previous || Math.hypot(point.x - previous.x, point.z - previous.z) > 0.01) points.push(point);
+        if (!previous || Math.hypot(point.x - previous.x, point[groundAxis] - previous[groundAxis]) > 0.01) points.push(point);
     }
     if (points.length < 3) return undefined;
     const distances = [0];
     for (let index = 1; index < points.length; index++) {
         distances.push(distances[index - 1] + Math.hypot(points[index].x - points[index - 1].x,
-            points[index].z - points[index - 1].z));
+            points[index][groundAxis] - points[index - 1][groundAxis]));
     }
     const lengthM = distances[distances.length - 1];
     const steps = Math.min(64, Math.floor(lengthM / 5));
@@ -47,15 +47,15 @@ export function getPhraseCornerGeometry(
         const fraction = (target - distances[cursor - 1]) / (distances[cursor] - distances[cursor - 1]);
         return {
             x: points[cursor - 1].x + (points[cursor].x - points[cursor - 1].x) * fraction,
-            z: points[cursor - 1].z + (points[cursor].z - points[cursor - 1].z) * fraction,
+            y: points[cursor - 1][groundAxis] + (points[cursor][groundAxis] - points[cursor - 1][groundAxis]) * fraction,
         };
     });
     let positive = 0, negative = 0;
     const bendBins = [0, 0, 0, 0, 0, 0];
     for (let index = 1; index < sampled.length - 1; index++) {
         const a = sampled[index - 1], b = sampled[index], c = sampled[index + 1];
-        const ux = b.x - a.x, uz = b.z - a.z, vx = c.x - b.x, vz = c.z - b.z;
-        const angle = Math.atan2(ux * vz - uz * vx, ux * vx + uz * vz);
+        const ux = b.x - a.x, uy = b.y - a.y, vx = c.x - b.x, vy = c.y - b.y;
+        const angle = Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);
         positive += Math.max(0, angle);
         negative += Math.max(0, -angle);
         bendBins[Math.min(5, Math.floor(index / steps * 6))] += Math.abs(angle);

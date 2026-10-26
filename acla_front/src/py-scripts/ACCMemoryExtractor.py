@@ -1,16 +1,22 @@
 from pyaccsharedmemory import accSharedMemory
 from acc_broadcasting import ACCBroadcasting
 import sched, time
-import csv
-from typing import List, Any, Dict
 import json
 import os
-from util.json_utils import DataclassJSONUtility
-from util.clean_encode import cleanEncoding
 import sys
-import enum 
+import enum
 
 recordedData = []
+
+
+def serialize_shared_memory(value):
+    """Encode SDK objects for transport without flattening or cleaning fields."""
+    if isinstance(value, enum.Enum):
+        return value.value
+    if hasattr(value, '__dict__'):
+        return {key: item for key, item in vars(value).items() if not key.startswith('_')}
+    raise TypeError(f'Object of type {type(value).__name__} is not JSON serializable')
+
 
 class ACCRecording:
     def __init__(self, target_fps: int = 60):
@@ -37,166 +43,20 @@ class ACCRecording:
         positions = self.broadcasting.poll()
         sm = self.asm.read_shared_memory()
         if  (sm is not None):
-            flattened = self.flatten_object(sm)
-            if flattened.get('Graphics_status') == 2:
-                if positions is not None:
-                    flattened['Graphics_normalized_positions'] = positions
-                    session_time = self.broadcasting.get_session_time()
-                    if session_time is not None:
-                        # Adapt Broadcasting milliseconds to standard elapsed seconds before delivery.
-                        flattened['Graphics_game_time'] = session_time / 1000.0
-            
-            #self.append_object_to_csv(flattened,full_path)
-
-            # !!!!!! must keep this to communicate with frontend
-            # emit compact JSON so the renderer receives a single line per sample
-            print(DataclassJSONUtility.to_json(flattened).rstrip(), flush=True)
+            packet = {
+                'type': 'sample',
+                'sharedMemory': sm,
+                'broadcasting': {
+                    'positions': positions,
+                    'sessionTime': self.broadcasting.get_session_time(),
+                },
+            }
+            # The Electron ACC adapter owns all application field conversions.
+            print(json.dumps(packet, default=serialize_shared_memory, separators=(',', ':')), flush=True)
         else:
             print(json.dumps({"available": False}).rstrip(), flush=True)
             
 
-    def flatten_object(self, obj: Any, prefix: str = '') -> Dict[str, Any]:
-            """
-            Recursively flatten an object's attributes, including nested objects
-            """
-            flattened = {}
-            
-            # Skip non-object attributes or None values
-            if not hasattr(obj, '__dict__') or obj is None:
-                return flattened
-            
-            for key, value in vars(obj).items():
-                # Skip private attributes
-                if key.startswith('_'):
-                    continue
-                full_key = f"{prefix}{key}" if prefix else key
-                
-                if isinstance(value, enum.Enum):
-                    valueFixed = cleanEncoding(value.value)
-                    if not self.is_blank(valueFixed):
-                        flattened[full_key] = valueFixed
-                # Handle nested objects recursively
-                elif hasattr(value, '__dict__'):
-                    nested_flattened = self.flatten_object(value, prefix=f"{full_key}_")
-                    flattened.update(nested_flattened)
-                # Handle basic types
-                else:
-                    valueFixed = cleanEncoding(value)
-
-                    if not self.is_blank(valueFixed):
-                        flattened[full_key] = valueFixed
-                    
-            return flattened
-    def append_object_to_csv(self, object: Any, filename: str) -> None:
-            """
-            Convert object with nested structures to CSV
-            """
-            if not filename:
-                raise ValueError("No filename provided")
-            
-            if not object:
-                return
-                
-            # Get all possible fieldnames from all objects
-            all_fieldnames = set()
-            flattened_objects = []
-            
-   
-            flattened_objects.append(object)
-            all_fieldnames.update(object.keys())
-            
-            
-            with open(filename, 'a', newline='', encoding='utf-8') as csvfile:
-                writer = csv.DictWriter(
-                    csvfile,
-                    fieldnames=all_fieldnames,
-                    quoting=csv.QUOTE_MINIMAL,  # This will handle special characters
-                    escapechar='\\'  # Add escape character
-                )
-                
-                
-                for object in flattened_objects:
-                    writer.writerow(object)
-    
-    def write_object_to_csv(self, objects: Any, filename: str, write_header: bool = True) -> None:
-            """
-            Convert a list of objects with nested structures to CSV
-            """
-            if not filename:
-                raise ValueError("No filename provided")
-            
-            if not objects:
-                return
-                
-            # Get all possible fieldnames from all objects
-            all_fieldnames = set()
-            flattened_objects = []
-            
-            flattened = self.flatten_object(objects)
-            flattened_objects.append(flattened)
-            all_fieldnames.update(flattened.keys())
-            
-            
-            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.DictWriter(
-                    csvfile,
-                    fieldnames=all_fieldnames,
-                    quoting=csv.QUOTE_MINIMAL,  # This will handle special characters
-                    escapechar='\\'  # Add escape character
-                )
-                
-                if write_header:
-                    writer.writeheader()
-                
-                for flattened in flattened_objects:
-                    writer.writerow(flattened)
-                   
-    def write_objects_to_csv(self, objects: List[Any], filename: str, write_header: bool = True) -> None:
-            """
-            Convert a list of objects with nested structures to CSV
-            """
-            if not filename:
-                raise ValueError("No filename provided")
-            
-            if not objects:
-                return
-                
-            # Get all possible fieldnames from all objects
-            all_fieldnames = set()
-            flattened_objects = []
-            
-            for obj in objects:
-                flattened = self.flatten_object(obj)
-                flattened_objects.append(flattened)
-                all_fieldnames.update(flattened.keys())
-            
-            
-            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.DictWriter(
-                    csvfile,
-                    fieldnames=all_fieldnames,
-                    quoting=csv.QUOTE_MINIMAL,  # This will handle special characters
-                    escapechar='\\'  # Add escape character
-                )
-                
-                if write_header:
-                    writer.writeheader()
-                
-                for flattened in flattened_objects:
-                    writer.writerow(flattened)
-
-    def is_blank(self,value):
-        """Check if value is None, empty, or whitespace-only for any type"""
-        if value is None:
-            return True
-        if isinstance(value, (str, bytes)):
-            return not str(value).strip()
-        if isinstance(value, (list, dict, set, tuple)):
-            return not bool(value)
-        return False
-    
-
-    
 if __name__ == "__main__":
     recorder = ACCRecording()
     # The Electron recording reader uses this script as a stream-only telemetry

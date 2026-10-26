@@ -21,9 +21,9 @@ export function trainingFixture(now = 1000, aggression = 50, referenceLap = refe
     const store = createLiveTelemetryStore();
     store.publishFrame({ type: 'frame', game: 'acc', sequence: 1, committedSequence: 1, committedCount: 1, sample: {
         Graphics_status: 2, Static_car_model: 'GT3', Static_track: 'monza',
-        Physics_local_velocity_x: 1, Physics_local_velocity_y: 0, Physics_local_velocity_z: 30, Physics_speed_kmh: 108,
+        Physics_local_velocity_x: 1, Physics_local_velocity_y: 30, Physics_local_velocity_z: 0, Physics_speed_kmh: 108,
         Physics_heading: 0, Physics_pitch: 0, Physics_roll: 0, Physics_steer_angle: 0,
-        Physics_local_angular_vel_x: 0.1, Physics_local_angular_vel_y: -0.2, Physics_local_angular_vel_z: 0.3,
+        Physics_local_angular_vel_x: 0.1, Physics_local_angular_vel_y: 0.3, Physics_local_angular_vel_z: -0.2,
         Physics_gas: 0.3, Physics_brake: 0, Graphics_normalized_car_position: 0.25,
         Physics_gear: 4, Physics_rpm: 6000,
     } });

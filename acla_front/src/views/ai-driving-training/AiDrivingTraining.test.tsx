@@ -32,15 +32,52 @@ beforeEach(() => {
 });
 afterEach(() => { delete window.virtualController; jest.restoreAllMocks(); jest.useRealTimers(); });
 
+it('displays the complete action plan in one table and clears it on Stop', async () => {
+    const { observation } = trainingFixture(Date.now());
+    const checkpoint = { ...new DrivingPolicy(observation.context, observation.features.length).checkpoint(), steps: 10 };
+    localStorage.setItem('acla.self-driving.policy.v10', JSON.stringify(checkpoint));
+    mockInput = { observation };
+    render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    const table = screen.getByRole('table', { name: 'Planned driving actions' });
+    expect(within(table).getByText('Waiting for AI control and fresh inputs.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    act(() => { jest.advanceTimersByTime(250); });
+    fireEvent.click(screen.getByRole('button', { name: 'Run trained model' })); await flush();
+    expect(within(table).getAllByRole('row')).toHaveLength(8);
+    expect(within(table).getAllByRole('rowheader').map((cell) => cell.textContent))
+        .toEqual(['0.0 s', '0.5 s', '1.0 s', '1.5 s', '2.0 s', '2.5 s', '3.0 s']);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+    expect(within(table).getByText('Waiting for AI control and fresh inputs.')).toBeInTheDocument();
+});
+
+it.each([8, 9])('preserves version-%s checkpoints while requiring a model trained with current axes', (version) => {
+    const { observation } = trainingFixture();
+    const previous = JSON.stringify({ ...new DrivingPolicy(observation.context, observation.features.length).checkpoint(), version, steps: 321 });
+    const key = `acla.self-driving.policy.v${version}`;
+    localStorage.setItem(key, previous);
+    render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    expect(localStorage.getItem(key)).toBe(previous);
+    expect(localStorage.getItem('acla.self-driving.policy.v10')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Run trained model' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Export model' })).toBeDisabled();
+    expect(screen.getByText(/updated ACC telemetry axes require a new model/)).toBeInTheDocument();
+});
+
 it('shows motion inputs with axes and units, and clears them when observations are unavailable', () => {
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
     const labels = ['Local velocity', 'Rotation rates'];
     labels.forEach((label) => expect(screen.getByText(label).nextElementSibling).toHaveTextContent('—'));
     mockInput = { observation: { ...trainingFixture(Date.now()).observation, heading: 1.2, pitch: -0.025, roll: 0.03 } };
     act(() => { jest.advanceTimersByTime(250); });
-    expect(screen.getByText('Local velocity').nextElementSibling).toHaveTextContent('X 1.00 · Y 0.00 · Z 30.00 m/s');
+    expect(screen.getByText('Local velocity').nextElementSibling).toHaveTextContent('X 1.00 · Y 30.00 · Z 0.00 m/s');
     expect(screen.queryByText('World-space velocity')).not.toBeInTheDocument();
     expect(screen.queryByText('Orientation')).not.toBeInTheDocument();
+    expect(screen.getByText('Rotation rates').nextElementSibling).toHaveTextContent('Pitch (X) 0.100 · Roll (Y) 0.300 · Yaw (Z) -0.200 rad/s');
+    const observation = trainingFixture(Date.now()).observation;
+    mockInput = { observation: { ...observation, context: { ...observation.context, game: 'iracing' },
+        localVelocity: [1, 0, 30], rotationRates: [0.1, -0.2, 0.3] } };
+    act(() => { jest.advanceTimersByTime(250); });
+    expect(screen.getByText('Local velocity').nextElementSibling).toHaveTextContent('X 1.00 · Y 0.00 · Z 30.00 m/s');
     expect(screen.getByText('Rotation rates').nextElementSibling).toHaveTextContent('Pitch (X) 0.100 · Yaw (Y) -0.200 · Roll (Z) 0.300 rad/s');
     mockInput = { error: 'Waiting for fresh, running live telemetry.' };
     act(() => { jest.advanceTimersByTime(250); });
@@ -91,7 +128,7 @@ it('keeps training disabled until the controller and all live inputs are ready',
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
     expect(window.virtualController!.apply).toHaveBeenLastCalledWith({ throttle: 0, brake: 0, steering: 0 });
-    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v8')!)).toMatchObject({ algorithm: 'online-actor-critic', version: 8 });
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v10')!)).toMatchObject({ algorithm: 'online-actor-critic', version: 10 });
 });
 
 it.each([true, false])('keeps the session active through invalid inputs and resumes automatically (training=%s)', async (train) => {
@@ -100,7 +137,7 @@ it.each([true, false])('keeps the session active through invalid inputs and resu
     const observation = trainingFixture(Date.now()).observation;
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
     checkpoint.steps = 10;
-    localStorage.setItem('acla.self-driving.policy.v8', JSON.stringify(checkpoint));
+    localStorage.setItem('acla.self-driving.policy.v10', JSON.stringify(checkpoint));
     mockInput = { observation };
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
@@ -132,7 +169,7 @@ it.each([true, false])('keeps the session active through invalid inputs and resu
     expect(screen.getByText('Learning steps').parentElement).toHaveTextContent(train ? '11' : '10');
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
     expect(screen.getByLabelText('Current control owner')).toHaveTextContent('No driver');
-    const saved = JSON.parse(localStorage.getItem('acla.self-driving.policy.v8')!);
+    const saved = JSON.parse(localStorage.getItem('acla.self-driving.policy.v10')!);
     expect(saved.steps).toBe(train ? 11 : 10);
     if (!train) expect(saved).toEqual(checkpoint);
 });
@@ -145,13 +182,13 @@ it.each([1, 2, 3, 4, 5, 6, 7])('removes version-%s local models and starts train
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(localStorage.getItem(`acla.self-driving.policy.v${version}`)).toBeNull();
     expect(screen.getByRole('button', { name: 'Export model' })).toBeDisabled();
-    expect(localStorage.getItem('acla.self-driving.policy.v8')).toBeNull();
+    expect(localStorage.getItem('acla.self-driving.policy.v10')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     mockInput = { observation: trainingFixture(Date.now()).observation };
     act(() => { jest.advanceTimersByTime(250); });
     fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
-    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v8')!).version).toBe(8);
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v10')!).version).toBe(10);
     expect(localStorage.getItem(`acla.self-driving.policy.v${version}`)).toBeNull();
 });
 
@@ -159,8 +196,8 @@ it.each([1, 2])('shows and releases a saved model’s learned shift choice %s', 
     const { observation } = trainingFixture(Date.now());
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
     checkpoint.steps = 10;
-    checkpoint.outputWeights.slice(4).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === shift ? 4 : 0; });
-    localStorage.setItem('acla.self-driving.policy.v8', JSON.stringify(checkpoint));
+    checkpoint.outputWeights.slice(3, 6).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === shift ? 4 : 0; });
+    localStorage.setItem('acla.self-driving.policy.v10', JSON.stringify(checkpoint));
     mockInput = { observation };
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
@@ -178,7 +215,7 @@ it.each([1, 2])('shows and releases a saved model’s learned shift choice %s', 
     expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: false, shiftDown: false }));
     fireEvent.keyDown(window, { key: 'Escape' }); await flush();
     expect(window.virtualController!.apply).toHaveBeenLastCalledWith({ throttle: 0, brake: 0, steering: 0 });
-    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v8')!)).toEqual(checkpoint);
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v10')!)).toEqual(checkpoint);
 });
 
 it('maps physical controls and switches vJoy ownership with one UI button or one controller button', async () => {
@@ -251,7 +288,7 @@ it('starts human driving without AI inputs, arms training without stealing contr
     expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({ throttle: 0.6, brake: 0.1, steering: 0 }));
     expect(screen.getByRole('button', { name: 'Return to AI' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Hold to test throttle' })).toBeDisabled();
-    expect(localStorage.getItem('acla.self-driving.policy.v8')).toBeNull();
+    expect(localStorage.getItem('acla.self-driving.policy.v10')).toBeNull();
     const observation = trainingFixture(Date.now()).observation;
     mockInput = { observation };
     act(() => { jest.advanceTimersByTime(250); }); await flush();
@@ -501,7 +538,7 @@ it.each([true, false])('uses Live Map’s selected lap and applies slider change
         jest.requireActual('./driving-observation').readDrivingObservation(fixture.live, detected, lap, aggression, Date.now()));
     const checkpoint = new DrivingPolicy(fixture.observation.context, fixture.observation.features.length).checkpoint();
     checkpoint.steps = 10;
-    localStorage.setItem('acla.self-driving.policy.v8', JSON.stringify(checkpoint));
+    localStorage.setItem('acla.self-driving.policy.v10', JSON.stringify(checkpoint));
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     act(() => { jest.advanceTimersByTime(250); });
@@ -526,7 +563,7 @@ it.each([true, false])('uses Live Map’s selected lap and applies slider change
     expect(slider).toHaveValue('50');
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
-    const saved = JSON.parse(localStorage.getItem('acla.self-driving.policy.v8')!);
+    const saved = JSON.parse(localStorage.getItem('acla.self-driving.policy.v10')!);
     expect(saved.steps).toBe(train ? 11 : 10);
     if (!train) expect(saved).toEqual(checkpoint);
 });
@@ -537,7 +574,7 @@ it('restores a saved model after remount', () => {
     const oldKeys = [1, 2, 3, 4, 5, 6, 7].map((version) => `acla.self-driving.policy.v${version}`);
     oldKeys.forEach((key) => localStorage.setItem(key, 'old-model'));
     localStorage.setItem('acla.self-driving.aggression', '75');
-    localStorage.setItem('acla.self-driving.policy.v8', JSON.stringify(checkpoint));
+    localStorage.setItem('acla.self-driving.policy.v10', JSON.stringify(checkpoint));
     const first = render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
     expect(screen.getByText('321')).toBeInTheDocument();
     expect(oldKeys.map((key) => localStorage.getItem(key))).toEqual(oldKeys.map(() => null));
@@ -546,10 +583,10 @@ it('restores a saved model after remount', () => {
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
     expect(screen.getByText('321')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Export model' })).toBeEnabled();
-    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v8')!)).toEqual(checkpoint);
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v10')!)).toEqual(checkpoint);
 });
 
-it('imports and saves a version-8 checkpoint', async () => {
+it('imports and saves a version-10 checkpoint', async () => {
     const { observation } = trainingFixture();
     const checkpoint = { ...new DrivingPolicy(observation.context, observation.features.length).checkpoint(), steps: 44 };
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
@@ -557,15 +594,15 @@ it('imports and saves a version-8 checkpoint', async () => {
     const file = new File([text], 'model.json', { type: 'application/json' });
     Object.defineProperty(file, 'text', { value: async () => text });
     fireEvent.change(screen.getByLabelText('Import model checkpoint'), { target: { files: [file] } }); await flush();
-    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v8')!)).toEqual(checkpoint);
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v10')!)).toEqual(checkpoint);
     expect(screen.getByText('44')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
 
-it.each([1, 2, 3, 4, 5, 6, 7])('rejects a version-%s import without replacing the current model', async (version) => {
+it.each([1, 2, 3, 4, 5, 6, 7, 8, 9])('rejects a version-%s import without replacing the current model', async (version) => {
     const { observation } = trainingFixture();
     const checkpoint = { ...new DrivingPolicy(observation.context, observation.features.length).checkpoint(), steps: 321 };
-    localStorage.setItem('acla.self-driving.policy.v8', JSON.stringify(checkpoint));
+    localStorage.setItem('acla.self-driving.policy.v10', JSON.stringify(checkpoint));
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
     const text = JSON.stringify({ ...new DrivingPolicy(observation.context, observation.features.length + (version === 5 ? 6 : version === 3 || version === 4 ? 3 : 0)).checkpoint(), version, steps: 44 });
     const file = new File([text], 'unsupported.json', { type: 'application/json' });
@@ -573,20 +610,20 @@ it.each([1, 2, 3, 4, 5, 6, 7])('rejects a version-%s import without replacing th
     fireEvent.change(screen.getByLabelText('Import model checkpoint'), { target: { files: [file] } }); await flush();
     expect(screen.getByRole('alert')).toHaveTextContent('Invalid or incompatible self-driving model checkpoint.');
     expect(screen.getByText('321')).toBeInTheDocument();
-    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v8')!)).toEqual(checkpoint);
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v10')!)).toEqual(checkpoint);
 });
 
 it('removes the saved model on New model and stays empty after remount', () => {
     const { observation } = trainingFixture();
     const checkpoint = { ...new DrivingPolicy(observation.context, observation.features.length).checkpoint(), steps: 321 };
-    localStorage.setItem('acla.self-driving.policy.v8', JSON.stringify(checkpoint));
+    localStorage.setItem('acla.self-driving.policy.v10', JSON.stringify(checkpoint));
     const first = render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
     fireEvent.click(screen.getByRole('button', { name: 'New model' }));
-    expect(localStorage.getItem('acla.self-driving.policy.v8')).toBeNull();
+    expect(localStorage.getItem('acla.self-driving.policy.v10')).toBeNull();
     first.unmount();
     render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
     expect(screen.queryByText('321')).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Export model' })).toBeDisabled();
-    expect(localStorage.getItem('acla.self-driving.policy.v8')).toBeNull();
+    expect(localStorage.getItem('acla.self-driving.policy.v10')).toBeNull();
 });

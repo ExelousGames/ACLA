@@ -14,7 +14,7 @@ import type { AccControlPreset, ControllerAction, VirtualController } from './vi
 import ManualDrivingControls, { ManualDrivingControlsHandle } from './ManualDrivingControls';
 import './AiDrivingTraining.css';
 
-const STORAGE_KEY = 'acla.self-driving.policy.v8';
+const STORAGE_KEY = 'acla.self-driving.policy.v10';
 const AGGRESSION_KEY = 'acla.self-driving.aggression';
 function readAggression(): number {
     try {
@@ -303,6 +303,17 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <p>Start AI training or evaluation when live inputs are ready. If you are already driving, you keep control until Return to AI.</p>
                 <p>Online actor–critic · 32 hidden units · continuous throttle, brake and steering, plus learned hold gear, shift up and shift down.</p>
                 <p>3-second driving memory follows recent motion, controls and reference targets during training and evaluation. Memory starts fresh after stopping, changing drivers or interrupted inputs.</p>
+                <p>One action plan covers 0 to 3 seconds in 0.5-second steps. The AI applies the 0-second action and refreshes the whole plan with each fresh observation. Later steps learn from the actions taken during uninterrupted training.</p>
+                <p className="driving-note">Action plans and updated ACC telemetry axes require a new model. Earlier checkpoints need retraining.</p>
+                <table className="driving-pedals" aria-label="Planned driving actions">
+                    <caption>Action plan · 0–3 seconds</caption>
+                    <thead><tr><th scope="col">Time</th><th scope="col">Throttle</th><th scope="col">Brake</th><th scope="col">Steering</th><th scope="col">Shift</th></tr></thead>
+                    <tbody>{state.plan ? state.plan.map(({ timeSeconds, action }) => <tr key={timeSeconds}>
+                        <th scope="row">{timeSeconds.toFixed(1)} s</th>
+                        <td>{(action.throttle * 100).toFixed(1)}%</td><td>{(action.brake * 100).toFixed(1)}%</td>
+                        <td>{action.steering.toFixed(3)}</td><td>{action.shiftUp ? 'Up' : action.shiftDown ? 'Down' : 'Hold'}</td>
+                    </tr>) : <tr><td colSpan={5}>Waiting for AI control and fresh inputs.</td></tr>}</tbody>
+                </table>
                 <p className="driving-note">Disable automatic gears in the simulator and bind both shift buttons before training. The model learns gear choices from driving rewards. Shifts use 0.1-second presses with at least 0.5 seconds between shifts. Downshifts are allowed in every gear, including neutral and reverse.</p>
                 <div className="driving-metrics"><div><strong>{modelSteps ?? 0}</strong><span>Learning steps</span></div>
                     <div><strong>{state.episodeReward.toFixed(2)}</strong><span>Episode reward</span></div></div>
@@ -397,7 +408,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <dt>Map</dt><dd>{observation?.context.map ?? 'Waiting'}</dd>
                     <dt>Speed</dt><dd>{observation ? `${observation.speed.toFixed(1)} km/h` : '—'}</dd>
                     <dt>Local velocity</dt><dd>{observation ? `${observation.localVelocity.map((value, axis) => `${['X', 'Y', 'Z'][axis]} ${value.toFixed(2)}`).join(' · ')} m/s` : '—'}</dd>
-                    <dt>Rotation rates</dt><dd>{observation ? `${observation.rotationRates.map((value, axis) => `${['Pitch (X)', 'Yaw (Y)', 'Roll (Z)'][axis]} ${value.toFixed(3)}`).join(' · ')} rad/s` : '—'}</dd>
+                    <dt>Rotation rates</dt><dd>{observation ? `${observation.rotationRates.map((value, axis) => `${(observation.context.game === 'acc' ? ['Pitch (X)', 'Roll (Y)', 'Yaw (Z)'] : ['Pitch (X)', 'Yaw (Y)', 'Roll (Z)'])[axis]} ${value.toFixed(3)}`).join(' · ')} rad/s` : '—'}</dd>
                     <dt>Gear / RPM</dt><dd>{observation ? `${observation.gear < 0 ? 'R' : observation.gear === 0 ? 'N' : observation.gear} / ${observation.rpm}` : '—'}</dd>
                     <dt>Lap position</dt><dd>{observation ? `${(observation.normalizedPosition * 100).toFixed(1)}%` : '—'}</dd>
                     <dt>Reference error</dt><dd>{observation ? `${observation.referenceDistance.toFixed(2)} coordinate units` : '—'}</dd>

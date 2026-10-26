@@ -2,6 +2,9 @@ import { drivingReward, NEUTRAL, readDrivingObservation } from './driving-observ
 import { trainingFixture } from './training-fixtures';
 import { referencePedalTargets } from './driving-reference';
 import { getLiveMapReferenceLine } from 'views/live-session/live-map-reference';
+import { DrivingMemory, DRIVING_MEMORY_INPUTS } from './driving-memory';
+
+const { AccAdapter } = require('../../../electron/recording/readers/acc/acc-adapter');
 
 it('uses all telemetry inputs and separate spatial segmentation channels from the capture time', () => {
     const { live, vision, referenceLap, observation } = trainingFixture();
@@ -15,27 +18,34 @@ it('uses all telemetry inputs and separate spatial segmentation channels from th
         .observation?.speed).toBe(108);
 });
 
-it('keeps motion values and policy inputs paired with the captured image', () => {
+it('preserves adapted ACC axes and signs in capture-time policy inputs and driving memory', () => {
     const { live, vision, referenceLap } = trainingFixture();
-    Object.assign(vision.telemetry!.currentTelemetry, {
-        Physics_local_velocity_x: -12, Physics_local_velocity_y: 2.5, Physics_local_velocity_z: 40,
-        Physics_velocity_x: 40, Physics_velocity_y: 2.5, Physics_velocity_z: 12,
-        Physics_heading: Math.PI / 2, Physics_pitch: -0.2, Physics_roll: 0.3,
-        Physics_local_angular_vel_x: -Math.PI / 2, Physics_local_angular_vel_y: 0, Physics_local_angular_vel_z: Math.PI / 4,
-    });
+    Object.assign(vision.telemetry!.currentTelemetry, new AccAdapter().adapt({ type: 'sample', broadcasting: {}, sharedMemory: {
+        Physics: {
+            local_velocity: { x: -12, y: 2.5, z: 40 }, velocity: { x: 40, y: 2.5, z: 12 },
+            heading: Math.PI / 2, pitch: -0.2, roll: 0.3,
+            local_angular_vel: { x: -Math.PI / 2, y: -Math.PI / 8, z: Math.PI / 4 },
+        },
+    } }));
     const later = { ...live, currentTelemetry: { ...live.currentTelemetry,
         Physics_local_velocity_x: 90, Physics_heading: 0, Physics_local_angular_vel_x: 1 } };
     const observation = readDrivingObservation(later, vision, referenceLap, 50, 1000).observation!;
-    expect(observation).toMatchObject({ localVelocity: [-12, 2.5, 40],
-        heading: Math.PI / 2, pitch: -0.2, roll: 0.3, rotationRates: [-Math.PI / 2, 0, Math.PI / 4] });
-    expect(observation.features.slice(0, 3)).toEqual([-0.12, 0.025, 0.4]);
-    expect(observation.features.slice(62, 65)).toEqual([-0.5, 0, 0.25]);
+    expect(observation).toMatchObject({ localVelocity: [-12, 40, 2.5],
+        heading: Math.PI / 2, pitch: -0.2, roll: 0.3, rotationRates: [-Math.PI / 2, Math.PI / 4, -Math.PI / 8] });
+    expect(observation.features.slice(0, 3)).toEqual([-0.12, 0.4, 0.025]);
+    expect(observation.features.slice(62, 65)).toEqual([-0.5, 0.25, -0.125]);
+    const memory = new DrivingMemory();
+    memory.encode(observation);
+    const encoded = memory.encode({ ...observation, capturedAt: 1200 });
+    expect(encoded.slice(2, 5)).toEqual([-0.12, 0.4, 0.025]);
+    expect(encoded.slice(16, 19)).toEqual([-0.5, 0.25, -0.125]);
+    expect(encoded.slice(DRIVING_MEMORY_INPUTS)).toEqual(observation.features);
 });
 
 it('ignores world-space velocity when building policy inputs', () => {
     const { live, vision, referenceLap, observation: before } = trainingFixture();
     // The fixture has local velocity only; world-space telemetry is optional and unused.
-    expect(before.localVelocity).toEqual([1, 0, 30]);
+    expect(before.localVelocity).toEqual([1, 30, 0]);
     Object.assign(vision.telemetry!.currentTelemetry, {
         Physics_velocity_x: -30, Physics_velocity_y: NaN, Physics_velocity_z: Infinity,
     });
@@ -49,7 +59,7 @@ describe.each(['x', 'y', 'z'])('local velocity %s validation', (axis) => {
         const { live, vision, referenceLap } = trainingFixture();
         Object.assign(vision.telemetry!.currentTelemetry, {
             [`Physics_local_velocity_${axis}`]: velocity,
-            Physics_velocity_x: 1, Physics_velocity_y: 0, Physics_velocity_z: 30,
+            Physics_velocity_x: 1, Physics_velocity_y: 30, Physics_velocity_z: 0,
         });
         expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/Local velocity/);
     });

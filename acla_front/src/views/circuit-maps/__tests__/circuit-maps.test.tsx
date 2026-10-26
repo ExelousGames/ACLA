@@ -542,8 +542,8 @@ describe('CircuitMaps', () => {
         await waitFor(() => expect(mockedApi.post).toHaveBeenCalled());
         const [, payload] = mockedApi.post.mock.calls[0];
         expect((payload as any).samples[mode]).toHaveLength(120);
-        expect((payload as any).samples[mode][0]).toMatchObject({ x: 1.5, y: 2.5, z: 1, sample_count: 2 });
-        expect((payload as any).samples[mode][119]).toMatchObject({ x: 121, y: 122, z: 1, sample_count: 1 });
+        expect((payload as any).samples[mode][0]).toMatchObject({ x: 1.5, y: 1, z: 2.5, sample_count: 2 });
+        expect((payload as any).samples[mode][119]).toMatchObject({ x: 121, y: 1, z: 122, sample_count: 1 });
         expect((payload as any).samples[mode === 'middle_line' ? 'left_boundary' : 'middle_line']).toEqual([]);
         await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
     });
@@ -700,7 +700,7 @@ describe('CircuitMaps', () => {
                 ...importedRow, Static_track: 'Live Preview',
                 Graphics_car_id: Array.from({ length: 60 }, (_, slot) => slot === 0 ? 63 : -1),
                 Graphics_car_coordinates: Array.from({ length: 60 }, (_, slot) => slot === 0
-                    ? { x: 200, y: altitude, z: trackY } : { x: 0, y: 0, z: 0 }),
+                    ? { x: 200, y: trackY, z: altitude } : { x: 0, y: 0, z: 0 }),
             },
         }));
         [3, 10000].forEach((altitude, index) => {

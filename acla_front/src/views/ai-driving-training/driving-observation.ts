@@ -17,9 +17,9 @@ export interface DrivingObservation {
     normalizedPosition: number;
     referenceDistance: number;
     speed: number;
-    /** Car-local X/Y/Z velocity in m/s. */
+    /** Adapter-local X/Y/Z velocity in m/s: ACC right/forward/up; iRacing right/up/forward. */
     localVelocity: [number, number, number];
-    /** Car-local X/Y/Z angular velocity (pitch/yaw/roll) in rad/s. */
+    /** Adapter-local X/Y/Z angular velocity in rad/s: ACC pitch/roll/yaw; iRacing pitch/yaw/roll. */
     rotationRates: [number, number, number];
     /** Forward gears start at 1; neutral is 0 and reverse is -1. */
     gear: number;
@@ -61,6 +61,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
     const sample = paired.currentTelemetry;
     const game = paired.game, car = sample.Static_car_model, map = sample.Static_track;
     if (!game || !car || !map) return { error: 'Game, car and map are required.' };
+    // Preserve adapter XYZ order and signs. ACC has already swapped Y/Z at capture.
     const velocity = [sample.Physics_local_velocity_x, sample.Physics_local_velocity_y, sample.Physics_local_velocity_z];
     const rotation = [sample.Physics_heading, sample.Physics_pitch, sample.Physics_roll];
     const rotationRates = [sample.Physics_local_angular_vel_x, sample.Physics_local_angular_vel_y, sample.Physics_local_angular_vel_z];

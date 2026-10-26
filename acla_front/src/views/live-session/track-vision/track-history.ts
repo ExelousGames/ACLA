@@ -1,3 +1,4 @@
+import type { DesktopGame } from 'contexts/DesktopGameContext';
 import type { StandardTelemetrySample } from '../live-session-types';
 import type { BirdsEyePoint, BirdsEyeScene } from './birds-eye-scene';
 import { sameCalibration } from './camera-projection';
@@ -18,9 +19,11 @@ export interface VisionMotion {
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
 /** Only motion fields are read. Simulator XYZ positions and lap progress are never used. */
-export function readVisionMotion(sample: StandardTelemetrySample, receivedAt: number, generation: number): VisionMotion | undefined {
+export function readVisionMotion(sample: StandardTelemetrySample, receivedAt: number, generation: number, game: DesktopGame): VisionMotion | undefined {
     if (sample.Graphics_status !== 2 || !finite(sample.Physics_heading)) return undefined;
-    const localForward = sample.Physics_local_velocity_z, localRight = sample.Physics_local_velocity_x;
+    // ACC's adapter normalizes forward to Y; iRacing's adapter still supplies forward on Z.
+    const localForward = game === 'acc' ? sample.Physics_local_velocity_y : sample.Physics_local_velocity_z;
+    const localRight = sample.Physics_local_velocity_x;
     const speed = sample.Physics_speed_kmh, gear = sample.Physics_gear;
     const local = finite(localForward) && finite(localRight);
     // Standard gear 0 is reverse. Without signed velocity, a moving neutral car is ambiguous.

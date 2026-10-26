@@ -123,10 +123,11 @@ describe('Live Map phrase context', () => {
     it.each([
         ['acc', 1, 'right'], ['acc', -1, 'left'],
         ['iracing', -1, 'right'], ['iracing', 1, 'left'],
-    ] as const)('resolves the upcoming corner direction in %s with Z scale %s as %s', (game, zScale, direction) => {
+    ] as const)('resolves the upcoming corner direction in %s with ground-axis scale %s as %s', (game, scale, direction) => {
         const map = circuitMap('slow', true);
         map.game = game;
-        map.samples.middle_line!.forEach((point) => { point.z *= zScale; });
+        map.samples.middle_line = map.samples.middle_line!.map((point) => game === 'acc'
+            ? { ...point, y: point.y * scale } : { ...point, y: 0, z: point.y * scale });
         const context = createPhraseMapContext(map);
         expect(context.approaching(0.05)).toMatchObject({
             sectionId: 'turn-1', cornerStartPosition: 0.1, cornerDirection: direction,
@@ -136,7 +137,7 @@ describe('Live Map phrase context', () => {
 
     it('leaves upcoming direction unknown when the mapped corner has no geometry', () => {
         const map = circuitMap();
-        map.samples.middle_line!.forEach((point) => { point.z = 0; });
+        map.samples.middle_line!.forEach((point) => { point.y = 0; });
         expect(createPhraseMapContext(map).approaching(0.05)?.cornerDirection).toBeUndefined();
     });
 
@@ -173,7 +174,7 @@ describe('Live Map phrase context', () => {
     it.each(['acc', 'iracing'] as const)('recognizes opposite linked turns in %s coordinates', (game) => {
         const map = circuitMap('slow', true);
         map.game = game;
-        if (game === 'iracing') map.samples.middle_line!.forEach((point) => { point.z *= -1; });
+        if (game === 'iracing') map.samples.middle_line = map.samples.middle_line!.map((point) => ({ ...point, y: 0, z: -point.y }));
         map.centerline_tags!.reverse();
         expect(createPhraseMapContext(map).at(0.11).linkedOpposite).toBe(1);
         expect(createPhraseMapContext(map).at(0.26).linkedOpposite).toBe(0);
@@ -245,7 +246,7 @@ describe('Live Map phrase context', () => {
         const map = circuitMap('slow', true);
         map.samples.middle_line!.push(...[
             [0.32, 1350, 350], [0.37, 1450, 250], [0.42, 1450, 150],
-        ].map(([position, x, z], index) => ({ ...map.samples.middle_line![0], normalized_position: position, bin: 20 + index, x, z })));
+        ].map(([position, x, y], index) => ({ ...map.samples.middle_line![0], normalized_position: position, bin: 20 + index, x, y })));
         map.centerline_tags!.push(
             { id: 'third', label: 'corner', start_position: 0.32, end_position: 0.42 },
             { id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.42 },

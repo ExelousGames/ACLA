@@ -6,6 +6,7 @@ import {
     DriverExpertComparisonGraph,
     driverExpertComparisonOverlayRenderer,
     getDriverExpertReplayDurationMs,
+    getDriverExpertComparisonAvailability,
     getDriverExpertComparisonUnavailableDiagnostics,
     hasComparableDriverExpertData,
     normalizeDriverExpertComparisonData,
@@ -461,28 +462,35 @@ describe('DriverExpertComparisonGraph', () => {
         },
     );
 
-    it('flips both vertical axes for ACC using driver X/Z and expert X/Y', () => {
+    it('uses normalized X/Y for both ACC trajectories and ignores altitude', () => {
         detectedGame = 'acc';
         setReducedMotion(true);
         const { rerender } = render(<DriverExpertComparisonGraph data={completeData} />);
 
-        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-300');
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-50');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '-60');
+        const driverPath = screen.getByTestId('driver-track-path').getAttribute('d');
         const expertPath = screen.getByTestId('expert-track-path').getAttribute('d');
         const expertMarkerY = screen.getByTestId('expert-position-marker')
             .querySelector('circle:last-child')?.getAttribute('cy');
 
-        const changedExpertZ = {
+        const changedAltitude = {
             samples: completeData.samples.map((sample) => ({
                 ...sample,
+                driverTrajectory: {
+                    ...sample.driverTrajectory,
+                    z: sample.driverTrajectory.z * -100,
+                },
                 expertTrajectory: {
                     ...sample.expertTrajectory,
                     z: sample.expertTrajectory.z * -100,
                 },
             })),
         };
-        rerender(<DriverExpertComparisonGraph data={changedExpertZ} />);
+        rerender(<DriverExpertComparisonGraph data={changedAltitude} />);
 
+        expect(screen.getByTestId('driver-track-path')).toHaveAttribute('d', driverPath);
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-50');
         expect(screen.getByTestId('expert-track-path')).toHaveAttribute('d', expertPath);
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '-60');
         expect(screen.getByTestId('expert-position-marker')
@@ -498,7 +506,7 @@ describe('DriverExpertComparisonGraph', () => {
         detectedGame = 'acc';
         rerender(<DriverExpertComparisonGraph data={completeData} />);
 
-        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-300');
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-50');
         expect(screen.getByTestId('comparison-camera-layer').getAttribute('data-camera-transform')).not.toBe(xyTransform);
     });
 
@@ -507,13 +515,13 @@ describe('DriverExpertComparisonGraph', () => {
         setReducedMotion(true);
         const view = render(<DriverExpertComparisonGraph data={completeData} game="acc" />);
 
-        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-300');
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-50');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '-60');
 
         detectedGame = 'ac';
         view.rerender(<DriverExpertComparisonGraph data={completeData} game="acc" />);
 
-        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-300');
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-50');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '-60');
     });
 
@@ -533,7 +541,8 @@ describe('DriverExpertComparisonGraph', () => {
 
         detectedGame = 'acc';
         rerender(<DriverExpertComparisonGraph data={xyOnlyData} />);
-        expect(screen.queryByTestId('driver-position-marker')).not.toBeInTheDocument();
+        expect(getDriverExpertComparisonAvailability(xyOnlyData).trajectory).toBe(true);
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-2');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '-4');
         expect(screen.getByTestId('expert-telemetry-pod')).toBeInTheDocument();
 
@@ -547,9 +556,17 @@ describe('DriverExpertComparisonGraph', () => {
                 expertTrajectory: { x: 4, z: 5 },
             }],
         }} />);
-        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-3');
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '-2');
         expect(screen.getByTestId('driver-telemetry-pod')).toBeInTheDocument();
         expect(screen.queryByTestId('expert-position-marker')).not.toBeInTheDocument();
+
+        const missingDriverY = {
+            samples: [{ ...xyOnlyData.samples[0], driverTrajectory: { x: 1, z: 3 } }],
+        };
+        rerender(<DriverExpertComparisonGraph data={missingDriverY} />);
+        expect(getDriverExpertComparisonAvailability(missingDriverY).trajectory).toBe(false);
+        expect(screen.queryByTestId('driver-position-marker')).not.toBeInTheDocument();
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '-4');
     });
 
     it('normalizes complete timed payloads and preserves every finite source axis independently', () => {
@@ -1878,8 +1895,7 @@ describe('DriverExpertComparisonGraph', () => {
 describe('Driver/Expert comparison availability', () => {
     const reasonCodes = (
         data: Parameters<typeof getDriverExpertComparisonUnavailableDiagnostics>[0],
-        game: DesktopGame | null = null,
-    ) => getDriverExpertComparisonUnavailableDiagnostics(data, game)
+    ) => getDriverExpertComparisonUnavailableDiagnostics(data)
         .map((diagnostic) => diagnostic.code);
 
     it('only reports missing data or a completely empty sample list', () => {

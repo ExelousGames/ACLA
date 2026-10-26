@@ -11,6 +11,81 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
 beforeEach(() => { jest.useFakeTimers(); });
 afterEach(() => { jest.useRealTimers(); });
 
+it.each([true, false])('publishes one plan, applies only its first action and replans on fresh inputs (training=%s)', async (train) => {
+    const run = setup();
+    const decide = jest.spyOn(run.policy, 'decide');
+    const planned = jest.spyOn(run.policy, 'learnPlannedActions');
+    run.loop.start(run.policy, train); await flush();
+    const plan = run.loop.state.plan!;
+    expect(plan.map(({ timeSeconds }) => timeSeconds)).toEqual([0, 0.5, 1, 1.5, 2, 2.5, 3]);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(plan[0].action);
+    run.input({ observation: run.fixture.observation }, 1100);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.plan).toBe(plan);
+    expect(decide).toHaveBeenCalledTimes(1);
+    for (let capturedAt = 1200; capturedAt <= 4400; capturedAt += 200) {
+        run.input({ observation: { ...run.fixture.observation, capturedAt } }, capturedAt);
+        jest.advanceTimersByTime(200); await flush();
+    }
+    expect(run.loop.state.plan).not.toBe(plan);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(run.loop.state.plan![0].action);
+    if (train) expect(planned.mock.calls.some(([, targets]) => targets.some(({ step }) => step === 6))).toBe(true);
+    else expect(planned).not.toHaveBeenCalled();
+    await run.loop.stop();
+    expect(run.loop.state.plan).toBeNull();
+});
+
+it.each(['stop', 'handoff', 'invalid', 'gap'] as const)('discards unfinished plan training after %s', async (boundary) => {
+    const run = setup();
+    run.policy = new DrivingPolicy(run.fixture.observation.context, run.fixture.observation.features.length, () => 0.1);
+    const planned = jest.spyOn(run.policy, 'learnPlannedActions');
+    run.loop.start(run.policy, true); await flush();
+    for (const capturedAt of [1200, 1400]) {
+        run.input({ observation: { ...run.fixture.observation, capturedAt } }, capturedAt);
+        jest.advanceTimersByTime(200); await flush();
+    }
+    expect(planned).not.toHaveBeenCalled();
+    if (boundary === 'stop') await run.loop.stop();
+    if (boundary === 'handoff') { run.loop.setControlSource('manual'); run.loop.setControlSource('ai'); }
+    if (boundary === 'invalid') {
+        run.input({ error: 'Camera disconnected.' }, 1500);
+        jest.advanceTimersByTime(100); await flush();
+    }
+    if (boundary !== 'gap') expect(run.loop.state.plan).toBeNull();
+    const restartAt = boundary === 'gap' ? 3000 : 1800;
+    run.input({ observation: { ...run.fixture.observation, capturedAt: restartAt } }, restartAt);
+    if (boundary === 'stop') run.loop.start(run.policy, true);
+    jest.advanceTimersByTime(200); await flush();
+    for (const capturedAt of [restartAt + 200, restartAt + 400]) {
+        run.input({ observation: { ...run.fixture.observation, capturedAt } }, capturedAt);
+        jest.advanceTimersByTime(200); await flush();
+    }
+    expect(planned).not.toHaveBeenCalled();
+    await run.loop.stop();
+});
+
+it.each([true, false])('uses later acknowledged human actions to teach the three-second plan only in training (training=%s)', async (train) => {
+    const run = setup(true);
+    const planned = jest.spyOn(run.policy, 'learnPlannedActions');
+    const learn = jest.spyOn(run.policy, 'learn');
+    const original = new DrivingMemory().encode(run.fixture.observation);
+    run.manual.mockResolvedValue({ action: NEUTRAL, toggleControl: false });
+    run.loop.startManual(); await flush();
+    run.loop.start(run.policy, train); await flush();
+    const later = { throttle: 0.8, brake: 0, steering: -0.6 };
+    for (let capturedAt = 1200; capturedAt <= 4200; capturedAt += 200) {
+        run.manual.mockResolvedValue({ action: capturedAt === 4000 ? later : NEUTRAL, toggleControl: false });
+        run.input({ observation: { ...run.fixture.observation, capturedAt } }, capturedAt);
+        jest.advanceTimersByTime(200); await flush();
+    }
+    if (train) expect(planned).toHaveBeenCalledWith(original,
+        [{ step: 6, action: { ...later, shiftUp: false, shiftDown: false }, shifts: { up: true, down: true } }]);
+    else expect(planned).not.toHaveBeenCalled();
+    expect(learn).not.toHaveBeenCalled(); // Human driving never supplies an on-policy reward gradient.
+    expect(run.loop.state.plan).toBeNull();
+    await run.loop.stop();
+});
+
 function setup(withManual = false) {
     const fixture = trainingFixture();
     let input: ObservationResult = { observation: fixture.observation };
@@ -629,11 +704,11 @@ it('learns the actual shift, masks both directions during cooldown, and allows a
     expect(run.loop.state.action.shiftUp).toBe(true);
     run.input({ observation: { ...run.fixture.observation, capturedAt: 1100, gear: 4, normalizedPosition: 0.251 } }, 1100);
     jest.advanceTimersByTime(100); await flush();
-    expect(learn.mock.calls[0][0].action.shiftUp).toBe(true);
+    expect(learn.mock.calls[0][0].plan[0].action.shiftUp).toBe(true);
     expect(run.loop.state.action).toMatchObject({ shiftUp: false, shiftDown: false });
     run.input({ observation: { ...run.fixture.observation, capturedAt: 1400, gear: 4, normalizedPosition: 0.252 } }, 1400);
     jest.advanceTimersByTime(100); await flush();
-    expect(learn.mock.calls[1][0].shiftProbabilities).toEqual([1, 0, 0]);
+    expect(learn.mock.calls[1][0].plan[0].shiftProbabilities).toEqual([1, 0, 0]);
     expect(run.loop.state.action).toMatchObject({ shiftUp: false, shiftDown: false });
     run.input({ observation: { ...run.fixture.observation, capturedAt: 1500, gear: 4, normalizedPosition: 0.253 } }, 1500);
     jest.advanceTimersByTime(100); await flush();
@@ -645,7 +720,7 @@ it.each([true, false].flatMap((train) => [-1, 0, 1, 2].map((gear) => ({ train, g
     'allows downshifts at gear $gear with training=$train while respecting cooldown', async ({ train, gear }) => {
     const run = setup();
     const checkpoint = run.policy.checkpoint();
-    checkpoint.outputWeights.slice(4).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === 2 ? 4 : 0; });
+    checkpoint.outputWeights.slice(3, 6).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === 2 ? 4 : 0; });
     run.policy = train
         ? new DrivingPolicy(run.fixture.observation.context, run.fixture.observation.features.length, () => 0.95)
         : DrivingPolicy.restore(checkpoint);
@@ -658,7 +733,7 @@ it.each([true, false].flatMap((train) => [-1, 0, 1, 2].map((gear) => ({ train, g
     jest.advanceTimersByTime(100); await flush();
     expect(run.loop.state.action).toMatchObject({ shiftUp: false, shiftDown: false });
     expect(run.policy.steps).toBe(train ? 1 : 0);
-    if (train) expect(learn.mock.calls[0][0].action.shiftDown).toBe(true);
+    if (train) expect(learn.mock.calls[0][0].plan[0].action.shiftDown).toBe(true);
     else expect(run.policy.checkpoint()).toEqual(checkpoint);
     run.input({ observation: { ...run.fixture.observation, gear, capturedAt: 1500 } }, 1500);
     jest.advanceTimersByTime(100); await flush();
@@ -712,7 +787,7 @@ it.each([true, false])('attributes reward to the action’s aggression while the
     run.loop.start(run.policy, train);
     await flush();
     const sent = run.controller.apply.mock.calls[0][0];
-    expect(sent).toEqual(decide.mock.results[0].value.action);
+    expect(sent).toEqual(decide.mock.results[0].value.plan[0].action);
     expect(sent.brake).not.toBe(1); // Targets never replace policy commands.
     run.input({ observation: withAggression(100, 1000, 0.25) }, 1100);
     acknowledge(); await flush();

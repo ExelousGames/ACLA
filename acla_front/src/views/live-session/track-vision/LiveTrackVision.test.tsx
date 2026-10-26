@@ -608,7 +608,7 @@ it('projects the previous scene and its cars with relative depth, updates live, 
     expect(screen.getByLabelText("Bird's-eye view status")).toHaveTextContent('Waiting for scene');
 });
 
-it('remembers the road beside the driver using capture-time motion and clears it on a telemetry reset', async () => {
+it.each(['acc', 'iracing'] as const)('remembers the road beside the driver using %s capture-time motion and clears it on a telemetry reset', async (game) => {
     const fixture = vision(0, { width: 1280, height: 720, corner: 'straight', player: 'middle', cars: [],
         road: (x, y) => Math.abs(x) <= 5 && y >= 8 && y <= 40 });
     model.detect.mockResolvedValue(fixture.detections.segment);
@@ -619,8 +619,10 @@ it('remembers the road beside the driver using capture-time motion and clears it
     let sequence = 0;
     const telemetry = (heading = 0) => act(() => {
         sequence++;
-        liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence, committedSequence: sequence,
-            committedCount: sequence, sample: { Graphics_status: 2, Physics_speed_kmh: 72, Physics_gear: 3, Physics_heading: heading } });
+        liveTelemetryStore.publishFrame({ type: 'frame', game, sequence, committedSequence: sequence,
+            committedCount: sequence, sample: { Graphics_status: 2, Physics_speed_kmh: 72, Physics_gear: 3, Physics_heading: heading,
+                Physics_local_velocity_x: 0, Physics_local_velocity_y: game === 'acc' ? 20 : -3,
+                Physics_local_velocity_z: game === 'acc' ? -3 : 20 } });
     });
     telemetry();
     await startCapture();
@@ -631,6 +633,7 @@ it('remembers the road beside the driver using capture-time motion and clears it
         await act(async () => { jest.advanceTimersByTime(200); });
     }
     const result = ref.current!.getLatestDetection()!;
+    expect(result.motion?.forwardMps).toBe(20);
     expect(result.birdsEyeScene!.leftBoundary.flat().some((point) => point.observedAt !== undefined && point.y <= 0)).toBe(true);
     selectStep("Bird's-eye view");
     expect(screen.getByLabelText("Bird's-eye view status")).toHaveTextContent('Nearby track estimated from recent frames');

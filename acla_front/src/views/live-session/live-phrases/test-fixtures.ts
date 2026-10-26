@@ -11,7 +11,7 @@ export const circuitMap = (speed: 'slow' | 'fast' = 'slow', linked = false): Cir
     samples: { middle_line: [
         [0, 0, 0], [0.1, 1000, 0], [0.15, 1100, 100], [0.2, 1100, 200],
         [0.21, 1100, 250], [0.26, 1200, 350], [0.31, 1300, 350], [0.9, -1000, 0],
-    ].map(([position, x, z], index) => ({ bin: index, normalized_position: position, x, y: 0, z, sample_count: 1, updated_at: '' })) },
+    ].map(([position, x, y], index) => ({ bin: index, normalized_position: position, x, y, z: 0, sample_count: 1, updated_at: '' })) },
     centerline_tags: [
         { id: 'turn-1', label: 'corner', start_position: 0.1, end_position: 0.2 },
         { id: 'speed-1', label: speed, start_position: 0.1, end_position: 0.2 },
@@ -22,8 +22,8 @@ export const circuitMap = (speed: 'slow' | 'fast' = 'slow', linked = false): Cir
 
 /** Equal-length steps with a known heading profile, independent of the classifier. */
 export const shapedCornerMap = (shape: PhraseCornerGeometry['shape']): CircuitMapDto => {
-    let x = 0, z = 0;
-    const samples = [{ x, z }];
+    let x = 0, y = 0;
+    const samples = [{ x, y }];
     for (let index = 0; index <= 80; index++) {
         const progress = index / 80;
         const angle = shape === 'hairpin' ? Math.PI * progress
@@ -32,13 +32,13 @@ export const shapedCornerMap = (shape: PhraseCornerGeometry['shape']): CircuitMa
                     : shape === 'opening' ? Math.PI / 2 * (2 * progress - progress ** 2)
                         : Math.PI / 2 * progress;
         x += 5 * Math.cos(angle);
-        z += 5 * Math.sin(angle);
-        samples.push({ x, z });
+        y += 5 * Math.sin(angle);
+        samples.push({ x, y });
     }
     return {
         ...circuitMap(),
         samples: { middle_line: samples.map((point, index) => ({
-            ...point, y: 0, normalized_position: 0.1 + 0.2 * index / 81,
+            ...point, z: 0, normalized_position: 0.1 + 0.2 * index / 81,
             bin: index, sample_count: 1, updated_at: '',
         })) },
         centerline_segments: [{ id: 'shaped-turn', tags: ['corner', 'slow'], start_position: 0.1, end_position: 0.3 }],

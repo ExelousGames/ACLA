@@ -33,7 +33,7 @@ const slowCorner = (corner: CornerDirection = 'right') => {
     const map = circuitMap();
     map.samples.middle_line!.forEach((point) => {
         point.normalized_position += 0.025;
-        if (corner === 'left') point.z *= -1;
+        if (corner === 'left') point.y *= -1;
     });
     map.centerline_segments = [{ id: 'turn', tags: ['corner', 'slow'], start_position: 0.125, end_position: 0.225 }];
     return map;
@@ -486,7 +486,7 @@ describe('One Tight Slow Corner', () => {
     it('waits without guessing a turn direction when map geometry has no turn', () => {
         const engine = new PhraseEngine([rule]);
         const map = slowCorner();
-        map.samples.middle_line!.forEach((point) => { point.z = 0; });
+        map.samples.middle_line!.forEach((point) => { point.y = 0; });
         engine.receiveMap(map, 0);
         engine.receiveTelemetry(frame(sample(3)), 0);
         engine.receiveVision(closeVision(1000), 1000);

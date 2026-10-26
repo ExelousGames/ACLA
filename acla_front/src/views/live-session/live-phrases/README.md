@@ -141,7 +141,8 @@ does not exit an entered closure. As with other closures, a session/stream reset
 or detection restart returns to root. Missing opponent positions or a valid rate
 prevent the timed speech actions. Track Vision supplies the opponent's side position;
 map labels and geometry determine the upcoming slow corner's direction and its
-opposite linked turn, accounting for the game's X/Z coordinate orientation.
+opposite linked turn, using ACC's normalized X/Y ground plane or iRacing's X/Z
+ground plane and the game's display orientation.
 
 The next root child, **One Tight Slow Corner**, enters immediately when the next corner is labeled slow
 on the Live Map (`corner` with `slow`, or `slow corner`) **and** is outside every

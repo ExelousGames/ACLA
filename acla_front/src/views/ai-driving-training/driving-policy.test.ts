@@ -1,6 +1,62 @@
-import { DrivingPolicy } from './driving-policy';
+import { DRIVING_PLAN_TIMES, DrivingPolicy } from './driving-policy';
 import { DrivingMemory, DRIVING_MEMORY_INPUTS } from './driving-memory';
 import { trainingFixture } from './training-fixtures';
+
+it('returns one independently predicted action sequence from zero through three seconds', () => {
+    const { observation } = trainingFixture();
+    const features = new DrivingMemory().encode(observation);
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
+    checkpoint.outputWeights.forEach((row) => row.fill(0));
+    DRIVING_PLAN_TIMES.forEach((_, step) => {
+        checkpoint.outputWeights[step * 6][32] = step * 0.4;
+        checkpoint.outputWeights[step * 6 + 2][32] = step * -0.2;
+        checkpoint.outputWeights[step * 6 + 3 + step % 3][32] = 4;
+    });
+    const policy = DrivingPolicy.restore(checkpoint);
+    const decision = policy.decide(features, false);
+    expect(decision.plan.map((step) => step.timeSeconds)).toEqual([0, 0.5, 1, 1.5, 2, 2.5, 3]);
+    expect(decision).not.toHaveProperty('action');
+    decision.plan.forEach(({ action, shift }, step) => {
+        expect(action.throttle).toBeCloseTo(1 / (1 + Math.exp(-step * 0.4)));
+        expect(action.brake).toBe(0.5);
+        expect(action.steering).toBeCloseTo(Math.tanh(step * -0.2));
+        expect(shift).toBe(step % 3);
+        expect(action.shiftUp && action.shiftDown).toBe(false);
+    });
+    const cooling = policy.decide(features, false, { up: false, down: false });
+    expect(cooling.plan[0].shift).toBe(0);
+    expect(cooling.plan[1].shift).toBe(1); // Current cooldown expires before the next plan slot.
+    expect(DrivingPolicy.restore(policy.checkpoint()).decide(features, false)).toEqual(decision);
+});
+
+it('trains delayed actions at their own plan time without fabricating a reward or updating other output rows', () => {
+    const { observation } = trainingFixture();
+    const features = new DrivingMemory().encode(observation);
+    const policy = new DrivingPolicy(observation.context, observation.features.length, () => 0.6);
+    const before = policy.decide(features, false).plan[6];
+    const checkpoint = policy.checkpoint();
+    for (let i = 0; i < 30; i++) policy.learnPlannedActions(features, [{ step: 6,
+        action: { throttle: 1, brake: 0, steering: -1, shiftDown: true }, shifts: { up: true, down: true } }]);
+    const after = policy.decide(features, false).plan[6];
+    expect(after.action.throttle).toBeGreaterThan(before.action.throttle);
+    expect(after.action.brake).toBeLessThan(before.action.brake);
+    expect(after.action.steering).toBeLessThan(before.action.steering);
+    expect(after.shiftProbabilities[2]).toBeGreaterThan(before.shiftProbabilities[2]);
+    expect(policy.checkpoint().outputWeights.slice(0, 36)).toEqual(checkpoint.outputWeights.slice(0, 36));
+    expect(policy.checkpoint().outputWeights[42]).toEqual(checkpoint.outputWeights[42]);
+    expect(policy.steps).toBe(0);
+});
+
+it('only credits the executed first action with a reinforcement gradient', () => {
+    const { observation } = trainingFixture();
+    const features = new DrivingMemory().encode(observation);
+    const policy = new DrivingPolicy(observation.context, observation.features.length, () => 0.6);
+    const before = policy.checkpoint();
+    const decision = policy.decide(features, true);
+    policy.learn(decision, decision.value + 1, features, 0.2, true);
+    expect(policy.checkpoint().outputWeights.slice(6, 42)).toEqual(before.outputWeights.slice(6, 42));
+    expect(policy.checkpoint().outputWeights.slice(0, 6)).not.toEqual(before.outputWeights.slice(0, 6));
+});
 
 it('learns human steering, pedals and shifts as targets with unchanged checkpoint dimensions', () => {
     const { observation } = trainingFixture();
@@ -11,12 +67,12 @@ it('learns human steering, pedals and shifts as targets with unchanged checkpoin
     for (let i = 0; i < 30; i++) policy.learnDemonstration(features,
         { throttle: 1, brake: 0, steering: -1, shiftDown: true }, { up: true, down: true });
     const after = policy.decide(features, false);
-    expect(after.action.throttle).toBeGreaterThan(before.action.throttle);
-    expect(after.action.brake).toBeLessThan(before.action.brake);
-    expect(after.action.steering).toBeLessThan(before.action.steering);
-    expect(after.shiftProbabilities[2]).toBeGreaterThan(before.shiftProbabilities[2]);
-    expect(policy.checkpoint()).toMatchObject({ version: 8, inputs: checkpoint.inputs, context: checkpoint.context, steps: 30 });
-    expect(policy.checkpoint().outputWeights[3]).toEqual(checkpoint.outputWeights[3]);
+    expect(after.plan[0].action.throttle).toBeGreaterThan(before.plan[0].action.throttle);
+    expect(after.plan[0].action.brake).toBeLessThan(before.plan[0].action.brake);
+    expect(after.plan[0].action.steering).toBeLessThan(before.plan[0].action.steering);
+    expect(after.plan[0].shiftProbabilities[2]).toBeGreaterThan(before.plan[0].shiftProbabilities[2]);
+    expect(policy.checkpoint()).toMatchObject({ version: 10, inputs: checkpoint.inputs, context: checkpoint.context, steps: 30 });
+    expect(policy.checkpoint().outputWeights[42]).toEqual(checkpoint.outputWeights[42]);
     expect(DrivingPolicy.restore(policy.checkpoint()).decide(features, false)).toEqual(after);
 });
 
@@ -26,7 +82,7 @@ it('does not train forced cooldown holds as human gear preferences', () => {
     const policy = new DrivingPolicy(observation.context, observation.features.length);
     const before = policy.checkpoint();
     policy.learnDemonstration(features, { throttle: 0, brake: 1, steering: 1 }, { up: false, down: false });
-    expect(policy.checkpoint().outputWeights.slice(4)).toEqual(before.outputWeights.slice(4));
+    expect(policy.checkpoint().outputWeights.slice(3, 6)).toEqual(before.outputWeights.slice(3, 6));
 });
 
 it('learns from rewards, bounds actions, and exactly restores deterministic inference', () => {
@@ -38,12 +94,12 @@ it('learns from rewards, bounds actions, and exactly restores deterministic infe
     const before = model.checkpoint();
     for (let i = 0; i < 100; i++) {
         const decision = model.decide(features, true);
-        expect(decision.action.throttle).toBeGreaterThanOrEqual(0);
-        expect(decision.action.throttle).toBeLessThanOrEqual(1);
-        expect(decision.action.brake).toBeGreaterThanOrEqual(0);
-        expect(decision.action.brake).toBeLessThanOrEqual(1);
-        expect(Math.abs(decision.action.steering)).toBeLessThanOrEqual(1);
-        model.learn(decision, 1 - Math.abs(decision.action.steering), features, 0.2);
+        expect(decision.plan[0].action.throttle).toBeGreaterThanOrEqual(0);
+        expect(decision.plan[0].action.throttle).toBeLessThanOrEqual(1);
+        expect(decision.plan[0].action.brake).toBeGreaterThanOrEqual(0);
+        expect(decision.plan[0].action.brake).toBeLessThanOrEqual(1);
+        expect(Math.abs(decision.plan[0].action.steering)).toBeLessThanOrEqual(1);
+        model.learn(decision, 1 - Math.abs(decision.plan[0].action.steering), features, 0.2);
     }
     expect(model.steps).toBe(100);
     expect(model.checkpoint().hiddenWeights).not.toEqual(before.hiddenWeights);
@@ -58,13 +114,13 @@ it('positive and negative advantages move the policy toward and away from the sa
     const features = new DrivingMemory().encode(observation);
     const policy = new DrivingPolicy(observation.context, observation.features.length, () => 0.6);
     const decision = policy.decide(features, true);
-    const initial = policy.decide(features, false).means[2];
+    const initial = policy.decide(features, false).plan[0].means[2];
     const negative = DrivingPolicy.restore(policy.checkpoint());
     policy.learn(decision, decision.value + 1, features, 0.2, true);
     negative.learn(decision, decision.value - 1, features, 0.2, true);
-    const direction = Math.sign(decision.latent[2] - decision.means[2]);
-    expect((policy.decide(features, false).means[2] - initial) * direction).toBeGreaterThan(0);
-    expect((negative.decide(features, false).means[2] - initial) * direction).toBeLessThan(0);
+    const direction = Math.sign(decision.plan[0].latent[2] - decision.plan[0].means[2]);
+    expect((policy.decide(features, false).plan[0].means[2] - initial) * direction).toBeGreaterThan(0);
+    expect((negative.decide(features, false).plan[0].means[2] - initial) * direction).toBeLessThan(0);
 });
 
 it('rejects corrupt checkpoints and invalid observations', () => {
@@ -81,9 +137,9 @@ it.each([[0.1, 0], [0.7, 1], [0.95, 2]])('samples a mutually exclusive gear choi
     const features = new DrivingMemory().encode(observation);
     const model = new DrivingPolicy(observation.context, observation.features.length, () => draw);
     const decision = model.decide(features, true);
-    expect(decision.shift).toBe(shift);
-    expect(decision.action).toMatchObject({ shiftUp: shift === 1, shiftDown: shift === 2 });
-    expect(decision.shiftProbabilities.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1);
+    expect(decision.plan[0].shift).toBe(shift);
+    expect(decision.plan[0].action).toMatchObject({ shiftUp: shift === 1, shiftDown: shift === 2 });
+    expect(decision.plan[0].shiftProbabilities.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1);
 });
 
 it.each([0.1, 0.7, 0.95])('reinforces or discourages the sampled gear choice according to reward (draw %s)', (draw) => {
@@ -92,11 +148,11 @@ it.each([0.1, 0.7, 0.95])('reinforces or discourages the sampled gear choice acc
     const model = new DrivingPolicy(observation.context, observation.features.length, () => draw);
     const negative = DrivingPolicy.restore(model.checkpoint());
     const decision = model.decide(features, true);
-    const before = decision.shiftProbabilities[decision.shift];
+    const before = decision.plan[0].shiftProbabilities[decision.plan[0].shift];
     model.learn(decision, decision.value + 1, features, 0.2, true);
     negative.learn(decision, decision.value - 1, features, 0.2, true);
-    expect(model.decide(features, false).shiftProbabilities[decision.shift]).toBeGreaterThan(before);
-    expect(negative.decide(features, false).shiftProbabilities[decision.shift]).toBeLessThan(before);
+    expect(model.decide(features, false).plan[0].shiftProbabilities[decision.plan[0].shift]).toBeGreaterThan(before);
+    expect(negative.decide(features, false).plan[0].shiftProbabilities[decision.plan[0].shift]).toBeLessThan(before);
 });
 
 it('does not sample or train masked gear choices, including cooldown-forced holds', () => {
@@ -105,28 +161,28 @@ it('does not sample or train masked gear choices, including cooldown-forced hold
     const model = new DrivingPolicy(observation.context, observation.features.length, () => 0.99);
     const before = model.checkpoint();
     const held = model.decide(features, true, { up: false, down: false });
-    expect(held.shiftProbabilities).toEqual([1, 0, 0]);
-    expect(held.action).toMatchObject({ shiftUp: false, shiftDown: false });
+    expect(held.plan[0].shiftProbabilities).toEqual([1, 0, 0]);
+    expect(held.plan[0].action).toMatchObject({ shiftUp: false, shiftDown: false });
     model.learn(held, held.value + 1, features, 0.2, true);
-    expect(model.checkpoint().outputWeights.slice(4)).toEqual(before.outputWeights.slice(4));
+    expect(model.checkpoint().outputWeights.slice(3, 6)).toEqual(before.outputWeights.slice(3, 6));
     const upOnly = model.decide(features, true, { up: true, down: false });
-    expect(upOnly.shift).toBe(1);
-    expect(upOnly.shiftProbabilities[2]).toBe(0);
+    expect(upOnly.plan[0].shift).toBe(1);
+    expect(upOnly.plan[0].shiftProbabilities[2]).toBe(0);
     model.learn(upOnly, upOnly.value + 1, features, 0.2, true);
-    expect(model.checkpoint().outputWeights[6]).toEqual(before.outputWeights[6]);
+    expect(model.checkpoint().outputWeights[5]).toEqual(before.outputWeights[5]);
 });
 
 it.each([1, 2])('restores deterministic shifting choice %s and respects masks at evaluation', (shift) => {
     const { observation } = trainingFixture();
     const features = new DrivingMemory().encode(observation);
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
-    checkpoint.outputWeights.slice(4).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === shift ? 4 : 0; });
+    checkpoint.outputWeights.slice(3, 6).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === shift ? 4 : 0; });
     const model = DrivingPolicy.restore(JSON.parse(JSON.stringify(checkpoint)));
     const decision = model.decide(features, false);
-    expect(decision.shift).toBe(shift);
-    expect(decision.action).toMatchObject({ shiftUp: shift === 1, shiftDown: shift === 2 });
+    expect(decision.plan[0].shift).toBe(shift);
+    expect(decision.plan[0].action).toMatchObject({ shiftUp: shift === 1, shiftDown: shift === 2 });
     expect(DrivingPolicy.restore(model.checkpoint()).decide(features, false)).toEqual(decision);
-    expect(model.decide(features, false, { up: false, down: false }).shift).toBe(0);
+    expect(model.decide(features, false, { up: false, down: false }).plan[0].shift).toBe(0);
 });
 
 it('rejects incorrect input dimensions and incomplete shifting heads', () => {
@@ -140,7 +196,7 @@ it('rejects incorrect input dimensions and incomplete shifting heads', () => {
     expect(() => DrivingPolicy.restore({ ...checkpoint, outputWeights: checkpoint.outputWeights.slice(0, 4) })).toThrow(/checkpoint/);
 });
 
-it.each([1, 2, 3, 4, 5, 6, 7, 9])('rejects unsupported checkpoint version %s', (version) => {
+it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 11])('rejects unsupported checkpoint version %s', (version) => {
     const { observation } = trainingFixture();
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
     expect(() => DrivingPolicy.restore({ ...checkpoint, version })).toThrow(/checkpoint/);
@@ -163,7 +219,7 @@ it('makes different decisions from the same current frame with different recent 
     };
     const slower = decideAfter(0.1), faster = decideAfter(0.8);
     expect(slower.features.slice(DRIVING_MEMORY_INPUTS)).toEqual(faster.features.slice(DRIVING_MEMORY_INPUTS));
-    expect(faster.action.steering).toBeGreaterThan(slower.action.steering);
+    expect(faster.plan[0].action.steering).toBeGreaterThan(slower.plan[0].action.steering);
     expect(policy.matches(observation)).toBe(true);
     expect(() => policy.decide(observation.features, false)).toThrow(/observation/);
     expect(DrivingPolicy.restore(policy.checkpoint()).decide(faster.features, false)).toEqual(faster);

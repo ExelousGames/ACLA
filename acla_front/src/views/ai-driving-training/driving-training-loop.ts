@@ -1,9 +1,10 @@
 import { DrivingAction, DrivingObservation, DrivingReward, drivingReward, MAX_TRAINING_TRANSITION_SECONDS,
     NEUTRAL, ObservationResult } from './driving-observation';
-import { DrivingPolicy, PolicyDecision, ShiftAvailability } from './driving-policy';
+import { DrivingPolicy, PlannedAction, PolicyDecision, ShiftAvailability } from './driving-policy';
 import { ControlSource, DrivingControlSelector, ManualControls } from './driving-control';
 import { ControlLease, DrivingControlOutput } from './driving-control-output';
 import { DrivingMemory } from './driving-memory';
+import { DrivingPlanTraining } from './driving-plan-training';
 
 const SHIFT_PULSE_MS = 100;
 const SHIFT_COOLDOWN_MS = 500;
@@ -12,6 +13,7 @@ export interface TrainingState {
     mode: 'idle' | 'manual' | 'training' | 'evaluation';
     status: string;
     action: DrivingAction;
+    plan: PlannedAction[] | null;
     source: ControlSource | null;
     steps: number;
     episodeReward: number;
@@ -19,7 +21,7 @@ export interface TrainingState {
 }
 export const initialTrainingState: TrainingState = {
     mode: 'idle', status: 'Connect vJoy, then choose human driving or prepare the AI inputs.', action: NEUTRAL,
-    source: null, steps: 0, episodeReward: 0, reward: null,
+    source: null, steps: 0, episodeReward: 0, reward: null, plan: null,
 };
 
 export class DrivingTrainingLoop {
@@ -38,6 +40,7 @@ export class DrivingTrainingLoop {
     private lease?: ControlLease;
     private policy?: DrivingPolicy;
     private memory = new DrivingMemory();
+    private planTraining = new DrivingPlanTraining();
 
     constructor(private output: DrivingControlOutput, private read: () => ObservationResult,
         private publish: (state: TrainingState) => void, private now = Date.now,
@@ -71,6 +74,7 @@ export class DrivingTrainingLoop {
         clearInterval(this.timer);
         this.policy = policy;
         this.memory.reset();
+        this.planTraining.reset();
         this.previous = undefined;
         this.boundary = boundary;
         if (!humanDriving) this.selector = new DrivingControlSelector();
@@ -95,8 +99,9 @@ export class DrivingTrainingLoop {
         this.previous = undefined;
         this.lease = undefined;
         this.memory.reset();
+        this.planTraining.reset();
         this.policy = undefined;
-        this.state = { ...this.state, mode: 'idle', status, action: NEUTRAL, source: null };
+        this.state = { ...this.state, mode: 'idle', status, action: NEUTRAL, source: null, plan: null };
         this.publish(this.state);
         try { await this.output.release(); }
         catch (error) {
@@ -119,9 +124,10 @@ export class DrivingTrainingLoop {
         // No reward, held paddle or demonstration may cross an ownership boundary.
         this.previous = undefined;
         this.memory.reset();
+        this.planTraining.reset();
         this.controlChangedAt = this.now();
         this.shiftReleaseAt = 0;
-        this.state = { ...this.state, source, action: NEUTRAL };
+        this.state = { ...this.state, source, action: NEUTRAL, plan: null };
         this.state.status = this.driverStatus();
         this.publish(this.state);
     }
@@ -165,8 +171,9 @@ export class DrivingTrainingLoop {
             if (!observation) {
                 this.previous = undefined;
                 this.memory.reset();
+                this.planTraining.reset();
                 this.controlChangedAt = this.now();
-                this.state = { ...this.state, reward: null };
+                this.state = { ...this.state, reward: null, plan: null };
             }
             if (inputError) {
                 this.state = { ...this.state, status: selected.source === 'manual'
@@ -225,16 +232,18 @@ export class DrivingTrainingLoop {
             const decision = policy.decide(observation.features, this.state.mode === 'training', {
                 up: canShift, down: canShift,
             });
-            if (!await lease.apply(decision.action) || generation !== this.generation) return;
+            const action = decision.plan[0].action;
+            if (!await lease.apply(action) || generation !== this.generation) return;
             const appliedAt = this.now();
-            if (decision.action.shiftUp || decision.action.shiftDown) {
+            if (action.shiftUp || action.shiftDown) {
                 this.shiftReleaseAt = appliedAt + SHIFT_PULSE_MS;
                 this.nextShiftAt = appliedAt + SHIFT_COOLDOWN_MS;
             }
-            this.previous = { observation, decision, action: decision.action, source: 'ai',
+            this.previous = { observation, decision, action, source: 'ai',
                 shifts: { up: canShift, down: canShift }, appliedAt };
             this.lastFrame = observation.capturedAt;
-            this.state = { ...this.state, action: decision.action, status: this.driverStatus() };
+            this.state = { ...this.state, action, plan: decision.plan.map(({ timeSeconds, action: planned }) =>
+                ({ timeSeconds, action: { ...planned } })), status: this.driverStatus() };
             this.publish(this.state);
         } catch (error) {
             if (generation === this.generation) await this.stop(error instanceof Error ? error.message : 'Training failed.');
@@ -247,6 +256,7 @@ export class DrivingTrainingLoop {
         // Gaps between usable frames are recoverable after input validation.
         // The caller starts the next transition from this fresh observation.
         if (elapsedSeconds > MAX_TRAINING_TRANSITION_SECONDS) {
+            this.planTraining.reset();
             this.state = { ...this.state, reward: null };
             return;
         }
@@ -254,6 +264,7 @@ export class DrivingTrainingLoop {
         if (this.state.mode === 'training') {
             if (previous.source === 'manual') policy.learnDemonstration(previous.observation.features, previous.action, previous.shifts);
             else policy.learn(previous.decision!, reward.total, observation.features, elapsedSeconds);
+            this.planTraining.record(policy, previous.observation.features, previous.action, previous.shifts, previous.appliedAt);
         }
         this.state = { ...this.state, steps: policy.steps, reward, episodeReward: this.state.episodeReward + reward.total };
     }

@@ -4,7 +4,7 @@ const { spawn: defaultSpawn } = require('child_process');
 const path = require('path');
 const readline = require('readline');
 const { performance } = require('perf_hooks');
-const { validateLiveTelemetryRow } = require('../../../../src/data/live-telemetry-dataset');
+const { AccAdapter } = require('./acc-adapter');
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -26,6 +26,7 @@ class AccPythonReader {
     this.createInterface = dependencies.createInterface || readline.createInterface;
     this.now = dependencies.now || (() => performance.now());
     this.startedAt = null;
+    this.adapter = new AccAdapter();
     this.child = null;
     this.lines = null;
     this.emit = null;
@@ -87,9 +88,9 @@ class AccPythonReader {
       this.lines = this.createInterface({ input: child.stdout, crlfDelay: Infinity });
       this.lines.on('line', (line) => {
         if (this.stopping || typeof line !== 'string' || !line.trim()) return;
-        let sample;
+        let packet;
         try {
-          sample = JSON.parse(line);
+          packet = JSON.parse(line);
         } catch (error) {
           const failure = new Error(`ACC reader emitted invalid JSON: ${errorMessage(error)}`);
           rejectStarted(failure);
@@ -97,21 +98,19 @@ class AccPythonReader {
           return;
         }
 
-        if (sample && sample.available === false && Object.keys(sample).length === 1) {
+        if (packet && packet.available === false && Object.keys(packet).length === 1) {
           return;
         }
-        const validation = validateLiveTelemetryRow(sample);
-        if (!validation.ok) {
-          const failure = new Error(validation.error);
-          rejectStarted(failure);
-          this._emitFatal(failure.message);
+        let sample;
+        try {
+          sample = this.adapter.adapt(packet, this.now() - this.startedAt);
+        } catch (error) {
+          rejectStarted(error);
+          this._emitFatal(errorMessage(error));
           return;
         }
 
-        const frame = { game: 'acc', sample: {
-          ...sample,
-          Graphics_analyst_session_time: (this.now() - this.startedAt) / 1000,
-        } };
+        const frame = { game: 'acc', sample };
         this.emit?.({ type: 'frame', frame });
         resolveStarted();
       });

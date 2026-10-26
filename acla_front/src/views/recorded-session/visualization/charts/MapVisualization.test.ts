@@ -1,4 +1,4 @@
-import { buildCircuitTrackLayout, getAccTelemetryTrackKey } from '../../../session-shared/visualization/charts/circuitTrackLayout';
+import { buildCircuitTrackLayout, buildSessionPointsTrackLayout, getAccTelemetryTrackKey } from '../../../session-shared/visualization/charts/circuitTrackLayout';
 import { getPlaybackFrameIndex, parseTelemetryFrame, parseTelemetryFrames, segmentVisiblePoints } from '../../../session-shared/visualization/charts/mapTelemetry';
 import {
     getSegmentTrackSectionText,
@@ -242,6 +242,16 @@ describe('MapVisualization trajectory clipping', () => {
 });
 
 describe('MapVisualization circuit map layout', () => {
+    it('keeps fallback track points in ACC X/Y and supports the iRacing X/Z plane', () => {
+        const points = [{ position_x: 10, position_y: 20 }, { position_x: 30, position_y: 40 }];
+        expect(buildSessionPointsTrackLayout(points).centerLine).toEqual([[
+            { x: 10, y: 20, z: 0 }, { x: 30, y: 40, z: 0 },
+        ]]);
+        expect(buildSessionPointsTrackLayout(points, 'z').centerLine).toEqual([[
+            { x: 10, y: 0, z: 20 }, { x: 30, y: 0, z: 40 },
+        ]]);
+    });
+
     it('resolves ACC shared-memory track keys from raw keys and display names', () => {
         expect(getAccTelemetryTrackKey('brands_hatch')).toBe('brands_hatch');
         expect(getAccTelemetryTrackKey('Brands Hatch Circuit')).toBe('brands_hatch');

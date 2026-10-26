@@ -250,11 +250,10 @@ const normalizeSourceTrajectory = (value: unknown): DriverExpertTrajectoryPoint 
 
 const toPlottingTrajectory = (
     value: unknown,
-    verticalAxis: 'y' | 'z',
     flipVerticalAxis = false,
 ): PlottingTrajectoryPoint | undefined => {
     const source = normalizeSourceTrajectory(value);
-    const vertical = source ? finiteNumber(source[verticalAxis]) : undefined;
+    const vertical = source ? finiteNumber(source.y) : undefined;
     return source && vertical !== undefined
         ? { x: source.x, y: flipVerticalAxis ? -vertical : vertical }
         : undefined;
@@ -266,15 +265,12 @@ const selectPlottingReplay = (
 ): DriverExpertReplay<PlottingTrajectoryPoint> | undefined => {
     if (!replay) return undefined;
     const isAcc = detectedGame === 'acc';
-    const driverVerticalAxis = isAcc ? 'z' : 'y';
     const mapStream = (
         stream: readonly ReplayStreamPoint[],
-        verticalAxis: 'y' | 'z',
     ): ReplayStreamPoint<PlottingTrajectoryPoint>[] => stream.map((point) => {
         const { trajectory, ...values } = point;
         const plottingPoint = toPlottingTrajectory(
             trajectory,
-            verticalAxis,
             isAcc,
         );
         return {
@@ -283,8 +279,8 @@ const selectPlottingReplay = (
         };
     });
     return {
-        driver: mapStream(replay.driver, driverVerticalAxis),
-        expert: mapStream(replay.expert, 'y'),
+        driver: mapStream(replay.driver),
+        expert: mapStream(replay.expert),
         durationMs: replay.durationMs,
     };
 };
@@ -446,7 +442,6 @@ interface DriverExpertComparisonChannelPresence {
 
 const getDriverExpertComparisonChannelPresence = (
     data: DriverExpertComparisonData | null | undefined,
-    detectedGame: DesktopGame | null,
 ): DriverExpertComparisonChannelPresence => {
     const replay = buildDriverExpertReplay(data);
     if (!replay) {
@@ -461,14 +456,13 @@ const getDriverExpertComparisonChannelPresence = (
             expertGear: false,
         };
     }
-    const driverVerticalAxis = detectedGame === 'acc' ? 'z' : 'y';
     return {
         replay,
         driverTrajectory: replay.driver.some((point) => (
-            toPlottingTrajectory(point.trajectory, driverVerticalAxis) !== undefined
+            toPlottingTrajectory(point.trajectory) !== undefined
         )),
         expertTrajectory: replay.expert.some((point) => (
-            toPlottingTrajectory(point.trajectory, 'y') !== undefined
+            toPlottingTrajectory(point.trajectory) !== undefined
         )),
         driverGas: streamHasValue(replay.driver, 'gas'),
         expertGas: streamHasValue(replay.expert, 'gas'),
@@ -481,9 +475,8 @@ const getDriverExpertComparisonChannelPresence = (
 
 export const getDriverExpertComparisonAvailability = (
     data: DriverExpertComparisonData | null | undefined,
-    detectedGame: DesktopGame | null = null,
 ): DriverExpertComparisonAvailability => {
-    const presence = getDriverExpertComparisonChannelPresence(data, detectedGame);
+    const presence = getDriverExpertComparisonChannelPresence(data);
     return {
         trajectory: presence.driverTrajectory && presence.expertTrajectory,
         gas: presence.driverGas && presence.expertGas,
@@ -494,7 +487,6 @@ export const getDriverExpertComparisonAvailability = (
 
 export const getDriverExpertComparisonUnavailableDiagnostics = (
     data: DriverExpertComparisonData | null | undefined,
-    _detectedGame: DesktopGame | null = null,
 ): DriverExpertComparisonDiagnostic[] => {
     if (!data) {
         return [{
@@ -513,7 +505,6 @@ export const getDriverExpertComparisonUnavailableDiagnostics = (
 
 export const hasComparableDriverExpertData = (
     data: DriverExpertComparisonData | null | undefined,
-    _detectedGame: DesktopGame | null = null,
 ): boolean => {
     const samples = data?.samples;
     return Array.isArray(samples) && samples.length > 0;
@@ -1634,8 +1625,8 @@ export const DriverExpertComparisonPresentation: React.FC<DriverExpertComparison
         [comparisonGame, replay],
     );
     const availability = React.useMemo(
-        () => getDriverExpertComparisonAvailability(data, comparisonGame),
-        [comparisonGame, data],
+        () => getDriverExpertComparisonAvailability(data),
+        [data],
     );
     const hasAnyComparison = sourceSamples.length > 0;
     const trajectoryHeight = layout?.trajectoryHeight ?? 300;

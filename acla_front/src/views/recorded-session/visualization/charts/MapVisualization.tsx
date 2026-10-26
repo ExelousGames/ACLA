@@ -104,7 +104,7 @@ const formatTime = (seconds: number): string => {
     return `${minutes}:${wholeSeconds}.${tenths}`;
 };
 
-const getBounds = (frames: TelemetryFrame[], trackLayout: CircuitTrackLayout) => {
+const getBounds = (frames: TelemetryFrame[], trackLayout: CircuitTrackLayout, verticalAxis: 'y' | 'z') => {
     const positions: Vec3[] = [];
     frames.forEach((frame) => frame.cars.forEach((car) => positions.push(car.position)));
     positions.push(...trackLayout.allPoints);
@@ -113,8 +113,8 @@ const getBounds = (frames: TelemetryFrame[], trackLayout: CircuitTrackLayout) =>
         return {
             minX: -100,
             maxX: 100,
-            minY: 0,
-            maxY: 20,
+            minY: -100,
+            maxY: 100,
             minZ: -100,
             maxZ: 100,
             center: { x: 0, y: 0, z: 0 },
@@ -139,7 +139,7 @@ const getBounds = (frames: TelemetryFrame[], trackLayout: CircuitTrackLayout) =>
         maxZ = Math.max(maxZ, point.z);
     });
 
-    const span = Math.max(maxX - minX, maxZ - minZ, maxY - minY, 1);
+    const span = Math.max(maxX - minX, verticalAxis === 'y' ? maxY - minY : maxZ - minZ, 1);
 
     return {
         minX,
@@ -214,6 +214,10 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
 
     const selectedSessionId = analysisContext.sessionSelected?.SessionId || '';
     const isLocalSession = analysisContext.sessionSelected?.storage === 'local';
+    const sessionGame = analysisContext.sessionSelected?.game_recorded_from ?? (isLocalSession ? 'iracing_recorded' : 'acc');
+    // ACC's adapter stores the track plane in X/Y and altitude in Z.
+    const verticalAxis = sessionGame === 'acc' ? 'y' : 'z';
+    const depthAxis = verticalAxis === 'y' ? 'z' : 'y';
     const circuitSourceTrackKey = useMemo(() => getAccTelemetryTrackKey(
         analysisContext.sessionSelected?.map,
         analysisContext.mapSelected
@@ -224,8 +228,8 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
     const circuitTrackLayout = useMemo(() => (
         circuitMap
             ? buildCircuitTrackLayout(circuitMap)
-            : buildSessionPointsTrackLayout(analysisContext.sessionSelected?.points)
-    ), [analysisContext.sessionSelected?.points, circuitMap]);
+            : buildSessionPointsTrackLayout(analysisContext.sessionSelected?.points, verticalAxis)
+    ), [analysisContext.sessionSelected?.points, circuitMap, verticalAxis]);
     const frames = recordedFrames;
     const currentFrame = recordedFrames[playbackIndex];
     const currentTelemetry = currentFrame?.sourceIndex !== undefined
@@ -267,8 +271,8 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
         recordedFrames.slice(renderStartIndex, playbackIndex + 1)
     ), [playbackIndex, recordedFrames, renderStartIndex]);
     const bounds = useMemo(() => (
-        getBounds(frames, circuitTrackLayout)
-    ), [circuitTrackLayout, frames]);
+        getBounds(frames, circuitTrackLayout, verticalAxis)
+    ), [circuitTrackLayout, frames, verticalAxis]);
     const duration = recordedFrames.length > 1
         ? Math.max(0, recordedFrames[recordedFrames.length - 1].time - recordedFrames[0].time)
         : 0;
@@ -342,7 +346,7 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
     useEffect(() => {
         let cancelled = false;
 
-        if (!circuitSourceTrackKey || isLocalSession) {
+        if (!circuitSourceTrackKey || isLocalSession || sessionGame !== 'acc') {
             setCircuitMap(null);
             return;
         }
@@ -359,7 +363,7 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
         return () => {
             cancelled = true;
         };
-    }, [circuitSourceTrackKey, getCircuitMapByTrack, isLocalSession]);
+    }, [circuitSourceTrackKey, getCircuitMapByTrack, isLocalSession, sessionGame]);
 
     useEffect(() => {
         const wrapper = wrapperRef.current;
@@ -472,21 +476,21 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
     const projectPoint = useCallback((point: Vec3, size = canvasSize): ProjectedPoint => {
         const center = cameraMode === 'driver' && driverCameraTarget ? driverCameraTarget : bounds.center;
         const dx = (point.x - center.x) * (axisFlip.x ? -1 : 1);
-        const dz = (point.z - center.z) * (axisFlip.z ? -1 : 1);
+        const vertical = (point[verticalAxis] - center[verticalAxis]) * (axisFlip[verticalAxis] ? -1 : 1);
         const padding = Math.max(24, Math.min(size.width, size.height) * 0.06);
         const spanX = Math.max(bounds.maxX - bounds.minX, 1);
-        const spanZ = Math.max(bounds.maxZ - bounds.minZ, 1);
+        const spanVertical = Math.max(verticalAxis === 'y' ? bounds.maxY - bounds.minY : bounds.maxZ - bounds.minZ, 1);
         const scaleX = Math.max(1, size.width - padding * 2) / spanX;
-        const scaleZ = Math.max(1, size.height - padding * 2) / spanZ;
-        const scale = Math.min(scaleX, scaleZ) * zoom;
+        const scaleVertical = Math.max(1, size.height - padding * 2) / spanVertical;
+        const scale = Math.min(scaleX, scaleVertical) * zoom;
 
         return {
             ...point,
             screenX: size.width / 2 + dx * scale,
-            screenY: size.height / 2 - dz * scale,
-            depth: point.y * (axisFlip.y ? -1 : 1)
+            screenY: size.height / 2 - vertical * scale,
+            depth: point[depthAxis] * (axisFlip[depthAxis] ? -1 : 1)
         };
-    }, [axisFlip, bounds, cameraMode, canvasSize, driverCameraTarget, zoom]);
+    }, [axisFlip, bounds, cameraMode, canvasSize, depthAxis, driverCameraTarget, verticalAxis, zoom]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -543,18 +547,21 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
             const margin = bounds.span * 0.16;
             const minX = bounds.minX - margin;
             const maxX = bounds.maxX + margin;
-            const minZ = bounds.minZ - margin;
-            const maxZ = bounds.maxZ + margin;
+            const minVertical = (verticalAxis === 'y' ? bounds.minY : bounds.minZ) - margin;
+            const maxVertical = (verticalAxis === 'y' ? bounds.maxY : bounds.maxZ) + margin;
             const gridCount = 10;
+            const groundPoint = (x: number, vertical: number): Vec3 => (
+                verticalAxis === 'y' ? { x, y: vertical, z: 0 } : { x, y: 0, z: vertical }
+            );
 
             context.save();
             context.lineWidth = 1;
             context.strokeStyle = 'rgba(255, 255, 255, 0.08)';
             for (let index = 0; index <= gridCount; index += 1) {
                 const x = minX + ((maxX - minX) * index) / gridCount;
-                const z = minZ + ((maxZ - minZ) * index) / gridCount;
-                drawLine([{ x, y: 0, z: minZ }, { x, y: 0, z: maxZ }], 'rgba(255,255,255,0.08)', 1);
-                drawLine([{ x: minX, y: 0, z }, { x: maxX, y: 0, z }], 'rgba(255,255,255,0.08)', 1);
+                const vertical = minVertical + ((maxVertical - minVertical) * index) / gridCount;
+                drawLine([groundPoint(x, minVertical), groundPoint(x, maxVertical)], 'rgba(255,255,255,0.08)', 1);
+                drawLine([groundPoint(minX, vertical), groundPoint(maxX, vertical)], 'rgba(255,255,255,0.08)', 1);
             }
             context.restore();
         };
@@ -663,7 +670,7 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
                     context.restore();
                 }
             });
-    }, [bounds, canvasSize, circuitTrackLayout, currentFrame, projectPoint, segmentOverlayRuns, visibleFrames]);
+    }, [bounds, canvasSize, circuitTrackLayout, currentFrame, projectPoint, segmentOverlayRuns, verticalAxis, visibleFrames]);
 
     useEffect(() => {
         const canvas = canvasRef.current;

@@ -121,13 +121,16 @@ export const buildCircuitTrackLayout = (map: CircuitMapDto | null): CircuitTrack
     };
 };
 
-export const buildSessionPointsTrackLayout = (points?: { position_x: number; position_y: number }[]): CircuitTrackLayout => {
+export const buildSessionPointsTrackLayout = (
+    points?: { position_x: number; position_y: number }[],
+    verticalAxis: 'y' | 'z' = 'y',
+): CircuitTrackLayout => {
     if (!points || points.length === 0) return EMPTY_CIRCUIT_TRACK_LAYOUT;
 
     const centerLine = points.map((point) => ({
         x: point.position_x,
-        y: 0,
-        z: point.position_y
+        y: verticalAxis === 'y' ? point.position_y : 0,
+        z: verticalAxis === 'z' ? point.position_y : 0
     }));
 
     return {

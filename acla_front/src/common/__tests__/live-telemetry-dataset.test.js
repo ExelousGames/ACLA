@@ -78,8 +78,13 @@ describe('live telemetry dataset boundary', () => {
                 now = 2500 + elapsedSeconds[tick] * 1000;
                 const status = [2, 3, 0, 2][tick];
                 if (game === 'acc') {
-                    // ACC's Python capture adapter already converts Broadcasting ms to seconds.
-                    lines.emit('line', JSON.stringify({ Graphics_status: status, Graphics_game_time: time }));
+                    lines.emit('line', JSON.stringify({ type: 'sample',
+                        sharedMemory: {
+                            Physics: { velocity: { x: -4, y: 2, z: -9 } },
+                            Graphics: { status, car_coordinates: Array(60).fill({ x: 10, y: 20, z: -30 }) },
+                        },
+                        broadcasting: { positions: {}, sessionTime: time === undefined ? null : time * 1000 },
+                    }));
                 } else {
                     child.stdout.write(`${JSON.stringify({ type: 'sample', tick,
                         values: { IsOnTrack: status !== 0, IsReplayPlaying: false, SessionTime: time } })}\n`);
@@ -103,8 +108,14 @@ describe('live telemetry dataset boundary', () => {
             expect(updates.map((update) => update.sample)).toEqual(events.map((event) => event.frame.sample));
             const rows = fs.readFileSync(filePath, 'utf8').trim().split('\n').map(JSON.parse);
             expect(rows).toEqual(events.map((event) => event.frame.sample));
+            if (game === 'acc') {
+                expect(rows[0]).toMatchObject({
+                    Physics_velocity_x: -4, Physics_velocity_y: -9, Physics_velocity_z: 2,
+                    Graphics_car_coordinates: Array(60).fill({ x: 10, y: -30, z: 20 }),
+                });
+            }
             expect(rows[0].Graphics_game_time).toBe(12.125);
-            expect(rows[1].Graphics_game_time).toBe(12.125);
+            expect(rows[1].Graphics_game_time).toBe(game === 'acc' ? undefined : 12.125);
             expect(rows[2]).not.toHaveProperty('Graphics_game_time');
             expect(rows[3].Graphics_game_time).toBe(0);
             expect(rows[0]).not.toHaveProperty('SessionTime');
@@ -197,7 +208,7 @@ describe('live telemetry dataset boundary', () => {
         }
     });
 
-    it('requires the direct ACC reader to emit dataset rows and keeps control packets outside them', async () => {
+    it('adapts raw ACC captures to dataset rows and keeps control packets outside them', async () => {
         const child = new EventEmitter();
         child.stdout = new PassThrough();
         child.stderr = new PassThrough();
@@ -211,13 +222,18 @@ describe('live telemetry dataset boundary', () => {
         const started = reader.start(emit);
         lines.emit('line', '{"available":false}');
         expect(emit).not.toHaveBeenCalled();
-        lines.emit('line', '{"Physics_speed_kmh":120,"Graphics_status":2,"Graphics_normalized_positions":{"1052":0.25}}');
+        lines.emit('line', JSON.stringify({ type: 'sample',
+            sharedMemory: { Physics: { speed_kmh: 120 }, Graphics: { status: 2 } },
+            broadcasting: { positions: { 1052: 0.25 }, sessionTime: 12125 },
+        }));
         await started;
         expect(emit).toHaveBeenCalledWith({ type: 'frame', frame: {
             game: 'acc', sample: { Physics_speed_kmh: 120, Graphics_status: 2, Graphics_normalized_positions: { 1052: 0.25 },
-                Graphics_analyst_session_time: expect.any(Number) },
+                Graphics_game_time: 12.125, Graphics_analyst_session_time: expect.any(Number) },
         } });
-        lines.emit('line', '{"Physics_speed_kmh":121,"speedKph":121}');
+        lines.emit('line', JSON.stringify({ type: 'sample',
+            sharedMemory: { Physics: { speed_kmh: 121, speedKph: 121 } }, broadcasting: {},
+        }));
         expect(emit.mock.calls.filter(([event]) => event.type === 'frame')).toHaveLength(1);
         expect(emit).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'fatal' }));
         await reader.stop();

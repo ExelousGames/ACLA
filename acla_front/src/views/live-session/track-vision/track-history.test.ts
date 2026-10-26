@@ -130,11 +130,20 @@ it('reads only live motion and never accesses world position or lap progress', (
     for (const field of ['Graphics_car_coordinates', 'Graphics_normalized_car_position', 'Physics_velocity_x']) {
         Object.defineProperty(sample, field, { get() { throw new Error(`Must not read ${field}`); } });
     }
-    expect(readVisionMotion(sample, 100, 4)).toEqual({ receivedAt: 100, generation: 4,
+    expect(readVisionMotion(sample, 100, 4, 'acc')).toEqual({ receivedAt: 100, generation: 4,
         headingRad: 0.3, forwardMps: 20, rightMps: 0 });
-    expect(readVisionMotion({ ...sample, Physics_local_velocity_x: 1.5, Physics_local_velocity_z: -4 }, 100, 4))
+    expect(readVisionMotion({ ...sample, Physics_local_velocity_x: 1.5,
+        Physics_local_velocity_y: -4, Physics_local_velocity_z: 30 }, 100, 4, 'acc'))
         .toMatchObject({ forwardMps: -4, rightMps: 1.5 });
-    expect(readVisionMotion({ ...sample, Physics_gear: 0 }, 100, 4)?.forwardMps).toBe(-20);
+    expect(readVisionMotion({ ...sample, Physics_gear: 0 }, 100, 4, 'acc')?.forwardMps).toBe(-20);
+});
+
+it('preserves the iRacing adapter forward Z axis and uses speed when ACC forward Y is missing', () => {
+    const sample: StandardTelemetrySample = { Graphics_status: 2, Physics_heading: 0.3,
+        Physics_speed_kmh: 72, Physics_gear: 3, Physics_local_velocity_x: 1.5, Physics_local_velocity_z: -4 };
+    expect(readVisionMotion({ ...sample, Physics_local_velocity_y: 30 }, 100, 4, 'iracing'))
+        .toMatchObject({ forwardMps: -4, rightMps: 1.5 });
+    expect(readVisionMotion(sample, 100, 4, 'acc')).toMatchObject({ forwardMps: 20, rightMps: 0 });
 });
 
 it.each([
@@ -143,5 +152,5 @@ it.each([
     { Physics_gear: undefined }, { Physics_gear: 1 }, { Physics_speed_kmh: -10 },
 ])('rejects unavailable/paused motion: %s', (patch) => {
     expect(readVisionMotion({ Graphics_status: 2, Physics_heading: 0, Physics_speed_kmh: 72, Physics_gear: 3,
-        ...patch }, 0, 0)).toBeUndefined();
+        ...patch }, 0, 0, 'acc')).toBeUndefined();
 });

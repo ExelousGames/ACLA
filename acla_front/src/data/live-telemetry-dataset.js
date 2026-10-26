@@ -1,6 +1,6 @@
 // The authoritative field table for every simulator reader, adapter and writer.
 // Add telemetry fields here before emitting them. Downstream accepts only rows
-// validated against this table. Readers convert to the documented units and
+// validated against this table. Adapters convert to the documented units and
 // enum meanings before emitting a row.
 // Missing source values are omitted, never filled with aliases or legacy data.
 // Coordinates and car IDs each have 60 entries. Normalized positions are keyed
@@ -175,7 +175,7 @@ const LIVE_TELEMETRY_DATASET = Object.freeze(/** @type {const} */ ({
   // Graphics
   Graphics_abs_level: 'integer',
   Graphics_active_cars: 'integer',
-  // Elapsed recording seconds, added by the shared writer.
+  // Elapsed recording seconds from the live reader's monotonic clock.
   Graphics_analyst_session_time: 'number',
   Graphics_best_time: 'integer',
   Graphics_best_time_str: 'string',

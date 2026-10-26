@@ -34,9 +34,9 @@ const clamp01 = (value: unknown): number | undefined => {
     return Math.max(0, Math.min(1, parsed));
 };
 
-const sampleToPoint = (sample: CircuitMapBinSample) => ({
+const sampleToPoint = (sample: CircuitMapBinSample, verticalAxis: 'y' | 'z') => ({
     x: Number(sample.x),
-    y: Number(sample.z),
+    y: Number(sample[verticalAxis]),
     normalizedPosition: Number(sample.normalized_position),
 });
 
@@ -49,8 +49,9 @@ const isFinitePoint = (point: ReturnType<typeof sampleToPoint>) => (
 const toPolyline = (
     samples: CircuitMapBinSample[] | undefined,
     project: (sample: CircuitMapBinSample) => ProjectedPoint,
+    verticalAxis: 'y' | 'z',
 ) => (samples || [])
-    .filter((sample) => isFinitePoint(sampleToPoint(sample)))
+    .filter((sample) => isFinitePoint(sampleToPoint(sample, verticalAxis)))
     .sort((a, b) => a.bin - b.bin)
     .map(project)
     .map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`)
@@ -107,12 +108,13 @@ const AiMapToolDisplay: React.FC<AiMapToolDisplayProps> = ({ display, surface = 
     const renderData = useMemo(() => {
         const map = display.map;
         if (!map || display.status !== 'ready') return null;
+        const verticalAxis = map.game === 'acc' ? 'y' : 'z';
 
         const samples = [
             ...(map.samples.left_boundary || []),
             ...(map.samples.right_boundary || []),
             ...(map.samples.pit_lane || []),
-        ].map(sampleToPoint).filter(isFinitePoint);
+        ].map((sample) => sampleToPoint(sample, verticalAxis)).filter(isFinitePoint);
 
         if (samples.length < 2) return null;
 
@@ -132,7 +134,7 @@ const AiMapToolDisplay: React.FC<AiMapToolDisplayProps> = ({ display, surface = 
         const offsetY = (VIEWBOX_HEIGHT - drawHeight) / 2;
 
         const project = (sample: CircuitMapBinSample): ProjectedPoint => {
-            const point = sampleToPoint(sample);
+            const point = sampleToPoint(sample, verticalAxis);
             return {
                 x: offsetX + (point.x - minX) * scale,
                 y: offsetY + drawHeight - ((point.y - minY) * scale),
@@ -145,9 +147,9 @@ const AiMapToolDisplay: React.FC<AiMapToolDisplayProps> = ({ display, surface = 
             .map(project);
 
         return {
-            left: toPolyline(map.samples.left_boundary, project),
-            right: toPolyline(map.samples.right_boundary, project),
-            pit: toPolyline(map.samples.pit_lane, project),
+            left: toPolyline(map.samples.left_boundary, project, verticalAxis),
+            right: toPolyline(map.samples.right_boundary, project, verticalAxis),
+            pit: toPolyline(map.samples.pit_lane, project, verticalAxis),
             center: pathFromPoints(centerlineSamples.map(project)),
             highlight: pathFromPoints(highlightPoints),
             hasHighlight: highlightPoints.length > 1,

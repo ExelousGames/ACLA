@@ -6,6 +6,8 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
+    "migrate:acc-yz": "node scripts/migrate-acc-yz.js",
+    "test:migrate:acc-yz": "node --test scripts/migrate-acc-yz.test.js",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "node --max-old-space-size=2048 node_modules/.bin/nest start",

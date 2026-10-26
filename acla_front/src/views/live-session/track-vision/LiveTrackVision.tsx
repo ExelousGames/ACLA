@@ -172,7 +172,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
             positionTelemetry.current = { position, receivedAt: Date.now(), identity, game: event.update.game,
                 track: event.sample.Static_track, gameTime };
         }
-        const next = event.type === 'frame' ? readVisionMotion(event.sample, Date.now(), motionGeneration.current) : undefined;
+        const next = event.type === 'frame' ? readVisionMotion(event.sample, Date.now(), motionGeneration.current, event.update.game) : undefined;
         if (!next && (motion.current || event.type !== 'frame')) {
             motionGeneration.current++;
             motion.current = undefined;

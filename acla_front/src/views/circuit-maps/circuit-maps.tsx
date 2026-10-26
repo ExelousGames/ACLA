@@ -169,8 +169,8 @@ const CircuitMaps = () => {
     const currentTrackKey = (telemetryGame === game ? getCircuitMapTrackKey(currentTelemetry) : null)
         || (liveSession?.sessionGame === game ? getCircuitMapTrackKey(liveSession.staticData) : null);
     const liveCapture = useMemo(() => (
-        isAccLive ? extractCircuitMapCaptureSample(currentTelemetry, game) : null
-    ), [currentTelemetry, game, isAccLive]);
+        isAccLive ? extractCircuitMapCaptureSample(currentTelemetry) : null
+    ), [currentTelemetry, isAccLive]);
 
     const loadMapList = useCallback(async (nextGame: CircuitMapGame = game) => {
         const requestId = ++listLoadRequestRef.current;
@@ -287,7 +287,7 @@ const CircuitMaps = () => {
                 || event.telemetryStatus !== ACC_STATUS.ACC_LIVE
             ) return;
 
-            const liveCapture = extractCircuitMapCaptureSample(event.sample, game);
+            const liveCapture = extractCircuitMapCaptureSample(event.sample);
             if (!liveCapture) return;
             const signature = `${liveCapture.bin}:${liveCapture.position.x}:${liveCapture.position.y}:${liveCapture.position.z}`;
             if (signature === lastCaptureSignatureRef.current) return;
@@ -378,7 +378,7 @@ const CircuitMaps = () => {
                     }
                     importedTrackKey = trackKey;
                 }
-                const result = mergeCircuitMapSamples(nextSamples, rows, game, updatedAt);
+                const result = mergeCircuitMapSamples(nextSamples, rows, updatedAt);
                 nextSamples = result.samples;
                 capturedRows += result.capturedRows;
             });

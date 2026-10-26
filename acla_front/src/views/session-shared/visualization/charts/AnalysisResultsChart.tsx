@@ -611,14 +611,13 @@ const AnalysisResultCard: React.FC<{
     const timingDirection = delta === null ? 'unavailable'
         : Math.round(deltaMs!) > 0 ? 'lost'
             : Math.round(deltaMs!) < 0 ? 'gained' : 'unchanged';
-    const hasComparison = hasComparableDriverExpertData(element.comparison, sessionGame ?? null);
+    const hasComparison = hasComparableDriverExpertData(element.comparison);
     const comparisonDiagnostics = React.useMemo(() => {
         if (hasComparison) return [];
         const diagnostics = [
             ...(element.comparisonDiagnostics ?? []),
             ...getDriverExpertComparisonUnavailableDiagnostics(
                 element.comparison,
-                sessionGame ?? null,
             ).filter((diagnostic) => (
                 diagnostic.code !== 'comparison_data_missing'
                 || !element.comparisonDiagnostics?.length
@@ -627,7 +626,7 @@ const AnalysisResultCard: React.FC<{
         const diagnosticsByCode = new Map<string, typeof diagnostics[number]>();
         diagnostics.forEach((diagnostic) => diagnosticsByCode.set(diagnostic.code, diagnostic));
         return Array.from(diagnosticsByCode.values());
-    }, [element.comparison, element.comparisonDiagnostics, hasComparison, sessionGame]);
+    }, [element.comparison, element.comparisonDiagnostics, hasComparison]);
     const comparisonWarningFingerprint = React.useMemo(() => JSON.stringify({
         segment_id: element.id,
         game: sessionGame ?? null,
@@ -1392,7 +1391,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         return result ? cloneAndFreeze(result) : null;
     }, [elements, id, pagination, retainedPages]);
     const createComparisonSnapshot = React.useCallback((result: AnalysisResultElement): DriverExpertComparisonSnapshot => {
-        if (!result.comparison || !hasComparableDriverExpertData(result.comparison, sessionGame)) {
+        if (!result.comparison || !hasComparableDriverExpertData(result.comparison)) {
             throw new OperationExecutionError(`Analysis result '${result.id}' has no supported overlay graph.`);
         }
         return {
@@ -1446,7 +1445,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         }
         if (
             !result.comparison
-            || !hasComparableDriverExpertData(result.comparison, sessionGame)
+            || !hasComparableDriverExpertData(result.comparison)
         ) {
             throw new OperationExecutionError(
                 `Analysis result '${resultId}' has no supported overlay graph.`,
@@ -1562,7 +1561,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             finish('failed', error instanceof Error ? error : new Error(String(error)));
         }
         return controller.operation;
-    }, [componentRefs, createComparisonSnapshot, name, resolveSpecificResult, sessionGame]);
+    }, [componentRefs, createComparisonSnapshot, name, resolveSpecificResult]);
     const activeMistakeCatalog = React.useMemo(() => {
         const categoryLabels = {
             MSP: getCategoryLabels('MSP'),
@@ -1794,7 +1793,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                 skip('invalid_start_position');
                 return;
             }
-            if (!hasComparableDriverExpertData(segment.comparison, sessionGame ?? null)) {
+            if (!hasComparableDriverExpertData(segment.comparison)) {
                 skip('comparison_unavailable');
                 return;
             }
@@ -1896,7 +1895,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
 
         result.skipped_count = result.skipped_segments.length;
         return result;
-    }, [componentRefs, getFilteredSegments, prepareComparisonVoices, sessionGame]);
+    }, [componentRefs, getFilteredSegments, prepareComparisonVoices]);
 
     const addAnalysisResultToDoList = React.useCallback((dispatchNested: WorkflowDispatcher) => {
         const controller = createControlledOperation<AddFilteredDriverExpertComparisonsResult>();
