@@ -211,6 +211,10 @@ async def test_session_metadata_game_survives_download_cleaning_and_top_lap_sele
         assert error is None
         assert count == 1
         assert all(row["game_recorded_from"] == session["game_recorded_from"] for row in cleaned)
+        for axis in ("y", "z"):
+            column = f"Graphics_player_pos_{axis}"
+            assert cleaned[0][column] == records[0][column]
+            assert cleaned[-1][column] == records[-1][column]
         for candidate in candidates:
             _update_top_lap(top_laps, candidate)
     assert set(top_laps) == {

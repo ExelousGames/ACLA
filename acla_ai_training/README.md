@@ -208,8 +208,8 @@ XYZ is selected by first reading `Graphics_active_cars`, trimming both
 This applies to single-car sessions too. Zero active cars or a missing or ambiguous
 player ID match skips the frame; legacy `Graphics_player_pos_x/y/z` fields are not used.
 Reference coordinates retain their world axes and scale; curves must cover the lap
-and share the telemetry coordinate system. For ACC, preparation aligns the raw
-driver Y/Z axes with the stored references, then uses `Physics_heading`,
+and share the telemetry coordinate system. Preparation preserves the corrected
+driver XYZ axes (Z up). For ACC, it uses `Physics_heading`,
 `Physics_pitch`, and `Physics_roll` (radians) to rotate each reference-minus-driver
 vector into car-local XYZ: **right, forward, up**. The position files mark these
 targets with `coordinate_frame: car_local`; no world-space targets are saved.

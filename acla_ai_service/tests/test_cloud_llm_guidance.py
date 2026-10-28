@@ -84,6 +84,56 @@ async def test_guidance_calls_selected_cloud_provider(monkeypatch, cloud_provide
 
 
 @pytest.mark.asyncio
+async def test_guidance_preserves_adapter_axes_for_enrichment(monkeypatch, cloud_provider):
+    record = dict.fromkeys(guidance.TelemetryFeatures.get_features_for_top_lap_reference(), 0.0)
+    vectors = {
+        "Physics_velocity_x": 10.0,
+        "Physics_velocity_y": -9.0,
+        "Physics_velocity_z": 2.0,
+        "Physics_g_force_x": 0.5,
+        "Physics_g_force_y": -0.8,
+        "Physics_g_force_z": 1.2,
+    }
+    record.update(vectors)
+    record.update({
+        "Graphics_player_car_id": 42,
+        "Graphics_car_id": [7, 42],
+        "Graphics_car_coordinates": [
+            {"x": 10.0, "y": -30.0, "z": 2.0},
+            {"x": 11.0, "y": -20.0, "z": 3.0},
+        ],
+    })
+    enrich = Mock(side_effect=lambda records, **kwargs: records)
+    grip = AsyncMock(return_value=[])
+    monkeypatch.setattr(guidance, "get_top_lap_reference_model", lambda: SimpleNamespace(
+        enrich=enrich,
+    ))
+    monkeypatch.setattr(guidance, "get_tire_grip_analysis", lambda: SimpleNamespace(
+        extract_tire_grip_features=grip,
+    ))
+    monkeypatch.setattr(guidance, "generate_llm_prompt_from_labels", Mock(return_value="Guidance"))
+    _mock_cloud(monkeypatch)
+
+    result = await guidance.generate_top_lap_reference_guidance(record)
+
+    assert result["status"] == "success"
+    expected = {
+        **vectors,
+        "Graphics_player_pos_x": 11.0,
+        "Graphics_player_pos_y": -20.0,
+        "Graphics_player_pos_z": 3.0,
+        "Car_1_pos_x": 10.0,
+        "Car_1_pos_y": -30.0,
+        "Car_1_pos_z": 2.0,
+        "Car_2_pos_x": 11.0,
+        "Car_2_pos_y": -20.0,
+        "Car_2_pos_z": 3.0,
+    }
+    for enriched in (enrich.call_args.args[0][0], grip.call_args.args[0][0]):
+        assert {field: enriched[field] for field in expected} == expected
+
+
+@pytest.mark.asyncio
 async def test_guidance_preserves_raw_map_context(monkeypatch, cloud_provider, telemetry):
     from app.shared import label_hierarchy
 

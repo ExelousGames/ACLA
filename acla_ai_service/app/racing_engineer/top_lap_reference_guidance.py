@@ -36,9 +36,9 @@ async def generate_top_lap_reference_guidance(
 
         telemetry_df = pd.DataFrame([telemetry_dict])
         processor = FeatureProcessor(telemetry_df)
+        # Preserve the coordinate axes already normalized by the recording adapter.
         processed_df = processor.general_cleaning_for_analysis()
 
-        processor.flip_y_z_features()
         features = TelemetryFeatures().get_features_for_top_lap_reference()
 
         filtered_df = processor.filter_features_by_list(processed_df, features)

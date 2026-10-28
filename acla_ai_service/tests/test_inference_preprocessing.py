@@ -86,14 +86,53 @@ def test_preprocess_inference_telemetry_preserves_columns_and_tracks_raw_rows():
     assert list(result.records[0]) == list(source[0])
     assert result.records[0]["unexpected_feature"] == 99
     assert RAW_ROW_INDEX_COLUMN not in result.records[0]
-    assert result.records[0]["Graphics_player_pos_y"] == pytest.approx(20.0)
-    assert result.records[0]["Graphics_player_pos_z"] == pytest.approx(10.0)
-    assert result.records[0]["Physics_velocity_y"] == pytest.approx(2.0)
-    assert result.records[0]["Physics_velocity_z"] == pytest.approx(1.0)
-    assert result.records[1]["Graphics_player_pos_y"] == pytest.approx(23.0)
-    assert result.records[1]["Graphics_player_pos_z"] == pytest.approx(13.0)
+    assert result.records[0]["Graphics_player_pos_y"] == pytest.approx(10.0)
+    assert result.records[0]["Graphics_player_pos_z"] == pytest.approx(20.0)
+    assert result.records[0]["Physics_velocity_y"] == pytest.approx(1.0)
+    assert result.records[0]["Physics_velocity_z"] == pytest.approx(2.0)
+    assert result.records[1]["Graphics_player_pos_y"] == pytest.approx(13.0)
+    assert result.records[1]["Graphics_player_pos_z"] == pytest.approx(23.0)
     assert source[0]["Graphics_player_pos_y"] == 10.0
     assert source[0]["Graphics_player_pos_z"] == 20.0
+
+
+def test_preprocessing_preserves_adapter_axes_when_expanding_car_coordinates():
+    source = [
+        _telemetry_row(
+            time,
+            Graphics_player_car_id=42,
+            Graphics_car_id=[7, 42],
+            Graphics_car_coordinates=[
+                {"x": 10.0, "y": -30.0 + offset, "z": 2.0},
+                {"x": 11.0, "y": -20.0 + offset, "z": 3.0},
+            ],
+            Physics_local_velocity_y=-9.0 + offset,
+            Physics_local_velocity_z=2.0,
+            Physics_tyre_contact_point_front_left_y=-4.0 + offset,
+            Physics_tyre_contact_point_front_left_z=1.0,
+        )
+        for time, offset in [(0, 0.0), (1_000, 2.0)]
+    ]
+
+    result = preprocess_inference_telemetry(source)
+
+    assert [row["Graphics_current_time"] for row in result.records] == [0, 500, 1_000]
+    for offset, row in enumerate(result.records):
+        assert row["Graphics_player_pos_x"] == 11.0
+        assert row["Graphics_player_pos_y"] == pytest.approx(-20.0 + offset)
+        assert row["Graphics_player_pos_z"] == 3.0
+        assert row["Car_1_pos_y"] == pytest.approx(-30.0 + offset)
+        assert row["Car_1_pos_z"] == 2.0
+        assert row["Car_2_pos_y"] == pytest.approx(-20.0 + offset)
+        assert row["Car_2_pos_z"] == 3.0
+        assert row["Physics_local_velocity_y"] == pytest.approx(-9.0 + offset)
+        assert row["Physics_local_velocity_z"] == 2.0
+        assert row["Physics_tyre_contact_point_front_left_y"] == pytest.approx(-4.0 + offset)
+        assert row["Physics_tyre_contact_point_front_left_z"] == 1.0
+    assert source[0]["Graphics_car_coordinates"] == [
+        {"x": 10.0, "y": -30.0, "z": 2.0},
+        {"x": 11.0, "y": -20.0, "z": 3.0},
+    ]
 
 
 def test_preprocess_inference_telemetry_removes_player_position_anomalies():
@@ -288,8 +327,8 @@ def test_preprocessing_keeps_available_metadata_and_opponents_for_segment_splitt
     assert result.records[0]["Static_track"] == "brands_hatch"
     assert result.records[0]["Static_car_model"] == "car-a"
     assert result.records[0]["Car_1_pos_x"] == 10.0
-    assert result.records[0]["Car_1_pos_y"] == 30.0
-    assert result.records[0]["Car_1_pos_z"] == 20.0
+    assert result.records[0]["Car_1_pos_y"] == 20.0
+    assert result.records[0]["Car_1_pos_z"] == 30.0
     assert "Car_2_pos_x" not in result.records[0]
     assert result.records[0]["Physics_slip_angle_front_left"] == 0.1
     assert result.records[0]["Graphics_gap_ahead"] == 100.0

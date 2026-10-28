@@ -1299,30 +1299,3 @@ class FeatureProcessor:
             )
 
         return pd.concat(sampled_runs, ignore_index=True)
-
-    def flip_y_z_features(self) -> pd.DataFrame:
-        """Swap values across *_y and *_z telemetry columns to align axis conventions."""
-
-        if self.df is None or self.df.empty:
-            return self.df if self.df is not None else pd.DataFrame()
-
-        swapped_pairs = 0
-
-        for col in list(self.df.columns):
-            if not isinstance(col, str) or not col.endswith("_y"):
-                continue
-
-            counterpart = f"{col[:-2]}_z"
-            if counterpart not in self.df.columns:
-                continue
-
-            y_values = self.df[col].copy()
-            z_values = self.df[counterpart].copy()
-            self.df[col] = z_values
-            self.df[counterpart] = y_values
-            swapped_pairs += 1
-
-        if swapped_pairs == 0:
-            print("[INFO] No *_y/_z feature pairs found to flip.")
-
-        return self.df

@@ -224,7 +224,10 @@ def _remove_position_anomalies(dataframe: pd.DataFrame) -> pd.DataFrame:
 def preprocess_inference_telemetry(
     telemetry_data: Sequence[Dict[str, Any]],
 ) -> InferenceTelemetryBatch:
-    """Clean and resample telemetry; consumers own their feature requirements."""
+    """Clean and resample telemetry; consumers own their feature requirements.
+
+    Preserve the coordinate axes already normalized by the recording adapter.
+    """
     if not telemetry_data:
         return InferenceTelemetryBatch(records=[], raw_indices=[])
 
@@ -234,8 +237,7 @@ def preprocess_inference_telemetry(
     ]
 
     processor = FeatureProcessor(dataframe)
-    processor.general_cleaning_for_analysis()
-    processed = processor.flip_y_z_features()
+    processed = processor.general_cleaning_for_analysis()
     processed = _remove_position_anomalies(processed)
     processor.df = processed
 

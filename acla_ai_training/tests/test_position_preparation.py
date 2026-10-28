@@ -149,25 +149,24 @@ def test_local_targets_use_acc_angle_signs_in_right_forward_up_order(rotation, o
 
 def test_same_local_offset_has_same_target_after_world_heading_changes():
     offset = np.array([[2, 3, 4], [-1, -5, -2]], dtype=np.float64)
-    # A positive ACC heading quarter turn maps SDK (left, forward) to (-forward, left).
+    # A positive ACC heading quarter turn maps (left, forward) to (-forward, left).
     turned = np.column_stack((-offset[:, 1], offset[:, 0], offset[:, 2]))
     np.testing.assert_allclose(local_targets(offset, [0, 0, 0]), local_targets(turned, [np.pi / 2, 0, 0]))
 
 
 def test_recorded_acc_wheel_geometry_has_positive_right_forward_and_up():
-    # Recorded SDK world XYZ, independent of the rotation formula under test.
+    # Recorded wheel geometry in corrected XYZ, independent of the rotation formula under test.
     rotation = [0.9896045923233032, 0.0058305226266384125, 0.03325597196817398]
-    front_left = np.array([527.7977905273438, -5.134513854980469, -612.2542114257812])
-    front_right = np.array([526.8236083984375, -5.075478553771973, -613.7393188476562])
-    rear_left = np.array([529.8399047851562, -5.141879081726074, -613.632080078125])
-    rear_right = np.array([528.8966674804688, -5.086496353149414, -615.0673217773438])
-    up = [0.020880399271845818, 0.9994397759437561, 0.02615666389465332]
+    front_left = np.array([527.7977905273438, -612.2542114257812, -5.134513854980469])
+    front_right = np.array([526.8236083984375, -613.7393188476562, -5.075478553771973])
+    rear_left = np.array([529.8399047851562, -613.632080078125, -5.141879081726074])
+    rear_right = np.array([528.8966674804688, -615.0673217773438, -5.086496353149414])
+    up = [0.020880399271845818, 0.02615666389465332, 0.9994397759437561]
     right = (front_right + rear_right - front_left - rear_left) / 2
     forward = (front_left + front_right - rear_left - rear_right) / 2
-    prepared = np.array([right, forward, up])[:, [0, 2, 1]]
 
     np.testing.assert_allclose(
-        local_targets(prepared, rotation), np.diag([1.75, 2.46, 1.0]), atol=0.02,
+        local_targets([right, forward, up], rotation), np.diag([1.75, 2.46, 1.0]), atol=0.02,
     )
 
 
@@ -187,11 +186,11 @@ def test_preparation_rotation_changes_only_targets_and_preserves_world_geometry(
     prepare(dataset)
     after = load_position_manifest(dataset.downloads)["a" * 24][1]
     np.testing.assert_array_equal(before["references"], after["references"])
-    np.testing.assert_allclose(after["target"], [[-2.7, -1.9, 3.8], [-2.7, 2.1, -4.2]])
+    np.testing.assert_allclose(after["target"], [[-2.8, -1.9, 3.7], [-2.8, 2.1, -4.3]])
     for field in ("image", "game", "map_name", "normalized_position"):
         assert before[field] == after[field]
     saved = json.loads(after["image"].with_suffix(".position.json").read_text())
-    assert saved["driver_position"] == [0.1, 0.3, 0.2]
+    assert saved["driver_position"] == [0.1, 0.2, 0.3]
     assert "world_rotation" not in saved
 
 
@@ -204,14 +203,9 @@ def test_preparation_accepts_one_session_without_assigning_a_split(dataset):
     assert not dataset.output.exists()
 
 
-@pytest.mark.parametrize("game, expected", [
-    ("acc", [0.1, 0.3, 0.2]),
-    ("iracing", [0.1, 0.2, 0.3]),
-    ("iracing_live", [0.1, 0.2, 0.3]),
-    ("iracing_recorded", [0.1, 0.2, 0.3]),
-])
+@pytest.mark.parametrize("game", ["acc", "iracing", "iracing_live", "iracing_recorded"])
 @pytest.mark.parametrize("encoded", [False, True])
-def test_session_game_controls_driver_coordinate_order(dataset, game, expected, encoded):
+def test_session_preserves_driver_coordinate_order_for_supported_games(dataset, game, encoded):
     extraction = dataset.extractions[0]
     extraction["session"]["game_recorded_from"] = game
     for pair in extraction["frames"]:
@@ -222,7 +216,7 @@ def test_session_game_controls_driver_coordinate_order(dataset, game, expected, 
     session = _prepare_session(extraction)
 
     if game == "acc":
-        assert all(frame["driver_position"] == expected for frame in session["frames"])
+        assert all(frame["driver_position"] == [0.1, 0.2, 0.3] for frame in session["frames"])
     else:
         assert session is None
     assert json.dumps(extraction["frames"]) == original_frames
@@ -252,7 +246,7 @@ def test_extracted_frames_become_offline_trainable_dataset_with_signed_targets(d
         assert [row["normalized_position"] for row in frames] == [0, 0.25, 0.5]
         assert all(row["game"] == "acc" and row["map_name"] == "Display Name" for row in frames)
     np.testing.assert_allclose(records["a" * 24][1]["references"], [[2, 3, 4], [-2, 3, -4]])
-    np.testing.assert_allclose(records["a" * 24][1]["target"], [[-1.9, 2.7, 3.8], [2.1, 2.7, -4.2]])
+    np.testing.assert_allclose(records["a" * 24][1]["target"], [[-1.9, 2.8, 3.7], [2.1, 2.8, -4.3]])
 
 
 @pytest.mark.parametrize("source", ["iracing", "iracing_live", "iracing_recorded"])
@@ -295,8 +289,8 @@ def test_driver_xyz_and_other_telemetry_never_become_training_inputs(dataset):
     for field in ("session_id", "game", "map_name", "normalized_position"):
         assert before[field] == after[field]
     np.testing.assert_array_equal(before["references"], after["references"])
-    np.testing.assert_allclose(before["target"], [[-0.9, 1.7, 2.8], [1.1, 1.7, -3.2]])
-    np.testing.assert_allclose(after["target"], [[-2, 5, 1], [0, 5, -5]])
+    np.testing.assert_allclose(before["target"], [[-0.9, 1.8, 2.7], [1.1, 1.8, -3.3]])
+    np.testing.assert_allclose(after["target"], [[-2, 0, 6], [0, 0, 0]])
 
 
 def test_cli_skips_existing_ids_and_custom_frame_folders(dataset, monkeypatch, capsys):
@@ -345,7 +339,7 @@ def test_preparation_finds_player_zero_after_trimming_inactive_slots(dataset, en
     assert result["frames"] == 6
     assert result["skipped_sessions"] == []
     records = load_position_manifest(dataset.downloads)
-    np.testing.assert_allclose(records["a" * 24][0]["target"], [[-2, 5, 1], [0, 5, -5]])
+    np.testing.assert_allclose(records["a" * 24][0]["target"], [[-2, 0, 6], [0, 0, 0]])
 
 
 def test_duplicate_player_ids_within_active_slots_remain_ambiguous():
@@ -409,7 +403,7 @@ def test_preparation_skips_frames_without_an_identifiable_player(dataset, player
     records = load_position_manifest(dataset.downloads)
     assert len(records["a" * 24]) == 2
     assert len(records["b" * 24]) == 3
-    np.testing.assert_allclose(records["a" * 24][0]["target"], [[-1.9, 2.7, 3.8], [2.1, 2.7, -4.2]])
+    np.testing.assert_allclose(records["a" * 24][0]["target"], [[-1.9, 2.8, 3.7], [2.1, 2.8, -4.3]])
 
 
 @pytest.mark.parametrize("legacy", [
@@ -477,7 +471,7 @@ def test_missing_dependency_skips_session_and_prepares_later_sessions(dataset, m
     assert [session["id"] for session in result["sessions"]] == [dataset.folders[1].name]
     records = load_position_manifest(dataset.downloads)
     assert list(records) == [dataset.folders[1].name]
-    np.testing.assert_allclose(records[dataset.folders[1].name][1]["target"], [[-1.9, 2.7, 3.8], [2.1, 2.7, -4.2]])
+    np.testing.assert_allclose(records[dataset.folders[1].name][1]["target"], [[-1.9, 2.8, 3.7], [2.1, 2.8, -4.3]])
     assert dataset.folders[0].name in caplog.text
     assert missing_dependency in caplog.text
 
@@ -712,7 +706,7 @@ def test_one_command_downloads_extracts_and_prepares_before_annotation(downloada
     assert data.requests.count("racing-session/download/cleanup") == 2
     records = load_position_manifest(data.downloads)
     np.testing.assert_allclose(records["a" * 24][0]["references"], [[2, 3, 4], [-2, 3, -4]])
-    np.testing.assert_allclose(records["a" * 24][0]["target"], [[-1.9, 2.7, 3.8], [2.1, 2.7, -4.2]])
+    np.testing.assert_allclose(records["a" * 24][0]["target"], [[-1.9, 2.8, 3.7], [2.1, 2.8, -4.3]])
     for session_id, directory in zip(records, result["annotation_directories"]):
         folder = Path(directory)
         assert folder.is_dir()

@@ -497,8 +497,7 @@ def process_single_chunk(
 
         game = _resolve_game(None, telemetry_df.iloc[0].to_dict())
         processor = FeatureProcessor(telemetry_df)
-        processor.general_cleaning_for_analysis()
-        processed_df = processor.flip_y_z_features()
+        processed_df = processor.general_cleaning_for_analysis()
         processed_df = _clean_position_anomalies(
             processed_df,
             context=f"chunk {chunk_id}",

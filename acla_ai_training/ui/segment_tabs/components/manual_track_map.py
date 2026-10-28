@@ -12,16 +12,6 @@ from .opponent_interaction import (
 from .track_sections import add_track_section_trajectory, track_sections_available
 
 
-def _flip_y_z_coordinates(df):
-    flipped = df.copy(deep=False)
-    for y_col in [col for col in df.columns if isinstance(col, str) and col.endswith("_y")]:
-        z_col = f"{y_col[:-2]}_z"
-        if z_col in df.columns:
-            flipped[y_col] = df[z_col]
-            flipped[z_col] = df[y_col]
-    return flipped
-
-
 def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
     # --- Track Map Visualization ---
     track_position_mode = st.selectbox(
@@ -46,7 +36,7 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
         if has_player_pos or has_opponent_pos or has_expert_pos:
             # View controls
             st.caption("Axis Settings")
-            col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4, col_ctrl5 = st.columns(5)
+            col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns(4)
             with col_ctrl1:
                 invert_x = st.checkbox("Invert X", value=False, key="manual_invert_x")
             with col_ctrl2:
@@ -54,19 +44,6 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
             with col_ctrl3:
                 invert_z = st.checkbox("Invert Z", value=False, key="manual_invert_z")
             with col_ctrl4:
-                flip_y_z = st.checkbox(
-                    "Flip Y/Z",
-                    value=False,
-                    key="manual_flip_y_z",
-                    help="Swap Y and Z coordinates in the trajectory graph.",
-                    disabled=not any(
-                        isinstance(col, str)
-                        and col.endswith("_y")
-                        and f"{col[:-2]}_z" in df.columns
-                        for col in df.columns
-                    ),
-                )
-            with col_ctrl5:
                 show_sections = st.checkbox(
                     "Show Track Sections",
                     value=False,
@@ -88,13 +65,6 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                  map_plot_df = df.iloc[start_idx:safe_end_idx]
                  selected_time_idx = safe_end_idx - 1
                  position_rows = map_plot_df
-            if flip_y_z:
-                map_plot_df = _flip_y_z_coordinates(map_plot_df)
-                position_rows = (
-                    map_plot_df
-                    if not map_plot_df.empty
-                    else _flip_y_z_coordinates(position_rows)
-                )
             current_row = position_rows.iloc[-1]
             start_row = position_rows.iloc[0]
             interaction = render_opponent_interaction_panel(
@@ -386,14 +356,9 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                                     showlegend=False if target_slot is not None else True
                                 ))
 
-                overlay_interaction = interaction
-                if flip_y_z and interaction and isinstance(interaction.get("trace"), pd.DataFrame):
-                    overlay_interaction = dict(interaction)
-                    overlay_interaction["trace"] = _flip_y_z_coordinates(interaction["trace"])
-
                 add_interaction_overlay(
                     fig_map,
-                    overlay_interaction,
+                    interaction,
                     use_3d=use_3d,
                     has_z=use_3d,
                 )

@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 def local_targets(world_offsets, world_rotation):
     """Rotate ACC reference offsets into car-local right/forward/up coordinates.
 
-    Prepared ACC world coordinates are X/Z/Y relative to the raw Y-up SDK.
-    Heading, pitch, roll are ACC radians; body-to-world is Ry(-heading)
-    Rx(-pitch) Rz(-roll) in SDK axes. Row vectors multiply by that matrix
+    Telemetry and references already use corrected world XYZ with Z up.
+    Heading, pitch, roll are ACC radians; body-to-world is Rz(heading)
+    Rx(pitch) Ry(roll) in these axes. Row vectors multiply by that matrix
     to invert it. ACC local X points left, so negate it after rotation to
     produce right/forward/up rather than left/forward/up.
     Keep the subtraction and rotation in float64 until the targets are complete.
@@ -33,14 +33,14 @@ def local_targets(world_offsets, world_rotation):
         raise ValueError("World offsets must contain finite XYZ triples.")
     if rotation.shape != (3,) or not np.isfinite(rotation).all():
         raise ValueError("World rotation must be finite heading, pitch, roll in radians.")
-    ch, cp, cr = np.cos(-rotation)
-    sh, sp, sr = np.sin(-rotation)
-    yaw = np.array([[ch, 0, sh], [0, 1, 0], [-sh, 0, ch]])
+    ch, cp, cr = np.cos(rotation)
+    sh, sp, sr = np.sin(rotation)
+    yaw = np.array([[ch, -sh, 0], [sh, ch, 0], [0, 0, 1]])
     pitch = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
-    roll = np.array([[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]])
-    local = offsets[:, [0, 2, 1]] @ (yaw @ pitch @ roll)
+    roll = np.array([[cr, 0, sr], [0, 1, 0], [-sr, 0, cr]])
+    local = offsets @ (yaw @ pitch @ roll)
     local[:, 0] *= -1
-    return local[:, [0, 2, 1]].astype(np.float32)
+    return local.astype(np.float32)
 
 
 def _number(value, name):
@@ -119,9 +119,6 @@ def _prepare_session(extraction: dict) -> dict | None:
             driver_xyz = driver_position(row)
             if driver_xyz is None:
                 continue
-            if source == "acc":
-                # Align raw ACC coordinates with the reference/map axes.
-                driver_xyz[1], driver_xyz[2] = driver_xyz[2], driver_xyz[1]
             for field in ("Static_track", "Static_car_model"):
                 if not isinstance(row.get(field), str) or not row[field].strip():
                     raise ValueError(f"{field} is required to select an exact reference lap")
