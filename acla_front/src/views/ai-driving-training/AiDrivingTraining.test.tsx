@@ -32,6 +32,47 @@ beforeEach(() => {
 });
 afterEach(() => { delete window.virtualController; jest.restoreAllMocks(); jest.useRealTimers(); });
 
+it('enables a restored model with unchanged inputs even when its context keys were reordered', async () => {
+    const { observation } = trainingFixture(Date.now());
+    const checkpoint = { ...new DrivingPolicy(observation.context, observation.features.length).checkpoint(), steps: 10 };
+    const { game, car, map, classes } = checkpoint.context;
+    checkpoint.context = { classes, map, car, game };
+    localStorage.setItem('acla.self-driving.policy.v10', JSON.stringify(checkpoint));
+    mockInput = { observation };
+    render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    act(() => { jest.advanceTimersByTime(250); });
+    expect(screen.queryByText(/does not match|belongs to different inputs/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start training' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Run trained model' })).toBeEnabled();
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v10')!)).toEqual(checkpoint);
+});
+
+it('shows saved and live mismatch values and recovers without replacing the saved model', async () => {
+    const { observation } = trainingFixture(Date.now());
+    const checkpoint = { ...new DrivingPolicy(observation.context, observation.features.length).checkpoint(), steps: 10 };
+    localStorage.setItem('acla.self-driving.policy.v10', JSON.stringify(checkpoint));
+    mockInput = { observation: { ...observation, context: { game: 'iracing', car: 'MX5', map: 'spa', classes: ['track'] },
+        features: observation.features.slice(16) } };
+    render(<AiDrivingTraining onOpenLiveSession={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    act(() => { jest.advanceTimersByTime(250); });
+    const warning = screen.getByRole('alert');
+    expect(warning).toHaveTextContent('Game: saved “acc”; live “iracing”.');
+    expect(warning).toHaveTextContent('Car: saved “GT3”; live “MX5”.');
+    expect(warning).toHaveTextContent('Track: saved “monza”; live “spa”.');
+    expect(warning).toHaveTextContent('Segmentation labels (in channel order): saved ["road","car"]; live ["track"].');
+    expect(warning).toHaveTextContent(`Input count: saved ${observation.features.length}; live ${observation.features.length - 16}.`);
+    expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Run trained model' })).toBeDisabled();
+    mockInput = { observation };
+    act(() => { jest.advanceTimersByTime(250); });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start training' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Run trained model' })).toBeEnabled();
+    expect(JSON.parse(localStorage.getItem('acla.self-driving.policy.v10')!)).toEqual(checkpoint);
+});
+
 it('displays the complete action plan in one table and clears it on Stop', async () => {
     const { observation } = trainingFixture(Date.now());
     const checkpoint = { ...new DrivingPolicy(observation.context, observation.features.length).checkpoint(), steps: 10 };

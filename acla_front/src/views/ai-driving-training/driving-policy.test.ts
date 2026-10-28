@@ -2,6 +2,41 @@ import { DRIVING_PLAN_TIMES, DrivingPolicy } from './driving-policy';
 import { DrivingMemory, DRIVING_MEMORY_INPUTS } from './driving-memory';
 import { trainingFixture } from './training-fixtures';
 
+it('matches restored inputs regardless of checkpoint context key order', () => {
+    const { observation } = trainingFixture();
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
+    const { game, car, map, classes } = checkpoint.context;
+    checkpoint.context = { classes, map, car, game };
+    const restored = DrivingPolicy.restore(JSON.parse(JSON.stringify(checkpoint)));
+    expect(restored.matches(observation)).toBe(true);
+    expect(restored.checkpoint()).toEqual(checkpoint);
+});
+
+it('accepts changing live values with the same input layout', () => {
+    const { observation } = trainingFixture();
+    const policy = new DrivingPolicy(observation.context, observation.features.length);
+    expect(policy.matches({ ...observation, features: observation.features.map(() => 0.5),
+        session: 'another session', aggression: 100 })).toBe(true);
+});
+
+it.each(['game', 'car', 'map'] as const)('still rejects a different %s', (key) => {
+    const { observation } = trainingFixture();
+    const policy = new DrivingPolicy(observation.context, observation.features.length);
+    expect(policy.matches({ ...observation, context: { ...observation.context, [key]: 'different' } })).toBe(false);
+});
+
+it.each([{ classes: ['car', 'road'] }, { classes: ['road', 'grass'] }, { classes: ['road'] }])('still rejects different segmentation channels: $classes', ({ classes }) => {
+    const { observation } = trainingFixture();
+    const policy = new DrivingPolicy(observation.context, observation.features.length);
+    expect(policy.matches({ ...observation, context: { ...observation.context, classes } })).toBe(false);
+});
+
+it('still rejects a different input count', () => {
+    const { observation } = trainingFixture();
+    const policy = new DrivingPolicy(observation.context, observation.features.length);
+    expect(policy.matches({ ...observation, features: observation.features.slice(1) })).toBe(false);
+});
+
 it('returns one independently predicted action sequence from zero through three seconds', () => {
     const { observation } = trainingFixture();
     const features = new DrivingMemory().encode(observation);

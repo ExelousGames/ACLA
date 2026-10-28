@@ -59,7 +59,25 @@ export class DrivingPolicy {
     }
 
     matches(observation: DrivingObservation): boolean {
-        return observation.features.length === this.observationInputs && JSON.stringify(this.context) === JSON.stringify(observation.context);
+        return this.inputMismatches(observation).length === 0;
+    }
+
+    inputMismatches(observation: DrivingObservation): string[] {
+        const differences: string[] = [];
+        // Compare values, not JSON object key order. Class order defines feature channels.
+        for (const [key, label] of [['game', 'Game'], ['car', 'Car'], ['map', 'Track']] as const) {
+            if (this.context[key] !== observation.context[key]) {
+                differences.push(`${label}: saved “${this.context[key]}”; live “${observation.context[key]}”.`);
+            }
+        }
+        if (this.context.classes.length !== observation.context.classes.length
+            || this.context.classes.some((name, i) => name !== observation.context.classes[i])) {
+            differences.push(`Segmentation labels (in channel order): saved ${JSON.stringify(this.context.classes)}; live ${JSON.stringify(observation.context.classes)}.`);
+        }
+        if (this.observationInputs !== observation.features.length) {
+            differences.push(`Input count: saved ${this.observationInputs}; live ${observation.features.length}.`);
+        }
+        return differences;
     }
 
     decide(features: number[], explore: boolean, shifts: ShiftAvailability = { up: true, down: true }): PolicyDecision {

@@ -265,7 +265,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     };
     const output: ControllerAction = running ? state.action : testAction;
     const observation = inputs.observation;
-    const mismatched = observation && policy.current && !policy.current.matches(observation);
+    const inputMismatches = observation ? policy.current?.inputMismatches(observation) ?? [] : [];
+    const mismatched = inputMismatches.length > 0;
 
     return <section className="driving-training" aria-label="AI Self-Driving Training">
         <header className="driving-training-header">
@@ -317,7 +318,11 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <p className="driving-note">Disable automatic gears in the simulator and bind both shift buttons before training. The model learns gear choices from driving rewards. Shifts use 0.1-second presses with at least 0.5 seconds between shifts. Downshifts are allowed in every gear, including neutral and reverse.</p>
                 <div className="driving-metrics"><div><strong>{modelSteps ?? 0}</strong><span>Learning steps</span></div>
                     <div><strong>{state.episodeReward.toFixed(2)}</strong><span>Episode reward</span></div></div>
-                {mismatched && <p className="driving-error">This model belongs to different inputs. Create a new model or import a matching checkpoint.</p>}
+                {mismatched && <div className="driving-error" role="alert">
+                    <p>The saved model does not match the current live session.</p>
+                    <ul>{inputMismatches.map((difference) => <li key={difference}>{difference}</li>)}</ul>
+                    <p>Use matching live inputs, import a matching checkpoint, or export this model before creating a new one.</p>
+                </div>}
                 <div className="driving-buttons">
                     <button className="driving-primary" disabled={!connected || !observation || aiActive || Boolean(mismatched) || Boolean(testTimer.current)} onClick={() => start(true)}>Start training</button>
                     <button disabled={!connected || !observation || aiActive || !modelSteps || Boolean(mismatched) || Boolean(testTimer.current)} onClick={() => start(false)}>Run trained model</button>
