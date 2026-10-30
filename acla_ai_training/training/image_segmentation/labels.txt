@@ -33,3 +33,5 @@ back mirror
 pit lane
 pit lane left
 pit lane right
+destoryable
+wrong way sign

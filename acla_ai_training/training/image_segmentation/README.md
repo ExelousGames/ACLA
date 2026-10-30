@@ -73,6 +73,12 @@ docker exec -it acla_ai_training_c python3 /app/scripts/open_labelme.py \
 On a local desktop, run
 `python scripts/open_labelme.py [path/to/images]` from `acla_ai_training/`.
 
+To review only annotated images, enable **View > Show Annotated Images Only**, or
+start with `python scripts/open_labelme.py path/to/images --annotated-only`.
+The file list and next/previous navigation include only images with saved Labelme
+`.json` files, including saved empty annotations. Position `.position.json` files
+do not count. Disable the toggle to show all images again.
+
 In Labelme, press **Ctrl+N** (Create Polygons), click along the region boundary,
 and double-click to finish. Choose a label, then **Ctrl+S** to save. Use **D** / **A**
 for the next / previous image. JSON annotations are saved beside the images.
@@ -135,7 +141,7 @@ are rounded locally, with multiple vertices along the inner and outer edges to
 preserve the stroke width. Redundant vertices are removed to keep the outline
 easy to edit. Move the generated vertices independently with
 **Edit Shapes**. Set the total width with **Edit > Set Polyline Polygon Width…**
-(default **15 image pixels**, independent of zoom). Rounding is limited by the
+(default **12 image pixels**, independent of zoom). Rounding is limited by the
 adjacent segment lengths, and the polygon is clipped to the image edges.
 Consecutive duplicate points are ignored. Choose the label as usual; the saved
 annotation is a polygon.

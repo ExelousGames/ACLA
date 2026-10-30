@@ -26,6 +26,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     annotate.add_argument("--labels", type=Path, default=DEFAULT_LABELS)
     annotate.add_argument(
+        "--annotated-only", action="store_true",
+        help="Show only images with saved Labelme JSON annotations.",
+    )
+    annotate.add_argument(
         "--browser", action="store_true",
         help="Serve Labelme through noVNC on port 6080 (automatic on Linux without a display).",
     )
@@ -151,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
             "--labels", str(args.labels.resolve()),
             "--config", str(PACKAGE_DIR / "labelme.yaml"),
         ]
+        if args.annotated_only:
+            command.append("--annotated-only")
         try:
             stop_existing_labelme()
         except (OSError, RuntimeError) as exc:

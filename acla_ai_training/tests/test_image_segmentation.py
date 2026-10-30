@@ -138,7 +138,8 @@ def labelme_shutdown(monkeypatch):
     return stop
 
 
-def test_desktop_launcher_uses_same_python_and_shared_labels(tmp_path, monkeypatch, labelme_shutdown):
+@pytest.mark.parametrize("annotated_only", [False, True])
+def test_desktop_launcher_uses_same_python_and_shared_labels(tmp_path, monkeypatch, labelme_shutdown, annotated_only):
     from training.image_segmentation import __main__ as cli
 
     def start(command):
@@ -150,8 +151,9 @@ def test_desktop_launcher_uses_same_python_and_shared_labels(tmp_path, monkeypat
     monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(cli.subprocess, "call", launch)
 
-    assert main(["annotate", str(tmp_path)]) == 0
+    assert main(["annotate", str(tmp_path), *(["--annotated-only"] if annotated_only else [])]) == 0
     command = launch.call_args.args[0]
+    assert ("--annotated-only" in command) is annotated_only
     assert command[:3] == [sys.executable, str(PACKAGE_DIR / "labelme_editor.py"), str(tmp_path)]
     assert command[command.index("--labels") + 1] == str(DEFAULT_LABELS)
     config = yaml.safe_load(Path(command[command.index("--config") + 1]).read_text())
@@ -160,7 +162,8 @@ def test_desktop_launcher_uses_same_python_and_shared_labels(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("with_images", [False, True])
-def test_headless_launcher_opens_browser_with_optional_images(tmp_path, monkeypatch, with_images, labelme_shutdown):
+@pytest.mark.parametrize("annotated_only", [False, True])
+def test_headless_launcher_opens_browser_with_optional_images(tmp_path, monkeypatch, with_images, labelme_shutdown, annotated_only):
     from training.image_segmentation import __main__ as cli
     from training.image_segmentation import browser
 
@@ -176,8 +179,9 @@ def test_headless_launcher_opens_browser_with_optional_images(tmp_path, monkeypa
     monkeypatch.setattr(browser, "run_browser", launch)
     images = [str(tmp_path)] if with_images else []
 
-    assert main(["annotate", *images]) == 7
+    assert main(["annotate", *images, *(["--annotated-only"] if annotated_only else [])]) == 7
     command = launch.call_args.args[0]
+    assert ("--annotated-only" in command) is annotated_only
     assert command[:2] == [sys.executable, str(PACKAGE_DIR / "labelme_editor.py")]
     assert command[2:2 + len(images)] == images
     assert command[2 + len(images)] == "--labels"
@@ -217,15 +221,20 @@ def test_failed_shutdown_does_not_launch_a_replacement(monkeypatch, labelme_shut
 
 
 @pytest.mark.parametrize("plugin_dir", ["/fake/cv2/qt/plugins", "/custom/qt/plugins"])
-def test_labelme_child_removes_only_opencv_qt_paths(monkeypatch, plugin_dir):
+@pytest.mark.parametrize("annotated_only", [False, True])
+def test_labelme_child_removes_only_opencv_qt_paths(monkeypatch, plugin_dir, annotated_only):
     from training.image_segmentation import labelme_editor
 
     monkeypatch.setitem(sys.modules, "cv2", SimpleNamespace(__file__="/fake/cv2/__init__.py"))
     monkeypatch.setattr(labelme_editor.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setenv("QT_QPA_PLATFORM_PLUGIN_PATH", plugin_dir)
     monkeypatch.setenv("QT_QPA_FONTDIR", "/fake/cv2/qt/fonts")
+    monkeypatch.setattr(sys, "argv", ["labelme_editor.py", "/images", *(["--annotated-only"] if annotated_only else [])])
+    create_window = MagicMock(wraps=labelme_editor.create_main_window)
+    monkeypatch.setattr(labelme_editor, "create_main_window", create_window)
 
     def start_labelme(*args, **kwargs):
+        assert sys.argv == ["labelme_editor.py", "/images"]
         assert "QT_QPA_FONTDIR" not in labelme_editor.os.environ
         expected = plugin_dir if plugin_dir.startswith("/custom") else None
         assert labelme_editor.os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH") == expected
@@ -234,6 +243,7 @@ def test_labelme_child_removes_only_opencv_qt_paths(monkeypatch, plugin_dir):
     labelme_cli = SimpleNamespace(MainWindow=object, main=launch)
     monkeypatch.setitem(sys.modules, "labelme", SimpleNamespace(__main__=labelme_cli))
     labelme_editor.main()
+    create_window.assert_called_once_with(object, annotated_only=annotated_only)
     launch.assert_called_once_with()
 
 

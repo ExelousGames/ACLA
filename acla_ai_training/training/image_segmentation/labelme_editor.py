@@ -1,5 +1,6 @@
 """Launch Labelme maximized without OpenCV's incompatible bundled Qt plugins."""
 
+import argparse
 import importlib.util
 import math
 import os
@@ -64,10 +65,10 @@ def polyline_polygon_points(points: list[tuple[float, float]], width: float) -> 
     return polygon
 
 
-def create_main_window(base_window):
+def create_main_window(base_window, *, annotated_only=False):
     class PolylinePolygonMainWindow(base_window):
         _polygon_from_polyline = False
-        _polygon_width = 15.0
+        _polygon_width = 12.0
         _backend_annotator = None
         _yolo26x_annotator = None
 
@@ -86,7 +87,45 @@ def create_main_window(base_window):
             self._position_window.resize(560, 440)
             self._position_window.hide()
             menus.view.addAction(self._position_window.toggleViewAction())
+            self._annotated_only_action = QtWidgets.QAction("Show Annotated Images Only", self)
+            self._annotated_only_action.setCheckable(True)
+            self._annotated_only_action.setChecked(annotated_only)
+            self._annotated_only_action.setToolTip("Show images with saved Labelme JSON annotations")
+            self._annotated_only_action.triggered.connect(self._set_annotated_only)
+            menus.view.addAction(self._annotated_only_action)
             return menus
+
+        def _import_images_from_dir(self, root_dir, pattern=None):
+            from PyQt5 import QtCore
+
+            super()._import_images_from_dir(root_dir, pattern)
+            # A successful import clears the current image path. A cancelled
+            # unsaved-changes prompt must leave the existing list untouched.
+            if not root_dir or self._image_path is not None or not self._annotated_only_action.isChecked():
+                return
+            files = self._docks.file_list
+            for row in range(files.count() - 1, -1, -1):
+                if files.item(row).checkState() != QtCore.Qt.Checked:
+                    files.takeItem(row)
+            if not files.count():
+                self.mark_clean()
+                self.close_file()
+                self.show_status_message("No images with saved Labelme annotations match this folder/search.", 10000)
+
+        def _set_annotated_only(self, enabled):
+            if not self._prev_opened_dir:
+                return
+            if not self._can_continue():
+                self._annotated_only_action.setChecked(not enabled)
+                return
+            current_image = self._image_path
+            # The save/discard decision above also applies to rebuilding the list.
+            self.mark_clean()
+            self._import_images_from_dir(self._prev_opened_dir, self._docks.file_search.text())
+            if current_image in self.image_list:
+                self._load_file(current_image)
+            else:
+                self._open_next_image()
 
         def _load_file(self, image_or_label_path):
             super()._load_file(image_or_label_path)
@@ -289,6 +328,10 @@ def create_main_window(base_window):
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--annotated-only", action="store_true")
+    args, labelme_args = parser.parse_known_args()
+    sys.argv[1:] = labelme_args
     if importlib.util.find_spec("cv2") is not None:
         # imgviz imports OpenCV while Labelme starts. Import it first so its
         # environment changes can be cleared before PyQt5 creates the window.
@@ -301,7 +344,7 @@ def main() -> None:
                 del os.environ[name]
     from labelme import __main__ as labelme_cli
 
-    labelme_cli.MainWindow = create_main_window(labelme_cli.MainWindow)
+    labelme_cli.MainWindow = create_main_window(labelme_cli.MainWindow, annotated_only=args.annotated_only)
     labelme_cli.main()
 
 

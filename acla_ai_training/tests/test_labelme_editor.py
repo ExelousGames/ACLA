@@ -156,6 +156,96 @@ def finish_polyline(window, points):
     return canvas
 
 
+def test_annotated_filter_controls_nested_file_list_navigation_and_search(editor):
+    window, annotation = editor
+    window._switch_canvas_mode(edit=False, create_mode="polyline_polygon")
+    finish_polyline(window, [(10, 20), (30, 20)])
+    saved = annotation.read_bytes()
+    nested = annotation.parent / "session"
+    nested.mkdir()
+    annotated = nested / "frame_2.png"
+    unannotated = nested / "frame_3.png"
+    for image in (annotated, unannotated):
+        window._image.save(str(image))
+    data = json.loads(saved)
+    data["imagePath"] = annotated.name
+    annotated.with_suffix(".json").write_text(json.dumps(data))
+    unannotated.with_suffix(".position.json").write_text("{}")
+    window._load_from_file_or_dir(str(annotation.parent))
+    all_images = window.image_list
+    assert len(all_images) == 3
+    window._load_file(str(unannotated))
+
+    action = window._annotated_only_action
+    assert action in window._menus.view.actions()
+    action.trigger()
+    assert window.image_list == [str(annotation.with_suffix(".png")), str(annotated)]
+    assert window._image_path == window.image_list[0]
+    window._open_next_image()
+    assert window._image_path == str(annotated)
+    window._open_next_image()
+    assert window._image_path == str(annotated)
+    window._open_prev_image()
+    assert window._image_path == str(annotation.with_suffix(".png"))
+
+    window._docks.file_search.setText("frame_3")
+    assert window.image_list == []
+    assert window._image_path is None
+    assert not window._canvas_widgets.canvas.isEnabled()
+    window._docks.file_search.clear()
+    window._open_next_image()
+    window._open_next_image()
+    action.trigger()
+    assert window.image_list == all_images
+    assert window._image_path == str(annotated)
+    assert annotation.read_bytes() == saved
+    assert not unannotated.with_suffix(".json").exists()
+
+
+@pytest.mark.parametrize("open_later", [False, True])
+def test_annotated_only_startup_includes_saved_empty_annotations(editor, open_later):
+    from labelme.app import MainWindow
+
+    original, annotation = editor
+    assert original.save_labels(str(annotation))
+    original._image.save(str(annotation.with_name("unannotated.png")))
+    window = create_main_window(MainWindow, annotated_only=True)(
+        config_file=PACKAGE_DIR / "labelme.yaml",
+        file_or_dir=None if open_later else str(annotation.parent),
+        config_overrides={"labels": ["track"]},
+    )
+    try:
+        if open_later:
+            window._load_from_file_or_dir(str(annotation.parent))
+        assert window._annotated_only_action.isChecked()
+        assert window.image_list == [str(annotation.with_suffix(".png"))]
+        assert window._image_path == window.image_list[0]
+        assert window._canvas_widgets.canvas.shapes == []
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_cancelling_annotated_filter_preserves_unsaved_work(editor, monkeypatch):
+    from PyQt5 import QtWidgets
+
+    window, _ = editor
+    window._actions.save_auto.setChecked(False)
+    window._switch_canvas_mode(edit=False, create_mode="polyline_polygon")
+    finish_polyline(window, [(10, 20), (30, 20)])
+    current_image, images = window._image_path, window.image_list
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", lambda *args: QtWidgets.QMessageBox.Cancel)
+
+    window._annotated_only_action.trigger()
+
+    assert not window._annotated_only_action.isChecked()
+    assert window._image_path == current_image
+    assert window.image_list == images
+    assert window._is_changed
+    assert len(window._canvas_widgets.canvas.shapes) == 1
+    window.mark_clean()
+
+
 def test_polygon_tool_saves_polygon_and_keeps_undo_history(editor):
     window, annotation = editor
     action = dict(window._actions.draw)["polyline_polygon"]

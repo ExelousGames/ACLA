@@ -1,6 +1,7 @@
 """Restart Labelme; headless Linux containers serve the editor at localhost:6080.
 
-Usage: python scripts/open_labelme.py [path/to/images] [--labels path/to/labels.txt] [--browser]
+Usage: python scripts/open_labelme.py [path/to/images] [--labels path/to/labels.txt] [--browser] [--annotated-only]
+Use --annotated-only or View > Show Annotated Images Only to review saved annotations.
 Click Custom Annotate to add editable polygons from the newest backend model.
 Click YOLO26x Annotate to add predicted polygon regions labeled "other".
 Relabel those regions as needed using Edit Label before training.
