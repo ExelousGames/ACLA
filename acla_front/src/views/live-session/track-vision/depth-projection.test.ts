@@ -28,7 +28,7 @@ it('never blends other surfaces into an object at a depth discontinuity', () => 
     const source = frame();
     const depth = source.detections.depth!;
     if (depth.task !== 'depth') throw new Error('Expected depth');
-    depth.values.forEach((_, i) => { depth.values[i] = i % 8 < 4 ? 10 : 80; });
+    depth.values!.forEach((_, i) => { depth.values![i] = i % 8 < 4 ? 10 : 80; });
     const lift = createDepthProjection(source)!;
     expect(lift(0.499, 0.5, (u) => u < 0.5)!.y).toBeCloseTo(10);
     expect(lift(0.501, 0.5, (u) => u > 0.5)!.y).toBeCloseTo(80);

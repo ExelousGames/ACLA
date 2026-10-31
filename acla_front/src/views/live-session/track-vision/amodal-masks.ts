@@ -30,10 +30,10 @@ export function predictAmodalMasks(frame: TrackVisionFrame, minimumConfidence = 
         && (y + 0.5) / height * VISION_INPUT_SIZE < box.padY + box.resizedHeight;
     const observed = new Float32Array(size);
     const validDepth = depth?.task === 'depth' && Number.isInteger(depth.width) && Number.isInteger(depth.height)
-        && depth.width > 0 && depth.height > 0 && depth.values.length === depth.width * depth.height;
+        && depth.width > 0 && depth.height > 0 && depth.values?.length === depth.width * depth.height;
     if (validDepth) for (let i = 0; i < size; i++) {
         const x = i % width, y = Math.floor(i / width);
-        const value = depth.values[Math.floor((y + 0.5) / height * depth.height) * depth.width
+        const value = depth.values![Math.floor((y + 0.5) / height * depth.height) * depth.width
             + Math.floor((x + 0.5) / width * depth.width)];
         if (inCapture(x, y) && Number.isFinite(value) && value > 0 && value <= 200) observed[i] = value;
     }

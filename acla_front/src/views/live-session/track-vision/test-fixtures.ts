@@ -1,5 +1,5 @@
 import { VISION_INPUT_SIZE } from './vision-config';
-import type { CameraParameters, SegmentResult, TrackVisionFrame } from './track-vision-types';
+import type { CameraParameters, SegmentResult, TrackVisionFrame, VisionResult, DepthResult } from './track-vision-types';
 import { createCameraProjection, DEFAULT_CAMERA } from './camera-projection';
 import { letterbox } from './yolo-segmentation';
 
@@ -18,7 +18,8 @@ export function vision(capturedAt: number, options: {
     maskSize?: number;
     road?: (x: number, y: number) => boolean;
     classNames?: string[];
-} = {}): TrackVisionFrame {
+} = {}): TrackVisionFrame & { detections: Partial<Record<'segment' | 'depth',
+    (SegmentResult | (DepthResult & { values: Float32Array })) & Pick<VisionResult, 'inferenceMs' | 'classNames'>>> } {
     const { width = 1600, height = 900, corner = 'left', player = 'inside', opponent = 'outside', classNames = ['track', 'car'], maskSize: size = 320 } = options;
     const calibration = { ...DEFAULT_CAMERA, ...options.camera, imageWidth: width, imageHeight: height };
     const projection = createCameraProjection(calibration);

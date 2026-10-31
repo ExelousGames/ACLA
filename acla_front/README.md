@@ -42,7 +42,7 @@ car positions expire after two seconds without an update.
 The sidebar's **AI Self-Driving Training** page trains a local, mixed-action
 actor–critic neural policy against the running simulator. Start live telemetry,
 add **Live Map** with a matching reference lap, and add **Track Vision** with
-position and segmentation models and screen capture enabled. The training page
+the position model and screen capture enabled. The training page
 reports any missing inputs. Live Session stays mounted when switching tabs.
 
 Track Vision supports temporal GRU position exports: it reads the model's saved
@@ -110,7 +110,7 @@ No extra Python package is needed for vJoy: the bridge loads the installed SDK D
 matching the Python architecture from `Program Files\vJoy\x64` (or `x86`). For a
 custom installation, set `ACLA_VJOY_DLL` to the absolute `vJoyInterface.dll` path
 before launching the app. Missing drivers/axes, busy devices, and rejected writes
-are reported as errors. The watchdog and disconnect reset pedals to zero and
+are reported as errors. Disconnect and bridge failures reset pedals to zero and
 steering to center, and release both shift buttons before relinquishing the device.
 
 ### Shared human / AI control
@@ -169,7 +169,7 @@ Calibration tests (only while stopped) ─────────────�
 Each handoff revokes the old lease, drops its queued commands, and releases the
 outgoing controls before writing the new driver's action. Stop revokes ownership
 immediately and queues neutral after any in-flight write, so a late acknowledgement
-cannot restart driving. The Electron/Python bridge retains its independent watchdog.
+cannot restart driving. The Electron/Python bridge releases controls on disconnect or failure.
 `DrivingTrainingLoop` schedules the active source and keeps learning separate from
 output ownership. Human control updates on the control clock even between camera
 frames. Training samples acknowledged
@@ -178,8 +178,7 @@ human actions supervise the existing actor through behavior cloning. Handover
 discards the pending transition and waits for a fresh observation before learning
 or resuming AI output, avoiding mixed-driver reward attribution. Human controller
 state and driver identity are **not added to model inputs**; the existing telemetry
-controls still describe what the simulator received. Version-4 checkpoints remain
-compatible. Evaluation does not update weights from either source.
+controls still describe what the simulator received. Evaluation does not update weights from either source.
 
 Disconnecting any mapped device while takeover is enabled stops the session,
 even if AI currently owns the controls. Telemetry/capture loss while AI is driving
@@ -195,7 +194,8 @@ during either human or AI driving.
 
 Once the simulator responds to the virtual wheel, start a
 practice session with manual gears configured and both shift buttons bound,
-position the car near the reference line, then select **Start training**. The policy
+position the car near the reference line, and choose **New model** to select a save
+location (or **Open model** to resume a file). Then select **Start training**. The policy
 controls throttle, brake, steering and the choice to hold gear, shift up or shift
 down. Repositioning and restarting laps are not automated.
 **Run trained model** uses deterministic inference without updating weights.
@@ -209,18 +209,127 @@ Button releases continue even while waiting for a new camera frame.
 
 The observation includes car-local velocity XYZ (m/s), speed (km/h), game/car/map
 category encodings, cyclic normalized lap position,
-car-local rotation rates XYZ (pitch/yaw/roll in rad/s, normalized by π and clamped to ±1), current
-steering/pedals, current gear, engine RPM, the position model's reference XYZ delta (m), and a 4×4 pooled
-segmentation mask per class. Heading, pitch and roll are retained solely for the
-instability reward and are not policy features. Telemetry is paired with the image before inference;
-stale or mismatched sessions are rejected. Policies have a 32-unit tanh hidden
-layer, a three-dimensional Gaussian actor, a three-way categorical shifting head
-and a TD(0) value head. A speed bonus multiplies forward lap progress (capped at
-0.02 per observation) by speed in km/h and `exp(-referenceDistance / 3)`, so
-covering the same section faster earns more reward. No forward progress means no
-speed bonus. Positive progress close to the reference also earns reward;
-excessive yaw/attitude changes, pedal overlap, distance
-from the line and standing still incur penalties. New policies are untrained;
+yaw rate (rad/s, normalized by π and clamped to ±1), current
+steering/pedals, current gear, engine RPM, the position model's reference XYZ delta (m),
+and a **768 × 768 RGB camera image** from the same Track Vision capture.
+The camera is the only visual input: segmentation labels, depth grids, reconstructed
+track ribbons and traffic boxes are not policy inputs or checkpoint matching keys.
+Camera/position observations remain available if the segmentation or depth models are
+missing or fail; the driving page does not request CPU depth downloads.
+The camera is copied before asynchronous inference or overlays. A learned CNN reads
+the full RGB frame directly: 8 × 8 convolution/stride 8 with 8 channels, 4 × 4
+convolution/stride 4 with 16 channels, then 3 × 3 convolution/stride 3 with 16 channels.
+Each layer applies leaky ReLU (negative slope 0.01). The resulting 8 × 8 × 16 feature
+map supplies 1,024 learned visual features, without averaging RGB cells beforehand.
+A 128-unit LSTM reads these features and telemetry in chronological order, from the
+oldest available history frame through the current observation. Input, forget,
+candidate and output gates maintain hidden and cell states within that sequence.
+Actor–critic, human demonstrations and delayed action-plan training all backpropagate
+through the complete sequence, updating convolution filters/biases as well as LSTM
+input weights, recurrent weights and gate biases. Convolution gradients accumulate
+across all camera timesteps before updating the shared filters.
+CNN and LSTM inference, learning-gradient calculations, backpropagation and weight
+updates run on a hardware WebGPU device. The CPU sends demonstration/plan targets or
+reward, elapsed time and the sampled action. The GPU calculates target transforms,
+masked shift probabilities, the TD advantage and clipped gradients without intermediate
+readbacks. Weights, activations and training predictions stay on the GPU; only control
+decisions read the small action/value output. Each training tick waits once for GPU
+completion, without copying results, to keep queued work bounded during human driving.
+Repeated images share convolution activations within a decision;
+each later decision re-encodes images with the current learned weights. Pending
+decisions retain their own activations until training and release.
+Saving the model reads the current trained weights back after the entire training tick.
+Training and evaluation require GPU acceleration and report an error if unavailable;
+the CPU inference/training implementation has been removed. Human driving remains
+available without WebGPU. Run `npx electron scripts/check-driving-gpu.cjs` for real-GPU
+gradient checks using finite differences, readback checks and a full training-tick
+benchmark, without connecting to simulator controls.
+
+New models receive up to five seconds of observations, including game/car/map, telemetry,
+controls, reference targets and full-resolution camera frames, in 17 elapsed-time bins
+of 300 ms (the oldest bin spans the final 200 ms), using the newest observation in each
+bin, followed by the current observation. Each history slot has presence and
+age inputs; missing bins are skipped when assembling the LSTM sequence. Raw RGB bytes
+are stored separately from scalar telemetry and shared across pending samples. The same
+learned CNN processes current and historical frames. Every decision starts with zero
+recurrent state. Saved configurations declare the history features.
+History resets on start/stop, human/AI handover, invalid inputs, session/reference/context
+changes, backwards timestamps and gaps over 1.5 seconds. The observation panel shows the
+768 × 768 camera resolution. Earlier pooled-image LSTM checkpoints and configurations
+are incompatible with the CNN architecture. Create a new CNN–LSTM model and retrain
+from scratch; existing files are not automatically migrated.
+Heading, pitch and roll angles are not required for training or used as policy features.
+Telemetry is paired with the image before inference;
+stale or mismatched sessions are rejected. New policies have a 128-unit LSTM,
+a three-dimensional Gaussian actor, a three-way categorical shifting head
+and a TD(0) value head. **Driving aggression** shapes the reference lap's speed goals:
+50 follows the reference. Lower settings spread the slower-speed area outward with
+earlier deceleration and later acceleration, lowering targets through the section.
+Higher settings condense that area with later deceleration and earlier acceleration,
+raising targets through the section. The shift grows linearly
+to 20 raw coordinate units along the reference at 0 and 100. Brake application or
+throttle lift anchors deceleration; throttle pickup anchors acceleration, including
+pickup during trail braking. Brake release alone does not mean acceleration.
+The speed profile is interpolated between the shifted pedal events, wrapping at
+start/finish. Each shift is limited to a quarter of the nearest event spacing so
+events cannot cross. Cautious targets never exceed the unshifted reference speed;
+aggressive targets never fall below it, including uneven speeds within a pedal phase.
+A lap with no pedal changes keeps its original speed profile.
+The selected lap must contain raw XYZ coordinates, `expert_optimal_speed` (km/h),
+`expert_optimal_throttle` and `expert_optimal_brake` (both between 0 and 1).
+Aggression, reference speed and target speed are included in observations and memory.
+The acceleration/deceleration reward credits measured speed changes toward the goal
+on every fresh forward-driving transition, including held pedals. It uses one fixed
+goal at the destination position for both speed readings:
+`gapClosed = abs(previousSpeed - targetSpeed) - abs(currentSpeed - targetSpeed)`.
+This rewards useful acceleration or braking even far from the goal. Constant speed
+earns zero, including when already close to the goal or when the target itself moves
+toward the car. Moving away is penalized, and overshooting reduces credit.
+The correction rate uses elapsed telemetry time, not camera processing time:
+`correction = clamp(gapClosed / (3.6 × telemetrySeconds × accelerationTolerance), -1, 1)`.
+With default weights, the reward is
+`100 × forwardProgress × exp(-referenceDistance / 3) × correction`.
+`accelerationTolerance` defaults to 3 m/s². The legacy `speedTolerance` setting remains
+in model JSON for compatibility and is no longer used to score speed proximity.
+Forward progress is capped at 0.02 per observation; stationary or reverse driving
+earns no timing bonus. Both ends of a transition use the aggression that produced
+the action, even if the slider changes before scoring. There is no separate raw-speed
+or pedal-matching reward. The previous speed-window and pedal-change-gated reward
+are removed. Model JSON retains the `pedal-event-speed-profile` encoding, so existing
+models with this configuration can continue training under the new reward. The line reward is
+`lineWeight × forwardProgress × (2 / (1 + (smoothedDistance / lineDistanceTolerance)²) - 1)`.
+Distance uses an exponential moving average with an elapsed-time coefficient
+`1 - exp(-elapsedMs / lineSmoothingMs)`, seeded from the first observation.
+The defaults are a 500 ms time constant and a tolerance of 10 source coordinate units,
+where line reward is zero. The signed proximity factor is positive inside this tolerance
+and negative outside it, approaching -1 far from the line. This gives a continuous
+close-to-far gradient that tolerates movement in the position estimate while penalizing
+forward driving far from the line. Standing still or reversing earns zero line reward;
+the progress component penalizes standing still. Distance history resets at
+episode, control handover and input interruption boundaries. Model JSON now requires
+`lineDistanceTolerance` and `lineSmoothingMs` instead of `distancePenalty`,
+`distancePenaltyLimit`, `stationarySpeed` and `stationaryPenalty`.
+The normalized-position progress reward uses the signed lap-position change, corrected
+for start/finish crossings, divided by elapsed telemetry seconds. With
+`rate = abs(positionChange / telemetrySeconds)`, it adds
+`0.25 × lineWeight × cappedSignedProgress × rate / (rate + 0.01)`.
+Faster forward progress earns more and negative progress incurs a penalty. Zero speed
+or unchanged normalized position instead incurs `-0.25 × lineWeight × 0.01 × telemetrySeconds`,
+or -0.25 reward per second with default weights. This stationary penalty scales with
+elapsed telemetry time so its accumulated value is independent of sampling frequency.
+Positive rewards also require nonzero speed and a non-reverse
+gear. Signed progress uses the existing 0.02-per-observation cap. At 0.01 lap/second
+the rate factor is one half; it approaches 1 as the rate increases, keeping the
+bonus below 25% of the reward for covering the same distance exactly on the line.
+Distance weighting keeps accumulated reward independent of sampling frequency
+at a constant rate below the existing progress cap. Camera processing delays do
+not affect the measured rate. The reward appears separately under **Reward signal**
+and contributes to the total used for learning.
+Two or more yaw-rate sign reversals within one second incur an instability penalty using only measured yaw
+rotation rate (ACC local Z; iRacing local Y), ignoring rates within ±0.05 rad/s.
+It is `-0.4 × elapsedSeconds × (reversalsInLastSecond - 1)²` when there is more than one reversal;
+steady turns, isolated reversals, pitch and roll incur no instability penalty. Reversal history
+resets at training, control handover and input interruption boundaries. New policies are untrained;
 successful driving is an empirical training outcome, not a built-in capability.
 
 Only observations captured after a controller acknowledgement can train that
@@ -229,14 +338,48 @@ older than 500 ms, images older than 1.5 s, invalid inputs and large position ju
 pause learning and discard the pending transition while the loop waits and retries.
 AI controls stay neutral until fresh inputs match the model, original session and
 reference. Recovery starts a new learning transition without using the interrupted sample.
-A separate Python watchdog releases controls after 600 ms
-without a command and requires reconnection. **Stop** and Escape in the app release
-controls; Escape is not a global simulator hotkey. Checkpoints save locally every
-50 learning steps and at stop, and can be imported/exported as JSON. A checkpoint
-must match the current game, car, map and segmentation classes.
-Gear, RPM, all three local velocity components and all three rotation rates must be present in telemetry. Version 7
-checkpoints use car-local velocity instead of world-space velocity; older checkpoints require a new model.
-Previous local checkpoints are preserved separately when saving a version 7 model.
+Pauses between training commands keep the virtual controller connected with its
+last applied inputs. **Stop** and Escape in the app release
+controls; Escape is not a global simulator hotkey. Select **New model** to choose a
+model file with the desktop save dialog, or **Open model** to resume an existing file.
+The complete model saves back to that file every 50 learning steps by default and
+at stop. **Save model** saves immediately. The selected path is shown on the page. A model
+must match the current game, car, map and observation configuration.
+All three local velocity components and yaw rate must be present in telemetry. Gear and RPM do not gate observation validity, so stalled-engine readings can still be used. Missing or non-finite gear/RPM readings use neutral gear and zero RPM as policy inputs. Pitch and roll rates are not used or required.
+
+### Self-contained model JSON
+
+The settings above are defaults for a new model, defined in
+[`driving-model-defaults.json`](src/views/ai-driving-training/driving-model-defaults.json).
+Each model file contains `format`, `algorithm`, `configuration`, and `model`.
+The desktop dialogs label these files **Kestrel self driving model** and default to
+`kestrel-self-driving-model.json`. The `format` is `kestrel-self-driving-model`.
+`configuration` owns the ordered input features and their normalization/encodings,
+camera resolution, CNN layers/activation, history feature selection and timing, LSTM size,
+action plan times, shift timing, exploration and learning parameters, reward
+parameters, input freshness limits, checkpoint frequency, and aggression.
+`model` owns the game/car/track, per-timestep input count, learning step count,
+convolution weights (`cameraWeights`: layers, output-channel rows, then flattened
+kernel Y/X/input-channel weights and a final bias), LSTM gate weights (`lstmWeights`: input/forget/candidate/output rows, with input features,
+previous hidden values and bias columns) and the actor/critic output matrix (`outputWeights`). An untrained document has `model: null`.
+The format and algorithm names identify supported operations; there is no numeric model version.
+
+Training and evaluation reload and validate JSON from the selected file every time
+they start. Choose a file before starting training. Observations, memory,
+inference, learning and the UI use the saved configuration. Changing the defaults
+only affects newly created models. Files preserve configuration and weights together;
+configuration-only files can also be opened and saved before training. Writes are
+serialized and replace the file only after the complete new contents have been written.
+The app remembers the selected path while it is running; after restarting, use
+**Open model** to select it again. Model files require the desktop app.
+Validation checks supported encodings, finite values, resource limits, timing,
+feature names/order and the matrix dimensions derived from the configuration.
+Missing settings are rejected rather than filled with current defaults.
+
+Models are never saved in browser local storage. The old `acla.self-driving.model`,
+numbered checkpoints and separate aggression setting are deleted when the training
+page loads, without migration or backup. Select **New model** to choose a file and
+start again with the default configuration and fresh weights.
 
 ## Python environments for desktop scripts
 

@@ -1,0 +1,84 @@
+{
+  "network": {
+    "type": "cnn-lstm",
+    "cameraActivation": "leaky-relu-0.01",
+    "cameraLayers": [
+      { "kernelSize": 8, "stride": 8, "channels": 8 },
+      { "kernelSize": 4, "stride": 4, "channels": 16 },
+      { "kernelSize": 3, "stride": 3, "channels": 16 }
+    ],
+    "hiddenUnits": 128,
+    "activation": "tanh",
+    "initialActionBias": [-2, -3, 0, 1, 0, 0],
+    "initialOutputWeightScale": 0.01
+  },
+  "observation": {
+    "features": ["localVelocity", "speed", "game", "car", "map", "position", "controls", "referenceOffset", "gear", "rpm", "yawRate", "camera", "aggression", "referenceSpeed", "targetSpeed"],
+    "velocityFrame": "adapter-local-xyz",
+    "referenceFrame": "car-local-right-forward-up",
+    "rotation": "signed-game-yaw-radians-per-second",
+    "categoryEncoding": "fnv1a-bits",
+    "categoryBits": 16,
+    "velocityScale": 100,
+    "speedScale": 360,
+    "referenceOffsetScale": 20,
+    "gearScale": 8,
+    "rpmScale": 20000,
+    "yawRateScale": 3.141592653589793,
+    "cameraWidth": 768,
+    "cameraHeight": 768,
+    "cameraEncoding": "rgb-bytes-cnn"
+  },
+  "memory": {
+    "windowMs": 5000,
+    "intervalMs": 300,
+    "encoding": "newest-per-bin-presence-age",
+    "features": ["localVelocity", "speed", "game", "car", "map", "position", "controls", "referenceOffset", "gear", "rpm", "yawRate", "camera", "aggression", "referenceSpeed", "targetSpeed"]
+  },
+  "actions": {
+    "planTimesSeconds": [0, 0.5, 1, 1.5, 2, 2.5, 3],
+    "outputs": ["throttle-sigmoid", "brake-sigmoid", "steering-tanh", "hold-logit", "up-logit", "down-logit"],
+    "shiftPulseMs": 100,
+    "shiftCooldownMs": 500
+  },
+  "learning": {
+    "explorationSigma": 0.25,
+    "discount": 0.99,
+    "discountIntervalSeconds": 0.2,
+    "actorRate": 0.0003,
+    "criticRate": 0.001,
+    "demonstrationRate": 0.001,
+    "advantageLimit": 5,
+    "policyGradientLimit": 10,
+    "demonstrationGradientLimit": 5,
+    "actionEpsilon": 0.001,
+    "weightLimit": 5,
+    "planTargetToleranceMs": 250
+  },
+  "reward": {
+    "referenceTiming": "pedal-event-speed-profile",
+    "proximityScale": 3,
+    "progressLimit": 0.02,
+    "timingWeight": 100,
+    "speedTolerance": 20,
+    "accelerationTolerance": 3,
+    "lineWeight": 100,
+    "lineDistanceTolerance": 10,
+    "lineSmoothingMs": 500,
+    "yawWindowMs": 1000,
+    "yawDeadband": 0.05,
+    "yawPenalty": 0.4,
+    "totalLimit": 10,
+    "aggressionMaxRadius": 20
+  },
+  "runtime": {
+    "telemetryMaxAgeMs": 500,
+    "visionMaxAgeMs": 1500,
+    "maxTransitionSeconds": 1.5,
+    "maxPositionJump": 0.1,
+    "controlIntervalMs": 100,
+    "manualControlIntervalMs": 50,
+    "saveEverySteps": 50
+  },
+  "aggression": 50
+}

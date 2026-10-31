@@ -45,19 +45,79 @@ describe('ACC telemetry adapter', () => {
         expect(packet).toEqual(original);
     });
 
-    it.each(['velocity', 'local_velocity', 'g_force', 'local_angular_vel'])(
-        'swaps Y/Z in %s without negating components or changing orientation angles', (field) => {
+    it.each(['velocity', 'local_velocity', 'g_force'])(
+        'swaps Y/Z in %s without negating linear components', (field) => {
             const vector = Object.freeze({ x: -4, y: 2, z: -9 });
             const packet = capture({ Physics: { [field]: vector, heading: 0.5, pitch: -0.2, roll: 0.1 } });
             const expected = {
                 [`Physics_${field}_x`]: -4, [`Physics_${field}_y`]: -9, [`Physics_${field}_z`]: 2,
-                Physics_heading: 0.5, Physics_pitch: -0.2, Physics_roll: 0.1,
+                Physics_heading: -0.5, Physics_pitch: 0.2, Physics_roll: -0.1,
             };
             expect(adapter.adapt(packet)).toEqual(expected);
             expect(adapter.adapt(packet)).toEqual(expected);
             expect(vector).toEqual({ x: -4, y: 2, z: -9 });
         },
     );
+
+    it.each(['heading', 'pitch', 'roll'])('converts %s independently to right-hand rotation', (field) => {
+        for (const angle of [-Math.PI, -0.2, -0, 0, 0.3, Math.PI]) {
+            const physics = Object.freeze({ [field]: angle });
+            const packet = capture({ Physics: physics });
+            const expected = { [`Physics_${field}`]: angle === 0 ? 0 : -angle };
+            expect(adapter.adapt(packet)).toEqual(expected);
+            expect(adapter.adapt(packet)).toEqual(expected);
+            expect(physics[field]).toBe(angle);
+        }
+        expect(adapter.adapt(capture({ Physics: { speed_kmh: 10, [field]: null } })))
+            .toEqual({ Physics_speed_kmh: 10 });
+        for (const angle of [NaN, Infinity, -Infinity, '0', false]) {
+            expect(() => adapter.adapt(capture({ Physics: { [field]: angle } }))).toThrow(TypeError);
+        }
+    });
+
+    it.each([
+        ['zero', 0, 0, 0],
+        ['positive yaw', Math.PI / 2, 0, 0],
+        ['negative yaw', -Math.PI / 2, 0, 0],
+        ['positive pitch', 0, Math.PI / 2, 0],
+        ['negative pitch', 0, -Math.PI / 2, 0],
+        ['positive roll', 0, 0, Math.PI / 2],
+        ['negative roll', 0, 0, -Math.PI / 2],
+        ['combined', 1.2, -0.4, 0.7],
+        ['half turn', Math.PI, 0.3, -0.2],
+        ['wrapped heading', 5 * Math.PI / 2, -0.2, 0.4],
+    ])('keeps orientation consistent with converted local/world vectors: %s', (_name, heading, pitch, roll) => {
+        // Right-hand rotations applied to column vectors. ACC uses yaw Y / pitch X / roll Z;
+        // after P(x,y,z)=(x,z,y), the corresponding axes are yaw Z / pitch X / roll Y.
+        const rotateX = ([x, y, z], a) => [x, y * Math.cos(a) - z * Math.sin(a), y * Math.sin(a) + z * Math.cos(a)];
+        const rotateY = ([x, y, z], a) => [x * Math.cos(a) + z * Math.sin(a), y, -x * Math.sin(a) + z * Math.cos(a)];
+        const rotateZ = ([x, y, z], a) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a), z];
+        for (const local of [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-2, 3, 40]]) {
+            const world = rotateY(rotateX(rotateZ(local, roll), pitch), heading);
+            const row = adapter.adapt(capture({ Physics: {
+                heading, pitch, roll,
+                local_velocity: { x: local[0], y: local[1], z: local[2] },
+                velocity: { x: world[0], y: world[1], z: world[2] },
+            } }));
+            const convertedLocal = ['x', 'y', 'z'].map((axis) => row[`Physics_local_velocity_${axis}`]);
+            const rotated = rotateZ(rotateX(rotateY(convertedLocal, row.Physics_roll), row.Physics_pitch), row.Physics_heading);
+            ['x', 'y', 'z'].forEach((axis, index) => expect(rotated[index]).toBeCloseTo(row[`Physics_velocity_${axis}`], 10));
+        }
+    });
+
+    it.each([
+        [{ x: -4, y: 2, z: -9 }, { Physics_local_angular_vel_x: 4, Physics_local_angular_vel_y: 9, Physics_local_angular_vel_z: -2 }],
+        [{ x: -3 }, { Physics_local_angular_vel_x: 3 }],
+        [{ y: 2 }, { Physics_local_angular_vel_z: -2 }],
+        [{ z: -9 }, { Physics_local_angular_vel_y: 9 }],
+        [{ x: 0, y: -0, z: null }, { Physics_local_angular_vel_x: 0, Physics_local_angular_vel_z: 0 }],
+    ])('converts angular velocity as an axial vector: %o', (angular, expected) => {
+        const original = { ...angular };
+        const packet = capture({ Physics: { local_angular_vel: Object.freeze(angular) } });
+        expect(adapter.adapt(packet)).toEqual(expected);
+        expect(adapter.adapt(packet)).toEqual(expected);
+        expect(angular).toEqual(original);
+    });
 
     it.each(['tyre_contact_point', 'tyre_contact_normal', 'tyre_contact_heading'])(
         'swaps Y/Z in %s for every wheel', (field) => {

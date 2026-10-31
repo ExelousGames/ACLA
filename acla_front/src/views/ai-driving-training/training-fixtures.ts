@@ -1,19 +1,21 @@
 import type { TrackVisionDetection } from 'views/live-session/track-vision/track-vision-types';
+import { reconstructScene } from 'views/live-session/track-vision/reconstructed-scene';
+import { POLICY_CAMERA_HEIGHT, POLICY_CAMERA_INPUTS, POLICY_CAMERA_WIDTH } from 'views/live-session/track-vision/policy-camera';
 import { createLiveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import { readDrivingObservation } from './driving-observation';
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 
 export function referenceLapFixture(): TopLapReferenceEntry {
-    // A 400-coordinate-unit square, with a braking plateau and complementary throttle.
+    // A 400-coordinate-unit square, with a slow corner between deceleration and acceleration.
     const x = [0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1];
     return { game: 'acc', car: 'GT3', track: 'monza', avg_grip_int: 2, x,
         target_features: ['expert_optimal_player_pos_x', 'expert_optimal_player_pos_y', 'expert_optimal_player_pos_z',
-            'expert_optimal_throttle', 'expert_optimal_brake'],
+            'expert_optimal_throttle', 'expert_optimal_brake', 'expert_optimal_speed'],
         y: x.map((p) => {
             const brake = p <= 0.2 || p >= 0.6 ? 0 : p < 0.3 ? (p - 0.2) / 0.1 : p <= 0.5 ? 1 : (0.6 - p) / 0.1;
             return [p <= 0.25 ? p * 400 : p <= 0.5 ? 100 : p <= 0.75 ? (0.75 - p) * 400 : 0,
                 p <= 0.25 ? 0 : p <= 0.5 ? (p - 0.25) * 400 : p <= 0.75 ? 100 : (1 - p) * 400,
-                0, 1 - brake, brake];
+                0, 1 - brake, brake, 120 - 40 * brake];
         }) };
 }
 
@@ -29,9 +31,13 @@ export function trainingFixture(now = 1000, aggression = 50, referenceLap = refe
     } });
     const live = { ...store.getSnapshot(), receivedAt: now, currentTelemetry: { ...store.getSnapshot().currentTelemetry } };
     const vision: TrackVisionDetection = { capturedAt: now, width: 4, height: 4, telemetry: { ...live },
+        camera: { width: POLICY_CAMERA_WIDTH, height: POLICY_CAMERA_HEIGHT, rgb: new Uint8Array(POLICY_CAMERA_INPUTS).fill(128) },
         position: { coordinateFrame: 'car_local', referenceDelta: [2, 0, 0], normalizedPosition: 0.25, references: { reference: { x: 3, y: 0, z: 0 } }, inferenceMs: 1, referenceLap },
         detections: { segment: { task: 'segment', width: 4, height: 4, classNames: ['road', 'car'], inferenceMs: 1,
-            instances: [{ classId: 0, confidence: 1, box: [0, 0, 1, 1], mask: new Uint8Array(16).fill(1) }] } },
+            instances: [{ classId: 0, confidence: 1, box: [0, 0, 1, 1], mask: Uint8Array.from({ length: 16 }, (_, i) => Number(i % 4 === 1 || i % 4 === 2)) }] },
+            depth: { task: 'depth', width: 8, height: 8, scale: 'relative', classNames: [], inferenceMs: 1,
+                values: Float32Array.from({ length: 64 }, (_, i) => (i + 1) / 64) } },
         reconstruction: null, geometry: null };
+    vision.reconstructedScene = reconstructScene(vision);
     return { live, vision, referenceLap, observation: readDrivingObservation(live, vision, referenceLap, aggression, now).observation! };
 }

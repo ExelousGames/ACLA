@@ -12,6 +12,8 @@ import { PhraseEngine } from '../live-phrases/phrase-engine';
 import { circuitMap } from '../live-phrases/test-fixtures';
 import { liveTelemetryStore } from '../live-telemetry-store';
 import { TRACK_VISION_SETTINGS_KEY } from './track-vision-settings';
+import type { GpuDepth } from './vision-gpu-depth';
+import type { GpuSegments } from './vision-gpu-segments';
 import { SessionScreenCaptureControls, SessionScreenCaptureProvider } from '../live-session-recording/SessionScreenCapture';
 
 jest.mock('./vision-overlay', () => ({ drawVisionOverlay: jest.fn() }));
@@ -52,6 +54,7 @@ const deferred = <T,>() => {
 let track: { stop: jest.Mock; onended: (() => void) | null };
 let stream: MediaStream;
 let getDisplayMedia: jest.Mock;
+let cameraLevel: number;
 let depthModel: { detect: jest.Mock; dispose: jest.Mock; executionProvider: string; name: string; classNames: string[]; inputSize: number };
 let positionModel: { detect: jest.Mock; dispose: jest.Mock; resetHistory: jest.Mock; name: string; inputSize: number };
 let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu'; name: string; classNames: string[]; inputSize: number };
@@ -59,10 +62,122 @@ const detection = { task: 'segment' as const, width: 2, height: 2, instances: [{
     classId: 0, confidence: 0.9, box: [0, 0, 1, 1] as [number, number, number, number], mask: new Uint8Array(4).fill(1),
 }], classNames: ['track', 'curb'], inferenceMs: 50 };
 
+const gpuDepthFixture = () => {
+    const gpu = { read: jest.fn().mockResolvedValue(new Float32Array([1, 0.5, 0.25, 0.125])),
+        readRange: jest.fn().mockResolvedValue({ near: 0.125, far: 1 }), draw: jest.fn(),
+        rangeValues: undefined as { near: number; far: number } | undefined,
+        dispose: jest.fn().mockResolvedValue(undefined) };
+    gpu.readRange.mockImplementation(async () => { gpu.rangeValues = { near: 0.125, far: 1 }; return gpu.rangeValues; });
+    return { gpu, result: { task: 'depth' as const, width: 2, height: 2, scale: 'relative' as const,
+        gpu: gpu as unknown as GpuDepth, classNames: [], inferenceMs: 1 } };
+};
+
+it('submits depth before mapping same-frame GPU masks and publishes only after masks arrive', async () => {
+    const pending = deferred<typeof detection.instances>();
+    const gpu = { read: jest.fn(() => pending.promise), dispose: jest.fn().mockResolvedValue(undefined) };
+    model.detect.mockResolvedValue({ ...detection, instances: [], gpu: gpu as unknown as GpuSegments });
+    depthModel.detect.mockImplementation(async () => {
+        expect(gpu.read).not.toHaveBeenCalled();
+        return vision(0).detections.depth;
+    });
+    const ref = React.createRef<TrackVisionHandle>();
+    const view = render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush(); await startCapture();
+    expect(depthModel.detect).toHaveBeenCalledTimes(1);
+    expect(gpu.read).toHaveBeenCalledTimes(1);
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    await act(async () => { pending.resolve(detection.instances); });
+    expect(ref.current!.getLatestDetection()?.detections.segment).toHaveProperty('instances', detection.instances);
+    view.unmount();
+    expect(gpu.dispose).toHaveBeenCalledTimes(1);
+});
+
+it('discards GPU masks arriving after capture stops', async () => {
+    const pending = deferred<any>();
+    const gpu = { read: jest.fn(), dispose: jest.fn().mockResolvedValue(undefined) };
+    model.detect.mockReturnValue(pending.promise);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush(); await startCapture();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+    await act(async () => { pending.resolve({ ...detection, instances: [], gpu }); });
+    expect(gpu.dispose).toHaveBeenCalledTimes(1);
+    expect(gpu.read).not.toHaveBeenCalled();
+    expect(ref.current!.getLatestDetection()).toBeNull();
+});
+
+it('rejects a frame when deferred GPU mask validation fails after depth submission', async () => {
+    const gpu = { read: jest.fn().mockRejectedValue(new Error('Segmentation class ID does not match the backend labels.')),
+        dispose: jest.fn().mockResolvedValue(undefined) };
+    model.detect.mockResolvedValue({ ...detection, instances: [], gpu });
+    const depth = gpuDepthFixture();
+    depthModel.detect.mockResolvedValue(depth.result);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush(); await startCapture();
+    expect(depthModel.detect).toHaveBeenCalledTimes(1);
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(model.dispose).toHaveBeenCalledTimes(1);
+    expect(gpu.dispose).toHaveBeenCalledTimes(1);
+    expect(depth.gpu.dispose).toHaveBeenCalledTimes(1);
+    expect(depthModel.dispose).not.toHaveBeenCalled();
+});
+
+it('keeps capture and depth-map display on the GPU, then reads depth only for a CPU consumer', async () => {
+    const frame = gpuDepthFixture();
+    depthModel.detect.mockResolvedValue(frame.result);
+    const ref = React.createRef<TrackVisionHandle>();
+    const view = render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush(); await startCapture();
+    expect(frame.gpu.read).not.toHaveBeenCalled();
+    selectStep('Depth map'); await flush();
+    expect(frame.gpu.draw).toHaveBeenCalled();
+    expect(frame.gpu.readRange).toHaveBeenCalledTimes(1);
+    expect(frame.gpu.read).not.toHaveBeenCalled();
+    selectStep('Label depths'); await flush();
+    expect(frame.gpu.read).toHaveBeenCalledTimes(1);
+    expect(ref.current!.getLatestDetection()?.detections.depth).toHaveProperty('values');
+    await act(async () => { await ref.current!.requestDepthValues(); });
+    expect(frame.gpu.read).toHaveBeenCalledTimes(1);
+    view.unmount();
+    expect(frame.gpu.dispose).toHaveBeenCalledTimes(1);
+});
+
+it('downloads for an external CPU consumer and releases replaced frames without releasing the current one', async () => {
+    const first = gpuDepthFixture(), second = gpuDepthFixture();
+    depthModel.detect.mockResolvedValueOnce(first.result).mockResolvedValue(second.result);
+    const ref = React.createRef<TrackVisionHandle>();
+    const view = render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush(); await startCapture();
+    expect(first.gpu.read).not.toHaveBeenCalled();
+    await act(async () => { await ref.current!.requestDepthValues(); });
+    expect(first.gpu.read).toHaveBeenCalledTimes(1);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(second.gpu.read).toHaveBeenCalledTimes(1);
+    expect(first.gpu.dispose).toHaveBeenCalledTimes(1);
+    expect(second.gpu.dispose).not.toHaveBeenCalled();
+    view.unmount();
+    expect(second.gpu.dispose).toHaveBeenCalledTimes(1);
+});
+
+it('releases GPU depth arriving after capture was stopped', async () => {
+    const frame = gpuDepthFixture(), pending = deferred<any>();
+    depthModel.detect.mockReturnValue(pending.promise);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush(); await startCapture();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+    await act(async () => { pending.resolve(frame.result); });
+    expect(frame.gpu.dispose).toHaveBeenCalledTimes(1);
+    expect(frame.gpu.read).not.toHaveBeenCalled();
+    expect(ref.current!.getLatestDetection()).toBeNull();
+});
+
 beforeEach(() => {
     jest.useFakeTimers();
     window.localStorage.clear();
     liveTelemetryStore.resetSession();
+    cameraLevel = 64;
     track = { stop: jest.fn(), onended: null };
     stream = { getTracks: () => [track], getVideoTracks: () => [track] } as unknown as MediaStream;
     getDisplayMedia = jest.fn().mockResolvedValue(stream);
@@ -72,8 +187,8 @@ beforeEach(() => {
     jest.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(1280);
     jest.spyOn(HTMLVideoElement.prototype, 'videoHeight', 'get').mockReturnValue(720);
     const contexts = new WeakMap<HTMLCanvasElement, CanvasRenderingContext2D>();
-    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
-        if (!contexts.has(this)) contexts.set(this, { canvas: this, drawImage: jest.fn(), clearRect: jest.fn(), save: jest.fn(), restore: jest.fn(), fillRect: jest.fn(), fillText: jest.fn(), measureText: jest.fn(() => ({ width: 80 })), getImageData: jest.fn((_x, _y, width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), createImageData: jest.fn((width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), putImageData: jest.fn() } as any);
+    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement): any {
+        if (!contexts.has(this)) contexts.set(this, { canvas: this, drawImage: jest.fn(), clearRect: jest.fn(), save: jest.fn(), restore: jest.fn(), fillRect: jest.fn(), fillText: jest.fn(), measureText: jest.fn(() => ({ width: 80 })), getImageData: jest.fn((_x, _y, width, height) => ({ data: new Uint8ClampedArray(width * height * 4).fill(cameraLevel) })), createImageData: jest.fn((width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), putImageData: jest.fn() } as any);
         return contexts.get(this)!;
     });
     model = { name: 'track-segments', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu', inputSize: 768 };
@@ -90,6 +205,30 @@ beforeEach(() => {
 });
 
 afterEach(() => { jest.restoreAllMocks(); jest.clearAllTimers(); jest.useRealTimers(); delete window.screenCapture; });
+
+it('publishes camera pixels paired before asynchronous inference and preserves earlier images', async () => {
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await startCapture();
+    const first = ref.current!.getLatestDetection()!;
+    expect(first.camera!.rgb.length).toBe(768 * 768 * 3);
+    expect(first.camera!.rgb.every((value) => value === 64)).toBe(true);
+    const pending = deferred<typeof detection>();
+    model.detect.mockReturnValueOnce(pending.promise);
+    cameraLevel = 128;
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()).toBe(first);
+    cameraLevel = 255;
+    await act(async () => { pending.resolve(detection); });
+    const second = ref.current!.getLatestDetection()!;
+    expect(second.capturedAt).toBeGreaterThan(first.capturedAt);
+    expect(second.timing?.captureIntervalMs).toBe(second.capturedAt - first.capturedAt);
+    expect(second.camera!.rgb.length).toBe(768 * 768 * 3);
+    expect(second.camera!.rgb.every((value) => value === 128)).toBe(true);
+    expect(first.camera!.rgb.length).toBe(768 * 768 * 3);
+    expect(first.camera!.rgb.every((value) => value === 64)).toBe(true);
+    expect(second.camera!.rgb).not.toBe(first.camera!.rgb);
+});
 
 it('shares from the recording controls before Track Vision opens and keeps capture alive when the panel closes', async () => {
     const ref = React.createRef<TrackVisionHandle>();
@@ -1075,7 +1214,7 @@ it('loads the backend model automatically and detects without a file upload', as
     expect(screen.getByLabelText('Segmentation inference device')).toHaveTextContent('GPU acceleration active');
     expect(screen.getByLabelText('Model labels')).toHaveTextContent('track, curb');
     expect(screen.queryByRole('checkbox', { name: 'Enable Depth' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('checkbox', { name: 'Enable Segmentation' })).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Enable segmentation model' })).toBeChecked();
     expect(screen.queryByText('Model settings')).not.toBeInTheDocument();
     expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledWith('depth', 518);
     expect(screen.queryByRole('checkbox', { name: 'Enable Semantic' })).not.toBeInTheDocument();
@@ -1187,6 +1326,127 @@ it('runs depth alongside backend segmentation and releases both models on unmoun
     expect(depth.dispose).toHaveBeenCalledTimes(1);
     expect(model.dispose).toHaveBeenCalledTimes(1);
     expect(track.stop).toHaveBeenCalledTimes(1);
+});
+
+it('restores disabled segmentation without loading it and keeps the depth map available', async () => {
+    window.localStorage.setItem(TRACK_VISION_SETTINGS_KEY, JSON.stringify({ version: 1, segmentEnabled: false }));
+    const depth = gpuDepthFixture();
+    depthModel.detect.mockResolvedValue(depth.result);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    expect(screen.getByRole('checkbox', { name: 'Enable segmentation model' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Enable depth model' })).toBeChecked();
+    expect(screen.getByRole('combobox', { name: 'Display label' })).toBeDisabled();
+    expect(screen.getByText('Disabled')).toBeVisible();
+    expect(TrackVisionModel.loadBackend).not.toHaveBeenCalled();
+    await startCapture();
+    fireEvent.click(cameraButton('Apply camera calibration'));
+    const result = ref.current!.getLatestDetection()!;
+    expect(result.detections).toEqual({ depth: depth.result });
+    expect(result.reconstructedScene).toBeNull();
+    expect(result.birdsEyeScene).toBeNull();
+    expect(result.geometry).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('Depth ·');
+    expect(screen.getByRole('status')).not.toHaveTextContent('Segmentation');
+    for (const step of ['Segmentation', 'Filtering', 'Label depths', 'Reconstructed scene', "Bird's-eye view"]) {
+        selectStep(step);
+        expect(screen.getByRole('tabpanel')).toHaveTextContent('Segmentation model is disabled. Enable it in Settings');
+        expect(screen.queryByText('Waiting for segmentation.')).not.toBeInTheDocument();
+    }
+    selectStep('Depth map');
+    await flush();
+    expect(depth.gpu.draw).toHaveBeenCalled();
+    expect(screen.getByLabelText('Depth map color scale')).toBeVisible();
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(depthModel.detect).toHaveBeenCalledTimes(2);
+    expect(model.detect).not.toHaveBeenCalled();
+    expect(track.stop).not.toHaveBeenCalled();
+});
+
+it.each(['segment', 'depth'])('disables segmentation during pending %s inference and re-enables it during capture', async (task) => {
+    const fixture = vision(0, { width: 1280, height: 720 });
+    model.detect.mockResolvedValue(fixture.detections.segment);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    fireEvent.click(cameraButton('Apply camera calibration'));
+    expect(ref.current!.getLatestDetection()?.birdsEyeScene).not.toBeNull();
+    const pending = deferred<any>();
+    const gpu = { read: jest.fn(), dispose: jest.fn().mockResolvedValue(undefined) };
+    (task === 'segment' ? model : depthModel).detect.mockReturnValueOnce(pending.promise);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    const segmentCalls = model.detect.mock.calls.length;
+    const toggle = screen.getByRole('checkbox', { name: 'Enable segmentation model' });
+    fireEvent.click(toggle);
+    await flush();
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(model.dispose).toHaveBeenCalledTimes(1);
+    expect(depthModel.dispose).not.toHaveBeenCalled();
+    expect(positionModel.dispose).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem(TRACK_VISION_SETTINGS_KEY)!)).toMatchObject({ segmentEnabled: false });
+    await act(async () => { pending.resolve({ ...fixture.detections[task as 'segment' | 'depth'], gpu }); });
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(gpu.dispose).toHaveBeenCalledTimes(1);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.detections).toEqual({ depth: vision(0).detections.depth });
+    expect(ref.current!.getLatestDetection()?.birdsEyeScene).toBeNull();
+    expect(model.detect).toHaveBeenCalledTimes(segmentCalls);
+
+    const replacement = { ...model, dispose: jest.fn().mockResolvedValue(undefined) };
+    const loading = deferred<typeof replacement>();
+    (TrackVisionModel.loadBackend as jest.Mock).mockReturnValueOnce(loading.promise);
+    fireEvent.click(toggle);
+    await flush();
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting for segmentation and depth');
+    await act(async () => { loading.resolve(replacement); });
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(fixture.detections.segment);
+    expect(ref.current!.getLatestDetection()?.birdsEyeScene).not.toBeNull();
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(2);
+    expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
+    expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+    expect(track.stop).not.toHaveBeenCalled();
+    expect(getDisplayMedia).toHaveBeenCalledTimes(1);
+});
+
+it('discards a pending segmentation load after disabling it and continues with depth', async () => {
+    const pending = deferred<typeof model>();
+    (TrackVisionModel.loadBackend as jest.Mock).mockReturnValueOnce(pending.promise);
+    const ref = React.createRef<TrackVisionHandle>();
+    render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable segmentation model' }));
+    await act(async () => { pending.resolve(model); });
+    expect(model.dispose).toHaveBeenCalledTimes(1);
+    await act(async () => { jest.advanceTimersByTime(200); });
+    expect(ref.current!.getLatestDetection()?.detections).toEqual({ depth: vision(0).detections.depth });
+    expect(model.detect).not.toHaveBeenCalled();
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Disabled')).toBeVisible();
+});
+
+it('cancels segmentation GPU retries when disabled and remembers the choice when reopened', async () => {
+    (TrackVisionModel.loadBackend as jest.Mock).mockRejectedValueOnce(new GpuInferenceError('Segmentation GPU unavailable'));
+    const ref = React.createRef<TrackVisionHandle>();
+    const { unmount } = render(<LiveTrackVision ref={ref} name="vision" />);
+    await flush();
+    await startCapture();
+    expect(ref.current!.getLatestDetection()).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable segmentation model' }));
+    await act(async () => { jest.advanceTimersByTime(3000); });
+    expect(ref.current!.getLatestDetection()?.detections).toEqual({ depth: vision(0).detections.depth });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+    unmount();
+    render(<LiveTrackVision name="reopened-vision" />);
+    await flush();
+    expect(screen.getByRole('checkbox', { name: 'Enable segmentation model' })).not.toBeChecked();
+    expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
 });
 
 it('restores disabled depth without loading it and publishes segmentation, scene and BEV during capture', async () => {
@@ -1342,9 +1602,7 @@ it('waits for same-frame masks and preserves the full image including the interi
     expect(depthModel.detect).not.toHaveBeenCalled();
     fireEvent.change(screen.getByRole('slider', { name: 'Segmentation confidence' }), { target: { value: '0.95' } });
     await act(async () => { pending.resolve(segmented); });
-    expect(depthModel.detect).toHaveBeenCalledWith(model.detect.mock.calls[0][0], 0.5, expect.objectContaining({
-        width: 2, height: 2, mask: new Uint8Array([1, 1, 1, 1]),
-    }));
+    expect(depthModel.detect).toHaveBeenCalledWith(model.detect.mock.calls[0][0], 0.5);
     expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(segmented);
 });
 
@@ -1356,17 +1614,13 @@ it.each(['empty', 'interior only', 'entire image is interior'])('runs depth on t
     render(<LiveTrackVision ref={ref} name="vision" />);
     await flush();
     await startCapture();
-    expect(depthModel.detect).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), 0.5, expect.objectContaining({
-        mask: new Uint8Array([1, 1, 1, 1]),
-    }));
+    expect(depthModel.detect).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), 0.5);
     model.detect.mockResolvedValue({ ...detection, classNames: ['car interior'], instances: reason === 'empty' ? [] : [
         { ...detection.instances[0], mask: new Uint8Array(reason === 'entire image is interior' ? [1, 1, 1, 1] : [0, 0, 1, 0]) },
     ] });
     await act(async () => { jest.advanceTimersByTime(200); });
     expect(depthModel.detect).toHaveBeenCalledTimes(2);
-    expect(depthModel.detect).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), 0.5, expect.objectContaining({
-        width: 2, height: 2, mask: new Uint8Array([1, 1, 1, 1]),
-    }));
+    expect(depthModel.detect).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), 0.5);
     expect(ref.current!.getLatestDetection()?.detections.depth).toBeDefined();
     expect(screen.getByRole('status')).not.toHaveTextContent('waiting');
 });
@@ -1569,6 +1823,70 @@ describe('separate segmentation and position models', () => {
         jest.spyOn(operationComponents, 'useOptionalOperationComponentRefDirectory').mockReturnValue({
             findComponentRef: (name: string) => name === 'visualization:live-trajectory-map' ? { current: mapHandle } : null,
         } as any);
+    });
+
+    it('keeps capture and position running with both segmentation and depth disabled', async () => {
+        window.localStorage.setItem(TRACK_VISION_SETTINGS_KEY, JSON.stringify({ version: 1, segmentEnabled: false, depthEnabled: false }));
+        const ref = React.createRef<TrackVisionHandle>();
+        render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush();
+        telemetry();
+        await startCapture();
+        expect(TrackVisionModel.loadBackend).not.toHaveBeenCalled();
+        expect(TrackVisionModel.loadBuiltin).not.toHaveBeenCalled();
+        expect(ref.current!.getLatestDetection()?.detections).toEqual({});
+        expect(ref.current!.getLatestDetection()?.position).toMatchObject(prediction);
+        expect(ref.current!.getLatestDrivingDetection()?.camera).toBeDefined();
+        expect(ref.current!.getLatestDrivingDetection()?.position).toMatchObject(prediction);
+        expect(screen.getByRole('status')).toHaveTextContent('Screen shared. Segmentation and depth are disabled.');
+        selectStep("Bird's-eye view");
+        expect(screen.getByLabelText('Reference lap position marker')).toBeVisible();
+        await act(async () => { jest.advanceTimersByTime(200); });
+        expect(positionModel.detect).toHaveBeenCalledTimes(2);
+        expect(track.stop).not.toHaveBeenCalled();
+    });
+
+    it.each(['segment', 'depth'])('publishes driving camera and position when %s inference fails', async (task) => {
+        (task === 'segment' ? model : depthModel).detect.mockRejectedValueOnce(new Error('Model unavailable'));
+        const ref = React.createRef<TrackVisionHandle>();
+        render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush(); telemetry(); await startCapture();
+        expect(ref.current!.getLatestDetection()).toBeNull();
+        const driving = ref.current!.getLatestDrivingDetection()!;
+        expect(driving.position).toMatchObject(prediction);
+        expect(driving.camera).toMatchObject({ width: 768, height: 768 });
+        expect(driving.camera!.rgb.length).toBe(768 * 768 * 3);
+        expect(driving.detections).toEqual({});
+        expect(driving.reconstruction).toBeNull();
+        fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+        expect(ref.current!.getLatestDrivingDetection()).toBeNull();
+    });
+
+    it('reports async stage delays while position is pending and preserves original publication timings', async () => {
+        const segment = deferred<typeof detection>(), depth = deferred<any>(), position = deferred<typeof prediction>();
+        model.detect.mockReturnValueOnce(segment.promise);
+        depthModel.detect.mockReturnValueOnce(depth.promise);
+        positionModel.detect.mockReturnValueOnce(position.promise);
+        const ref = React.createRef<TrackVisionHandle>();
+        render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush(); telemetry(); await startCapture();
+        expect(ref.current!.getTimingSnapshot()).toMatchObject({ currentStage: 'segment', state: 'processing' });
+        await act(async () => { jest.advanceTimersByTime(145); segment.resolve(detection); });
+        await act(async () => { jest.advanceTimersByTime(64); depth.resolve(vision(0).detections.depth); });
+        await act(async () => { jest.advanceTimersByTime(900); });
+        expect(ref.current!.getLatestDetection()).toBeNull();
+        expect(ref.current!.getTimingSnapshot()).toMatchObject({ currentStage: 'position', stageElapsedMs: 900,
+            totalMs: 1109, stages: { segment: 145, depth: 64 }, state: 'processing' });
+        await act(async () => { position.resolve(prediction); });
+        const published = ref.current!.getLatestDetection()!;
+        expect(published.timing).toMatchObject({ capturedAt: published.capturedAt, currentStage: null,
+            totalMs: 1109, stages: { segment: 145, depth: 64, position: 900, track: 0, scene: 0, birdsEye: 0 }, state: 'complete' });
+        expect(published.timing!.finishedAt! - published.capturedAt).toBe(1109);
+        fireEvent.click(cameraButton('Enable on capture'));
+        fireEvent.click(cameraButton('Apply camera calibration'));
+        expect(ref.current!.getLatestDetection()!.timing).toEqual(published.timing);
+        fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
+        expect(ref.current!.getTimingSnapshot()).toBeNull();
     });
 
     it('keeps segmentation and depth available when the position ONNX is missing', async () => {

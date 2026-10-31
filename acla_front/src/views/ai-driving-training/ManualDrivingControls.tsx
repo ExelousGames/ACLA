@@ -14,10 +14,6 @@ function savedMapping(): ManualMapping {
     try {
         const data = JSON.parse(localStorage.getItem(MAPPING_KEY) || '{}');
         if (!data || typeof data !== 'object' || Array.isArray(data)) return {};
-        const toggleControl = data.toggleControl ?? data.takeover ?? data.resume;
-        delete data.takeover;
-        delete data.resume;
-        if (toggleControl !== undefined) data.toggleControl = toggleControl;
         for (const [key, value] of Object.entries(data) as [string, any][]) {
             if (!value || typeof value.deviceId !== 'string') return {};
             if (AXES.includes(key as any)) {

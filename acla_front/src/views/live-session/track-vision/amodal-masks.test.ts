@@ -47,7 +47,7 @@ it('completes supported hidden masks with unitless relative depths below the met
     const depth = frame.detections.depth!;
     if (depth.task !== 'depth') throw new Error('depth');
     depth.scale = 'relative';
-    depth.values = depth.values.map((value) => value / 1000);
+    depth.values = depth.values!.map((value) => value / 1000);
     const prediction = predictAmodalMasks(frame).find((mask) => mask.classId === 0)!;
     expect(prediction.hiddenMask.reduce((sum, active) => sum + active, 0)).toBe(32);
     expect(prediction.depths[210]).toBeCloseTo(0.01);
@@ -69,7 +69,7 @@ it.each(['unlabelled gap', 'missing depth', 'farther instance', 'no depth'])(
         const segment = frame.detections.segment!, depth = frame.detections.depth!;
         if (segment.task !== 'segment' || depth.task !== 'depth') throw new Error('detections');
         if (reason === 'unlabelled gap') segment.instances.pop();
-        if (reason === 'missing depth' || reason === 'farther instance') depth.values = depth.values.map((value) =>
+        if (reason === 'missing depth' || reason === 'farther instance') depth.values = depth.values!.map((value) =>
             value === 5 ? reason === 'missing depth' ? NaN : 30 : value);
         if (reason === 'no depth') delete frame.detections.depth;
         expect(predictAmodalMasks(frame).find((mask) => mask.classId === 0)!.hiddenMask.some(Boolean)).toBe(false);
@@ -80,7 +80,7 @@ it('interpolates a sloped hidden surface in inverse depth', () => {
     const frame = fixture();
     const depth = frame.detections.depth!;
     if (depth.task !== 'depth') throw new Error('depth');
-    depth.values = depth.values.map((value, i) => value === 10 ? 1 / (0.12 - Math.floor(i % 40 / 2) * 0.003) : value);
+    depth.values = depth.values!.map((value, i) => value === 10 ? 1 / (0.12 - Math.floor(i % 40 / 2) * 0.003) : value);
     const prediction = predictAmodalMasks(frame).find((mask) => mask.classId === 0)!;
     expect(prediction.depths[210]).toBeCloseTo(1 / (0.12 - 10 * 0.003), 4);
 });
@@ -91,7 +91,7 @@ it.each(['track', 'car', 'grass', 'new label'])('retains %s and lower-confidence
     if (segment.task !== 'segment' || depth.task !== 'depth') throw new Error('detections');
     segment.classNames[1] = '  CAR  interior ';
     segment.instances[1].confidence = 0.6;
-    const original = segment.instances.map(({ mask }) => mask.slice()), originalDepth = depth.values.slice();
+    const original = segment.instances.map(({ mask }) => mask.slice()), originalDepth = depth.values!.slice();
     for (const reverse of [false, true]) {
         if (reverse) segment.instances.reverse();
         const masks = predictAmodalMasks(frame, 0.65);

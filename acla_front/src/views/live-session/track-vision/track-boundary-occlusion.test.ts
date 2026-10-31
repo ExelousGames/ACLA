@@ -24,7 +24,7 @@ function hideEdge(frame: TrackVisionFrame, side: 'left' | 'right' | 'both', labe
     // Segmentation need not retain track underneath the occluding vehicle.
     segment.instances[0].mask.forEach((_, i) => { if (mask[i]) segment.instances[0].mask[i] = 0; });
     return (value: number) => {
-        depth.values = depth.values.map((old, i) => {
+        depth.values = depth.values!.map((old, i) => {
             const column = Math.floor((i % depth.width + 0.5) / depth.width * segment.width);
             const row = Math.floor((Math.floor(i / depth.width) + 0.5) / depth.height * segment.height);
             return mask[row * segment.width + column] ? value : old;

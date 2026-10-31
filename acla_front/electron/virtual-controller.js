@@ -36,7 +36,7 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
     connection.contents.removeListener('did-start-navigation', connection.onNavigate);
     if (!connection.contents.isDestroyed()) connection.contents.setBackgroundThrottling(connection.backgroundThrottling);
     connection.lines?.close();
-    // EOF makes Python reset and destroy the device. The independent Python watchdog also covers a main-process crash.
+    // EOF makes Python reset and destroy the device.
     connection.child.stdin.end();
     const timer = setTimeout(() => { connection.child.kill(); }, 800);
     timer.unref?.();

@@ -13,6 +13,7 @@ const { registerScreenCapture } = require('../electron/screen-capture');
 const { registerSessionVideo } = require('../electron/session-video');
 const { registerTrackVisionModels } = require('../electron/track-vision-models');
 const { registerVirtualController } = require('../electron/virtual-controller');
+const { registerDrivingModelFiles } = require('../electron/driving-model-files');
 const {
   DESKTOP_GAME_SET,
   recordingStartFailure,
@@ -55,6 +56,7 @@ const configureScreenCapture = registerScreenCapture({ ipcMain, desktopCapturer,
 registerSessionVideo({ ipcMain, getMainWindow: () => mainWindow, getRecordingDirectory, shell });
 registerTrackVisionModels({ app, ipcMain, getMainWindow: () => mainWindow });
 registerVirtualController({ app, ipcMain, getMainWindow: () => mainWindow, getPythonExecutable });
+registerDrivingModelFiles({ app, ipcMain, dialog, getMainWindow: () => mainWindow });
 let isAppQuitting = false;
 let recordingManager = null;
 let latestDetectedGame = null;

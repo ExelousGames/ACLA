@@ -81,10 +81,10 @@ it('detects and saves axes, pedal inversion and every button across separate dev
 });
 
 it.each([
-    [{ takeover: { deviceId: 'wheel', button: 2 }, resume: { deviceId: 'wheel', button: 3 } }, 2],
-    [{ resume: { deviceId: 'wheel', button: 3 } }, 3],
-    [{ toggleControl: { deviceId: 'wheel', button: 1 }, takeover: { deviceId: 'wheel', button: 2 } }, 1],
-])('restores one toggle from saved bindings %j', async (bindings, button) => {
+    { takeover: { deviceId: 'wheel', button: 2 }, resume: { deviceId: 'wheel', button: 3 } },
+    { resume: { deviceId: 'wheel', button: 3 } },
+    { toggleControl: { deviceId: 'wheel', button: 1 }, takeover: { deviceId: 'wheel', button: 2 } },
+])('rejects saved legacy control bindings %j', async (bindings) => {
     const axes = {
         steering: { deviceId: 'wheel', axis: 'axis0', inverted: false },
         throttle: { deviceId: 'pedals', axis: 'axis1', inverted: true },
@@ -93,9 +93,9 @@ it.each([
     localStorage.setItem(MAPPING_KEY, JSON.stringify({ ...axes, ...bindings }));
     render(<ManualDrivingControls {...props} />);
     await flush();
-    expect(screen.getByRole('combobox', { name: 'Take over / Return to AI button' })).toHaveValue(JSON.stringify(['wheel', button]));
-    expect(screen.getByRole('button', { name: 'Enable controller takeover' })).toBeEnabled();
-    expect(JSON.parse(localStorage.getItem(MAPPING_KEY)!)).toEqual({ ...axes, toggleControl: { deviceId: 'wheel', button } });
+    expect(screen.getByRole('combobox', { name: 'Take over / Return to AI button' })).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Enable controller takeover' })).toBeDisabled();
+    expect(JSON.parse(localStorage.getItem(MAPPING_KEY)!)).toEqual({});
 });
 
 it.each(['x', 'y', 'z', 'r', 'u', 'v'])('requires remapping saved legacy axis %s', async (axis) => {

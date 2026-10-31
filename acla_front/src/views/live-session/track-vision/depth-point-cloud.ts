@@ -28,7 +28,7 @@ export function createDepthPointCloud(frame: TrackVisionFrame): DepthPointCloud 
     if (!validCalibration(frame.calibration) || frame.calibration.imageWidth !== frame.width
         || frame.calibration.imageHeight !== frame.height || depth?.task !== 'depth' || depth.scale === 'relative'
         || !Number.isInteger(depth.width) || !Number.isInteger(depth.height) || depth.width <= 0 || depth.height <= 0
-        || depth.values.length !== depth.width * depth.height) return null;
+        || !depth.values || depth.values.length !== depth.width * depth.height) return null;
     const camera = createCameraProjection(frame.calibration);
     const { padX, padY, resizedWidth, resizedHeight } = letterbox(frame.width, frame.height, VISION_INPUT_SIZE);
     const columns = Float64Array.from({ length: depth.width }, (_, x) => ((x + 0.5) / depth.width * VISION_INPUT_SIZE - padX) / resizedWidth);

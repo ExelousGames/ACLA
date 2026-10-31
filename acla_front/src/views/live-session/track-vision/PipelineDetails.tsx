@@ -6,10 +6,11 @@ import { createDepthMap, formatDepth } from './depth-map';
 
 import { VISION_DEPTH_COLORS, VISION_LABEL_COLORS as COLORS } from './vision-colors';
 
-export default function PipelineDetails({ step, frame, masks, classNames, filterConfidence, depthMap, depthEnabled }: {
+export default function PipelineDetails({ step, frame, masks, classNames, filterConfidence, depthMap, segmentEnabled, depthEnabled }: {
     step: PipelineStep; frame: TrackVisionFrame | null; masks: AmodalMask[]; classNames: string[];
     depthMap: ReturnType<typeof createDepthMap>;
     filterConfidence: number;
+    segmentEnabled: boolean;
     depthEnabled: boolean;
 }) {
     const segment = frame?.detections.segment;
@@ -21,6 +22,9 @@ export default function PipelineDetails({ step, frame, masks, classNames, filter
     const rows = labelDepths(masks);
     const measured = rows.filter((row) => row.samples);
     const { near, far } = labelDepthRange(masks);
+    if (!segmentEnabled && ['segmentation', 'filtering', 'depth', 'scene', 'birds-eye'].includes(step)) return <p className="track-vision__hint">
+        Segmentation model is disabled. Enable it in Settings to view masks and reconstructed track boundaries.
+    </p>;
     if (!depthEnabled && (step === 'depth-map' || step === 'depth')) return <p className="track-vision__hint">
         Depth model is disabled. Enable it in Settings to view depth.
     </p>;
@@ -50,7 +54,8 @@ export default function PipelineDetails({ step, frame, masks, classNames, filter
             <span>Near {reading(depthMap?.near ?? null)}</span><i style={{ background: `linear-gradient(90deg, ${VISION_DEPTH_COLORS.join(', ')})` }} /><span>Far {reading(depthMap?.far ?? null)}</span>
         </div>
         {!depthMap && <p className="track-vision__hint">Waiting for depth.</p>}
-        {depthMap && depthMap.near === null && <p className="track-vision__hint">No valid depth in this frame.</p>}
+        {depthMap && depthMap.near === null && (!depthMap.depth.gpu || depthMap.depth.gpu.rangeValues)
+            && <p className="track-vision__hint">No valid depth in this frame.</p>}
     </div>;
     if (step !== 'depth') return null;
     return <div className="track-vision__depth-details">

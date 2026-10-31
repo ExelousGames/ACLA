@@ -1,6 +1,7 @@
 import queue
 import os
 import sys
+import time
 import unittest
 from io import StringIO
 from unittest.mock import Mock, patch, call
@@ -11,22 +12,14 @@ from virtual_wheel import AXES, VJoyController
 
 
 class ControllerTests(unittest.TestCase):
-    def test_physical_reads_do_not_refresh_output_watchdog(self):
+    def test_physical_reads_do_not_change_output(self):
         controller, physical = Mock(), Mock()
         physical.read.return_value = [{"id": "wheel", "axes": {"axis0": 0.5}, "buttons": []}]
-
-        class ReadingQueue:
-            now = 0
-
-            def get(self, timeout):
-                self.now += 0.1
-                if self.now == 0.1:
-                    return {"id": 1, "action": {"throttle": 0.8, "brake": 0, "steering": 0}}
-                return {"id": 2, "type": "read-physical"}
-
-        commands, messages = ReadingQueue(), []
-        with self.assertRaisesRegex(RuntimeError, "watchdog"):
-            serve(controller, commands, messages.append, lambda: commands.now, physical)
+        commands, messages = queue.Queue(), []
+        commands.put({"id": 1, "action": {"throttle": 0.8, "brake": 0, "steering": 0}})
+        commands.put({"id": 2, "type": "read-physical"})
+        commands.put(None)
+        serve(controller, commands, messages.append, physical=physical)
         self.assertIn({"type": "physical", "id": 2, "devices": physical.read.return_value}, messages)
         controller.apply.assert_called_once()
         self.assertEqual(controller.reset.call_count, 2)
@@ -54,23 +47,33 @@ class ControllerTests(unittest.TestCase):
             call.apply({"throttle": 0.4, "brake": 0.1, "steering": -0.5}), call.reset(), call.close()])
         self.assertEqual(messages[-1], {"type": "applied", "id": 1})
 
-    def test_watchdog_resets_without_new_commands(self):
+    def test_training_pause_keeps_controller_connected_until_next_action(self):
         controller = Mock()
+        first = {"throttle": 0.8, "brake": 0, "steering": 0.2}
+        second = {"throttle": 0.3, "brake": 0, "steering": -0.1}
 
-        class StalledQueue:
-            now = 0
+        class PausedQueue:
+            polls = 0
 
             def get(self, timeout):
-                self.now += 0.1
-                if self.now == 0.1:
-                    return {"id": 1, "action": {"throttle": 0.8, "brake": 0, "steering": 0.2}}
-                raise queue.Empty
+                self.polls += 1
+                if self.polls == 1:
+                    return {"id": 1, "action": first}
+                if self.polls <= 16:
+                    controller.close.assert_not_called()
+                    controller.apply.assert_called_once_with(first)
+                    # Fifteen empty 50 ms polls exceed the former 600 ms cutoff.
+                    time.sleep(timeout)
+                    raise queue.Empty
+                if self.polls == 17:
+                    return {"id": 2, "action": second}
+                return None
 
-        commands = StalledQueue()
-        with self.assertRaisesRegex(RuntimeError, "watchdog"):
-            serve(controller, commands, lambda _: None, lambda: commands.now)
+        messages = []
+        serve(controller, PausedQueue(), messages.append)
         self.assertEqual(controller.reset.call_count, 2)
-        controller.apply.assert_called_once()
+        self.assertEqual(controller.apply.call_args_list, [call(first), call(second)])
+        self.assertEqual(messages, [{"type": "ready"}, {"type": "applied", "id": 1}, {"type": "applied", "id": 2}])
         controller.close.assert_called_once()
 
     def test_invalid_commands_reset_device(self):
@@ -196,19 +199,20 @@ class WheelControllerTests(unittest.TestCase):
                                              call.SetAxis(0, 1, 0x32), call.SetBtn(False, 1, 1),
                                              call.SetBtn(False, 1, 2), call.RelinquishVJD(1)])
 
-    def test_watchdog_neutralizes_and_relinquishes_wheel(self):
+    def test_eof_neutralizes_and_relinquishes_wheel_after_idle(self):
         class StalledQueue:
-            now = 0
+            polls = 0
 
             def get(self, timeout):
-                self.now += 0.1
-                if self.now == 0.1:
+                self.polls += 1
+                if self.polls == 1:
                     return {"action": {"steering": 0, "throttle": 0, "brake": 0, "shiftDown": True}}
+                if self.polls == 10:
+                    return None
                 raise queue.Empty
 
         sdk, commands = wheel_sdk(), StalledQueue()
-        with self.assertRaisesRegex(RuntimeError, "watchdog"):
-            serve(VJoyController(1, sdk), commands, lambda _: None, lambda: commands.now)
+        serve(VJoyController(1, sdk), commands, lambda _: None)
         self.assertEqual(sdk.mock_calls[-6:], [call.SetAxis(16384, 1, 0x30), call.SetAxis(0, 1, 0x31),
                                              call.SetAxis(0, 1, 0x32), call.SetBtn(False, 1, 1),
                                              call.SetBtn(False, 1, 2), call.RelinquishVJD(1)])

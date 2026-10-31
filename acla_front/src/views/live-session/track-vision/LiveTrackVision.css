@@ -54,7 +54,7 @@
 .track-vision__resolution { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--lp-gray, #a4adbb); }
 .track-vision__resolution select { flex: 0 1 220px; }
 .track-vision__detector-state { color: var(--lp-gray, #a4adbb); font-size: 11px; }
-.track-vision__depth-toggle { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.track-vision__model-toggle { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .track-vision__detector .track-vision__hint, .track-vision__detector .track-vision__error { grid-column: 1 / -1; }
 .track-vision__controls label { display: flex; flex-direction: column; gap: 4px; color: var(--lp-gray, #a4adbb); }
 .track-vision select { flex: 1 1 160px; min-width: 0; max-width: 100%; }

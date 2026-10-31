@@ -151,7 +151,7 @@ test('verification detects subsequent corruption', async () => {
   const f = fixture();
   await migrateSession(f.sessions, f.bucket, f.session, f.files, before, quiet);
   f.buffers.set(f.session.dataChunkFileIds[0].toString(), Buffer.from('[]'));
-  await assert.rejects(verifySession(f.bucket, f.session), /differs from swapped original/);
+  await assert.rejects(verifySession(f.bucket, f.session), /differs from transformed original/);
 });
 
 test('dry run scopes ACC, honors cutoff and marker, and handles legacy missing dates without writes', async () => {

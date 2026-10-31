@@ -1,7 +1,7 @@
 import { FloatTensor } from './yolo-segmentation';
 import { DepthResult, SegmentResult } from './track-vision-types';
 
-export function decodeDepth(output: FloatTensor): DepthResult {
+export function decodeDepth(output: FloatTensor): DepthResult & { values: Float32Array } {
     const dims = output.dims;
     const height = dims[dims.length - 2];
     const width = dims[dims.length - 1];

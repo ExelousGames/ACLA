@@ -43,20 +43,29 @@
 .driving-details { display: grid; grid-template-columns: auto 1fr; gap: 12px 18px; font-size: 13px; margin-top: 22px; }
 .driving-details dt { color: #a3adb7; }
 .driving-details dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.driving-input-delays { grid-column: 1 / -1; }
+.driving-input-delays .driving-details { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; margin: 14px 0; font-size: 12px; }
+.driving-input-delays dd { font-variant-numeric: tabular-nums; }
+.driving-input-delays dd[data-stale="true"] { color: #ffb3b3; }
+.driving-delay-stages { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.driving-delay-stages caption { text-align: left; margin: 8px 0; color: #a3adb7; }
+.driving-delay-stages th, .driving-delay-stages td { padding: 6px 0; border-bottom: 1px solid #ffffff0d; text-align: right; }
+.driving-delay-stages th { font-weight: 400; }
+.driving-delay-stages th:first-child { text-align: left; padding-right: 12px; }
+.driving-delay-stages tfoot { color: #dbebe2; }
 .driving-controls { display: grid; gap: 15px; margin: 20px 0; }
 .driving-controls > div > div { display: flex; justify-content: space-between; font-size: 12px; }
 .driving-controls label { text-transform: capitalize; }
 .driving-controls output { font-variant-numeric: tabular-nums; }
 .driving-controls meter { display: block; width: 100%; height: 12px; margin-top: 5px; accent-color: #00e676; }
 .driving-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.driving-training button, .driving-import { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #3a414d; border-radius: 6px; background: #232934; color: #edf3f2; font-size: 12px; padding: 9px 13px; cursor: pointer; line-height: 1.4; }
+.driving-training button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #3a414d; border-radius: 6px; background: #232934; color: #edf3f2; font-size: 12px; padding: 9px 13px; cursor: pointer; line-height: 1.4; }
 .driving-training button:disabled { opacity: .4; cursor: not-allowed; }
-.driving-training button:not(:disabled):hover, .driving-import:hover { border-color: #00e676; }
-.driving-training button:focus-visible, .driving-import:focus-within { outline: 2px solid #00e676; outline-offset: 3px; }
+.driving-training button:not(:disabled):hover { border-color: #00e676; }
+.driving-training button:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
 .driving-training button.driving-primary { background: #00e676; color: #082416; border-color: #00e676; font-weight: 600; }
 .driving-training button.driving-stop { color: #ffb3b3; border-color: #733c46; background: #52273240; }
-.driving-import { position: relative; overflow: hidden; }
-.driving-import input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.driving-model-path { overflow-wrap: anywhere; }
 .driving-metrics { display: flex; gap: 50px; margin: 24px 0; }
 .driving-metrics strong { display: block; font-size: 30px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .driving-metrics span { display: block; font-size: 12px; color: #a3adb7; margin-top: 6px; }

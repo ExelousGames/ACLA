@@ -1,13 +1,13 @@
-import { DrivingAction, DrivingObservation, DrivingReward, drivingReward, MAX_TRAINING_TRANSITION_SECONDS,
+import { DrivingAction, DrivingLineProximity, DrivingObservation, DrivingReward, drivingReward, DrivingYawInstability,
     NEUTRAL, ObservationResult } from './driving-observation';
 import { DrivingPolicy, PlannedAction, PolicyDecision, ShiftAvailability } from './driving-policy';
 import { ControlSource, DrivingControlSelector, ManualControls } from './driving-control';
 import { ControlLease, DrivingControlOutput } from './driving-control-output';
-import { DrivingMemory } from './driving-memory';
+import { DrivingMemory, DrivingPolicyInput } from './driving-memory';
 import { DrivingPlanTraining } from './driving-plan-training';
+import { DrivingModelTimer } from './driving-model-timing';
 
-const SHIFT_PULSE_MS = 100;
-const SHIFT_COOLDOWN_MS = 500;
+import { DEFAULT_DRIVING_CONFIG } from './driving-model-config';
 
 export interface TrainingState {
     mode: 'idle' | 'manual' | 'training' | 'evaluation';
@@ -24,27 +24,45 @@ export const initialTrainingState: TrainingState = {
     source: null, steps: 0, episodeReward: 0, reward: null, plan: null,
 };
 
+interface TrainingSample {
+    observation: DrivingObservation;
+    input: DrivingPolicyInput;
+    decision?: PolicyDecision;
+    action: DrivingAction;
+    shifts: ShiftAvailability;
+    source: ControlSource;
+    appliedAt: number;
+}
+
 export class DrivingTrainingLoop {
     state = { ...initialTrainingState };
-    private previous?: { observation: DrivingObservation; decision?: PolicyDecision; action: DrivingAction;
-        shifts: ShiftAvailability; source: ControlSource; appliedAt: number };
+    private get config() { return this.policy?.configuration ?? DEFAULT_DRIVING_CONFIG; }
+    private previous?: TrainingSample;
     private boundary?: DrivingObservation;
     private selector = new DrivingControlSelector();
     private controlChangedAt = -Infinity;
     private lastFrame = -Infinity;
     private generation = 0;
-    private busy = false;
+    private controlBusy = false;
+    private modelLease?: ControlLease;
+    private modelRevision = 0;
+    private starting = false;
     private timer?: ReturnType<typeof setInterval>;
     private shiftReleaseAt = 0;
     private nextShiftAt = 0;
     private lease?: ControlLease;
     private policy?: DrivingPolicy;
     private memory = new DrivingMemory();
+    private yawInstability = new DrivingYawInstability();
+    private lineProximity = new DrivingLineProximity();
     private planTraining = new DrivingPlanTraining();
+    private modelTiming?: DrivingModelTimer;
 
     constructor(private output: DrivingControlOutput, private read: () => ObservationResult,
         private publish: (state: TrainingState) => void, private now = Date.now,
         private readManual?: () => Promise<ManualControls | null>) {}
+
+    getModelTimingSnapshot() { return this.modelTiming?.snapshot(); }
 
     setControlSource(source: ControlSource) {
         if (this.state.mode === 'idle') return;
@@ -57,25 +75,35 @@ export class DrivingTrainingLoop {
         this.changeSource(source);
     }
 
-    start(policy: DrivingPolicy, train: boolean) {
-        const input = this.read();
-        if (!input.observation) throw new Error(input.error);
-        if (!policy.matches(input.observation)) throw new Error('Model inputs differ from this game, car, map or segmentation model. Create a new model.');
-        this.begin(policy, train, input.observation);
+    async start(policy: DrivingPolicy, train: boolean) {
+        if (this.starting || (this.state.mode !== 'idle' && this.state.mode !== 'manual')) throw new Error('Stop the current session before starting another.');
+        this.starting = true;
+        const generation = this.generation;
+        try {
+            await policy.initializeGpu();
+            if (generation !== this.generation) return;
+            const input = this.read();
+            if (!input.observation) throw new Error(input.error);
+            if (!policy.matches(input.observation)) throw new Error('Model inputs differ from this game, car, map or observation configuration. Create a new model.');
+            this.begin(policy, train, input.observation);
+        } finally { this.starting = false; }
     }
 
     startManual() { this.begin(); }
 
     private begin(policy?: DrivingPolicy, train = false, boundary?: DrivingObservation) {
         const humanDriving = this.state.mode === 'manual';
-        if ((!humanDriving && (this.state.mode !== 'idle' || this.busy)) || (humanDriving && !policy)) {
+        if ((!humanDriving && (this.state.mode !== 'idle' || this.controlBusy || this.modelLease)) || (humanDriving && !policy)) {
             throw new Error('Stop the current session before starting another.');
         }
         clearInterval(this.timer);
+        this.discardPrevious();
         this.policy = policy;
-        this.memory.reset();
+        this.memory = new DrivingMemory(this.config);
+        this.yawInstability = new DrivingYawInstability(this.config);
+        this.lineProximity = new DrivingLineProximity(this.config);
         this.planTraining.reset();
-        this.previous = undefined;
+        this.modelTiming = undefined;
         this.boundary = boundary;
         if (!humanDriving) this.selector = new DrivingControlSelector();
         this.selector.source = !policy || humanDriving ? 'manual' : 'ai';
@@ -89,16 +117,20 @@ export class DrivingTrainingLoop {
             source: this.selector.source, steps: policy?.steps ?? this.state.steps };
         this.state.status = this.driverStatus();
         this.publish(this.state);
-        this.timer = setInterval(() => { void this.tick(policy); }, this.readManual ? 50 : 100);
+        this.timer = setInterval(() => { void this.tick(policy); }, this.readManual ? this.config.runtime.manualControlIntervalMs : this.config.runtime.controlIntervalMs);
         void this.tick(policy);
     }
 
     async stop(status = 'Stopped. Controller released.'): Promise<void> {
         const generation = ++this.generation;
+        this.modelRevision++;
         clearInterval(this.timer);
-        this.previous = undefined;
+        this.modelTiming?.finish(false);
+        this.discardPrevious();
         this.lease = undefined;
         this.memory.reset();
+        this.yawInstability.reset();
+        this.lineProximity.reset();
         this.planTraining.reset();
         this.policy = undefined;
         this.state = { ...this.state, mode: 'idle', status, action: NEUTRAL, source: null, plan: null };
@@ -117,13 +149,22 @@ export class DrivingTrainingLoop {
         return this.state.mode === 'training' ? 'AI control • online actor–critic' : 'AI control • fixed policy';
     }
 
+    private discardPrevious() {
+        this.policy?.releaseDecision(this.previous?.decision);
+        this.previous = undefined;
+    }
+
     private changeSource(source: ControlSource) {
         if (source === this.state.source) return;
+        this.modelRevision++;
+        this.modelTiming?.finish(false);
         this.selector.source = source;
         this.lease = this.output.acquire(source);
         // No reward, held paddle or demonstration may cross an ownership boundary.
-        this.previous = undefined;
+        this.discardPrevious();
         this.memory.reset();
+        this.yawInstability.reset();
+        this.lineProximity.reset();
         this.planTraining.reset();
         this.controlChangedAt = this.now();
         this.shiftReleaseAt = 0;
@@ -134,22 +175,22 @@ export class DrivingTrainingLoop {
 
     private observationError(input: ObservationResult): string | undefined {
         if (!input.observation) return input.error || 'Waiting for live inputs.';
-        if (!this.policy?.matches(input.observation)) return 'Game, car, map or segmentation model changed. Waiting for matching model inputs.';
+        if (!this.policy?.matches(input.observation)) return 'Game, car, map or observation configuration changed. Waiting for matching model inputs.';
         if (!input.observation.features.every(Number.isFinite)) return 'Invalid policy observation.';
         if (input.observation.session !== this.boundary?.session) return 'Live session changed. Waiting for the original live session.';
         if (input.observation.reference !== this.boundary?.reference) return 'Live Map reference changed. Waiting for the original reference.';
         if (this.previous) {
             const elapsedSeconds = (input.observation.capturedAt - this.previous.observation.capturedAt) / 1000;
             const progress = Math.abs(input.observation.normalizedPosition - this.previous.observation.normalizedPosition);
-            if (elapsedSeconds > 0 && elapsedSeconds <= MAX_TRAINING_TRANSITION_SECONDS && Math.min(progress, 1 - progress) > 0.1) {
+            if (elapsedSeconds > 0 && elapsedSeconds <= this.config.runtime.maxTransitionSeconds && Math.min(progress, 1 - progress) > this.config.runtime.maxPositionJump) {
                 return 'Lap position jumped. Waiting for fresh telemetry.';
             }
         }
     }
 
     private async tick(policy?: DrivingPolicy) {
-        if (this.busy || this.state.mode === 'idle') return;
-        this.busy = true;
+        if (this.controlBusy || this.state.mode === 'idle') return;
+        this.controlBusy = true;
         const generation = this.generation;
         let lease = this.lease!;
         try {
@@ -169,8 +210,12 @@ export class DrivingTrainingLoop {
             lease = this.lease!;
             const observation = !inputError && input.observation ? { ...input.observation } : undefined;
             if (!observation) {
-                this.previous = undefined;
+                this.modelRevision++;
+                this.modelTiming?.finish(false);
+                this.discardPrevious();
                 this.memory.reset();
+                this.yawInstability.reset();
+                this.lineProximity.reset();
                 this.planTraining.reset();
                 this.controlChangedAt = this.now();
                 this.state = { ...this.state, reward: null, plan: null };
@@ -202,70 +247,121 @@ export class DrivingTrainingLoop {
                 if (!await lease.apply(action) || generation !== this.generation) return;
                 const appliedAt = this.now();
                 if (canShift && (action.shiftUp || action.shiftDown)) {
-                    this.shiftReleaseAt = appliedAt + SHIFT_PULSE_MS;
-                    this.nextShiftAt = appliedAt + SHIFT_COOLDOWN_MS;
+                    this.shiftReleaseAt = appliedAt + this.config.actions.shiftPulseMs;
+                    this.nextShiftAt = appliedAt + this.config.actions.shiftCooldownMs;
                 }
-                if (fresh && observation && policy) {
-                    observation.features = this.memory.encode(observation);
-                    if (previous) this.learnPrevious(policy, observation);
-                    this.previous = { observation, action, source: 'manual', shifts: { up: canShift, down: canShift }, appliedAt };
-                    this.lastFrame = observation.capturedAt;
+                this.state = { ...this.state, action, status: inputError ? this.state.status : this.driverStatus() };
+                this.publish(this.state);
+                if (fresh && observation && policy && !this.modelLease) {
+                    void this.updateModel(policy, observation, lease, { action, shifts: { up: canShift, down: canShift }, appliedAt });
                 } else if (previous?.source === 'manual' && canShift && (action.shiftUp || action.shiftDown)) {
                     // Retain a brief paddle press between images as the demonstration for
                     // this frame. Use the whole acknowledged action, not a synthetic mix.
                     this.previous = { ...previous, action, shifts: { up: true, down: true }, appliedAt };
                 }
-                this.state = { ...this.state, action, status: inputError ? this.state.status : this.driverStatus() };
-                this.publish(this.state);
                 return;
             }
-            // Refresh the hardware watchdog, but never learn twice from the same image or from a capture predating the action.
+            // An old owner's model work may still be finishing. Neutralize a new
+            // AI lease immediately, but never queue stale heartbeats behind its decision.
+            if (this.modelLease) {
+                if (this.modelLease !== lease) await lease.apply(this.state.action);
+                return;
+            }
+            // Maintain the current action without learning twice from the same image or from a capture predating the action.
             if (!fresh) {
                 if (!await lease.apply(this.state.action)) return;
                 if (generation === this.generation) this.publish(this.state);
                 return;
             }
             if (!observation || !policy) return;
-            observation.features = this.memory.encode(observation);
-            if (previous) this.learnPrevious(policy, observation);
+            void this.updateModel(policy, observation, lease);
+        } catch (error) {
+            if (generation === this.generation && lease === this.lease) await this.stop(error instanceof Error ? error.message : 'Controller failed.');
+        } finally { this.controlBusy = false; }
+    }
+
+    /** Only one model operation runs at a time; controller polling never awaits it. */
+    private async updateModel(policy: DrivingPolicy, observation: DrivingObservation, lease: ControlLease,
+        manual?: Pick<TrainingSample, 'action' | 'shifts' | 'appliedAt'>) {
+        this.modelLease = lease;
+        const generation = this.generation, revision = this.modelRevision;
+        const active = () => generation === this.generation && lease === this.lease && revision === this.modelRevision;
+        const timing = this.modelTiming = new DrivingModelTimer(observation.capturedAt, manual ? 'manual' : 'ai', this.state.mode === 'training');
+        const previous = this.previous;
+        try {
+            timing.start('memory');
+            const policyInput = this.memory.encode(observation);
+            timing.end();
+            // Pending learning owns the old sample until it releases its GPU buffers.
+            this.previous = undefined;
+            if (manual) {
+                // Save the acknowledged action before learning, so later paddle
+                // presses can still be retained while the model is busy.
+                this.previous = { observation, input: policyInput, ...manual, source: 'manual' };
+                this.lastFrame = observation.capturedAt;
+            }
+            if (previous) await this.learnPrevious(policy, previous, observation, policyInput, active, timing);
+            if (!active()) return;
+            if (manual) {
+                timing.finish(true);
+                this.publish(this.state);
+                return;
+            }
             const canShift = this.now() >= this.nextShiftAt;
-            const decision = policy.decide(observation.features, this.state.mode === 'training', {
+            timing.start('inference');
+            const decision = await policy.decideAsync(policyInput, this.state.mode === 'training', {
                 up: canShift, down: canShift,
             });
+            if (!active()) { policy.releaseDecision(decision); return; }
             const action = decision.plan[0].action;
-            if (!await lease.apply(action) || generation !== this.generation) return;
+            try {
+                timing.start('control');
+                if (!await lease.apply(action) || !active()) { policy.releaseDecision(decision); return; }
+            } catch (error) { policy.releaseDecision(decision); throw error; }
+            timing.end();
             const appliedAt = this.now();
             if (action.shiftUp || action.shiftDown) {
-                this.shiftReleaseAt = appliedAt + SHIFT_PULSE_MS;
-                this.nextShiftAt = appliedAt + SHIFT_COOLDOWN_MS;
+                this.shiftReleaseAt = appliedAt + this.config.actions.shiftPulseMs;
+                this.nextShiftAt = appliedAt + this.config.actions.shiftCooldownMs;
             }
-            this.previous = { observation, decision, action, source: 'ai',
+            this.previous = { observation, input: policyInput, decision, action, source: 'ai',
                 shifts: { up: canShift, down: canShift }, appliedAt };
             this.lastFrame = observation.capturedAt;
             this.state = { ...this.state, action, plan: decision.plan.map(({ timeSeconds, action: planned }) =>
                 ({ timeSeconds, action: { ...planned } })), status: this.driverStatus() };
+            timing.finish(true);
             this.publish(this.state);
         } catch (error) {
-            if (generation === this.generation) await this.stop(error instanceof Error ? error.message : 'Training failed.');
-        } finally { this.busy = false; }
+            if (active()) await this.stop(error instanceof Error ? error.message : 'Training failed.');
+        } finally { timing.finish(false); this.modelLease = undefined; }
     }
 
-    private learnPrevious(policy: DrivingPolicy, observation: DrivingObservation) {
-        const previous = this.previous!;
-        const elapsedSeconds = (observation.capturedAt - previous.observation.capturedAt) / 1000;
-        // Gaps between usable frames are recoverable after input validation.
-        // The caller starts the next transition from this fresh observation.
-        if (elapsedSeconds > MAX_TRAINING_TRANSITION_SECONDS) {
-            this.planTraining.reset();
-            this.state = { ...this.state, reward: null };
-            return;
-        }
-        const reward = drivingReward(previous.observation, observation, previous.action);
-        if (this.state.mode === 'training') {
-            if (previous.source === 'manual') policy.learnDemonstration(previous.observation.features, previous.action, previous.shifts);
-            else policy.learn(previous.decision!, reward.total, observation.features, elapsedSeconds);
-            this.planTraining.record(policy, previous.observation.features, previous.action, previous.shifts, previous.appliedAt);
-        }
-        this.state = { ...this.state, steps: policy.steps, reward, episodeReward: this.state.episodeReward + reward.total };
+    private async learnPrevious(policy: DrivingPolicy, previous: TrainingSample, observation: DrivingObservation, input: DrivingPolicyInput, active: () => boolean,
+        timing: DrivingModelTimer) {
+        // This operation owns the sample while GPU work is in flight. Stop/handoff
+        // can clear the loop without destroying buffers still needed by backprop.
+        try {
+            const elapsedSeconds = (observation.capturedAt - previous.observation.capturedAt) / 1000;
+            // Gaps between usable frames are recoverable after input validation.
+            // The caller starts the next transition from this fresh observation.
+            if (elapsedSeconds > this.config.runtime.maxTransitionSeconds) {
+                this.yawInstability.reset();
+                this.lineProximity.reset();
+                this.planTraining.reset();
+                this.state = { ...this.state, reward: null };
+                return;
+            }
+            const reward = drivingReward(previous.observation, observation, this.yawInstability, this.config, this.lineProximity);
+            if (this.state.mode === 'training') {
+                timing.start('learning');
+                await policy.trainBatchAsync(async () => {
+                    if (previous.source === 'manual') await policy.learnDemonstrationAsync(previous.input, previous.action, previous.shifts);
+                    else await policy.learnAsync(previous.decision!, reward.total, input, elapsedSeconds);
+                    if (active()) await this.planTraining.recordAsync(policy, previous.input, previous.action, previous.shifts, previous.appliedAt, active);
+                });
+                timing.end();
+            }
+            if (active()) this.state = { ...this.state, steps: policy.steps, reward, episodeReward: this.state.episodeReward + reward.total };
+        } finally { policy.releaseDecision(previous.decision); }
     }
 }

@@ -30,6 +30,18 @@ async function download(bucket, id) {
   return Buffer.concat(buffers);
 }
 
+const YZ_MIGRATION = {
+  id: MIGRATION,
+  transform,
+  validateSession() {},
+  validateFile(file, session, before) {
+    if (!file || !(file.uploadDate instanceof Date) || file.uploadDate >= before
+      || file.metadata?.telemetryMigration) {
+      throw new Error(`Session ${session._id}: missing, recent, or already transformed chunk.`);
+    }
+  },
+};
+
 function transform(buffer) {
   const rows = JSON.parse(buffer.toString('utf8'));
   if (!Array.isArray(rows)) throw new Error('Telemetry chunk must be a JSON array.');
@@ -44,17 +56,18 @@ function validateCounts(session, rows) {
 
 // Originals are never deleted. New chunks are verified before a single atomic
 // session update publishes the complete ordered list together with its marker.
-async function migrateSession(sessions, bucket, session, files, before, log) {
+async function migrateSession(sessions, bucket, session, files, before, log, migration = YZ_MIGRATION) {
+  const marker = `telemetryMigrations.${migration.id}`;
   const replacements = [];
   let rows = 0;
   for (let index = 0; index < files.length; index++) {
     const file = files[index];
-    const converted = transform(await download(bucket, file._id));
-    const upload = bucket.openUploadStream(`${file.filename}.${MIGRATION}.json`, {
+    const converted = migration.transform(await download(bucket, file._id));
+    const upload = bucket.openUploadStream(`${file.filename}.${migration.id}.json`, {
       chunkSizeBytes: file.chunkSize,
       metadata: {
         ...file.metadata,
-        telemetryMigration: { id: MIGRATION, sourceFileId: file._id, sessionId: session._id },
+        telemetryMigration: { id: migration.id, sourceFileId: file._id, sessionId: session._id },
       },
     });
     const completion = finished(upload);
@@ -73,11 +86,11 @@ async function migrateSession(sessions, bucket, session, files, before, log) {
     game_recorded_from: 'acc',
     dataChunkFileIds: session.dataChunkFileIds,
     totalDataPoints: session.totalDataPoints ?? { $exists: false },
-    [MARKER]: { $exists: false },
+    [marker]: { $exists: false },
   }, {
     $set: {
       dataChunkFileIds: replacements,
-      [MARKER]: {
+      [marker]: {
         before, migratedAt: new Date(), rows,
         originalChunkFileIds: session.dataChunkFileIds,
       },
@@ -89,16 +102,16 @@ async function migrateSession(sessions, bucket, session, files, before, log) {
   return rows;
 }
 
-async function verifySession(bucket, session) {
-  const marker = session.telemetryMigrations[MIGRATION];
+async function verifySession(bucket, session, migration = YZ_MIGRATION) {
+  const marker = session.telemetryMigrations[migration.id];
   if (marker.originalChunkFileIds.length !== session.dataChunkFileIds.length) {
     throw new Error(`Session ${session._id}: migrated chunk count differs from backup.`);
   }
   let rows = 0;
   for (let index = 0; index < session.dataChunkFileIds.length; index++) {
-    const expected = transform(await download(bucket, marker.originalChunkFileIds[index]));
+    const expected = migration.transform(await download(bucket, marker.originalChunkFileIds[index]));
     if (!expected.buffer.equals(await download(bucket, session.dataChunkFileIds[index]))) {
-      throw new Error(`Session ${session._id}, chunk ${index}: migrated data differs from swapped original.`);
+      throw new Error(`Session ${session._id}, chunk ${index}: migrated data differs from transformed original.`);
     }
     rows += expected.rows;
   }
@@ -107,7 +120,7 @@ async function verifySession(bucket, session) {
   return rows;
 }
 
-async function migrate(db, { before, apply = false, verify = false, log = console.log }) {
+async function migrate(db, { before, apply = false, verify = false, log = console.log, migration = YZ_MIGRATION }) {
   if (!(before instanceof Date) || !Number.isFinite(before.getTime())) throw new Error('A valid --before date is required.');
   if (apply && verify) throw new Error('Choose either --apply or --verify.');
   const sessions = db.collection('racingsessions');
@@ -121,12 +134,13 @@ async function migrate(db, { before, apply = false, verify = false, log = consol
     const created = session.created_date == null ? session._id.getTimestamp() : new Date(session.created_date);
     if (!Number.isFinite(created.getTime())) throw new Error(`Session ${session._id}: invalid creation date.`);
     if (created >= before) { summary.afterCutoff++; continue; }
-    if (session.telemetryMigrations && Object.hasOwn(session.telemetryMigrations, MIGRATION)) {
+    if (session.telemetryMigrations && Object.hasOwn(session.telemetryMigrations, migration.id)) {
       summary.alreadyMigrated++;
       if (verify) plan.push({ session });
       continue;
     }
     summary.candidates++;
+    migration.validateSession(session);
     if (verify) continue;
     const ids = session.dataChunkFileIds;
     if (!Array.isArray(ids) || !ids.length) throw new Error(`Session ${session._id}: no telemetry chunks.`);
@@ -135,12 +149,9 @@ async function migrate(db, { before, apply = false, verify = false, log = consol
     }
     const metadata = await db.collection(`${BUCKET}.files`).find({ _id: { $in: ids } }).toArray();
     const byId = new Map(metadata.map(file => [file._id.toString(), file]));
-    const files = ids.map(id => {
+    const files = ids.map((id, index) => {
       const file = byId.get(id.toString());
-      if (!file || !(file.uploadDate instanceof Date) || file.uploadDate >= before
-        || file.metadata?.telemetryMigration) {
-        throw new Error(`Session ${session._id}: missing, recent, or already transformed chunk ${id}.`);
-      }
+      migration.validateFile(file, session, before, index);
       return file;
     });
     summary.chunks += files.length;
@@ -152,10 +163,10 @@ async function migrate(db, { before, apply = false, verify = false, log = consol
   if (!apply && !verify) return summary;
   for (const { session, files } of plan) {
     if (verify) {
-      summary.rows += await verifySession(bucket, session);
+      summary.rows += await verifySession(bucket, session, migration);
       summary.verified++;
     } else {
-      summary.rows += await migrateSession(sessions, bucket, session, files, before, log);
+      summary.rows += await migrateSession(sessions, bucket, session, files, before, log, migration);
       summary.migrated++;
     }
     log({ sessionId: session._id, migrated: summary.migrated, verified: summary.verified, rows: summary.rows });
@@ -163,13 +174,13 @@ async function migrate(db, { before, apply = false, verify = false, log = consol
   return summary;
 }
 
-async function main() {
+async function main(migration = YZ_MIGRATION, script = 'migrate-acc-yz.js') {
   const { values } = parseArgs({ options: {
     before: { type: 'string' }, apply: { type: 'boolean' }, verify: { type: 'boolean' },
     'dry-run': { type: 'boolean' }, help: { type: 'boolean' },
   } });
   if (values.help) {
-    console.log('node scripts/migrate-acc-yz.js --before <ISO-8601 UTC date> [--dry-run | --apply | --verify]\n'
+    console.log(`node scripts/${script} --before <ISO-8601 UTC date> [--dry-run | --apply | --verify]\n`
       + 'Defaults to metadata-only dry run. Set MONGODB_URI or backend MONGO_CLIENTNAME/MONGO_CLIENTPASSWORD/MONGO_URL.\n'
       + 'Apply retains originals and verifies every replacement before publishing each session.');
     return;
@@ -186,7 +197,7 @@ async function main() {
   try {
     await client.connect();
     console.log(JSON.stringify(await migrate(client.db(), {
-      before: new Date(values.before), apply: values.apply, verify: values.verify,
+      before: new Date(values.before), apply: values.apply, verify: values.verify, migration,
       log: entry => console.log(JSON.stringify(entry)),
     })));
   } finally { await client.close(); }
@@ -197,4 +208,4 @@ if (require.main === module) main().catch(error => {
   process.exitCode = 1;
 });
 
-module.exports = { MIGRATION, MARKER, swapRow, transform, migrateSession, verifySession, migrate };
+module.exports = { MIGRATION, MARKER, swapRow, transform, migrateSession, verifySession, migrate, main };

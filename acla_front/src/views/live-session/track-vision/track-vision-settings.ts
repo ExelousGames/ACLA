@@ -7,6 +7,7 @@ export const TRACK_VISION_SETTINGS_KEY = 'acla.track-vision-settings';
 
 export interface TrackVisionSettings {
     inputSizes: Record<DetectionTask, number>;
+    segmentEnabled: boolean;
     depthEnabled: boolean;
     confidence: number;
     filterConfidence: number;
@@ -18,6 +19,7 @@ export interface TrackVisionSettings {
 
 const defaults: TrackVisionSettings = {
     inputSizes: { segment: VISION_INPUT_SIZE, depth: DEPTH_INPUT_SIZE },
+    segmentEnabled: true,
     depthEnabled: true,
     confidence: 0.5,
     filterConfidence: VISION_CONFIDENCE,
@@ -33,6 +35,7 @@ export function readTrackVisionSettings(): TrackVisionSettings {
         if (saved?.version !== 1) return defaults;
         const camera = saved.cameraDraft && { ...saved.cameraDraft, imageWidth: 1, imageHeight: 1 };
         return {
+            segmentEnabled: saved.segmentEnabled !== false,
             depthEnabled: saved.depthEnabled !== false,
             inputSizes: {
                 segment: MODEL_INPUT_RESOLUTIONS.segment.some(({ size }) => size === saved.inputSizes?.segment)

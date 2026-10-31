@@ -23,7 +23,7 @@ function frame() {
     const setDepth = (region: Region, meters: number) => {
         const depth = source.detections.depth!;
         if (depth.task !== 'depth') throw new Error('depth');
-        depth.values.forEach((_, i) => { if (region((i % 80 + 0.5) / 80, (Math.floor(i / 80) + 0.5) / 80)) depth.values[i] = meters; });
+        depth.values!.forEach((_, i) => { if (region((i % 80 + 0.5) / 80, (Math.floor(i / 80) + 0.5) / 80)) depth.values![i] = meters; });
     };
     return { source, add, setDepth };
 }

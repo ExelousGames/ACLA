@@ -1,16 +1,13 @@
-"""JSON-lines vJoy steering wheel bridge with an independent dead-man timeout."""
+"""JSON-lines vJoy steering wheel bridge with cleanup on disconnect or failure."""
 import argparse
 import json
 import math
 import queue
 import sys
 import threading
-import time
 
 from virtual_wheel import VJoyController
 from physical_controller import PhysicalControllers
-
-WATCHDOG_SECONDS = 0.6
 
 
 def valid_action(action):
@@ -27,15 +24,11 @@ def emit(message):
     print(json.dumps(message), flush=True)
 
 
-def serve(controller, commands, emit_message=emit, clock=time.monotonic, physical=None):
-    armed = False
-    last_command = clock()
+def serve(controller, commands, emit_message=emit, physical=None):
     try:
         controller.reset()
         emit_message({"type": "ready"})
         while True:
-            if armed and clock() - last_command > WATCHDOG_SECONDS:
-                raise RuntimeError("Controller watchdog expired. Inputs released; reconnect to continue.")
             try:
                 command = commands.get(timeout=0.05)
             except queue.Empty:
@@ -46,14 +39,11 @@ def serve(controller, commands, emit_message=emit, clock=time.monotonic, physica
                 if physical is None:
                     physical = PhysicalControllers()
                 emit_message({"type": "physical", "id": command.get("id"), "devices": physical.read()})
-                # Reading inputs must not refresh the output watchdog.
                 continue
             action = command.get("action") if isinstance(command, dict) else None
             if not valid_action(action):
                 raise ValueError("Invalid controller action. Inputs released.")
             controller.apply(action)
-            last_command = clock()
-            armed = any(action.values())
             emit_message({"type": "applied", "id": command.get("id")})
     finally:
         try:

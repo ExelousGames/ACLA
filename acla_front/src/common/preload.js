@@ -1,6 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const { DESKTOP_GAME_SET, isRecordingStartFailure } = require('../../electron/recording/recording-protocol');
 const { validateLiveTelemetryRow } = require('../data/live-telemetry-dataset');
+contextBridge.exposeInMainWorld('drivingModelFiles', {
+    current: () => ipcRenderer.invoke('driving-model-current'),
+    choose: (mode) => ipcRenderer.invoke('driving-model-choose', mode),
+    select: (filePath) => ipcRenderer.invoke('driving-model-select', filePath),
+    read: (filePath) => ipcRenderer.invoke('driving-model-read', filePath),
+    write: (filePath, json) => ipcRenderer.invoke('driving-model-write', filePath, json),
+});
 contextBridge.exposeInMainWorld('virtualController', {
     readPhysicalControls: () => ipcRenderer.invoke('virtual-controller-read-physical'),
     connect: (options) => ipcRenderer.invoke('virtual-controller-connect', options),

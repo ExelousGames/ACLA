@@ -17,25 +17,27 @@ export function createDepthMap(frame: TrackVisionFrame | null) {
     const crop = { x: padX / VISION_INPUT_SIZE * depth.width, y: padY / VISION_INPUT_SIZE * depth.height,
         width: resizedWidth / VISION_INPUT_SIZE * depth.width, height: resizedHeight / VISION_INPUT_SIZE * depth.height };
     let near = Infinity, far = -Infinity;
-    depth.values.forEach((value, i) => {
+    if (!depth.gpu) depth.values?.forEach((value, i) => {
         const x = i % depth.width + 0.5, y = Math.floor(i / depth.width) + 0.5;
         if (!validDepth(value) || x < crop.x || x >= crop.x + crop.width || y < crop.y || y >= crop.y + crop.height) return;
         near = Math.min(near, value); far = Math.max(far, value);
     });
     return { depth, crop, width: frame.width, height: frame.height,
-        near: Number.isFinite(near) ? near : null, far: Number.isFinite(far) ? far : null };
+        near: depth.gpu?.rangeValues?.near ?? (Number.isFinite(near) ? near : null),
+        far: depth.gpu?.rangeValues?.far ?? (Number.isFinite(far) ? far : null) };
 }
 
 type DepthMap = NonNullable<ReturnType<typeof createDepthMap>>;
 
 export function drawDepthMap(context: CanvasRenderingContext2D, map: DepthMap) {
     const { depth, crop, width, height, near, far } = map;
+    if (depth.gpu) { depth.gpu.draw(context, crop, width, height); return; }
     const layer = document.createElement('canvas');
     layer.width = depth.width; layer.height = depth.height;
     const paint = layer.getContext('2d');
     if (!paint) return;
     const pixels = paint.createImageData(layer.width, layer.height);
-    depth.values.forEach((value, i) => {
+    depth.values?.forEach((value, i) => {
         if (!validDepth(value) || near === null || far === null) return;
         const t = far > near ? Math.max(0, Math.min(1, (value - near) / (far - near))) : 0;
         const position = t * (COLORS.length - 1), lower = Math.floor(position);
@@ -60,6 +62,6 @@ export function depthAtMouse(map: DepthMap, rect: Pick<DOMRect, 'left' | 'top' |
     const v = (y - (rect.height - map.height * scale) / 2) / (map.height * scale);
     if (![u, v].every(Number.isFinite) || u < 0 || u >= 1 || v < 0 || v >= 1) return null;
     const column = Math.floor(map.crop.x + u * map.crop.width), row = Math.floor(map.crop.y + v * map.crop.height);
-    const value = map.depth.values[row * map.depth.width + column];
+    const value = map.depth.values?.[row * map.depth.width + column] ?? 0;
     return { x, y, depth: validDepth(value) ? value : null };
 }

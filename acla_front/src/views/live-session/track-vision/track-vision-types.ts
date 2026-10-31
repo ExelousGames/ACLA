@@ -11,14 +11,23 @@ export interface DepthResult {
     height: number;
     /** Relative depth is unitless. Omitted scale denotes legacy optical-axis meters. */
     scale?: 'metric' | 'relative';
-    /** Near-to-far depth in the shared letterbox coordinates; excluded pixels are zero. */
-    values: Float32Array;
+    /** CPU cache, populated only by readDepthValues. Excluded pixels are zero. */
+    values?: Float32Array;
+    /** Elapsed readback time, including queue waits and CPU conversion. */
+    readbackMs?: number;
+    readbackTiming?: import('./vision-timing').DepthReadbackTiming;
+    /** Owned by the captured frame; release when that frame is replaced or discarded. */
+    gpu?: import('./vision-gpu-depth').GpuDepth;
 }
 
 export interface SegmentResult {
     task: 'segment';
     width: number;
     height: number;
+    /** Owned by the captured frame; CPU instances are populated by readSegmentInstances. */
+    gpu?: import('./vision-gpu-segments').GpuSegments;
+    readbackMs?: number;
+    readbackTiming?: import('./vision-timing').SegmentReadbackTiming;
     instances: Array<{
         classId: number;
         confidence: number;
@@ -28,7 +37,11 @@ export interface SegmentResult {
     }>;
 }
 
-export type VisionResult = (SegmentResult | DepthResult) & { inferenceMs: number; classNames: string[] };
+export type VisionResult = (SegmentResult | DepthResult) & {
+    inferenceMs: number;
+    inferenceTiming?: import('./vision-timing').VisionModelTiming;
+    classNames: string[];
+};
 export interface CameraParameters {
     heightM: number;
     /** Positive pitch looks down; positive yaw looks right. Roll is assumed zero. */
@@ -105,6 +118,10 @@ export interface TrackPositionResult {
 
 export interface TrackVisionFrame {
     capturedAt: number;
+    /** Original capture timings; retained when calibration or display settings change. */
+    timing?: import('./vision-timing').VisionTimingSnapshot;
+    /** Clean 768 × 768 RGB pixels for the driving convolutional encoder and its history. */
+    camera?: import('./policy-camera').PolicyCameraImage;
     /** Immutable telemetry paired with the image before asynchronous inference. */
     telemetry?: import('../live-telemetry-store').LiveTelemetrySnapshot;
     position?: TrackPositionResult & { normalizedPosition: number; references: PositionReferences;

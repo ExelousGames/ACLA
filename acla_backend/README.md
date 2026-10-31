@@ -77,6 +77,36 @@ leave unused staged copies identified by `metadata.telemetryMigration` in
 To recover a session, restore its ordered `originalChunkFileIds` and remove the
 marker in one conditional update after checking its current references.
 
+## Repair stored ACC orientation after the Y/Z migration
+
+The follow-up `acc_orientation_v1` migration negates `Physics_heading`,
+`Physics_pitch`, `Physics_roll`, and all three `Physics_local_angular_vel_*`
+components. Swapping Y/Z has determinant -1, so right-hand rotations require
+these sign changes. Positions and polar vectors are already normalized and
+are preserved. This matches the updated frontend ACC adapter.
+
+```bash
+docker exec acla_backend_c node scripts/migrate-acc-orientation.js --before 2026-10-31T01:37:46Z --dry-run
+docker exec acla_backend_c node scripts/migrate-acc-orientation.js --before 2026-10-31T01:37:46Z --apply
+docker exec acla_backend_c node scripts/migrate-acc-orientation.js --before 2026-10-31T01:37:46Z --verify
+npm run test:migrate:acc-orientation
+```
+
+The cutoff precedes captures from the orientation-aware adapter. Every candidate
+must have a completed `acc_yz_v1` marker, and each current chunk must trace to
+that migration in the original order. Unmarked sessions are rejected because
+their coordinate convention cannot be inferred safely. The default dry run
+checks metadata only. Apply uses the same verified-copy and atomic-publish path
+as the Y/Z migration, retaining both the raw originals and the Y/Z-only copies.
+The new marker prevents repeat sign changes. Verify checks every repaired chunk
+against its Y/Z-only backup; use this follow-up verifier after repair, since the
+historical Y/Z verifier expects the intermediate representation.
+
+To roll back only this repair, restore the ordered `originalChunkFileIds` from
+`telemetryMigrations.acc_orientation_v1` and remove that marker in a single
+conditional session update after checking current references. Keep `acc_yz_v1`
+and its original files intact. No files are deleted by either migration.
+
 ## Project setup
 
 ```bash

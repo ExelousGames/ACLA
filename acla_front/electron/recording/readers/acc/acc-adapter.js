@@ -19,13 +19,18 @@ function flattenFields(source, sample, prefix = '') {
   }
 }
 
-function swapYZAxes(sample) {
-  // Normalize every ACC vector from (x, y, z) to (x, z, y) at the adapter boundary.
+function normalizeCoordinates(sample) {
+  // Polar vectors use P(x,y,z)=(x,z,y). Since det(P)=-1, right-hand rotations
+  // use P*R*P^T: Ry(heading)*Rx(pitch)*Rz(roll) becomes Rz(-heading)*Rx(-pitch)*Ry(-roll).
+  // Angular velocity is axial, so it uses det(P)*P*w = (-x,-z,-y).
   return Object.fromEntries(Object.entries(sample).map(([field, value]) => {
     if (field === 'Graphics_car_coordinates') {
       return [field, value.map(({ x, y, z }) => ({ x, y: z, z: y }))];
     }
     const adjustedField = field.replace(/_([yz])$/, (_, axis) => axis === 'y' ? '_z' : '_y');
+    if (/^Physics_(heading|pitch|roll|local_angular_vel_[xyz])$/.test(field)) {
+      return [adjustedField, value === 0 ? 0 : -value];
+    }
     return [adjustedField, value];
   }));
 }
@@ -48,7 +53,7 @@ class AccAdapter {
     }
     // Validate source fields before a timestamp can make an empty capture look valid.
     assertLiveTelemetryRow(sample);
-    sample = swapYZAxes(sample);
+    sample = normalizeCoordinates(sample);
     if (elapsedMilliseconds !== undefined) {
       sample.Graphics_analyst_session_time = elapsedMilliseconds / 1000;
     }

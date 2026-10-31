@@ -8,6 +8,7 @@ import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
 import { TrackPositionModel } from './track-position-model';
 import { MODEL_INPUT_RESOLUTIONS } from './vision-config';
 import { CameraCalibration, DETECTION_TASKS, TrackVisionDetection, TrackVisionFrame } from './track-vision-types';
+import { capturePolicyCameraImage } from './policy-camera';
 import { reconstructTrack } from './track-reconstruction';
 import { validCalibration } from './camera-projection';
 import { readTrackVisionSettings, saveTrackVisionSettings } from './track-vision-settings';
@@ -22,16 +23,30 @@ import { liveTelemetryStore } from '../live-telemetry-store';
 import { drawLabelDepths, filteredFrame, filteredMasks, PIPELINE_STEPS, PipelineStep } from './pipeline-visuals';
 import PipelineDetails from './PipelineDetails';
 import { createDepthMap, depthAtMouse, drawDepthMap, formatDepth } from './depth-map';
+import { readDepthValues } from './vision-gpu-depth';
+import { readSegmentInstances } from './vision-gpu-segments';
+import { VisionFrameTimer, VisionTimingSnapshot } from './vision-timing';
 import './LiveTrackVision.css';
 
 export interface TrackVisionHandle extends NamedOperationComponentHandle {
     getLatestDetection(): TrackVisionDetection | null;
+    /** Camera and position can be consumed without segmentation, depth or scene output. */
+    getLatestDrivingDetection(): TrackVisionDetection | null;
+    getTimingSnapshot(): VisionTimingSnapshot | null;
     subscribeDetection(listener: () => void): () => void;
+    /** Request CPU depth for the current capture and while the consumer keeps polling. */
+    requestDepthValues(): Promise<void>;
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : 'Vision detection failed.';
 const GPU_RETRY_DELAY_MS = 3000;
 const VISION_MODELS = [...DETECTION_TASKS, { id: 'position', label: 'Position' }] as const;
+const disposeGpuFrame = (frame: TrackVisionFrame | null, next?: TrackVisionFrame | null) => {
+    for (const { id } of DETECTION_TASKS) {
+        const result = frame?.detections[id];
+        if (result !== next?.detections[id]) void result?.gpu?.dispose().catch(() => undefined);
+    }
+};
 type ModelTask = typeof VISION_MODELS[number]['id'];
 type DetectorState = { status: 'loading' | 'ready' | 'retrying' | 'error' | 'disabled'; error?: string; classNames?: string[] };
 
@@ -56,6 +71,9 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const modelVersion = useRef(0);
     const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const latest = useRef<TrackVisionDetection | null>(null);
+    const latestDriving = useRef<TrackVisionDetection | null>(null);
+    const frameTimer = useRef<VisionFrameTimer | null>(null);
+    const cpuDepthUntil = useRef(0);
     const trackHistory = useRef(new TrackHistory());
     const motion = useRef<VisionMotion | undefined>(undefined);
     const motionGeneration = useRef(0);
@@ -63,9 +81,11 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const [retry, setRetry] = useState(0);
     const [savedSettings] = useState(readTrackVisionSettings);
     const [inputSizes, setInputSizes] = useState(savedSettings.inputSizes);
+    const [segmentEnabled, setSegmentEnabled] = useState(savedSettings.segmentEnabled);
     const [depthEnabled, setDepthEnabled] = useState(savedSettings.depthEnabled);
     const [detectors, setDetectors] = useState<Record<ModelTask, DetectorState>>({
-        segment: { status: 'loading' }, depth: { status: savedSettings.depthEnabled ? 'loading' : 'disabled' },
+        segment: { status: savedSettings.segmentEnabled ? 'loading' : 'disabled' },
+        depth: { status: savedSettings.depthEnabled ? 'loading' : 'disabled' },
         position: { status: 'loading' },
     });
     const [captureState, setCaptureState] = useState<'idle' | 'starting' | 'active'>('idle');
@@ -94,14 +114,28 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const previewWidth = previewFrameRef.current?.width ?? 0, previewHeight = previewFrameRef.current?.height ?? 0;
     const previewCamera = useMemo(() => ({ ...cameraDraft, imageWidth: previewWidth, imageHeight: previewHeight }),
         [cameraDraft, previewWidth, previewHeight]);
-    const options = useRef({ confidence, filterConfidence, depthEnabled });
-    options.current = { confidence, filterConfidence, depthEnabled };
+    const needsCpuDepth = step === 'filtering' || step === 'depth' || (step === 'depth-map' && Boolean(depthPointer));
+    const options = useRef({ confidence, filterConfidence, segmentEnabled, depthEnabled, needsCpuDepth });
+    options.current = { confidence, filterConfidence, segmentEnabled, depthEnabled, needsCpuDepth };
+
+    useEffect(() => {
+        const depth = previewResult?.detections.depth;
+        if (depth?.task !== 'depth' || !depth.gpu) return;
+        let active = true;
+        const reads: Promise<unknown>[] = [];
+        if (needsCpuDepth && !depth.values) reads.push(readDepthValues(depth));
+        if (step === 'depth-map' && !depth.gpu.rangeValues) reads.push(depth.gpu.readRange());
+        if (reads.length) void Promise.all(reads).then(() => {
+            if (active) setPreviewResult((current) => current?.detections.depth === depth ? { ...current } : current);
+        }).catch((reason) => { if (active) setError(message(reason)); });
+        return () => { active = false; };
+    }, [previewResult, needsCpuDepth, step]);
 
     useEffect(() => {
         if (window.screenCapture) saveTrackVisionSettings({
-            inputSizes, depthEnabled, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture,
+            inputSizes, segmentEnabled, depthEnabled, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture,
         });
-    }, [inputSizes, depthEnabled, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture]);
+    }, [inputSizes, segmentEnabled, depthEnabled, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture]);
 
     const togglePreviewSize = () => {
         const preview = previewRef.current;
@@ -137,14 +171,27 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         }
     }, [detectors.segment, displayLabel]);
 
-    const publish = useCallback((result: TrackVisionFrame | null) => {
+    const publish = useCallback((result: TrackVisionFrame | null, timing?: VisionFrameTimer, drivingFrame = result) => {
+        disposeGpuFrame(latest.current, result);
         if (result) result = { ...result, filterConfidence: options.current.filterConfidence,
             motion: motion.current && result.motion?.generation === motionGeneration.current ? result.motion : undefined };
+        timing?.start('track');
         const reconstruction = reconstructTrack(result);
         const geometry = reconstruction?.geometry ?? null;
+        timing?.start('scene');
         const reconstructedScene = reconstructScene(result);
+        timing?.start('birdsEye');
         const birdsEyeScene = trackHistory.current.update(result, projectBirdsEyeScene(reconstructedScene, result?.calibration));
+        if (timing) {
+            timing.finish(Boolean(result));
+            if (result) result = { ...result, timing: timing.snapshot() };
+        }
         latest.current = result ? { ...result, reconstruction, reconstructedScene, birdsEyeScene, geometry } : null;
+        latestDriving.current = drivingFrame ? {
+            capturedAt: drivingFrame.capturedAt, width: drivingFrame.width, height: drivingFrame.height,
+            camera: drivingFrame.camera, telemetry: drivingFrame.telemetry, position: drivingFrame.position,
+            timing: timing?.snapshot() ?? drivingFrame.timing, detections: {}, reconstruction: null, geometry: null,
+        } : null;
         setPreviewResult(latest.current);
         if (!result) setDepthPointer(null);
         listeners.current.forEach((listener) => listener());
@@ -152,6 +199,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const resetPositionHistory = useCallback(() => {
         positionGeneration.current++;
         models.current.position?.resetHistory();
+        latestDriving.current = null;
         if (latest.current?.position) publish({ ...latest.current, position: undefined });
     }, [publish]);
     useEffect(() => liveTelemetryStore.subscribeEvents((event) => {
@@ -190,6 +238,18 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const handle = useMemo<TrackVisionHandle>(() => ({
         getComponentName: () => name,
         getLatestDetection: () => latest.current,
+        getLatestDrivingDetection: () => latestDriving.current,
+        getTimingSnapshot: () => frameTimer.current?.snapshot() ?? null,
+        requestDepthValues: async () => {
+            cpuDepthUntil.current = Date.now() + 1000;
+            const frame = latest.current, depth = frame?.detections.depth;
+            if (depth?.task !== 'depth' || depth.values) return;
+            await readDepthValues(depth);
+            if (latest.current === frame) {
+                setPreviewResult((current) => current?.detections.depth === depth ? { ...current } : current);
+                listeners.current.forEach((listener) => listener());
+            }
+        },
         subscribeDetection: (listener) => {
             listeners.current.add(listener);
             return () => { listeners.current.delete(listener); };
@@ -202,6 +262,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
 
     const releaseFrames = useCallback(() => {
         captureVersion.current++;
+        frameTimer.current = null;
         models.current.position?.resetHistory();
         clearTimeout(timerRef.current);
         previewFrameRef.current = null;
@@ -229,16 +290,17 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         if (!window.screenCapture) return;
         const version = ++modelVersion.current;
         publish(null);
+        const enabled = { segment: segmentEnabled, depth: depthEnabled, position: true };
         const disposals: Promise<void>[] = [];
         for (const { id } of DETECTION_TASKS) {
             const model = models.current[id];
-            if (model && id === 'depth' && (model.inputSize !== inputSizes.depth || !depthEnabled)) {
+            if (model && (!enabled[id] || (id === 'depth' && model.inputSize !== inputSizes.depth))) {
                 delete models.current[id];
                 disposals.push(model.dispose().catch(() => undefined));
             }
         }
         setDetectors(Object.fromEntries(VISION_MODELS.map(({ id }) => {
-            if (id === 'depth' && !depthEnabled) return [id, { status: 'disabled' }];
+            if (!enabled[id]) return [id, { status: 'disabled' }];
             const model = models.current[id];
             return [id, model ? {
                 status: 'ready', classNames: id === 'position' ? undefined : models.current[id]?.classNames,
@@ -249,7 +311,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
             await Promise.all(disposals);
             for (const { id } of VISION_MODELS) {
                 if (version !== modelVersion.current) return;
-                if (id === 'depth' && !depthEnabled) continue;
+                if (!enabled[id]) continue;
                 if (models.current[id]) continue;
                 try {
                     const model = id === 'depth'
@@ -270,7 +332,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
             }
         });
         // Retrying increments the version above; unmount cleanup invalidates it too.
-    }, [retry, publish, inputSizes, depthEnabled]);
+    }, [retry, publish, inputSizes, segmentEnabled, depthEnabled]);
 
     useEffect(() => {
         const active = Object.values(detectors);
@@ -305,8 +367,14 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 const tick = async () => {
                     if (version !== captureVersion.current) return;
                     const started = performance.now();
+                    let unpublished: TrackVisionFrame | null = null;
                     try {
                         if (video.readyState >= 2 && video.videoWidth && video.videoHeight) {
+                            const capturedAt = Date.now();
+                            const previousCapture = frameTimer.current?.capturedAt;
+                            const timing = new VisionFrameTimer(capturedAt, previousCapture);
+                            frameTimer.current = timing;
+                            timing.start('capture');
                             frame.width = video.videoWidth;
                             frame.height = video.videoHeight;
                             const context = frame.getContext('2d');
@@ -314,10 +382,16 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             context.drawImage(video, 0, 0);
                             const stackVersion = modelVersion.current;
                             const frameConfidence = options.current.confidence;
-                            const frameTasks = DETECTION_TASKS.filter(({ id }) => id !== 'depth' || options.current.depthEnabled);
+                            const frameTasks = DETECTION_TASKS.filter(({ id }) => id === 'segment'
+                                ? options.current.segmentEnabled : options.current.depthEnabled);
+                            timing.start('camera');
                             const result: TrackVisionFrame = { capturedAt: Date.now(), motion: motion.current,
                                 telemetry: liveTelemetryStore.getSnapshot(),
+                                camera: capturePolicyCameraImage(frame),
                                 width: frame.width, height: frame.height, detections: {} };
+                            unpublished = result;
+                            timing.capturedAt = result.capturedAt;
+                            timing.start('references');
                             const telemetry = positionTelemetry.current;
                             const positionVersion = positionGeneration.current;
                             const liveMap = getLiveMap();
@@ -336,35 +410,65 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                                 && liveMap === getLiveMap() && circuitMap === liveMap?.getCircuitMap()
                                 && referenceLap === liveMap?.getReferenceLap() && positionModel === models.current.position;
                             const inference = (async () => {
-                                if (frameTasks.some(({ id }) => !models.current[id])) return;
-                                for (const { id } of frameTasks) {
-                                    if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
-                                    const model = models.current[id]!;
-                                    try {
-                                        if (id === 'depth') {
-                                            const segment = result.detections.segment;
-                                            // Preserve cockpit pixels for depth; their mask is used by downstream edge filtering.
-                                            const region = segment?.task === 'segment' && segment.width > 0 && segment.height > 0
-                                                ? { width: segment.width, height: segment.height, mask: new Uint8Array(segment.width * segment.height).fill(1) } : null;
-                                            if (!region) throw new Error('Depth requires a valid segmentation grid.');
-                                            result.detections.depth = await models.current.depth!.detect(frame, frameConfidence, region);
-                                        } else {
-                                            result.detections.segment = await model.detect(frame, frameConfidence);
+                                await (async () => {
+                                    if (frameTasks.some(({ id }) => !models.current[id])) return;
+                                    for (const { id } of frameTasks) {
+                                        if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
+                                        const model = models.current[id]!;
+                                        try {
+                                            if (id === 'depth') {
+                                                const segment = result.detections.segment;
+                                                if (options.current.segmentEnabled
+                                                    && (segment?.task !== 'segment' || !(segment.width > 0 && segment.height > 0))) {
+                                                    throw new Error('Depth requires a valid segmentation grid.');
+                                                }
+                                                // Preserve cockpit pixels for depth; their mask is used by downstream edge filtering.
+                                                timing.start('depth');
+                                                result.detections.depth = await models.current.depth!.detect(frame, frameConfidence);
+                                                const depth = result.detections.depth;
+                                                if (depth.task === 'depth' && (options.current.needsCpuDepth || Date.now() < cpuDepthUntil.current
+                                                    || (depth.scale !== 'relative' && cameraCalibration.current))) {
+                                                    timing.start('depthReadback');
+                                                    await readDepthValues(depth);
+                                                }
+                                            } else {
+                                                timing.start('segment');
+                                                result.detections.segment = await model.detect(frame, frameConfidence);
+                                            }
+                                        }
+                                        catch (reason) {
+                                            if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
+                                            delete models.current[id];
+                                            void model.dispose().catch(() => undefined);
+                                            setDetectors((current) => ({ ...current, [id]: {
+                                                status: 'retrying', error: message(reason),
+                                            } }));
+                                            return;
                                         }
                                     }
-                                    catch (reason) {
-                                        if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
-                                        delete models.current[id];
-                                        void model.dispose().catch(() => undefined);
-                                        setDetectors((current) => ({ ...current, [id]: {
-                                            status: 'retrying', error: message(reason),
-                                        } }));
-                                        return;
+                                    if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
+                                    const segment = result.detections.segment;
+                                    if (segment?.task === 'segment') {
+                                        try {
+                                            // Depth has already been submitted; mask mapping never holds the ORT queue.
+                                            timing.start('segmentReadback');
+                                            await readSegmentInstances(segment);
+                                        } catch (reason) {
+                                            if (version !== captureVersion.current || stackVersion !== modelVersion.current) return;
+                                            const segmentModel = models.current.segment;
+                                            delete models.current.segment;
+                                            delete result.detections.segment;
+                                            void segment.gpu?.dispose().catch(() => undefined);
+                                            void segmentModel?.dispose().catch(() => undefined);
+                                            setDetectors((current) => ({ ...current, segment: { status: 'retrying', error: message(reason) } }));
+                                            return;
+                                        }
                                     }
-                                }
+                                })();
                                 if (positionModel && references && telemetry && positionCurrent()
                                     && version === captureVersion.current && stackVersion === modelVersion.current) {
                                     try {
+                                        timing.start('position');
                                         const position = await positionModel.detect(frame, references, {
                                             normalized_position: telemetry.position, game: telemetry.game,
                                             map_name: [circuitMap?.circuit_name, circuitMap?.source_track_key, telemetry.track]
@@ -388,10 +492,12 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             await inference;
                             if (version !== captureVersion.current) return;
                             if (stackVersion !== modelVersion.current) {
+                                timing.finish(false);
                                 timerRef.current = setTimeout(tick, 0);
                                 return;
                             }
                             // Keep a clean copy for the camera calibration preview.
+                            timing.start('preview');
                             const previewFrame = previewFrameRef.current ?? document.createElement('canvas');
                             previewFrame.width = frame.width;
                             previewFrame.height = frame.height;
@@ -407,9 +513,10 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             }
                             result.calibration = cameraCalibration.current;
                             const complete = frameTasks.every(({ id }) => Boolean(result.detections[id]));
-                            publish(complete ? result : null);
+                            publish(complete ? result : null, timing, result);
+                            if (complete) unpublished = null;
                             setHasFrame(true);
-                            setStatus(complete ? frameTasks.map(({ id, label }) => `${label} · ${Math.round(result.detections[id]!.inferenceMs)} ms`).join(' / ')
+                            setStatus(complete ? frameTasks.map(({ id, label }) => `${label} · ${Math.round(result.detections[id]!.inferenceMs)} ms`).join(' / ') || 'Screen shared. Segmentation and depth are disabled.'
                                 : `Screen shared. Waiting for ${frameTasks.map(({ label }) => label.toLowerCase()).join(' and ')}.`);
                         }
                         timerRef.current = setTimeout(tick, Math.max(0, 200 - (performance.now() - started)));
@@ -417,7 +524,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                         if (version !== captureVersion.current) return;
                         stop();
                         setError(message(reason));
-                    }
+                    } finally { disposeGpuFrame(unpublished); }
                 };
                 void tick();
             } catch (reason) {
@@ -480,7 +587,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                     {hasFrame && hoveredDepth && depthRect && <span className="track-vision__depth-pointer" aria-label="Depth at mouse"
                         style={{ left: hoveredDepth.x, top: hoveredDepth.y,
                             transform: `translate(${hoveredDepth.x > depthRect.width / 2 ? 'calc(-100% - 12px)' : '12px'}, ${hoveredDepth.y > depthRect.height / 2 ? 'calc(-100% - 12px)' : '12px'})` }}>
-                        {hoveredDepth.depth === null ? 'No valid depth' : formatDepth(hoveredDepth.depth, depthMap?.depth.scale, 2)}
+                        {!depthMap?.depth.values ? 'Reading depth…' : hoveredDepth.depth === null ? 'No valid depth' : formatDepth(hoveredDepth.depth, depthMap?.depth.scale, 2)}
                     </span>}
                     {hasFrame && step === 'calibration' && showCalibrationOnCapture && previewFrameRef.current && validCalibration(previewCamera)
                         && <CameraGroundGrid camera={previewCamera} applied={Boolean(calibration)} />}
@@ -491,7 +598,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                         </button>
                     </div>
                 </dialog>
-                <PipelineDetails step={step} frame={previewResult} masks={masks} classNames={labels} filterConfidence={filterConfidence} depthMap={depthMap} depthEnabled={depthEnabled} />
+                <PipelineDetails step={step} frame={previewResult} masks={masks} classNames={labels} filterConfidence={filterConfidence}
+                    depthMap={depthMap} segmentEnabled={segmentEnabled} depthEnabled={depthEnabled} />
                 <div hidden={!isSceneStep}>
                     <ReconstructedSceneView scene={hasFrame ? previewResult?.reconstructedScene ?? null : null}
                         source={hasFrame ? previewFrameRef.current : null} capturedAt={previewCapturedAt} />
@@ -548,9 +656,10 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                                     <option key={size} value={size}>{label} · {size} × {size}</option>)}
                             </select>
                         </label>}
-                        {id === 'depth' && <label className="track-vision__depth-toggle">
-                            <input type="checkbox" checked={depthEnabled} onChange={(event) => setDepthEnabled(event.target.checked)} />
-                            Enable depth model
+                        {id !== 'position' && <label className="track-vision__model-toggle">
+                            <input type="checkbox" checked={id === 'segment' ? segmentEnabled : depthEnabled}
+                                onChange={(event) => (id === 'segment' ? setSegmentEnabled : setDepthEnabled)(event.target.checked)} />
+                            Enable {id === 'segment' ? 'segmentation' : 'depth'} model
                         </label>}
                         {!!detectors[id].classNames?.length && <div className="track-vision__hint" aria-label="Model labels">Labels: {detectors[id].classNames!.join(', ')}</div>}
                         {detectors[id].status === 'ready' && <div className="track-vision__hint" aria-label={`${label} inference device`}>GPU acceleration active</div>}
