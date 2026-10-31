@@ -1,4 +1,4 @@
-"""Load prepared image, XYZ, and track-context inputs without reading driver telemetry."""
+"""Load prepared image, XYZ, orientation, and track-context inputs without reopening telemetry."""
 
 from __future__ import annotations
 
@@ -61,6 +61,17 @@ def encode_position_context(normalized_position, game, map_name, categories):
     return np.asarray(encoded, dtype=np.float32)
 
 
+def position_orientation(orientation):
+    """Validate world heading, pitch, roll in radians, without filling missing angles."""
+    values = np.asarray(orientation)
+    if values.shape != (3,) or values.dtype.kind not in "fi" or not np.isfinite(values).all():
+        raise ValueError("orientation must contain finite heading, pitch, roll in radians.")
+    values = values.astype(np.float32)
+    if not np.isfinite(values).all():
+        raise ValueError("orientation must contain finite float32 angles.")
+    return values
+
+
 class PositionCurve:
     """A closed-lap XYZ curve indexed by normalized lap position."""
 
@@ -115,7 +126,7 @@ def reference_inputs(normalized_position, reference_lap: PositionCurve, centerli
 def load_position_manifest(path: Path) -> dict[str, list[dict]]:
     """Read a position-file folder or dataset index, grouped by session without splitting.
 
-    Each frame contains session_id, image, game, map_name, normalized_position, references,
+    Each frame contains session_id, image, game, map_name, normalized_position, orientation, references,
     and target. References contain world XYZ; targets contain car-local
     right/forward/up offsets, for the reference lap and optionally the centerline.
     Image paths are relative to their JSON file. No telemetry or curve files are read.
@@ -155,9 +166,9 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
                 f"Position targets must use corrected right/forward/up axes: {position_path}. "
                 "Run scripts/migrate_position_targets.py for ACC local targets, or regenerate the dataset."
             )
-        if not {"game", "map_name", "normalized_position"} <= frame.keys():
+        if not {"game", "map_name", "normalized_position", "orientation"} <= frame.keys():
             raise ValueError(
-                "Position files require game, map_name, and normalized_position; "
+                "Position files require game, map_name, normalized_position, and orientation; "
                 "regenerate the dataset with prepare_position_dataset.py."
             )
         image = (position_path.parent / frame["image"]).resolve()
@@ -169,6 +180,7 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
         record = {
             "session_id": session_id, "image": image,
             **position_context(frame["normalized_position"], frame["game"], frame["map_name"]),
+            "orientation": position_orientation(frame["orientation"]),
         }
         for field in ("references", "target"):
             values = np.asarray(frame[field], dtype=np.float32)
@@ -251,6 +263,7 @@ class PositionDataset(Dataset):
             i: {
                 "image": image_tensor(self.records[i]["image"], self.imgsz, augment=self.augment),
                 "references": torch.from_numpy(self.records[i]["references"][:1]),
+                "orientation": torch.from_numpy(position_orientation(self.records[i]["orientation"])),
                 "context": torch.from_numpy(encode_position_context(
                     self.records[i]["normalized_position"], self.records[i]["game"],
                     self.records[i]["map_name"], self.categories,
@@ -260,10 +273,10 @@ class PositionDataset(Dataset):
         }
         inputs = {
             field: torch.stack([frames[i][field] for i in indices]) if self.sequence_length > 1 else frames[index][field]
-            for field in ("image", "references", "context")
+            for field in ("image", "references", "context", "orientation")
         }
         # Use only the reference lap; prepared files may also contain centerline XYZ.
-        # Keep inputs and targets separate. No raw telemetry is returned to the trainer.
+        # Keep inputs and targets separate; driver XYZ is never returned to the trainer.
         return {
             "game": row["game"],
             "map_name": row["map_name"],

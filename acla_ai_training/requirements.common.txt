@@ -18,8 +18,12 @@ mcp>=1.19
 
 # Track-image polygon segmentation (kept out of the live AI service).
 ultralytics>=8.4,<9
+# Pretrained ResNet-18 encoder for position_model_v2 (resolved alongside the runtime's torch).
+torchvision>=0.15
 # Export segmentation and position models during publication.
 onnx>=1.16,<2
+# Indexed comparisons for position-training sample selection.
+scipy>=1.12,<2
 -r training/image_segmentation/requirements-labelme.txt
 # Browser access to Labelme in the headless training container.
 websockify>=0.12,<1

@@ -102,11 +102,27 @@ it('waits for an in-flight prediction before releasing its GPU session', async (
     expect(session.release).toHaveBeenCalledTimes(1);
 });
 
+it('feeds single-frame world orientation in radians and rejects missing or nonfinite angles', async () => {
+    session.inputNames = ['images', 'references', 'orientation'];
+    const model = await TrackPositionModel.load();
+    expect(model.requiresOrientation).toBe(true);
+    const frame = document.createElement('canvas');
+    const references = { reference: { x: 1, y: 2, z: 3 } };
+    await model.detect(frame, references, { normalized_position: 0.25, orientation: [1.2, -0.1, 0.3] });
+    expect(session.run.mock.calls[1][0].orientation).toMatchObject({ dims: [1, 3], data: new Float32Array([1.2, -0.1, 0.3]) });
+    for (const orientation of [undefined, [0, NaN, 0], [0, Infinity, 0], [0, 0]]) {
+        await expect(model.detect(frame, references, { normalized_position: 0.25, orientation: orientation as any }))
+            .rejects.toThrow('finite orientation');
+    }
+    expect(session.run).toHaveBeenCalledTimes(2);
+    await model.dispose();
+});
+
 describe('temporal position inference', () => {
     let pixel: number;
     beforeEach(() => {
         pixel = 0;
-        session.inputNames = ['images', 'references', 'context'];
+        session.inputNames = ['images', 'references', 'context', 'orientation'];
         (loadBackendPositionModel as jest.Mock).mockResolvedValue({ bytes: new ArrayBuffer(8), inputSize: 32,
             sequenceLength: 3, metadata: { name: 'track-position' }, categories: { game: ['acc'], map_name: ['monza'] } });
         (HTMLCanvasElement.prototype.getContext as jest.Mock).mockReturnValue({ fillRect: jest.fn(), drawImage,
@@ -116,11 +132,13 @@ describe('temporal position inference', () => {
     const detect = (model: TrackPositionModel, step: number) => {
         pixel = step * 32;
         return model.detect(document.createElement('canvas'), { reference: { x: step, y: -step, z: step * 10 } },
-            { normalized_position: step / 10, game: 'acc', map_name: 'monza' });
+            { normalized_position: step / 10, game: 'acc', map_name: 'monza', orientation: [step / 2, -step / 10, step / 20] });
     };
     const expectWindow = (call: number, steps: number[]) => {
-        const { images, references, context } = session.run.mock.calls[call][0];
+        const { images, references, context, orientation } = session.run.mock.calls[call][0];
         expect(images.dims).toEqual([1, 3, 3, 32, 32]);
+        expect(orientation).toMatchObject({ dims: [1, 3, 3],
+            data: new Float32Array(steps.flatMap((step) => [step / 2, -step / 10, step / 20])) });
         expect(references).toMatchObject({ dims: [1, 3, 1, 3],
             data: new Float32Array(steps.flatMap((step) => [step, -step, step * 10])) });
         expect(context).toMatchObject({ dims: [1, 3, 3],
@@ -168,6 +186,8 @@ describe('temporal position inference', () => {
             .rejects.toThrow('finite reference points');
         await detect(model, 2);
         expectWindow(2, [2, 2, 2]);
+        await expect(model.detect(document.createElement('canvas'), { reference: { x: 0, y: 0, z: 0 } },
+            { normalized_position: 0.25 })).rejects.toThrow('finite orientation');
         session.run.mockRejectedValueOnce(new Error('GPU failure'));
         await expect(detect(model, 3)).rejects.toThrow('GPU failure');
         expect(session.run.mock.calls[3][0].images.dispose).toHaveBeenCalledTimes(1);

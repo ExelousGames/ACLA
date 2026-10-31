@@ -106,15 +106,16 @@ vocabulary in its saved order. Progress and game come from the capture-time tele
 map names use the loaded map's display name or simulator key. Unknown category labels
 produce an all-zero one-hot vector. Two-input ONNX graphs run without context.
 
-Temporal GRU exports (inference schema 5) use the published
+Temporal GRU exports (inference schema 7; older schema 5 remains supported) use the published
 `metadata.inference.temporal.sequenceLength` as their window length `T` (training defaults to 4).
-Track Vision keeps each captured image aligned with its own reference XYZ and context:
+Track Vision keeps each captured image aligned with its own reference XYZ, orientation, and context:
 
 | Input | Shape |
 | --- | --- |
 | `images` | `[1, T, 3, H, W]` |
 | `references` | `[1, T, 1, 3]` |
 | `context` | `[1, T, 1 + len(game) + len(map_name)]` |
+| `orientation` | `[1, T, 3]` |
 
 Frames are ordered oldest to newest; short windows repeat the earliest captured frame
 on the left. Each image uses the same letterbox preprocessing as single-frame inference.
@@ -122,7 +123,11 @@ The graph resets its GRU state for every window and returns only the final frame
 `deltas` as `[1, 1, 3]`; there is no hidden-state tensor to carry between calls.
 Warm-up frames never enter live history. Unsupported temporal ordering, padding or
 state semantics are rejected when loading. Models without temporal metadata retain
-the single-frame input shapes, including schema 4 exports from `--sequence-length 1`.
+the single-frame input shapes. New `--sequence-length 1` exports use schema 6
+with `orientation` shaped `[1, 3]`. The orientation input is world heading, pitch,
+roll in radians from `Physics_heading`, `Physics_pitch`, and `Physics_roll`.
+`metadata.inference.orientation` declares the order, units, and frame. The graph
+encodes sine/cosine internally. Older graphs without orientation remain supported.
 
 History clears on capture stop/restart, telemetry session or recording stream reset,
 game/session/map/reference changes, video seeking or a backwards simulator clock,
@@ -140,9 +145,11 @@ resetting telemetry clears the marker. The signed XYZ output triple is shown her
 and published as `TrackVisionDetection.position.referenceDelta`,
 with `coordinateFrame: "car_local"`, `references`, `normalizedPosition`, and `inferenceMs`.
 The offset is `diag(-1, 1, 1) @ inverse_world_rotation @ (reference_position - current_position)`
-in source coordinate units. The model learns this local offset; driver XYZ and world
-rotation are used only to prepare training targets, never as position-model inputs.
-The `references` input remains in world/source XYZ coordinates. Missing references, paused or
+in source coordinate units. The model learns this local offset. Driver XYZ is used only to prepare training
+targets. New models also require world orientation for training and inference;
+regenerate prepared datasets missing orientation and retrain older checkpoints.
+The `references` input remains in world/source XYZ coordinates. Missing references or
+required orientation, paused or
 stale telemetry skip position inference while image-only segmentation continues; resetting telemetry or changing the loaded
 map/reference during inference discards the pending position prediction.
 

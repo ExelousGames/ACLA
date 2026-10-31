@@ -13,7 +13,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
-SESSION_DOWNLOAD_DIR = Path(__file__).resolve().parents[2] / "storage" / "session_downloads"
+SESSION_DOWNLOAD_DIR = (
+    Path(__file__).resolve().parents[2] / "storage" / "session_downloads"
+    / "session_downloaded_by_prepare_position_dataset"
+)
 
 
 class _Video(BaseModel):

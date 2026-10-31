@@ -176,7 +176,7 @@ def test_local_targets_reject_invalid_rotation(rotation):
         local_targets([[1, 2, 3]], rotation)
 
 
-def test_preparation_rotation_changes_only_targets_and_preserves_world_geometry(dataset):
+def test_preparation_saves_orientation_and_rotates_targets_preserving_world_geometry(dataset):
     prepare(dataset)
     before = load_position_manifest(dataset.downloads)["a" * 24][1]
     for pair in dataset.extractions[0]["frames"]:
@@ -191,7 +191,8 @@ def test_preparation_rotation_changes_only_targets_and_preserves_world_geometry(
         assert before[field] == after[field]
     saved = json.loads(after["image"].with_suffix(".position.json").read_text())
     assert saved["driver_position"] == [0.1, 0.2, 0.3]
-    assert "world_rotation" not in saved
+    np.testing.assert_allclose(saved["orientation"], [np.pi / 2, 0, 0])
+    np.testing.assert_allclose(after["orientation"], [np.pi / 2, 0, 0])
 
 
 def test_preparation_accepts_one_session_without_assigning_a_split(dataset):
@@ -283,7 +284,7 @@ def test_driver_xyz_and_other_telemetry_never_become_training_inputs(dataset):
     prepare(dataset)
     after = load_position_manifest(dataset.downloads)["a" * 24][0]
     assert set(before) == set(after) == {
-        "session_id", "image", "references", "target", "game", "map_name", "normalized_position",
+        "session_id", "image", "references", "target", "game", "map_name", "normalized_position", "orientation",
     }
     assert before["image"] == after["image"]
     for field in ("session_id", "game", "map_name", "normalized_position"):
@@ -635,7 +636,7 @@ def downloadable_dataset(dataset, monkeypatch, tmp_path):
     dataset.backend.call_backend_function.side_effect = request
     dataset.backend.iter_session_video = video
     dataset.requests = requests
-    dataset.downloads = tmp_path / "downloads"
+    dataset.downloads = tmp_path / "session_downloads" / "session_downloaded_by_prepare_position_dataset"
     dataset.args = ["--sessions", dataset.folders[0].name, dataset.folders[1].name]
     monkeypatch.setattr(client, "backend_service", dataset.backend)
     monkeypatch.setattr(script, "SESSION_DOWNLOAD_DIR", dataset.downloads)
@@ -718,7 +719,7 @@ def test_one_command_downloads_extracts_and_prepares_before_annotation(downloada
             assert not row["image"].with_suffix(".json").exists()
             position = json.loads(row["image"].with_suffix(".position.json").read_text())
             assert set(position) == {"session_id", "image", "references", "target", "game", "map_name",
-                                     "normalized_position", "coordinate_frame", "target_definition", "driver_position"}
+                                     "normalized_position", "coordinate_frame", "target_definition", "driver_position", "orientation"}
             assert position["coordinate_frame"] == "car_local"
             assert position["target_definition"] == TARGET_DEFINITION
             assert position["game"] == row["game"] == "acc"
@@ -746,6 +747,55 @@ def test_one_command_downloads_extracts_and_prepares_before_annotation(downloada
                 assert row[field] == original[field]
             np.testing.assert_array_equal(row["references"], original["references"])
             np.testing.assert_array_equal(row["target"], original["target"])
+
+
+def test_cli_saves_aligned_heading_pitch_roll_for_offline_training(downloadable_dataset, capsys):
+    data = downloadable_dataset
+    orientations = [[0.4 + index, -0.2 - index / 10, 0.1 + index / 100] for index in range(3)]
+    for folder in data.folders:
+        path = folder / "telemetry.json"
+        rows = json.loads(path.read_text())
+        for row, orientation in zip(rows, orientations):
+            row.update(zip(("Physics_heading", "Physics_pitch", "Physics_roll"), orientation))
+        write_json(path, rows)
+
+    assert script.main([*data.args, "--fps", "2", "--video-offset", f"{data.folders[0].name}=0.25"]) == 0
+    assert json.loads(capsys.readouterr().out)["frames"] == 3
+    # Training must use the saved angles without access to the source telemetry.
+    for folder in data.downloads.iterdir():
+        (folder / "telemetry.json").unlink()
+    records = load_position_manifest(data.downloads)
+    for session_id, indices in zip((folder.name for folder in data.folders), ([1], [0, 2])):
+        assert len(records[session_id]) == len(indices)
+        for frame, index in zip(records[session_id], indices):
+            position = json.loads(frame["image"].with_suffix(".position.json").read_text())
+            assert position["orientation"] == orientations[index]
+            np.testing.assert_allclose(frame["orientation"], orientations[index])
+
+
+def test_copying_labelme_samples_preserves_position_training_data(downloadable_dataset, capsys):
+    data = downloadable_dataset
+    assert script.main(data.args) == 0
+    capsys.readouterr()
+    before = load_position_manifest(data.downloads)
+    session_id = data.folders[0].name
+    image = before[session_id][0]["image"]
+    write_json(image.with_suffix(".json"), {"imagePath": image.name, "shapes": []})
+    data.requests.clear()
+
+    assert script.main(["--move-annotated"]) == 0
+
+    assert json.loads(capsys.readouterr().out)["frames"] == 1
+    assert not data.requests
+    after = load_position_manifest(data.downloads)
+    assert {key: len(frames) for key, frames in after.items()} == {key: len(frames) for key, frames in before.items()}
+    destination = data.downloads.parent / "session image segmentation samples" / image.relative_to(data.downloads)
+    samples = load_position_manifest(data.downloads.parent / "session image segmentation samples")
+    copied = samples[session_id][0]
+    assert copied["image"] == destination
+    np.testing.assert_array_equal(copied["target"], before[session_id][0]["target"])
+    assert destination.with_suffix(".json").is_file()
+    assert image.is_file()
 
 
 @pytest.mark.parametrize("include_valid", [False, True])
@@ -966,6 +1016,7 @@ def test_guided_preparation_skips_existing_local_sessions(dataset, monkeypatch, 
         for folder in dataset.folders
     ]}
     answers = iter([
+        "1",  # Download sessions from the main menu.
         "6", "1", "2", "",  # Pick both listed sessions.
         "", "", "", "",  # Default sampling/alignment, no offsets, start.
     ])
@@ -983,6 +1034,7 @@ def test_guided_preparation_reprompts_invalid_answers_before_downloading(downloa
     data = downloadable_dataset
     train, val = [folder.name for folder in data.folders]
     answers = iter([
+        "1",  # Download sessions from the main menu.
         "bad", "6", "", "99", "c" * 24, train.upper(), train, val, "",  # Invalid and duplicate IDs.
         "0", "nan", "2", "-1", "inf", "100",  # Sampling and tolerance.
         "invalid", f"{'c' * 24}=0", f"{train}=0.25", f"{train}=0.5", "",
@@ -1010,7 +1062,7 @@ def test_guided_preparation_reprompts_invalid_answers_before_downloading(downloa
 def test_guided_image_cancellation_leaves_no_downloads_or_output(downloadable_dataset, monkeypatch):
     data = downloadable_dataset
     answers = iter([
-        "1", "", "", "", "2",
+        "1", "1", "", "", "", "2",
     ])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
     assert script.main([]) == 0
@@ -1033,7 +1085,7 @@ def test_guided_date_ranges_download_only_selected_sessions(downloadable_dataset
         return response
 
     data.backend.call_backend_function.side_effect = with_old_session
-    answers = iter(["last 2 days", "", "", "", "1"])
+    answers = iter(["1", "last 2 days", "", "", "", "1"])
 
     def answer(_):
         assert all(endpoint == "racing-session/with-videos" for endpoint in data.requests)
@@ -1052,8 +1104,9 @@ def test_guided_date_ranges_download_only_selected_sessions(downloadable_dataset
     ({"error": "Denied"}, "Denied"),
     ({"unexpected": []}, "Invalid video session listing"),
 ])
-def test_guided_listing_failure_stops_before_download(downloadable_dataset, capsys, response, message):
+def test_guided_listing_failure_stops_before_download(downloadable_dataset, monkeypatch, capsys, response, message):
     data = downloadable_dataset
+    monkeypatch.setattr("builtins.input", lambda _: "1")
     data.backend.call_backend_function.side_effect = None
     data.backend.call_backend_function.return_value = response
     assert script.main([]) == 1
@@ -1110,6 +1163,7 @@ def test_date_selection_uses_local_calendar_boundaries_including_dst(monkeypatch
 def test_guided_range_can_select_all_sessions_without_splitting(downloadable_dataset, monkeypatch, capsys, choice):
     data = downloadable_dataset
     answers = iter([
+        "1",  # Download sessions from the main menu.
         choice,  # Select every available session for preparation.
         "", "", "", "1",
     ])

@@ -13,12 +13,15 @@ export interface PositionContext {
     normalized_position: number;
     game?: string;
     map_name?: string | string[];
+    /** World heading, pitch, roll in radians, captured with this frame. */
+    orientation?: [number, number, number];
 }
 
 interface PositionFrame {
     image: Float32Array;
     references: Float32Array;
     context?: Float32Array;
+    orientation?: Float32Array;
 }
 
 export class TrackPositionModel {
@@ -27,6 +30,8 @@ export class TrackPositionModel {
     private busy = false;
     private canvas = document.createElement('canvas');
     private history: PositionFrame[] = [];
+
+    get requiresOrientation() { return this.session.inputNames.includes('orientation'); }
 
     private constructor(private runtime: typeof import('onnxruntime-web'), private session: InferenceSession,
         readonly name: string, readonly inputSize: number, private categories: Record<string, string[]> = {},
@@ -52,7 +57,8 @@ export class TrackPositionModel {
                 // Run the actual graph instead of inferring compatibility from a version or input count.
                 // Warm-up never becomes part of the captured history.
                 await model.run([{ image: new Float32Array(3 * loaded.inputSize ** 2), references: new Float32Array(3),
-                    context: model.encodeContext({ normalized_position: 0 }) }]);
+                    context: model.encodeContext({ normalized_position: 0 }),
+                    orientation: model.requiresOrientation ? new Float32Array(3) : undefined }]);
                 return model;
             } catch (error) {
                 await session?.release().catch(() => undefined);
@@ -99,6 +105,9 @@ export class TrackPositionModel {
             if (window[0].context) {
                 feeds.context = new this.runtime.Tensor('float32', stack((frame) => frame.context!), [...batch, window[0].context.length]);
             }
+            if (this.requiresOrientation) {
+                feeds.orientation = new this.runtime.Tensor('float32', stack((frame) => frame.orientation!), [...batch, 3]);
+            }
             outputs = await this.session.run(feeds);
             const result = outputs.deltas;
             if (result?.dims.join(',') !== '1,1,3' || !(result.data instanceof Float32Array)
@@ -119,6 +128,12 @@ export class TrackPositionModel {
             this.resetHistory();
             throw new Error('Position inference requires a frame and finite reference points.');
         }
+        const orientation = this.requiresOrientation && positionContext?.orientation
+            ? new Float32Array(positionContext.orientation) : undefined;
+        if (this.requiresOrientation && (!orientation || orientation.length !== 3 || !orientation.every(Number.isFinite))) {
+            this.resetHistory();
+            throw new Error('Position inference requires finite orientation: world heading, pitch, roll in radians.');
+        }
         this.busy = true;
         const operation = (async () => {
             const started = performance.now();
@@ -132,7 +147,7 @@ export class TrackPositionModel {
             context.imageSmoothingQuality = 'high';
             context.drawImage(frame, Math.floor((this.inputSize - width) / 2), Math.floor((this.inputSize - height) / 2), width, height);
             const image = rgbaToChw(context.getImageData(0, 0, this.inputSize, this.inputSize).data);
-            this.history = [...this.history, { image, references: points, context: this.encodeContext(positionContext) }]
+            this.history = [...this.history, { image, references: points, context: this.encodeContext(positionContext), orientation }]
                 .slice(-this.sequenceLength);
             // Snapshot before queueing so resetHistory during an in-flight call stays effective.
             const frames = this.history;

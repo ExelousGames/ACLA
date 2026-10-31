@@ -60,7 +60,8 @@ checkpoints without retraining and the ONNX-only local FastAPI upload endpoint.
 
 ## Prepare images, telemetry, and position references
 
-Run the guided preparation command to choose sessions,
+Run the guided preparation command for a main menu offering **Download sessions**,
+**Copy annotated images**, and **Exit**. Choose Download sessions to select sessions,
 frame sampling, and alignment settings:
 
 ```bash
@@ -122,7 +123,8 @@ to prepare position inputs and targets.
 
 ### Prepared files
 
-Downloads and images are kept in `storage/session_downloads/SESSION_ID/`:
+Downloads and images are kept in
+`storage/session_downloads/session_downloaded_by_prepare_position_dataset/SESSION_ID/`:
 
 - `telemetry.json`: all telemetry rows, in backend chunk order.
 - `video_000.mp4`: the session's MP4, named by backend video index.
@@ -135,7 +137,7 @@ Downloads and images are kept in `storage/session_downloads/SESSION_ID/`:
 
 The video preparation command creates each image and its `.position.json` file
 in the same folder. Each position file contains `session_id`, `image`, `game`,
-`map_name`, `normalized_position`, `references`, and `target`.
+`map_name`, `normalized_position`, `orientation`, `references`, and `target`.
 The `references` and `target` arrays are two XYZ triples, ordered reference lap then
 centerline. Images and their matching position files can be moved together.
 
@@ -214,29 +216,59 @@ driver XYZ axes (Z up). For ACC, it uses `Physics_heading`,
 vector into car-local XYZ: **right, forward, up**. The position files mark these
 targets with `coordinate_frame: car_local`; no world-space targets are saved.
 Driver world XYZ is retained only for the annotation map. Training keeps reference
-world XYZ as input and uses neither driver XYZ nor rotation as model inputs.
+world XYZ and world orientation as inputs; driver XYZ is excluded. The required
+`orientation` triple is `[heading, pitch, roll]` in radians, saved from the aligned
+telemetry. The model encodes each angle as sine/cosine internally. Regenerate
+datasets missing orientation with `prepare_position_dataset.py` and retrain older
+checkpoints; missing orientation is never replaced with zeros.
 All three rotation fields must be finite. iRacing sessions are currently skipped
 because their recorded position and heading fields use different world frames.
 
 After preparation succeeds, annotate the images in each reported directory:
 
 ```bash
-python scripts/open_labelme.py storage/session_downloads/SESSION_ID_A/frames
-python scripts/open_labelme.py storage/session_downloads/SESSION_ID_B/frames
+python scripts/open_labelme.py "storage/session_downloads/session_downloaded_by_prepare_position_dataset/SESSION_ID_A/frames"
+python scripts/open_labelme.py "storage/session_downloads/session_downloaded_by_prepare_position_dataset/SESSION_ID_B/frames"
 ```
 
 Save Labelme annotations as `frame_000000.json` beside each image, alongside its
-separate `frame_000000.position.json`. Then train the position extension from the
-folder containing the prepared pairs and an existing segmentation
-checkpoint:
+separate `frame_000000.position.json`. Choose **Copy annotated images** from the
+preparation command's main menu, or run:
 
 ```bash
-python scripts/train_position.py \
-  --manifest storage/session_downloads \
-  --model storage/image_segmentation/runs/train/weights/best.pt \
+python scripts/prepare_position_dataset.py --move-annotated
+```
+
+The existing `--move-annotated` flag now copies saved Labelme annotations, their images, and any matching
+`.position.json` files from sessions in
+`storage/session_downloads/session_downloaded_by_prepare_position_dataset/` into
+`storage/session_downloads/session image segmentation samples/SESSION_ID/frames/video_000/`.
+All original files stay in the downloaded sessions.
+The copy works without backend access, preserves session/video subfolders, and
+checks for missing images before copying any files.
+If an image folder already exists in the samples directory, the command creates
+a numbered sibling: `SESSION_ID/frames/video_000_1/`, then `video_000_2/`, and so on.
+Each source folder gets one destination per run, containing all its annotated
+images, Labelme annotations, and available `.position.json` files.
+Existing files and folders are preserved; repeat runs create another numbered
+folder even when the incoming files are identical.
+The command reports `duplicated_frames` and `duplicated_directories` in its output;
+`frames` includes all copied frames.
+To avoid including both originals and copies in training, select either the
+download folder (all prepared images) or the samples folder (annotated images).
+Training recursively from the samples folder includes its numbered folders.
+
+Then train `position_model_v2` from the folder containing the prepared pairs:
+
+```bash
+python scripts/train_position_v2.py \
+  --manifest "storage/session_downloads/session_downloaded_by_prepare_position_dataset" \
   --output storage/image_segmentation/position-runs/run-1 \
   --epochs 100 --imgsz 768 --batch 8 --device 0
 ```
+
+Use `scripts/train_position.py` with the same options to train the original
+`position_model.py` CNN/GRU from scratch.
 
 Folder input includes all `.position.json` files recursively. To train on a subset,
 pass a folder containing only those image/position pairs to `--manifest`.
@@ -247,7 +279,7 @@ After image extraction, training assigns whole sessions from each
 Each map needs at least two sessions. Validation uses the session combination
 whose total frame count is closest to the requested fraction, accounting for
 unequal session sizes; the seed randomizes equally balanced choices.
-Sessions never cross splits, and all frames are retained. Images from all maps
+Sessions never cross splits, and by default all frames are retained. Images from all maps
 are shuffled within each split. A single map is sufficient.
 The training and validation maps are printed and saved in the run's `split.json`,
 along with image paths, target frame fraction, and seed. The same inputs and seed reproduce
@@ -255,21 +287,38 @@ the assignments. Position data must use adjacent
 `.position.json` files. Indexes containing inline frame data or preset `split`
 assignments are rejected; rerun preparation and pass the folder of prepared pairs.
 
+To reduce near-duplicate training targets, add any combination of
+`--min-offset-distance 0.1`, `--min-orientation-distance-deg 5`, and
+`--min-normalized-position-distance 0.01` (example thresholds). The first compares
+3D local XYZ offsets in source units; the second compares wrapped heading,
+pitch, and roll differences in degrees. The third compares circular lap progress:
+0.01 means 1% of a lap, wrapping across 0/1. All enabled thresholds must be close
+to a kept sample before another target is removed. Selection runs separately per
+game/map after splitting sessions, uses `--seed`, and uses a KD-tree instead of
+an all-pairs distance matrix. Validation keeps every frame, and temporal windows
+keep their original history. Counts and thresholds are saved in `split.json`
+under `density_sampling`; `train` lists retained targets and, for temporal runs,
+`train_history` lists all available training frames. Omit all three options to disable
+thinning. Larger thresholds keep fewer distinct examples and can discard useful
+visual or track-position variation; start conservatively.
+
 The regression trainer uses images, reference XYZ, game/map names, normalized lap
-position, and prepared position targets. Names are one-hot encoded using category
+position, world orientation, and prepared position targets. Names are one-hot encoded using category
 vocabularies saved with the checkpoint for inference. The trainer
-does not read Labelme polygons. To incorporate newly drawn region labels into
-its image features, train a segmentation checkpoint with those labels first,
-then pass that checkpoint to `--model`. The preparation merge leaves that
-training behavior unchanged. See the
+fine-tunes an ImageNet-pretrained ResNet-18, retains its spatial feature maps
+through a small ConvLSTM, and regresses the final frame's signed XYZ offset.
+It reads no Labelme polygons or segmentation checkpoint. Both training scripts share
+the same options and input/output contract; `train_position.py` trains the original CNN/GRU.
+The new architecture is in `training/image_segmentation/position_model_v2.py`.
+See the
 [regression workflow](training/image_segmentation/README.md#predict-signed-position-differences-from-images)
 for model inputs, output definitions, and inference.
 
 After training, the best checkpoint is exported to `best.onnx` with an accompanying
-`best.onnx.json` inference manifest. The graph includes position deltas and
-segmentation outputs for direct loading by Track Vision. The default upload now
-sends ONNX; `--no-upload` still produces the local ONNX artifacts. Until the
-backend upload route accepts `.onnx`, use `--no-upload`. See the
+`best.onnx.json` inference manifest. The graph outputs signed position deltas.
+The v2 script uploads ONNX as `position_model_v2`; the original uses `track-position`. `--no-upload` still produces
+the local ONNX artifacts. ResNet weights are downloaded on the first training run
+unless cached; trained checkpoint loading and export need no download. See the
 [ONNX contract](training/image_segmentation/README.md#track-vision-onnx-contract)
 for the backend/frontend handoff and publishing a saved checkpoint without
 retraining.

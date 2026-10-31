@@ -56,7 +56,7 @@ let stream: MediaStream;
 let getDisplayMedia: jest.Mock;
 let cameraLevel: number;
 let depthModel: { detect: jest.Mock; dispose: jest.Mock; executionProvider: string; name: string; classNames: string[]; inputSize: number };
-let positionModel: { detect: jest.Mock; dispose: jest.Mock; resetHistory: jest.Mock; name: string; inputSize: number };
+let positionModel: { detect: jest.Mock; dispose: jest.Mock; resetHistory: jest.Mock; name: string; inputSize: number; requiresOrientation?: boolean };
 let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu'; name: string; classNames: string[]; inputSize: number };
 const detection = { task: 'segment' as const, width: 2, height: 2, instances: [{
     classId: 0, confidence: 0.9, box: [0, 0, 1, 1] as [number, number, number, number], mask: new Uint8Array(4).fill(1),
@@ -1807,11 +1807,12 @@ describe('separate segmentation and position models', () => {
     const prediction = { coordinateFrame: 'car_local' as const, referenceDelta: [-1, 2, -3], inferenceMs: 20 };
     let mapHandle: { getCircuitMap: jest.Mock; getReferenceLap: jest.Mock; getPositionReferences: jest.Mock };
     let sequence: number;
-    const telemetry = (position = 0.25, status = 2, game: 'acc' | 'iracing' = 'acc', gameTime?: number) => act(() => {
+    const telemetry = (position = 0.25, status = 2, game: 'acc' | 'iracing' = 'acc', gameTime?: number, orientation?: [number, number, number]) => act(() => {
         sequence++;
         expect(liveTelemetryStore.publishFrame({ type: 'frame', game, sequence, committedSequence: sequence,
             committedCount: sequence, sample: { Graphics_status: status, Graphics_normalized_car_position: position,
                 ...(gameTime === undefined ? {} : { Graphics_game_time: gameTime }),
+                ...(orientation ? { Physics_heading: orientation[0], Physics_pitch: orientation[1], Physics_roll: orientation[2] } : {}),
                 Static_track: 'monza', Graphics_player_car_id: 0,
                 Graphics_car_coordinates: Array.from({ length: 60 }, () => ({ x: 900, y: 901, z: 902 })) } })).toBe(true);
     });
@@ -1957,6 +1958,29 @@ describe('separate segmentation and position models', () => {
         expect(screen.queryByLabelText('Reference lap position marker')).not.toBeInTheDocument();
         view.unmount();
         expect(positionModel.dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes capture-time orientation and pauses position inference when orientation disappears', async () => {
+        positionModel.requiresOrientation = true;
+        const ref = React.createRef<TrackVisionHandle>();
+        render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush();
+        telemetry(0.25, 2, 'acc', 100, [1.2, -0.1, 0.3]);
+        await startCapture();
+        expect(positionModel.detect).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), references,
+            expect.objectContaining({ orientation: [1.2, -0.1, 0.3] }));
+        positionModel.detect.mockClear();
+        positionModel.resetHistory.mockClear();
+        telemetry(0.26, 2, 'acc', 101);
+        await act(async () => { jest.advanceTimersByTime(200); });
+        expect(positionModel.detect).not.toHaveBeenCalled();
+        expect(positionModel.resetHistory).toHaveBeenCalled();
+        expect(ref.current!.getLatestDetection()!.position).toBeUndefined();
+        expect(ref.current!.getLatestDetection()!.detections.segment).toEqual(detection);
+        telemetry(0.27, 2, 'acc', 102, [1.3, -0.2, 0.4]);
+        await act(async () => { jest.advanceTimersByTime(200); });
+        expect(positionModel.detect).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), references,
+            expect.objectContaining({ orientation: [1.3, -0.2, 0.4] }));
     });
 
     it.each(['missing references', 'stale telemetry', 'paused telemetry'])('keeps segmentation available with %s', async (condition) => {

@@ -236,6 +236,7 @@ async def prepare_position_dataset(backend, extractions: list[dict]) -> dict:
                 **position_context(frame["normalized_position"], circuit_map["game"], circuit_map["map_name"]),
                 "references": references.tolist(),
                 "driver_position": frame["driver_position"],
+                "orientation": frame["world_rotation"],
                 "target": local_targets(
                     references - np.asarray(frame["driver_position"], dtype=np.float64),
                     frame["world_rotation"],
@@ -263,6 +264,7 @@ async def prepare_position_dataset(backend, extractions: list[dict]) -> dict:
                         "coordinate_frame": COORDINATE_FRAME,
                         "target_definition": TARGET_DEFINITION,
                         "driver_position": frame["driver_position"],
+                        "orientation": frame["orientation"],
                     }, target, indent=2, allow_nan=False)
                     target.write("\n")
         # Validate the saved position files and images through folder discovery.

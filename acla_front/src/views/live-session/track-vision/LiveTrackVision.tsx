@@ -57,7 +57,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const getLiveMap = useCallback(() => directoryRef.current?.findComponentRef<LiveTrajectoryMapHandle>(
         getVisualizationComponentName('live-trajectory-map'))?.current ?? null, []);
     const positionTelemetry = useRef<{ position: number; receivedAt: number; identity: string; game: string;
-        track?: string; gameTime?: number } | undefined>(undefined);
+        track?: string; gameTime?: number; orientation?: [number, number, number] } | undefined>(undefined);
     const positionGeneration = useRef(0);
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -205,11 +205,15 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     useEffect(() => liveTelemetryStore.subscribeEvents((event) => {
         const position = event.type === 'frame' ? event.sample.Graphics_normalized_car_position : undefined;
         const gameTime = event.type === 'frame' ? event.sample.Graphics_game_time : undefined;
+        const angles = event.type === 'frame' ? [event.sample.Physics_heading, event.sample.Physics_pitch, event.sample.Physics_roll] : [];
+        const orientation = angles.length === 3 && angles.every((value) => typeof value === 'number' && Number.isFinite(value))
+            ? angles as [number, number, number] : undefined;
         const identity = event.type === 'frame' ? JSON.stringify([event.sessionGeneration, event.streamGeneration,
             event.update.game, event.sample.Static_track, event.sample.Static_car_model, event.sample.Graphics_session_index]) : '';
         const previous = positionTelemetry.current;
         if (event.type !== 'frame' || event.telemetryStatus !== ACC_STATUS.ACC_LIVE
             || typeof position !== 'number' || !Number.isFinite(position) || position < 0 || position > 1
+            || (models.current.position?.requiresOrientation && !orientation)
             || (previous && (previous.identity !== identity || Date.now() - previous.receivedAt > 500
                 || (gameTime !== undefined && previous.gameTime !== undefined && gameTime < previous.gameTime)))) {
             resetPositionHistory();
@@ -218,7 +222,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         if (event.type === 'frame' && event.telemetryStatus === ACC_STATUS.ACC_LIVE
             && typeof position === 'number' && Number.isFinite(position) && position >= 0 && position <= 1) {
             positionTelemetry.current = { position, receivedAt: Date.now(), identity, game: event.update.game,
-                track: event.sample.Static_track, gameTime };
+                track: event.sample.Static_track, gameTime, orientation };
         }
         const next = event.type === 'frame' ? readVisionMotion(event.sample, Date.now(), motionGeneration.current, event.update.game) : undefined;
         if (!next && (motion.current || event.type !== 'frame')) {
@@ -466,11 +470,13 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                                     }
                                 })();
                                 if (positionModel && references && telemetry && positionCurrent()
+                                    && (!positionModel.requiresOrientation || telemetry.orientation)
                                     && version === captureVersion.current && stackVersion === modelVersion.current) {
                                     try {
                                         timing.start('position');
                                         const position = await positionModel.detect(frame, references, {
                                             normalized_position: telemetry.position, game: telemetry.game,
+                                            orientation: telemetry.orientation,
                                             map_name: [circuitMap?.circuit_name, circuitMap?.source_track_key, telemetry.track]
                                                 .filter((value): value is string => typeof value === 'string' && Boolean(value)),
                                         });

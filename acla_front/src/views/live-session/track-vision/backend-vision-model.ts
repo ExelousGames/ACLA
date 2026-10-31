@@ -16,7 +16,7 @@ interface CatalogueVisionModel extends Omit<BackendVisionModel, 'id' | 'download
     createdAt: string;
     metadata: { imgsz: number; categories?: Record<string, string[]>;
         coordinateFrame?: string; coordinateAxes?: string[];
-        inference?: { schemaVersion?: number; temporal?: {
+        inference?: { schemaVersion?: number; orientation?: { order: string[]; units: string; frame: string }; temporal?: {
             type: string; sequenceLength: number; order: string; targetFrame: string; padding: string; state: string;
         } } };
 }
@@ -84,12 +84,18 @@ async function loadModel(name: string, task: BackendVisionModel['task']) {
     }
     const inference = task === 'position' ? model.metadata.inference : undefined;
     const temporal = inference?.temporal;
-    if ((inference?.schemaVersion === 5 && !temporal) || (temporal && (
+    if (([5, 7].includes(inference?.schemaVersion ?? 0) && !temporal) || (temporal && (
         temporal.type !== 'gru' || !Number.isSafeInteger(temporal.sequenceLength) || temporal.sequenceLength < 2
         || temporal.order !== 'oldest-to-newest' || temporal.targetFrame !== 'last'
         || temporal.padding !== 'repeat-first' || temporal.state !== 'reset-per-window'
     ))) {
         throw new Error('Track-position model has unsupported metadata.inference.temporal.');
+    }
+    if (inference && [6, 7].includes(inference.schemaVersion ?? 0)
+        && (!inference.orientation || !Array.isArray(inference.orientation.order)
+            || inference.orientation.order.join(',') !== 'heading,pitch,roll'
+            || inference.orientation?.units !== 'radians' || inference.orientation?.frame !== 'world')) {
+        throw new Error('Track-position model must declare world heading, pitch, roll orientation in radians.');
     }
     return { ...await prepare(toMetadata(model)), inputSize, categories: model.metadata?.categories,
         sequenceLength: temporal?.sequenceLength ?? 1 };

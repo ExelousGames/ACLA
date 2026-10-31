@@ -1,13 +1,19 @@
 """Prepare image/world XYZ and track context with car-local offset targets.
 
 Run without arguments for step-by-step prompts, or pass flags for unattended use.
+Downloads are saved under session_downloads/session_downloaded_by_prepare_position_dataset.
+The main menu also copies saved Labelme annotations, their images, and available
+.position.json files into session_downloads/session image segmentation samples.
+Use --move-annotated to copy annotated frames while keeping the downloaded originals.
+Existing image folders get numbered siblings, such as video_000_1 and video_000_2.
 Telemetry is used during preparation; the trainer receives only prepared inputs
 and targets in a .position.json file beside each image, discovered recursively
 during training. Heading/pitch/roll rotate reference-minus-driver offsets into
 local XYZ (right, forward, up), using Rz(heading) Rx(pitch) Ry(roll)
 directly in the corrected world axes, then negating ACC's left-positive local X.
-Driver world XYZ is retained only for the
-annotation map; neither driver XYZ nor rotation is a model input.
+Each position file also saves orientation: [heading, pitch, roll] in radians
+from the aligned telemetry row, as required by the trainer. Driver world XYZ
+is retained only for the annotation map and is not a model input.
 Local targets currently support ACC only; iRacing sessions are skipped because
 their recorded position and heading fields use different world frames.
 Images are randomly split within each game/map when training starts, with 20% for validation.
@@ -25,6 +31,7 @@ import json
 import math
 from pathlib import Path
 import re
+import shutil
 import sys
 from tempfile import TemporaryDirectory
 
@@ -34,6 +41,72 @@ from training.storage.session_download import SESSION_DOWNLOAD_DIR, download_ses
 
 
 TIME_FIELD = "Graphics_analyst_session_time"
+
+
+def move_annotated_frames() -> dict:
+    """Copy annotated frames locally, preserving originals, paths, and position data."""
+    destination = SESSION_DOWNLOAD_DIR.parent / "session image segmentation samples"
+    output_directories = {}
+    duplicated_frames = 0
+    copies, sessions = [], []
+    for folder in sorted(SESSION_DOWNLOAD_DIR.glob("*")):
+        if not re.fullmatch(r"[0-9a-fA-F]{24}", folder.name) or not folder.is_dir():
+            continue
+        count = 0
+        for annotation_path in sorted((folder / "frames").rglob("*.json")):
+            if annotation_path.name.endswith(".position.json"):
+                continue
+            annotation = json.loads(annotation_path.read_text(encoding="utf-8"))
+            if not isinstance(annotation, dict) or not {"imagePath", "shapes"} <= annotation.keys():
+                continue
+            filename = annotation["imagePath"]
+            if not isinstance(filename, str) or not filename or not isinstance(annotation["shapes"], list):
+                raise ValueError(f"Invalid Labelme annotation: {annotation_path}")
+            image = annotation_path.parent / filename
+            if (Path(filename).is_absolute() or image.parent.resolve() != annotation_path.parent.resolve()
+                    or image.stem != annotation_path.stem):
+                raise ValueError(f"Annotation must reference a matching image in the same folder: {annotation_path}")
+            if not image.is_file():
+                raise FileNotFoundError(f"Annotated image is missing: {image}")
+            files = [image, annotation_path]
+            position = image.with_suffix(".position.json")
+            if position.is_file():
+                files.append(position)
+            directory = destination / image.parent.relative_to(SESSION_DOWNLOAD_DIR)
+            if directory not in output_directories:
+                target_directory = directory
+                number = 1
+                while (target_directory.exists() or target_directory.is_symlink()
+                       or target_directory in output_directories.values()):
+                    target_directory = directory.with_name(f"{directory.name}_{number}")
+                    number += 1
+                output_directories[directory] = target_directory
+            target_directory = output_directories[directory]
+            copies.append([(source, target_directory / source.name) for source in files])
+            count += 1
+            duplicated_frames += int(target_directory != directory)
+        if count:
+            sessions.append({"id": folder.name, "frames": count})
+
+    for pair in copies:
+        pair[0][1].parent.mkdir(parents=True, exist_ok=True)
+        copied = []
+        try:
+            for source, target in pair:
+                copied.append(target)
+                shutil.copy2(source, target)
+        except OSError:
+            # Keep an image, annotation, and optional position file together on failure.
+            for target in reversed(copied):
+                target.unlink(missing_ok=True)
+            raise
+    return {
+        "frames": len(copies), "sessions": sessions, "directory": str(destination),
+        "duplicated_frames": duplicated_frames,
+        "duplicated_directories": [
+            str(target) for directory, target in output_directories.items() if target != directory
+        ],
+    }
 
 
 def _finite_number(value, name: str) -> float:
@@ -402,9 +475,14 @@ async def _interactive_options(args: argparse.Namespace) -> bool:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument(
         "--sessions", nargs="+", metavar="SESSION",
         help="Backend session IDs or local folders; existing folders are skipped. Split during training.",
+    )
+    action.add_argument(
+        "--move-annotated", action="store_true",
+        help="Copy saved Labelme image/JSON pairs and position files into the samples folder, keeping originals.",
     )
     parser.add_argument("--fps", type=float, help="Images per second; default: all frames.")
     parser.add_argument(
@@ -415,8 +493,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     async def run() -> int:
-        if not argv and not await _interactive_options(args):
-            print("Preparation cancelled.")
+        if not argv:
+            choice = _prompt_choice("Position dataset main menu", [
+                "Download sessions", "Copy annotated images", "Exit",
+            ])
+            if choice == 3:
+                return 0
+            args.move_annotated = choice == 2
+            if not args.move_annotated and not await _interactive_options(args):
+                print("Preparation cancelled.")
+                return 0
+        if args.move_annotated:
+            if args.fps is not None or args.max_delta_ms is not None or args.video_offset:
+                parser.error("Frame sampling and alignment options only apply to downloading sessions")
+            print(json.dumps(move_annotated_frames(), indent=2))
             return 0
         if not args.sessions:
             parser.error("--sessions is required for image preparation")

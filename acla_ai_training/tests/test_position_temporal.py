@@ -2,6 +2,8 @@
 
 import json
 from pathlib import Path
+import runpy
+import sys
 
 import numpy as np
 import onnxruntime as ort
@@ -10,10 +12,11 @@ import torch
 from PIL import Image
 
 from training.image_segmentation.__main__ import main
-from training.image_segmentation import position_data, position_training
+from training.image_segmentation import position_data, position_model_v2, position_training
 from training.image_segmentation.position_data import PositionCurve, PositionDataset, TARGET_DEFINITION
 from training.image_segmentation.position_export import export_position_checkpoint
 from training.image_segmentation.position_model import PositionModel
+from training.image_segmentation.position_model_v2 import PositionModelV2
 
 
 CATEGORIES = {"game": ["acc"], "map_name": ["Monza"]}
@@ -36,6 +39,7 @@ def make_record(folder, number, session="session-a"):
     return {
         "session_id": session, "image": path, "game": "acc", "map_name": "Monza",
         "normalized_position": number / 20,
+        "orientation": [number / 10, -number / 20, number / 30],
         "references": np.array([[number, number + 1, number + 2]], dtype=np.float32),
         "target": np.array([[number / 10, -0.2, 0.1]], dtype=np.float32),
     }
@@ -46,6 +50,7 @@ def model_inputs(batch, length, imgsz=32):
         torch.rand(batch, length, 3, imgsz, imgsz),
         torch.rand(batch, length, 1, 3),
         torch.cat((torch.rand(batch, length, 1), torch.ones(batch, length, 2)), dim=-1),
+        torch.rand(batch, length, 3),
     )
 
 
@@ -57,6 +62,7 @@ def test_windows_use_numeric_frame_order_and_only_past_inputs(tmp_path):
         assert sample["references"][:, 0, 0].tolist() == expected
         assert sample["image"].shape == (4, 3, 32, 32)
         assert sample["context"].shape == (4, 3)
+        np.testing.assert_allclose(sample["orientation"], [[n / 10, -n / 20, n / 30] for n in expected], atol=1e-7)
         torch.testing.assert_close(sample["target"], torch.from_numpy(records[index]["target"]))
         assert sample["normalized_position"] == records[index]["normalized_position"]
 
@@ -67,7 +73,7 @@ def test_windows_use_numeric_frame_order_and_only_past_inputs(tmp_path):
         row["target"][:] = 1e6
         row["driver_position"] = [1e6, 1e6, 1e6]
     after = dataset[1]
-    for field in ("image", "references", "context"):
+    for field in ("image", "references", "context", "orientation"):
         torch.testing.assert_close(before[field], after[field])
 
 
@@ -134,9 +140,10 @@ def test_history_affects_predictions_and_receives_gradients_without_retained_sta
     model = PositionModel(32, categories=CATEGORIES, sequence_length=4)
     inputs = model_inputs(2, 4)
     inputs[0].requires_grad_()
+    inputs[3].requires_grad_()
     expected = model(*inputs)
     assert expected.shape == (2, 1, 3)
-    for field in range(3):
+    for field in range(4):
         changed = [value.detach().clone() for value in inputs]
         changed[field][:, :-1] = 0
         assert not torch.allclose(expected, model(*changed), rtol=1e-6, atol=1e-7)
@@ -145,6 +152,7 @@ def test_history_affects_predictions_and_receives_gradients_without_retained_sta
     torch.testing.assert_close(model(*inputs), expected)
     expected.square().mean().backward()
     assert inputs[0].grad[:, 0].abs().sum() > 0
+    assert inputs[3].grad[:, 0].abs().sum() > 0
     for parameter in model.temporal_encoder.parameters():
         assert torch.isfinite(parameter.grad).all() and parameter.grad.abs().sum() > 0
     checkpoint = tmp_path / "best.pt"
@@ -154,7 +162,7 @@ def test_history_affects_predictions_and_receives_gradients_without_retained_sta
     torch.testing.assert_close(loaded(*inputs), expected)
 
 
-@pytest.mark.parametrize("field", [0, 1, 2])
+@pytest.mark.parametrize("field", [0, 1, 2, 3])
 def test_temporal_model_requires_aligned_history_shapes(field):
     model = PositionModel(32, categories=CATEGORIES, sequence_length=4)
     inputs = list(model_inputs(1, 4))
@@ -182,11 +190,11 @@ def test_prediction_helper_uses_previous_images_and_lap_positions(tmp_path):
     dataset = PositionDataset(records, 32, CATEGORIES, sequence_length=4)
     for index in range(len(records)):
         sample = dataset[index]
-        expected = model(*(sample[field].unsqueeze(0) for field in ("image", "references", "context")))
+        expected = model(*(sample[field].unsqueeze(0) for field in ("image", "references", "context", "orientation")))
         result = model.predict_position(
             records[index]["image"], records[index]["normalized_position"], curve,
-            game="acc", map_name="Monza",
-            history=[(row["image"], row["normalized_position"]) for row in records[:index]],
+            game="acc", map_name="Monza", orientation=records[index]["orientation"],
+            history=[(row["image"], row["normalized_position"], row["orientation"]) for row in records[:index]],
         )
         np.testing.assert_allclose(result["reference_delta"], expected.detach().numpy()[0, 0], atol=1e-6)
 
@@ -198,7 +206,7 @@ def test_temporal_onnx_matches_pytorch_for_different_histories(tmp_path, length,
     model.save(checkpoint)
     artifact = export_position_checkpoint(checkpoint)
     contract = json.loads(artifact.with_suffix(".onnx.json").read_text())["metadata"]["inference"]
-    assert contract["schemaVersion"] == 5
+    assert contract["schemaVersion"] == 7
     assert contract["image"]["layout"] == "NTCHW"
     assert contract["temporal"]["sequenceLength"] == length
     assert contract["temporal"]["padding"] == "repeat-first"
@@ -207,20 +215,24 @@ def test_temporal_onnx_matches_pytorch_for_different_histories(tmp_path, length,
         "images": {"dtype": "float32", "shape": [1, length, 3, imgsz, imgsz]},
         "references": {"dtype": "float32", "shape": [1, length, 1, 3]},
         "context": {"dtype": "float32", "shape": [1, length, 3]},
+        "orientation": {"dtype": "float32", "shape": [1, length, 3]},
     }
     assert contract["outputs"] == {"deltas": {"dtype": "float32", "shape": [1, 1, 3]}}
     options = ort.SessionOptions()
     options.intra_op_num_threads = options.inter_op_num_threads = 1
     session = ort.InferenceSession(str(artifact), sess_options=options, providers=["CPUExecutionProvider"])
     inputs = model_inputs(1, length, imgsz)
-    for field in range(3):
+    for field in range(4):
         changed = [value.clone() for value in inputs]
         changed[field][:, :-1] = 0
-        actual = session.run(None, dict(zip(("images", "references", "context"), [value.numpy() for value in changed])))
+        actual = session.run(None, dict(zip(("images", "references", "context", "orientation"), [value.numpy() for value in changed])))
         np.testing.assert_allclose(actual[0], model(*changed).detach().numpy(), rtol=1e-4, atol=1e-5)
 
 
-def test_default_training_updates_temporal_weights_and_counts_each_final_frame_once(tmp_path, monkeypatch):
+@pytest.mark.parametrize("script,model_class", [
+    ("train_position.py", PositionModel), ("train_position_v2.py", PositionModelV2),
+])
+def test_training_scripts_update_the_selected_model_and_count_each_final_frame_once(tmp_path, monkeypatch, script, model_class):
     records = [make_record(tmp_path / session, number, session) for session in ("a", "b") for number in range(5)]
     for row in records:
         row["image"].with_suffix(".position.json").write_text(json.dumps({
@@ -229,18 +241,39 @@ def test_default_training_updates_temporal_weights_and_counts_each_final_frame_o
             "coordinate_frame": "car_local", "target_definition": TARGET_DEFINITION,
         }))
     captured = {}
+    build_network = model_class._build_network
+    encoder = position_model_v2.resnet18
+    weights_seen = []
 
-    def create_model(*args, **kwargs):
-        model = PositionModel(*args, **kwargs)
-        captured["before"] = model.temporal_encoder.weight_hh.detach().clone()
-        return model
+    def offline_encoder(*, weights):
+        weights_seen.append(weights)
+        return encoder(weights=None)
 
-    monkeypatch.setattr(position_training, "PositionModel", create_model)
+    def build(model):
+        build_network(model)
+        captured.setdefault("before", {key: value.clone() for key, value in model.temporal_encoder.state_dict().items()})
+        captured.setdefault("encoder_before", model.image_encoder[0].weight.detach().clone())
+
+    monkeypatch.setattr(position_model_v2, "resnet18", offline_encoder)
+    monkeypatch.setattr(model_class, "_build_network", build)
     output = tmp_path / "run"
-    checkpoint = position_training.train_position_model(tmp_path, output=output, epochs=1, imgsz=32, batch=3, device="cpu", upload=False)
-    model = PositionModel.load(checkpoint)
+    monkeypatch.setattr(sys, "argv", [
+        script, "--manifest", str(tmp_path), "--output", str(output), "--epochs", "1",
+        "--imgsz", "32", "--batch", "3", "--device", "cpu", "--no-upload",
+    ])
+    with pytest.raises(SystemExit) as exit_code:
+        runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts" / script), run_name="__main__")
+    assert exit_code.value.code == 0
+    model = PositionModel.load(output / "best.pt")
+    assert type(model) is model_class
+    if model_class is PositionModelV2:
+        assert weights_seen[0] == position_model_v2.ResNet18_Weights.IMAGENET1K_V1
+        assert all(weights is None for weights in weights_seen[1:])
+    else:
+        assert weights_seen == []
     assert model.sequence_length == 4
-    assert not torch.equal(captured["before"], model.temporal_encoder.weight_hh)
+    assert any(not torch.equal(value, model.temporal_encoder.state_dict()[key]) for key, value in captured["before"].items())
+    assert not torch.equal(captured["encoder_before"], model.image_encoder[0].weight)
     split = json.loads((output / "split.json").read_text())
     assert split["sequence_length"] == 4
     assert len(split["train"]) == len(split["val"]) == 5
@@ -249,10 +282,13 @@ def test_default_training_updates_temporal_weights_and_counts_each_final_frame_o
     assert metrics["val_by_map"][0]["count"] == 5
     assert sum(section["count"] for section in metrics["val_by_map"][0]["val_errors_by_normalized_position"]) == 5
     assert (output / "best.onnx").is_file()
+    metadata = json.loads((output / "best.onnx.json").read_text())["metadata"]
+    assert metadata["modelName"] == model_class.model_name
 
 
 @pytest.mark.parametrize("arguments,length", [([], 4), (["--sequence-length", "2"], 2), (["--sequence-length", "1"], 1)])
-def test_cli_forwards_temporal_window(arguments, length, monkeypatch):
+@pytest.mark.parametrize("command", ["train-position", "train-position-v2"])
+def test_cli_forwards_temporal_window(arguments, length, monkeypatch, command):
     captured = {}
 
     def train(manifest, **kwargs):
@@ -260,5 +296,5 @@ def test_cli_forwards_temporal_window(arguments, length, monkeypatch):
         return Path("run/best.pt")
 
     monkeypatch.setattr(position_training, "train_position_model", train)
-    assert main(["train-position", "--manifest", "data", "--output", "run", "--no-upload", *arguments]) == 0
+    assert main([command, "--manifest", "data", "--output", "run", "--no-upload", *arguments]) == 0
     assert captured["sequence_length"] == length

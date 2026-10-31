@@ -58,21 +58,29 @@ def main(argv: list[str] | None = None) -> int:
     prepared = commands.add_parser("train", parents=[train], help="Train a prepared YOLO dataset.")
     prepared.add_argument("--data", type=Path, required=True, help="Prepared data.yaml file.")
 
-    position = commands.add_parser("train-position", help="Train a standalone signed XYZ position model from scratch.")
+    position = argparse.ArgumentParser(add_help=False)
     position.add_argument("--manifest", type=Path, help="Required for training: recursively scan a folder for .position.json files, or read a positions.json index; split whole sessions within each game/map, balancing frame counts.")
     position.add_argument("--output", type=Path, help="Required for training: new directory for position checkpoints, ONNX, and metrics.")
     position.add_argument("--epochs", type=int, default=100)
     position.add_argument("--imgsz", type=int, default=768)
     position.add_argument("--batch", type=int, default=8)
     position.add_argument("--sequence-length", type=int, default=4,
-                          help="Causal history window including the current frame (default: 4); 1 disables temporal memory. Batch counts windows.")
+                          help="Causal history window including the current frame (default: 4); 1 uses only the current frame. Batch counts windows.")
     position.add_argument("--device", default="0", help="0 for the first GPU (default), cpu, or mps.")
     position.add_argument("--workers", type=int, default=0)
     position.add_argument("--val-fraction", type=float, default=0.2, help="Target validation share of frames per game/map (default: 0.2), using whole sessions; at least two sessions per map are required.")
     position.add_argument("--seed", type=int, default=42, help="Random session split, frame shuffle, and training seed (default: 42).")
+    position.add_argument("--min-offset-distance", type=float,
+                          help="Thin training targets within this 3D local XYZ distance (source units), per game/map. Disabled by default.")
+    position.add_argument("--min-orientation-distance-deg", type=float,
+                          help="Thin training targets whose wrapped heading, pitch, and roll differences are each within this many degrees (0 < value <= 180). All enabled sampling thresholds must be close. History and validation are retained.")
+    position.add_argument("--min-normalized-position-distance", type=float,
+                          help="Thin training targets within this fraction of a lap (0 < value <= 0.5; 0.01 means 1%%), wrapping across 0/1. All enabled sampling thresholds must be close. Disabled by default.")
     position_upload = position.add_mutually_exclusive_group()
     position_upload.add_argument("--no-upload", action="store_true", help="Export ONNX locally without uploading.")
     position_upload.add_argument("--upload-model", type=Path, help="Upload an existing position .onnx model without training.")
+    commands.add_parser("train-position", parents=[position], help="Train the original CNN/GRU for signed XYZ offsets.")
+    commands.add_parser("train-position-v2", parents=[position], help="Train position_model_v2: pretrained ResNet-18 + ConvLSTM for signed XYZ offsets.")
 
     automatic = commands.add_parser(
         "train-labelme", parents=[train], help="Split nested Labelme annotations and train.",
@@ -97,20 +105,26 @@ def main(argv: list[str] | None = None) -> int:
     upload.add_argument("--name", default="track-segments", help="Model name in the backend store.")
     upload_position = commands.add_parser("upload-position", help="Export/publish a position model as ONNX without retraining.")
     upload_position.add_argument("checkpoint", type=Path, help="Local position .pt checkpoint or exported .onnx artifact.")
-    upload_position.add_argument("--name", default="track-position", help="Model name in the backend store.")
+    upload_position.add_argument("--name", help="Model name in the backend store (default: artifact model name).")
     args = parser.parse_args(argv)
 
-    if args.command == "train-position" and args.upload_model is not None:
+    if args.command in ("train-position", "train-position-v2") and args.upload_model is not None:
         args.command = "upload-position"
         args.checkpoint = args.upload_model
-        args.name = "track-position"
+        args.name = None
 
-    if args.command == "train-position":
+    if args.command in ("train-position", "train-position-v2"):
         missing = [flag for flag in ("manifest", "output") if getattr(args, flag) is None]
         if missing:
             parser.error("the following arguments are required for training: " + ", ".join(f"--{flag}" for flag in missing))
 
         from .position_training import train_position_model
+
+        model_class = None
+        if args.command == "train-position-v2":
+            from .position_model_v2 import PositionModelV2
+
+            model_class = PositionModelV2
 
         try:
             checkpoint = train_position_model(
@@ -118,7 +132,11 @@ def main(argv: list[str] | None = None) -> int:
                 imgsz=args.imgsz, batch=args.batch, device=args.device, workers=args.workers,
                 sequence_length=args.sequence_length,
                 val_fraction=args.val_fraction, seed=args.seed,
+                min_offset_distance=args.min_offset_distance,
+                min_orientation_distance_deg=args.min_orientation_distance_deg,
+                min_normalized_position_distance=args.min_normalized_position_distance,
                 upload=not args.no_upload,
+                model_class=model_class,
             )
         except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             parser.error(str(exc))

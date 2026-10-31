@@ -1,4 +1,4 @@
-"""Train a position CNN with per-map session splits and car-local XYZ errors."""
+"""Train position models with per-map session splits and car-local XYZ errors."""
 
 from __future__ import annotations
 
@@ -11,11 +11,12 @@ import httpx
 import numpy as np
 import torch
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from .position_data import OUTPUT_NAMES, PositionDataset, load_position_manifest
 from .position_export import export_position_checkpoint
 from .position_model import PositionModel
+from .position_sampling import select_position_samples
 
 
 OFFSET_LENGTH_RANGES = (
@@ -100,7 +101,11 @@ def train_position_model(
     workers=0,
     val_fraction=0.2,
     seed=42,
+    min_offset_distance=None,
+    min_orientation_distance_deg=None,
+    min_normalized_position_distance=None,
     upload=True,
+    model_class=None,
 ):
     if epochs < 1 or batch < 1 or workers < 0:
         raise ValueError("Epochs and batch must be positive; workers must be nonnegative.")
@@ -109,20 +114,52 @@ def train_position_model(
     sessions = load_position_manifest(manifest)
     records = [frame for frames in sessions.values() for frame in frames]
     splits = split_position_frames(records, val_fraction=val_fraction, seed=seed)
+    training_indices = select_position_samples(
+        splits["train"], min_offset_distance=min_offset_distance,
+        min_orientation_distance_deg=min_orientation_distance_deg,
+        min_normalized_position_distance=min_normalized_position_distance, seed=seed,
+    )
+    sampling_enabled = any(value is not None for value in (
+        min_offset_distance, min_orientation_distance_deg, min_normalized_position_distance,
+    ))
     torch.manual_seed(seed)
     device = f"cuda:{device}" if str(device).isdigit() else device
     categories = {field: sorted({row[field] for row in records}) for field in ("game", "map_name")}
-    network = PositionModel(imgsz, categories=categories, sequence_length=sequence_length).to(device)
+    model_class = PositionModel if model_class is None else model_class
+    network = model_class(imgsz, categories=categories, sequence_length=sequence_length).to(device)
+    print(f"Position model: {network.model_name}", flush=True)
     positions = torch.from_numpy(np.stack([row["references"][0] for row in splits["train"]])).to(device)
     # Standardize XYZ using training references alone; context stays in [0, 1].
     network.position_mean.copy_(positions.mean(0))
     network.position_std.copy_(positions.std(0, unbiased=False).clamp_min(1.0))
+    # Build history from every frame in the split, then select window endpoints.
+    datasets = {
+        split: PositionDataset(records, imgsz, categories, augment=split == "train", sequence_length=sequence_length)
+        for split, records in splits.items()
+    }
+    sampling_metadata = {}
+    if sampling_enabled:
+        sampling_metadata["density_sampling"] = {
+            "min_offset_distance": min_offset_distance,
+            "min_orientation_distance_deg": min_orientation_distance_deg,
+            "min_normalized_position_distance": min_normalized_position_distance,
+            "candidate_count": len(splits["train"]),
+            "selected_count": len(training_indices),
+        }
+        if sequence_length > 1:
+            sampling_metadata["train_history"] = [str(row["image"]) for row in splits["train"]]
+        datasets["train"] = Subset(datasets["train"], training_indices)
+        splits["train"] = [splits["train"][index] for index in training_indices]
+        print(
+            f"Density sampling: kept {len(training_indices)}/{sampling_metadata['density_sampling']['candidate_count']} "
+            "training targets; validation and temporal history retained", flush=True,
+        )
     loaders = {
         split: DataLoader(
-            PositionDataset(records, imgsz, categories, augment=split == "train", sequence_length=sequence_length),
+            dataset,
             batch_size=batch, shuffle=split == "train", num_workers=workers,
         )
-        for split, records in splits.items()
+        for split, dataset in datasets.items()
     }
     optimizer = torch.optim.Adam(network.parameters(), lr=1e-4)
     output.mkdir(parents=True)
@@ -134,7 +171,7 @@ def train_position_model(
     }
     (output / "split.json").write_text(
         json.dumps({"seed": seed, "val_fraction": val_fraction, "sequence_length": sequence_length,
-                    "maps": maps, **assignments}, indent=2) + "\n",
+                    "maps": maps, **assignments, **sampling_metadata}, indent=2) + "\n",
         encoding="utf-8",
     )
     print(
@@ -161,7 +198,8 @@ def train_position_model(
         train_error_total = torch.zeros((), dtype=torch.float64, device=device)
         for sample in loaders["train"]:
             optimizer.zero_grad()
-            prediction = network(sample["image"].to(device), sample["references"].to(device), sample["context"].to(device))
+            prediction = network(sample["image"].to(device), sample["references"].to(device),
+                                 sample["context"].to(device), sample["orientation"].to(device))
             target = sample["target"].to(device)
             loss = position_regression_loss(prediction, target)
             train_error_total += (prediction.detach().double() - target.double()).abs().sum()
@@ -180,7 +218,8 @@ def train_position_model(
         with torch.no_grad():
             for sample in loaders["val"]:
                 # Compute vector geometry in double precision, including tiny offsets.
-                prediction = network(sample["image"].to(device), sample["references"].to(device), sample["context"].to(device)).double()
+                prediction = network(sample["image"].to(device), sample["references"].to(device),
+                                     sample["context"].to(device), sample["orientation"].to(device)).double()
                 target = sample["target"].to(device=device, dtype=torch.float64)
                 difference = prediction - target
                 distances = torch.linalg.vector_norm(difference, dim=-1)

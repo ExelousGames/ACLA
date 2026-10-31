@@ -14,7 +14,7 @@ from .position_export import METADATA_KEY, export_position_checkpoint
 async def upload_position_checkpoint(
     checkpoint: Path,
     *,
-    name: str = "track-position",
+    name: str | None = None,
     backend_service=None,
 ) -> dict[str, Any]:
     """Export .pt checkpoints, or publish an already exported ONNX artifact."""
@@ -25,7 +25,7 @@ async def upload_position_checkpoint(
         raise ValueError("Model file must use the .pt or .onnx extension")
     if not checkpoint.is_file() or not checkpoint.stat().st_size:
         raise ValueError(f"Checkpoint is missing or empty: {checkpoint}")
-    if not name.strip() or len(name) > 200:
+    if name is not None and (not name.strip() or len(name) > 200):
         raise ValueError("Model name must contain 1 to 200 characters")
 
     if checkpoint.suffix.lower() == ".pt":
@@ -38,6 +38,9 @@ async def upload_position_checkpoint(
     metadata = json.loads(properties[METADATA_KEY])
     if metadata.get("task") != "position" or metadata.get("metadata", {}).get("artifactFormat") != "onnx":
         raise ValueError("ONNX model must describe a Track Vision position artifact.")
+    name = name if name is not None else metadata["metadata"].get("modelName", "track-position")
+    if not isinstance(name, str) or not name.strip() or len(name) > 200:
+        raise ValueError("Model name must contain 1 to 200 characters")
     metadata["name"] = name.strip()
     json.dumps(metadata, allow_nan=False)
     del graph

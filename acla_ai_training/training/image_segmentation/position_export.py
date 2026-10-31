@@ -72,6 +72,7 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
         # The shared model store requires names; these identify regression axes.
         "classNames": list(OUTPUT_NAMES),
         "metadata": {
+            "modelName": position.model_name,
             "format": saved.get("format"),
             "artifactFormat": "onnx",
             "trainingRunId": checkpoint.parent.name,
@@ -91,6 +92,7 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
         torch.zeros(1, 3, position.imgsz, position.imgsz),
         torch.zeros(1, 1, 3),
         torch.zeros(1, position.context_size),
+        torch.zeros(1, 3),
     )
     temporal = position.sequence_length > 1
     if temporal:
@@ -103,7 +105,7 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
         export_options = {"dynamo": False} if "dynamo" in inspect.signature(torch.onnx.export).parameters else {}
         torch.onnx.export(
             position, inputs, str(temporary),
-            input_names=["images", "references", "context"],
+            input_names=["images", "references", "context", "orientation"],
             output_names=["deltas"],
             opset_version=OPSET_VERSION, dynamic_axes=None, **export_options,
         )
@@ -123,7 +125,7 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
         ):
             raise ValueError("Unexpected Track Vision ONNX inputs or outputs.")
         metadata["metadata"]["inference"] = {
-            "schemaVersion": 5 if temporal else 4,
+            "schemaVersion": 7 if temporal else 6,
             "opset": OPSET_VERSION,
             "inputs": input_specs,
             "outputs": output_specs,
@@ -136,10 +138,11 @@ def export_position_checkpoint(checkpoint: Path) -> Path:
             "coordinateOrder": ["x", "y", "z"],
             "contextOrder": ["normalized_position", "game", "map_name"],
             "categoryEncoding": "one-hot",
+            "orientation": {"order": ["heading", "pitch", "roll"], "units": "radians", "frame": "world"},
         }
         if temporal:
             metadata["metadata"]["inference"]["temporal"] = {
-                "type": "gru", "sequenceLength": position.sequence_length,
+                "type": position.temporal_type, "sequenceLength": position.sequence_length,
                 "order": "oldest-to-newest", "targetFrame": "last",
                 "padding": "repeat-first", "state": "reset-per-window",
                 "resetHistoryOn": ["session-change", "recording-change", "game-change", "map-change", "seek"],

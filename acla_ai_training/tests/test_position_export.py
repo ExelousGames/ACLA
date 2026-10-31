@@ -69,8 +69,9 @@ def test_export_preserves_position_without_segmentation_with_small_uneven_and_ev
             "images": {"dtype": "float32", "shape": [1, 3, imgsz, imgsz]},
             "references": {"dtype": "float32", "shape": [1, 1, 3]},
             "context": {"dtype": "float32", "shape": [1, 4]},
+            "orientation": {"dtype": "float32", "shape": [1, 3]},
         }
-        assert contract["schemaVersion"] == 4
+        assert contract["schemaVersion"] == 6
         assert metadata["targetDefinition"] == "diag(-1, 1, 1) @ inverse_world_rotation @ (reference_position - current_position)"
         assert metadata["coordinateFrame"] == "car_local"
         assert metadata["coordinateAxes"] == ["right", "forward", "up"]
@@ -87,12 +88,15 @@ def test_export_preserves_position_without_segmentation_with_small_uneven_and_ev
         image = torch.rand(1, 3, imgsz, imgsz)
         references = torch.tensor([[[10., -20., 30.]]])
         context = torch.tensor([[0.25, 1., 1., 0.]])
+        orientation = torch.tensor([[1.2, -0.1, 0.3]])
+        assert contract["orientation"] == {"order": ["heading", "pitch", "roll"], "units": "radians", "frame": "world"}
         results = []
-        for points, values in [(references, context), (references + 4, context),
-                               (references, torch.tensor([[0.75, 1., 0., 1.]]))]:
+        for points, values, angles in [(references, context, orientation), (references + 4, context, orientation),
+                                       (references, torch.tensor([[0.75, 1., 0., 1.]]), orientation),
+                                       (references, context, orientation + 0.5)]:
             with torch.no_grad():
-                expected = model(image, points, values)
-            result = session.run(None, {"images": image.numpy(), "references": points.numpy(), "context": values.numpy()})
+                expected = model(image, points, values, angles)
+            result = session.run(None, {"images": image.numpy(), "references": points.numpy(), "context": values.numpy(), "orientation": angles.numpy()})
             assert len(result) == 1
             np.testing.assert_allclose(result[0], expected.numpy(), rtol=1e-4, atol=1e-5)
             results.append(result[0])

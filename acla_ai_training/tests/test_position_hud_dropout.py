@@ -51,6 +51,7 @@ def test_training_reloads_mix_originals_and_variants_without_changing_labels(tmp
     original_file = path.read_bytes()
     record = {
         "image": path, "game": "acc", "map_name": "Monza", "normalized_position": 0.25,
+        "orientation": [1.2, -0.1, 0.3],
         "references": np.array([[1, 2, 3]], dtype=np.float32),
         "target": np.array([[0.1, -0.2, 0.3]], dtype=np.float32),
     }
@@ -68,7 +69,7 @@ def test_training_reloads_mix_originals_and_variants_without_changing_labels(tmp
     assert 1 < len(variants) < len(samples)
     assert any(not torch.equal(variants[0], image) for image in variants[1:])
     for sample in samples:
-        for field in ("references", "context", "target"):
+        for field in ("references", "context", "orientation", "target"):
             torch.testing.assert_close(sample[field], original[field], rtol=0, atol=0)
         for field in ("game", "map_name", "normalized_position"):
             assert sample[field] == original[field]

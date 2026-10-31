@@ -1,9 +1,10 @@
-"""Train the standalone position-regression CNN + temporal GRU from scratch.
+"""Train the original position_model: CNN/GRU offset regression from scratch.
 
-All image encoder, temporal memory, and regression weights are trained together.
-No pretrained or segmentation checkpoint is used.
+The CNN learns spatial image features from position targets, with a GRU for
+temporal windows and a signed XYZ regression head. All parameters train from
+scratch. Use scripts/train_position_v2.py for pretrained ResNet-18 + ConvLSTM.
 By default, a causal four-frame window predicts the final frame's offset.
-Use --sequence-length N to change the window; 1 keeps the single-frame CNN.
+Use --sequence-length N to change the window; 1 processes only the current frame.
 Windows use numeric image suffixes (frame_000123.jpg), oldest first, within the
 same session/video directory. They contain only the current and earlier prepared
 frames, repeating the first frame when history is short. Sampling cadence should
@@ -11,14 +12,16 @@ match inference; time gaps are not inferred from frame numbers. Batch counts
 windows, so image memory/compute grows with sequence length; lower --batch if needed.
 
 The input folder and its subfolders are scanned for .position.json files holding
-reference-lap XYZ, game, map name, normalized lap position, and signed
+reference-lap XYZ, world orientation, game, map name, normalized lap position, and signed
 car-local offset targets beside their images. Any stored centerline inputs and
 targets are ignored. The model keeps reference-lap world XYZ as input and predicts
 the signed offset from the driver to the reference in local XYZ: right, forward,
 up. Preparation applies inverse world rotation (heading, pitch, roll in radians)
 to the reference-minus-driver vector, then negates ACC's left-positive local X
-to make X point right; rotation is not an inference input. Existing local targets
-must first be converted with scripts/migrate_position_targets.py.
+to make X point right. Orientation is a required input: world heading, pitch, roll
+in radians, saved as orientation in each position file. The model converts these
+angles to sine/cosine internally. Regenerate datasets missing orientation with
+scripts/prepare_position_dataset.py and retrain older checkpoints.
 The preparation workflow currently supports ACC only and skips iRacing sessions.
 Game/map names are one-hot encoded, with the
 category order saved in each checkpoint for inference.
@@ -29,12 +32,23 @@ equally balanced session choices. Every map appears in both sets, with at least
 two sessions required per map. Sessions never cross splits; windows are built
 within each split before training shuffles them. The maps, image assignments,
 and sequence length are saved in split.json.
+Optional density thinning removes near-duplicate training targets per game/map:
+--min-offset-distance sets the 3D local XYZ distance in source units;
+--min-orientation-distance-deg sets the maximum wrapped difference in each of
+heading, pitch, and roll; --min-normalized-position-distance sets the circular
+lap-progress distance (0.01 = 1% of a lap), wrapping across 0/1. Each threshold
+can be used alone. All enabled thresholds must be close to a retained sample
+before a target is removed. Selection
+uses --seed and indexed neighborhood queries, without an all-pairs matrix.
+Validation retains every frame; temporal windows retain the original history.
+split.json saves the thresholds, counts, selected targets, and full train_history
+when temporal sampling is enabled. Omit all three options to train on every frame.
 Preparation aligns images to telemetry using Graphics_analyst_session_time.
-No driver telemetry is read during training.
+Training reads the prepared orientation values, without reopening source telemetry.
 Before letterboxing, each training-frame load has a 50% chance of HUD
 CoarseDropout: 1-9 randomly selected panels are fully covered with random RGB
 colors or pixel noise, using regions normalized from a 1252 x 720 annotation.
-Reference inputs, context, and XYZ targets stay unchanged. Validation and
+Reference inputs, orientation, context, and XYZ targets stay unchanged. Validation and
 inference use original frames; obscured versions are generated on each load.
 Training uses mean component Smooth L1 between predicted and target XYZ offsets.
 Each epoch prints training and validation MAE in local coordinates, in source units. Training MAE
@@ -55,15 +69,15 @@ coordinate units. Direction errors use degrees. Zero-length vectors are excluded
 from direction averages, with valid counts reported. Empty averages show n/a.
 Near zero, a large direction error can accompany a small distance error.
 Uses the first GPU by default; use --device cpu for CPU training.
-Temporal ONNX uses schemaVersion 5: images [1,T,3,H,W], references [1,T,1,3],
-and context [1,T,C], with the history order/padding contract in best.onnx.json.
+Temporal ONNX uses schemaVersion 7: images [1,T,3,H,W], references [1,T,1,3],
+context [1,T,C], and orientation [1,T,3], with the history order/padding contract in best.onnx.json.
 The caller buffers frames; GRU state resets per window. Clear history on session,
-recording, game/map changes or seeks. Single-frame exports retain schemaVersion 4.
+recording, game/map changes or seeks. Single-frame exports use schemaVersion 6 and orientation [1,3].
 Exports only car-local position deltas in best.onnx, preserving
 best.pt and last.pt for Python use. Uploads best.onnx to the backend as
 track-position by default; use --no-upload to export locally without publishing.
 Use --upload-model path/to/best.onnx to skip training and publish an existing
-ONNX model through the same uploader; --manifest and --output are not needed.
+ONNX model under its saved model name; --manifest and --output are not needed.
 
 Usage: python scripts/train_position.py --manifest storage/session_downloads --output position-runs/run-1
 Upload: python scripts/train_position.py --upload-model position-runs/run-1/best.onnx

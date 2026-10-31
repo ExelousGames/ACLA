@@ -132,6 +132,25 @@ it('preserves the published category vocabulary and order for position inference
 const temporal = { type: 'gru', sequenceLength: 4, order: 'oldest-to-newest', targetFrame: 'last',
     padding: 'repeat-first', state: 'reset-per-window' };
 
+const orientation = { order: ['heading', 'pitch', 'roll'], units: 'radians', frame: 'world' };
+
+it.each([6, 7])('loads orientation-aware position schema %s', async (schemaVersion) => {
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel,
+        metadata: { ...positionCatalogueModel.metadata, inference: { schemaVersion, orientation,
+            ...(schemaVersion === 7 ? { temporal } : {}) } } }] });
+    prepare.mockResolvedValue(new Uint8Array([9]));
+    await expect(loadBackendPositionModel()).resolves.toMatchObject({ sequenceLength: schemaVersion === 7 ? 4 : 1 });
+});
+
+it.each([undefined, { ...orientation, units: 'degrees' }, { ...orientation, frame: 'local' },
+    { ...orientation, order: 'heading,pitch,roll' },
+    { ...orientation, order: ['roll', 'pitch', 'heading'] }])('rejects incompatible orientation metadata (%j)', async (configuration) => {
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel,
+        metadata: { ...positionCatalogueModel.metadata, inference: { schemaVersion: 7, temporal, orientation: configuration } } }] });
+    await expect(loadBackendPositionModel()).rejects.toThrow('world heading, pitch, roll');
+    expect(prepare).not.toHaveBeenCalled();
+});
+
 it('passes the published GRU window length to position inference', async () => {
     (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel,
         metadata: { ...positionCatalogueModel.metadata, format: 'acla-position-cnn-gru-v1',

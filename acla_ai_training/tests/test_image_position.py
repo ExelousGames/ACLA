@@ -39,6 +39,7 @@ def aligned_manifest(tmp_path):
             "game": "acc" if session_id == "session-a" else "iracing",
             "map_name": "Display Name" if session_id == "session-a" else "Other Track",
             "normalized_position": 0.25,
+            "orientation": [1.2, -0.1, 0.3],
             "coordinate_frame": "car_local",
             "target_definition": TARGET_DEFINITION,
             "references": [[0.2, -0.1, 0.1], [0.25, -0.1, 0.1]],
@@ -189,7 +190,7 @@ def test_prepared_targets_can_only_change_labels(aligned_manifest):
     path.write_text(json.dumps(frame))
     after = load_position_manifest(aligned_manifest)
     a, b = (PositionDataset(records["session-a"], 64, CATEGORIES)[0] for records in (before, after))
-    assert set(a) == {"image", "references", "context", "target", "game", "map_name", "normalized_position"}
+    assert set(a) == {"image", "references", "context", "orientation", "target", "game", "map_name", "normalized_position"}
     assert (a["game"], a["map_name"]) == (b["game"], b["map_name"]) == ("acc", "Display Name")
     assert a["normalized_position"] == b["normalized_position"] == 0.25
     torch.testing.assert_close(a["image"], b["image"])
@@ -198,7 +199,7 @@ def test_prepared_targets_can_only_change_labels(aligned_manifest):
     torch.testing.assert_close(a["context"], torch.tensor([0.25, 1, 0, 1, 0]))
     assert not torch.equal(a["target"], b["target"])
     np.testing.assert_allclose(before["session-a"][0]["target"], [[0.1, -0.2, 0], [0.15, -0.2, 0]], atol=1e-7)
-    assert list(inspect.signature(PositionModel.forward).parameters) == ["self", "images", "references", "context"]
+    assert list(inspect.signature(PositionModel.forward).parameters) == ["self", "images", "references", "context", "orientation"]
     assert "driver_position" not in inspect.signature(PositionModel.predict_position).parameters
     assert "centerline" not in inspect.signature(PositionModel.predict_position).parameters
 
@@ -217,7 +218,7 @@ def test_centerline_data_is_not_used_as_a_model_input_or_target(aligned_manifest
     after = load_position_manifest(aligned_manifest)
     a, b = (PositionDataset(records["session-a"], 64, CATEGORIES)[0] for records in (before, after))
     assert (a["game"], a["map_name"]) == (b["game"], b["map_name"])
-    for field in ("image", "references", "context", "target"):
+    for field in ("image", "references", "context", "orientation", "target"):
         torch.testing.assert_close(a[field], b[field])
     torch.testing.assert_close(a["references"], torch.tensor([[0.2, -0.1, 0.1]]))
     torch.testing.assert_close(a["target"], torch.tensor([[0.1, -0.2, 0]]))
@@ -226,7 +227,7 @@ def test_centerline_data_is_not_used_as_a_model_input_or_target(aligned_manifest
 def test_model_rejects_centerline_input():
     model = PositionModel(imgsz=64, categories=CATEGORIES)
     with pytest.raises(ValueError, match="reference-lap XYZ"):
-        model(torch.zeros(1, 3, 64, 64), torch.zeros(1, 2, 3), torch.zeros(1, model.context_size))
+        model(torch.zeros(1, 3, 64, 64), torch.zeros(1, 2, 3), torch.zeros(1, model.context_size), torch.zeros(1, 3))
 
 
 @pytest.mark.parametrize("field, value", [
@@ -245,7 +246,7 @@ def test_prepared_context_must_be_valid(aligned_manifest, field, value):
         load_position_manifest(aligned_manifest)
 
 
-@pytest.mark.parametrize("field", ["game", "map_name", "normalized_position"])
+@pytest.mark.parametrize("field", ["game", "map_name", "normalized_position", "orientation"])
 def test_old_position_files_require_regeneration(aligned_manifest, field):
     path = aligned_manifest.parent / "session-a.position.json"
     frame = json.loads(path.read_text())
@@ -253,6 +254,47 @@ def test_old_position_files_require_regeneration(aligned_manifest, field):
     path.write_text(json.dumps(frame))
     with pytest.raises(ValueError, match="regenerate the dataset"):
         load_position_manifest(aligned_manifest)
+
+
+@pytest.mark.parametrize("orientation", [None, [0, 0], [0, 0, float("nan")],
+                                         [float("inf"), 0, 0], ["0", "0", "0"]])
+def test_invalid_prepared_orientation_is_rejected(aligned_manifest, orientation):
+    path = aligned_manifest.parent / "session-a.position.json"
+    frame = json.loads(path.read_text())
+    frame["orientation"] = orientation
+    path.write_text(json.dumps(frame))
+    with pytest.raises(ValueError, match="orientation"):
+        load_position_manifest(aligned_manifest)
+
+
+def test_orientation_changes_prediction_and_is_periodic():
+    model = PositionModel(imgsz=32, categories=CATEGORIES).eval()
+    inputs = (torch.zeros(1, 3, 32, 32), torch.zeros(1, 1, 3), torch.zeros(1, model.context_size))
+    with torch.no_grad():
+        # Route the three sine components to outputs without relying on random weights.
+        for parameter in model.head.parameters():
+            parameter.zero_()
+        model.head[0].weight[:3, -6:-3] = torch.eye(3)
+        model.head[0].bias[:3] = 2
+        model.head[2].weight[:, :3] = torch.eye(3)
+        angles = torch.tensor([[0.2, -0.3, 0.4]])
+        baseline = model(*inputs, angles)
+        for axis in range(3):
+            changed = angles.clone()
+            changed[0, axis] += 0.5
+            assert not torch.allclose(model(*inputs, changed), baseline)
+        torch.testing.assert_close(model(*inputs, angles + 2 * torch.pi), baseline)
+    for invalid in (torch.zeros(1, 2), torch.tensor([[0, 0, float("nan")]])):
+        with pytest.raises(ValueError, match="Orientation"):
+            model(*inputs, invalid)
+
+
+def test_checkpoint_without_orientation_requires_retraining(position_checkpoint):
+    saved = torch.load(position_checkpoint, weights_only=True)
+    saved["state_dict"]["head.0.weight"] = saved["state_dict"]["head.0.weight"][:, :-6]
+    torch.save(saved, position_checkpoint)
+    with pytest.raises(ValueError, match="retrain with orientation"):
+        PositionModel.load(position_checkpoint)
 
 
 def test_context_encoding_uses_saved_category_order_and_preserves_lap_endpoints():
@@ -338,7 +380,11 @@ def test_existing_top_lap_entries_supply_reference_xyz():
 
 
 @pytest.fixture(autouse=True)
-def single_threaded_torch():
+def single_threaded_torch(monkeypatch):
+    from training.image_segmentation import position_model_v2
+
+    encoder = position_model_v2.resnet18
+    monkeypatch.setattr(position_model_v2, "resnet18", lambda **kwargs: encoder(weights=None))
     previous = torch.get_num_threads()
     torch.set_num_threads(1)
     yield
@@ -438,7 +484,7 @@ def test_regression_trains_image_encoder_and_head_from_scratch_and_roundtrips(al
     assert all(parameter.requires_grad for parameter in model.parameters())
     encoder_before = {key: value.clone() for key, value in model.position_encoder.state_dict().items()}
     optimizer = torch.optim.Adam((parameter for parameter in model.parameters() if parameter.requires_grad), lr=0.01)
-    inputs = tuple(sample[field].unsqueeze(0) for field in ("image", "references", "context"))
+    inputs = tuple(sample[field].unsqueeze(0) for field in ("image", "references", "context", "orientation"))
     prediction = model(*inputs)
     assert prediction.shape == (1, 1, 3)
     loss = position_regression_loss(prediction, sample["target"].unsqueeze(0))
@@ -466,16 +512,16 @@ def test_regression_trains_image_encoder_and_head_from_scratch_and_roundtrips(al
     torch.testing.assert_close(actual, expected)
     curve = PositionCurve([0, 0.5], [[0, 0, 0], [1, 2, 3]])
     prediction = restored.predict_position(
-        records["session-b"][0]["image"], 0.25, curve, game="iracing", map_name="Other Track",
+        records["session-b"][0]["image"], 0.25, curve, game="iracing", map_name="Other Track", orientation=[1.2, -0.1, 0.3],
     )
     assert set(prediction) == {
         "reference_delta",
     }
     assert prediction == model.predict_position(
-        records["session-b"][0]["image"], 0.25, curve, game="iracing", map_name="Other Track",
+        records["session-b"][0]["image"], 0.25, curve, game="iracing", map_name="Other Track", orientation=[1.2, -0.1, 0.3],
     )
     with pytest.raises(ValueError, match="Unknown map_name"):
-        restored.predict_position(tmp_path / "missing.png", 0.25, curve, game="acc", map_name="Unknown")
+        restored.predict_position(tmp_path / "missing.png", 0.25, curve, game="acc", map_name="Unknown", orientation=[0, 0, 0])
 
 
 @pytest.mark.parametrize("image_size", [64, 96])
@@ -501,7 +547,7 @@ def test_position_predictions_distinguish_layouts_with_identical_global_averages
             model.head[2].weight[0, 0] = 1
             prediction = model(
                 torch.zeros(2, 3, image_size, image_size), torch.zeros(2, 1, 3),
-                torch.tensor([[0.25, 1, 0, 1, 0]]).repeat(2, 1),
+                torch.tensor([[0.25, 1, 0, 1, 0]]).repeat(2, 1), torch.zeros(2, 3),
             )
         assert prediction.shape == (2, 1, 3)
         assert prediction[0, 0, 0] > prediction[1, 0, 0]
@@ -514,7 +560,7 @@ def test_all_context_inputs_affect_predictions_with_fixed_image_and_references()
     with torch.no_grad():
         model.head[0].weight.zero_()
         model.head[0].bias.zero_()
-        model.head[0].weight[0, -model.context_size:] = torch.tensor([1, 2, 4, 8, 16])
+        model.head[0].weight[0, -model.context_size - 6:-6] = torch.tensor([1, 2, 4, 8, 16])
         model.head[2].weight.zero_()
         model.head[2].bias.zero_()
         model.head[2].weight[0, 0] = 1
@@ -525,7 +571,7 @@ def test_all_context_inputs_affect_predictions_with_fixed_image_and_references()
             (0.25, "acc", "Other Track", 18.25),
         ):
             context = torch.from_numpy(encode_position_context(position, game, map_name, CATEGORIES)).unsqueeze(0)
-            prediction = model(torch.zeros(1, 3, 64, 64), torch.zeros(1, 1, 3), context)
+            prediction = model(torch.zeros(1, 3, 64, 64), torch.zeros(1, 1, 3), context, torch.zeros(1, 3))
             assert prediction[0, 0, 0].item() == expected
 
 
@@ -557,7 +603,7 @@ def test_checkpoint_with_centerline_input_requires_retraining(position_checkpoin
     state["head.2.bias"] = torch.zeros(6)
     state["position_mean"], state["position_std"] = torch.zeros(6), torch.ones(6)
     torch.save(saved, position_checkpoint)
-    with pytest.raises(ValueError, match="centerline inputs; retrain from scratch"):
+    with pytest.raises(ValueError, match="incompatible inputs"):
         PositionModel.load(position_checkpoint)
 
 
@@ -1027,13 +1073,14 @@ def test_position_upload_streams_onnx_and_regression_metadata(position_checkpoin
     manifest = json.loads(artifact.with_suffix(".onnx.json").read_text())
     assert metadata == {"name": "track-position", **manifest}
     inference = metadata["metadata"].pop("inference")
-    assert list(inference["inputs"]) == ["images", "references", "context"]
+    assert list(inference["inputs"]) == ["images", "references", "context", "orientation"]
     assert list(inference["outputs"]) == ["deltas"]
     assert metadata == {
         "name": "track-position", "task": "position",
         "classNames": list(OUTPUT_NAMES),
         "metadata": {
-            "format": "acla-position-cnn-v3", "artifactFormat": "onnx", "trainingRunId": position_checkpoint.parent.name,
+            "modelName": "track-position",
+            "format": "acla-position-cnn-v4", "artifactFormat": "onnx", "trainingRunId": position_checkpoint.parent.name,
             "categories": CATEGORIES,
             "imgsz": 64, "outputNames": list(OUTPUT_NAMES),
             "targetDefinition": TARGET_DEFINITION,
@@ -1165,7 +1212,7 @@ def test_position_upload_command_can_retry_without_training(tmp_path, monkeypatc
     else:
         assert main(args) == 0
         assert "position-model" in capsys.readouterr().out
-    upload.assert_awaited_once_with(checkpoint, name="race-position" if name_flag else "track-position")
+    upload.assert_awaited_once_with(checkpoint, name="race-position" if name_flag else None)
 
 
 @pytest.mark.parametrize("args, message", [

@@ -370,8 +370,9 @@ train offline without exporting or publishing.
 
 ## Predict signed position differences from images
 
-`train-position` trains a standalone position CNN from scratch. It combines
-learned image features with reference-lap XYZ, normalized lap position, and one-hot encoded game
+`train-position` trains `position_model_v2`, a pretrained ResNet-18 encoder with
+spatial ConvLSTM memory. It combines learned image features with reference-lap XYZ,
+world orientation, normalized lap position, and one-hot encoded game
 and map names. Reference-lap XYZ is looked up during preparation at the frame's
 normalized lap position. The output is exactly three signed values:
 
@@ -391,11 +392,12 @@ Reference-lap and driver XYZ must use the same world frame and scale before
 subtraction. This preparation currently supports ACC only: iRacing sessions are
 skipped because their recorded position and heading fields use different frames.
 
-Driver XYZ and world rotation are required **only during preparation to construct training labels**.
+Driver XYZ is used during preparation to construct training labels. World orientation
+is also a required model input, supplied as heading, pitch, roll in radians.
 Each image's `.position.json` contains its filename, session ID, reference coordinates,
-game, map name, normalized lap position, local targets, and `coordinate_frame: car_local`.
+game, map name, normalized lap position, `orientation`, local targets, and `coordinate_frame: car_local`.
 It also retains `driver_position` for the annotation map; the training loader ignores it.
-The model receives the image, one reference-lap XYZ triple, and encoded context;
+The model receives the image, one reference-lap XYZ triple, world orientation, and encoded context;
 targets provide supervision and error metrics. Inference requires the same inputs.
 Prepared files may still contain centerline coordinates and targets for compatibility
 with the preparation workflow. Training ignores those rows; files with only the
@@ -404,20 +406,20 @@ Reference lookup uses linear interpolation, including across the start/finish se
 missing axes and invalid or missing reference curves fail instead of becoming
 zero coordinates.
 
-The image encoder uses five convolution/GroupNorm/ReLU blocks with
-16, 32, 64, 96, and 128 channels and strides (2, 2, 2, 1, 1), respectively.
-A 4×4 adaptive pooling grid preserves coarse
-image layout, followed by a 128-feature linear/ReLU position encoder. By default,
-a 128-unit causal GRU reads four frames of image features, standardized reference
-coordinates, and context, in chronological order. An MLP combines its final memory
-with the current reference coordinates and context to predict the current signed
-offsets. All encoder, GRU, and regression weights are randomly
-initialized and trained together. No pretrained weights, segmentation model,
-or segmentation labels are used.
+The image encoder starts from ImageNet ResNet-18 weights and retains spatial
+features through a small ConvLSTM. By default, it reads four frames together with
+standardized reference coordinates, orientation, and context, in chronological
+order. A 4×4 pooling grid and MLP combine the final spatial memory with the
+current reference coordinates, orientation, and context to predict signed offsets.
+The encoder is fine-tuned with the new memory and regression head; no segmentation
+model or segmentation labels are used. The architecture and initialization details
+are described under **Train and predict** below.
 Reference inputs are standardized using training-set statistics. Lap progress
 stays in `[0, 1]`; game and map names use separate one-hot vectors. Sorted category
 vocabularies are built from the prepared dataset and saved in each checkpoint.
 The context order is normalized position, game vector, then map-name vector.
+Orientation is a separate three-angle input. Inside the model, sine/cosine
+encoding produces six features without a discontinuity at the angle wrap.
 Inference reuses the saved order and rejects names absent from the vocabulary.
 Outputs stay in raw coordinate units, with an unconstrained linear output layer.
 Training uses mean component Smooth L1 between predicted and target XYZ offsets.
@@ -426,7 +428,7 @@ CoarseDropout. It selects 1-9 of the nine annotated HUD panels and fully covers
 each with either a random solid RGB color or random pixel noise (equal chance).
 Panel bounds are normalized from the 1252 x 720 annotation and scaled to the
 source frame. Original and newly obscured frames are mixed during training;
-reference inputs, context, and XYZ targets stay unchanged. Validation and
+reference inputs, orientation, context, and XYZ targets stay unchanged. Validation and
 inference always use original frames.
 Image preparation then letterboxes the entire frame;
 there are no flips, crops, mosaics, or other geometric training augmentations
@@ -462,7 +464,7 @@ coordinate extraction.
 Once preparation succeeds, open each reported `annotation_directories` folder
 with `python scripts/open_labelme.py PATH`. Save Labelme JSON beside the images.
 Pass the folder containing the image/position pairs to `train-position` below.
-The position trainer reads images, reference XYZ, game/map context, lap progress, and
+The position trainer reads images, reference XYZ, orientation, game/map context, lap progress, and
 prepared targets. It does not read source telemetry or Labelme polygons; its
 image features are learned directly from the position targets.
 
@@ -479,6 +481,7 @@ beside its image, using the same stem with `.position.json`, for example
   "game": "acc",
   "map_name": "Spa-Francorchamps",
   "normalized_position": 0.25,
+  "orientation": [0, 0, 0],
   "references": [[0.2, 0.0, 0.5], [0.25, 0.0, 0.5]],
   "coordinate_frame": "car_local",
   "target_definition": "diag(-1, 1, 1) @ inverse_world_rotation @ (reference_position - current_position)",
@@ -501,7 +504,8 @@ left-positive local X negated to produce right/forward/up
 (the example above has zero rotation). The world-space target is no longer saved.
 The trainer does no reference lookup or target calculation. `game` and `map_name`
 must be nonempty strings and `normalized_position` must be finite and in `[0, 1]`.
-Files without `coordinate_frame: car_local` must be regenerated. Preparation skips
+Files without `coordinate_frame: car_local` or finite `orientation: [heading, pitch, roll]`
+must be regenerated. Existing checkpoints without orientation must be retrained. Preparation skips
 existing session folders, so move the affected folders out of the download cache
 before selecting those sessions again; preserve any annotations you need.
 
@@ -534,19 +538,45 @@ service package with `PYTHONPATH=../acla_ai_service` as for other training comma
 
 ### Train and predict
 
+Train the pretrained ResNet-18/ConvLSTM model with the v2 entrypoint:
+
 ```bash
-python scripts/train_position.py \
+python scripts/train_position_v2.py \
   --manifest storage/session_downloads \
   --output storage/image_segmentation/position-runs/run-1 \
   --epochs 100 --imgsz 768 --batch 8 --device 0
 ```
 
 In the training container, use
-`docker exec -it acla_ai_training_c python3 /app/scripts/train_position.py`
+`docker exec -it acla_ai_training_c python3 /app/scripts/train_position_v2.py`
 with the same arguments. The script forwards to
-`python -m training.image_segmentation train-position`.
+`python -m training.image_segmentation train-position-v2`.
 
-Use a new output directory; every run trains from scratch. The first GPU
+To train the original CNN/GRU from scratch, use `scripts/train_position.py`
+or `python -m training.image_segmentation train-position` with the same options.
+Both entrypoints share dataset preparation, splitting, sampling, metrics, and export.
+
+The v2 command trains `position_model_v2`, defined in
+`position_model_v2.py`. It fine-tunes a
+[pretrained ResNet-18](https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.resnet18.html)
+(`IMAGENET1K_V1`) without its global pooling or classifier. Its spatial feature
+maps (512 channels at 1/32 resolution) are projected to 64 channels, then passed
+through a 32-channel ConvLSTM. Each step also receives the reference XYZ, context,
+and sine/cosine orientation, broadcast across the feature map. Only the final
+hidden map is pooled to 4x4 and fed to a small regression head with the final
+frame's auxiliary inputs. All encoder, ConvLSTM, and head parameters are trained
+with the existing Smooth L1 loss and Adam optimizer at `1e-4`.
+
+ImageNet RGB normalization is inside the model and ONNX graph, so callers keep
+using full letterboxed RGB frames scaled to `[0, 1]`. BatchNorm running statistics
+stay fixed while its affine parameters train, supporting small/partial batches.
+The first run downloads torchvision's pretrained weights into the PyTorch cache
+unless already present. Saved checkpoints contain all weights; loading or exporting
+them does not download anything. The original CNN/GRU architecture remains in
+`position_model.py`, and its existing checkpoints can still be loaded and exported.
+
+Use a new output directory; every v2 run starts from the pretrained encoder and a
+new temporal/regression head, while the original model starts from scratch. The first GPU
 is the default if `--device` is omitted; use `--device cpu` for CPU training.
 After image extraction and before the first epoch, training assigns whole sessions
 from each `(game, map_name)` to validation, targeting `--val-fraction 0.2` of that
@@ -555,7 +585,7 @@ count, accounting for unequal session sizes; equally balanced session choices
 are randomized by the seed. The rest go to training, so every map appears in both
 sets. Each set receives at least one session per map; maps with fewer than two
 sessions are rejected. Sessions must each belong to one game/map. Frames from the
-same session never cross splits, and all frames are retained. An exact target
+same session never cross splits, and by default all frames are retained. An exact target
 fraction may be impossible with whole sessions. Images from all maps and sessions are shuffled
 within each split. Temporal windows are assembled in chronological order before
 training batches are reshuffled each epoch.
@@ -563,17 +593,62 @@ The training and validation maps are printed before the first epoch.
 The run's `split.json` records the seed, target frame fraction, sequence length, map lists, and image paths.
 Prepared position files and the dataset index are not changed.
 
+Optional density thinning reduces near-duplicate **training targets** per game/map:
+
+```bash
+python scripts/train_position.py \
+  --manifest storage/session_downloads \
+  --output storage/image_segmentation/position-runs/density-1 \
+  --min-offset-distance 0.1 --min-orientation-distance-deg 5 \
+  --min-normalized-position-distance 0.01
+```
+
+The same sampling options apply to `scripts/train_position_v2.py`.
+
+These example thresholds suppress a target when a previously retained sample has
+a reference-lap local XYZ offset within 0.1 source units (Euclidean distance)
+**and** heading, pitch, and roll differences each within 5 degrees **and**
+normalized lap position within 0.01 (1% of a lap). Lap distance is circular:
+`min(abs(a - b), 1 - abs(a - b))`, so positions 0.999 and 0.001 are 0.002 apart,
+and 0 and 1 are equivalent. Angular
+differences wrap across -180/180 degrees; this compares the three Euler angles,
+not a single rotation angle. Threshold boundaries count as close. Any option
+can be used alone or combined; all enabled thresholds must be close. Offset thresholds
+must be finite and positive; orientation thresholds must be in `(0, 180]` degrees.
+Normalized-position thresholds must be in `(0, 0.5]` laps. Omitted dimensions do
+not affect selection. Without any sampling option, every training target is used.
+
+The selector shuffles candidates with `--seed` and greedily keeps separated
+examples. A KD-tree indexes scaled XYZ and sine/cosine orientation and lap-position coordinates,
+then exact distance checks remove nearby candidates. It queries only retained
+examples and holds one neighborhood at a time, avoiding an N-by-N distance matrix
+or a complete neighbor graph. Selection is reproducible for the same data and seed.
+It runs after the whole-session split and compares only within each game/map.
+Image appearance is not compared, so large thresholds may remove useful variation;
+tune them conservatively. Enable the lap-position threshold to preserve examples
+from distant track sections that share similar offsets and orientation.
+
+Validation stays complete. All original training frames remain available as
+temporal history, including frames removed as prediction targets. Reference
+normalization uses all original training references. The log reports retained
+counts, and `split.json` adds `density_sampling` with all three thresholds,
+`candidate_count`, and `selected_count`. Its `train` list contains selected target
+images; for temporal runs, `train_history` records all original training images.
+The validation fraction describes the split before thinning. Loss and training
+MAE count only retained targets.
+
 `--sequence-length 4` is the default: each example contains the current frame and
 up to three preceding prepared frames from the same session and video directory.
 Frames are ordered by their numeric filename suffix (`frame_2` precedes `frame_10`);
 filenames within a recording must share a prefix and have unique numeric suffixes.
 At the start of a recording, repeat its first frame on the left until the window
-is full. Images, references, and context all follow the same window; only the
+is full. Images, references, orientation, and context all follow the same window; only the
 final frame's target contributes to loss and metrics. No history crosses a
 training/validation split, session, recording folder, or game/map boundary.
-Memory starts at zero for each window. `--sequence-length 1` disables the GRU
-and preserves single-frame training, checkpoint loading, and schema 4 export.
-Single-frame Python models remain the default when constructing `PositionModel`
+ConvLSTM hidden and cell states (or GRU hidden state for the original model) start at zero for each window.
+`--sequence-length 1` performs one step using only the current frame and
+preserves single-frame inputs and schema 6 export.
+Single-frame Python models remain the default when constructing `PositionModelV2`
 directly; the training CLI enables four-frame memory explicitly.
 
 Windows use consecutive **available prepared frames**, not a fixed elapsed time.
@@ -630,7 +705,8 @@ exports that checkpoint to `best.onnx` and `best.onnx.json`, including with
 `--no-upload`. The `.pt` checkpoints remain available for Python inference.
 
 After export, `best.onnx` is uploaded to the backend using the same authentication
-and binary storage as segmentation training. The name is `track-position`;
+and binary storage as segmentation training. The name is `position_model_v2` for
+the v2 entrypoint and `track-position` for the original model;
 use `--no-upload` to train and export offline.
 Position uploads contain one self-contained ONNX graph with
 only the signed position outputs. They are stored with
@@ -651,12 +727,13 @@ retraining with:
 
 ```bash
 python -m training.image_segmentation upload-position \
-  storage/image_segmentation/position-runs/run-1/best.pt --name track-position
+  storage/image_segmentation/position-runs/run-1/best.pt --name position_model_v2
 ```
 
 Passing `best.onnx` instead publishes the existing export without exporting
 again. Publication reads metadata embedded in the ONNX file, so the JSON sidecar
-is not required for upload.
+is not required for upload. Without `--name`, publication uses `metadata.modelName`:
+`position_model_v2` for the new model and `track-position` for older artifacts.
 
 The training script can also publish an existing ONNX model through the same
 uploader, skipping all training steps:
@@ -677,7 +754,7 @@ model** below. Successful uploads print the backend model ID.
 The graph uses ONNX opset 17 and fixed batch size 1 at the checkpoint's training
 image size. All inputs and outputs are float32. `metadata.inference` describes
 the names, exact shapes, preprocessing, and context order; its `schemaVersion`
-is 5 for temporal models (4 for single-frame models). Reference and delta tensors
+is 7 for temporal models (6 for single-frame models). Reference and delta tensors
 contain only the reference-lap XYZ triple for each represented frame.
 References remain in world coordinates; deltas use local right/forward/up axes,
 identified by `metadata.coordinateFrame` and `metadata.coordinateAxes`.
@@ -689,17 +766,19 @@ The interface is independent of the informational checkpoint `format` label.
 | Input `images` | `[1, T, 3, imgsz, imgsz]` | RGB, NTCHW, divided by 255. Letterbox each full frame, round resized dimensions ties-to-even, center with floor offsets, and pad with RGB 114. |
 | Input `references` | `[1, T, 1, 3]` | Reference-lap XYZ for each frame in source coordinates. Learned standardization is inside the graph. |
 | Input `context` | `[1, T, 1 + len(game) + len(map_name)]` | Each frame's normalized lap position, then game and map-name one-hot vectors in `metadata.categories` order. |
+| Input `orientation` | `[1, T, 3]` | Each frame's world heading, pitch, roll in radians; sine/cosine encoding is inside the graph. |
 | Output `deltas` | `[1, 1, 3]` | Final frame's car-local reference offset: right, forward, up. |
 
 `T` is fixed to `metadata.inference.temporal.sequenceLength`. Keep a rolling
-window of aligned images, references, and contexts in **oldest-to-newest** order.
+window of aligned images, references, orientations, and contexts in **oldest-to-newest** order.
 Repeat the earliest frame on the left when history is short. Clear the window
-on a new session/recording, game/map change, or seek. The graph starts GRU state
+on a new session/recording, game/map change, or seek. The graph starts ConvLSTM state
 from zero on every call and exposes no recurrent state input/output; all memory
-comes from the supplied window. The export unrolls the GRU into ordinary tensor
-operators. For schema 4, omit the `T` dimension from every input; output shape is
-unchanged. Existing frontend/backend consumers need schema 5 support before
-using temporal exports; this change is confined to the training workspace.
+comes from the supplied window. The export unrolls the ConvLSTM into ordinary tensor
+operators. For schema 6, omit the `T` dimension from every input; output shape is
+unchanged. `metadata.inference.orientation` declares the angle order, radians,
+and world frame. Track Vision supplies the capture-time telemetry orientation
+and skips position inference when any required angle is missing or nonfinite.
 
 The frontend must validate finite reference coordinates, lap position in `[0, 1]`,
 and known category values; Python's input validation is not part of the graph.
@@ -717,26 +796,28 @@ model's saved vocabulary:
 import json
 from pathlib import Path
 from training.image_segmentation.position_data import PositionCurve
-from training.image_segmentation.position_model import PositionModel
+from training.image_segmentation.position_model_v2 import PositionModelV2
 
 reference = PositionCurve.from_points(json.loads(Path("reference-lap.json").read_text()))
-model = PositionModel.load(Path("position-runs/run-1/best.pt"))
+model = PositionModelV2.load(Path("position-runs/run-1/best.pt"))
 result = model.predict_position(
     Path("frame.jpg"), 0.25, reference,
-    game="acc", map_name="Monza",
-    history=[(Path("previous-frame.jpg"), 0.249)],  # Previous frames, oldest first.
+    game="acc", map_name="Monza", orientation=[1.2, -0.1, 0.3],
+    history=[(Path("previous-frame.jpg"), 0.249, [1.19, -0.1, 0.3])],
 )
 # {"reference_delta": [dx, dy, dz]}
 ```
 
 For an already loaded top-lap entry, use `PositionCurve.from_top_lap(entry)`.
-Position checkpoints include only the image encoder, position encoder, optional GRU, regression
-head, reference normalization, and category vocabulary. Load them through
-`PositionModel.load`. Use `upload-position` to export and store their ONNX graph; the segmentation `upload`
+V2 checkpoints include the ResNet encoder, channel projection, ConvLSTM, regression
+head, RGB/reference normalization, and category vocabulary. Load them through
+`PositionModelV2.load` or the shared `PositionModel.load`. Use `upload-position` to export and store their ONNX graph; the segmentation `upload`
 command continues to accept segmentation checkpoints only. Uploading stores the
 model for later download; the live API does not yet run position inference.
-Temporal checkpoints use `acla-position-cnn-gru-v1` and save `sequence_length`;
-single-frame checkpoints use `acla-position-cnn-v3`. Existing corrected single-frame
+V2 checkpoints use `acla-position-resnet18-convlstm-v1` and save `sequence_length`.
+Their temporal exports declare `metadata.inference.temporal.type: convlstm`;
+the tensor shapes and window contract remain schema 7 (schema 6 for length 1).
+Existing corrected single-frame
 checkpoints without `sequence_length` load as length 1. Previous checkpoints that used
 centerline inputs or YOLO encoders must be retrained from scratch using the same prepared position
 dataset. Format labels remain informational; loading checks the saved context

@@ -20,8 +20,9 @@ class PositionFormatTests(unittest.TestCase):
         original = PositionModel(imgsz=64, categories=categories).eval()
         image, references = torch.rand(1, 3, 64, 64), torch.rand(1, 1, 3)
         context = torch.tensor([[0.25, 1., 1., 0.]])
+        orientation = torch.tensor([[1.2, -0.1, 0.3]])
         with torch.no_grad():
-            expected = original(image, references, context)
+            expected = original(image, references, context, orientation)
         with tempfile.TemporaryDirectory(prefix='acla-position-format-') as folder:
             checkpoint = Path(folder) / 'weights.pt'
             original.save(checkpoint)
@@ -36,7 +37,7 @@ class PositionFormatTests(unittest.TestCase):
                     with torch.no_grad():
                         restored = PositionModel.load(checkpoint)
                         self.assertEqual(restored.categories, categories)
-                        torch.testing.assert_close(restored(image, references, context), expected)
+                        torch.testing.assert_close(restored(image, references, context, orientation), expected)
                     with patch('training.image_segmentation.position_publication.upload_ultralytics_model',
                                new_callable=AsyncMock, return_value={'_id': 'published'}) as upload:
                         result = asyncio.run(upload_position_checkpoint(checkpoint, backend_service=object()))
