@@ -252,7 +252,7 @@ def test_training_scripts_update_the_selected_model_and_count_each_final_frame_o
     def build(model):
         build_network(model)
         captured.setdefault("before", {key: value.clone() for key, value in model.temporal_encoder.state_dict().items()})
-        captured.setdefault("encoder_before", model.image_encoder[0].weight.detach().clone())
+        captured.setdefault("encoder_before", {key: value.clone() for key, value in model.image_encoder.state_dict().items()})
 
     monkeypatch.setattr(position_model_v2, "resnet18", offline_encoder)
     monkeypatch.setattr(model_class, "_build_network", build)
@@ -269,11 +269,14 @@ def test_training_scripts_update_the_selected_model_and_count_each_final_frame_o
     if model_class is PositionModelV2:
         assert weights_seen[0] == position_model_v2.ResNet18_Weights.IMAGENET1K_V1
         assert all(weights is None for weights in weights_seen[1:])
+        for key, value in model.image_encoder.state_dict().items():
+            assert torch.equal(value, captured["encoder_before"][key]), key
+        assert all(not parameter.requires_grad for parameter in model.image_encoder.parameters())
     else:
         assert weights_seen == []
+        assert not torch.equal(captured["encoder_before"]["0.weight"], model.image_encoder[0].weight)
     assert model.sequence_length == 4
     assert any(not torch.equal(value, model.temporal_encoder.state_dict()[key]) for key, value in captured["before"].items())
-    assert not torch.equal(captured["encoder_before"], model.image_encoder[0].weight)
     split = json.loads((output / "split.json").read_text())
     assert split["sequence_length"] == 4
     assert len(split["train"]) == len(split["val"]) == 5

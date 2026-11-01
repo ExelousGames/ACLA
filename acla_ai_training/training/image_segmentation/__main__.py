@@ -70,12 +70,10 @@ def main(argv: list[str] | None = None) -> int:
     position.add_argument("--workers", type=int, default=0)
     position.add_argument("--val-fraction", type=float, default=0.2, help="Target validation share of frames per game/map (default: 0.2), using whole sessions; at least two sessions per map are required.")
     position.add_argument("--seed", type=int, default=42, help="Random session split, frame shuffle, and training seed (default: 42).")
-    position.add_argument("--min-offset-distance", type=float,
-                          help="Thin training targets within this 3D local XYZ distance (source units), per game/map. Disabled by default.")
-    position.add_argument("--min-orientation-distance-deg", type=float,
-                          help="Thin training targets whose wrapped heading, pitch, and roll differences are each within this many degrees (0 < value <= 180). All enabled sampling thresholds must be close. History and validation are retained.")
-    position.add_argument("--min-normalized-position-distance", type=float,
-                          help="Thin training targets within this fraction of a lap (0 < value <= 0.5; 0.01 means 1%%), wrapping across 0/1. All enabled sampling thresholds must be close. Disabled by default.")
+    position.add_argument("--density-position-radius", type=float,
+                          help="Enable density filtering: remove training endpoints within this driver world-XYZ radius (source units) and the orientation threshold, per game/map. Must be positive; disabled by default. Original temporal history and validation are retained.")
+    position.add_argument("--density-orientation-deg", type=float, default=5.0,
+                          help="Maximum wrapped difference in each heading/pitch/roll angle for density filtering (0 < value <= 180, default: 5 degrees). Used with --density-position-radius.")
     position_upload = position.add_mutually_exclusive_group()
     position_upload.add_argument("--no-upload", action="store_true", help="Export ONNX locally without uploading.")
     position_upload.add_argument("--upload-model", type=Path, help="Upload an existing position .onnx model without training.")
@@ -132,9 +130,8 @@ def main(argv: list[str] | None = None) -> int:
                 imgsz=args.imgsz, batch=args.batch, device=args.device, workers=args.workers,
                 sequence_length=args.sequence_length,
                 val_fraction=args.val_fraction, seed=args.seed,
-                min_offset_distance=args.min_offset_distance,
-                min_orientation_distance_deg=args.min_orientation_distance_deg,
-                min_normalized_position_distance=args.min_normalized_position_distance,
+                density_position_radius=args.density_position_radius,
+                density_orientation_deg=args.density_orientation_deg,
                 upload=not args.no_upload,
                 model_class=model_class,
             )

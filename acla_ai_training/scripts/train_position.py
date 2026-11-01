@@ -32,17 +32,18 @@ equally balanced session choices. Every map appears in both sets, with at least
 two sessions required per map. Sessions never cross splits; windows are built
 within each split before training shuffles them. The maps, image assignments,
 and sequence length are saved in split.json.
-Optional density thinning removes near-duplicate training targets per game/map:
---min-offset-distance sets the 3D local XYZ distance in source units;
---min-orientation-distance-deg sets the maximum wrapped difference in each of
-heading, pitch, and roll; --min-normalized-position-distance sets the circular
-lap-progress distance (0.01 = 1% of a lap), wrapping across 0/1. Each threshold
-can be used alone. All enabled thresholds must be close to a retained sample
-before a target is removed. Selection
-uses --seed and indexed neighborhood queries, without an all-pairs matrix.
-Validation retains every frame; temporal windows retain the original history.
-split.json saves the thresholds, counts, selected targets, and full train_history
-when temporal sampling is enabled. Omit all three options to train on every frame.
+Training uses every frame unless --density-position-radius R is set. Density
+filtering keeps coverage of driver world XYZ and orientation separately per
+game/map: an endpoint is redundant only within radius R (source units) of a
+retained endpoint and within --density-orientation-deg D in each wrapped heading,
+pitch, roll angle (default D=5 degrees). Larger thresholds remove more examples.
+A spatial index avoids all-pairs comparisons; --seed controls representative
+selection. Only training endpoints are filtered, after building full temporal
+windows: original history, order, padding, and validation are preserved. No files
+are deleted. Driver XYZ is selection metadata, never a model input. Filtering
+requires finite driver_position triples in the prepared files. split.json saves
+the thresholds, candidate/selected counts, selected paths, and full train_history
+for temporal runs. Omit --density-position-radius to keep every training frame.
 Preparation aligns images to telemetry using Graphics_analyst_session_time.
 Training reads the prepared orientation values, without reopening source telemetry.
 Before letterboxing, each training-frame load has a 50% chance of HUD
@@ -80,6 +81,7 @@ Use --upload-model path/to/best.onnx to skip training and publish an existing
 ONNX model under its saved model name; --manifest and --output are not needed.
 
 Usage: python scripts/train_position.py --manifest storage/session_downloads --output position-runs/run-1
+Density: python scripts/train_position.py --manifest storage/session_downloads --output position-runs/density-1 --density-position-radius 0.5 --density-orientation-deg 5
 Upload: python scripts/train_position.py --upload-model position-runs/run-1/best.onnx
 Run --help for training options.
 """

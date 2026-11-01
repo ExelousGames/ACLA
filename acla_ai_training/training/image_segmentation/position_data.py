@@ -127,7 +127,8 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
     """Read a position-file folder or dataset index, grouped by session without splitting.
 
     Each frame contains session_id, image, game, map_name, normalized_position, orientation, references,
-    and target. References contain world XYZ; targets contain car-local
+    and target, plus optional driver_position for density selection only.
+    References contain world XYZ; targets contain car-local
     right/forward/up offsets, for the reference lap and optionally the centerline.
     Image paths are relative to their JSON file. No telemetry or curve files are read.
     """
@@ -182,6 +183,8 @@ def load_position_manifest(path: Path) -> dict[str, list[dict]]:
             **position_context(frame["normalized_position"], frame["game"], frame["map_name"]),
             "orientation": position_orientation(frame["orientation"]),
         }
+        if "driver_position" in frame:
+            record["driver_position"] = frame["driver_position"]
         for field in ("references", "target"):
             values = np.asarray(frame[field], dtype=np.float32)
             if values.shape not in ((1, 3), (2, 3)) or not np.isfinite(values).all():

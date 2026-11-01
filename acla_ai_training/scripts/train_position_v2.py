@@ -2,13 +2,25 @@
 
 Uses the same prepared datasets, options, validation metrics, and ONNX export as
 train_position.py. The original script continues to train the CNN/GRU model.
-V2 fine-tunes all encoder, ConvLSTM, and regression parameters while keeping
-pretrained BatchNorm statistics fixed. ImageNet RGB normalization is in the model.
+Training uses every frame unless --density-position-radius R is set. Density
+filtering removes endpoints only when driver world XYZ is within R source units
+of a retained endpoint in the same game/map and wrapped heading, pitch, roll
+differences are each within --density-orientation-deg D (default: 5 degrees).
+Larger thresholds remove more examples. A spatial index finds nearby positions;
+--seed controls representative selection. Full temporal windows are built before
+filtering endpoints, preserving original steps, order, and padding. Validation
+and files are retained. Driver XYZ is selection metadata, never a model input;
+filtering requires finite driver_position triples in the prepared files.
+split.json saves thresholds, candidate/selected counts, selected paths, and full
+train_history for temporal runs. Omit the radius to retain all training frames.
+V2 freezes all ImageNet ResNet-18 weights and BatchNorm state, training only the
+channel projection, ConvLSTM, and regression head. ImageNet RGB normalization is in the model.
 The first run downloads ResNet-18 weights unless cached; checkpoint loading and
 export do not download weights. The default temporal window contains four frames.
 Uploads best.onnx as position_model_v2; use --no-upload to export locally.
 
 Usage: python scripts/train_position_v2.py --manifest storage/session_downloads --output position-runs/v2-run-1
+Density: python scripts/train_position_v2.py --manifest storage/session_downloads --output position-runs/v2-density-1 --density-position-radius 0.5 --density-orientation-deg 5
 Upload: python scripts/train_position_v2.py --upload-model position-runs/v2-run-1/best.onnx
 Run --help for training options.
 """

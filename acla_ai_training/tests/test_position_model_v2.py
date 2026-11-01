@@ -63,10 +63,17 @@ def test_training_defaults_to_pretrained_resnet_with_spatial_features_and_intern
 
 
 @pytest.mark.parametrize("length", [1, 4])
-def test_training_reaches_encoder_memory_and_head_without_batchnorm_drift(length):
+def test_training_updates_projection_memory_and_head_with_frozen_resnet(length):
     model = PositionModelV2(32, categories=CATEGORIES, sequence_length=length, pretrained=False).train()
     batchnorm = [layer for layer in model.image_encoder.modules() if isinstance(layer, nn.BatchNorm2d)]
-    statistics = [(layer.running_mean.clone(), layer.running_var.clone()) for layer in batchnorm]
+    encoder_state = {name: value.clone() for name, value in model.image_encoder.state_dict().items()}
+    trained_layers = (model.position_encoder, model.temporal_encoder, model.head)
+    before = [{name: value.clone() for name, value in layer.state_dict().items()} for layer in trained_layers]
+    optimizer = torch.optim.Adam((parameter for parameter in model.parameters() if parameter.requires_grad), lr=1e-4)
+    for mode in (False, True, False, True):
+        model.train(mode)
+        assert all(not layer.training for layer in model.image_encoder.modules())
+        assert all(layer.training == mode for layer in trained_layers)
     # Batch one and a 1x1 final feature map must train, including a partial last batch.
     inputs = model_inputs(1, length, 32)
     inputs[0].requires_grad_()
@@ -83,18 +90,21 @@ def test_training_reaches_encoder_memory_and_head_without_batchnorm_drift(length
         reordered = [torch.cat((value[:, :3].flip(1), value[:, 3:]), dim=1) for value in inputs]
         assert not torch.allclose(model(*reordered), expected, rtol=1e-6, atol=1e-7)
     expected.square().mean().backward()
-    for parameter in (model.image_encoder[0].weight, model.position_encoder[0].weight,
-                      model.temporal_encoder.gates.weight, model.head[-1].weight):
+    assert all(not parameter.requires_grad and parameter.grad is None for parameter in model.image_encoder.parameters())
+    for parameter in (model.position_encoder[0].weight, model.temporal_encoder.gates.weight, model.head[-1].weight):
         assert torch.isfinite(parameter.grad).all() and parameter.grad.abs().sum() > 0
     assert inputs[0].grad.abs().sum() > 0
     assert inputs[3].grad.abs().sum() > 0
     if length > 1:
         assert inputs[0].grad[:, 0].abs().sum() > 0
         assert inputs[3].grad[:, 0].abs().sum() > 0
-    for layer, (mean, variance) in zip(batchnorm, statistics):
-        assert not layer.training and layer.weight.requires_grad
-        torch.testing.assert_close(layer.running_mean, mean)
-        torch.testing.assert_close(layer.running_var, variance)
+    optimizer.step()
+    for name, value in model.image_encoder.state_dict().items():
+        assert torch.equal(value, encoder_state[name]), name
+    for layer, state in zip(trained_layers, before):
+        assert any(not torch.equal(value, state[name]) for name, value in layer.state_dict().items())
+    for layer in batchnorm:
+        assert not layer.training and not layer.weight.requires_grad and not layer.bias.requires_grad
 
 
 @pytest.mark.parametrize("length,imgsz", [(1, 32), (4, 96), (2, 128)])

@@ -279,7 +279,7 @@ After image extraction, training assigns whole sessions from each
 Each map needs at least two sessions. Validation uses the session combination
 whose total frame count is closest to the requested fraction, accounting for
 unequal session sizes; the seed randomizes equally balanced choices.
-Sessions never cross splits, and by default all frames are retained. Images from all maps
+Sessions never cross splits, and all frames are retained by default. Images from all maps
 are shuffled within each split. A single map is sufficient.
 The training and validation maps are printed and saved in the run's `split.json`,
 along with image paths, target frame fraction, and seed. The same inputs and seed reproduce
@@ -287,26 +287,25 @@ the assignments. Position data must use adjacent
 `.position.json` files. Indexes containing inline frame data or preset `split`
 assignments are rejected; rerun preparation and pass the folder of prepared pairs.
 
-To reduce near-duplicate training targets, add any combination of
-`--min-offset-distance 0.1`, `--min-orientation-distance-deg 5`, and
-`--min-normalized-position-distance 0.01` (example thresholds). The first compares
-3D local XYZ offsets in source units; the second compares wrapped heading,
-pitch, and roll differences in degrees. The third compares circular lap progress:
-0.01 means 1% of a lap, wrapping across 0/1. All enabled thresholds must be close
-to a kept sample before another target is removed. Selection runs separately per
-game/map after splitting sessions, uses `--seed`, and uses a KD-tree instead of
-an all-pairs distance matrix. Validation keeps every frame, and temporal windows
-keep their original history. Counts and thresholds are saved in `split.json`
-under `density_sampling`; `train` lists retained targets and, for temporal runs,
-`train_history` lists all available training frames. Omit all three options to disable
-thinning. Larger thresholds keep fewer distinct examples and can discard useful
-visual or track-position variation; start conservatively.
+Both training scripts support optional density filtering, for example add
+`--density-position-radius 0.5 --density-orientation-deg 5` to either command.
+An endpoint is removed only when a retained endpoint in the same game/map is
+within 0.5 source coordinate units of its **driver world XYZ**, and each wrapped
+heading/pitch/roll difference is at most 5 degrees. Tune these example thresholds
+to your dataset's units; larger thresholds remove more examples. A spatial index
+finds nearby positions, with seeded representative selection. Original temporal
+windows are built before filtering: all history steps, ordering, and padding
+remain intact, including frames removed as training endpoints. Validation and
+prepared files stay unchanged. Driver coordinates are used only for selection.
+`split.json` saves thresholds, counts, selected endpoints, and full `train_history`
+for temporal runs. Omit the radius to disable filtering.
 
 The regression trainer uses images, reference XYZ, game/map names, normalized lap
 position, world orientation, and prepared position targets. Names are one-hot encoded using category
 vocabularies saved with the checkpoint for inference. The trainer
-fine-tunes an ImageNet-pretrained ResNet-18, retains its spatial feature maps
-through a small ConvLSTM, and regresses the final frame's signed XYZ offset.
+keeps an ImageNet-pretrained ResNet-18 frozen, including all BatchNorm parameters
+and running statistics. It trains the channel projection, small ConvLSTM, and
+regression head to predict the final frame's signed XYZ offset from spatial features.
 It reads no Labelme polygons or segmentation checkpoint. Both training scripts share
 the same options and input/output contract; `train_position.py` trains the original CNN/GRU.
 The new architecture is in `training/image_segmentation/position_model_v2.py`.

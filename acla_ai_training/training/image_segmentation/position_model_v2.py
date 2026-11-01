@@ -27,7 +27,8 @@ class ConvLSTMCell(nn.Module):
 class PositionModelV2(PositionModel):
     """Keep the original position inputs/output, retaining space through temporal fusion.
 
-    Training starts from ImageNet ResNet-18 weights. Checkpoint restoration uses
+    Training keeps the ImageNet ResNet-18 weights and BatchNorm state frozen.
+    Checkpoint restoration uses
     pretrained=False because every encoder parameter is already in the checkpoint.
     """
 
@@ -45,6 +46,7 @@ class PositionModelV2(PositionModel):
         backbone = resnet18(weights=weights)
         # Remove global pooling and classification: [N, 512, H/32, W/32] remains spatial.
         self.image_encoder = nn.Sequential(*list(backbone.children())[:-2])
+        self.image_encoder.requires_grad_(False)
         self.register_buffer("image_mean", torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1))
         self.register_buffer("image_std", torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1))
         self.position_encoder = nn.Sequential(nn.Conv2d(512, 64, 1), nn.ReLU())
@@ -56,11 +58,8 @@ class PositionModelV2(PositionModel):
 
     def train(self, mode=True):
         super().train(mode)
-        # Correlated windows and small batches should not overwrite pretrained BN statistics.
-        # Affine parameters and all encoder convolutions still receive gradients.
-        for layer in self.image_encoder.modules():
-            if isinstance(layer, nn.BatchNorm2d):
-                layer.eval()
+        # Keep pretrained BatchNorm state fixed even when the remaining layers train.
+        self.image_encoder.eval()
         return self
 
     def visual_features(self, images):

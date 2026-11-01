@@ -14,9 +14,9 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, Subset
 
 from .position_data import OUTPUT_NAMES, PositionDataset, load_position_manifest
+from .position_density import select_position_endpoints
 from .position_export import export_position_checkpoint
 from .position_model import PositionModel
-from .position_sampling import select_position_samples
 
 
 OFFSET_LENGTH_RANGES = (
@@ -101,9 +101,8 @@ def train_position_model(
     workers=0,
     val_fraction=0.2,
     seed=42,
-    min_offset_distance=None,
-    min_orientation_distance_deg=None,
-    min_normalized_position_distance=None,
+    density_position_radius=None,
+    density_orientation_deg=5.0,
     upload=True,
     model_class=None,
 ):
@@ -114,14 +113,10 @@ def train_position_model(
     sessions = load_position_manifest(manifest)
     records = [frame for frames in sessions.values() for frame in frames]
     splits = split_position_frames(records, val_fraction=val_fraction, seed=seed)
-    training_indices = select_position_samples(
-        splits["train"], min_offset_distance=min_offset_distance,
-        min_orientation_distance_deg=min_orientation_distance_deg,
-        min_normalized_position_distance=min_normalized_position_distance, seed=seed,
+    training_indices = select_position_endpoints(
+        splits["train"], position_radius=density_position_radius,
+        orientation_degrees=density_orientation_deg, seed=seed,
     )
-    sampling_enabled = any(value is not None for value in (
-        min_offset_distance, min_orientation_distance_deg, min_normalized_position_distance,
-    ))
     torch.manual_seed(seed)
     device = f"cuda:{device}" if str(device).isdigit() else device
     categories = {field: sorted({row[field] for row in records}) for field in ("game", "map_name")}
@@ -132,17 +127,16 @@ def train_position_model(
     # Standardize XYZ using training references alone; context stays in [0, 1].
     network.position_mean.copy_(positions.mean(0))
     network.position_std.copy_(positions.std(0, unbiased=False).clamp_min(1.0))
-    # Build history from every frame in the split, then select window endpoints.
+    # Construct history from all original frames before selecting window endpoints.
     datasets = {
         split: PositionDataset(records, imgsz, categories, augment=split == "train", sequence_length=sequence_length)
         for split, records in splits.items()
     }
     sampling_metadata = {}
-    if sampling_enabled:
+    if density_position_radius is not None:
         sampling_metadata["density_sampling"] = {
-            "min_offset_distance": min_offset_distance,
-            "min_orientation_distance_deg": min_orientation_distance_deg,
-            "min_normalized_position_distance": min_normalized_position_distance,
+            "position_radius": density_position_radius,
+            "orientation_degrees": density_orientation_deg,
             "candidate_count": len(splits["train"]),
             "selected_count": len(training_indices),
         }
@@ -152,7 +146,7 @@ def train_position_model(
         splits["train"] = [splits["train"][index] for index in training_indices]
         print(
             f"Density sampling: kept {len(training_indices)}/{sampling_metadata['density_sampling']['candidate_count']} "
-            "training targets; validation and temporal history retained", flush=True,
+            "training endpoints; original temporal history and validation retained", flush=True,
         )
     loaders = {
         split: DataLoader(
@@ -161,7 +155,7 @@ def train_position_model(
         )
         for split, dataset in datasets.items()
     }
-    optimizer = torch.optim.Adam(network.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam((parameter for parameter in network.parameters() if parameter.requires_grad), lr=1e-4)
     output.mkdir(parents=True)
     assignments = {split: [str(row["image"]) for row in frames] for split, frames in splits.items()}
     maps = {

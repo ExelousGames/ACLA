@@ -396,7 +396,8 @@ Driver XYZ is used during preparation to construct training labels. World orient
 is also a required model input, supplied as heading, pitch, roll in radians.
 Each image's `.position.json` contains its filename, session ID, reference coordinates,
 game, map name, normalized lap position, `orientation`, local targets, and `coordinate_frame: car_local`.
-It also retains `driver_position` for the annotation map; the training loader ignores it.
+It also retains `driver_position` for the annotation map and optional training
+density selection; driver coordinates are never passed to the model.
 The model receives the image, one reference-lap XYZ triple, world orientation, and encoded context;
 targets provide supervision and error metrics. Inference requires the same inputs.
 Prepared files may still contain centerline coordinates and targets for compatibility
@@ -411,7 +412,7 @@ features through a small ConvLSTM. By default, it reads four frames together wit
 standardized reference coordinates, orientation, and context, in chronological
 order. A 4×4 pooling grid and MLP combine the final spatial memory with the
 current reference coordinates, orientation, and context to predict signed offsets.
-The encoder is fine-tuned with the new memory and regression head; no segmentation
+The encoder stays frozen while the channel projection, memory, and regression head train; no segmentation
 model or segmentation labels are used. The architecture and initialization details
 are described under **Train and predict** below.
 Reference inputs are standardized using training-set statistics. Lap progress
@@ -557,19 +558,20 @@ or `python -m training.image_segmentation train-position` with the same options.
 Both entrypoints share dataset preparation, splitting, sampling, metrics, and export.
 
 The v2 command trains `position_model_v2`, defined in
-`position_model_v2.py`. It fine-tunes a
+`position_model_v2.py`. It freezes a
 [pretrained ResNet-18](https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.resnet18.html)
 (`IMAGENET1K_V1`) without its global pooling or classifier. Its spatial feature
 maps (512 channels at 1/32 resolution) are projected to 64 channels, then passed
 through a 32-channel ConvLSTM. Each step also receives the reference XYZ, context,
 and sine/cosine orientation, broadcast across the feature map. Only the final
 hidden map is pooled to 4x4 and fed to a small regression head with the final
-frame's auxiliary inputs. All encoder, ConvLSTM, and head parameters are trained
+frame's auxiliary inputs. Only the channel projection, ConvLSTM, and head parameters are trained
 with the existing Smooth L1 loss and Adam optimizer at `1e-4`.
 
 ImageNet RGB normalization is inside the model and ONNX graph, so callers keep
-using full letterboxed RGB frames scaled to `[0, 1]`. BatchNorm running statistics
-stay fixed while its affine parameters train, supporting small/partial batches.
+using full letterboxed RGB frames scaled to `[0, 1]`. Every ResNet parameter stays
+fixed, including BatchNorm scale and bias. The encoder remains in evaluation mode
+throughout training, so BatchNorm running statistics and batch counters stay fixed too.
 The first run downloads torchvision's pretrained weights into the PyTorch cache
 unless already present. Saved checkpoints contain all weights; loading or exporting
 them does not download anything. The original CNN/GRU architecture remains in
@@ -585,7 +587,7 @@ count, accounting for unequal session sizes; equally balanced session choices
 are randomized by the seed. The rest go to training, so every map appears in both
 sets. Each set receives at least one session per map; maps with fewer than two
 sessions are rejected. Sessions must each belong to one game/map. Frames from the
-same session never cross splits, and by default all frames are retained. An exact target
+same session never cross splits, and all frames are retained by default. An exact target
 fraction may be impossible with whole sessions. Images from all maps and sessions are shuffled
 within each split. Temporal windows are assembled in chronological order before
 training batches are reshuffled each epoch.
@@ -593,49 +595,39 @@ The training and validation maps are printed before the first epoch.
 The run's `split.json` records the seed, target frame fraction, sequence length, map lists, and image paths.
 Prepared position files and the dataset index are not changed.
 
-Optional density thinning reduces near-duplicate **training targets** per game/map:
+Both scripts can reduce redundant training endpoints while retaining sparse pose
+coverage. For example (radii use the prepared world-coordinate units):
 
-```bash
-python scripts/train_position.py \
-  --manifest storage/session_downloads \
-  --output storage/image_segmentation/position-runs/density-1 \
-  --min-offset-distance 0.1 --min-orientation-distance-deg 5 \
-  --min-normalized-position-distance 0.01
+```sh
+python scripts/train_position.py --manifest storage/session_downloads \
+  --output position-runs/density-1 \
+  --density-position-radius 0.5 --density-orientation-deg 5
+python scripts/train_position_v2.py --manifest storage/session_downloads \
+  --output position-runs/v2-density-1 \
+  --density-position-radius 0.5 --density-orientation-deg 5
 ```
 
-The same sampling options apply to `scripts/train_position_v2.py`.
+`--density-position-radius` enables filtering and must be positive and finite.
+`--density-orientation-deg` defaults to 5 and must be in `(0, 180]`. Both conditions
+must match: driver world XYZ Euclidean distance at most the radius, and wrapped
+heading, pitch, roll differences each at most the angle threshold. Game and map
+must match exactly; local target offsets and normalized lap position do not
+define redundancy. Each removed endpoint is covered by a retained pose. A SciPy
+`cKDTree` queries spatial neighbors only for retained representatives, without
+building an all-pairs matrix or full neighbor graph. Representatives are chosen
+in a seeded shuffled traversal, then returned in original dataset order.
 
-These example thresholds suppress a target when a previously retained sample has
-a reference-lap local XYZ offset within 0.1 source units (Euclidean distance)
-**and** heading, pitch, and roll differences each within 5 degrees **and**
-normalized lap position within 0.01 (1% of a lap). Lap distance is circular:
-`min(abs(a - b), 1 - abs(a - b))`, so positions 0.999 and 0.001 are 0.002 apart,
-and 0 and 1 are equivalent. Angular
-differences wrap across -180/180 degrees; this compares the three Euler angles,
-not a single rotation angle. Threshold boundaries count as close. Any option
-can be used alone or combined; all enabled thresholds must be close. Offset thresholds
-must be finite and positive; orientation thresholds must be in `(0, 180]` degrees.
-Normalized-position thresholds must be in `(0, 0.5]` laps. Omitted dimensions do
-not affect selection. Without any sampling option, every training target is used.
-
-The selector shuffles candidates with `--seed` and greedily keeps separated
-examples. A KD-tree indexes scaled XYZ and sine/cosine orientation and lap-position coordinates,
-then exact distance checks remove nearby candidates. It queries only retained
-examples and holds one neighborhood at a time, avoiding an N-by-N distance matrix
-or a complete neighbor graph. Selection is reproducible for the same data and seed.
-It runs after the whole-session split and compares only within each game/map.
-Image appearance is not compared, so large thresholds may remove useful variation;
-tune them conservatively. Enable the lap-position threshold to preserve examples
-from distant track sections that share similar offsets and orientation.
-
-Validation stays complete. All original training frames remain available as
-temporal history, including frames removed as prediction targets. Reference
-normalization uses all original training references. The log reports retained
-counts, and `split.json` adds `density_sampling` with all three thresholds,
-`candidate_count`, and `selected_count`. Its `train` list contains selected target
-images; for temporal runs, `train_history` records all original training images.
-The validation fraction describes the split before thinning. Loss and training
-MAE count only retained targets.
+Filtering runs only on the training split. Temporal windows are constructed from
+**all original training frames** before selecting endpoints, so their original
+steps, order, and padding are preserved. A redundant endpoint can still supply
+history to another window. This compares final-frame poses, not entire motion
+trajectories. Validation is unchanged. Filtering requires finite XYZ triples in
+`driver_position`; regenerate older files missing them. Driver positions never
+become model inputs. Larger thresholds remove more examples; tune the example
+values to the dataset's source units. Omit the radius to retain every endpoint.
+`split.json` records `density_sampling` thresholds and candidate/selected counts;
+`train` lists selected endpoints and `train_history` lists the full original
+training split for temporal runs. Source files are never removed or rewritten.
 
 `--sequence-length 4` is the default: each example contains the current frame and
 up to three preceding prepared frames from the same session and video directory.
