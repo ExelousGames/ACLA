@@ -2,9 +2,10 @@ import * as gpuRuntime from 'onnxruntime-web/webgpu';
 import * as cpuRuntime from 'onnxruntime-web/wasm';
 import { loadBackendPositionModel } from './backend-vision-model';
 import { TrackPositionModel } from './track-position-model';
+import { mockGpuDevice } from './vision-gpu-test-device';
 
 jest.mock('onnxruntime-web/webgpu', () => ({
-    env: { wasm: {}, webgpu: {} }, InferenceSession: { create: jest.fn() }, Tensor: jest.fn(),
+    env: { wasm: {}, webgpu: {} }, InferenceSession: { create: jest.fn() }, Tensor: Object.assign(jest.fn(), { fromGpuBuffer: jest.fn() }),
 }), { virtual: true });
 jest.mock('onnxruntime-web/wasm', () => ({
     env: { wasm: {}, webgpu: {} }, InferenceSession: { create: jest.fn() }, Tensor: jest.fn(),
@@ -47,6 +48,10 @@ let frame: HTMLCanvasElement;
 const originalGpu = Object.getOwnPropertyDescriptor(navigator, 'gpu');
 
 beforeEach(() => {
+    (gpuRuntime.env.webgpu as any).device = mockGpuDevice().device;
+    (gpuRuntime.Tensor.fromGpuBuffer as jest.Mock).mockImplementation((gpuBuffer, options) => ({
+        dims: options.dims, gpuBuffer, location: 'gpu-buffer', dispose: jest.fn(),
+    }));
     active = 0;
     maxActive = 0;
     events = [];

@@ -6,7 +6,7 @@ import type { LiveTrajectoryMapHandle } from '../LiveTrajectoryMap';
 import { useSessionScreenCapture } from '../live-session-recording/SessionScreenCapture';
 import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
 import { TrackPositionModel } from './track-position-model';
-import { MODEL_INPUT_RESOLUTIONS } from './vision-config';
+import { MODEL_INPUT_RESOLUTIONS, POSITION_MODEL_NAMES, PositionModelVersion } from './vision-config';
 import { CameraCalibration, DETECTION_TASKS, TrackVisionDetection, TrackVisionFrame } from './track-vision-types';
 import { capturePolicyCameraImage } from './policy-camera';
 import { reconstructTrack } from './track-reconstruction';
@@ -83,6 +83,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const [inputSizes, setInputSizes] = useState(savedSettings.inputSizes);
     const [segmentEnabled, setSegmentEnabled] = useState(savedSettings.segmentEnabled);
     const [depthEnabled, setDepthEnabled] = useState(savedSettings.depthEnabled);
+    const [positionModelVersion, setPositionModelVersion] = useState(savedSettings.positionModelVersion);
     const [detectors, setDetectors] = useState<Record<ModelTask, DetectorState>>({
         segment: { status: savedSettings.segmentEnabled ? 'loading' : 'disabled' },
         depth: { status: savedSettings.depthEnabled ? 'loading' : 'disabled' },
@@ -133,9 +134,9 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
 
     useEffect(() => {
         if (window.screenCapture) saveTrackVisionSettings({
-            inputSizes, segmentEnabled, depthEnabled, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture,
+            inputSizes, segmentEnabled, depthEnabled, positionModelVersion, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture,
         });
-    }, [inputSizes, segmentEnabled, depthEnabled, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture]);
+    }, [inputSizes, segmentEnabled, depthEnabled, positionModelVersion, confidence, filterConfidence, displayLabel, cameraDraft, calibration, showCalibrationOnCapture]);
 
     const togglePreviewSize = () => {
         const preview = previewRef.current;
@@ -296,6 +297,11 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         publish(null);
         const enabled = { segment: segmentEnabled, depth: depthEnabled, position: true };
         const disposals: Promise<void>[] = [];
+        const position = models.current.position;
+        if (position && position.name !== POSITION_MODEL_NAMES[positionModelVersion]) {
+            delete models.current.position;
+            disposals.push(position.dispose().catch(() => undefined));
+        }
         for (const { id } of DETECTION_TASKS) {
             const model = models.current[id];
             if (model && (!enabled[id] || (id === 'depth' && model.inputSize !== inputSizes.depth))) {
@@ -310,7 +316,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 status: 'ready', classNames: id === 'position' ? undefined : models.current[id]?.classNames,
             } : { status: 'loading' }];
         })) as Record<ModelTask, DetectorState>);
-        // Serialize retries, toggles and resolution changes so only one session per model is loaded.
+        // Serialize retries, version, toggle and resolution changes so only one session per model is loaded.
         modelQueue.current = modelQueue.current.then(async () => {
             await Promise.all(disposals);
             for (const { id } of VISION_MODELS) {
@@ -320,7 +326,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                 try {
                     const model = id === 'depth'
                         ? await TrackVisionModel.loadBuiltin(id, inputSizes[id])
-                        : id === 'segment' ? await TrackVisionModel.loadBackend() : await TrackPositionModel.load();
+                        : id === 'segment' ? await TrackVisionModel.loadBackend() : await TrackPositionModel.load(positionModelVersion);
                     if (version !== modelVersion.current) { await model.dispose().catch(() => undefined); return; }
                     if (id === 'depth') models.current.depth = model as TrackVisionModel;
                     else if (id === 'segment') models.current.segment = model as TrackVisionModel;
@@ -336,7 +342,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
             }
         });
         // Retrying increments the version above; unmount cleanup invalidates it too.
-    }, [retry, publish, inputSizes, segmentEnabled, depthEnabled]);
+    }, [retry, publish, inputSizes, segmentEnabled, depthEnabled, positionModelVersion]);
 
     useEffect(() => {
         const active = Object.values(detectors);
@@ -654,12 +660,19 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             ? captureState === 'active' && DETECTION_TASKS.every(({ id }) => detectors[id].status === 'ready' || detectors[id].status === 'disabled') ? 'Running' : 'Ready' : detectors[id].status === 'retrying' ? 'Retrying GPU…'
                                 : detectors[id].status === 'disabled' ? 'Disabled' : detectors[id].status === 'error' ? 'Unavailable' : 'Loading…'}</span>
                         {id !== 'depth' ? <div className="track-vision__hint">
-                            {id === 'segment' ? 'track-segments' : 'track-position'}{models.current[id] && ` · ${models.current[id]!.inputSize} × ${models.current[id]!.inputSize}`}
+                            {id === 'segment' ? 'track-segments' : POSITION_MODEL_NAMES[positionModelVersion]}{models.current[id] && ` · ${models.current[id]!.inputSize} × ${models.current[id]!.inputSize}`}
                         </div> : <label className="track-vision__resolution">Input resolution
                             <select aria-label={`${label} input resolution`} value={inputSizes[id]} disabled={id === 'depth' && !depthEnabled}
                                 onChange={(event) => setInputSizes((current) => ({ ...current, [id]: Number(event.target.value) }))}>
                                 {MODEL_INPUT_RESOLUTIONS[id].map(({ label, size }) =>
                                     <option key={size} value={size}>{label} · {size} × {size}</option>)}
+                            </select>
+                        </label>}
+                        {id === 'position' && <label className="track-vision__resolution">Model version
+                            <select aria-label="Position model version" value={positionModelVersion}
+                                onChange={(event) => setPositionModelVersion(event.target.value as PositionModelVersion)}>
+                                <option value="v1">V1</option>
+                                <option value="v2">V2</option>
                             </select>
                         </label>}
                         {id !== 'position' && <label className="track-vision__model-toggle">

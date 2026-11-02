@@ -211,7 +211,7 @@ it('publishes camera pixels paired before asynchronous inference and preserves e
     render(<LiveTrackVision ref={ref} name="vision" />);
     await startCapture();
     const first = ref.current!.getLatestDetection()!;
-    expect(first.camera!.rgb.length).toBe(768 * 768 * 3);
+    expect(first.camera!.rgb.length).toBe(384 * 216 * 3);
     expect(first.camera!.rgb.every((value) => value === 64)).toBe(true);
     const pending = deferred<typeof detection>();
     model.detect.mockReturnValueOnce(pending.promise);
@@ -223,9 +223,9 @@ it('publishes camera pixels paired before asynchronous inference and preserves e
     const second = ref.current!.getLatestDetection()!;
     expect(second.capturedAt).toBeGreaterThan(first.capturedAt);
     expect(second.timing?.captureIntervalMs).toBe(second.capturedAt - first.capturedAt);
-    expect(second.camera!.rgb.length).toBe(768 * 768 * 3);
+    expect(second.camera!.rgb.length).toBe(384 * 216 * 3);
     expect(second.camera!.rgb.every((value) => value === 128)).toBe(true);
-    expect(first.camera!.rgb.length).toBe(768 * 768 * 3);
+    expect(first.camera!.rgb.length).toBe(384 * 216 * 3);
     expect(first.camera!.rgb.every((value) => value === 64)).toBe(true);
     expect(second.camera!.rgb).not.toBe(first.camera!.rgb);
 });
@@ -1826,6 +1826,111 @@ describe('separate segmentation and position models', () => {
         } as any);
     });
 
+    it('switches position versions during capture, saves the choice and reloads only position', async () => {
+        const v2 = { ...positionModel, name: 'position_model_v2', inputSize: 768,
+            detect: jest.fn().mockResolvedValue({ ...prediction, referenceDelta: [4, 5, 6] }),
+            dispose: jest.fn().mockResolvedValue(undefined), resetHistory: jest.fn() };
+        const ref = React.createRef<TrackVisionHandle>();
+        const view = render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush(); telemetry(); await startCapture();
+        const selector = screen.getByRole('combobox', { name: 'Position model version' });
+        expect(selector).toHaveValue('v1');
+        expect(within(selector).getAllByRole('option').map((option) => option.textContent)).toEqual(['V1', 'V2']);
+        expect(TrackPositionModel.load).toHaveBeenLastCalledWith('v1');
+        expect(ref.current!.getLatestDetection()?.position).toMatchObject(prediction);
+        const disposal = deferred<void>();
+        positionModel.dispose.mockReturnValueOnce(disposal.promise);
+        (TrackPositionModel.load as jest.Mock).mockResolvedValue(v2);
+        fireEvent.change(selector, { target: { value: 'v2' } });
+        await flush();
+        expect(ref.current!.getLatestDetection()).toBeNull();
+        expect(ref.current!.getLatestDrivingDetection()).toBeNull();
+        expect(positionModel.dispose).toHaveBeenCalledTimes(1);
+        expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+        await act(async () => { disposal.resolve(); });
+        expect(TrackPositionModel.load).toHaveBeenLastCalledWith('v2');
+        expect(screen.getByText('position_model_v2 · 768 × 768')).toBeInTheDocument();
+        await act(async () => { jest.advanceTimersByTime(200); });
+        expect(ref.current!.getLatestDetection()?.position?.referenceDelta).toEqual([4, 5, 6]);
+        expect(ref.current!.getLatestDrivingDetection()?.position?.referenceDelta).toEqual([4, 5, 6]);
+        expect(getDisplayMedia).toHaveBeenCalledTimes(1);
+        expect(track.stop).not.toHaveBeenCalled();
+        expect(model.dispose).not.toHaveBeenCalled();
+        expect(depthModel.dispose).not.toHaveBeenCalled();
+        expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+        expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(window.localStorage.getItem(TRACK_VISION_SETTINGS_KEY)!)).toMatchObject({ positionModelVersion: 'v2' });
+        view.unmount();
+        render(<LiveTrackVision name="vision" />);
+        await flush();
+        const restored = screen.getByRole('combobox', { name: 'Position model version' });
+        expect(restored).toHaveValue('v2');
+        expect(TrackPositionModel.load).toHaveBeenLastCalledWith('v2');
+        (TrackPositionModel.load as jest.Mock).mockResolvedValue(positionModel);
+        fireEvent.change(restored, { target: { value: 'v1' } });
+        await flush();
+        expect(TrackPositionModel.load).toHaveBeenLastCalledWith('v1');
+        expect(screen.getByText('track-position · 512 × 512')).toBeInTheDocument();
+        expect(JSON.parse(window.localStorage.getItem(TRACK_VISION_SETTINGS_KEY)!)).toMatchObject({ positionModelVersion: 'v1' });
+    });
+
+    it('ignores an in-flight prediction from the previous position version', async () => {
+        const pending = deferred<typeof prediction>();
+        positionModel.detect.mockReturnValueOnce(pending.promise);
+        const ref = React.createRef<TrackVisionHandle>();
+        render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush(); telemetry(); await startCapture();
+        expect(positionModel.detect).toHaveBeenCalledTimes(1);
+        const v2 = { ...positionModel, name: 'position_model_v2',
+            detect: jest.fn().mockResolvedValue({ ...prediction, referenceDelta: [4, 5, 6] }) };
+        (TrackPositionModel.load as jest.Mock).mockResolvedValue(v2);
+        fireEvent.change(screen.getByRole('combobox', { name: 'Position model version' }), { target: { value: 'v2' } });
+        await flush();
+        await act(async () => { pending.resolve(prediction); });
+        expect(ref.current!.getLatestDetection()).toBeNull();
+        expect(ref.current!.getLatestDrivingDetection()).toBeNull();
+        await act(async () => { jest.advanceTimersByTime(200); });
+        expect(ref.current!.getLatestDetection()?.position?.referenceDelta).toEqual([4, 5, 6]);
+        expect(track.stop).not.toHaveBeenCalled();
+    });
+
+    it('disposes a superseded download and loads the latest selected version', async () => {
+        const pending = deferred<typeof positionModel>();
+        const v2 = { ...positionModel, name: 'position_model_v2', dispose: jest.fn().mockResolvedValue(undefined) };
+        (TrackPositionModel.load as jest.Mock).mockReturnValueOnce(pending.promise).mockResolvedValue(v2);
+        render(<LiveTrackVision name="vision" />);
+        await flush();
+        fireEvent.change(screen.getByRole('combobox', { name: 'Position model version' }), { target: { value: 'v2' } });
+        await flush();
+        expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
+        await act(async () => { pending.resolve(positionModel); });
+        expect(positionModel.dispose).toHaveBeenCalledTimes(1);
+        expect(TrackPositionModel.load).toHaveBeenLastCalledWith('v2');
+        expect(v2.dispose).not.toHaveBeenCalled();
+        expect(TrackVisionModel.loadBackend).toHaveBeenCalledTimes(1);
+        expect(TrackVisionModel.loadBuiltin).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries a failed v2 load without falling back to v1 or restarting capture', async () => {
+        const ref = React.createRef<TrackVisionHandle>();
+        render(<LiveTrackVision ref={ref} name="vision" />);
+        await flush(); telemetry(); await startCapture();
+        (TrackPositionModel.load as jest.Mock).mockRejectedValueOnce(new Error('No ONNX position_model_v2 model'));
+        fireEvent.change(screen.getByRole('combobox', { name: 'Position model version' }), { target: { value: 'v2' } });
+        await flush();
+        expect(screen.getByRole('alert')).toHaveTextContent('No ONNX position_model_v2 model');
+        await act(async () => { jest.advanceTimersByTime(200); });
+        expect(ref.current!.getLatestDetection()?.detections.segment).toEqual(detection);
+        expect(ref.current!.getLatestDetection()?.position).toBeUndefined();
+        (TrackPositionModel.load as jest.Mock).mockResolvedValue({ ...positionModel, name: 'position_model_v2' });
+        fireEvent.click(screen.getByRole('button', { name: 'Retry Position' }));
+        await flush();
+        expect((TrackPositionModel.load as jest.Mock).mock.calls).toEqual([['v1'], ['v2'], ['v2']]);
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        expect(getDisplayMedia).toHaveBeenCalledTimes(1);
+        expect(track.stop).not.toHaveBeenCalled();
+    });
+
     it('keeps capture and position running with both segmentation and depth disabled', async () => {
         window.localStorage.setItem(TRACK_VISION_SETTINGS_KEY, JSON.stringify({ version: 1, segmentEnabled: false, depthEnabled: false }));
         const ref = React.createRef<TrackVisionHandle>();
@@ -1855,8 +1960,8 @@ describe('separate segmentation and position models', () => {
         expect(ref.current!.getLatestDetection()).toBeNull();
         const driving = ref.current!.getLatestDrivingDetection()!;
         expect(driving.position).toMatchObject(prediction);
-        expect(driving.camera).toMatchObject({ width: 768, height: 768 });
-        expect(driving.camera!.rgb.length).toBe(768 * 768 * 3);
+        expect(driving.camera).toMatchObject({ width: 384, height: 216 });
+        expect(driving.camera!.rgb.length).toBe(384 * 216 * 3);
         expect(driving.detections).toEqual({});
         expect(driving.reconstruction).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));

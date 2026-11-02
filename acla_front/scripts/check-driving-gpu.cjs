@@ -32,7 +32,7 @@ const server = http.createServer((_req, res) => res.end('<!doctype html><title>D
 
 async function checks() {
     const { DrivingPolicy } = require('views/ai-driving-training/driving-policy');
-    const { cloneConfig, drivingCameraInputs, drivingMemorySlots, drivingObservationInputs, drivingPolicyInputs } = require('views/ai-driving-training/driving-model-config');
+    const { cloneConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingObservationInputs, drivingPolicyInputs } = require('views/ai-driving-training/driving-model-config');
     const { drivingMemoryInputs, drivingMemorySlotInputs } = require('views/ai-driving-training/driving-memory');
     const assert = (condition, label) => { if (!condition) throw new Error(label); };
     const errors = [];
@@ -55,13 +55,13 @@ async function checks() {
     };
     const compare = (a, b, label) => {
         assert(a.model.steps === b.model.steps, `${label}: steps`);
-        for (const key of ['cameraWeights', 'lstmWeights', 'outputWeights']) {
+        for (const key of ['cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights']) {
             close(a.model[key].flat(2), b.model[key].flat(2), `${label}/${key}`);
         }
     };
     const changed = (a, b) => a.flat(2).some((value, i) => value !== b.flat(2)[i]);
     const finite = (checkpoint) => {
-        for (const key of ['cameraWeights', 'lstmWeights', 'outputWeights']) {
+        for (const key of ['cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights']) {
             assert(checkpoint.model[key].flat(2).every(Number.isFinite), `Finite ${key}`);
         }
     };
@@ -72,6 +72,7 @@ async function checks() {
     };
     const assertTrained = (before, after, label) => {
         after.model.cameraWeights.forEach((rows, l) => assert(changed(rows, before.model.cameraWeights[l]), `${label}: CNN layer ${l}`));
+        assert(changed(before.model.cameraProjectionWeights, after.model.cameraProjectionWeights), `${label}: spatial projection`);
         const h = after.configuration.network.hiddenUnits;
         for (let gate = 0; gate < 4; gate++) {
             assert(changed(before.model.lstmWeights.slice(gate * h, (gate + 1) * h),
@@ -91,8 +92,8 @@ async function checks() {
     const makeInput = (config, frame = 0, history = true, distinct = false) => {
         const bins = drivingMemorySlots(config), slots = drivingMemorySlotInputs(config);
         const features = Array.from({ length: drivingObservationInputs(config) + drivingMemoryInputs(config) }, (_, i) => Math.sin(i * 0.7) * 0.2);
-        const rgb = Uint8Array.from({ length: 768 * 768 * 3 }, (_, i) => (i * 17 + frame * 31) % 256);
-        const camera = { width: 768, height: 768, rgb };
+        const rgb = Uint8Array.from({ length: 384 * 216 * 3 }, (_, i) => (i * 17 + frame * 31) % 256);
+        const camera = { width: 384, height: 216, rgb };
         const cameras = Array.from({ length: bins + 1 }, (_, slot) =>
             slot < bins && (!history || !config.memory.features.includes('camera')) ? null : camera);
         if (distinct) cameras.forEach((image, slot) => {
@@ -226,10 +227,11 @@ async function checks() {
     config.observation.features = ['camera', 'speed']; config.memory.features = ['camera', 'speed'];
     config.memory.windowMs = 400; config.network.hiddenUnits = 2;
     config.network.cameraLayers.forEach(layer => { layer.channels = 1; });
+    config.network.cameraProjectionUnits = 32;
     config.learning.demonstrationRate = 0.05;
     const seedPolicy = new DrivingPolicy({ game: 'acc', car: 'GT3', map: 'monza' }, drivingObservationInputs(config), () => 0.6, config);
     const seed = seedPolicy.checkpoint();
-    seed.model.cameraWeights.forEach((rows, l) => rows.forEach(row => { row.fill([0.005, 0.03, 0.05][l]); row[row.length - 1] = 0.05; }));
+    seed.model.cameraWeights.forEach((rows, l) => rows.forEach(row => { row.fill([0.005, 0.03, 0.05, 0.05][l]); row[row.length - 1] = 0.05; }));
     seed.model.outputWeights.forEach(row => { row[0] = 0.1; row[1] = -0.05; });
     const gpu = await create(config, seed), input = makeInput(config, 1, true, true);
     const target = { throttle: 1 / (1 + Math.exp(1.5)), brake: 1 / (1 + Math.exp(2.5)), steering: Math.tanh(0.15), shiftUp: true };
@@ -242,9 +244,13 @@ async function checks() {
     const before = await gpu.checkpointAsync(), coordinates = [];
     config.network.cameraLayers.forEach((_, l) => {
         const row = before.model.cameraWeights[l][0];
-        for (const column of [0, row.length - 1]) coordinates.push({ key: 'cameraWeights', layer: l, row: 0, column,
+        for (const column of [0, Math.floor((row.length - 1) / 2), row.length - 2, row.length - 1]) coordinates.push({ key: 'cameraWeights', layer: l, row: 0, column,
             buffer: gpu.gpu.cameraWeights[l], index: column, value: row[column] });
     });
+    for (const row of [0, 31]) {
+        for (const column of [0, 7, 24, 31, 32]) coordinates.push({ key: 'cameraProjectionWeights', row, column,
+            buffer: gpu.gpu.cameraProjectionWeights, index: row * 33 + column, value: before.model.cameraProjectionWeights[row][column] });
+    }
     const inputs = drivingPolicyInputs(config), h = config.network.hiddenUnits;
     for (let gate = 0; gate < 4; gate++) {
         const row = gate * h;
@@ -277,24 +283,47 @@ async function checks() {
 
     // Spatial and temporal regressions exercise the same GPU kernels used by training.
     const spatialSeed = JSON.parse(JSON.stringify(seed));
-    spatialSeed.model.cameraWeights.forEach(rows => rows.forEach(row => { row.fill(0); row[0] = 1; }));
+    const layers = drivingCameraLayers(config);
+    spatialSeed.model.cameraWeights.forEach((rows, l) => rows.forEach(row => {
+        row.fill(0); const layer = layers[l];
+        row[(layer.padding * layer.kernelSize + layer.padding) * layer.inputChannels] = 1;
+    }));
+    spatialSeed.model.cameraProjectionWeights.forEach((row, i) => { row.fill(0); row[i] = 1; });
     const spatial = await create(config, spatialSeed);
     const cameraFeatures = async (pixel) => {
-        const sample = makeInput(config, 0, false), rgb = new Uint8Array(768 * 768 * 3);
+        const sample = makeInput(config, 0, false), rgb = new Uint8Array(384 * 216 * 3);
         rgb[pixel] = 255;
-        sample.cameras[sample.cameras.length - 1] = { width: 768, height: 768, rgb };
+        sample.cameras[sample.cameras.length - 1] = { width: 384, height: 216, rgb };
         const { pass } = await spatial.gpu.forward(sample);
         try { return await spatial.gpu.download([pass.features]); }
         finally { spatial.gpu.release(pass); }
     };
-    assert((await cameraFeatures(0))[2] === 1 && (await cameraFeatures(3))[2] === 0,
+    const left = await cameraFeatures(0), right = await cameraFeatures(368 * 3);
+    close([left[2], right[2 + 7]], [1 / 12, 1 / 12], 'Spatial pooling averages each cell');
+    assert(left[2 + 7] === 0 && right[2] === 0, 'Projection preserves left versus right positions');
+    assert((await cameraFeatures(3))[2] === 0,
         'Convolutions distinguish equal-average images with different pixel positions');
     spatialSeed.model.cameraWeights.forEach((rows, l) => {
-        rows.forEach(row => { row.fill(0); row[row.length - 2] = 1; });
+        rows.forEach(row => { row.fill(0); row[[56, 8, 8, 5][l]] = 1; });
         spatial.gpu.device.queue.writeBuffer(spatial.gpu.cameraWeights[l], 0, new Float32Array(rows.flat()));
     });
-    assert((await cameraFeatures(768 * 768 * 3 - 1))[2 + drivingCameraInputs(config) - 1] === 1,
-        'The bottom-right RGB pixel reaches the final CNN layer');
+    close([(await cameraFeatures(384 * 216 * 3 - 1))[2 + 31]], [1 / 12],
+        'The bottom-right RGB pixel reaches the pooled projection through padded convolutions');
+    // A vertical ramp has independently known averages in the four overlapping
+    // pooling bands of the 14-row map; boundary rows receive both gradients.
+    const ramp = spatial.gpu.upload(Array.from({ length: 24 * 14 }, (_, i) => Math.floor(i / 24)));
+    const pooled = spatial.gpu.buffer(drivingCameraPooledInputs(config) * 4);
+    const poolDeltas = spatial.gpu.upload(new Array(32).fill(1)), rampGradient = spatial.gpu.buffer(24 * 14 * 4);
+    const commands = spatial.gpu.device.createCommandEncoder();
+    spatial.gpu.dispatch(commands, 'cameraPool', [ramp, pooled], 1);
+    spatial.gpu.dispatch(commands, 'cameraPoolBackward', [poolDeltas, rampGradient], Math.ceil(24 * 14 / 64));
+    spatial.gpu.device.queue.submit([commands.finish()]);
+    close(Array.from(await spatial.gpu.download([pooled])), [1.5, 4.5, 8.5, 11.5].flatMap(value => new Array(8).fill(value)),
+        'Adaptive pooling covers non-divisible height');
+    const rampDeltas = await spatial.gpu.download([rampGradient]);
+    close([rampDeltas[0], rampDeltas[3 * 24], rampDeltas[10 * 24], rampDeltas[13 * 24]],
+        [1 / 12, 1 / 6, 1 / 6, 1 / 12], 'Overlapping pooling gradients accumulate');
+    [ramp, pooled, poolDeltas, rampGradient].forEach(buffer => spatial.gpu.destroy(buffer));
     spatialSeed.model.lstmWeights.forEach(row => row.fill(0));
     spatialSeed.model.lstmWeights[2 * h][2 + drivingCameraInputs(config)] = 1;
     spatialSeed.model.outputWeights.forEach(row => row.fill(0));
@@ -316,7 +345,7 @@ async function checks() {
         const c = cloneConfig(config);
         if (!cameraHistory) c.memory.features = ['speed'];
         const policy = await create(c), sample = makeInput(c);
-        sample.cameras[sample.cameras.length - 1] = { width: 768, height: 768, rgb: new Uint8Array(768 * 768 * 3) };
+        sample.cameras[sample.cameras.length - 1] = { width: 384, height: 216, rgb: new Uint8Array(384 * 216 * 3) };
         const start = await policy.checkpointAsync();
         await policy.learnDemonstrationAsync(sample, action, shifts);
         const finish = await policy.checkpointAsync();
@@ -341,14 +370,14 @@ async function checks() {
         }
         const finish = await policy.checkpointAsync(); finite(finish);
         if (variant === 'zero-rates') {
-            for (const key of ['cameraWeights', 'lstmWeights', 'outputWeights']) close(start.model[key].flat(2), finish.model[key].flat(2), 'Zero learning rates', 1e-12);
+            for (const key of ['cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights']) close(start.model[key].flat(2), finish.model[key].flat(2), 'Zero learning rates', 1e-12);
             assert(finish.model.steps === 2, 'Count completed transitions with zero rates');
         } else close(start.model.outputWeights.slice(3, 6).flat(), finish.model.outputWeights.slice(3, 6).flat(), 'Masked large logits');
         policy.dispose();
     }
     assert(errors.length === 0, errors.join('\n'));
     return { adapter: { vendor: adapter.info.vendor, architecture: adapter.info.architecture },
-        checks: 'GPU-only prediction and learning, zero intermediate readbacks, CNN/LSTM/output finite differences, all layers and gates train, historical camera gradients, masks, terminal/clipped transitions, delayed plans, checkpoint reload/synchronization, custom layouts/rates, bounded buffers and device loss passed',
+        checks: 'GPU-only prediction and learning, zero intermediate readbacks, CNN/projection/LSTM/output finite differences, padded borders, spatial ordering and adaptive pooling gradients, all layers and gates train, historical camera gradients, masks, terminal/clipped transitions, delayed plans, checkpoint reload/synchronization, custom layouts/rates, bounded buffers and device loss passed',
         finiteDifferences: { weightsChecked: coordinates.length, maxDerivativeError }, results };
 }
 

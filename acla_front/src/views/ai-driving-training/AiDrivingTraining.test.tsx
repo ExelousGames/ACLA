@@ -75,6 +75,29 @@ it('shows a GPU startup failure without starting AI controls', async () => {
     expect(window.virtualController!.apply).not.toHaveBeenCalled();
 });
 
+it('shows impact confidence, estimated severity, penalty and unavailable sample timing', async () => {
+    const { observation } = trainingFixture(Date.now());
+    mockInput = { observation };
+    await renderTraining();
+    expect(screen.getByLabelText('Impact estimate')).toHaveTextContent('Waiting for two fresh motion samples.');
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
+    act(() => { jest.advanceTimersByTime(200); }); await flush();
+    mockInput = { observation: { ...observation, capturedAt: Date.now(), measuredAt: Date.now(),
+        localVelocity: [0, 0, 0], speed: 0 } };
+    act(() => { jest.advanceTimersByTime(100); }); await flush();
+    expect(getDefinition('Impact penalty')).toHaveTextContent('-5.000');
+    expect(screen.getByLabelText('Impact estimate')).toHaveTextContent('Possible impact · Confidence 100% · Estimated severity 100/100');
+    expect(screen.getByLabelText('Impact estimate')).toHaveTextContent(/Excess Δv .* m\/s/);
+    act(() => { jest.setSystemTime(Date.now() + 500); });
+    mockInput = { observation: { ...observation, capturedAt: Date.now(), measuredAt: Date.now() } };
+    act(() => { jest.advanceTimersByTime(100); }); await flush();
+    expect(getDefinition('Impact penalty')).toHaveTextContent('0.000');
+    expect(screen.getByLabelText('Impact estimate')).toHaveTextContent('Impact estimate unavailable');
+    expect(screen.getByText(/Car damage telemetry is not used/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+});
+
 it('honors Stop while preparing the GPU', async () => {
     mockInput = { observation: trainingFixture(Date.now()).observation };
     let ready!: () => void;
@@ -173,17 +196,17 @@ it('shows direct observation inputs without summary metadata', async () => {
     ['Current observation', 'Observation history', 'Total policy inputs'].forEach((label) => {
         expect(screen.queryByText(label)).not.toBeInTheDocument();
     });
-    expect(getDefinition('Camera image')).toHaveTextContent('768 × 768 RGB');
+    expect(getDefinition('Camera image')).toHaveTextContent('384 × 216 RGB');
     expect(getDefinition('Camera image')).not.toHaveTextContent(/history/);
     expect(screen.getByText(/5-second observation history covers all AI observation inputs/)).toHaveTextContent('sampled in 300 ms bins');
     for (const label of ['Reconstructed scene', 'Depth model', 'Segmentation labels']) {
         expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
     expect(screen.queryByText(/segmentation|depth|mask readback/i)).not.toBeInTheDocument();
-    mockInput = { error: 'Track Vision camera pixels must be 768 × 768 RGB.' };
+    mockInput = { error: 'Track Vision camera pixels must be 384 × 216 RGB.' };
     act(() => { jest.advanceTimersByTime(250); });
-    expect(getDefinition('Camera image')).toHaveTextContent('768 × 768 RGB · Waiting');
-    expect(screen.getByText('Track Vision camera pixels must be 768 × 768 RGB.')).toBeInTheDocument();
+    expect(getDefinition('Camera image')).toHaveTextContent('384 × 216 RGB · Waiting');
+    expect(screen.getByText('Track Vision camera pixels must be 384 × 216 RGB.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
 });
 
@@ -366,7 +389,11 @@ it.each([true, false])('keeps the session active through invalid inputs and resu
     // Keep shift pulses out of this input-recovery test's short observation intervals.
     jest.spyOn(Math, 'random').mockReturnValue(0.1);
     const observation = trainingFixture(Date.now()).observation;
-    const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
+    // UI recovery uses the GPU stub; keep repeated checkpoint serialization small.
+    const config = cloneConfig();
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
+    config.network.cameraProjectionUnits = 8;
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
     checkpoint.model.steps = 10;
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     mockInput = { observation };
@@ -786,9 +813,11 @@ it.each([true, false])('uses Live Map’s selected lap and applies slider change
     expect(screen.getByText('X (right) 2.00 · Y (forward) 0.00 coordinate units')).toBeInTheDocument();
     expect(screen.queryByText('Reference pedal reward')).not.toBeInTheDocument();
     expect(screen.queryByText('Drive fast')).not.toBeInTheDocument();
+    expect(screen.queryByText('Penalize instability')).not.toBeInTheDocument();
     expect(screen.getByText('Acceleration / deceleration')).toBeInTheDocument();
     expect(screen.getByText(/holding the same speed earns no bonus/)).toBeInTheDocument();
     expect(getDefinition('Normalized position progress')).toHaveTextContent('0.000');
+    expect(getDefinition('Drive toward the reference line')).toHaveTextContent('0.000');
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     fixture = trainingFixture(Date.now(), 50, referenceLap);
     fixture.live.currentTelemetry.Graphics_normalized_car_position = 0.252;
@@ -797,7 +826,10 @@ it.each([true, false])('uses Live Map’s selected lap and applies slider change
     expect(screen.getByText(/Last scored at aggression 0/)).toBeInTheDocument();
     const progress = Number(getDefinition('Normalized position progress').textContent);
     expect(progress).toBeGreaterThan(0);
-    expect(progress).toBeLessThan(Number(getDefinition('Follow the reference line').textContent) * 0.25);
+    expect(Number(getDefinition('Follow the reference line').textContent)).toBeGreaterThan(0);
+    expect(getDefinition('Drive toward the reference line')).toHaveTextContent('0.000');
+    expect(screen.getByText(/most reward when reference error is 3 raw coordinate units/)).toBeInTheDocument();
+    expect(screen.getByText(/Each frame is compared with the previous frame/)).toBeInTheDocument();
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     fixture = trainingFixture(Date.now(), 50, referenceLap);
     fixture.live.currentTelemetry.Graphics_normalized_car_position = 0.252;
@@ -947,6 +979,8 @@ it('discards browser models and requires a chosen file before training', async (
     const { observation } = trainingFixture(Date.now());
     const legacyConfig = cloneConfig();
     legacyConfig.network.hiddenUnits = 32;
+    legacyConfig.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
+    legacyConfig.network.cameraProjectionUnits = 8;
     const oldModel = new DrivingPolicy(observation.context, observation.features.length, Math.random, legacyConfig).checkpoint();
     oldModel.model.steps = 321;
     localStorage.setItem('acla.self-driving.model', JSON.stringify(oldModel));
@@ -1033,7 +1067,10 @@ it('honors Stop while reading the model before starting', async () => {
 it('automatically saves trained weights to the selected file at the configured interval', async () => {
     jest.spyOn(Math, 'random').mockReturnValue(0.1);
     const observation = trainingFixture(Date.now()).observation;
-    const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
+    const config = cloneConfig();
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
+    config.network.cameraProjectionUnits = 8;
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
     checkpoint.configuration.runtime.saveEverySteps = 1;
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     mockInput = { observation };

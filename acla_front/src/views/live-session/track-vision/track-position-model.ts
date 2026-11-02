@@ -1,9 +1,10 @@
-import type { InferenceSession } from 'onnxruntime-web';
+import type { InferenceSession, Tensor } from 'onnxruntime-web';
 import { loadBackendPositionModel } from './backend-vision-model';
 import { GpuInferenceError } from './track-vision-model';
 import { runWithVisionGpuQueue } from './vision-gpu-queue';
 import { visionAssetUrl } from './vision-assets';
-import { rgbaToChw } from './yolo-segmentation';
+import { POSITION_MODEL_NAMES, PositionModelVersion } from './vision-config';
+import { VisionGpuInput } from './vision-gpu-input';
 import type { PositionReferences, TrackPositionResult } from './track-vision-types';
 
 // Python/Pillow training uses ties-to-even rounding for the letterboxed image.
@@ -18,7 +19,6 @@ export interface PositionContext {
 }
 
 interface PositionFrame {
-    image: Float32Array;
     references: Float32Array;
     context?: Float32Array;
     orientation?: Float32Array;
@@ -30,18 +30,35 @@ export class TrackPositionModel {
     private busy = false;
     private canvas = document.createElement('canvas');
     private history: PositionFrame[] = [];
+    private input: VisionGpuInput;
+    private imageBuffers: GPUBuffer[] = [];
+    private imageTensors: Tensor[] = [];
+    private imageIndex = 0;
 
     get requiresOrientation() { return this.session.inputNames.includes('orientation'); }
 
     private constructor(private runtime: typeof import('onnxruntime-web'), private session: InferenceSession,
         readonly name: string, readonly inputSize: number, private categories: Record<string, string[]> = {},
-        readonly sequenceLength = 1) {
+        readonly sequenceLength = 1, private device: GPUDevice) {
         this.canvas.width = this.canvas.height = inputSize;
+        this.input = new VisionGpuInput(device, runtime, inputSize);
+        try {
+            if (sequenceLength > 1) {
+                // Alternate complete windows so the retained frames need only one GPU copy.
+                for (let i = 0; i < 2; i++) {
+                    const buffer = device.createBuffer({ size: Math.ceil(sequenceLength * 3 * inputSize ** 2 * 4 / 16) * 16,
+                        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+                    this.imageBuffers.push(buffer);
+                    this.imageTensors.push(runtime.Tensor.fromGpuBuffer(buffer,
+                        { dataType: 'float32', dims: [1, sequenceLength, 3, inputSize, inputSize] }));
+                }
+            }
+        } catch (error) { this.disposeInputs(); throw error; }
     }
 
-    static async load(): Promise<TrackPositionModel> {
-        const loaded = await loadBackendPositionModel();
-        if (!loaded) throw new Error('No ONNX track-position model has been uploaded for position.');
+    static async load(version: PositionModelVersion = 'v1'): Promise<TrackPositionModel> {
+        const loaded = await loadBackendPositionModel(version);
+        if (!loaded) throw new Error(`No ONNX ${POSITION_MODEL_NAMES[version]} model has been uploaded for position.`);
         if (!('gpu' in navigator) || !navigator.gpu) throw new GpuInferenceError('GPU acceleration is unavailable for Track Vision.');
         return runWithVisionGpuQueue(async () => {
             const runtime = await import('onnxruntime-web/webgpu');
@@ -50,17 +67,19 @@ export class TrackPositionModel {
             runtime.env.wasm.proxy = false;
             runtime.env.webgpu.powerPreference = 'high-performance';
             let session: InferenceSession | undefined;
+            let model: TrackPositionModel | undefined;
             try {
                 session = await runtime.InferenceSession.create(loaded.bytes, { executionProviders: ['webgpu'] });
-                const model = new TrackPositionModel(runtime, session, loaded.metadata.name, loaded.inputSize,
-                    loaded.categories, loaded.sequenceLength);
+                model = new TrackPositionModel(runtime, session, loaded.metadata.name, loaded.inputSize,
+                    loaded.categories, loaded.sequenceLength, await runtime.env.webgpu.device);
                 // Run the actual graph instead of inferring compatibility from a version or input count.
                 // Warm-up never becomes part of the captured history.
-                await model.run([{ image: new Float32Array(3 * loaded.inputSize ** 2), references: new Float32Array(3),
+                await model.run(model.imageTensors[0] ?? model.input.tensor, [{ references: new Float32Array(3),
                     context: model.encodeContext({ normalized_position: 0 }),
                     orientation: model.requiresOrientation ? new Float32Array(3) : undefined }]);
                 return model;
             } catch (error) {
+                model?.disposeInputs();
                 await session?.release().catch(() => undefined);
                 throw new GpuInferenceError(`Track Vision GPU initialization failed. ${error instanceof Error ? error.message : String(error)}`);
             }
@@ -86,8 +105,37 @@ export class TrackPositionModel {
         }
     }
 
-    private async run(frames: PositionFrame[]) {
-        // Left padding matches training; each graph call starts its GRU from zero.
+    private prepareImages(firstFrame: boolean) {
+        // Keep canvas high-quality resizing and ties-to-even letterboxing, without pixel readback.
+        const image = this.input.prepare(this.canvas, { rect: [0, 0, 1, 1] }, false);
+        if (this.sequenceLength === 1) return image;
+        const next = 1 - this.imageIndex;
+        const target = this.imageBuffers[next];
+        const frameBytes = 3 * this.inputSize ** 2 * 4;
+        const encoder = this.device.createCommandEncoder();
+        if (firstFrame) {
+            for (let i = 0; i < this.sequenceLength - 1; i++) {
+                encoder.copyBufferToBuffer(image.gpuBuffer, 0, target, i * frameBytes, frameBytes);
+            }
+        } else {
+            encoder.copyBufferToBuffer(this.imageBuffers[this.imageIndex], frameBytes, target, 0,
+                (this.sequenceLength - 1) * frameBytes);
+        }
+        encoder.copyBufferToBuffer(image.gpuBuffer, 0, target, (this.sequenceLength - 1) * frameBytes, frameBytes);
+        this.device.queue.submit([encoder.finish()]);
+        this.imageIndex = next;
+        return this.imageTensors[next];
+    }
+
+    private disposeInputs() {
+        this.input.tensor.dispose();
+        this.input.dispose();
+        this.imageTensors.forEach((tensor) => tensor.dispose());
+        this.imageBuffers.forEach((buffer) => buffer.destroy());
+    }
+
+    private async run(images: Tensor, frames: PositionFrame[]) {
+        // Left padding matches training; each graph call resets its recurrent state.
         const window = [...Array<PositionFrame>(this.sequenceLength - frames.length).fill(frames[0]), ...frames];
         const stack = (select: (frame: PositionFrame) => Float32Array) => {
             const first = select(window[0]);
@@ -100,7 +148,6 @@ export class TrackPositionModel {
         const feeds: Record<string, import('onnxruntime-web').Tensor> = {};
         let outputs: InferenceSession.ReturnType | undefined;
         try {
-            feeds.images = new this.runtime.Tensor('float32', stack((frame) => frame.image), [...batch, 3, this.inputSize, this.inputSize]);
             feeds.references = new this.runtime.Tensor('float32', stack((frame) => frame.references), [...batch, 1, 3]);
             if (window[0].context) {
                 feeds.context = new this.runtime.Tensor('float32', stack((frame) => frame.context!), [...batch, window[0].context.length]);
@@ -108,7 +155,8 @@ export class TrackPositionModel {
             if (this.requiresOrientation) {
                 feeds.orientation = new this.runtime.Tensor('float32', stack((frame) => frame.orientation!), [...batch, 3]);
             }
-            outputs = await this.session.run(feeds);
+            // Images borrow persistent GPU storage; only the small telemetry tensors are temporary.
+            outputs = await this.session.run({ images, ...feeds });
             const result = outputs.deltas;
             if (result?.dims.join(',') !== '1,1,3' || !(result.data instanceof Float32Array)
                 || result.data.length !== 3 || !result.data.every(Number.isFinite)) throw new Error('Invalid track-position output.');
@@ -137,7 +185,7 @@ export class TrackPositionModel {
         this.busy = true;
         const operation = (async () => {
             const started = performance.now();
-            const context = this.canvas.getContext('2d', { willReadFrequently: true });
+            const context = this.canvas.getContext('2d');
             if (!context) throw new Error('A canvas is required for position inference.');
             const ratio = Math.min(this.inputSize / frame.width, this.inputSize / frame.height);
             const width = Math.max(1, roundEven(frame.width * ratio)), height = Math.max(1, roundEven(frame.height * ratio));
@@ -146,12 +194,12 @@ export class TrackPositionModel {
             context.imageSmoothingEnabled = true;
             context.imageSmoothingQuality = 'high';
             context.drawImage(frame, Math.floor((this.inputSize - width) / 2), Math.floor((this.inputSize - height) / 2), width, height);
-            const image = rgbaToChw(context.getImageData(0, 0, this.inputSize, this.inputSize).data);
-            this.history = [...this.history, { image, references: points, context: this.encodeContext(positionContext), orientation }]
+            const firstFrame = this.history.length === 0;
+            this.history = [...this.history, { references: points, context: this.encodeContext(positionContext), orientation }]
                 .slice(-this.sequenceLength);
             // Snapshot before queueing so resetHistory during an in-flight call stays effective.
             const frames = this.history;
-            const position = await runWithVisionGpuQueue(() => this.run(frames));
+            const position = await runWithVisionGpuQueue(() => this.run(this.prepareImages(firstFrame), frames));
             return { ...position, inferenceMs: performance.now() - started };
         })();
         this.pending = operation;
@@ -169,6 +217,9 @@ export class TrackPositionModel {
         this.disposed = true;
         this.resetHistory();
         await this.pending.catch(() => undefined);
-        await runWithVisionGpuQueue(() => this.session.release());
+        await runWithVisionGpuQueue(async () => {
+            this.disposeInputs();
+            await this.session.release();
+        });
     }
 }

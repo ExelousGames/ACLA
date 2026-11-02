@@ -1,8 +1,8 @@
 import { mockDrivingGpu } from './driving-gpu-test-model';
-import { cloneConfig, drivingObservationInputs, validateDrivingConfig } from './driving-model-config';
+import { cloneConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingObservationInputs, drivingPolicyInputs, validateDrivingConfig } from './driving-model-config';
 import { DrivingMemory, drivingMemoryInputs } from './driving-memory';
 import { DrivingPolicy, emptyTrainingDocument, readTrainingDocument } from './driving-policy';
-import { drivingReward, DrivingYawInstability, readDrivingObservation, NEUTRAL } from './driving-observation';
+import { drivingReward, readDrivingObservation, NEUTRAL } from './driving-observation';
 import { DrivingPlanTraining } from './driving-plan-training';
 import { DrivingTrainingLoop } from './driving-training-loop';
 import { DrivingControlOutput } from './driving-control-output';
@@ -11,6 +11,20 @@ import { trainingFixture } from './training-fixtures';
 
 beforeEach(() => { mockDrivingGpu(); });
 afterEach(() => { jest.restoreAllMocks(); });
+
+it('keeps a widescreen spatial grid and projects it to 256 visual LSTM inputs', () => {
+    const config = cloneConfig();
+    expect(() => validateDrivingConfig(config)).not.toThrow();
+    expect(drivingCameraLayers(config).map(({ width, height, channels }) => [width, height, channels]))
+        .toEqual([[192, 108, 16], [96, 54, 32], [48, 27, 64], [24, 14, 64]]);
+    expect(drivingCameraPooledInputs(config)).toBe(8 * 4 * 64);
+    expect(drivingCameraInputs(config)).toBe(256);
+    expect(drivingPolicyInputs(config)).toBe(drivingObservationInputs(config) + 256 + 2);
+    const { observation } = trainingFixture();
+    const saved = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
+    expect(saved.model.cameraProjectionWeights).toHaveLength(256);
+    expect(saved.model.cameraProjectionWeights.every((row) => row.length === 2049)).toBe(true);
+});
 
 it('rebuilds the whole observation, memory, network and plan from a non-default JSON document', async () => {
     const config = cloneConfig();
@@ -86,7 +100,7 @@ it('uses configured reward coefficients and freshness instead of current default
     const before = fixture.observation;
     const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.255, speed: 106, controls: NEUTRAL };
     const normal = drivingReward(before, after);
-    const changed = drivingReward(before, after, new DrivingYawInstability(config), config);
+    const changed = drivingReward(before, after, config);
     expect(normal.timing).not.toBe(0);
     expect(changed.timing).toBeCloseTo(normal.timing * 3);
     expect(readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1100, config).error).toMatch(/fresh image/);
@@ -128,6 +142,15 @@ it('requires the pedal-event reward encoding and rejects earlier speed-window mo
     expect(() => readTrainingDocument(document)).toThrow(/configuration/);
 });
 
+it('omits instability settings and rejects model JSON that still includes them', () => {
+    const document = emptyTrainingDocument();
+    for (const key of ['yawWindowMs', 'yawDeadband', 'yawPenalty']) {
+        expect(document.configuration.reward).not.toHaveProperty(key);
+    }
+    Object.assign(document.configuration.reward, { yawWindowMs: 1000, yawDeadband: 0.05, yawPenalty: 0.4 });
+    expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+});
+
 it.each([
     (c: any) => { delete c.learning.discount; },
     (c: any) => { c.network.activation = 'relu'; },
@@ -142,7 +165,15 @@ it.each([
     (c: any) => { c.network.cameraLayers[0].channels = 0; },
     (c: any) => { c.network.cameraLayers[0].channels = 1.5; },
     (c: any) => { c.network.cameraLayers[0].stride = 5; },
-    (c: any) => { c.network.cameraLayers[0].channels = 64; },
+    (c: any) => { c.network.cameraLayers[0].channels = 65; },
+    (c: any) => { c.network.cameraLayers[0].padding = 0; },
+    (c: any) => { c.network.cameraPooling.width = 1; },
+    (c: any) => { c.network.cameraPooling.height = 1; },
+    (c: any) => { c.network.cameraPooling.type = 'global-average'; },
+    (c: any) => { c.network.cameraProjectionUnits = 0; },
+    (c: any) => { c.network.cameraProjectionUnits = 257; },
+    (c: any) => { c.network.cameraProjectionUnits = 1.5; },
+    (c: any) => { c.observation.cameraResize = 'stretch'; },
     (c: any) => { c.observation.cameraEncoding = 'rgb-bytes-convolution'; },
     (c: any) => { c.network.hiddenUnits = 0; },
     (c: any) => { c.memory.windowMs = 0; },

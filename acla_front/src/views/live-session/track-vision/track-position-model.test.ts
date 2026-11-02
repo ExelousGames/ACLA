@@ -1,17 +1,47 @@
 import * as runtime from 'onnxruntime-web/webgpu';
 import { loadBackendPositionModel } from './backend-vision-model';
 import { TrackPositionModel } from './track-position-model';
+import { POSITION_MODEL_NAMES } from './vision-config';
+import { mockGpuDevice } from './vision-gpu-test-device';
+import { runWithVisionGpuQueue } from './vision-gpu-queue';
 
 jest.mock('onnxruntime-web/webgpu', () => ({
-    env: { wasm: {}, webgpu: {} }, InferenceSession: { create: jest.fn() }, Tensor: jest.fn(),
+    env: { wasm: {}, webgpu: {} }, InferenceSession: { create: jest.fn() }, Tensor: Object.assign(jest.fn(), { fromGpuBuffer: jest.fn() }),
 }), { virtual: true });
 jest.mock('./backend-vision-model', () => ({ loadBackendPositionModel: jest.fn() }));
 const tensor = (dims: number[], data: Float32Array) => ({ dims, data, dispose: jest.fn() });
 const originalGpu = Object.getOwnPropertyDescriptor(navigator, 'gpu');
 let session: { inputNames: string[]; outputNames: string[]; run: jest.Mock; release: jest.Mock };
 let drawImage: jest.Mock;
+let device: ReturnType<typeof mockGpuDevice>;
+let pixel: number;
+let imageWindows: Float32Array[];
+
+const snapshotImages = () => {
+    const feeds = session.run.mock.calls[session.run.mock.calls.length - 1][0];
+    imageWindows[session.run.mock.calls.length - 1] = feeds.images.gpuBuffer.values.slice();
+};
 
 beforeEach(() => {
+    pixel = 255;
+    imageWindows = [];
+    device = mockGpuDevice();
+    (runtime.env.webgpu as any).device = device.device;
+    // Model tests simulate GPU storage/copies; the Chromium check verifies the actual shader pixels.
+    device.calls.createBuffer.mockImplementation(({ size }) => ({ size, values: new Float32Array(size / 4),
+        destroy: jest.fn(), mapAsync: jest.fn(), getMappedRange: jest.fn() }));
+    device.pass.dispatchWorkgroups.mockImplementation(() => {
+        const entries = device.calls.createBindGroup.mock.calls.slice(-1)[0][0].entries;
+        entries.find((entry: any) => entry.binding === 4).resource.buffer.values.fill(pixel / 255);
+    });
+    device.calls.createCommandEncoder.mockImplementation(() => ({ beginComputePass: () => device.pass,
+        beginRenderPass: () => device.pass, finish: jest.fn(() => ({})),
+        copyBufferToBuffer: jest.fn((source, sourceOffset, target, targetOffset, bytes) => {
+            target.values.set(source.values.subarray(sourceOffset / 4, (sourceOffset + bytes) / 4), targetOffset / 4);
+        }) }));
+    (runtime.Tensor.fromGpuBuffer as jest.Mock).mockImplementation((gpuBuffer, options) => ({
+        dims: options.dims, gpuBuffer, location: 'gpu-buffer', dispose: jest.fn(),
+    }));
     Object.defineProperty(navigator, 'gpu', { configurable: true, value: {} });
     session = { inputNames: ['images', 'references'], outputNames: ['deltas'],
         run: jest.fn().mockResolvedValue({ deltas: tensor([1, 1, 3], new Float32Array([-1, 2, -3])) }),
@@ -21,7 +51,7 @@ beforeEach(() => {
     (loadBackendPositionModel as jest.Mock).mockResolvedValue({ bytes: new ArrayBuffer(8), inputSize: 512, metadata: { name: 'track-position', classNames: ['reference_delta_x', 'reference_delta_y', 'reference_delta_z'] } });
     drawImage = jest.fn();
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ fillRect: jest.fn(), drawImage,
-        getImageData: () => ({ data: new Uint8ClampedArray(512 * 512 * 4).fill(255) }) } as any);
+        getImageData: () => { throw new Error('Position preprocessing must not read CPU pixels'); } } as any);
 });
 afterEach(() => {
     jest.restoreAllMocks();
@@ -42,18 +72,27 @@ it('runs the image and ordered raw reference XYZ on GPU and preserves all three 
         references: expect.objectContaining({ dims: [1, 1, 3], data: new Float32Array([10, -20, 30]) }),
     });
     expect(drawImage).toHaveBeenCalledWith(frame, 0, 112, 512, 288);
-    expect(session.run.mock.calls[1][0].images.data[0]).toBe(1);
+    expect(session.run.mock.calls[1][0].images.location).toBe('gpu-buffer');
+    expect(session.run.mock.calls[1][0].images).toBe(session.run.mock.calls[0][0].images);
+    expect(runtime.Tensor).not.toHaveBeenCalledWith('float32', expect.anything(), [1, 3, 512, 512]);
+    expect(HTMLCanvasElement.prototype.getContext).toHaveBeenCalledWith('2d');
+    expect(device.calls.queue.copyExternalImageToTexture).toHaveBeenCalledWith(
+        { source: expect.any(HTMLCanvasElement) }, expect.anything(), [512, 512]);
     expect(result).toEqual({ coordinateFrame: 'car_local', referenceDelta: [-1, 2, -3], inferenceMs: expect.any(Number) });
     expect(session.run).toHaveBeenCalledTimes(2); // One warm-up and one position inference.
     expect(session.run.mock.calls[1][0].references.dispose).toHaveBeenCalledTimes(1);
+    expect(session.run.mock.calls[1][0].images.dispose).not.toHaveBeenCalled();
     await model.dispose();
     await model.dispose();
     expect(session.release).toHaveBeenCalledTimes(1);
+    expect(session.run.mock.calls[1][0].images.dispose).toHaveBeenCalledTimes(1);
+    expect(device.calls.createBuffer.mock.results.every(({ value }) => value.destroy.mock.calls.length === 1)).toBe(true);
 });
 
-it('reports a missing position model without initializing another session', async () => {
+it.each(['v1', 'v2'] as const)('reports missing %s weights without initializing another session', async (version) => {
     (loadBackendPositionModel as jest.Mock).mockResolvedValue(null);
-    await expect(TrackPositionModel.load()).rejects.toThrow('No ONNX track-position model');
+    await expect(TrackPositionModel.load(version)).rejects.toThrow(`No ONNX ${POSITION_MODEL_NAMES[version]} model`);
+    expect(loadBackendPositionModel).toHaveBeenCalledWith(version);
     expect(runtime.InferenceSession.create).not.toHaveBeenCalled();
 });
 
@@ -85,6 +124,7 @@ it.each([
     await expect(TrackPositionModel.load()).rejects.toThrow('Invalid track-position output');
     expect(session.release).toHaveBeenCalledTimes(1);
     expect(session.run.mock.calls[0][0].references.dispose).toHaveBeenCalledTimes(1);
+    expect(device.calls.createBuffer.mock.results.every(({ value }) => value.destroy.mock.calls.length === 1)).toBe(true);
 });
 
 it('waits for an in-flight prediction before releasing its GPU session', async () => {
@@ -118,25 +158,25 @@ it('feeds single-frame world orientation in radians and rejects missing or nonfi
     await model.dispose();
 });
 
-describe('temporal position inference', () => {
-    let pixel: number;
+describe.each(['v1', 'v2'] as const)('temporal position inference (%s)', (version) => {
     beforeEach(() => {
         pixel = 0;
         session.inputNames = ['images', 'references', 'context', 'orientation'];
         (loadBackendPositionModel as jest.Mock).mockResolvedValue({ bytes: new ArrayBuffer(8), inputSize: 32,
-            sequenceLength: 3, metadata: { name: 'track-position' }, categories: { game: ['acc'], map_name: ['monza'] } });
-        (HTMLCanvasElement.prototype.getContext as jest.Mock).mockReturnValue({ fillRect: jest.fn(), drawImage,
-            getImageData: () => ({ data: new Uint8ClampedArray(32 * 32 * 4).fill(pixel) }) });
+            sequenceLength: 3, metadata: { name: POSITION_MODEL_NAMES[version] }, categories: { game: ['acc'], map_name: ['monza'] } });
     });
 
-    const detect = (model: TrackPositionModel, step: number) => {
+    const detect = async (model: TrackPositionModel, step: number) => {
         pixel = step * 32;
-        return model.detect(document.createElement('canvas'), { reference: { x: step, y: -step, z: step * 10 } },
+        const result = await model.detect(document.createElement('canvas'), { reference: { x: step, y: -step, z: step * 10 } },
             { normalized_position: step / 10, game: 'acc', map_name: 'monza', orientation: [step / 2, -step / 10, step / 20] });
+        snapshotImages();
+        return result;
     };
     const expectWindow = (call: number, steps: number[]) => {
         const { images, references, context, orientation } = session.run.mock.calls[call][0];
         expect(images.dims).toEqual([1, 3, 3, 32, 32]);
+        expect(images.location).toBe('gpu-buffer');
         expect(orientation).toMatchObject({ dims: [1, 3, 3],
             data: new Float32Array(steps.flatMap((step) => [step / 2, -step / 10, step / 20])) });
         expect(references).toMatchObject({ dims: [1, 3, 1, 3],
@@ -144,27 +184,35 @@ describe('temporal position inference', () => {
         expect(context).toMatchObject({ dims: [1, 3, 3],
             data: new Float32Array(steps.flatMap((step) => [step / 10, 1, 1])) });
         steps.forEach((step, index) => {
-            expect(images.data[index * 3 * 32 * 32]).toBeCloseTo(step * 32 / 255);
-            expect(images.data[(index + 1) * 3 * 32 * 32 - 1]).toBeCloseTo(step * 32 / 255);
+            expect(imageWindows[call][index * 3 * 32 * 32]).toBeCloseTo(step * 32 / 255);
+            expect(imageWindows[call][(index + 1) * 3 * 32 * 32 - 1]).toBeCloseTo(step * 32 / 255);
         });
     };
 
     it('pads, aligns and rolls the frame window without retaining warm-up samples', async () => {
-        const model = await TrackPositionModel.load();
+        const model = await TrackPositionModel.load(version);
+        expect(loadBackendPositionModel).toHaveBeenCalledWith(version);
+        expect(model.name).toBe(POSITION_MODEL_NAMES[version]);
         expect(session.run.mock.calls[0][0].images.dims).toEqual([1, 3, 3, 32, 32]);
         for (let step = 1; step <= 4; step++) await detect(model, step);
         expectWindow(1, [1, 1, 1]);
         expectWindow(2, [1, 1, 2]);
         expectWindow(3, [1, 2, 3]);
         expectWindow(4, [2, 3, 4]);
-        for (const [feeds] of session.run.mock.calls) {
+        expect(runtime.Tensor.fromGpuBuffer).toHaveBeenCalledTimes(3); // One frame and two reusable windows.
+        expect(session.run.mock.calls[1][0].images).toBe(session.run.mock.calls[3][0].images);
+        expect(session.run.mock.calls[2][0].images).toBe(session.run.mock.calls[4][0].images);
+        expect(device.calls.queue.writeBuffer.mock.calls.every(([, , data]) => data.byteLength <= 48)).toBe(true);
+        for (const [{ images, ...feeds }] of session.run.mock.calls) {
+            expect(images.dispose).not.toHaveBeenCalled();
             for (const input of Object.values(feeds) as ReturnType<typeof tensor>[]) expect(input.dispose).toHaveBeenCalledTimes(1);
         }
         await model.dispose();
+        expect(device.calls.createBuffer.mock.results.every(({ value }) => value.destroy.mock.calls.length === 1)).toBe(true);
     });
 
     it('does not restore history when a prediction finishes after a reset', async () => {
-        const model = await TrackPositionModel.load();
+        const model = await TrackPositionModel.load(version);
         await detect(model, 1);
         let finish!: (value: unknown) => void;
         session.run.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
@@ -179,8 +227,33 @@ describe('temporal position inference', () => {
         await model.dispose();
     });
 
+    it('keeps resets effective while a frame is waiting for another GPU operation', async () => {
+        const model = await TrackPositionModel.load(version);
+        await detect(model, 1);
+        let unblock!: () => void;
+        const blocked = runWithVisionGpuQueue(() => new Promise<void>((resolve) => { unblock = resolve; }));
+        await Promise.resolve();
+        const pending = detect(model, 2);
+        model.resetHistory();
+        unblock();
+        await blocked;
+        await pending;
+        expectWindow(2, [1, 1, 2]);
+        await detect(model, 3);
+        expectWindow(3, [3, 3, 3]);
+        await model.dispose();
+    });
+
+    it('releases both history buffers when warm-up fails', async () => {
+        session.run.mockRejectedValueOnce(new Error('Warm-up failed'));
+        await expect(TrackPositionModel.load(version)).rejects.toThrow('Warm-up failed');
+        expect(session.release).toHaveBeenCalledTimes(1);
+        expect(runtime.Tensor.fromGpuBuffer).toHaveBeenCalledTimes(3);
+        expect(device.calls.createBuffer.mock.results.every(({ value }) => value.destroy.mock.calls.length === 1)).toBe(true);
+    });
+
     it('clears interrupted history after invalid inputs or failed inference', async () => {
-        const model = await TrackPositionModel.load();
+        const model = await TrackPositionModel.load(version);
         await detect(model, 1);
         await expect(model.detect(document.createElement('canvas'), { reference: { x: NaN, y: 0, z: 0 } }))
             .rejects.toThrow('finite reference points');
@@ -190,7 +263,7 @@ describe('temporal position inference', () => {
             { normalized_position: 0.25 })).rejects.toThrow('finite orientation');
         session.run.mockRejectedValueOnce(new Error('GPU failure'));
         await expect(detect(model, 3)).rejects.toThrow('GPU failure');
-        expect(session.run.mock.calls[3][0].images.dispose).toHaveBeenCalledTimes(1);
+        expect(session.run.mock.calls[3][0].images.dispose).not.toHaveBeenCalled();
         await detect(model, 4);
         expectWindow(4, [4, 4, 4]);
         await model.dispose();

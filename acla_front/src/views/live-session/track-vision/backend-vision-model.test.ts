@@ -134,6 +134,61 @@ const temporal = { type: 'gru', sequenceLength: 4, order: 'oldest-to-newest', ta
 
 const orientation = { order: ['heading', 'pitch', 'roll'], units: 'radians', frame: 'world' };
 
+const positionV2 = { ...positionCatalogueModel, _id: 'c'.repeat(24), name: 'position_model_v2',
+    metadata: { ...positionCatalogueModel.metadata, format: 'acla-position-resnet18-convlstm-v1',
+        inference: { schemaVersion: 7, orientation, temporal: { ...temporal, type: 'convlstm' } } } };
+
+it('loads and coalesces v1 and v2 independently using the latest ONNX for each exact name', async () => {
+    const newerV2 = { ...positionV2, _id: 'd'.repeat(24), createdAt: '2026-10-16T12:00:00Z' };
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [positionV2, positionCatalogueModel, newerV2,
+        { ...newerV2, _id: 'e'.repeat(24), filename: 'best.pt', createdAt: '2026-10-17T12:00:00Z' }] });
+    prepare.mockImplementation(async (_model, bytes) => bytes ? new Uint8Array(bytes) : null);
+    const [v1, v2, sameV1, sameV2] = await Promise.all([
+        loadBackendPositionModel('v1'), loadBackendPositionModel('v2'),
+        loadBackendPositionModel('v1'), loadBackendPositionModel('v2'),
+    ]);
+    expect(v1).toBe(sameV1);
+    expect(v2).toBe(sameV2);
+    expect(v1).toMatchObject({ metadata: { name: 'track-position', id: positionCatalogueModel._id } });
+    expect(v2).toMatchObject({ metadata: { name: 'position_model_v2', id: newerV2._id }, sequenceLength: 4 });
+    expect(apiService.get).toHaveBeenCalledTimes(2);
+    expect(apiService.get).toHaveBeenCalledWith('/ai-model/ultralytics', { name: 'track-position' });
+    expect(apiService.get).toHaveBeenCalledWith('/ai-model/ultralytics', { name: 'position_model_v2' });
+    expect(apiService.getBinary).toHaveBeenCalledTimes(2);
+    expect(apiService.getBinary).toHaveBeenCalledWith(`/ai-model/ultralytics/${newerV2._id}/file`, { timeoutMs: 300000 });
+});
+
+it.each(['v1', 'v2'] as const)('does not fall back to the other version when %s is unavailable', async (version) => {
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [version === 'v1' ? positionV2 : positionCatalogueModel] });
+    await expect(loadBackendPositionModel(version)).resolves.toBeNull();
+    expect(prepare).not.toHaveBeenCalled();
+});
+
+it('clears a failed v2 load so it can be retried', async () => {
+    (apiService.get as jest.Mock).mockRejectedValueOnce(new Error('Offline')).mockResolvedValue({ data: [positionV2] });
+    prepare.mockResolvedValue(new Uint8Array([9]));
+    await expect(loadBackendPositionModel('v2')).rejects.toThrow('Offline');
+    await expect(loadBackendPositionModel('v2')).resolves.toMatchObject({ metadata: { name: 'position_model_v2' } });
+    expect(apiService.get).toHaveBeenCalledTimes(2);
+});
+
+it('supports single-frame v2 exports without temporal metadata', async () => {
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionV2,
+        metadata: { ...positionV2.metadata, inference: { schemaVersion: 6, orientation } } }] });
+    prepare.mockResolvedValue(new Uint8Array([9]));
+    await expect(loadBackendPositionModel('v2')).resolves.toMatchObject({ sequenceLength: 1 });
+});
+
+it.each([
+    { ...temporal, type: 'lstm' }, { ...temporal, type: 'convlstm', state: 'persistent' },
+    { ...temporal, type: 'convlstm', padding: 'zeros' }, { ...temporal, type: 'convlstm', sequenceLength: 1 },
+])('rejects incompatible v2 temporal windows (%j)', async (configuration) => {
+    (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionV2,
+        metadata: { ...positionV2.metadata, inference: { schemaVersion: 7, orientation, temporal: configuration } } }] });
+    await expect(loadBackendPositionModel('v2')).rejects.toThrow('metadata.inference.temporal');
+    expect(prepare).not.toHaveBeenCalled();
+});
+
 it.each([6, 7])('loads orientation-aware position schema %s', async (schemaVersion) => {
     (apiService.get as jest.Mock).mockResolvedValue({ data: [{ ...positionCatalogueModel,
         metadata: { ...positionCatalogueModel.metadata, inference: { schemaVersion, orientation,

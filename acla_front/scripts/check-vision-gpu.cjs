@@ -7,11 +7,13 @@ const http = require('http');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 const source = path.join(root, 'src/views/live-session/track-vision');
-const files = ['vision-gpu-input', 'vision-gpu-depth', 'vision-gpu-segments', 'vision-gpu-queue', 'vision-decoding', 'vision-config', 'vision-colors', 'yolo-segmentation'];
+const files = ['vision-gpu-input', 'vision-gpu-depth', 'vision-gpu-segments', 'vision-gpu-queue', 'vision-decoding', 'vision-config', 'vision-colors', 'yolo-segmentation', 'track-position-model'];
 const modules = files.map((name) => `${JSON.stringify('./' + name)}: function(require, exports) {\n${ts.transpileModule(
     fs.readFileSync(path.join(source, name + '.ts'), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } },
 ).outputText}\n}`).join(',');
-const bundle = `const modules = {${modules}}, cache = {}; function require(id) {
+// Position checks construct the model with an inspecting session, without fetching backend weights.
+const bundle = `const modules = {${modules}, './backend-vision-model': () => {}, './vision-assets': () => {},
+    './track-vision-model': (_require, exports) => { exports.GpuInferenceError = Error; }}, cache = {}; function require(id) {
     if (!cache[id]) { cache[id] = {}; modules[id](require, cache[id]); } return cache[id]; }`;
 const server = http.createServer((req, res) => {
     const relative = decodeURIComponent(new URL(req.url, 'http://localhost').pathname).slice(1);
@@ -27,6 +29,7 @@ async function checks() {
     const { GpuDepth, readDepthValues } = require('./vision-gpu-depth');
     const { GpuSegments } = require('./vision-gpu-segments');
     const { decodeSegments } = require('./vision-decoding');
+    const { TrackPositionModel } = require('./track-position-model');
     const assert = (condition, text) => { if (!condition) throw new Error(text); };
     const close = (actual, expected, label) => assert(Math.abs(actual - expected) < 0.00001, `${label}: ${actual} != ${expected}`);
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
@@ -97,6 +100,55 @@ async function checks() {
         } finally { staging.destroy(); }
     };
     const runtime = { Tensor: { fromGpuBuffer: (gpuBuffer, options) => ({ gpuBuffer, ...options }) } };
+    const positionRuntime = { Tensor: Object.assign(function (_type, data, dims) {
+        return { data, dims, dispose() {} };
+    }, { fromGpuBuffer: (gpuBuffer, options) => ({ gpuBuffer, ...options, dispose() {} }) }) };
+    const positionChecks = [];
+    for (const sequenceLength of [1, 3]) {
+        let actualImages, actualReferences;
+        const positionSession = {
+            inputNames: ['images', 'references'],
+            run: async (feeds) => {
+                actualImages = await download(feeds.images.gpuBuffer, sequenceLength * 3 * 32 * 32);
+                actualReferences = feeds.references.data.slice();
+                return { deltas: { dims: [1, 1, 3], data: new Float32Array([1, -2, 3]), dispose() {} } };
+            },
+            release: async () => {},
+        };
+        const position = new TrackPositionModel(positionRuntime, positionSession, 'GPU check', 32, {}, sequenceLength, device);
+        const capture = document.createElement('canvas');
+        const reference = document.createElement('canvas'); reference.width = reference.height = 32;
+        const expectedFrames = [];
+        for (let step = 0; step < 6; step++) {
+            if (step === 4) { position.resetHistory(); expectedFrames.length = 0; }
+            // Includes ties-to-even rounding (21.5 -> 22), portrait, and square captures.
+            [capture.width, capture.height] = [[64, 43], [43, 64], [32, 32]][step % 3];
+            const paint = capture.getContext('2d');
+            const gradient = paint.createLinearGradient(0, 0, capture.width, capture.height);
+            gradient.addColorStop(0, `rgb(${step * 30}, 240, 120)`); gradient.addColorStop(1, '#402080');
+            paint.fillStyle = gradient; paint.fillRect(0, 0, capture.width, capture.height);
+            const context = reference.getContext('2d', { willReadFrequently: true });
+            const roundEven = (value) => value % 1 === 0.5 ? 2 * Math.round(value / 2) : Math.round(value);
+            const ratio = Math.min(32 / capture.width, 32 / capture.height);
+            const width = roundEven(capture.width * ratio), height = roundEven(capture.height * ratio);
+            context.fillStyle = 'rgb(114, 114, 114)'; context.fillRect(0, 0, 32, 32);
+            context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high';
+            context.drawImage(capture, Math.floor((32 - width) / 2), Math.floor((32 - height) / 2), width, height);
+            const rgba = context.getImageData(0, 0, 32, 32).data;
+            const chw = Float32Array.from({ length: 3 * 32 * 32 }, (_, i) => rgba[(i % 1024) * 4 + Math.floor(i / 1024)] / 255);
+            expectedFrames.push({ chw, step });
+            if (expectedFrames.length > sequenceLength) expectedFrames.shift();
+            const result = await position.detect(capture, { reference: { x: step, y: -step, z: step * 10 } });
+            assert(result.referenceDelta.join(',') === '1,-2,3', 'Position output');
+            const padded = [...Array(sequenceLength - expectedFrames.length).fill(expectedFrames[0]), ...expectedFrames];
+            padded.forEach(({ chw, step }, index) => {
+                chw.forEach((value, pixel) => close(actualImages[index * chw.length + pixel], value, 'Position RGB/history parity'));
+                assert(actualReferences[index * 3] === step, 'Position image/reference alignment');
+            });
+        }
+        await position.dispose();
+        positionChecks.push({ sequenceLength, checks: 'CPU preprocessing parity, padding, rollover, reset, and image/reference alignment' });
+    }
     const frame = document.createElement('canvas'); frame.width = 8; frame.height = 4;
     const paint = frame.getContext('2d'); paint.fillStyle = '#ff8040'; paint.fillRect(0, 0, 8, 4);
     const preprocessor = new VisionGpuInput(device, runtime, 8);
@@ -160,7 +212,7 @@ async function checks() {
     await modelDevice.queue.onSubmittedWorkDone();
     await modelDepth.dispose(); modelInput.dispose(); await session.release();
     assert(!errors.length, errors.join('\n'));
-    return { adapter: adapter.info, checks: 'GPU segmentation parity, preprocessing, masking, reduction, coloring, lazy readback, disposal, and actual ONNX GPU IO binding passed', segmentChecks, modelRange };
+    return { adapter: adapter.info, checks: 'GPU segmentation parity, position preprocessing/history parity, masking, reduction, coloring, lazy readback, disposal, and actual ONNX GPU IO binding passed', segmentChecks, positionChecks, modelRange };
 }
 app.whenReady().then(async () => {
     let window;

@@ -2,6 +2,9 @@
 export const VISION_INPUT_SIZE = 768;
 export const DEPTH_INPUT_SIZE = 518;
 
+export const POSITION_MODEL_NAMES = { v1: 'track-position', v2: 'position_model_v2' } as const;
+export type PositionModelVersion = keyof typeof POSITION_MODEL_NAMES;
+
 export const MODEL_INPUT_RESOLUTIONS = {
     segment: [
         { label: 'Low', size: 384 },

@@ -4,6 +4,16 @@ import { readTrackVisionSettings, saveTrackVisionSettings, TRACK_VISION_SETTINGS
 beforeEach(() => window.localStorage.clear());
 afterEach(() => jest.restoreAllMocks());
 
+it.each([undefined, null, 'v3', 2, 'v1'])('defaults legacy or invalid position model versions to v1 (%s)', (value) => {
+    window.localStorage.setItem(TRACK_VISION_SETTINGS_KEY, JSON.stringify({ version: 1, positionModelVersion: value }));
+    expect(readTrackVisionSettings().positionModelVersion).toBe('v1');
+});
+
+it.each(['v1', 'v2'] as const)('saves and restores position model %s', (positionModelVersion) => {
+    saveTrackVisionSettings({ ...readTrackVisionSettings(), positionModelVersion });
+    expect(readTrackVisionSettings().positionModelVersion).toBe(positionModelVersion);
+});
+
 describe.each(['segmentEnabled', 'depthEnabled'] as const)('%s', (setting) => {
     it.each([undefined, null, 'false', 0, true])('keeps the model enabled for legacy or invalid settings: %s', (value) => {
         window.localStorage.setItem(TRACK_VISION_SETTINGS_KEY, JSON.stringify({ version: 1, [setting]: value }));

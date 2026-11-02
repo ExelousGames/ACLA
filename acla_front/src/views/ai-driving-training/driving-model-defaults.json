@@ -3,10 +3,13 @@
     "type": "cnn-lstm",
     "cameraActivation": "leaky-relu-0.01",
     "cameraLayers": [
-      { "kernelSize": 8, "stride": 8, "channels": 8 },
-      { "kernelSize": 4, "stride": 4, "channels": 16 },
-      { "kernelSize": 3, "stride": 3, "channels": 16 }
+      { "kernelSize": 5, "stride": 2, "padding": 2, "channels": 16 },
+      { "kernelSize": 3, "stride": 2, "padding": 1, "channels": 32 },
+      { "kernelSize": 3, "stride": 2, "padding": 1, "channels": 64 },
+      { "kernelSize": 3, "stride": 2, "padding": 1, "channels": 64 }
     ],
+    "cameraPooling": { "type": "adaptive-average", "width": 8, "height": 4 },
+    "cameraProjectionUnits": 256,
     "hiddenUnits": 128,
     "activation": "tanh",
     "initialActionBias": [-2, -3, 0, 1, 0, 0],
@@ -25,8 +28,9 @@
     "gearScale": 8,
     "rpmScale": 20000,
     "yawRateScale": 3.141592653589793,
-    "cameraWidth": 768,
-    "cameraHeight": 768,
+    "cameraWidth": 384,
+    "cameraHeight": 216,
+    "cameraResize": "contain-black",
     "cameraEncoding": "rgb-bytes-cnn"
   },
   "memory": {
@@ -65,9 +69,6 @@
     "lineWeight": 100,
     "lineDistanceTolerance": 10,
     "lineSmoothingMs": 500,
-    "yawWindowMs": 1000,
-    "yawDeadband": 0.05,
-    "yawPenalty": 0.4,
     "totalLimit": 10,
     "aggressionMaxRadius": 20
   },

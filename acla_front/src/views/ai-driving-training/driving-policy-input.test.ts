@@ -39,7 +39,7 @@ it('assembles all 17 history bins and the current observation into 18 chronologi
         .toEqual([...Array.from({ length: 17 }, (_, i) => (5000 - i * 300) / 5000), 0]);
 });
 
-it('rejects pooled-image configurations and missing or malformed CNN/LSTM weights without migration', () => {
+it('rejects old configurations and missing or malformed CNN/projection/LSTM weights without migration', () => {
     const { observation } = trainingFixture(), config = cloneConfig();
     config.network.hiddenUnits = 2;
     const saved = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
@@ -51,6 +51,17 @@ it('rejects pooled-image configurations and missing or malformed CNN/LSTM weight
         saved.model.cameraWeights.map((rows) => rows.map((row) => row.slice(1)))]) {
         expect(() => DrivingPolicy.restore({ ...saved, model: { ...saved.model, cameraWeights } })).toThrow(/checkpoint/);
     }
+    for (const cameraProjectionWeights of [undefined, [], [[NaN]], saved.model.cameraProjectionWeights.slice(1),
+        saved.model.cameraProjectionWeights.map((row) => row.slice(1))]) {
+        expect(() => DrivingPolicy.restore({ ...saved, model: { ...saved.model, cameraProjectionWeights } })).toThrow(/checkpoint/);
+    }
+    const square: any = emptyTrainingDocument();
+    square.configuration.observation.cameraWidth = square.configuration.observation.cameraHeight = 768;
+    square.configuration.network.cameraLayers = [
+        { kernelSize: 8, stride: 8, channels: 8 }, { kernelSize: 4, stride: 4, channels: 16 },
+        { kernelSize: 3, stride: 3, channels: 16 },
+    ];
+    expect(() => readTrainingDocument(square)).toThrow(/configuration/);
     const old: any = emptyTrainingDocument();
     old.configuration.network.type = 'lstm';
     old.configuration.observation.cameraEncoding = 'rgb-bytes-average-pool';

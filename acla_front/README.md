@@ -211,23 +211,27 @@ The observation includes car-local velocity XYZ (m/s), speed (km/h), game/car/ma
 category encodings, cyclic normalized lap position,
 yaw rate (rad/s, normalized by π and clamped to ±1), current
 steering/pedals, current gear, engine RPM, the position model's reference XYZ delta (m),
-and a **768 × 768 RGB camera image** from the same Track Vision capture.
+and a **384 × 216 RGB camera image** from the same Track Vision capture.
 The camera is the only visual input: segmentation labels, depth grids, reconstructed
 track ribbons and traffic boxes are not policy inputs or checkpoint matching keys.
 Camera/position observations remain available if the segmentation or depth models are
 missing or fail; the driving page does not request CPU depth downloads.
-The camera is copied before asynchronous inference or overlays. A learned CNN reads
-the full RGB frame directly: 8 × 8 convolution/stride 8 with 8 channels, 4 × 4
-convolution/stride 4 with 16 channels, then 3 × 3 convolution/stride 3 with 16 channels.
-Each layer applies leaky ReLU (negative slope 0.01). The resulting 8 × 8 × 16 feature
-map supplies 1,024 learned visual features, without averaging RGB cells beforehand.
+The camera is copied before asynchronous inference or overlays, preserving the full
+capture's aspect ratio with centered black letterboxing when it is not 16:9.
+A learned CNN uses four overlapping stride-2 convolutions: a 5 × 5 kernel with
+16 channels, then 3 × 3 kernels with 32, 64 and 64 channels. Symmetric zero padding
+is 2 pixels in the first layer and 1 in the others; each applies leaky ReLU (negative
+slope 0.01). The feature maps are 192 × 108, 96 × 54, 48 × 27 and 24 × 14.
+Adaptive average pooling retains an 8-column × 4-row × 64-channel grid, flattened
+in Y/X/channel order. A learned linear projection maps its 2,048 values to 256 visual
+features, with separate weights for each spatial position so left and right remain distinct.
 A 128-unit LSTM reads these features and telemetry in chronological order, from the
 oldest available history frame through the current observation. Input, forget,
 candidate and output gates maintain hidden and cell states within that sequence.
 Actor–critic, human demonstrations and delayed action-plan training all backpropagate
-through the complete sequence, updating convolution filters/biases as well as LSTM
-input weights, recurrent weights and gate biases. Convolution gradients accumulate
-across all camera timesteps before updating the shared filters.
+through the complete sequence, updating convolution and projection weights/biases as
+well as LSTM input weights, recurrent weights and gate biases. Visual gradients accumulate
+across all camera timesteps before updating the shared encoder.
 CNN and LSTM inference, learning-gradient calculations, backpropagation and weight
 updates run on a hardware WebGPU device. The CPU sends demonstration/plan targets or
 reward, elapsed time and the sampled action. The GPU calculates target transforms,
@@ -255,8 +259,8 @@ learned CNN processes current and historical frames. Every decision starts with 
 recurrent state. Saved configurations declare the history features.
 History resets on start/stop, human/AI handover, invalid inputs, session/reference/context
 changes, backwards timestamps and gaps over 1.5 seconds. The observation panel shows the
-768 × 768 camera resolution. Earlier pooled-image LSTM checkpoints and configurations
-are incompatible with the CNN architecture. Create a new CNN–LSTM model and retrain
+384 × 216 camera resolution. Earlier square-image CNN and pooled-image LSTM checkpoints
+and configurations are incompatible with this architecture. Create a new CNN–LSTM model and retrain
 from scratch; existing files are not automatically migrated.
 Heading, pitch and roll angles are not required for training or used as policy features.
 Telemetry is paired with the image before inference;
@@ -296,19 +300,30 @@ earns no timing bonus. Both ends of a transition use the aggression that produce
 the action, even if the slider changes before scoring. There is no separate raw-speed
 or pedal-matching reward. The previous speed-window and pedal-change-gated reward
 are removed. Model JSON retains the `pedal-event-speed-profile` encoding, so existing
-models with this configuration can continue training under the new reward. The line reward is
-`lineWeight × forwardProgress × (2 / (1 + (smoothedDistance / lineDistanceTolerance)²) - 1)`.
-Distance uses an exponential moving average with an elapsed-time coefficient
-`1 - exp(-elapsedMs / lineSmoothingMs)`, seeded from the first observation.
-The defaults are a 500 ms time constant and a tolerance of 10 source coordinate units,
-where line reward is zero. The signed proximity factor is positive inside this tolerance
-and negative outside it, approaching -1 far from the line. This gives a continuous
-close-to-far gradient that tolerates movement in the position estimate while penalizing
-forward driving far from the line. Standing still or reversing earns zero line reward;
-the progress component penalizes standing still. Distance history resets at
-episode, control handover and input interruption boundaries. Model JSON now requires
-`lineDistanceTolerance` and `lineSmoothingMs` instead of `distancePenalty`,
-`distancePenaltyLimit`, `stationarySpeed` and `stationaryPenalty`.
+models with this configuration can continue training under the new reward.
+**Follow the reference line** rewards staying near a reference error of 3 raw source
+coordinate units, measured as the magnitude of the position model's car-local XYZ
+offset. Its reward is
+`lineWeight × forwardProgress × exp(-abs(referenceDistance - 3) / proximityScale)`.
+It peaks at 3 and decreases for errors above or below 3. Holding the same error
+continues to earn reward while making forward progress. Weighting by lap progress
+avoids earning extra reward just by increasing the capture rate. Stationary driving,
+reverse gear or backward lap progress earns no line reward.
+**Drive toward the reference line** separately compares each pair of fresh frames:
+`correctionDistance = max(previousDistance - 3, 0) - max(currentDistance - 3, 0)`.
+Closing the gap beyond 3 raw units earns reward; widening it incurs a penalty.
+Crossing the boundary scores only the part outside 3, so entering and leaving the
+band are symmetric. Changes entirely within 3 units and unchanged distance earn zero.
+There is no minimum frame-to-frame change or accumulated distance anchor.
+The approach reward is
+`lineWeight × clamp(correctionDistance / referenceLength, -progressLimit, progressLimit)`.
+Normalizing to reference lap length puts correction in the same units as lap progress;
+the existing progress and total caps bound large prediction jumps. A moving car can
+earn approach reward even when its normalized lap position stays unchanged.
+Zero speed, reverse gear or backward lap progress earns no approach reward. No
+transition crosses an episode, control handover or input interruption boundary.
+The legacy `lineDistanceTolerance` and `lineSmoothingMs` settings remain in model JSON
+for compatibility but no longer affect line reward.
 The normalized-position progress reward uses the signed lap-position change, corrected
 for start/finish crossings, divided by elapsed telemetry seconds. With
 `rate = abs(positionChange / telemetrySeconds)`, it adds
@@ -320,16 +335,16 @@ elapsed telemetry time so its accumulated value is independent of sampling frequ
 Positive rewards also require nonzero speed and a non-reverse
 gear. Signed progress uses the existing 0.02-per-observation cap. At 0.01 lap/second
 the rate factor is one half; it approaches 1 as the rate increases, keeping the
-bonus below 25% of the reward for covering the same distance exactly on the line.
+bonus below `0.25 × lineWeight × cappedForwardProgress`.
 Distance weighting keeps accumulated reward independent of sampling frequency
 at a constant rate below the existing progress cap. Camera processing delays do
 not affect the measured rate. The reward appears separately under **Reward signal**
 and contributes to the total used for learning.
-Two or more yaw-rate sign reversals within one second incur an instability penalty using only measured yaw
-rotation rate (ACC local Z; iRacing local Y), ignoring rates within ±0.05 rad/s.
-It is `-0.4 × elapsedSeconds × (reversalsInLastSecond - 1)²` when there is more than one reversal;
-steady turns, isolated reversals, pitch and roll incur no instability penalty. Reversal history
-resets at training, control handover and input interruption boundaries. New policies are untrained;
+The total reward combines acceleration/deceleration timing, reference-line proximity,
+reference-line approach and normalized-position progress, clamped to the configured total limit. Yaw rate
+remains a policy input but does not incur an instability penalty. The removed reward
+settings `yawWindowMs`, `yawDeadband` and `yawPenalty` are no longer accepted in model
+JSON; remove these three settings from existing files before loading them. New policies are untrained;
 successful driving is an empirical training outcome, not a built-in capability.
 
 Only observations captured after a controller acknowledgement can train that
@@ -355,12 +370,15 @@ Each model file contains `format`, `algorithm`, `configuration`, and `model`.
 The desktop dialogs label these files **Kestrel self driving model** and default to
 `kestrel-self-driving-model.json`. The `format` is `kestrel-self-driving-model`.
 `configuration` owns the ordered input features and their normalization/encodings,
-camera resolution, CNN layers/activation, history feature selection and timing, LSTM size,
+camera resolution/resizing, CNN layers/padding/activation, spatial pooling and projection size,
+history feature selection and timing, LSTM size,
 action plan times, shift timing, exploration and learning parameters, reward
 parameters, input freshness limits, checkpoint frequency, and aggression.
 `model` owns the game/car/track, per-timestep input count, learning step count,
 convolution weights (`cameraWeights`: layers, output-channel rows, then flattened
-kernel Y/X/input-channel weights and a final bias), LSTM gate weights (`lstmWeights`: input/forget/candidate/output rows, with input features,
+kernel Y/X/input-channel weights and a final bias), linear projection weights
+(`cameraProjectionWeights`: output rows, pooled Y/X/channel columns and a final bias),
+LSTM gate weights (`lstmWeights`: input/forget/candidate/output rows, with input features,
 previous hidden values and bias columns) and the actor/critic output matrix (`outputWeights`). An untrained document has `model: null`.
 The format and algorithm names identify supported operations; there is no numeric model version.
 

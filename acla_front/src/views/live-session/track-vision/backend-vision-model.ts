@@ -1,4 +1,5 @@
 import apiService from 'services/api.service';
+import { POSITION_MODEL_NAMES, PositionModelVersion } from './vision-config';
 
 export interface BackendVisionModel {
     id: string;
@@ -85,7 +86,7 @@ async function loadModel(name: string, task: BackendVisionModel['task']) {
     const inference = task === 'position' ? model.metadata.inference : undefined;
     const temporal = inference?.temporal;
     if (([5, 7].includes(inference?.schemaVersion ?? 0) && !temporal) || (temporal && (
-        temporal.type !== 'gru' || !Number.isSafeInteger(temporal.sequenceLength) || temporal.sequenceLength < 2
+        !['gru', 'convlstm'].includes(temporal.type) || !Number.isSafeInteger(temporal.sequenceLength) || temporal.sequenceLength < 2
         || temporal.order !== 'oldest-to-newest' || temporal.targetFrame !== 'last'
         || temporal.padding !== 'repeat-first' || temporal.state !== 'reset-per-window'
     ))) {
@@ -101,10 +102,11 @@ async function loadModel(name: string, task: BackendVisionModel['task']) {
         sequenceLength: temporal?.sequenceLength ?? 1 };
 }
 
-let positionPending: ReturnType<typeof loadModel> | undefined;
-export function loadBackendPositionModel() {
-    if (!positionPending) positionPending = loadModel('track-position', 'position').finally(() => { positionPending = undefined; });
-    return positionPending;
+const positionPending: Partial<Record<PositionModelVersion, ReturnType<typeof loadModel>>> = {};
+export function loadBackendPositionModel(version: PositionModelVersion = 'v1') {
+    if (!positionPending[version]) positionPending[version] = loadModel(POSITION_MODEL_NAMES[version], 'position')
+        .finally(() => { delete positionPending[version]; });
+    return positionPending[version]!;
 }
 
 let segmentationPending: ReturnType<typeof loadModel> | undefined;

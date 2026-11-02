@@ -8,6 +8,7 @@ export function mockDrivingGpu() {
     return jest.spyOn(DrivingGpuModel, 'create').mockImplementation(async (config, state) => {
         const weights = {
             cameraWeights: state.cameraWeights,
+            cameraProjectionWeights: state.cameraProjectionWeights,
             lstmWeights: state.lstmWeights,
             outputWeights: state.outputWeights,
         };
@@ -19,7 +20,7 @@ export function mockDrivingGpu() {
             learnTargets: jest.fn(() => { if (config.learning.demonstrationRate) changed(); }),
             release: jest.fn((pass: GpuPolicyPass) => { pass.released = true; }),
             finishTraining: jest.fn(async () => undefined),
-            weights: jest.fn(async (): Promise<Pick<PolicyModelState, 'cameraWeights' | 'lstmWeights' | 'outputWeights'>> =>
+            weights: jest.fn(async (): Promise<Pick<PolicyModelState, 'cameraWeights' | 'cameraProjectionWeights' | 'lstmWeights' | 'outputWeights'>> =>
                 JSON.parse(JSON.stringify(weights))),
             dispose: jest.fn(),
         } as unknown as DrivingGpuModel;

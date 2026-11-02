@@ -25,16 +25,23 @@ export function drivingFeatureSizes(config = DEFAULT_DRIVING_CONFIG): Record<str
 }
 
 export function drivingCameraInputs(config = DEFAULT_DRIVING_CONFIG): number {
-    const layers = drivingCameraLayers(config), last = layers[layers.length - 1];
-    return last.width * last.height * last.channels;
+    return config.network.cameraProjectionUnits;
 }
 
-/** Valid, non-overlapping strided convolutions cover every input pixel. */
+/** Row-major (y, x, channel) grid retained by the learned linear projection. */
+export function drivingCameraPooledInputs(config = DEFAULT_DRIVING_CONFIG): number {
+    const layers = drivingCameraLayers(config), last = layers[layers.length - 1];
+    return config.network.cameraPooling.width * config.network.cameraPooling.height * last.channels;
+}
+
+/** Overlapping convolutions with symmetric zero padding, including odd input sizes. */
 export function drivingCameraLayers(config = DEFAULT_DRIVING_CONFIG) {
     let width = config.observation.cameraWidth, height = config.observation.cameraHeight, channels = 3;
     return config.network.cameraLayers.map((layer) => {
         const inputWidth = width, inputHeight = height, inputChannels = channels;
-        width /= layer.stride; height /= layer.stride; channels = layer.channels;
+        width = Math.floor((width + 2 * layer.padding - layer.kernelSize) / layer.stride) + 1;
+        height = Math.floor((height + 2 * layer.padding - layer.kernelSize) / layer.stride) + 1;
+        channels = layer.channels;
         return { ...layer, inputWidth, inputHeight, inputChannels, width, height,
             columns: layer.kernelSize ** 2 * inputChannels + 1 };
     });
@@ -80,7 +87,11 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
     const c = value as DrivingModelConfig, o = c.observation, l = c.learning;
     const integer = (n: number, min: number, max: number) => Number.isSafeInteger(n) && n >= min && n <= max;
     if (c.network.cameraLayers.some((layer, i) => layer.kernelSize !== defaults.network.cameraLayers[i].kernelSize
-        || layer.stride !== layer.kernelSize || !integer(layer.channels, 1, 32))) return invalid();
+        || layer.stride !== defaults.network.cameraLayers[i].stride
+        || layer.padding !== defaults.network.cameraLayers[i].padding || !integer(layer.channels, 1, 64))) return invalid();
+    if (c.network.cameraPooling.width !== defaults.network.cameraPooling.width
+        || c.network.cameraPooling.height !== defaults.network.cameraPooling.height
+        || !integer(c.network.cameraProjectionUnits, 1, 256)) return invalid();
     if (!integer(c.network.hiddenUnits, 1, 256) || !integer(o.categoryBits, 1, 32)
         || o.cameraWidth !== POLICY_CAMERA_WIDTH || o.cameraHeight !== POLICY_CAMERA_HEIGHT
         || 4 * c.network.hiddenUnits * (drivingPolicyInputs(c) + c.network.hiddenUnits + 1) > 2000000
@@ -99,7 +110,7 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || !integer(c.actions.shiftPulseMs, 1, 1000) || c.actions.shiftCooldownMs < c.actions.shiftPulseMs
         || !integer(c.runtime.saveEverySteps, 1, 1000000)
         || ![c.runtime.telemetryMaxAgeMs, c.runtime.visionMaxAgeMs, c.runtime.maxTransitionSeconds,
-            c.runtime.controlIntervalMs, c.runtime.manualControlIntervalMs, c.reward.yawWindowMs].every((n) => n > 0)
+            c.runtime.controlIntervalMs, c.runtime.manualControlIntervalMs].every((n) => n > 0)
         || c.runtime.controlIntervalMs > 250 || c.runtime.manualControlIntervalMs > 250
         || c.runtime.maxPositionJump <= 0 || c.runtime.maxPositionJump > 0.5 || c.reward.progressLimit > 0.5) invalid();
 }

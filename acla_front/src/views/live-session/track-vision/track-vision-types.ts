@@ -120,7 +120,7 @@ export interface TrackVisionFrame {
     capturedAt: number;
     /** Original capture timings; retained when calibration or display settings change. */
     timing?: import('./vision-timing').VisionTimingSnapshot;
-    /** Clean 768 × 768 RGB pixels for the driving convolutional encoder and its history. */
+    /** Clean 384 × 216 RGB pixels for the driving convolutional encoder and its history. */
     camera?: import('./policy-camera').PolicyCameraImage;
     /** Immutable telemetry paired with the image before asynchronous inference. */
     telemetry?: import('../live-telemetry-store').LiveTelemetrySnapshot;

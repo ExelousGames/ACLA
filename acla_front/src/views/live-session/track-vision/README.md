@@ -8,7 +8,7 @@ Use **Expand capture** in the preview to fill most of the app window. Capture, d
 
 Use **Display label** in the bottom **Settings** section to show only one label's masks, boxes, and captions, or choose **All labels** (the default). Changing the selection updates the current preview immediately. Detection and scene reconstruction continue using every label.
 
-In **Settings → Track models**, **Segmentation** and **Position** each show their ONNX model, fixed training resolution, and independent load/retry status. Depth has an **Input resolution** dropdown with Low (252 × 252), Medium (392 × 392) and High (518 × 518, default) presets. Changing depth resolution reloads only depth while capture continues. **Enable segmentation model** and **Enable depth model** independently disable their models, release their GPU resources and cancel their retries. Both choices are saved when Track Vision is reopened. Capture and position remain available with either or both models disabled.
+In **Settings → Track models**, **Segmentation** and **Position** each show their ONNX model, fixed training resolution, and independent load/retry status. Position has a **Model version** dropdown: **V1** (the default, `track-position`) or **V2** (`position_model_v2`). The choice is saved when Track Vision is reopened. Switching clears previous position results and history, releases the old position model, and loads the selected version while capture, segmentation and depth continue. Depth has an **Input resolution** dropdown with Low (252 × 252), Medium (392 × 392) and High (518 × 518, default) presets. Changing depth resolution reloads only depth while capture continues. **Enable segmentation model** and **Enable depth model** independently disable their models, release their GPU resources and cancel their retries. Both choices are saved when Track Vision is reopened. Capture and position remain available with either or both models disabled.
 
 ## Visual pipeline
 
@@ -33,7 +33,7 @@ Window selection and capture start/stop controls live in the **Session Recording
 
 ## Backend model contract
 
-Track Vision requests `GET /ai-model/ultralytics?name=track-segments` and `GET /ai-model/ultralytics?name=track-position` with the normal JWT. It filters for each exact name, its corresponding `segment` or `position` task, and a `.onnx` filename (case-insensitive), then independently selects the newest ONNX upload by its parsed `createdAt` timestamp. Equal timestamps use descending `_id` as a deterministic tie-breaker. Selection does not depend on catalogue order or version text in a name; missing or invalid upload dates are reported as an error. If a matching model is unavailable, its loader reports an error. A selected segmentation catalogue entry is converted to:
+Track Vision requests `GET /ai-model/ultralytics?name=track-segments` and either `GET /ai-model/ultralytics?name=track-position` (V1) or `GET /ai-model/ultralytics?name=position_model_v2` (V2) with the normal JWT. It filters for each exact name, its corresponding `segment` or `position` task, and a `.onnx` filename (case-insensitive), then independently selects the newest ONNX upload by its parsed `createdAt` timestamp. Equal timestamps use descending `_id` as a deterministic tie-breaker. Selection within each model name does not depend on catalogue order or format labels; missing or invalid upload dates are reported as an error. If a matching model is unavailable, its loader reports an error without falling back to another position version. A selected segmentation catalogue entry is converted to:
 
 ```json
 {
@@ -75,7 +75,8 @@ All frames and inference stay on this device. Captured frames run sequentially a
 
 ### Position model
 
-Track Vision queries the Ultralytics model catalogue once for `track-position`,
+Track Vision queries the Ultralytics model catalogue for the selected position version,
+`track-position` (V1, CNN/GRU) or `position_model_v2` (V2, pretrained ResNet-18/ConvLSTM),
 filters for that exact name, the `position` task and an ONNX filename, and selects the newest ONNX upload
 by `createdAt` with the same `_id` tie-breaker. Electron verifies and caches the original ONNX bytes.
 Format/version labels are informational: new, arbitrary and missing labels are accepted.
@@ -106,7 +107,7 @@ vocabulary in its saved order. Progress and game come from the capture-time tele
 map names use the loaded map's display name or simulator key. Unknown category labels
 produce an all-zero one-hot vector. Two-input ONNX graphs run without context.
 
-Temporal GRU exports (inference schema 7; older schema 5 remains supported) use the published
+Temporal GRU and ConvLSTM exports (inference schema 7; older schema 5 remains supported) use the published
 `metadata.inference.temporal.sequenceLength` as their window length `T` (training defaults to 4).
 Track Vision keeps each captured image aligned with its own reference XYZ, orientation, and context:
 
@@ -119,7 +120,8 @@ Track Vision keeps each captured image aligned with its own reference XYZ, orien
 
 Frames are ordered oldest to newest; short windows repeat the earliest captured frame
 on the left. Each image uses the same letterbox preprocessing as single-frame inference.
-The graph resets its GRU state for every window and returns only the final frame's
+V2's ImageNet normalization is inside the ONNX graph; both versions receive RGB scaled to `[0, 1]`.
+The graph resets its recurrent state for every window and returns only the final frame's
 `deltas` as `[1, 1, 3]`; there is no hidden-state tensor to carry between calls.
 Warm-up frames never enter live history. Unsupported temporal ordering, padding or
 state semantics are rejected when loading. Models without temporal metadata retain
@@ -129,11 +131,11 @@ roll in radians from `Physics_heading`, `Physics_pitch`, and `Physics_roll`.
 `metadata.inference.orientation` declares the order, units, and frame. The graph
 encodes sine/cosine internally. Older graphs without orientation remain supported.
 
-History clears on capture stop/restart, telemetry session or recording stream reset,
+History clears on position model version changes, capture stop/restart, telemetry session or recording stream reset,
 game/session/map/reference changes, video seeking or a backwards simulator clock,
 and missing references, paused or stale telemetry. In-flight predictions cannot
-restore cleared history. No extra user setting is needed: upload the temporal
-`track-position` ONNX and reopen Track Vision to load the newest upload. Use
+restore cleared history. Upload the ONNX under its version's model name and select that
+version in **Settings → Track models → Position → Model version**. Reopen Track Vision to load the newest upload of the selected version. Use
 **Settings → Track models → Retry Position** if the previous load failed.
 
 The final **Bird's-eye view** step plots the reference-lap marker directly
@@ -174,7 +176,9 @@ AI Driving Training's **Input profiling → Published frame timing breakdown** s
 
 ### GPU image, segmentation and depth ownership
 
-Segmentation and depth preprocessing copy the captured canvas into a GPU texture, sample the shared letterbox geometry, and write CHW float32 data into a reusable GPU storage buffer. Depth normalization and optional exclusion masks run in the compute shader. `Tensor.fromGpuBuffer` binds that buffer directly to ONNX; no image pixels are read back for either model. The separate position-history model and driving-policy RGB capture retain their existing CPU inputs.
+Segmentation and depth preprocessing copy the captured canvas into a GPU texture, sample the shared letterbox geometry, and write CHW float32 data into a reusable GPU storage buffer. Depth normalization and optional exclusion masks run in the compute shader. `Tensor.fromGpuBuffer` binds that buffer directly to ONNX; no image pixels are read back for either model.
+
+Position preprocessing preserves high-quality canvas resizing and ties-to-even letterboxing, then uses the same GPU shader to produce RGB CHW values in `[0, 1]`, without `getImageData` or a CPU image tensor. Temporal position models alternate two reusable GPU history buffers: retained frames are copied on the GPU and the newest frame is appended, with earliest-frame padding after loading or resetting. The complete history is bound directly to ONNX instead of being rebuilt and uploaded from CPU memory. Only the small reference, context and orientation inputs and the three output deltas use CPU tensors. These buffers are released after pending inference, including failed initialization. Driving-policy RGB capture retains its existing CPU input.
 
 Segmentation sessions also use `preferredOutputLocation: 'gpu-buffer'`. Raw predictions and prototypes remain on the GPU through candidate filtering, stable confidence selection (top 300), class-aware NMS for raw outputs (up to 30 instances), box cropping and mask generation. End-to-end exports skip NMS as before. Raw output tensors are released after all mask commands are submitted; each frame owns the resulting GPU metadata and byte-packed masks. Only final instances are copied for the existing CPU scene analysis and overlay. Concurrent reads share one mapping, disposal waits for pending mapping, and cancelled or replaced frames release their buffers. No segmentation output download or CPU mask reconstruction sits between segmentation and depth submission.
 

@@ -26,6 +26,28 @@ it('requires GPU initialization before applying AI controls and reports initiali
     expect(run.controller.apply).not.toHaveBeenCalled();
 });
 
+it.each([true, false])('scores an impact once and passes its penalty to AI learning (training=%s)', async (train) => {
+    const run = setup();
+    const learn = jest.spyOn(run.policy, 'learnAsync');
+    await run.loop.start(run.policy, train); await flush();
+    const stopped = { ...run.fixture.observation, capturedAt: 1200, speed: 0, localVelocity: [0, 0, 0] as [number, number, number] };
+    run.input({ observation: stopped }, 1200);
+    jest.advanceTimersByTime(100); await flush();
+    const reward = run.loop.state.reward!;
+    expect(reward.impact).toBe(-5);
+    expect(reward.impactEstimate.detected).toBe(true);
+    expect(run.loop.state.episodeReward).toBe(reward.total);
+    expect(learn).toHaveBeenCalledTimes(train ? 1 : 0);
+    if (train) expect(learn).toHaveBeenLastCalledWith(expect.anything(), reward.total, expect.anything(), 0.2);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.episodeReward).toBe(reward.total);
+    run.input({ observation: { ...stopped, capturedAt: 1400 } }, 1400);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.reward!.impact).toBe(0);
+    expect(run.loop.state.episodeReward).toBeCloseTo(reward.total + run.loop.state.reward!.total);
+    await run.loop.stop();
+});
+
 it('cancels a start while the GPU is initializing', async () => {
     const run = setup();
     let ready!: () => void;
@@ -240,41 +262,48 @@ it('keeps a failed model cycle incomplete and clears its running stage', async (
     expect(run.loop.getModelTimingSnapshot()?.stages.control).toBeUndefined();
 });
 
-it.each([true, false])('retains smoothed line distance and saved tolerance across fresh frames (training=%s)', async (train) => {
+it.each([true, false])('scores proximity and frame-to-frame approach once per fresh frame (training=%s)', async (train) => {
     const run = setup();
     const config = cloneConfig();
-    config.reward.lineDistanceTolerance = 8;
-    config.reward.lineSmoothingMs = 400;
+    config.reward.lineWeight = 200;
     run.policy = new DrivingPolicy(run.fixture.observation.context, run.fixture.observation.features.length, () => 0.1, config);
     const learn = jest.spyOn(run.policy, 'learnAsync');
-    run.input({ observation: { ...run.fixture.observation, referenceDistance: 0 } }, 1000);
+    run.input({ observation: { ...run.fixture.observation, referenceDistance: 30 } }, 1000);
     run.loop.start(run.policy, train); await flush();
-    for (const capturedAt of [1200, 1400, 1600]) {
-        run.input({ observation: { ...run.fixture.observation, capturedAt, referenceDistance: 16,
+    let episodeReward = 0;
+    const samples = [[29.5, 0.25], [29, 0.25], [28.5, 0.25], [28, 0.25], [29, -0.5], [29, 0], [3, 4], [3, 0], [2, 0], [4, -0.5]];
+    for (let index = 0; index < samples.length; index++) {
+        const [referenceDistance, expectedApproach] = samples[index];
+        const capturedAt = 1200 + index * 200;
+        run.input({ observation: { ...run.fixture.observation, capturedAt, referenceDistance,
             normalizedPosition: 0.25 + (capturedAt - 1000) / 100000 } }, capturedAt);
         jest.advanceTimersByTime(200); await flush();
-        const expectedProximity = 1 / (1 + (2 * (1 - Math.exp(-(capturedAt - 1000) / 400))) ** 2);
-        expect(run.loop.state.reward?.line).toBeCloseTo(0.2 * (2 * expectedProximity - 1), 10);
+        expect(run.loop.state.reward?.line).toBeCloseTo(0.4 * Math.exp(-Math.abs(referenceDistance - 3) / 3));
+        expect(run.loop.state.reward?.approach).toBe(expectedApproach);
+        const scored = run.loop.state.reward!;
+        expect(scored.total).toBeCloseTo(scored.timing + scored.line + scored.approach + scored.progress);
+        episodeReward += run.loop.state.reward!.total;
+        expect(run.loop.state.episodeReward).toBeCloseTo(episodeReward);
         expect(learn.mock.calls.slice(-1)).toEqual(train ? [[expect.anything(), run.loop.state.reward!.total,
             expect.objectContaining({ features: expect.any(Array), cameras: expect.any(Array) }), 0.2]] : []);
         const reward = run.loop.state.reward;
         jest.advanceTimersByTime(100); await flush();
-        expect(run.loop.state.reward).toBe(reward); // Repeated images do not update smoothing.
+        expect(run.loop.state.reward).toBe(reward); // Repeated images do not count correction again.
     }
-    expect(learn).toHaveBeenCalledTimes(train ? 3 : 0);
-    expect(run.loop.state.reward?.line).toBeLessThan(0);
+    expect(learn).toHaveBeenCalledTimes(train ? samples.length : 0);
     await run.loop.stop();
 });
 
-it.each(['stop', 'handoff', 'invalid', 'gap'] as const)('discards smoothed line distance after %s', async (boundary) => {
+it.each(['stop', 'handoff', 'invalid', 'gap'] as const)('does not score reference approach across %s', async (boundary) => {
     const run = setup();
     run.policy = new DrivingPolicy(run.fixture.observation.context, run.fixture.observation.features.length, () => 0.1);
-    run.input({ observation: { ...run.fixture.observation, referenceDistance: 100 } }, 1000);
+    run.input({ observation: { ...run.fixture.observation, referenceDistance: 10 } }, 1000);
     run.loop.start(run.policy, false); await flush();
-    run.input({ observation: { ...run.fixture.observation, capturedAt: 1200, referenceDistance: 100,
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1200, referenceDistance: 9.5,
         normalizedPosition: 0.252 } }, 1200);
     jest.advanceTimersByTime(200); await flush();
-    expect(run.loop.state.reward?.line).toBeCloseTo(0.2 * (-99 / 101), 10);
+    expect(run.loop.state.reward?.approach).toBe(0.125);
+    const episodeReward = run.loop.state.episodeReward;
     if (boundary === 'stop') await run.loop.stop();
     if (boundary === 'handoff') { run.loop.setControlSource('manual'); run.loop.setControlSource('ai'); }
     if (boundary === 'invalid') {
@@ -282,56 +311,33 @@ it.each(['stop', 'handoff', 'invalid', 'gap'] as const)('discards smoothed line 
         jest.advanceTimersByTime(100); await flush();
     }
     const restartAt = boundary === 'gap' ? 2800 : 1400;
-    run.input({ observation: { ...run.fixture.observation, capturedAt: restartAt, referenceDistance: 0 } }, restartAt);
+    run.input({ observation: { ...run.fixture.observation, capturedAt: restartAt, referenceDistance: 9.25 } }, restartAt);
     if (boundary === 'stop') run.loop.start(run.policy, false);
     jest.advanceTimersByTime(200); await flush();
-    run.input({ observation: { ...run.fixture.observation, capturedAt: restartAt + 200, referenceDistance: 0,
+    expect(run.loop.state.episodeReward).toBe(boundary === 'stop' ? 0 : episodeReward);
+    run.input({ observation: { ...run.fixture.observation, capturedAt: restartAt + 200, referenceDistance: 8.75,
         normalizedPosition: 0.252 } }, restartAt + 200);
     jest.advanceTimersByTime(200); await flush();
-    expect(run.loop.state.reward?.line).toBeCloseTo(0.2, 10);
+    expect(run.loop.state.reward?.approach).toBe(0.125);
     await run.loop.stop();
 });
 
-it.each([true, false])('applies the repeated yaw reversal penalty to the reward (training=%s)', async (train) => {
+it.each([true, false])('learns and reports reward without a yaw reversal penalty (training=%s)', async (train) => {
     const run = setup();
     run.policy = new DrivingPolicy(run.fixture.observation.context, run.fixture.observation.features.length, () => 0.1);
     const learn = jest.spyOn(run.policy, 'learnAsync');
     run.loop.start(run.policy, train); await flush();
-    for (const [capturedAt, yaw, penalty] of [[1200, 0.3, 0], [1400, -0.3, -0.08]]) {
+    for (const [capturedAt, yaw] of [[1200, 0.3], [1400, -0.3], [1600, 0.3]]) {
         run.input({ observation: { ...run.fixture.observation, capturedAt, yawRate: yaw } }, capturedAt);
         jest.advanceTimersByTime(200); await flush();
-        expect(run.loop.state.reward?.instability).toBeCloseTo(penalty);
+        const reward = run.loop.state.reward!;
+        expect(reward).not.toHaveProperty('instability');
+        expect(reward.total).toBeCloseTo(-0.05); // Only the unchanged-position penalty applies.
+        expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress);
     }
     const reward = run.loop.state.reward!;
-    expect(reward.instability).toBeLessThan(0);
-    expect(learn).toHaveBeenCalledTimes(train ? 2 : 0);
+    expect(learn).toHaveBeenCalledTimes(train ? 3 : 0);
     expect(learn.mock.calls[learn.mock.calls.length - 1]?.[1]).toBe(train ? reward.total : undefined);
-    await run.loop.stop();
-});
-
-it.each(['stop', 'handoff', 'invalid', 'gap'] as const)('discards yaw reversal history after %s', async (boundary) => {
-    const run = setup();
-    run.policy = new DrivingPolicy(run.fixture.observation.context, run.fixture.observation.features.length, () => 0.1);
-    run.loop.start(run.policy, false); await flush();
-    run.input({ observation: { ...run.fixture.observation, capturedAt: 1200, yawRate: 0.3 } }, 1200);
-    jest.advanceTimersByTime(200); await flush();
-    expect(run.loop.state.reward?.instability).toBe(0);
-    if (boundary === 'stop') await run.loop.stop();
-    if (boundary === 'handoff') { run.loop.setControlSource('manual'); run.loop.setControlSource('ai'); }
-    if (boundary === 'invalid') {
-        run.input({ error: 'Camera disconnected.' }, 1300);
-        jest.advanceTimersByTime(100); await flush();
-    }
-    const restartAt = boundary === 'gap' ? 2800 : 1400;
-    run.input({ observation: { ...run.fixture.observation, capturedAt: restartAt, yawRate: 0.3 } }, restartAt);
-    if (boundary === 'stop') run.loop.start(run.policy, false);
-    jest.advanceTimersByTime(200); await flush();
-    for (const [offset, yaw, penalty] of [[200, -0.3, 0], [400, 0.3, -0.08]]) {
-        const capturedAt = restartAt + offset;
-        run.input({ observation: { ...run.fixture.observation, capturedAt, yawRate: yaw } }, capturedAt);
-        jest.advanceTimersByTime(200); await flush();
-        expect(run.loop.state.reward?.instability).toBeCloseTo(penalty);
-    }
     await run.loop.stop();
 });
 
@@ -861,7 +867,7 @@ it('waits for the effect of an acknowledged action and learns only once per new 
     const reward = run.loop.state.reward!;
     expect(reward.timing).toBe(0); // The speed stayed unchanged while the car moved forward.
     expect(reward.progress).toBeGreaterThan(0);
-    expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.progress + reward.instability);
+    expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress);
     const memory = new DrivingMemory();
     memory.encode(run.fixture.observation);
     expect(learn).toHaveBeenLastCalledWith(expect.anything(), reward.total,
@@ -908,8 +914,9 @@ it.each([true, false])('scores speed timing throughout changing and held pedals 
         const reward = run.loop.state.reward!;
         expect(reward.timing).toBeGreaterThan(0);
         expect(reward.line).toBeGreaterThan(0);
+        expect(reward.approach).toBe(0); // Steady reference distance does not earn correction reward.
         expect(reward.progress).toBeGreaterThan(0);
-        expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.progress + reward.instability);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress);
         episodeReward += reward.total;
         expect(run.loop.state.episodeReward).toBeCloseTo(episodeReward);
         expect(learn.mock.calls.slice(-1)).toEqual(train ? [[expect.anything(), reward.total,
@@ -1045,14 +1052,14 @@ it.each([true, false])('continues beyond 25 coordinate units from the reference 
     run.input({ observation: { ...run.fixture.observation, capturedAt: 1200, referenceDistance: 30 } }, 1200);
     jest.advanceTimersByTime(100); await flush();
     expect(run.loop.state.mode).toBe(train ? 'training' : 'evaluation');
-    expect(run.loop.state.reward?.line).toBe(0);
+    expect(run.loop.state.reward?.approach).toBe(-2);
     expect(run.controller.apply).toHaveBeenLastCalledWith(run.loop.state.action);
     expect(run.loop.state.action).not.toEqual(NEUTRAL);
     expect(run.policy.steps).toBe(train ? 1 : 0);
     run.input({ observation: { ...run.fixture.observation, capturedAt: 1400, referenceDistance: 28 } }, 1400);
     jest.advanceTimersByTime(100); await flush();
     expect(run.loop.state.mode).toBe(train ? 'training' : 'evaluation');
-    expect(run.loop.state.reward?.line).toBe(0);
+    expect(run.loop.state.reward?.approach).toBe(0.5); // Recovery counts even without a normalized-position change.
     expect(run.policy.steps).toBe(train ? 2 : 0);
     await run.loop.stop();
 });

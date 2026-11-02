@@ -6,6 +6,7 @@ import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import { selectLiveMapReference } from 'views/live-session/live-map-reference';
 import { DrivingReference, inspectDrivingReference, normalizedAggression, ReferenceSpeedTargets, referenceSpeedTargets } from './driving-reference';
 import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
+import { detectDrivingImpact, DrivingImpact, ImpactSample, IMPACT_PENALTY_WEIGHT } from './driving-impact';
 
 export interface DrivingAction { throttle: number; brake: number; steering: number; shiftUp?: boolean; shiftDown?: boolean }
 export const NEUTRAL: DrivingAction = { throttle: 0, brake: 0, steering: 0 };
@@ -118,7 +119,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         featureEncoding: drivingFeatureEncoding(config),
         features: o.features.flatMap((name) => groups[name]),
         camera,
-        // Rotation preserves distance, so the same proximity reward applies in local axes.
+        // Rotation preserves the distance magnitude used to measure reference correction.
         normalizedPosition: position!, referenceDistance: Math.hypot(...prediction.referenceDelta),
         referenceError: [prediction.referenceDelta[0], prediction.referenceDelta[1]],
         speed: speed!, gear: gear - 1, rpm, controls: action,
@@ -128,7 +129,8 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
 }
 
 export interface DrivingReward {
-    timing: number; line: number; progress: number; instability: number; total: number;
+    timing: number; line: number; approach: number; progress: number; impact: number; total: number;
+    impactEstimate: DrivingImpact;
     speedComparison: ReferenceSpeedTargets & { measured: number; aggression: number;
         /** Speed error removed by the driver's speed change, against one fixed target, in km/h. */
         speedGoalProgress: number;
@@ -136,68 +138,10 @@ export interface DrivingReward {
         measuredAcceleration: number; referenceAcceleration: number; targetAcceleration: number };
 }
 
-/** Reward-only history; ordinary turns and isolated direction changes are free. */
-export class DrivingYawInstability {
-    constructor(private config = DEFAULT_DRIVING_CONFIG) {}
-    private direction = 0;
-    private directionAt = -Infinity;
-    private reversals: number[] = [];
-    private last?: DrivingObservation;
-
-    reset() {
-        this.direction = 0;
-        this.directionAt = -Infinity;
-        this.reversals = [];
-        this.last = undefined;
-    }
-
-    private observe(observation: DrivingObservation) {
-        const { capturedAt, yawRate } = observation;
-        this.reversals = this.reversals.filter((time) => capturedAt - time < this.config.reward.yawWindowMs);
-        if (capturedAt - this.directionAt > this.config.reward.yawWindowMs) this.direction = 0;
-        if (Math.abs(yawRate) <= this.config.reward.yawDeadband) return;
-        const direction = Math.sign(yawRate);
-        if (this.direction && direction !== this.direction) this.reversals.push(capturedAt);
-        this.direction = direction;
-        this.directionAt = capturedAt;
-    }
-
-    penalty(previous: DrivingObservation, current: DrivingObservation): number {
-        if (!this.last || this.last.capturedAt !== previous.capturedAt || this.last.session !== previous.session
-            || this.last.reference !== previous.reference || this.last.context.game !== previous.context.game) {
-            this.reset();
-            this.observe(previous);
-        }
-        this.observe(current);
-        this.last = current;
-        const excessReversals = Math.max(0, this.reversals.length - 1);
-        return excessReversals ? -this.config.reward.yawPenalty * (current.capturedAt - previous.capturedAt) / 1000 * excessReversals ** 2 : 0;
-    }
-}
-
-/** Smooth the estimated distance in source units, independently of capture frequency. */
-export class DrivingLineProximity {
-    constructor(private config = DEFAULT_DRIVING_CONFIG) {}
-    private smoothedDistance = 0;
-    private last?: DrivingObservation;
-
-    reset() { this.last = undefined; }
-
-    proximity(previous: DrivingObservation, current: DrivingObservation): number {
-        if (!this.last || this.last.capturedAt !== previous.capturedAt || this.last.session !== previous.session
-            || this.last.reference !== previous.reference || this.last.context.game !== previous.context.game) {
-            this.smoothedDistance = previous.referenceDistance;
-        }
-        const alpha = -Math.expm1(-(current.capturedAt - previous.capturedAt) / this.config.reward.lineSmoothingMs);
-        this.smoothedDistance += alpha * (current.referenceDistance - this.smoothedDistance);
-        this.last = current;
-        return 1 / (1 + (this.smoothedDistance / this.config.reward.lineDistanceTolerance) ** 2);
-    }
-}
+export const REFERENCE_LINE_TARGET_DISTANCE = 3;
 
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
-    yawInstability = new DrivingYawInstability(), config = DEFAULT_DRIVING_CONFIG,
-    lineProximity = new DrivingLineProximity(config)): DrivingReward {
+    config = DEFAULT_DRIVING_CONFIG): DrivingReward {
     const r = config.reward;
     const dt = (current.capturedAt - previous.capturedAt) / 1000;
     if (dt <= 0 || dt > config.runtime.maxTransitionSeconds || previous.session !== current.session) throw new Error('Training transition crossed a session boundary or data gap.');
@@ -211,7 +155,7 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     const proximity = Math.exp(-current.referenceDistance / r.proximityScale);
     const forwardProgress = current.speed > 0 && current.gear >= 0 ? clamp(positionChange, 0, r.progressLimit) : 0;
     const progressPerSecond = Math.abs(positionChange / measuredSeconds);
-    // Half strength at 0.01 lap/second; faster progress approaches a quarter of ideal line reward.
+    // Half strength at 0.01 lap/second; faster progress approaches 0.25 * lineWeight per lap.
     // Weight by signed distance so extra samples do not earn extra reward at the same rate.
     const signedProgress = positionChange < 0 ? clamp(positionChange, -r.progressLimit, 0) : forwardProgress;
     // No movement incurs a time-based penalty: -0.25 per second with default weights.
@@ -231,12 +175,22 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     const correction = clamp(speedGoalProgress / (3.6 * measuredSeconds * r.accelerationTolerance));
     const timing = forwardProgress > 0
         ? r.timingWeight * forwardProgress * proximity * correction : 0;
-    // Center the smooth gradient on the tolerance: close is positive, far is negative.
-    const lineFactor = 2 * lineProximity.proximity(previous, current) - 1;
-    const line = forwardProgress > 0 ? r.lineWeight * forwardProgress * lineFactor : 0;
-    const instability = yawInstability.penalty(previous, current);
-    return { timing, line, progress, instability,
+    // Staying at the target error earns reward even when the distance is unchanged.
+    const line = r.lineWeight * forwardProgress
+        * Math.exp(-Math.abs(current.referenceDistance - REFERENCE_LINE_TARGET_DISTANCE) / r.proximityScale);
+    // Compare adjacent frames, counting only the portion of the gap outside the target.
+    // Clipping both distances keeps entering and leaving the band symmetric.
+    const correctionDistance = Math.max(0, previous.referenceDistance - REFERENCE_LINE_TARGET_DISTANCE)
+        - Math.max(0, current.referenceDistance - REFERENCE_LINE_TARGET_DISTANCE);
+    const approach = current.speed > 0 && current.gear >= 0 && positionChange >= 0
+        ? r.lineWeight * clamp(correctionDistance / previous.reference.length, -r.progressLimit, r.progressLimit) : 0;
+    const impactSample = (observation: DrivingObservation): ImpactSample => ({ measuredAt: observation.measuredAt,
+        velocity: [observation.localVelocity[0], observation.localVelocity[observation.context.game === 'iracing' ? 2 : 1]],
+        steering: observation.controls.steering });
+    const impactEstimate = detectDrivingImpact(impactSample(previous), impactSample(current));
+    const impact = impactEstimate.detected ? -IMPACT_PENALTY_WEIGHT * impactEstimate.confidence * impactEstimate.severity : 0;
+    return { timing, line, approach, progress, impact, impactEstimate,
         speedComparison: { ...speeds, measured: current.speed, aggression: previous.aggression, speedGoalProgress,
             measuredAcceleration, referenceAcceleration, targetAcceleration },
-        total: clamp(timing + line + progress + instability, -r.totalLimit, r.totalLimit) };
+        total: clamp(timing + line + approach + progress + impact, -r.totalLimit, r.totalLimit) };
 }

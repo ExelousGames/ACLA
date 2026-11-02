@@ -1,4 +1,4 @@
-import { DrivingAction, DrivingLineProximity, DrivingObservation, DrivingReward, drivingReward, DrivingYawInstability,
+import { DrivingAction, DrivingObservation, DrivingReward, drivingReward,
     NEUTRAL, ObservationResult } from './driving-observation';
 import { DrivingPolicy, PlannedAction, PolicyDecision, ShiftAvailability } from './driving-policy';
 import { ControlSource, DrivingControlSelector, ManualControls } from './driving-control';
@@ -53,8 +53,6 @@ export class DrivingTrainingLoop {
     private lease?: ControlLease;
     private policy?: DrivingPolicy;
     private memory = new DrivingMemory();
-    private yawInstability = new DrivingYawInstability();
-    private lineProximity = new DrivingLineProximity();
     private planTraining = new DrivingPlanTraining();
     private modelTiming?: DrivingModelTimer;
 
@@ -100,8 +98,6 @@ export class DrivingTrainingLoop {
         this.discardPrevious();
         this.policy = policy;
         this.memory = new DrivingMemory(this.config);
-        this.yawInstability = new DrivingYawInstability(this.config);
-        this.lineProximity = new DrivingLineProximity(this.config);
         this.planTraining.reset();
         this.modelTiming = undefined;
         this.boundary = boundary;
@@ -129,8 +125,6 @@ export class DrivingTrainingLoop {
         this.discardPrevious();
         this.lease = undefined;
         this.memory.reset();
-        this.yawInstability.reset();
-        this.lineProximity.reset();
         this.planTraining.reset();
         this.policy = undefined;
         this.state = { ...this.state, mode: 'idle', status, action: NEUTRAL, source: null, plan: null };
@@ -163,8 +157,6 @@ export class DrivingTrainingLoop {
         // No reward, held paddle or demonstration may cross an ownership boundary.
         this.discardPrevious();
         this.memory.reset();
-        this.yawInstability.reset();
-        this.lineProximity.reset();
         this.planTraining.reset();
         this.controlChangedAt = this.now();
         this.shiftReleaseAt = 0;
@@ -214,8 +206,6 @@ export class DrivingTrainingLoop {
                 this.modelTiming?.finish(false);
                 this.discardPrevious();
                 this.memory.reset();
-                this.yawInstability.reset();
-                this.lineProximity.reset();
                 this.planTraining.reset();
                 this.controlChangedAt = this.now();
                 this.state = { ...this.state, reward: null, plan: null };
@@ -345,13 +335,11 @@ export class DrivingTrainingLoop {
             // Gaps between usable frames are recoverable after input validation.
             // The caller starts the next transition from this fresh observation.
             if (elapsedSeconds > this.config.runtime.maxTransitionSeconds) {
-                this.yawInstability.reset();
-                this.lineProximity.reset();
                 this.planTraining.reset();
                 this.state = { ...this.state, reward: null };
                 return;
             }
-            const reward = drivingReward(previous.observation, observation, this.yawInstability, this.config, this.lineProximity);
+            const reward = drivingReward(previous.observation, observation, this.config);
             if (this.state.mode === 'training') {
                 timing.start('learning');
                 await policy.trainBatchAsync(async () => {

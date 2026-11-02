@@ -1,7 +1,7 @@
 import { DEFAULT_CAMERA, validCalibration } from './camera-projection';
 import { VISION_CONFIDENCE } from './semantic-scene';
 import type { CameraCalibration, CameraParameters, DetectionTask } from './track-vision-types';
-import { DEPTH_INPUT_SIZE, MODEL_INPUT_RESOLUTIONS, VISION_INPUT_SIZE } from './vision-config';
+import { DEPTH_INPUT_SIZE, MODEL_INPUT_RESOLUTIONS, PositionModelVersion, VISION_INPUT_SIZE } from './vision-config';
 
 export const TRACK_VISION_SETTINGS_KEY = 'acla.track-vision-settings';
 
@@ -9,6 +9,7 @@ export interface TrackVisionSettings {
     inputSizes: Record<DetectionTask, number>;
     segmentEnabled: boolean;
     depthEnabled: boolean;
+    positionModelVersion: PositionModelVersion;
     confidence: number;
     filterConfidence: number;
     displayLabel: string;
@@ -21,6 +22,7 @@ const defaults: TrackVisionSettings = {
     inputSizes: { segment: VISION_INPUT_SIZE, depth: DEPTH_INPUT_SIZE },
     segmentEnabled: true,
     depthEnabled: true,
+    positionModelVersion: 'v1',
     confidence: 0.5,
     filterConfidence: VISION_CONFIDENCE,
     displayLabel: '',
@@ -37,6 +39,7 @@ export function readTrackVisionSettings(): TrackVisionSettings {
         return {
             segmentEnabled: saved.segmentEnabled !== false,
             depthEnabled: saved.depthEnabled !== false,
+            positionModelVersion: saved.positionModelVersion === 'v2' ? 'v2' : defaults.positionModelVersion,
             inputSizes: {
                 segment: MODEL_INPUT_RESOLUTIONS.segment.some(({ size }) => size === saved.inputSizes?.segment)
                     ? saved.inputSizes!.segment : defaults.inputSizes.segment,

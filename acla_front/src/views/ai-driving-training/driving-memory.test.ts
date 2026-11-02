@@ -71,9 +71,9 @@ it('retains full-resolution camera frames aligned to history and owns their pixe
     const second = memory.encode({ ...observation, capturedAt: 1200,
         camera: { ...observation.camera, rgb: observation.camera.rgb.slice() } });
     expect(first.cameras).toHaveLength(18);
-    expect(first.cameras[17]!.width).toBe(768);
-    expect(first.cameras[17]!.height).toBe(768);
-    expect(first.cameras[17]!.rgb.length).toBe(768 * 768 * 3);
+    expect(first.cameras[17]!.width).toBe(384);
+    expect(first.cameras[17]!.height).toBe(216);
+    expect(first.cameras[17]!.rgb.length).toBe(384 * 216 * 3);
     expect(first.cameras[17]!.rgb.every((value) => value === 255)).toBe(true);
     expect(second.cameras[0]).toBe(first.cameras[17]);
     expect(second.cameras[17]!.rgb.every((value) => value === 0)).toBe(true);

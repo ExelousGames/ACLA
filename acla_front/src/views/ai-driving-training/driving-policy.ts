@@ -1,6 +1,6 @@
 import { DrivingAction, DrivingObservation } from './driving-observation';
 import { DrivingPolicyInput } from './driving-memory';
-import { cloneConfig, DEFAULT_DRIVING_CONFIG, DrivingModelConfig, drivingCameraLayers, drivingFeatureEncoding, drivingObservationInputs, drivingPolicyInputs, validateDrivingConfig } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingFeatureEncoding, drivingObservationInputs, drivingPolicyInputs, validateDrivingConfig } from './driving-model-config';
 import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
 
 /** Categorical order: hold gear, shift up, shift down. */
@@ -33,6 +33,7 @@ export interface PolicyModelState {
     inputs: number;
     steps: number;
     cameraWeights: number[][][];
+    cameraProjectionWeights: number[][];
     lstmWeights: number[][];
     outputWeights: number[][];
 }
@@ -61,7 +62,7 @@ export function readTrainingDocument(value: unknown): DrivingTrainingDocument {
 
 /** Gaussian axes, categorical shifting and a TD(0) critic share a CNN and temporal LSTM. */
 export class DrivingPolicy {
-    private initialWeights?: Pick<PolicyModelState, 'cameraWeights' | 'lstmWeights' | 'outputWeights'>;
+    private initialWeights?: Pick<PolicyModelState, 'cameraWeights' | 'cameraProjectionWeights' | 'lstmWeights' | 'outputWeights'>;
     private gpu?: DrivingGpuModel;
     private gpuInitialization?: Promise<void>;
     private gpuBatch?: Promise<void>;
@@ -88,6 +89,10 @@ export class DrivingPolicy {
         const cameraWeights = drivingCameraLayers(configuration).map((layer) => Array.from({ length: layer.channels }, () =>
             Array.from({ length: layer.columns }, (_, i) => i === layer.columns - 1 ? 0
                 : Math.max(-limit, Math.min(limit, (random() * 2 - 1) * Math.sqrt(6 / (layer.columns - 1)))))));
+        const pooled = drivingCameraPooledInputs(configuration), projected = drivingCameraInputs(configuration);
+        const cameraProjectionWeights = Array.from({ length: projected }, () =>
+            Array.from({ length: pooled + 1 }, (_, i) => i === pooled ? 0
+                : Math.max(-limit, Math.min(limit, (random() * 2 - 1) * Math.sqrt(6 / (pooled + projected))))));
         const lstmWeights = Array.from({ length: 4 * units }, (_, row) =>
             Array.from({ length: inputs + units + 1 }, (_, column) => {
                 const value = column === inputs + units ? Number(row >= units && row < 2 * units)
@@ -97,7 +102,7 @@ export class DrivingPolicy {
         const outputWeights = Array.from({ length: this.criticOutput + 1 }, (_, i) => Array.from({ length: this.configuration.network.hiddenUnits + 1 },
             (_, j) => j === this.configuration.network.hiddenUnits ? (i === this.criticOutput ? 0 : this.configuration.network.initialActionBias[i % this.actionOutputs])
                 : (random() * 2 - 1) * this.configuration.network.initialOutputWeightScale));
-        this.initialWeights = { cameraWeights, lstmWeights, outputWeights };
+        this.initialWeights = { cameraWeights, cameraProjectionWeights, lstmWeights, outputWeights };
     }
 
     matches(observation: DrivingObservation): boolean {
@@ -231,6 +236,7 @@ export class DrivingPolicy {
         return { ...emptyTrainingDocument(this.configuration), model: {
             context: { ...this.context }, inputs: this.inputs, steps: this.steps,
             cameraWeights: this.initialWeights.cameraWeights.map((rows) => rows.map((row) => row.slice())),
+            cameraProjectionWeights: this.initialWeights.cameraProjectionWeights.map((row) => row.slice()),
             lstmWeights: this.initialWeights.lstmWeights.map((row) => row.slice()), outputWeights: this.initialWeights.outputWeights.map((row) => row.slice()) } };
     }
 
@@ -253,7 +259,7 @@ export class DrivingPolicy {
         const config = document.configuration, data = document.model;
         const matrix = (rows: unknown, height: number, width: number) => Array.isArray(rows) && rows.length === height
             && rows.every((row) => Array.isArray(row) && row.length === width && row.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= config.learning.weightLimit));
-        if (!data || Object.keys(data).some((key) => !['context', 'inputs', 'steps', 'cameraWeights', 'lstmWeights', 'outputWeights'].includes(key))
+        if (!data || Object.keys(data).some((key) => !['context', 'inputs', 'steps', 'cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights'].includes(key))
             || !Number.isInteger(data.inputs) || data.inputs < 1
             || !Number.isSafeInteger(data.steps) || data.steps < 0
             || !data.context || !['game', 'car', 'map'].every((key) => typeof (data.context as any)[key] === 'string' && (data.context as any)[key].length > 0)
@@ -261,11 +267,13 @@ export class DrivingPolicy {
             || data.inputs !== drivingPolicyInputs(config)
             || !Array.isArray(data.cameraWeights) || data.cameraWeights.length !== config.network.cameraLayers.length
             || drivingCameraLayers(config).some((layer, i) => !matrix(data.cameraWeights[i], layer.channels, layer.columns))
+            || !matrix(data.cameraProjectionWeights, drivingCameraInputs(config), drivingCameraPooledInputs(config) + 1)
             || !matrix(data.lstmWeights, 4 * config.network.hiddenUnits, data.inputs + config.network.hiddenUnits + 1)
             || !matrix(data.outputWeights, config.actions.planTimesSeconds.length * config.actions.outputs.length + 1, config.network.hiddenUnits + 1)) return invalid();
         const policy = new DrivingPolicy(data.context, drivingObservationInputs(config), Math.random, config);
         policy.initialWeights = {
             cameraWeights: data.cameraWeights.map((rows) => rows.map((row) => row.slice())),
+            cameraProjectionWeights: data.cameraProjectionWeights.map((row) => row.slice()),
             lstmWeights: data.lstmWeights.map((row) => row.slice()),
             outputWeights: data.outputWeights.map((row) => row.slice()),
         };
