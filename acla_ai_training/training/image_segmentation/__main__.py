@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     position.add_argument("--val-fraction", type=float, default=0.2, help="Target validation share of frames per game/map (default: 0.2), using whole sessions; at least two sessions per map are required.")
     position.add_argument("--seed", type=int, default=42, help="Random session split, frame shuffle, and training seed (default: 42).")
     position.add_argument("--density-position-radius", type=float,
-                          help="Enable density filtering: remove training endpoints within this driver world-XYZ radius (source units) and the orientation threshold, per game/map. Must be positive; disabled by default. Original temporal history and validation are retained.")
+                          help="Enable density filtering across all sessions before splitting for validation: remove endpoints within this driver world-XYZ radius (source units) and the orientation threshold, per game/map. Must be positive; disabled by default. Original temporal history is retained in both splits; at least two sessions per map must retain endpoints.")
     position.add_argument("--density-orientation-deg", type=float, default=5.0,
                           help="Maximum wrapped difference in each heading/pitch/roll angle for density filtering (0 < value <= 180, default: 5 degrees). Used with --density-position-radius.")
     position_upload = position.add_mutually_exclusive_group()

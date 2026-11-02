@@ -1,4 +1,4 @@
-"""Select training endpoints by driver pose while retaining sparse coverage."""
+"""Select endpoints across sessions by driver pose while retaining sparse coverage."""
 
 from __future__ import annotations
 

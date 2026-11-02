@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from training.image_segmentation import position_training
+from training.image_segmentation.position_density import select_position_endpoints
 from training.image_segmentation.position_model import PositionModel
 from training.image_segmentation.position_model_v2 import PositionModelV2
 
@@ -70,38 +71,41 @@ def test_training_retains_all_frames_history_and_correct_metric_denominators(tmp
     finally:
         torch.set_num_threads(previous_threads)
     train, val = [loader.dataset for loader in loaders]
-    assert len(train) == (5 if density_radius is None else 2)
-    assert len(val) == 5
-    original = train if density_radius is None else train.dataset
-    selected = list(range(len(train))) if density_radius is None else train.indices
-    assert {row["session_id"] for row in original.records}.isdisjoint(row["session_id"] for row in val.records)
-    assert {row["image"] for row in original.records + val.records} == {
-        row["image"] for rows in sessions.values() for row in rows
-    }
-    for index, endpoint in enumerate(selected):
-        current = original.records[endpoint]
-        number = int(current["image"].stem.split("_")[-1])
-        if sequence_length > 1:
-            history = list(range(max(0, number - 3), number + 1))
-            assert train[index]["references"][:, 0, 0].tolist() == [history[0]] * (4 - len(history)) + history
+    assert len(train) == len(val) == (5 if density_radius is None else 1)
+    originals = [dataset if density_radius is None else dataset.dataset for dataset in (train, val)]
+    assert {row["session_id"] for row in originals[0].records}.isdisjoint(
+        row["session_id"] for row in originals[1].records
+    )
+    records = [row for rows in sessions.values() for row in rows]
+    assert {row["image"] for original in originals for row in original.records} == {row["image"] for row in records}
     split = json.loads((output / "split.json").read_text())
-    assert split["train"] == [str(original.records[index]["image"]) for index in selected]
-    assert set(split["val"]) == {str(row["image"]) for row in val.records}
+    for name, dataset, original in zip(("train", "val"), (train, val), originals):
+        selected = list(range(len(dataset))) if density_radius is None else dataset.indices
+        assert original.augment == (name == "train")
+        assert split[name] == [str(original.records[index]["image"]) for index in selected]
+        for index, endpoint in enumerate(selected):
+            current = original.records[endpoint]
+            number = int(current["image"].stem.split("_")[-1])
+            if sequence_length > 1:
+                history = list(range(max(0, number - 3), number + 1))
+                assert dataset[index]["references"][:, 0, 0].tolist() == [history[0]] * (4 - len(history)) + history
+        if density_radius is not None and sequence_length > 1:
+            assert split[f"{name}_history"] == [str(row["image"]) for row in original.records]
+            assert any(set(original.windows[index]) - set(selected) for index in selected)
+        else:
+            assert f"{name}_history" not in split
+    selected = select_position_endpoints(records, position_radius=density_radius)
+    assert set(split["train"]).isdisjoint(split["val"])
+    assert set(split["train"] + split["val"]) == {str(records[index]["image"]) for index in selected}
     if density_radius is None:
         assert "density_sampling" not in split
-        assert "train_history" not in split
     else:
         assert split["density_sampling"] == {
             "position_radius": density_radius, "orientation_degrees": 5.0,
-            "candidate_count": 5, "selected_count": 2,
+            "candidate_count": 10, "selected_count": 2,
         }
-        if sequence_length > 1:
-            assert split["train_history"] == [str(row["image"]) for row in original.records]
-            assert any(set(original.windows[index]) - set(selected) for index in selected)
-        else:
-            assert "train_history" not in split
     metrics = json.loads((output / "results.json").read_text())[0]
     assert metrics["train_loss"] == pytest.approx(sum(loss for loss, _ in totals) / len(train))
     assert metrics["train_mae"] == pytest.approx(sum(error for _, error in totals) / (len(train) * 3))
-    assert metrics["val_by_map"][0]["count"] == 5
+    assert metrics["val_by_map"][0]["count"] == len(val)
     torch.testing.assert_close(PositionModel.load(checkpoint).position_mean, torch.tensor([2., 0., 0.]))

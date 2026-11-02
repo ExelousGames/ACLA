@@ -42,7 +42,10 @@ def test_preparation_runs_without_the_service_package(tmp_path):
             sys.meta_path.insert(0, BlockServiceImports())
             sys.path.insert(0, sys.argv[1])
 
-            from scripts.prepare_position_dataset import main
+            import asyncio
+            import json
+
+            from scripts.prepare_position_dataset import prepare_sessions
             from training.image_segmentation.position_data import PositionCurve
             from training.image_segmentation.position_preparation import prepare_position_dataset
             from training.top_laps.reference import TopLapEntry, TopLapStore, deserialize_top_lap_store
@@ -57,7 +60,8 @@ def test_preparation_runs_without_the_service_package(tmp_path):
             restored = deserialize_top_lap_store(serialize_top_lap_store(store))
             curve = PositionCurve.from_top_lap(restored.entries[("acc", "track", "car", 2)])
             assert curve.at(0.5).tolist() == [2, 3, 4]
-            assert main(["--sessions", sys.argv[2]]) == 0
+            result = asyncio.run(prepare_sessions(None, [sys.argv[2]]))
+            print(json.dumps(result))
             assert not any(name == "app" or name.startswith("app.") for name in sys.modules)
         """), str(training_root), str(tmp_path)],
         cwd=tmp_path, capture_output=True, text=True, timeout=60,
@@ -294,15 +298,11 @@ def test_driver_xyz_and_other_telemetry_never_become_training_inputs(dataset):
     np.testing.assert_allclose(after["target"], [[-2, 0, 6], [0, 0, 0]])
 
 
-def test_cli_skips_existing_ids_and_custom_frame_folders(dataset, monkeypatch, capsys):
-    from training.integrations import backend as client
-
-    monkeypatch.setattr(client, "backend_service", dataset.backend)
+def test_preparation_skips_existing_ids_and_custom_frame_folders(dataset, monkeypatch):
     monkeypatch.setattr(script, "SESSION_DOWNLOAD_DIR", dataset.folders[0].parent)
-    assert script.main([
-        "--sessions", dataset.folders[0].name.upper(), str(dataset.folders[1] / "frames"),
-    ]) == 0
-    result = json.loads(capsys.readouterr().out)
+    result = asyncio.run(script.prepare_sessions(
+        dataset.backend, [dataset.folders[0].name.upper(), str(dataset.folders[1] / "frames")],
+    ))
     assert result["frames"] == 0
     assert result["skipped_sessions"] == [dataset.folders[0].name, str(dataset.folders[1] / "frames")]
     dataset.backend.call_backend_function.assert_not_awaited()
@@ -637,7 +637,7 @@ def downloadable_dataset(dataset, monkeypatch, tmp_path):
     dataset.backend.iter_session_video = video
     dataset.requests = requests
     dataset.downloads = tmp_path / "session_downloads" / "session_downloaded_by_prepare_position_dataset"
-    dataset.args = ["--sessions", dataset.folders[0].name, dataset.folders[1].name]
+    dataset.selected_sessions = [folder.name for folder in dataset.folders]
     monkeypatch.setattr(client, "backend_service", dataset.backend)
     monkeypatch.setattr(script, "SESSION_DOWNLOAD_DIR", dataset.downloads)
     return dataset
@@ -647,8 +647,8 @@ def downloadable_dataset(dataset, monkeypatch, tmp_path):
     (0, [0] * 60), (99, [44, 7]), (-1, [-1] * 60), (0, None),
 ])
 @pytest.mark.parametrize("include_valid", [False, True])
-def test_cli_skips_sessions_with_unidentifiable_players_and_explains_why(
-    downloadable_dataset, capsys, caplog, player, ids, include_valid,
+def test_preparation_skips_sessions_with_unidentifiable_players_and_explains_why(
+    downloadable_dataset, caplog, player, ids, include_valid,
 ):
     data = downloadable_dataset
     rejected = data.folders[:1] if include_valid else data.folders
@@ -659,11 +659,7 @@ def test_cli_skips_sessions_with_unidentifiable_players_and_explains_why(
             row.update(Graphics_player_car_id=player, Graphics_car_id=ids)
         write_json(path, rows)
 
-    assert script.main(data.args) == 0
-
-    captured = capsys.readouterr()
-    result = json.loads(captured.out)
-    assert "Preparation failed" not in captured.err
+    result = asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions))
     assert result["skipped_sessions"] == [folder.name for folder in rejected]
     assert result["frames"] == (3 if include_valid else 0)
     assert [session["id"] for session in result["sessions"]] == ([data.folders[1].name] if include_valid else [])
@@ -695,10 +691,12 @@ def test_cli_skips_sessions_with_unidentifiable_players_and_explains_why(
         assert not any(endpoint.startswith("circuit-map/") for endpoint in data.requests)
 
 
-def test_one_command_downloads_extracts_and_prepares_before_annotation(downloadable_dataset, capsys):
+def test_preparation_downloads_extracts_and_prepares_before_annotation(downloadable_dataset):
     data = downloadable_dataset
-    assert script.main([*data.args, "--fps", "2", "--video-offset", f"{data.folders[0].name}=0.25"]) == 0
-    result = json.loads(capsys.readouterr().out)
+    result = asyncio.run(script.prepare_sessions(
+        data.backend, data.selected_sessions, frame_interval=(0.5, 0.5),
+        video_offsets=[(data.folders[0].name, 0.25)],
+    ))
     assert result["frames"] == 3
     assert not data.output.exists()
     assert not list(data.downloads.rglob("positions.json"))
@@ -749,7 +747,7 @@ def test_one_command_downloads_extracts_and_prepares_before_annotation(downloada
             np.testing.assert_array_equal(row["target"], original["target"])
 
 
-def test_cli_saves_aligned_heading_pitch_roll_for_offline_training(downloadable_dataset, capsys):
+def test_preparation_saves_aligned_heading_pitch_roll_for_offline_training(downloadable_dataset):
     data = downloadable_dataset
     orientations = [[0.4 + index, -0.2 - index / 10, 0.1 + index / 100] for index in range(3)]
     for folder in data.folders:
@@ -759,8 +757,11 @@ def test_cli_saves_aligned_heading_pitch_roll_for_offline_training(downloadable_
             row.update(zip(("Physics_heading", "Physics_pitch", "Physics_roll"), orientation))
         write_json(path, rows)
 
-    assert script.main([*data.args, "--fps", "2", "--video-offset", f"{data.folders[0].name}=0.25"]) == 0
-    assert json.loads(capsys.readouterr().out)["frames"] == 3
+    result = asyncio.run(script.prepare_sessions(
+        data.backend, data.selected_sessions, frame_interval=(0.5, 0.5),
+        video_offsets=[(data.folders[0].name, 0.25)],
+    ))
+    assert result["frames"] == 3
     # Training must use the saved angles without access to the source telemetry.
     for folder in data.downloads.iterdir():
         (folder / "telemetry.json").unlink()
@@ -773,19 +774,19 @@ def test_cli_saves_aligned_heading_pitch_roll_for_offline_training(downloadable_
             np.testing.assert_allclose(frame["orientation"], orientations[index])
 
 
-def test_copying_labelme_samples_preserves_position_training_data(downloadable_dataset, capsys):
+def test_copying_labelme_samples_preserves_position_training_data(downloadable_dataset, monkeypatch, capsys):
     data = downloadable_dataset
-    assert script.main(data.args) == 0
-    capsys.readouterr()
+    asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions))
     before = load_position_manifest(data.downloads)
     session_id = data.folders[0].name
     image = before[session_id][0]["image"]
     write_json(image.with_suffix(".json"), {"imagePath": image.name, "shapes": []})
     data.requests.clear()
 
-    assert script.main(["--move-annotated"]) == 0
+    monkeypatch.setattr("builtins.input", lambda _: "2")
+    assert script.main([]) == 0
 
-    assert json.loads(capsys.readouterr().out)["frames"] == 1
+    assert '"frames": 1' in capsys.readouterr().out
     assert not data.requests
     after = load_position_manifest(data.downloads)
     assert {key: len(frames) for key, frames in after.items()} == {key: len(frames) for key, frames in before.items()}
@@ -799,8 +800,8 @@ def test_copying_labelme_samples_preserves_position_training_data(downloadable_d
 
 
 @pytest.mark.parametrize("include_valid", [False, True])
-def test_cli_reports_dependency_skips_with_existing_sessions(
-    downloadable_dataset, missing_dependency, include_valid, capsys,
+def test_preparation_reports_dependency_skips_with_existing_sessions(
+    downloadable_dataset, missing_dependency, include_valid,
 ):
     data = downloadable_dataset
     existing = data.downloads / ("c" * 24)
@@ -809,9 +810,7 @@ def test_cli_reports_dependency_skips_with_existing_sessions(
     if include_valid:
         selected.append(data.folders[1].name)
 
-    assert script.main(["--sessions", *selected]) == 0
-
-    result = json.loads(capsys.readouterr().out)
+    result = asyncio.run(script.prepare_sessions(data.backend, selected))
     assert result["skipped_sessions"] == [existing.name, data.folders[0].name]
     assert result["frames"] == (3 if include_valid else 0)
     assert [session["id"] for session in result["sessions"]] == ([data.folders[1].name] if include_valid else [])
@@ -854,14 +853,12 @@ def test_existing_session_folder_skips_all_work_without_a_manifest(tmp_path, mon
     assert output.exists() == output_exists
 
 
-def test_mixed_selection_only_downloads_and_processes_new_sessions(downloadable_dataset, capsys):
+def test_mixed_selection_only_downloads_and_processes_new_sessions(downloadable_dataset):
     data = downloadable_dataset
     existing = data.downloads / data.folders[0].name
     existing.mkdir(parents=True)
 
-    assert script.main(data.args) == 0
-
-    result = json.loads(capsys.readouterr().out)
+    result = asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions))
     assert result["frames"] == 3
     assert [session["id"] for session in result["sessions"]] == [data.folders[1].name]
     assert result["skipped_sessions"] == [data.folders[0].name]
@@ -871,18 +868,16 @@ def test_mixed_selection_only_downloads_and_processes_new_sessions(downloadable_
     assert list(existing.iterdir()) == []
 
 
-def test_rerun_preserves_images_annotations_and_output_without_processing(downloadable_dataset, capsys):
+def test_rerun_preserves_images_annotations_and_output_without_processing(downloadable_dataset):
     data = downloadable_dataset
-    assert script.main(data.args) == 0
-    capsys.readouterr()
+    asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions))
     records = load_position_manifest(data.downloads)
     annotation = records["a" * 24][0]["image"].with_suffix(".json")
     write_json(annotation, {"imagePath": records["a" * 24][0]["image"].name, "shapes": []})
     before = {path: path.read_bytes() for path in data.downloads.rglob("*") if path.is_file()}
     data.requests.clear()
     data.backend.getCompleteActiveModelData.reset_mock()
-    assert script.main(data.args) == 0
-    result = json.loads(capsys.readouterr().out)
+    result = asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions))
     assert result["frames"] == 0
     assert result["skipped_sessions"] == [folder.name for folder in data.folders]
     assert not data.requests
@@ -891,7 +886,7 @@ def test_rerun_preserves_images_annotations_and_output_without_processing(downlo
     assert {path: path.read_bytes() for path in data.downloads.rglob("*") if path.is_file()} == before
 
 
-def test_preparation_preserves_existing_index_directory(downloadable_dataset, capsys):
+def test_preparation_preserves_existing_index_directory(downloadable_dataset):
     data = downloadable_dataset
     data.output.mkdir(parents=True)
     marker = data.output / "notes.txt"
@@ -900,28 +895,23 @@ def test_preparation_preserves_existing_index_directory(downloadable_dataset, ca
     write_json(index, {"sessions": []})
     before = index.read_bytes()
 
-    assert script.main(data.args) == 0
-
-    result = json.loads(capsys.readouterr().out)
+    result = asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions))
     assert result["frames"] == 6
     assert set(load_position_manifest(data.downloads)) == {folder.name for folder in data.folders}
     assert marker.read_text() == "Existing notes"
     assert index.read_bytes() == before
 
 
-def test_later_run_keeps_all_sessions_discoverable_without_an_index(downloadable_dataset, capsys):
+def test_later_run_keeps_all_sessions_discoverable_without_an_index(downloadable_dataset):
     data = downloadable_dataset
     first, second = [folder.name for folder in data.folders]
-    assert script.main(["--sessions", first]) == 0
-    capsys.readouterr()
+    asyncio.run(script.prepare_sessions(data.backend, [first]))
     records = load_position_manifest(data.downloads)
     image = records[first][0]["image"]
     write_json(image.with_suffix(".json"), {"imagePath": image.name, "shapes": []})
     before = {path: path.read_bytes() for path in (data.downloads / first).rglob("*") if path.is_file()}
 
-    assert script.main(data.args) == 0
-
-    result = json.loads(capsys.readouterr().out)
+    result = asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions))
     assert result["frames"] == 3
     assert result["skipped_sessions"] == [first]
     assert not data.output.exists()
@@ -932,78 +922,113 @@ def test_later_run_keeps_all_sessions_discoverable_without_an_index(downloadable
 
 
 @pytest.mark.parametrize("options", [
-    ["--fps", "0"], ["--fps", "nan"], ["--max-delta-ms", "-1"], ["--max-delta-ms", "inf"],
-    ["--video-offset", f"{'c' * 24}=0"],
+    {"frame_interval": (0, 1)}, {"frame_interval": (float("nan"), 1)}, {"frame_interval": (2, 1)},
+    {"max_delta_ms": -1}, {"max_delta_ms": float("inf")}, {"video_offsets": [("c" * 24, 0)]},
 ])
-def test_invalid_cli_options_fail_before_download(downloadable_dataset, options, capsys):
+def test_invalid_options_fail_before_download(downloadable_dataset, options):
     data = downloadable_dataset
-    assert script.main([*data.args, *options]) == 1
-    assert "Preparation failed" in capsys.readouterr().err
+    with pytest.raises(ValueError):
+        asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions, **options))
     assert not data.requests
     assert not data.downloads.exists()
     assert not data.output.exists()
 
 
-@pytest.mark.parametrize("options", [["--fps", "2"], ["--max-delta-ms", "200"],
-                                        ["--video-offset", f"{'a' * 24}=0.25"]])
-def test_existing_sessions_are_skipped_even_with_new_alignment_options(dataset, monkeypatch, options, capsys):
+@pytest.mark.parametrize("options", [
+    {"frame_interval": (0.5, 0.5)}, {"max_delta_ms": 200}, {"video_offsets": [("a" * 24, 0.25)]},
+])
+def test_existing_sessions_are_skipped_even_with_new_alignment_options(dataset, monkeypatch, options):
     monkeypatch.setattr(script, "SESSION_DOWNLOAD_DIR", dataset.folders[0].parent)
-    assert script.main(["--sessions", dataset.folders[0].name, dataset.folders[1].name, *options]) == 0
-    assert json.loads(capsys.readouterr().out)["skipped_sessions"] == [folder.name for folder in dataset.folders]
+    result = asyncio.run(script.prepare_sessions(dataset.backend, [folder.name for folder in dataset.folders], **options))
+    assert result["skipped_sessions"] == [folder.name for folder in dataset.folders]
     assert not dataset.output.exists()
 
 
-def test_existing_sessions_are_skipped_without_validating_frames(dataset, capsys):
+def test_existing_sessions_are_skipped_without_validating_frames(dataset):
     manifest_path = dataset.folders[0] / "frames/manifest.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["session"]["sessionId"] = "c" * 24
     write_json(manifest_path, manifest)
-    assert script.main(["--sessions", str(dataset.folders[0]), str(dataset.folders[1])]) == 0
-    assert json.loads(capsys.readouterr().out)["frames"] == 0
+    result = asyncio.run(script.prepare_sessions(dataset.backend, [str(folder) for folder in dataset.folders]))
+    assert result["frames"] == 0
     assert not dataset.output.exists()
 
 
-def test_duplicate_selection_fails_before_download(downloadable_dataset, capsys):
+def test_duplicate_selection_fails_before_download(downloadable_dataset):
     data = downloadable_dataset
-    assert script.main(["--sessions", data.folders[0].name, data.folders[0].name.upper()]) == 1
-    assert "must appear once" in capsys.readouterr().err
+    with pytest.raises(ValueError, match="must appear once"):
+        asyncio.run(script.prepare_sessions(data.backend, [data.folders[0].name, data.folders[0].name.upper()]))
     assert not data.requests
 
 
-def test_completed_downloads_are_skipped_on_retry_after_failure(downloadable_dataset, capsys):
+def test_completed_downloads_are_skipped_on_retry_after_failure(downloadable_dataset):
     data = downloadable_dataset
     data.backend.getCompleteActiveModelData.side_effect = RuntimeError("Reference model missing")
-    assert script.main(data.args) == 1
-    assert "Reference model missing" in capsys.readouterr().err
+    with pytest.raises(RuntimeError, match="Reference model missing"):
+        asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions))
     assert not data.output.exists()
     assert len(list(data.downloads.rglob("*.jpg"))) == 6
     data.requests.clear()
     data.backend.getCompleteActiveModelData.reset_mock()
     data.backend.getCompleteActiveModelData.side_effect = None
-    assert script.main(data.args) == 0
-    assert json.loads(capsys.readouterr().out)["frames"] == 0
+    result = asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions))
+    assert result["frames"] == 0
     assert not data.requests
     data.backend.getCompleteActiveModelData.assert_not_awaited()
     assert not data.output.exists()
 
 
 @pytest.mark.parametrize("status", [403, 404, 500])
-def test_download_failure_stops_before_extraction_or_references(downloadable_dataset, capsys, status):
+def test_download_failure_stops_before_extraction_or_references(downloadable_dataset, status):
     data = downloadable_dataset
     data.backend.call_backend_function.side_effect = None
     data.backend.call_backend_function.return_value = {"error": f"Rejected {status}"}
-    assert script.main(data.args) == 1
-    assert f"Rejected {status}" in capsys.readouterr().err
+    with pytest.raises(RuntimeError, match=f"Rejected {status}"):
+        asyncio.run(script.prepare_sessions(data.backend, data.selected_sessions))
     data.backend.getCompleteActiveModelData.assert_not_awaited()
     assert not data.output.exists()
     assert not data.downloads.exists()
 
 
-@pytest.mark.parametrize("options", [["--fps", "2"], ["--sessions"]])
-def test_cli_requires_sessions(options):
-    with pytest.raises(SystemExit) as error:
-        script.main(options)
-    assert error.value.code == 2
+@pytest.mark.parametrize("value, expected", [
+    ("", None), ("  ", None), ("1", (1.0, 1.0)), ("0.5", (0.5, 0.5)),
+    (" 0.25 - 1.5 ", (0.25, 1.5)), (".25-.5", (0.25, 0.5)), ("1 - 1", (1.0, 1.0)),
+    ("1e-3", (0.001, 0.001)), ("1e-3 - 2e-3", (0.001, 0.002)), ("1.", (1.0, 1.0)),
+])
+def test_frame_interval_prompt_accepts_seconds_or_range(monkeypatch, value, expected):
+    monkeypatch.setattr("builtins.input", lambda _: value)
+    assert script._prompt_frame_interval() == expected
+
+
+@pytest.mark.parametrize("value", [
+    "0", "-1", "nan", "inf", "1e999", "2 - 1", "0 - 1", "-1 - 2", "1 - -2",
+    "1 - nan", "1 - inf", "1 - 1e999", "1 -", "1 - 2 - 3", "abc", "1,2",
+])
+def test_frame_interval_prompt_retries_invalid_input(monkeypatch, capsys, value):
+    answers = iter([value, "0.25 - 0.5"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    assert script._prompt_frame_interval() == (0.25, 0.5)
+    assert "Enter a positive, finite number or range" in capsys.readouterr().out
+
+
+def test_guided_preparation_uses_random_range_from_step_two(downloadable_dataset, monkeypatch, capsys):
+    data = downloadable_dataset
+    answers = iter(["1", "7", "0.25 - 0.5", "", "", "1"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    uniform = Mock(side_effect=[0.25, 0.5, 0.5, 0.25])
+    monkeypatch.setattr(script.random, "uniform", uniform)
+
+    assert script.main([]) == 0
+
+    output = capsys.readouterr().out
+    assert "Step 2: Frame sampling" in output
+    assert "Frame interval: random 0.25 - 0.5 seconds" in output
+    records = load_position_manifest(data.downloads)
+    for session_id, indices in zip(data.selected_sessions, ([0, 1], [0, 2])):
+        assert [row["image"].stem for row in records[session_id]] == [f"frame_{index:06d}" for index in indices]
+        manifest = json.loads((data.downloads / session_id / "frames/manifest.json").read_text())
+        assert manifest["frame_interval_seconds"] == [0.25, 0.5]
+    assert uniform.call_count == 4
 
 
 def test_guided_preparation_skips_existing_local_sessions(dataset, monkeypatch, capsys):
@@ -1036,7 +1061,7 @@ def test_guided_preparation_reprompts_invalid_answers_before_downloading(downloa
     answers = iter([
         "1",  # Download sessions from the main menu.
         "bad", "6", "", "99", "c" * 24, train.upper(), train, val, "",  # Invalid and duplicate IDs.
-        "0", "nan", "2", "-1", "inf", "100",  # Sampling and tolerance.
+        "0", "nan", "1 - 0.5", "0.5", "-1", "inf", "100",  # Interval and tolerance.
         "invalid", f"{'c' * 24}=0", f"{train}=0.25", f"{train}=0.5", "",
         "",  # Start.
     ])

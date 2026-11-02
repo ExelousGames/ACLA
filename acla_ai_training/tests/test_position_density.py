@@ -28,7 +28,7 @@ def test_only_driver_pose_and_game_map_define_redundancy():
     for index, row in enumerate(rows):
         row.update(target=[[index, 0, 0]], references=[[index, 0, 0]], normalized_position=index / len(rows))
     kept = select_position_endpoints(rows, position_radius=1)
-    assert len(set(kept) & {0, 1}) == 1  # Redundancy also spans training sessions.
+    assert len(set(kept) & {0, 1}) == 1  # Redundancy spans sessions before splitting.
     assert {2, 3, 4} <= set(kept)
     assert kept == sorted(kept)
     assert kept == select_position_endpoints(rows, position_radius=1)
@@ -105,6 +105,17 @@ def test_disabled_sampling_accepts_legacy_frames_without_driver_xyz():
     del row["driver_position"]
     with pytest.raises(ValueError, match="driver_position"):
         select_position_endpoints([row], position_radius=1)
+
+
+def test_density_sampling_requires_two_retained_sessions_per_map(tmp_path, monkeypatch):
+    sessions = {str(index): [record(index)] for index in range(2)}
+    monkeypatch.setattr(position_training, "load_position_manifest", lambda path: sessions)
+    output = tmp_path / "run"
+    with pytest.raises(ValueError, match="at least two sessions per map"):
+        position_training.train_position_model(
+            tmp_path, output=output, density_position_radius=1, device="cpu", upload=False,
+        )
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("indexed", [False, True])

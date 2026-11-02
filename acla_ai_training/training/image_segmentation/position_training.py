@@ -112,41 +112,48 @@ def train_position_model(
         raise FileExistsError(f"Choose a new position training output directory: {output}")
     sessions = load_position_manifest(manifest)
     records = [frame for frames in sessions.values() for frame in frames]
-    splits = split_position_frames(records, val_fraction=val_fraction, seed=seed)
-    training_indices = select_position_endpoints(
-        splits["train"], position_radius=density_position_radius,
+    selected_indices = select_position_endpoints(
+        records, position_radius=density_position_radius,
         orientation_degrees=density_orientation_deg, seed=seed,
     )
+    splits = split_position_frames([records[index] for index in selected_indices], val_fraction=val_fraction, seed=seed)
+    history_splits = splits
+    if density_position_radius is not None:
+        history_splits = {}
+        for split, frames in splits.items():
+            session_ids = {row["session_id"] for row in frames}
+            history_splits[split] = [row for row in records if row["session_id"] in session_ids]
     torch.manual_seed(seed)
     device = f"cuda:{device}" if str(device).isdigit() else device
     categories = {field: sorted({row[field] for row in records}) for field in ("game", "map_name")}
     model_class = PositionModel if model_class is None else model_class
     network = model_class(imgsz, categories=categories, sequence_length=sequence_length).to(device)
     print(f"Position model: {network.model_name}", flush=True)
-    positions = torch.from_numpy(np.stack([row["references"][0] for row in splits["train"]])).to(device)
+    positions = torch.from_numpy(np.stack([row["references"][0] for row in history_splits["train"]])).to(device)
     # Standardize XYZ using training references alone; context stays in [0, 1].
     network.position_mean.copy_(positions.mean(0))
     network.position_std.copy_(positions.std(0, unbiased=False).clamp_min(1.0))
-    # Construct history from all original frames before selecting window endpoints.
+    # Construct windows from all original frames in each assigned session.
     datasets = {
         split: PositionDataset(records, imgsz, categories, augment=split == "train", sequence_length=sequence_length)
-        for split, records in splits.items()
+        for split, records in history_splits.items()
     }
     sampling_metadata = {}
     if density_position_radius is not None:
         sampling_metadata["density_sampling"] = {
             "position_radius": density_position_radius,
             "orientation_degrees": density_orientation_deg,
-            "candidate_count": len(splits["train"]),
-            "selected_count": len(training_indices),
+            "candidate_count": len(records),
+            "selected_count": len(selected_indices),
         }
-        if sequence_length > 1:
-            sampling_metadata["train_history"] = [str(row["image"]) for row in splits["train"]]
-        datasets["train"] = Subset(datasets["train"], training_indices)
-        splits["train"] = [splits["train"][index] for index in training_indices]
+        for split, frames in splits.items():
+            if sequence_length > 1:
+                sampling_metadata[f"{split}_history"] = [str(row["image"]) for row in history_splits[split]]
+            indices = {row["image"]: index for index, row in enumerate(history_splits[split])}
+            datasets[split] = Subset(datasets[split], [indices[row["image"]] for row in frames])
         print(
-            f"Density sampling: kept {len(training_indices)}/{sampling_metadata['density_sampling']['candidate_count']} "
-            "training endpoints; original temporal history and validation retained", flush=True,
+            f"Density sampling: kept {len(selected_indices)}/{len(records)} "
+            "endpoints across all sessions before train/validation splitting; original temporal history retained", flush=True,
         )
     loaders = {
         split: DataLoader(

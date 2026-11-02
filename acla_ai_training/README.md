@@ -84,14 +84,7 @@ then, and Ctrl+C cancels. Preparation downloads the selected sessions, extracts
 aligned video frames, and prepares reference-lap/centerline XYZ, game, map name,
 normalized lap position, and signed offset targets for `train_position.py`.
 
-For unattended use, pass the existing command-line options instead:
-
-```bash
-python scripts/prepare_position_dataset.py \
-  --sessions SESSION_ID_A SESSION_ID_B --fps 2
-```
-
-`--sessions` accepts multiple backend session IDs or local session/frame folders.
+Preparation is interactive only; command-line options are not supported.
 Sessions whose local folders already exist are skipped entirely, even if the
 folder is incomplete: they are not downloaded, extracted, or processed again.
 Only missing sessions are downloaded and prepared. The command reports
@@ -163,13 +156,19 @@ sessions leaves all files untouched.
 
 ### Frame alignment
 
-New extraction defaults to every frame; `--fps 2` samples two images per second
-using video presentation timestamps relative to the first decoded frame,
-including variable-frame-rate recordings. Higher rates never duplicate frames.
+In **Step 2: Frame sampling**, enter seconds between frames: `0.5` uses a fixed
+half-second interval, while `0.5 - 1.5` draws a new uniform random interval between
+those bounds for each next sample. Values must be positive and finite, with the
+minimum no greater than the maximum. Press Enter to extract every frame.
+Sampling uses video presentation timestamps relative to the first decoded frame,
+including variable-frame-rate recordings. The first frame is sampled, then each
+next sample uses the first available frame at or after the requested interval;
+the video's frame timing may make the actual gap slightly longer. Frames are never duplicated.
 Telemetry must have finite, nondecreasing `Graphics_analyst_session_time` in seconds.
 Matching uses the nearest complete row without interpolation; ties prefer the
 earlier row. Frames outside telemetry coverage or farther than
-`--max-delta-ms 100` from the nearest row are skipped.
+the maximum time difference in **Step 3: Telemetry alignment** (default: 100 ms)
+from the nearest row are skipped.
 
 **Alignment assumption:** telemetry uses analyst elapsed time while video `startedAt`
 uses wall-clock time, with no exact shared start marker. The session video's
@@ -177,16 +176,10 @@ first frame is aligned to the first telemetry row. Pauses, clock resets, and
 startup delays can invalidate this estimate. Check alignment before using these
 training targets.
 
-Override a video's start relative to the first telemetry row with repeatable
-`--video-offset SESSION_ID=SECONDS`. A positive offset means the video
-starts later than that row. Offsets are scoped to a session:
-
-```bash
-python scripts/prepare_position_dataset.py \
-  --sessions SESSION_ID_A SESSION_ID_B --fps 2 \
-  --video-offset SESSION_ID_A=0.25 \
-  --video-offset SESSION_ID_B=-0.5
-```
+Override a video's start relative to the first telemetry row in **Step 4: Optional
+video start offsets**. Enter `SESSION_ID=SECONDS`, one session per line, then press
+Enter to continue. A positive offset means the video starts later than that row;
+for example, `SESSION_ID_A=0.25` or `SESSION_ID_B=-0.5`.
 
 Offsets do not correct drift or pauses within a video. The alignment delta is
 the distance to the selected telemetry sample under the estimate, not verified
@@ -233,13 +226,7 @@ python scripts/open_labelme.py "storage/session_downloads/session_downloaded_by_
 
 Save Labelme annotations as `frame_000000.json` beside each image, alongside its
 separate `frame_000000.position.json`. Choose **Copy annotated images** from the
-preparation command's main menu, or run:
-
-```bash
-python scripts/prepare_position_dataset.py --move-annotated
-```
-
-The existing `--move-annotated` flag now copies saved Labelme annotations, their images, and any matching
+preparation command's main menu. This copies saved Labelme annotations, their images, and any matching
 `.position.json` files from sessions in
 `storage/session_downloads/session_downloaded_by_prepare_position_dataset/` into
 `storage/session_downloads/session image segmentation samples/SESSION_ID/frames/video_000/`.
@@ -293,12 +280,15 @@ An endpoint is removed only when a retained endpoint in the same game/map is
 within 0.5 source coordinate units of its **driver world XYZ**, and each wrapped
 heading/pitch/roll difference is at most 5 degrees. Tune these example thresholds
 to your dataset's units; larger thresholds remove more examples. A spatial index
-finds nearby positions, with seeded representative selection. Original temporal
-windows are built before filtering: all history steps, ordering, and padding
-remain intact, including frames removed as training endpoints. Validation and
-prepared files stay unchanged. Driver coordinates are used only for selection.
-`split.json` saves thresholds, counts, selected endpoints, and full `train_history`
-for temporal runs. Omit the radius to disable filtering.
+finds nearby positions, with seeded representative selection across all sessions
+before splitting selected endpoints into training and validation. Whole-session
+splitting balances the selected counts; at least two sessions per map must retain
+endpoints. Both splits build temporal windows from their sessions' original
+frames, preserving all history steps, ordering, and padding, including frames
+removed as endpoints. Prepared files stay unchanged. Driver coordinates are used
+only for selection. `split.json` saves thresholds, total candidate/selected counts,
+selected endpoints, and full `train_history`/`val_history` for temporal runs.
+Omit the radius to disable filtering.
 
 The regression trainer uses images, reference XYZ, game/map names, normalized lap
 position, world orientation, and prepared position targets. Names are one-hot encoded using category

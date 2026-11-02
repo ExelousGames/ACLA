@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import Mock, call
 
 import cv2
 import numpy as np
@@ -88,10 +89,27 @@ def test_requires_analyst_clock_even_when_simulator_clock_is_present(bundle):
     assert not (bundle / "frames").exists()
 
 
-@pytest.mark.parametrize("fps,indices", [(2, [0, 2]), (0.5, [0]), (100, [0, 1, 2, 3])])
-def test_sampling_does_not_duplicate_frames(bundle, fps, indices):
-    result = preparation.extract_session_frames(bundle, fps=fps)
+@pytest.mark.parametrize("seconds,indices", [(0.5, [0, 2]), (2, [0]), (0.01, [0, 1, 2, 3])])
+def test_sampling_does_not_duplicate_frames(bundle, seconds, indices):
+    result = preparation.extract_session_frames(bundle, frame_interval=(seconds, seconds))
     assert [pair["frame_index"] for pair in result["frames"]] == indices
+
+
+def test_random_sampling_draws_a_new_interval_between_frames(bundle, monkeypatch):
+    uniform = Mock(side_effect=[0.25, 0.5, 0.25])
+    monkeypatch.setattr(preparation.random, "uniform", uniform)
+    result = preparation.extract_session_frames(bundle, frame_interval=(0.25, 0.5))
+    assert [pair["frame_index"] for pair in result["frames"]] == [0, 1, 3]
+    assert [pair["video_time_ms"] for pair in result["frames"]] == pytest.approx([0, 250, 750])
+    assert uniform.call_args_list == [call(0.25, 0.5)] * 3
+    manifest = json.loads((Path(result["directory"]) / "manifest.json").read_text())
+    assert manifest["frame_interval_seconds"] == [0.25, 0.5]
+    assert "fps" not in manifest
+
+
+def test_intervals_round_up_to_available_frames(bundle):
+    result = preparation.extract_session_frames(bundle, frame_interval=(0.3, 0.3))
+    assert [pair["frame_index"] for pair in result["frames"]] == [0, 2]
 
 
 @pytest.mark.parametrize("offset,frames,rows,skipped", [
@@ -134,7 +152,7 @@ def test_uses_presentation_times_for_variable_frame_rate(bundle, monkeypatch, st
             pass
 
     monkeypatch.setattr(cv2, "VideoCapture", lambda _: Capture())
-    result = preparation.extract_session_frames(bundle, fps=2)
+    result = preparation.extract_session_frames(bundle, frame_interval=(0.5, 0.5))
     records = result["frames"]
     assert [pair["frame_index"] for pair in records] == [0, 2]
     assert [pair["video_time_ms"] for pair in records] == [0, 550]
@@ -176,15 +194,17 @@ def test_failure_removes_partial_output_and_preserves_download(bundle, monkeypat
 
 def test_existing_extraction_is_preserved(bundle):
     output = bundle.parent / "chosen_output"
-    preparation.extract_session_frames(bundle, output, fps=2, video_offset=0.5)
+    preparation.extract_session_frames(bundle, output, frame_interval=(0.5, 0.5), video_offset=0.5)
     before = {path.relative_to(output): path.read_bytes() for path in output.rglob("*") if path.is_file()}
     with pytest.raises(FileExistsError, match="Output already exists"):
-        preparation.extract_session_frames(bundle, output, fps=2, video_offset=0.5)
+        preparation.extract_session_frames(bundle, output, frame_interval=(0.5, 0.5), video_offset=0.5)
     assert {path.relative_to(output): path.read_bytes() for path in output.rglob("*") if path.is_file()} == before
 
 
 @pytest.mark.parametrize("options", [
-    {"fps": 0}, {"fps": float("nan")}, {"max_delta_ms": -1}, {"max_delta_ms": float("inf")},
+    {"frame_interval": (0, 1)}, {"frame_interval": (1, 0.5)}, {"frame_interval": (-1, 1)},
+    {"frame_interval": (float("nan"), 1)}, {"frame_interval": (1, float("inf"))},
+    {"max_delta_ms": -1}, {"max_delta_ms": float("inf")},
 ])
 def test_invalid_extraction_options_leave_no_output(bundle, options):
     with pytest.raises(ValueError):

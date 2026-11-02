@@ -7,12 +7,15 @@ filtering removes endpoints only when driver world XYZ is within R source units
 of a retained endpoint in the same game/map and wrapped heading, pitch, roll
 differences are each within --density-orientation-deg D (default: 5 degrees).
 Larger thresholds remove more examples. A spatial index finds nearby positions;
---seed controls representative selection. Full temporal windows are built before
-filtering endpoints, preserving original steps, order, and padding. Validation
-and files are retained. Driver XYZ is selection metadata, never a model input;
-filtering requires finite driver_position triples in the prepared files.
-split.json saves thresholds, candidate/selected counts, selected paths, and full
-train_history for temporal runs. Omit the radius to retain all training frames.
+--seed controls representative selection across all sessions before splitting
+the selected endpoints into training and validation. Whole-session splitting
+balances selected counts; at least two sessions per map must retain endpoints.
+Both splits build temporal windows from their sessions' original frames,
+preserving steps, order, and padding. Files are retained. Driver XYZ is selection
+metadata, never a model input; filtering requires finite driver_position triples
+in the prepared files. split.json saves thresholds, total candidate/selected
+counts, selected paths, and full train_history/val_history for temporal runs.
+Omit the radius to retain all frames.
 V2 freezes all ImageNet ResNet-18 weights and BatchNorm state, training only the
 channel projection, ConvLSTM, and regression head. ImageNet RGB normalization is in the model.
 The first run downloads ResNet-18 weights unless cached; checkpoint loading and

@@ -445,10 +445,12 @@ and targets:
 
 ```bash
 python scripts/prepare_position_dataset.py
-# Unattended equivalent with explicit sessions and sampling:
-python scripts/prepare_position_dataset.py \
-  --sessions SESSION_ID_A SESSION_ID_B --fps 2
 ```
+
+In **Step 2: Frame sampling**, enter a fixed interval in seconds (such as `0.5`)
+or a range (such as `0.5 - 1.5`) for a new uniform random interval between each
+sampled frame. Press Enter for all frames. Preparation uses the interactive menu
+only; command-line options are not supported.
 
 This creates `frame_000000.jpg` and `frame_000000.position.json` together in each
 session's `frames/video_000/` folder. The position file holds that image's reference
@@ -595,7 +597,7 @@ The training and validation maps are printed before the first epoch.
 The run's `split.json` records the seed, target frame fraction, sequence length, map lists, and image paths.
 Prepared position files and the dataset index are not changed.
 
-Both scripts can reduce redundant training endpoints while retaining sparse pose
+Both scripts can reduce redundant endpoints while retaining sparse pose
 coverage. For example (radii use the prepared world-coordinate units):
 
 ```sh
@@ -617,17 +619,20 @@ define redundancy. Each removed endpoint is covered by a retained pose. A SciPy
 building an all-pairs matrix or full neighbor graph. Representatives are chosen
 in a seeded shuffled traversal, then returned in original dataset order.
 
-Filtering runs only on the training split. Temporal windows are constructed from
-**all original training frames** before selecting endpoints, so their original
-steps, order, and padding are preserved. A redundant endpoint can still supply
-history to another window. This compares final-frame poses, not entire motion
-trajectories. Validation is unchanged. Filtering requires finite XYZ triples in
+Filtering runs across **all sessions before splitting** the selected endpoints
+into training and validation. Whole-session splitting balances selected frame
+counts; at least two sessions per map must retain endpoints. Both splits construct
+temporal windows from **all original frames in their assigned sessions**, so
+original steps, order, and padding are preserved. A redundant endpoint can still
+supply history to another window. This compares final-frame poses, not entire
+motion trajectories. Filtering requires finite XYZ triples in
 `driver_position`; regenerate older files missing them. Driver positions never
 become model inputs. Larger thresholds remove more examples; tune the example
 values to the dataset's source units. Omit the radius to retain every endpoint.
-`split.json` records `density_sampling` thresholds and candidate/selected counts;
-`train` lists selected endpoints and `train_history` lists the full original
-training split for temporal runs. Source files are never removed or rewritten.
+`split.json` records `density_sampling` thresholds and total candidate/selected
+counts across all sessions; `train` and `val` list selected endpoints, while
+`train_history` and `val_history` list the original frames in each split's sessions
+for temporal runs. Source files are never removed or rewritten.
 
 `--sequence-length 4` is the default: each example contains the current frame and
 up to three preceding prepared frames from the same session and video directory.

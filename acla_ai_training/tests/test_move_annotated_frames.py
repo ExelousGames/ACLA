@@ -179,28 +179,28 @@ def test_failed_copy_removes_partial_output_and_keeps_originals(downloads, monke
     assert not any(path.is_file() for path in destination.rglob("*"))
 
 
-@pytest.mark.parametrize("choice", [None, "2", "Copy annotated images"])
-def test_menu_and_cli_copy_without_backend_or_download_prompts(downloads, monkeypatch, capsys, choice):
+@pytest.mark.parametrize("choice", ["2", "Copy annotated images"])
+def test_menu_copies_without_backend_or_download_prompts(downloads, monkeypatch, capsys, choice):
     files = annotated_frame(downloads / ("a" * 24) / "frames/video_000")
     monkeypatch.setitem(sys.modules, "training.integrations.backend", None)
     answers = iter([choice])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
 
-    assert script.main(["--move-annotated"] if choice is None else []) == 0
+    assert script.main([]) == 0
 
     output = capsys.readouterr().out
     assert '"frames": 1' in output
     assert "session image segmentation samples" in output
     assert all(path.exists() for path in files)
-    if choice is not None:
-        assert "Download sessions" in output
-        assert "Copy annotated images" in output
+    assert "Download sessions" in output
+    assert "Copy annotated images" in output
 
 
 def test_empty_downloads_need_no_backend_and_create_no_output(downloads, monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "training.integrations.backend", None)
-    assert script.main(["--move-annotated"]) == 0
-    assert json.loads(capsys.readouterr().out)["frames"] == 0
+    monkeypatch.setattr("builtins.input", lambda _: "2")
+    assert script.main([]) == 0
+    assert '"frames": 0' in capsys.readouterr().out
     assert not downloads.exists()
 
 
@@ -213,10 +213,9 @@ def test_main_menu_exit_needs_no_backend(downloads, monkeypatch):
 
 @pytest.mark.parametrize("options", [
     ["--sessions", "a" * 24], ["--fps", "2"], ["--max-delta-ms", "100"],
-    ["--video-offset", f"{'a' * 24}=0"],
+    ["--video-offset", f"{'a' * 24}=0"], ["--move-annotated"], ["--help"],
 ])
-def test_move_rejects_download_options_before_touching_files(downloads, options):
-    with pytest.raises(SystemExit) as error:
-        script.main(["--move-annotated", *options])
-    assert error.value.code == 2
+def test_cli_options_are_rejected_before_touching_files(downloads, options, capsys):
+    assert script.main(options) == 2
+    assert "Run without command-line options" in capsys.readouterr().err
     assert not downloads.exists()

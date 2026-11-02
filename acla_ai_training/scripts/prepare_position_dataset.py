@@ -1,10 +1,9 @@
 """Prepare image/world XYZ and track context with car-local offset targets.
 
-Run without arguments for step-by-step prompts, or pass flags for unattended use.
+Run without arguments for step-by-step prompts.
 Downloads are saved under session_downloads/session_downloaded_by_prepare_position_dataset.
 The main menu also copies saved Labelme annotations, their images, and available
 .position.json files into session_downloads/session image segmentation samples.
-Use --move-annotated to copy annotated frames while keeping the downloaded originals.
 Existing image folders get numbered siblings, such as video_000_1 and video_000_2.
 Telemetry is used during preparation; the trainer receives only prepared inputs
 and targets in a .position.json file beside each image, discovered recursively
@@ -23,13 +22,13 @@ Game and map names come from the selected centerline map's game and circuit_name
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 from bisect import bisect_left
 from datetime import datetime, timedelta
 import json
 import math
 from pathlib import Path
+import random
 import re
 import shutil
 import sys
@@ -115,6 +114,14 @@ def _finite_number(value, name: str) -> float:
     return float(value)
 
 
+def _validate_frame_interval(interval: tuple[float, float] | None) -> None:
+    if interval is None:
+        return
+    minimum, maximum = (_finite_number(value, "Frame interval") for value in interval)
+    if minimum <= 0 or maximum < minimum:
+        raise ValueError("Frame interval must be positive, with the minimum no greater than the maximum")
+
+
 def _bundle_file(directory: Path, filename: str) -> Path:
     if not isinstance(filename, str) or Path(filename).name != filename:
         raise ValueError("Manifest files must be filenames inside the downloaded session")
@@ -128,7 +135,7 @@ def extract_session_frames(
     session_folder: Path,
     output_folder: Path | None = None,
     *,
-    fps: float | None = None,
+    frame_interval: tuple[float, float] | None = None,
     video_offset: float | None = None,
     max_delta_ms: float = 100.0,
 ) -> dict:
@@ -137,9 +144,10 @@ def extract_session_frames(
     The offset is seconds from the first telemetry row to the session video's
     start. By default, the first video frame aligns with the first telemetry row.
     Frame/telemetry matches are returned in memory for position preparation.
+    Frame intervals are (minimum, maximum) seconds; equal bounds are fixed.
+    Each next sample uses the first frame at or after a uniformly drawn interval.
     """
-    if fps is not None and _finite_number(fps, "fps") <= 0:
-        raise ValueError("fps must be positive")
+    _validate_frame_interval(frame_interval)
     if _finite_number(max_delta_ms, "max_delta_ms") < 0:
         raise ValueError("max_delta_ms must be nonnegative")
     session_folder = session_folder.expanduser().resolve()
@@ -176,7 +184,7 @@ def extract_session_frames(
         "source_manifest": str(session_folder / "manifest.json"),
         "telemetry_time_field": TIME_FIELD,
         "first_telemetry_time_seconds": times[0],
-        "fps": fps,
+        "frame_interval_seconds": frame_interval,
         "max_delta_ms": max_delta_ms,
     }
     pairs = []
@@ -207,10 +215,10 @@ def extract_session_frames(
                     video_ms = presentation_ms - first_frame_ms
                     source_index = frame_index
                     frame_index += 1
-                    if fps is not None:
+                    if frame_interval is not None:
                         if video_ms + 1e-6 < next_sample_ms:
                             continue
-                        next_sample_ms = (math.floor((video_ms + 1e-6) * fps / 1000) + 1) * 1000 / fps
+                        next_sample_ms = video_ms + random.uniform(*frame_interval) * 1000
                     target_ms = offset * 1000 + video_ms
                     if target_ms < relative_times[0] or target_ms > relative_times[-1]:
                         skipped += 1
@@ -274,19 +282,18 @@ def _video_offset(value: str) -> tuple[str, float]:
             raise ValueError
         return session_id.lower(), seconds
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("Use SESSION_ID=SECONDS") from exc
+        raise ValueError("Use SESSION_ID=SECONDS") from exc
 
 
 async def prepare_sessions(
     backend, selected_sessions: list[str], *,
-    fps: float | None = None, video_offsets: list[tuple[str, float]] | None = None,
+    frame_interval: tuple[float, float] | None = None, video_offsets: list[tuple[str, float]] | None = None,
     max_delta_ms: float | None = None,
 ) -> dict:
     """Skip existing sessions; download new videos and create image/position JSON pairs."""
     if not selected_sessions:
         raise ValueError("Provide at least one session")
-    if fps is not None and _finite_number(fps, "fps") <= 0:
-        raise ValueError("fps must be positive")
+    _validate_frame_interval(frame_interval)
     if max_delta_ms is not None and _finite_number(max_delta_ms, "max_delta_ms") < 0:
         raise ValueError("max_delta_ms must be nonnegative")
 
@@ -321,7 +328,7 @@ async def prepare_sessions(
     for session_id, folder in sessions:
         await download_session_pair(backend, session_id, SESSION_DOWNLOAD_DIR)
         extractions.append(extract_session_frames(
-            folder, fps=fps, video_offset=offsets.get(session_id),
+            folder, frame_interval=frame_interval, video_offset=offsets.get(session_id),
             max_delta_ms=100.0 if max_delta_ms is None else max_delta_ms,
         ))
 
@@ -344,18 +351,36 @@ def _prompt_choice(label: str, options: list[str]) -> int:
         print(f"Enter a number from 1 to {len(options)}, or an option name.")
 
 
-def _prompt_number(label: str, *, positive: bool = False) -> float | None:
+def _prompt_frame_interval() -> tuple[float, float] | None:
+    number = r"[+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+    while True:
+        value = input("Seconds between frames (number or min - max) [Enter: all frames]: ").strip()
+        if not value:
+            return None
+        try:
+            match = re.fullmatch(rf"({number})(?:\s*-\s*({number}))?", value)
+            if match is None:
+                raise ValueError
+            minimum, maximum = match.groups()
+            interval = (float(minimum), float(maximum or minimum))
+            _validate_frame_interval(interval)
+            return interval
+        except ValueError:
+            print("Enter a positive, finite number or range such as 0.5 - 1.5 (min <= max), or press Enter for all frames.")
+
+
+def _prompt_number(label: str) -> float | None:
     while True:
         value = input(label).strip()
         if not value:
             return None
         try:
             number = _finite_number(float(value), "Value")
-            if number < 0 or (positive and number == 0):
+            if number < 0:
                 raise ValueError
             return number
         except ValueError:
-            print(f"Enter a finite {'positive' if positive else 'nonnegative'} number, or press Enter for the default.")
+            print("Enter a finite nonnegative number, or press Enter for the default.")
 
 
 async def _list_video_sessions(backend) -> list[tuple[str, datetime]]:
@@ -430,18 +455,18 @@ def _prompt_sessions(label: str, sessions: list[tuple[str, datetime]], selected:
         print(f"Added {session_id}.")
 
 
-async def _interactive_options(args: argparse.Namespace) -> bool:
+async def _interactive_options() -> dict | None:
     from training.integrations.backend import backend_service
 
     print("Position dataset preparation. Press Enter to accept defaults; Ctrl+C to cancel.\n")
     sessions = await _list_video_sessions(backend_service)
     selected = set()
-    args.sessions = _prompt_sessions("Step 1: Sessions with videos", sessions, selected)
+    selected_sessions = _prompt_sessions("Step 1: Sessions with videos", sessions, selected)
     print("Sessions whose local folders already exist will be skipped.")
     print("\nStep 2: Frame sampling")
-    args.fps = _prompt_number("Images per second [Enter: all frames]: ", positive=True)
+    frame_interval = _prompt_frame_interval()
     print("\nStep 3: Telemetry alignment")
-    args.max_delta_ms = _prompt_number("Maximum time difference in ms [Enter: 100]: ")
+    max_delta_ms = _prompt_number("Maximum time difference in ms [Enter: 100]: ")
     print("\nStep 4: Optional video start offsets")
     print("Default: align each session's video with its first telemetry row.")
     print("Enter SESSION_ID=SECONDS, one per line, or press Enter to continue.")
@@ -456,67 +481,54 @@ async def _interactive_options(args: argparse.Namespace) -> bool:
                 raise ValueError("Choose a session selected for preparation")
             if session_id in offsets:
                 raise ValueError("An offset for that session was already entered")
-        except (argparse.ArgumentTypeError, ValueError) as exc:
+        except ValueError as exc:
             print(f"Invalid offset: {exc}")
             continue
         offsets[session_id] = seconds
-    args.video_offset = list(offsets.items())
 
     print("\nPreparation summary")
-    print(f"Sessions: {', '.join(args.sessions)}")
+    print(f"Sessions: {', '.join(selected_sessions)}")
     print("Training and validation splits will be assigned when training starts.")
-    print(f"Images per second: {args.fps if args.fps is not None else 'all frames'}")
-    print(f"Maximum time difference: {args.max_delta_ms if args.max_delta_ms is not None else '100'} ms")
-    for session_id, seconds in args.video_offset:
+    if frame_interval is None:
+        print("Frame interval: all frames")
+    elif frame_interval[0] == frame_interval[1]:
+        print(f"Frame interval: {frame_interval[0]:g} seconds")
+    else:
+        print(f"Frame interval: random {frame_interval[0]:g} - {frame_interval[1]:g} seconds")
+    print(f"Maximum time difference: {max_delta_ms if max_delta_ms is not None else '100'} ms")
+    for session_id, seconds in offsets.items():
         print(f"Video offset: {session_id}={seconds} seconds")
-    return _prompt_choice("Start preparation?", ["Start", "Cancel"]) == 1
+    if _prompt_choice("Start preparation?", ["Start", "Cancel"]) == 2:
+        return None
+    return {
+        "selected_sessions": selected_sessions, "frame_interval": frame_interval,
+        "video_offsets": list(offsets.items()), "max_delta_ms": max_delta_ms,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    parser = argparse.ArgumentParser(description=__doc__)
-    action = parser.add_mutually_exclusive_group()
-    action.add_argument(
-        "--sessions", nargs="+", metavar="SESSION",
-        help="Backend session IDs or local folders; existing folders are skipped. Split during training.",
-    )
-    action.add_argument(
-        "--move-annotated", action="store_true",
-        help="Copy saved Labelme image/JSON pairs and position files into the samples folder, keeping originals.",
-    )
-    parser.add_argument("--fps", type=float, help="Images per second; default: all frames.")
-    parser.add_argument(
-        "--video-offset", type=_video_offset, action="append", default=[], metavar="SESSION_ID=SECONDS",
-        help="Video start relative to the first telemetry row. Repeat per session.",
-    )
-    parser.add_argument("--max-delta-ms", type=float, help="Maximum nearest-row distance; default: 100 ms.")
-    args = parser.parse_args(argv)
+    if argv:
+        print("Run without command-line options to use the interactive menu.", file=sys.stderr)
+        return 2
 
     async def run() -> int:
-        if not argv:
-            choice = _prompt_choice("Position dataset main menu", [
-                "Download sessions", "Copy annotated images", "Exit",
-            ])
-            if choice == 3:
-                return 0
-            args.move_annotated = choice == 2
-            if not args.move_annotated and not await _interactive_options(args):
-                print("Preparation cancelled.")
-                return 0
-        if args.move_annotated:
-            if args.fps is not None or args.max_delta_ms is not None or args.video_offset:
-                parser.error("Frame sampling and alignment options only apply to downloading sessions")
+        choice = _prompt_choice("Position dataset main menu", [
+            "Download sessions", "Copy annotated images", "Exit",
+        ])
+        if choice == 3:
+            return 0
+        if choice == 2:
             print(json.dumps(move_annotated_frames(), indent=2))
             return 0
-        if not args.sessions:
-            parser.error("--sessions is required for image preparation")
+        options = await _interactive_options()
+        if options is None:
+            print("Preparation cancelled.")
+            return 0
 
         from training.integrations.backend import backend_service
 
-        result = await prepare_sessions(
-            backend_service, args.sessions,
-            fps=args.fps, video_offsets=args.video_offset, max_delta_ms=args.max_delta_ms,
-        )
+        result = await prepare_sessions(backend_service, **options)
         print(json.dumps(result, indent=2))
         return 0
 

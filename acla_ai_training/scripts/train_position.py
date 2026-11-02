@@ -38,12 +38,15 @@ game/map: an endpoint is redundant only within radius R (source units) of a
 retained endpoint and within --density-orientation-deg D in each wrapped heading,
 pitch, roll angle (default D=5 degrees). Larger thresholds remove more examples.
 A spatial index avoids all-pairs comparisons; --seed controls representative
-selection. Only training endpoints are filtered, after building full temporal
-windows: original history, order, padding, and validation are preserved. No files
-are deleted. Driver XYZ is selection metadata, never a model input. Filtering
-requires finite driver_position triples in the prepared files. split.json saves
-the thresholds, candidate/selected counts, selected paths, and full train_history
-for temporal runs. Omit --density-position-radius to keep every training frame.
+selection across all sessions before the selected endpoints are split into
+training and validation. Whole-session splitting balances the selected counts;
+at least two sessions per map must retain endpoints. Both splits build temporal
+windows from their sessions' original frames, preserving history, order, and
+padding. No files are deleted. Driver XYZ is selection metadata, never a model
+input. Filtering requires finite driver_position triples in the prepared files.
+split.json saves the thresholds, total candidate/selected counts, selected paths,
+and full train_history/val_history for temporal runs. Omit
+--density-position-radius to keep every frame.
 Preparation aligns images to telemetry using Graphics_analyst_session_time.
 Training reads the prepared orientation values, without reopening source telemetry.
 Before letterboxing, each training-frame load has a 50% chance of HUD
