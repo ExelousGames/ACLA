@@ -54,7 +54,7 @@ it('rebuilds the whole observation, memory, network and plan from a non-default 
     const restored = DrivingPolicy.restore(JSON.parse(json));
     expect(restored.matches(observation)).toBe(true);
     expect(restored.checkpoint().model.lstmWeights).toHaveLength(4 * 7);
-    expect(restored.checkpoint().model.outputWeights).toHaveLength(19);
+    expect(restored.checkpoint().model.outputWeights).toHaveLength(16);
     expect(restored.planTimes).toEqual([0, 0.3, 1.2]);
     expect(restored.checkpoint()).toEqual(JSON.parse(json));
     expect(restored.checkpoint()).not.toHaveProperty('version');
@@ -131,6 +131,17 @@ it('rejects old pedal-target models even though the number of inputs is unchange
     oldReward.configuration.reward.speedWeight = 1;
     oldReward.configuration.reward.pedalWeight = 100;
     expect(() => readTrainingDocument(oldReward)).toThrow(/unsupported/);
+});
+
+it('uses a neutral combined pedal output in new models and rejects separate-pedal model layouts', () => {
+    const document = emptyTrainingDocument();
+    expect(document.configuration.actions.outputs).toEqual(['throttle-brake-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit']);
+    expect(document.configuration.network.initialActionBias).toEqual([0, 0, 1, 0, 0]);
+    document.configuration.actions.outputs = ['throttle-sigmoid', 'brake-sigmoid', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit'];
+    document.configuration.network.initialActionBias = [-2, -3, 0, 1, 0, 0];
+    const original = JSON.stringify(document);
+    expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+    expect(JSON.stringify(document)).toBe(original);
 });
 
 it('requires the pedal-event reward encoding and rejects earlier speed-window models without migration', () => {
@@ -227,7 +238,7 @@ it('runs the control loop with saved memory dimensions, shift pulse and cooldown
     let now = 1000;
     let observation = trainingFixture(now).observation;
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
-    checkpoint.model.outputWeights.slice(3, 6).forEach((row, i) => { row.fill(0); row[config.network.hiddenUnits] = i === 1 ? 4 : 0; });
+    checkpoint.model.outputWeights.slice(2, 5).forEach((row, i) => { row.fill(0); row[config.network.hiddenUnits] = i === 1 ? 4 : 0; });
     const policy = DrivingPolicy.restore(checkpoint);
     const decide = jest.spyOn(policy, 'decideAsync');
     const initialize = jest.spyOn(policy, 'initializeGpu');

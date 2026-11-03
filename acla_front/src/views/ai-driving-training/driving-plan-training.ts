@@ -11,10 +11,11 @@ export class DrivingPlanTraining {
     reset() { this.pending = []; }
 
     async recordAsync(policy: DrivingPolicy, features: DrivingPolicyInput, action: DrivingAction, shifts: ShiftAvailability,
-        appliedAt: number, active = () => true) {
+        appliedAt: number, active = () => true, onReplaySubmitted?: () => void) {
         for (const sample of this.collect(policy, features, action, shifts, appliedAt)) {
             if (!active()) return;
             await policy.learnPlannedActionsAsync(sample.features, sample.targets);
+            onReplaySubmitted?.();
         }
     }
 

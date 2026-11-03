@@ -1,13 +1,14 @@
 import { DrivingAction, DrivingObservation, DrivingReward, drivingReward,
     NEUTRAL, ObservationResult } from './driving-observation';
-import { DrivingPolicy, PlannedAction, PolicyDecision, ShiftAvailability } from './driving-policy';
+import { DrivingPolicy, PlannedAction, PlanStepCredit, PolicyDecision, ShiftAvailability } from './driving-policy';
 import { ControlSource, DrivingControlSelector, ManualControls } from './driving-control';
 import { ControlLease, DrivingControlOutput } from './driving-control-output';
-import { DrivingMemory, DrivingPolicyInput } from './driving-memory';
+import { DrivingMemory, DrivingPolicyInput, drivingMemorySlotInputs } from './driving-memory';
 import { DrivingPlanTraining } from './driving-plan-training';
 import { DrivingModelTimer } from './driving-model-timing';
+import type { DrivingImpact } from './driving-impact';
 
-import { DEFAULT_DRIVING_CONFIG } from './driving-model-config';
+import { DEFAULT_DRIVING_CONFIG, drivingMemorySlots } from './driving-model-config';
 
 export interface TrainingState {
     mode: 'idle' | 'manual' | 'training' | 'evaluation';
@@ -27,17 +28,28 @@ export const initialTrainingState: TrainingState = {
 interface TrainingSample {
     observation: DrivingObservation;
     input: DrivingPolicyInput;
-    decision?: PolicyDecision;
     action: DrivingAction;
     shifts: ShiftAvailability;
     source: ControlSource;
     appliedAt: number;
 }
 
+interface ExecutedPlan {
+    decision: PolicyDecision;
+    startedAt: number;
+    endedAt?: number;
+    executions: (Omit<PlanStepCredit, 'weight'> & { appliedAt: number })[];
+}
+
 export class DrivingTrainingLoop {
     state = { ...initialTrainingState };
     private get config() { return this.policy?.configuration ?? DEFAULT_DRIVING_CONFIG; }
     private previous?: TrainingSample;
+    private activePlan?: ExecutedPlan;
+    private plans: ExecutedPlan[] = [];
+    private learningPlans = new Set<ExecutedPlan>();
+    private installingPlan = false;
+    private planWrite?: Promise<boolean>;
     private boundary?: DrivingObservation;
     private selector = new DrivingControlSelector();
     private controlChangedAt = -Infinity;
@@ -58,7 +70,8 @@ export class DrivingTrainingLoop {
 
     constructor(private output: DrivingControlOutput, private read: () => ObservationResult,
         private publish: (state: TrainingState) => void, private now = Date.now,
-        private readManual?: () => Promise<ManualControls | null>) {}
+        private readManual?: () => Promise<ManualControls | null>,
+        private readImpact?: (previous: DrivingObservation, current: DrivingObservation) => DrivingImpact | undefined) {}
 
     getModelTimingSnapshot() { return this.modelTiming?.snapshot(); }
 
@@ -144,8 +157,16 @@ export class DrivingTrainingLoop {
     }
 
     private discardPrevious() {
-        this.policy?.releaseDecision(this.previous?.decision);
+        this.discardPlans();
         this.previous = undefined;
+    }
+
+    private discardPlans() {
+        for (const plan of this.plans) {
+            if (!this.learningPlans.has(plan)) this.policy?.releaseDecision(plan.decision);
+        }
+        this.plans = [];
+        this.activePlan = undefined;
     }
 
     private changeSource(source: ControlSource) {
@@ -181,7 +202,7 @@ export class DrivingTrainingLoop {
     }
 
     private async tick(policy?: DrivingPolicy) {
-        if (this.controlBusy || this.state.mode === 'idle') return;
+        if (this.controlBusy || this.installingPlan || this.state.mode === 'idle') return;
         this.controlBusy = true;
         const generation = this.generation;
         let lease = this.lease!;
@@ -189,12 +210,16 @@ export class DrivingTrainingLoop {
             // Release paddles on the control clock, even if no new image has arrived.
             if ((this.state.action.shiftUp || this.state.action.shiftDown) && this.now() >= this.shiftReleaseAt) {
                 const released = { ...this.state.action, shiftUp: false, shiftDown: false };
-                if (!await lease.apply(released) || generation !== this.generation) return;
-                this.state = { ...this.state, action: released };
-                this.publish(this.state);
+                this.planWrite = lease.apply(released).then((applied) => {
+                    if (!applied || generation !== this.generation) return false;
+                    this.state = { ...this.state, action: released };
+                    this.publish(this.state);
+                    return true;
+                });
+                if (!await this.planWrite) return;
             }
             const manual = this.readManual ? await this.readManual() : null;
-            if (generation !== this.generation || lease !== this.lease) return;
+            if (generation !== this.generation || lease !== this.lease || this.installingPlan) return;
             const input: ObservationResult = policy ? this.read() : { error: 'AI not started.' };
             const inputError = policy ? this.observationError(input) : undefined;
             const selected = this.selector.select(manual, Boolean(policy && !inputError));
@@ -251,15 +276,19 @@ export class DrivingTrainingLoop {
                 }
                 return;
             }
-            // An old owner's model work may still be finishing. Neutralize a new
-            // AI lease immediately, but never queue stale heartbeats behind its decision.
+            // Advance the current plan on the control clock, including during GPU work.
+            if (this.activePlan) {
+                this.planWrite = this.applyPlan(this.activePlan, lease);
+                if (!await this.planWrite) return;
+            }
+            // An old owner's model work may still be finishing.
             if (this.modelLease) {
                 if (this.modelLease !== lease) await lease.apply(this.state.action);
                 return;
             }
             // Maintain the current action without learning twice from the same image or from a capture predating the action.
             if (!fresh) {
-                if (!await lease.apply(this.state.action)) return;
+                if (!this.activePlan && !await lease.apply(this.state.action)) return;
                 if (generation === this.generation) this.publish(this.state);
                 return;
             }
@@ -267,7 +296,47 @@ export class DrivingTrainingLoop {
             void this.updateModel(policy, observation, lease);
         } catch (error) {
             if (generation === this.generation && lease === this.lease) await this.stop(error instanceof Error ? error.message : 'Controller failed.');
-        } finally { this.controlBusy = false; }
+        } finally { this.controlBusy = false; this.planWrite = undefined; }
+    }
+
+    private async applyPlan(plan: ExecutedPlan, lease: ControlLease) {
+        const elapsed = (this.now() - plan.startedAt) / 1000;
+        let step = 0;
+        while (step + 1 < plan.decision.plan.length && plan.decision.plan[step + 1].timeSeconds <= elapsed) step++;
+        const previousStep = plan.executions[plan.executions.length - 1]?.step;
+        if (step === previousStep) return await lease.apply(this.state.action) && plan === this.activePlan;
+        const selected = plan.decision.plan[step];
+        const canShift = this.now() >= this.nextShiftAt;
+        const shifts = { up: canShift && selected.shifts.up, down: canShift && selected.shifts.down };
+        const shift = selected.shift === 1 && shifts.up ? 1 : selected.shift === 2 && shifts.down ? 2 : 0;
+        const action = { ...selected.action,
+            shiftUp: Boolean(this.state.action.shiftUp || shift === 1),
+            shiftDown: Boolean(this.state.action.shiftDown || shift === 2) };
+        if (!await lease.apply(action) || plan !== this.activePlan) return false;
+        const appliedAt = this.now();
+        if (!plan.executions.length) plan.startedAt = appliedAt;
+        plan.executions.push({ step, appliedAt, shift, shifts });
+        if (shift) {
+            this.shiftReleaseAt = appliedAt + this.config.actions.shiftPulseMs;
+            this.nextShiftAt = appliedAt + this.config.actions.shiftCooldownMs;
+        }
+        this.state = { ...this.state, action };
+        this.publish(this.state);
+        return true;
+    }
+
+    /** Attribute each observed interval to acknowledged controls, including an old
+     * plan's tail while its replacement was being computed. */
+    private planCredits(from: number, until: number) {
+        return this.plans.map((plan) => {
+            const credits = plan.executions.map((execution, i) => {
+                const end = plan.executions[i + 1]?.appliedAt ?? plan.endedAt ?? until;
+                const duration = Math.max(0, Math.min(end, until) - Math.max(from, execution.appliedAt));
+                return { step: execution.step, shift: execution.shift, shifts: execution.shifts, weight: duration };
+            }).filter(({ weight }) => weight > 0);
+            const duration = credits.reduce((sum, { weight }) => sum + weight, 0);
+            return { plan, duration, credits: credits.map((credit) => ({ ...credit, weight: credit.weight / duration })) };
+        }).filter(({ duration }) => duration > 0);
     }
 
     /** Only one model operation runs at a time; controller polling never awaits it. */
@@ -281,8 +350,13 @@ export class DrivingTrainingLoop {
         try {
             timing.start('memory');
             const policyInput = this.memory.encode(observation);
+            timing.historyLength = 0;
+            const slotInputs = drivingMemorySlotInputs(this.config);
+            for (let bin = 0; bin < drivingMemorySlots(this.config); bin++) {
+                if (policyInput.features[bin * slotInputs]) timing.historyLength++;
+            }
             timing.end();
-            // Pending learning owns the old sample until it releases its GPU buffers.
+            // Reward uses this observation once; plans retain their own GPU buffers.
             this.previous = undefined;
             if (manual) {
                 // Save the acknowledged action before learning, so later paddle
@@ -303,18 +377,23 @@ export class DrivingTrainingLoop {
                 up: canShift, down: canShift,
             });
             if (!active()) { policy.releaseDecision(decision); return; }
-            const action = decision.plan[0].action;
+            this.installingPlan = true;
+            timing.start('control');
+            // Finish an acknowledged plan step before choosing the new shift mask.
+            try { await this.planWrite; }
+            catch (error) { policy.releaseDecision(decision); throw error; }
+            if (!active()) { policy.releaseDecision(decision); return; }
+            const outgoing = this.activePlan;
+            const plan: ExecutedPlan = { decision, startedAt: this.now(), executions: [] };
+            this.activePlan = plan;
             try {
-                timing.start('control');
-                if (!await lease.apply(action) || !active()) { policy.releaseDecision(decision); return; }
+                if (!await this.applyPlan(plan, lease) || !active()) { policy.releaseDecision(decision); return; }
             } catch (error) { policy.releaseDecision(decision); throw error; }
             timing.end();
-            const appliedAt = this.now();
-            if (action.shiftUp || action.shiftDown) {
-                this.shiftReleaseAt = appliedAt + this.config.actions.shiftPulseMs;
-                this.nextShiftAt = appliedAt + this.config.actions.shiftCooldownMs;
-            }
-            this.previous = { observation, input: policyInput, decision, action, source: 'ai',
+            const appliedAt = plan.startedAt, action = this.state.action;
+            if (outgoing) outgoing.endedAt = appliedAt;
+            this.plans.push(plan);
+            this.previous = { observation, input: policyInput, action, source: 'ai',
                 shifts: { up: canShift, down: canShift }, appliedAt };
             this.lastFrame = observation.capturedAt;
             this.state = { ...this.state, action, plan: decision.plan.map(({ timeSeconds, action: planned }) =>
@@ -323,33 +402,50 @@ export class DrivingTrainingLoop {
             this.publish(this.state);
         } catch (error) {
             if (active()) await this.stop(error instanceof Error ? error.message : 'Training failed.');
-        } finally { timing.finish(false); this.modelLease = undefined; }
+        } finally { timing.finish(false); this.modelLease = undefined; this.installingPlan = false; }
     }
 
     private async learnPrevious(policy: DrivingPolicy, previous: TrainingSample, observation: DrivingObservation, input: DrivingPolicyInput, active: () => boolean,
         timing: DrivingModelTimer) {
-        // This operation owns the sample while GPU work is in flight. Stop/handoff
-        // can clear the loop without destroying buffers still needed by backprop.
+        const samples = this.planCredits(previous.observation.measuredAt, observation.measuredAt);
+        const duration = samples.reduce((sum, sample) => sum + sample.duration, 0);
+        samples.forEach(({ plan }) => this.learningPlans.add(plan));
         try {
             const elapsedSeconds = (observation.capturedAt - previous.observation.capturedAt) / 1000;
             // Gaps between usable frames are recoverable after input validation.
             // The caller starts the next transition from this fresh observation.
             if (elapsedSeconds > this.config.runtime.maxTransitionSeconds) {
                 this.planTraining.reset();
+                this.discardPlans();
                 this.state = { ...this.state, reward: null };
                 return;
             }
-            const reward = drivingReward(previous.observation, observation, this.config);
+            const reward = drivingReward(previous.observation, observation, this.config, this.readImpact?.(previous.observation, observation));
             if (this.state.mode === 'training') {
                 timing.start('learning');
                 await policy.trainBatchAsync(async () => {
                     if (previous.source === 'manual') await policy.learnDemonstrationAsync(previous.input, previous.action, previous.shifts);
-                    else await policy.learnAsync(previous.decision!, reward.total, input, elapsedSeconds);
-                    if (active()) await this.planTraining.recordAsync(policy, previous.input, previous.action, previous.shifts, previous.appliedAt, active);
-                });
+                    else for (const sample of samples) {
+                        if (!active()) break;
+                        await policy.learnAsync(sample.plan.decision, reward.total * (sample.duration / duration), input,
+                            elapsedSeconds, sample.credits);
+                    }
+                    if (active() && previous.source === 'manual') await this.planTraining.recordAsync(policy, previous.input, previous.action, previous.shifts,
+                        previous.appliedAt, active, () => { timing.replayCount++; });
+                }, () => timing.start('learningWait'));
                 timing.end();
             }
             if (active()) this.state = { ...this.state, steps: policy.steps, reward, episodeReward: this.state.episodeReward + reward.total };
-        } finally { policy.releaseDecision(previous.decision); }
+        } finally {
+            for (const { plan } of samples) {
+                this.learningPlans.delete(plan);
+                if (!this.plans.includes(plan)) policy.releaseDecision(plan.decision);
+            }
+            this.plans = this.plans.filter((plan) => {
+                if (plan.endedAt === undefined || plan.endedAt > observation.measuredAt) return true;
+                policy.releaseDecision(plan.decision);
+                return false;
+            });
+        }
     }
 }

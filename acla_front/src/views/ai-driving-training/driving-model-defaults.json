@@ -12,7 +12,7 @@
     "cameraProjectionUnits": 256,
     "hiddenUnits": 128,
     "activation": "tanh",
-    "initialActionBias": [-2, -3, 0, 1, 0, 0],
+    "initialActionBias": [0, 0, 1, 0, 0],
     "initialOutputWeightScale": 0.01
   },
   "observation": {
@@ -41,7 +41,7 @@
   },
   "actions": {
     "planTimesSeconds": [0, 0.5, 1, 1.5, 2, 2.5, 3],
-    "outputs": ["throttle-sigmoid", "brake-sigmoid", "steering-tanh", "hold-logit", "up-logit", "down-logit"],
+    "outputs": ["throttle-brake-tanh", "steering-tanh", "hold-logit", "up-logit", "down-logit"],
     "shiftPulseMs": 100,
     "shiftCooldownMs": 500
   },

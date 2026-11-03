@@ -196,15 +196,33 @@ Once the simulator responds to the virtual wheel, start a
 practice session with manual gears configured and both shift buttons bound,
 position the car near the reference line, and choose **New model** to select a save
 location (or **Open model** to resume a file). Then select **Start training**. The policy
-controls throttle, brake, steering and the choice to hold gear, shift up or shift
-down. Repositioning and restarting laps are not automated.
+outputs one continuous throttle/brake value from −1 (full brake), through 0 (both
+pedals released), to 1 (full throttle), plus steering and the choice to hold gear,
+shift up or shift down. Positive pedal values apply throttle; negative values apply
+brake, so AI output never presses both pedals together. Human demonstrations and
+future action targets use throttle minus brake. Create and train a new model for
+this output layout; older separate-pedal checkpoints are not converted.
+Repositioning and restarting laps are not automated.
 **Run trained model** uses deterministic inference without updating weights.
+
+The AI executes its action plan on the control timer: by default, steps start at
+0, 0.5, 1, 1.5, 2, 2.5 and 3 seconds after the first control acknowledgement.
+The current plan continues during learning and inference. A new output replaces
+the entire plan immediately and starts its own clock. A late control tick skips
+expired steps; after the final step, the AI holds its pedals and steering until
+the next output or input interruption. Each planned shift is pulsed only once.
+Training explores every plan slot. Observed reward is shared among the steps
+that actually controlled the car, weighted by their acknowledged execution time.
+This includes the outgoing plan's actions while a replacement was computing;
+skipped and superseded steps receive no actor gradient. Human demonstrations
+continue to teach future plan slots from later acknowledged human actions.
 
 Gear choices learn from the same driving reward as the continuous controls.
 Each shift presses one paddle for 100 ms (released on the next control tick)
 with at least 500 ms between shifts. Downshifts are allowed in every gear,
 including neutral and reverse. Both shift directions are masked during cooldown
-before sampling, so training uses the action actually selected for output.
+before sampling the immediate action and again when executing later plan steps.
+Training retains the execution mask, so a suppressed shift receives no gradient.
 Button releases continue even while waiting for a new camera frame.
 
 The observation includes car-local velocity XYZ (m/s), speed (km/h), game/car/map
@@ -234,7 +252,7 @@ well as LSTM input weights, recurrent weights and gate biases. Visual gradients 
 across all camera timesteps before updating the shared encoder.
 CNN and LSTM inference, learning-gradient calculations, backpropagation and weight
 updates run on a hardware WebGPU device. The CPU sends demonstration/plan targets or
-reward, elapsed time and the sampled action. The GPU calculates target transforms,
+reward, elapsed time and the sampled actions with per-slot execution weights. The GPU calculates target transforms,
 masked shift probabilities, the TD advantage and clipped gradients without intermediate
 readbacks. Weights, activations and training predictions stay on the GPU; only control
 decisions read the small action/value output. Each training tick waits once for GPU
@@ -340,8 +358,29 @@ Distance weighting keeps accumulated reward independent of sampling frequency
 at a constant rate below the existing progress cap. Camera processing delays do
 not affect the measured rate. The reward appears separately under **Reward signal**
 and contributes to the total used for learning.
+**Impact penalty** monitors live horizontal local velocity independently of camera
+and GPU processing. A bounded history checks telemetry intervals 20–500 ms apart
+inside each training transition, so a brief bounce can be detected even when AI
+images are more than 500 ms apart or the car is already sliding by the next image.
+Only telemetry up to the image's paired timestamp is used. The strongest detected
+impact in the interval contributes one penalty; later intervals do not reuse it.
+A shared elliptical allowance combines ordinary
+acceleration/braking up to 2.5 g with steering-related sideslip. The full horizontal
+velocity change is scored against that allowance, with velocity noise removed once,
+so diagonal jolts do not disappear into separate speed and direction allowances.
+Smaller excess impulses now reach the
+50% confidence threshold sooner; confidence is heuristic, not a collision probability.
+At every speed, speed loss with the brake below 5% uses a 3 m/s² coasting allowance
+and a more sensitive impulse score. With steering also below 5%, this score combines
+speed loss and sideways deflection to detect glancing impacts. Acceleration adds no
+extra evidence to that score. Brake and steering inputs anywhere inside an interval
+are retained, so a pedal press or steering correction between images is respected.
+Missing telemetry, session changes and pauses do not create synthetic impacts.
+Detected impacts subtract `5 × confidence × severity`, with severity reaching 1 at
+10 m/s of excess velocity change. Vertical bumps and car damage telemetry are excluded;
+spins and extreme braking can still resemble impacts.
 The total reward combines acceleration/deceleration timing, reference-line proximity,
-reference-line approach and normalized-position progress, clamped to the configured total limit. Yaw rate
+reference-line approach, normalized-position progress and impact penalties, clamped to the configured total limit. Yaw rate
 remains a policy input but does not incur an instability penalty. The removed reward
 settings `yawWindowMs`, `yawDeadband` and `yawPenalty` are no longer accepted in model
 JSON; remove these three settings from existing files before loading them. New policies are untrained;

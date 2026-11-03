@@ -12,6 +12,8 @@ import { DrivingTrainingLoop, initialTrainingState } from './driving-training-lo
 import { DrivingControlOutput } from './driving-control-output';
 import type { ControlSource } from './driving-control';
 import { aggressionRadius } from './driving-reference';
+import { IMPACT_CONFIDENCE_THRESHOLD } from './driving-impact';
+import { DrivingImpactMonitor } from './driving-impact-monitor';
 import type { AccControlPreset, ControllerAction, VirtualController } from './virtual-controller';
 import ManualDrivingControls, { ManualDrivingControlsHandle } from './ManualDrivingControls';
 import ObservationInputDelays, { ObservationDelaySnapshot } from './ObservationInputDelays';
@@ -34,6 +36,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const configuration = useRef(cloneConfig());
     const documentReady = useRef(false);
     const loop = useRef<DrivingTrainingLoop | null>(null);
+    const impactMonitor = useRef(new DrivingImpactMonitor());
     const controller = useRef<VirtualController | null>(null);
     const controlOutput = useRef<DrivingControlOutput | null>(null);
     const manualControls = useRef<ManualDrivingControlsHandle>(null);
@@ -137,6 +140,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     useEffect(() => {
         mounted.current = true;
         let cancelled = false;
+        const monitor = impactMonitor.current;
+        const observeImpact = () => monitor.observe(liveTelemetryStore.getSnapshot());
+        const unsubscribeImpact = liveTelemetryStore.subscribeSnapshot(observeImpact);
+        observeImpact();
         discardBrowserModels();
         void (async () => {
             try {
@@ -170,7 +177,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     lastSaveStep.current = next.steps;
                     void save();
                 }
-            }, Date.now, () => manualControls.current?.read() ?? Promise.resolve(null));
+            }, Date.now, () => manualControls.current?.read() ?? Promise.resolve(null),
+            (previous, current) => monitor.between(previous, current));
         }
         const timer = setInterval(() => setInputs(read()), 250);
         const releaseTest = () => {
@@ -196,6 +204,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         window.addEventListener('beforeunload', onUnload);
         return () => {
             cancelled = true;
+            unsubscribeImpact();
             mounted.current = false;
             // This ref is a cancellation counter, not a DOM node.
             // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -387,18 +396,18 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             <section className="driving-card driving-ai-input" aria-label="AI driver">
                 <div className="driving-card-title"><h2>AI driver</h2><span>{aiActive ? state.source === 'ai' ? 'Driving' : 'Human has control' : 'Not started'}</span></div>
                 <p>Start AI training or evaluation when live inputs are ready. If you are already driving, you keep control until Return to AI.</p>
-                <p>CNN–LSTM actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle, brake and steering, plus learned hold gear, shift up and shift down.</p>
+                <p>CNN–LSTM actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle/brake and steering, plus learned hold gear, shift up and shift down. Throttle/brake ranges from −1 (full brake) through 0 (both released) to 1 (full throttle).</p>
                 <p>{config.memory.windowMs / 1000}-second observation history covers {fullObservationHistory ? 'all AI observation inputs' : 'the observation inputs selected in this saved model'} during training and evaluation, sampled in {config.memory.intervalMs} ms bins. Memory starts fresh after stopping, changing drivers or interrupted inputs.</p>
-                <p>One action plan predicts controls at {config.actions.planTimesSeconds.join(', ')} seconds. The AI applies the 0-second action and refreshes the whole plan with each fresh observation. Later steps learn from the actions taken during uninterrupted training.</p>
+                <p>One action plan predicts controls at {config.actions.planTimesSeconds.join(', ')} seconds. The AI follows these steps while computing, replacing the whole plan as soon as a new output is ready. Reward trains each executed step; human driving teaches future steps from demonstrated actions.</p>
                 <p className="driving-note">Each model JSON contains its inputs, memory, network, training settings and weights. Training and evaluation load that JSON each time they start.</p>
                 <table className="driving-pedals" aria-label="Planned driving actions">
                     <caption>Action plan · 0–{planEnd} seconds</caption>
-                    <thead><tr><th scope="col">Time</th><th scope="col">Throttle</th><th scope="col">Brake</th><th scope="col">Steering</th><th scope="col">Shift</th></tr></thead>
+                    <thead><tr><th scope="col">Time</th><th scope="col">Throttle / brake</th><th scope="col">Steering</th><th scope="col">Shift</th></tr></thead>
                     <tbody>{state.plan ? state.plan.map(({ timeSeconds, action }) => <tr key={timeSeconds}>
                         <th scope="row">{timeSeconds.toFixed(1)} s</th>
-                        <td>{(action.throttle * 100).toFixed(1)}%</td><td>{(action.brake * 100).toFixed(1)}%</td>
+                        <td>{(action.throttle - action.brake).toFixed(3)}</td>
                         <td>{action.steering.toFixed(3)}</td><td>{action.shiftUp ? 'Up' : action.shiftDown ? 'Down' : 'Hold'}</td>
-                    </tr>) : <tr><td colSpan={5}>Waiting for AI control and fresh inputs.</td></tr>}</tbody>
+                    </tr>) : <tr><td colSpan={4}>Waiting for AI control and fresh inputs.</td></tr>}</tbody>
                 </table>
                 <p className="driving-note">Disable automatic gears in the simulator and bind both shift buttons before training. The model learns gear choices from driving rewards. Shifts use {config.actions.shiftPulseMs / 1000}-second presses with at least {config.actions.shiftCooldownMs / 1000} seconds between shifts. Downshifts are allowed in every gear, including neutral and reverse.</p>
                 <div className="driving-metrics"><div><strong>{modelSteps ?? 0}</strong><span>Learning steps</span></div>
@@ -521,9 +530,9 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <div><dt>Drive toward the reference line</dt><dd>{state.reward?.approach.toFixed(3) ?? '0.000'}</dd><p>Each frame is compared with the previous frame. Closing the distance beyond 3 raw coordinate units earns reward; increasing it incurs a penalty. Only the part of a change outside 3 units is scored. Changes entirely within 3 units and unchanged distance earn zero. Standing still or reversing earns no approach reward.</p></div>
                     <div><dt>Normalized position progress</dt><dd>{state.reward?.progress.toFixed(3) ?? '0.000'}</dd><p>Faster increases in normalized lap position per second earn more reward; backward progress is penalized. Start/finish crossings preserve the direction of progress. Forward progress earns a separate reward even when reference distance stays steady. Zero speed or unchanged normalized position subtracts {(0.25 * config.reward.lineWeight * 0.01).toFixed(3)} reward per second.</p></div>
                     <div><dt>Impact penalty</dt><dd>{state.reward?.impact.toFixed(3) ?? '0.000'}</dd>
-                        <p>Abrupt changes in horizontal local velocity, with an allowance for measured steering, estimate possible impacts. Confidence of at least 60% applies a penalty scaled by confidence and severity. These are heuristic estimates; spins and extreme braking can resemble impacts. Car damage telemetry is not used.</p>
+                        <p>Live telemetry checks for impacts between AI frames, including brief bounces followed by sliding. With the brake released, unexpected slowing uses a smaller coasting allowance at every speed. With steering also centered, sideways deflection adds evidence of a diagonal impact. The strongest detected impact within each training interval applies a penalty. Confidence of at least {IMPACT_CONFIDENCE_THRESHOLD * 100}% applies a penalty scaled by confidence and severity. Severity reaches 100 at 10 m/s of excess velocity change. These are heuristic estimates; spins and extreme braking can resemble impacts. Car damage telemetry is not used.</p>
                         <p aria-label="Impact estimate">{!state.reward ? 'Waiting for two fresh motion samples.'
-                            : !state.reward.impactEstimate.available ? 'Impact estimate unavailable: telemetry samples must be 20–500 ms apart.'
+                            : !state.reward.impactEstimate.available ? 'Impact estimate unavailable: no reliable 20–500 ms telemetry interval.'
                             : `${state.reward.impactEstimate.detected ? 'Possible impact' : 'No impact detected'} · Confidence ${(state.reward.impactEstimate.confidence * 100).toFixed(0)}% · Estimated severity ${(state.reward.impactEstimate.severity * 100).toFixed(0)}/100 · Excess Δv ${state.reward.impactEstimate.deltaV.toFixed(2)} m/s`}</p>
                         <p>Severity measures excess velocity change, reaching 100 at 15 m/s. It does not estimate vehicle damage. Values describe the latest scored transition.</p>
                     </div>

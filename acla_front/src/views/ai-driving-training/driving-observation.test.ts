@@ -9,6 +9,55 @@ import { IMPACT_PENALTY_WEIGHT } from './driving-impact';
 const { AccAdapter } = require('../../../electron/recording/readers/acc/acc-adapter');
 
 describe('impact reward', () => {
+    it.each(['acc', 'iracing'])('penalizes diagonal impacts in all four directions for %s', (game) => {
+        const { observation } = trainingFixture();
+        const velocity = (right: number, forward: number): [number, number, number] =>
+            game === 'iracing' ? [right, 0, forward] : [right, forward, 0];
+        const before = { ...observation, context: { ...observation.context, game },
+            controls: { ...observation.controls, steering: 0.4 }, localVelocity: velocity(0, 30) };
+        for (const forward of [-1, 1]) {
+            for (const right of [-1, 1]) {
+                const after = { ...before, capturedAt: 1100, measuredAt: 1100,
+                    speed: Math.hypot(3 * right, 30 + 3 * forward) * 3.6, localVelocity: velocity(3 * right, 30 + 3 * forward) };
+                const reward = drivingReward(before, after);
+                expect(reward.impactEstimate.detected).toBe(true);
+                expect(reward.impact).toBeLessThan(0);
+                expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress + reward.impact);
+                expect(drivingReward(after, { ...after, capturedAt: 1200, measuredAt: 1200 }).impact).toBe(0);
+            }
+        }
+    });
+
+    it.each(['acc', 'iracing'])('penalizes an unbraked 10 km/h impact in %s without penalizing a braked stop', (game) => {
+        const { observation } = trainingFixture();
+        const before = { ...observation, context: { ...observation.context, game }, speed: 10,
+            localVelocity: (game === 'iracing' ? [0, 0, 10 / 3.6] : [0, 10 / 3.6, 0]) as [number, number, number] };
+        const after = { ...before, capturedAt: 1500, measuredAt: 1500, speed: 0,
+            localVelocity: [0, 0, 0] as [number, number, number] };
+        const reward = drivingReward(before, after);
+        expect(reward.impactEstimate.detected).toBe(true);
+        expect(reward.impact).toBeLessThan(-0.25);
+        expect(reward.impact).toBeGreaterThan(-1);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress + reward.impact);
+        expect(drivingReward(before, { ...after, controls: { ...after.controls, brake: 0.5 } }).impact).toBe(0);
+        expect(drivingReward(after, { ...after, capturedAt: 1700, measuredAt: 1700 }).impact).toBe(0);
+    });
+
+    it.each(['acc', 'iracing'])('penalizes smaller impacts for %s and scales up with impulse', (game) => {
+        const { observation } = trainingFixture();
+        const velocity = (forward: number): [number, number, number] => game === 'iracing' ? [0, 0, forward] : [0, forward, 0];
+        const before = { ...observation, context: { ...observation.context, game }, localVelocity: velocity(30) };
+        const after = { ...before, capturedAt: 1100, measuredAt: 1100, speed: 26 * 3.6, localVelocity: velocity(26) };
+        const small = drivingReward(before, after);
+        const larger = drivingReward(before, { ...after, speed: 24 * 3.6, localVelocity: velocity(24) });
+        expect(small.impactEstimate.detected).toBe(true);
+        expect(small.impact).toBeLessThan(-0.3);
+        expect(larger.impact).toBeLessThan(-1.5);
+        expect(larger.impact).toBeLessThan(small.impact);
+        expect(small.total).toBeCloseTo(small.timing + small.line + small.approach + small.progress + small.impact);
+        expect(drivingReward(after, { ...after, capturedAt: 1200, measuredAt: 1200 }).impact).toBe(0);
+    });
+
     it.each(['acc', 'iracing'])('uses the horizontal adapter axes for %s and ignores vertical bumps', (game) => {
         const { observation } = trainingFixture();
         const before = { ...observation, context: { ...observation.context, game },
@@ -29,7 +78,7 @@ describe('impact reward', () => {
         expect(drivingReward(before, after, config).total).toBe(-1);
     });
 
-    it('does not read damage telemetry or use yaw, pedals, gear, speed or reference offsets to infer impacts', () => {
+    it('does not read damage telemetry or use yaw, throttle, gear, speed or reference offsets to infer impacts', () => {
         const fixture = trainingFixture();
         for (const side of ['front', 'rear', 'left', 'right', 'center']) {
             Object.defineProperty(fixture.vision.telemetry!.currentTelemetry, `Physics_car_damage_${side}`,
@@ -40,7 +89,7 @@ describe('impact reward', () => {
         const impact = drivingReward(before, after).impactEstimate;
         expect(impact.detected).toBe(true);
         expect(drivingReward(before, { ...after, yawRate: 100, speed: 300, gear: -1, referenceDistance: 99,
-            controls: { ...after.controls, throttle: 1, brake: 1 } }).impactEstimate).toEqual(impact);
+            controls: { ...after.controls, throttle: 1 } }).impactEstimate).toEqual(impact);
         expect(drivingReward(before, { ...after, measuredAt: 1600, capturedAt: 1600 }))
             .toMatchObject({ impact: 0, impactEstimate: { available: false } });
         expect(() => drivingReward(before, { ...after, session: 'new session' })).toThrow(/boundary/);

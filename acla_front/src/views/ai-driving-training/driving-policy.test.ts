@@ -21,7 +21,7 @@ const action = { throttle: 0.7, brake: 0.1, steering: -0.3, shiftUp: true };
 it('requires GPU initialization for every prediction and learning entry point', async () => {
     const { policy, input } = setup();
     await expect(policy.decideAsync(input, false)).rejects.toThrow(/Initialize.*GPU/);
-    await expect(policy.learnAsync({} as any, 1, input, 0.2)).rejects.toThrow(/Initialize.*GPU/);
+    await expect(policy.learnAsync({} as any, 1, input, 0.2, [])).rejects.toThrow(/Initialize.*GPU/);
     await expect(policy.learnDemonstrationAsync(input, action, shifts)).rejects.toThrow(/Initialize.*GPU/);
     await expect(policy.learnPlannedActionsAsync(input, [])).rejects.toThrow(/Initialize.*GPU/);
     const train = jest.fn(async () => undefined);
@@ -61,15 +61,42 @@ it.each([0.1, 0.7, 0.95])('decodes GPU outputs, samples controls and preserves e
     expect(decision.plan[0].shiftProbabilities).toEqual([1, 0, 0]);
     expect(decision.plan[0].shifts).toEqual({ up: false, down: false });
     expect(decision.plan[0].shift).toBe(0);
+    decision.plan.forEach(({ means, latent }) => expect(latent).not.toEqual(means));
     decision.plan.forEach(({ action: result }) => {
         expect(result.throttle).toBeGreaterThanOrEqual(0);
         expect(result.throttle).toBeLessThanOrEqual(1);
+        expect(result.brake).toBeGreaterThanOrEqual(0);
+        expect(result.brake).toBeLessThanOrEqual(1);
+        expect(result.throttle * result.brake).toBe(0);
         expect(Math.abs(result.steering)).toBeLessThanOrEqual(1);
         expect(result.shiftUp && result.shiftDown).toBe(false);
     });
     expect(decision).not.toHaveProperty('sequence');
     policy.releaseDecision(decision);
     expect(decision.gpu.released).toBe(true);
+});
+
+it.each([-100, -0.7, 0, 0.4, 100])('decodes a signed pedal output for every plan slot (latent=%s)', async (pedalLatent) => {
+    const { policy, input } = setup();
+    await policy.initializeGpu();
+    const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
+    const prediction = await gpu.forward(input);
+    prediction.outputs = [...policy.planTimes.flatMap(() => [pedalLatent, Math.atanh(-0.3), 0, 4, -1]), 0.75];
+    jest.mocked(gpu.forward).mockResolvedValueOnce(prediction);
+    const decision = await policy.decideAsync(input, false);
+    expect(decision.value).toBe(0.75);
+    for (const { action: result, means, latent } of decision.plan) {
+        const pedal = Math.tanh(pedalLatent);
+        expect(result.throttle).toBe(Math.max(0, pedal));
+        expect(result.brake).toBe(Math.max(0, -pedal));
+        expect(result.throttle - result.brake).toBe(pedal);
+        expect(result.steering).toBeCloseTo(-0.3);
+        expect(result.shiftUp).toBe(true);
+        expect(result.shiftDown).toBe(false);
+        expect(means).toHaveLength(2);
+        expect(latent).toHaveLength(2);
+    }
+    policy.releaseDecision(decision);
 });
 
 it('sends raw demonstration and delayed targets straight to GPU learning without inference readback', async () => {
@@ -86,15 +113,16 @@ it('sends raw demonstration and delayed targets straight to GPU learning without
     expect(policy.steps).toBe(1);
 });
 
-it.each([false, true])('sends reward, elapsed time and sampled action to GPU actor/critic learning (terminal=%s)', async (terminal) => {
+it.each([false, true])('sends reward and every executed plan slot to GPU actor/critic learning (terminal=%s)', async (terminal) => {
     const { policy, input } = setup();
     await policy.initializeGpu();
     const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
     const decision = await policy.decideAsync(input, true, shifts);
-    await policy.learnAsync(decision, 0.8, input, 0.3, terminal);
+    const credits = [0, 2, 6].map((step) => ({ step, weight: 1 / 3, shift: decision.plan[step].shift, shifts: decision.plan[step].shifts }));
+    await policy.learnAsync(decision, 0.8, input, 0.3, credits, terminal);
     expect(gpu.learnTransition).toHaveBeenCalledWith(decision.gpu, input, {
         reward: 0.8, elapsedSeconds: 0.3, terminal,
-        latent: decision.plan[0].latent, shift: decision.plan[0].shift, shifts,
+        actions: credits.map((credit) => ({ ...credit, latent: decision.plan[credit.step].latent })),
     });
     expect(gpu.forward).toHaveBeenCalledTimes(1);
     expect(gpu.weights).not.toHaveBeenCalled();
@@ -113,7 +141,7 @@ it('rejects invalid targets and transitions before submitting GPU learning', asy
     }
     const decision = await policy.decideAsync(input, false);
     for (const [reward, elapsed] of [[NaN, 0.2], [1, 0], [1, -1], [1, Infinity]]) {
-        await expect(policy.learnAsync(decision, reward, input, elapsed)).rejects.toThrow(/transition/);
+        await expect(policy.learnAsync(decision, reward, input, elapsed, [])).rejects.toThrow(/transition/);
     }
     await policy.learnPlannedActionsAsync(input, []);
     expect(gpu.learnTargets).not.toHaveBeenCalled();
@@ -126,15 +154,32 @@ it('waits once for GPU batch completion before allowing a checkpoint readback', 
     await policy.initializeGpu();
     const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
     let finish!: () => void;
+    const submitted = jest.fn(() => {
+        expect(gpu.learnTargets).toHaveBeenCalledTimes(1);
+        expect(gpu.finishTraining).not.toHaveBeenCalled();
+    });
     jest.mocked(gpu.finishTraining).mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
-    const batch = policy.trainBatchAsync(async () => { await policy.learnDemonstrationAsync(input, action, shifts); });
+    const batch = policy.trainBatchAsync(async () => { await policy.learnDemonstrationAsync(input, action, shifts); }, submitted);
     const saved = policy.checkpointAsync();
     for (let i = 0; i < 10; i++) await Promise.resolve();
     expect(gpu.finishTraining).toHaveBeenCalledTimes(1);
+    expect(submitted).toHaveBeenCalledTimes(1);
     expect(gpu.weights).not.toHaveBeenCalled();
     finish(); await batch;
     expect((await saved).model.steps).toBe(1);
     expect(gpu.weights).toHaveBeenCalledTimes(1);
+});
+
+it('does not report submission or enter the GPU wait when batch preparation fails', async () => {
+    const { policy } = setup();
+    await policy.initializeGpu();
+    const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
+    const submitted = jest.fn();
+    await expect(policy.trainBatchAsync(async () => { throw new Error('Submission failed'); }, submitted))
+        .rejects.toThrow('Submission failed');
+    expect(submitted).not.toHaveBeenCalled();
+    expect(gpu.finishTraining).not.toHaveBeenCalled();
+    await expect(policy.checkpointAsync()).resolves.toHaveProperty('model');
 });
 
 it('propagates GPU failures and never switches to CPU computation', async () => {

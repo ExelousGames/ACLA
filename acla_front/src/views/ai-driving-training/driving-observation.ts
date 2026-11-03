@@ -141,7 +141,7 @@ export interface DrivingReward {
 export const REFERENCE_LINE_TARGET_DISTANCE = 3;
 
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
-    config = DEFAULT_DRIVING_CONFIG): DrivingReward {
+    config = DEFAULT_DRIVING_CONFIG, telemetryImpact?: DrivingImpact): DrivingReward {
     const r = config.reward;
     const dt = (current.capturedAt - previous.capturedAt) / 1000;
     if (dt <= 0 || dt > config.runtime.maxTransitionSeconds || previous.session !== current.session) throw new Error('Training transition crossed a session boundary or data gap.');
@@ -186,8 +186,8 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
         ? r.lineWeight * clamp(correctionDistance / previous.reference.length, -r.progressLimit, r.progressLimit) : 0;
     const impactSample = (observation: DrivingObservation): ImpactSample => ({ measuredAt: observation.measuredAt,
         velocity: [observation.localVelocity[0], observation.localVelocity[observation.context.game === 'iracing' ? 2 : 1]],
-        steering: observation.controls.steering });
-    const impactEstimate = detectDrivingImpact(impactSample(previous), impactSample(current));
+        steering: observation.controls.steering, brake: observation.controls.brake });
+    const impactEstimate = telemetryImpact ?? detectDrivingImpact(impactSample(previous), impactSample(current));
     const impact = impactEstimate.detected ? -IMPACT_PENALTY_WEIGHT * impactEstimate.confidence * impactEstimate.severity : 0;
     return { timing, line, approach, progress, impact, impactEstimate,
         speedComparison: { ...speeds, measured: current.speed, aggression: previous.aggression, speedGoalProgress,

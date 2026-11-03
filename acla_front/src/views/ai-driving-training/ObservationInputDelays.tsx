@@ -35,7 +35,6 @@ export default function ObservationInputDelays({ snapshot, telemetryMaxAgeMs, vi
     const timing = snapshot?.latestTiming;
     const model = snapshot?.modelTiming;
     const stageIndex = VISION_TIMING_STAGES.findIndex(({ id }) => id === timing?.currentStage);
-    const stage = DISPLAY_TIMING_STAGES.find(({ index }) => index === stageIndex);
     return <section className="driving-card driving-input-delays" aria-label="Input profiling">
         <h2>Input profiling</h2>
         <p>Telemetry freshness, input processing and driving model timings for diagnosing delays.</p>
@@ -57,35 +56,41 @@ export default function ObservationInputDelays({ snapshot, telemetryMaxAgeMs, vi
             <thead><tr><th scope="col">Stage</th><th scope="col">Delay</th></tr></thead>
             <tbody>{DISPLAY_TIMING_STAGES.map(({ id, label, index }) => <tr key={id}>
                 <th scope="row">{label}</th>
-                <td>{timing?.currentStage === id ? `${milliseconds(timing.stageElapsedMs)} · Running`
+                <td>{timing?.currentStage === id ? 'Running'
                     : timing?.stages[id] !== undefined ? milliseconds(timing.stages[id])
                         : !timing ? 'Unavailable' : timing.state === 'processing' && index > stageIndex ? 'Pending' : 'Not run'}</td>
             </tr>)}</tbody>
-            <tfoot><tr><th scope="row">Total frame processing</th><td>{milliseconds(timing?.totalMs)}
-                {timing && ` · ${timing.state === 'processing' ? 'Running' : timing.state === 'complete' ? 'Complete' : 'Incomplete'}`}</td></tr></tfoot>
+            <tfoot><tr><th scope="row">Total frame processing</th><td>{timing?.state === 'processing' ? 'Running'
+                : `${milliseconds(timing?.totalMs)}${timing ? ` · ${timing.state === 'complete' ? 'Complete' : 'Incomplete'}` : ''}`}</td></tr></tfoot>
         </table>
-        {stage && <p className="driving-note">Currently processing: {stage.label}. AI uses the last published frame while this capture finishes.</p>}
         <table className="driving-delay-stages">
             <caption>Driving model processing</caption>
             <thead><tr><th scope="col">Stage</th><th scope="col">Delay</th></tr></thead>
             <tbody>{DRIVING_MODEL_TIMING_STAGES.map(({ id, label }) => <tr key={id}>
                 <th scope="row">{label}</th>
-                <td>{model?.currentStage === id ? `${milliseconds(model.stageElapsedMs)} · Running`
+                <td>{model?.currentStage === id ? 'Running'
                     : model?.stages[id] !== undefined ? milliseconds(model.stages[id])
                         : !model ? 'Unavailable' : model.state === 'processing' ? 'Not run yet' : 'Not run'}</td>
             </tr>)}</tbody>
-            <tfoot><tr><th scope="row">Total driving model cycle</th><td>{milliseconds(model?.totalMs)}
-                {model && ` · ${model.state === 'processing' ? 'Running' : model.state === 'complete' ? 'Complete' : 'Incomplete'}`}</td></tr></tfoot>
+            <tfoot><tr><th scope="row">Total driving model cycle</th><td>{model?.state === 'processing' ? 'Running'
+                : `${milliseconds(model?.totalMs)}${model ? ` · ${model.state === 'complete' ? 'Complete' : 'Incomplete'}` : ''}`}</td></tr></tfoot>
         </table>
+        <dl className="driving-details">
+            <dt>Replay count</dt><dd>{model?.replayCount ?? 'Unavailable'}</dd>
+            <dt>History length</dt><dd>{model?.historyLength ?? 'Unavailable'}</dd>
+        </dl>
         <p className="driving-note">{model
             ? `Latest model cycle: ${model.training ? 'Training' : 'Evaluation'} · ${model.source === 'ai' ? 'AI' : 'Human'} control.
                 Observation age: ${milliseconds(age(now, model.capturedAt))}.${model.finishedAt === undefined ? ''
                     : ` Finished ${milliseconds(age(now, model.finishedAt))} ago.`}`
             : 'Waiting for a driving model cycle on fresh inputs.'}</p>
-        <p className="driving-note">Model timings measure elapsed work and async waits. Inference includes camera encoding,
-            policy evaluation and output readback, which can also wait for earlier GPU training work.
-            Training includes learning from AI actions or human demonstrations and submitting weight updates;
-            it does not wait for all GPU updates to finish. These are not GPU kernel timings.
+        <p className="driving-note">Training CPU preparation / submission measures elapsed CPU-side work through the last submission,
+            including learning from AI actions or human demonstrations and delayed plan replays.
+            GPU completion wait measures the subsequent queue wait, including queued work and scheduling delays.
+            Inference includes camera encoding, policy evaluation and output readback.
+            These elapsed times are separate from GPU timestamp queries used to measure individual passes.
+            Replay count counts delayed plan samples submitted this cycle. History length counts populated history bins
+            in the current input, excluding the current observation.
             The latest cycle remains visible while stopped or waiting for fresh inputs.</p>
         <p className="driving-note">Updates every 250 ms, including when inputs are invalid. Stage times include queue waits;
             the frame total includes all shared Track Vision processing, including stages not listed here.

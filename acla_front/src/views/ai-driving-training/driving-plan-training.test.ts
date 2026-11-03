@@ -51,3 +51,21 @@ it('discards pending time slots on reset', async () => {
     await training.recordAsync(policy, features, NEUTRAL, shifts, 1500);
     expect(learn).not.toHaveBeenCalled();
 });
+
+it('counts submitted replays, excluding pending, cancelled and failed samples', async () => {
+    const { policy, learn, training, features } = setup();
+    const submitted = jest.fn();
+    let active = true;
+    const record = (at: number) => training.recordAsync(policy, features, NEUTRAL, shifts, at, () => active, submitted);
+    await record(1000);
+    await record(1100);
+    expect(submitted).not.toHaveBeenCalled();
+    learn.mockImplementationOnce(async () => { active = false; });
+    await record(1600); // Both plans are due; only the first is submitted before cancellation.
+    expect(learn).toHaveBeenCalledTimes(1);
+    expect(submitted).toHaveBeenCalledTimes(1);
+    active = true;
+    learn.mockRejectedValueOnce(new Error('GPU lost'));
+    await expect(record(2100)).rejects.toThrow('GPU lost');
+    expect(submitted).toHaveBeenCalledTimes(1);
+});

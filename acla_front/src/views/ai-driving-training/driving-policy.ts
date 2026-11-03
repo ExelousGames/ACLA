@@ -28,6 +28,12 @@ export interface PlannedActionTarget {
     action: DrivingAction;
     shifts: ShiftAvailability;
 }
+export interface PlanStepCredit {
+    step: number;
+    weight: number;
+    shift: ShiftChoice;
+    shifts: ShiftAvailability;
+}
 export interface PolicyModelState {
     context: DrivingObservation['context'];
     inputs: number;
@@ -141,7 +147,7 @@ export class DrivingPolicy {
         const { pass, outputs } = await this.requireGpu().forward(input);
         const plan = this.planTimes.map((timeSeconds, step) => this.actionDecision(
             outputs.slice(step * this.actionOutputs, (step + 1) * this.actionOutputs), timeSeconds,
-            explore && step === 0, step === 0 ? shifts : { up: true, down: true }));
+            explore, step === 0 ? shifts : { up: true, down: true }));
         return { input, gpu: pass, value: outputs[this.criticOutput], plan };
     }
 
@@ -154,12 +160,12 @@ export class DrivingPolicy {
     releaseDecision(decision?: PolicyDecision) { if (decision?.gpu) this.gpu?.release(decision.gpu); }
 
     private actionDecision(outputs: number[], timeSeconds: number, explore: boolean, shifts: ShiftAvailability): ActionDecision {
-        const means = outputs.slice(0, 3);
+        const means = outputs.slice(0, 2);
         const latent = means.map((mean) => mean + (explore ? this.configuration.learning.explorationSigma * Math.sqrt(-2 * Math.log(Math.max(1e-9, this.random())))
             * Math.cos(2 * Math.PI * this.random()) : 0));
         // Mask before sampling. GPU learning reuses the execution-time mask
         // with the retained GPU logits to calculate the policy gradient.
-        const shiftLogits = outputs.slice(3);
+        const shiftLogits = outputs.slice(2);
         const shiftProbabilities = this.shiftProbabilities(shiftLogits, shifts);
         let shift: ShiftChoice = 0;
         if (explore) {
@@ -171,8 +177,9 @@ export class DrivingPolicy {
                 if (draw < cumulative) break;
             }
         } else shift = shiftProbabilities.indexOf(Math.max(...shiftProbabilities)) as ShiftChoice;
-        const action = { throttle: 1 / (1 + Math.exp(-latent[0])), brake: 1 / (1 + Math.exp(-latent[1])),
-            steering: Math.tanh(latent[2]), shiftUp: shift === 1, shiftDown: shift === 2 };
+        const pedal = Math.tanh(latent[0]);
+        const action = { throttle: Math.max(0, pedal), brake: Math.max(0, -pedal),
+            steering: Math.tanh(latent[1]), shiftUp: shift === 1, shiftDown: shift === 2 };
         return { timeSeconds, means, latent, shift, shiftProbabilities, shifts: { ...shifts }, action };
     }
 
@@ -185,12 +192,13 @@ export class DrivingPolicy {
     }
 
     /** Submit learning without reading back the bootstrap value or advantage. */
-    async learnAsync(decision: PolicyDecision, reward: number, next: DrivingPolicyInput, elapsedSeconds: number, terminal = false): Promise<void> {
+    async learnAsync(decision: PolicyDecision, reward: number, next: DrivingPolicyInput, elapsedSeconds: number,
+        credits: PlanStepCredit[], terminal = false): Promise<void> {
         const gpu = this.requireGpu();
         if (!Number.isFinite(reward) || !Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) throw new Error('Invalid training transition.');
         if (!decision.gpu) throw new Error('Missing GPU training sample.');
-        const { latent, shift, shifts } = decision.plan[0];
-        gpu.learnTransition(decision.gpu, next, { reward, elapsedSeconds, terminal, latent, shift, shifts });
+        gpu.learnTransition(decision.gpu, next, { reward, elapsedSeconds, terminal,
+            actions: credits.map((credit) => ({ ...credit, latent: decision.plan[credit.step].latent })) });
         this.steps++;
     }
 
@@ -222,11 +230,15 @@ export class DrivingPolicy {
     }
 
     /** Keep a checkpoint from observing only part of a training tick. */
-    async trainBatchAsync(train: () => Promise<void>): Promise<void> {
+    async trainBatchAsync(train: () => Promise<void>, onSubmitted?: () => void): Promise<void> {
         const gpu = this.requireGpu();
         let finish!: () => void;
         this.gpuBatch = new Promise<void>((resolve) => { finish = resolve; });
-        try { await train(); await gpu.finishTraining(); }
+        try {
+            await train();
+            onSubmitted?.();
+            await gpu.finishTraining();
+        }
         finally { this.gpuBatch = undefined; finish(); }
     }
 

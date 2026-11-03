@@ -37,6 +37,11 @@ async function checks() {
     const assert = (condition, label) => { if (!condition) throw new Error(label); };
     const errors = [];
     let readbacks = 0;
+    let bufferAllocations = 0, bindGroupAllocations = 0;
+    const createBuffer = GPUDevice.prototype.createBuffer, createBindGroup = GPUDevice.prototype.createBindGroup;
+    GPUDevice.prototype.createBuffer = function (...args) { bufferAllocations++; return createBuffer.apply(this, args); };
+    GPUDevice.prototype.createBindGroup = function (...args) { bindGroupAllocations++; return createBindGroup.apply(this, args); };
+    const allocations = () => [bufferAllocations, bindGroupAllocations];
     const mapAsync = GPUBuffer.prototype.mapAsync;
     GPUBuffer.prototype.mapAsync = function (...args) { readbacks++; return mapAsync.apply(this, args); };
     const withoutReadbacks = async (label, train) => {
@@ -103,6 +108,8 @@ async function checks() {
         return { features, cameras };
     };
     const shifts = { up: true, down: false }, action = { throttle: 0.7, brake: 0.12, steering: -0.3, shiftUp: true };
+    const credits = (decision, steps = decision.plan.map((_, step) => step)) => steps.map(step =>
+        ({ step, weight: 1 / steps.length, shift: decision.plan[step].shift, shifts: decision.plan[step].shifts }));
     const results = [];
     for (const layout of ['default', 'custom', 'boundary']) {
         const config = cloneConfig();
@@ -141,19 +148,25 @@ async function checks() {
         await withoutReadbacks('demonstration', () => gpu.learnDemonstrationAsync(input, action, shifts));
         const demonstration = await gpu.checkpointAsync();
         assertTrained(initial, demonstration, 'demonstration');
-        close(initial.model.outputWeights.slice(6).flat(), demonstration.model.outputWeights.slice(6).flat(), 'Only the demonstrated slot learns');
+        close(initial.model.outputWeights.slice(5).flat(), demonstration.model.outputWeights.slice(5).flat(), 'Only the demonstrated slot learns');
         await withoutReadbacks('distinct historical images', () => gpu.learnDemonstrationAsync(makeInput(config, 5, true, true), action, shifts));
         gpu.random = () => 0.99;
         for (const [reward, terminal, available] of [[0.8, false, shifts], [-20, false, { up: false, down: true }],
             [20, true, { up: false, down: false }], [-0.6, true, { up: true, down: true }]]) {
             const before = await gpu.checkpointAsync(), decision = await gpu.decideAsync(input, true, available);
             const following = terminal ? { features: [], cameras: [] } : next;
-            await withoutReadbacks('actor-critic', () => gpu.learnAsync(decision, reward, following, 0.35, terminal));
+            const executed = [0, decision.plan.length - 1];
+            await withoutReadbacks('actor-critic', () => gpu.learnAsync(decision, reward, following, 0.35, credits(decision, executed), terminal));
             gpu.releaseDecision(decision);
             const after = await gpu.checkpointAsync();
             assertTrained(before, after, 'actor-critic');
-            close(before.model.outputWeights.slice(6, -1).flat(), after.model.outputWeights.slice(6, -1).flat(), 'Unexecuted plans receive no reward');
-            if (!available.up && !available.down) close(before.model.outputWeights.slice(3, 6).flat(), after.model.outputWeights.slice(3, 6).flat(), 'Forced hold receives no shift gradient');
+            for (let step = 0; step < decision.plan.length; step++) {
+                const from = before.model.outputWeights.slice(step * 5, (step + 1) * 5);
+                const to = after.model.outputWeights.slice(step * 5, (step + 1) * 5);
+                if (executed.includes(step)) assert(changed(from, to), `Executed plan slot ${step} receives reward`);
+                else close(from.flat(), to.flat(), `Unexecuted slot ${step} receives no reward`);
+            }
+            if (!available.up && !available.down) close(before.model.outputWeights.slice(2, 5).flat(), after.model.outputWeights.slice(2, 5).flat(), 'Forced hold receives no shift gradient');
         }
         for (const [pedal, steering, available] of [[0, -1, { up: false, down: false }], [1, 1, { up: false, down: true }]]) {
             await withoutReadbacks('boundary demonstration', () => gpu.learnDemonstrationAsync(input,
@@ -166,7 +179,7 @@ async function checks() {
         const afterPlan = await gpu.checkpointAsync();
         assertTrained(beforePlan, afterPlan, 'delayed target');
         assert(afterPlan.model.steps === beforePlan.model.steps, 'Delayed targets do not count transitions');
-        close(beforePlan.model.outputWeights.slice(0, finalSlot * 6).flat(), afterPlan.model.outputWeights.slice(0, finalSlot * 6).flat(), 'Earlier slots receive no delayed gradient');
+        close(beforePlan.model.outputWeights.slice(0, finalSlot * 5).flat(), afterPlan.model.outputWeights.slice(0, finalSlot * 5).flat(), 'Earlier slots receive no delayed gradient');
         close(beforePlan.model.outputWeights.slice(-1).flat(), afterPlan.model.outputWeights.slice(-1).flat(), 'No critic gradient from demonstrations');
         const twin = await create(config, afterPlan), finalTarget = { step: finalSlot, action: { throttle: 0.1, brake: 0.9, steering: 0.4 }, shifts: { up: false, down: false } };
         await gpu.learnPlannedActionsAsync(input, [{ step: finalSlot, action, shifts }, finalTarget]);
@@ -199,6 +212,7 @@ async function checks() {
         const timing = [];
         if (layout === 'default') {
             const samples = Array.from({ length: 7 }, (_, i) => makeInput(config, i, true, true));
+            let warmedAllocations, warmedBuffers;
             for (let iteration = 0; iteration < 2; iteration++) {
                 const start = performance.now(), beforeReadbacks = readbacks;
                 await withoutReadbacks('Full training tick', () => gpu.trainBatchAsync(async () => {
@@ -208,7 +222,12 @@ async function checks() {
                 await predict(gpu, next);
                 assert(readbacks === beforeReadbacks + 1, 'Only the control decision reads back during a training tick');
                 timing.push(performance.now() - start);
-                assert(gpu.gpu.buffers.size === bufferCount, 'GPU buffers remain bounded across ticks');
+                if (iteration === 0) { warmedAllocations = allocations(); warmedBuffers = gpu.gpu.buffers.size; }
+                else {
+                    assert(gpu.gpu.buffers.size === warmedBuffers, 'GPU buffers remain bounded across ticks');
+                    assert(allocations().every((count, i) => count === warmedAllocations[i]),
+                        'Warmed training ticks reuse all temporary GPU buffers and bind groups');
+                }
             }
         }
         const validation = await gpu.gpu.device.popErrorScope(); assert(!validation, validation?.message);
@@ -229,16 +248,53 @@ async function checks() {
     config.network.cameraLayers.forEach(layer => { layer.channels = 1; });
     config.network.cameraProjectionUnits = 32;
     config.learning.demonstrationRate = 0.05;
+    // Verify signed pedal targets, including overlapping human pedals and coast,
+    // against independently calculated output-bias updates on the real GPU.
+    const pedalSeed = new DrivingPolicy({ game: 'acc', car: 'GT3', map: 'monza' }, drivingObservationInputs(config), () => 0.6, config).checkpoint();
+    pedalSeed.model.outputWeights.forEach(row => row.fill(0));
+    const pedals = await create(config, pedalSeed), pedalInput = makeInput(config);
+    for (const [throttle, brake] of [[0, 0], [1, 0], [0, 1], [0.7, 0.1], [0.1, 0.7], [0.3, 0.3]]) {
+        pedals.gpu.device.queue.writeBuffer(pedals.gpu.outputWeights, 0, new Float32Array(pedalSeed.model.outputWeights.flat()));
+        const targetAction = { throttle, brake, steering: -0.3 };
+        const available = { up: false, down: false };
+        await pedals.learnDemonstrationAsync(pedalInput, targetAction, available);
+        await pedals.learnPlannedActionsAsync(pedalInput, [{ step: 1, action: targetAction, shifts: available }]);
+        const saved = await pedals.checkpointAsync();
+        const p = Math.max(config.learning.actionEpsilon - 1, Math.min(1 - config.learning.actionEpsilon, throttle - brake));
+        const expected = config.learning.demonstrationRate * Math.atanh(p);
+        close([saved.model.outputWeights[0][2], saved.model.outputWeights[5][2]], [expected, expected], 'Signed demonstration and delayed pedal targets');
+        close([saved.model.outputWeights[1][2], saved.model.outputWeights[6][2]],
+            [config.learning.demonstrationRate * Math.atanh(-0.3), config.learning.demonstrationRate * Math.atanh(-0.3)], 'Steering stays independent of pedals');
+        close(saved.model.outputWeights.slice(2, 5).flat(), pedalSeed.model.outputWeights.slice(2, 5).flat(), 'Forced hold uses the shifted logit indices');
+    }
+    pedals.dispose();
+    // Compare reused storage with a newly restored GPU for every update. Vary
+    // history length and capture sharing to expose stale state/gradient contents.
+    const reused = await create(config);
+    for (let iteration = 0; iteration < 4; iteration++) {
+        const sample = makeInput(config, iteration, iteration % 2 === 0, iteration === 2);
+        const fresh = await create(config, await reused.checkpointAsync());
+        const held = await reused.decideAsync(sample, false), expected = await fresh.decideAsync(sample, false);
+        const replay = makeInput(config, iteration + 1, true, true);
+        await reused.learnDemonstrationAsync(replay, action, shifts);
+        await fresh.learnDemonstrationAsync(replay, action, shifts);
+        await reused.learnAsync(held, 0.4, replay, 0.2, credits(held), iteration % 2 === 0);
+        await fresh.learnAsync(expected, 0.4, replay, 0.2, credits(expected), iteration % 2 === 0);
+        reused.releaseDecision(held); fresh.releaseDecision(expected);
+        compare(await reused.checkpointAsync(), await fresh.checkpointAsync(), 'Reused workspace versus fresh GPU');
+        fresh.dispose();
+    }
+    reused.dispose();
     const seedPolicy = new DrivingPolicy({ game: 'acc', car: 'GT3', map: 'monza' }, drivingObservationInputs(config), () => 0.6, config);
     const seed = seedPolicy.checkpoint();
     seed.model.cameraWeights.forEach((rows, l) => rows.forEach(row => { row.fill([0.005, 0.03, 0.05, 0.05][l]); row[row.length - 1] = 0.05; }));
     seed.model.outputWeights.forEach(row => { row[0] = 0.1; row[1] = -0.05; });
     const gpu = await create(config, seed), input = makeInput(config, 1, true, true);
-    const target = { throttle: 1 / (1 + Math.exp(1.5)), brake: 1 / (1 + Math.exp(2.5)), steering: Math.tanh(0.15), shiftUp: true };
+    const target = { throttle: Math.tanh(0.4), brake: 0, steering: Math.tanh(0.15), shiftUp: true };
     const objective = async () => {
         const decision = await predict(gpu, input);
         const means = decision.plan[0].means;
-        return -0.5 * means.reduce((sum, mean, i) => sum + (mean - [-1.5, -2.5, 0.15][i]) ** 2, 0)
+        return -0.5 * means.reduce((sum, mean, i) => sum + (mean - [0.4, 0.15][i]) ** 2, 0)
             + Math.log(decision.plan[0].shiftProbabilities[1]);
     };
     const before = await gpu.checkpointAsync(), coordinates = [];
@@ -358,26 +414,26 @@ async function checks() {
         if (variant === 'zero-rates') { c.learning.actorRate = c.learning.criticRate = c.learning.demonstrationRate = 0; }
         else c.learning.weightLimit = 2000;
         const document = new DrivingPolicy(seed.model.context, drivingObservationInputs(c), () => 0.6, c).checkpoint();
-        if (variant === 'large-logits') { document.model.outputWeights[4].fill(0); document.model.outputWeights[4][c.network.hiddenUnits] = 1000; }
+        if (variant === 'large-logits') { document.model.outputWeights[3].fill(0); document.model.outputWeights[3][c.network.hiddenUnits] = 1000; }
         const policy = await create(c, document), sample = makeInput(c), start = await policy.checkpointAsync();
         const available = { up: false, down: false };
         if (variant === 'large-logits') assert((await predict(policy, sample)).plan[0].shiftProbabilities[1] === 1, 'Large logits remain stable');
         await policy.learnDemonstrationAsync(sample, { throttle: 0, brake: 1, steering: -1 }, available);
         if (variant === 'zero-rates') {
             const decision = await policy.decideAsync(sample, true);
-            await policy.learnAsync(decision, 2, sample, 0.2); policy.releaseDecision(decision);
+            await policy.learnAsync(decision, 2, sample, 0.2, credits(decision)); policy.releaseDecision(decision);
             await policy.learnPlannedActionsAsync(sample, [{ step: 1, action, shifts }]);
         }
         const finish = await policy.checkpointAsync(); finite(finish);
         if (variant === 'zero-rates') {
             for (const key of ['cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights']) close(start.model[key].flat(2), finish.model[key].flat(2), 'Zero learning rates', 1e-12);
             assert(finish.model.steps === 2, 'Count completed transitions with zero rates');
-        } else close(start.model.outputWeights.slice(3, 6).flat(), finish.model.outputWeights.slice(3, 6).flat(), 'Masked large logits');
+        } else close(start.model.outputWeights.slice(2, 5).flat(), finish.model.outputWeights.slice(2, 5).flat(), 'Masked large logits');
         policy.dispose();
     }
     assert(errors.length === 0, errors.join('\n'));
     return { adapter: { vendor: adapter.info.vendor, architecture: adapter.info.architecture },
-        checks: 'GPU-only prediction and learning, zero intermediate readbacks, CNN/projection/LSTM/output finite differences, padded borders, spatial ordering and adaptive pooling gradients, all layers and gates train, historical camera gradients, masks, terminal/clipped transitions, delayed plans, checkpoint reload/synchronization, custom layouts/rates, bounded buffers and device loss passed',
+        checks: 'GPU-only prediction and learning, zero intermediate readbacks, CNN/projection/LSTM/output finite differences, padded borders, spatial ordering and adaptive pooling gradients, all layers and gates train, historical camera gradients, masks, terminal/clipped transitions, delayed plans, checkpoint reload/synchronization, custom layouts/rates, allocation-free warmed ticks, reused versus fresh workspaces, bounded buffers and device loss passed',
         finiteDifferences: { weightsChecked: coordinates.length, maxDerivativeError }, results };
 }
 
