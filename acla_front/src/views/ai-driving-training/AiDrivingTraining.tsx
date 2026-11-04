@@ -510,6 +510,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <dt>Reference speed</dt><dd>{observation ? `${observation.speedTargets.reference.toFixed(1)} km/h` : '—'}</dd>
                     <dt>Aggression target speed</dt><dd>{observation ? `${observation.speedTargets.target.toFixed(1)} km/h` : '—'}</dd>
                     <dt>Local velocity</dt><dd>{observation ? `${observation.localVelocity.map((value, axis) => `${['X', 'Y', 'Z'][axis]} ${value.toFixed(2)}`).join(' · ')} m/s` : '—'}</dd>
+                    <dt>G-force</dt><dd>{observation ? `${observation.gForce.map((value, axis) => `${['X', 'Y', 'Z'][axis]} ${value.toFixed(2)}`).join(' · ')} g` : '—'}</dd>
                     <dt>Yaw rate</dt><dd>{observation ? `${observation.yawRate.toFixed(3)} rad/s` : '—'}</dd>
                     <dt>Gear / RPM</dt><dd>{observation ? `${observation.gear < 0 ? 'R' : observation.gear === 0 ? 'N' : observation.gear} / ${observation.rpm}` : '—'}</dd>
                     <dt>Lap position</dt><dd>{observation ? `${(observation.normalizedPosition * 100).toFixed(1)}%` : '—'}</dd>
@@ -517,7 +518,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <dt>Camera image</dt><dd>{config.observation.cameraWidth} × {config.observation.cameraHeight} RGB{observation ? '' : ' · Waiting'}</dd>
                     <dt>Model compute</dt><dd>{initializingGpu ? 'Preparing GPU…' : 'WebGPU · CNN, LSTM and training'}</dd>
                 </dl>
-                <p className="driving-note">The policy uses car-local velocity XYZ, yaw rate, speed, current gear, engine RPM, game, car, map, normalized position, current controls, car-local reference offsets (right, forward, up), camera pixels, aggression, reference speed and target speed. Acceleration and deceleration timing uses the reference lap’s throttle and brake events together with its speed profile. It generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights. Models saved with a different observation input set need to be trained again.</p>
+                <p className="driving-note">The policy uses car-local velocity XYZ, g-force XYZ, yaw rate, speed, current gear, engine RPM, game, car, map, normalized position, current controls, car-local reference offsets (right, forward, up), camera pixels, aggression, reference speed and target speed. Acceleration and deceleration timing uses the reference lap’s throttle and brake events together with its speed profile. It generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights. Models saved with a different observation input set need to be trained again.</p>
             </section>
             <section className="driving-card">
                 <h2>Reward signal</h2>

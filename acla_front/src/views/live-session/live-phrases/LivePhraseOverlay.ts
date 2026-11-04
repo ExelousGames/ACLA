@@ -12,6 +12,7 @@ export interface LivePhraseOverlaySnapshot {
     name: string;
     sentence: string;
     timestamp: number;
+    expiresAt?: number;
 }
 
 // Each phrase owns a normal addon handle. Only plain display data crosses IPC.
@@ -20,7 +21,7 @@ export const createLivePhraseOverlayComponent = (componentName: string) => (
         componentName,
         'live_phrase',
         (snapshot, publication) => {
-            const remaining = snapshot ? snapshot.timestamp + LIVE_PHRASE_DISPLAY_MS - Date.now() : 0;
+            const remaining = snapshot ? (snapshot.expiresAt ?? snapshot.timestamp + LIVE_PHRASE_DISPLAY_MS) - Date.now() : 0;
             return {
                 placement: 'flow',
                 requestedStatus: 'focus',
@@ -85,7 +86,7 @@ export class LivePhraseOverlay {
     private async show(event: PhraseEvent, generation: number): Promise<void> {
         const source = this.sources.find(({ rule }) => rule.id === event.ruleId);
         if (!source || !overlaySessionClient.available()
-            || Date.now() >= event.timestamp + LIVE_PHRASE_DISPLAY_MS) return;
+            || Date.now() >= (event.expiresAt ?? event.timestamp + LIVE_PHRASE_DISPLAY_MS)) return;
         let presentation = overlaySessionClient.current();
         if (!presentation) {
             if (!this.pendingPresentation) {
@@ -103,13 +104,14 @@ export class LivePhraseOverlay {
         }
         if (this.disposed || generation !== this.generation || presentation.mode !== 'live'
             || overlaySessionClient.current()?.presentationId !== presentation.presentationId
-            || Date.now() >= event.timestamp + LIVE_PHRASE_DISPLAY_MS) return;
+            || Date.now() >= (event.expiresAt ?? event.timestamp + LIVE_PHRASE_DISPLAY_MS)) return;
         source.ref.current.publish({
             eventId: event.id,
             ruleId: event.ruleId,
             name: source.rule.name,
             sentence: event.sentence,
             timestamp: event.timestamp,
+            ...(event.expiresAt !== undefined ? { expiresAt: event.expiresAt } : {}),
         }, { presentationId: presentation.presentationId });
     }
 }

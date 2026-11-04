@@ -307,20 +307,25 @@ describe('LiveSessionView', () => {
         const listener = jest.fn(), stop = jest.fn();
         const unsubscribe = view.subscribeLiveCircuitMap(listener);
         const map = { id: 'map', game: 'acc', circuit_name: 'test', samples: {}, resolution: 100 };
+        const reference = { game: 'acc', track: 'test', car: 'car' };
         let notify!: () => void;
         const mapRef = { current: {
             getComponentName: () => 'visualization:live-trajectory-map',
             getCircuitMap: () => map,
+            getReferenceLap: () => reference,
             subscribeCircuitMap: (callback: () => void) => { notify = callback; return stop; },
         } };
         expect(view.getLiveCircuitMap()).toBeNull();
+        expect(view.getLiveReferenceLap()).toBeNull();
         act(() => { componentDirectory!.registerComponentRef(mapRef); });
         expect(view.getLiveCircuitMap()).toBe(map);
+        expect(view.getLiveReferenceLap()).toBe(reference);
         listener.mockClear();
         act(() => { notify(); });
         expect(listener).toHaveBeenCalledTimes(1);
         act(() => { componentDirectory!.unregisterComponentRef(mapRef); });
         expect(view.getLiveCircuitMap()).toBeNull();
+        expect(view.getLiveReferenceLap()).toBeNull();
         expect(stop).toHaveBeenCalledTimes(1);
         expect(listener).toHaveBeenCalledTimes(2);
         unsubscribe();

@@ -227,9 +227,12 @@ Button releases continue even while waiting for a new camera frame.
 
 The observation includes car-local velocity XYZ (m/s), speed (km/h), game/car/map
 category encodings, cyclic normalized lap position,
-yaw rate (rad/s, normalized by π and clamped to ±1), current
+yaw rate (rad/s, normalized by π and clamped to ±1), g-force XYZ
+(in g, divided by `gForceScale`, default 5, and clamped to ±1), current
 steering/pedals, current gear, engine RPM, the position model's reference XYZ delta (m),
 and a **384 × 216 RGB camera image** from the same Track Vision capture.
+G-force retains the telemetry adapter's axis order, signs and gravity contribution,
+and is included in both the current observation and the five-second history.
 The camera is the only visual input: segmentation labels, depth grids, reconstructed
 track ribbons and traffic boxes are not policy inputs or checkpoint matching keys.
 Camera/position observations remain available if the segmentation or depth models are
@@ -399,7 +402,7 @@ model file with the desktop save dialog, or **Open model** to resume an existing
 The complete model saves back to that file every 50 learning steps by default and
 at stop. **Save model** saves immediately. The selected path is shown on the page. A model
 must match the current game, car, map and observation configuration.
-All three local velocity components and yaw rate must be present in telemetry. Gear and RPM do not gate observation validity, so stalled-engine readings can still be used. Missing or non-finite gear/RPM readings use neutral gear and zero RPM as policy inputs. Pitch and roll rates are not used or required.
+All three local velocity and g-force components and yaw rate must be present in telemetry. Gear and RPM do not gate observation validity, so stalled-engine readings can still be used. Missing or non-finite gear/RPM readings use neutral gear and zero RPM as policy inputs. Pitch and roll rates are not used or required.
 
 ### Self-contained model JSON
 

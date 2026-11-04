@@ -58,6 +58,12 @@ export function createPhraseMapContext(map: CircuitMapDto | null) {
     }).sort((a, b) => segmentSpan(a.area) - segmentSpan(b.area) || a.area.id.localeCompare(b.area.id));
     return {
         ready: line.length >= 2 && tags.length > 0,
+        isStraightAt(position: unknown): boolean | undefined {
+            if (!this.ready || !normalized(position)) return undefined;
+            // Use the tagged bounds, not the lookahead phase; overlapping corners take precedence.
+            return !corners.some((corner) => contains(corner, position))
+                && tags.some((tag) => labels(tag).some((label) => ['straight', 'long straight'].includes(label)) && contains(tag, position));
+        },
         longStraightsAt(position: unknown): readonly string[] | undefined {
             if (!this.ready || !normalized(position)) return undefined;
             // Tag membership is independent of the corner-approach phase.

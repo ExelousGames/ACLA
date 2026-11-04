@@ -1,5 +1,215 @@
 # Live phrases
 
+Live Phrases copies the reference lap and centerline map published by Live Map.
+All phrase rules use these local copies, including corner geometry, straight
+membership, speed corrections, advance cues and the braking exit from movement
+guidance. **Live Map must remain open for location**: the position model still
+has to match its current source reference. Copies refresh when Live Map publishes
+a replacement; removing Live Map clears them and invalidates retained location
+predictions.
+
+**Driving aggression** selects **0–50% caution relative to the reference**, defaulting
+to **0% (Reference)**, which preserves the original lap exactly. At 20% caution,
+each corner's minimum **speed** is 20% lower and local deceleration is capped at
+80% of the reference rate at the same normalized progress through its braking zone.
+Rates use `(startSpeed² - endSpeed²) / (2 × distance)` in m/s units. The braking
+distance is derived from those reduced rates and the lower minimum, rather than
+increased by a fixed percentage or determined by stretching speed values.
+Braking starts earlier and reaches the lower minimum at the original position.
+The acceleration section keeps its original start and end positions, rising from
+the lower minimum back to the reference exit speed without stretching the throttle
+zone. Adjustments use physical XYZ distance and wrap at start/finish. Mapped rate
+boundaries add samples along the existing reference polyline, interpolating its
+original controls. A backward speed calculation enforces local deceleration caps,
+including the tightest cap in overlapping braking zones; a nearby corner can
+therefore lower an earlier target further. Braking interpolates squared speed so
+the rate stays feasible between samples. Reference throttle, brake, steering,
+racing-line geometry, centerline geometry and tags retain their original profiles. Missing or
+invalid speed leaves the lap unchanged; aggression never falls back to modifying pedals.
+Each adjustment rebuilds from the untouched local baseline, clears current cues
+and movement progress, and keeps detection and prepared speech running.
+
+Reference-line guidance has two root closures: **Cornering** and **Turn to reference line**.
+**Cornering** contains **Brake zone** and **Throttle zone**.
+Brake zone groups **Brake**, **More brake**, **Release the brake**, **Less brake**, and **Steer soon**;
+Throttle zone groups **Throttle**, **More throttle**, and
+**Less throttle**. Each zone enters from the aligned, interpolated Live Phrases
+reference, even when the driver's pedals already match. Zone membership uses
+reference-speed pedal demand from the local aggression-adjusted speed profile,
+without live speed-error corrections. Reference brake pressure of at least 0.10
+also identifies a brake zone; brake zones take precedence over throttle zones.
+Otherwise reference throttle demand of at least 0.15 identifies a throttle zone.
+The reference brake channel must be available. With a matching, tagged centerline
+map, throttle zones are limited to actual corner bounds, including start/finish
+wraparound. Reference throttle on a straight or an untagged gap cannot enter or
+keep the throttle zone active. Once entered, the throttle zone stays selected
+until the driver leaves the corner, even after the reference throttle zone ends.
+Without usable map tags, it waits for confirmed corner-exit evidence.
+Braking can begin before mapped corner entry.
+
+Pedal phrases return to their zone after speaking. The zone stays selected while
+quiet or giving corrections, and only gives corrections for its own pedal.
+Live speed or pedal errors never switch zones. The enclosing exit checks the
+interpolated brake boundary or mapped corner exit for throttle even during a
+selected speech action or speech cooldown; missing position data withholds
+speech and waits for confirmed boundary evidence.
+Fresh telemetry crossing the mapped corner end exits the throttle zone,
+even if the reference-position capture has expired.
+Brake zone returns to Cornering when it ends. Steering cues run only inside
+Brake zone. Throttle zone returns to root only when the driver leaves
+the corner. If throttle pickup occurs beyond the corner, Cornering returns
+to root without entering the throttle zone. Movement cues wait
+until Cornering has exited. The former **Prepare to brake** cue is removed;
+**Brake** speaks when braking is needed now. **Prepare to accelerate** is also removed;
+**Throttle** speaks when throttle is needed now.
+Open Live Map with a reference lap for the current game/car/track and run Track
+Vision's position model. These cues do not require opponents, BEV
+reconstruction, or camera calibration. The separate Reference guidance indicator
+shows when fresh, matching position and reference inputs are usable.
+Movement guidance also requires Live Map straight tags; the other reference cues
+do not require circuit tags.
+
+`phrase-reference-guidance.ts` interpolates the reference's raw XYZ distance and
+`expert_optimal_speed`, `expert_optimal_steering`, `expert_optimal_brake`, and `expert_optimal_throttle`
+channels. It aligns the current lap position with the position model's forward
+driver-to-reference delta, then uses live speed to locate input onsets 0.6–1.8 s
+ahead, including steering reversals and start/finish crossings. Onset thresholds
+are 0.08 steering magnitude and 0.10 brake. Only steering
+has an advance speech cue; upcoming reference braking still suppresses acceleration.
+Throttle cues compare the applied pedal with demand for the adjusted speed profile
+and never request more throttle at full pedal. Missing or invalid control channels disable their
+cues rather than being treated as zero.
+
+Brake demand uses the original local reference's brake pressure and deceleration.
+For each decelerating interval, `(startSpeed² - endSpeed²) / (2 × distance)` in
+m/s units gives deceleration; dividing by its mean brake pressure estimates the
+response per unit of pedal. The nearest valid interval around the lap supplies
+this response, including when Cautious starts braking before the original brake onset.
+The adjusted speed profile's local slope multiplied by live speed gives the
+deceleration needed to follow it. Speed errors of at least 5 km/h add or subtract
+a correction over 1.5 s. Dividing the resulting demand by the original braking
+response gives a pedal target clamped to 0–100%. The response is a reference-based
+estimate, not a measurement of the live car's deceleration.
+
+- **Brake**: demand is at least 10% and the driver is below 10% pedal.
+- **More brake**: the applied pedal is at least 20 percentage points below demand for 300 ms.
+- **Release the brake**: demand is below 10% while the driver is applying at least 10%.
+- **Less brake**: the applied pedal is at least 20 percentage points above demand for 300 ms,
+  with braking still required.
+
+The confirmation period restarts if the correction clears or changes direction,
+filtering out brief pedal fluctuations. **Brake** and **Release the brake** do not
+require this hold.
+
+Only one brake cue can match at a time. Matching pressure stays quiet, and full
+pedal never receives **More brake**. Without usable reference speed or braking
+response, demand falls back to reference pressure; if speed is available and the
+driver is at least 5 km/h below target, demand is zero. Brake corrections are
+spoken only inside the reference brake zone, including release corrections when
+the driver is too slow while still inside that zone.
+
+**Steer soon** is a nested closure inside Brake zone. It follows the aligned local
+reference lap, independently of live steering or live deceleration. It enters
+silently when reference turn-in or a reversal is 0.6–1.8 s ahead and contains only
+these two spoken phrases:
+
+- **turn, slowly lift up the brake** speaks when reference deceleration eases
+  with turn-in at most 1.8 s ahead. Deceleration is calculated from speed and physical
+  distance for adjacent reference intervals; a decrease of at least 0.1 m/s² from
+  a braking interval qualifies, including a transition to constant speed.
+- **Turn** speaks when interpolated reference steering reaches magnitude 0.08 in
+  the upcoming turn's direction.
+
+Each action runs at most once per entry, and an earlier phase cannot speak after
+a later one. The closure stays entered between phases, returns to Brake zone
+after **Turn**, and exits immediately if the brake zone ends. Missing or stale
+position data withholds speech. Missing reference speed disables the easing cue;
+missing reference steering disables the steering sequence.
+
+Throttle demand uses the original local reference's throttle and acceleration.
+For accelerating intervals, `(endSpeed² - startSpeed²) / (2 × distance)` in m/s
+units divided by mean throttle estimates acceleration per unit of pedal. While
+the original profile is accelerating, the local speed slope and interpolated
+throttle align this response to the current position, including throttle ramps.
+Elsewhere the nearest valid accelerating interval supplies the response, wrapping
+at start/finish. The adjusted speed slope multiplied by live speed gives the new
+acceleration demand; speed errors of at least 5 km/h add or subtract a correction
+over 1.5 s. Reference throttle is adjusted by the change from original acceleration
+divided by the response, then clamped to 0–100%. This preserves maintenance
+throttle on flat-speed sections while delaying pickup for Cautious speed targets.
+The response is an estimate from the reference, not measured live acceleration.
+
+- **Throttle**: demand is at least 15% and the driver is below 15% pedal.
+- **More throttle**: the applied pedal is at least 15 percentage points below demand.
+- **Less throttle**: the applied pedal is at least 15 percentage points above demand,
+  with throttle still required.
+
+Only one throttle cue can match at a time. Applying or adding throttle requires
+the driver to be within 2 m of the line, with no braking required or imminent and
+no applied brake. Braking sets throttle demand to zero; easing throttle
+can still be suggested away from the line when demand is at least 15%.
+Throttle corrections are spoken only inside the reference throttle zone.
+Overspeed can request less throttle there, but cannot switch to a brake correction.
+Demand below 15% stays quiet.
+Without usable speed or acceleration response, demand falls back to reference
+throttle, or zero when usable speed shows the driver at least 5 km/h above target.
+Missing reference throttle/brake or live pedal data withholds throttle instructions.
+
+**Turn to reference line** replaces **Increase steering**. Its **Move to the left**
+and **Move to the right** children each contain **Small movement**, **Medium
+movement**, **A little bit more**, and **Enough movement**.
+These are executable closures with their own speech actions and inspectable
+conditions. Each speech action randomly picks from three short wordings, preserving
+the direction and movement size (for example, “Move to the left”, “Shift to the
+left”, or “Bring it to the left”). The position model's car-local X offset selects the side: negative
+is left, positive is right. No reference steering channel is required.
+
+Movement requires the driver's normalized lap position to be inside the current
+Live Map's `straight` or `long straight` centerline bounds, with no overlapping
+corner. Bounds include start/finish wraparound and remain eligible during the
+map's corner-approach phase. An untagged section is not a straight. The aligned
+reference brake channel must be available and below the 0.10 onset threshold,
+and speed must be less than 5 km/h above target when reference speed is available.
+Movement children return to their parent after speaking; **Turn to reference
+line** stays selected between movement cues and exits to root as soon as reference
+braking starts or speed exceeds the target by at least 5 km/h, even if the driver's
+brake input already matches. Brake-pressure corrections also end movement guidance.
+Leaving the straight or losing required inputs also exits and clears movement
+progress, so a later straight cannot inherit an old completion cue. Other
+reference cues retain their interrupt priority.
+
+Movement starts at 3 source units of lateral error. Small corrections are from
+3 to below 7 units (“Move to the left/right”), and medium corrections are from
+7 through 13 units (“Further to the left/right”). There is no large movement tier.
+After a cue, fresh captures spanning at least 0.75 s estimate the
+closing rate. “A little bit more” requires measurable progress above 0.05 units/s
+but more than 3 s estimated to reach the line's 0.35-unit tolerance. Adequate
+progress stays quiet. “OK, that's enough” requires an earlier movement cue and
+reaching that tolerance or crossing the line; it does not fire merely because
+the driver started on the line. Movement cues are at least 2 s apart, except
+completion can use the next 1 s speech window. Capture gaps over 500 ms, missing
+or mismatched inputs, reference/calibration changes and session/stream resets
+clear movement history. Repeated captures never add progress evidence.
+
+Reference cues require running telemetry and position captures no older than
+500 ms, paired with the same session/stream/game/car/track and selected reference
+lap. Position jumps and remote reference offsets suppress cues. Throttle advice
+also requires being within 2 source units laterally of the line, with no current
+braking or reference braking in the next 1.8 s. Distances use the reference's
+source coordinates, assumed to be metres, and constant current speed for ETA;
+the thresholds and lead time still need validation during simulator driving.
+
+Cornering can interrupt waiting overtaking closures when a reference brake or
+throttle zone starts, even when no speech cue matches. Its pedal cues run only
+inside their matching zone; steering cues run inside Brake zone. Cues are spaced by at least 1 s,
+with a 2 s per-closure cooldown and 0.5 s clear period before rearming. Short
+clips prepare first. Upcoming cues expire 100 ms before the predicted action;
+corrections expire after 1.5 s. Speech is discarded if its prepared clip cannot
+finish by that deadline or its conditions clear, and overlays use the same
+deadline. The longer brake-release prompt only needs to start before expiry;
+**Turn** interrupts it when ready. A queued steering prompt is discarded when its
+reference phase changes. Live chat retains higher audio priority.
+
 Live phrases runs a closure tree instead of a flat sentence-rule dispatcher.
 `closure.ts` defines the three building blocks:
 
@@ -34,10 +244,18 @@ state.step({ ready: false }); // Runs exit to root, independent of entry conditi
 
 Both classes require a display `name` and a `description` explaining their purpose.
 `createPhraseRoot` turns `PHRASE_DEFINITIONS` (names, descriptions, sentence text and entry
-conditions) into one root with a separate child closure for every guide.
-Each child contains one or more **say phrase** lambdas and an **exit to root** action, which
-is eligible after any phrase action runs. Optional `additionalActions` add alternative
-sentences; each action's `actionConditions` gate speech independently of entry conditions.
+conditions) into the root and its nested guide closures.
+Each sentence closure contains one or more **say phrase** lambdas and an exit action,
+eligible after a phrase action runs. Movement, braking and steering sentences exit
+to their parent; acceleration and overtaking sentences exit to root. Optional `additionalActions` add separate
+speech actions; each action's `actionConditions` gate speech independently of entry conditions.
+Any speech action can keep its existing `sentence` and add `sentenceAlternatives`,
+for example `{ sentence: 'Move to the left.', sentenceAlternatives: ['Shift to the left.'] }`.
+Each execution chooses one wording with equal probability, including the original;
+consecutive executions may repeat. Selection happens only when the action runs;
+checking conditions or inspecting the tree does not choose a wording. Action Details shows the alternatives.
+All wordings are prepared for speech, and the chosen sentence is published once
+for audio, history and overlays. Omitting alternatives keeps the single-sentence behavior.
 Only one speech action runs per entry. Its lambda publishes the event used by speech, history
 and overlays; there is no parallel sentence dispatcher. Hold, cooldown, clear
 period and fresh-frame checks gate entry into these sentence closures. The first
@@ -223,12 +441,15 @@ chat can interrupt or suppress a phrase; discarded phrases are not queued for
 replay. Speech works independently of overlay visibility.
 
 If a triggered clip is still being prepared, only the latest event can play once
-ready, while its rule remains active and it is less than eight seconds old.
+ready. Overtaking clips require an active rule and an event less than eight
+seconds old; reference cues require matching conditions and enough time to finish
+before their shorter deadline.
 Session/stream resets stop phrase speech and discard pending events. Disabling
 detection or unmounting also aborts preparation and stops owned playback. Speech
 errors appear in the panel without stopping rule detection or overlay cards.
 
-Every triggered phrase also publishes an eight-second pop-out card through the
+Every triggered phrase also publishes a pop-out card (eight seconds for overtaking,
+or until the reference cue's deadline) through the
 existing overlay addon contract. Enable the overlay in the Assistant to see it.
 Live phrases reuse an active live overlay presentation, or create a local live
 presentation on the first trigger when none exists; no AI conversation is needed.
@@ -336,13 +557,14 @@ The catalog includes:
 `LiveSessionHandle`. `subscribeTelemetry` supplies new frames and session/stream
 resets without treating retained frames as fresh. `getTrackVisionDetection` /
 `subscribeTrackVision` bridge `visualization:track-vision`;
-`getLiveCircuitMap` / `subscribeLiveCircuitMap` bridge
-`visualization:live-trajectory-map`, including late mounts, map loads and removal.
+`getLiveCircuitMap`, `getLiveReferenceLap` and `subscribeLiveCircuitMap` bridge
+`visualization:live-trajectory-map`, including late mounts, map/reference loads,
+reference changes and removal.
 `getLiveCornerSummaries` reads the currently mounted Event Log on each telemetry
 event and supplies exit-speed comparisons only for matching map and corner bounds.
 
 `PhraseEngine` is deterministic and local, with no chat, API or speech calls.
-It reads the published Track Vision `birdsEyeScene`, the same calibrated flat-road projection
+For overtaking, it reads the published Track Vision `birdsEyeScene`, the same calibrated flat-road projection
 rendered in the BEV tab, never raw masks, image boxes or depth-based `analysis`/`geometry`.
 It works with relative depth. Live Phrases keeps two separate conditions for each car:
 whether it is in a left or right turn corner, and whether it is near the left edge,
@@ -399,9 +621,10 @@ positions. The wording does not claim that vision confirms overlap, passing
 clearance or the opponent's intent; the slipstream gap trend is a visual estimate.
 
 Only new live telemetry frames emit. Timers and map/vision updates only evaluate
-or expire inputs. Telemetry expires after 1.5 s and Track Vision after 2 s.
-Other guides' entry conditions must hold for 0.8 s. All guides use an 8 s per-guide
+or expire inputs. Telemetry expires after 1.5 s and overtaking vision after 2 s;
+reference-position captures expire after 0.5 s.
+Other overtaking guides' entry conditions must hold for 0.8 s. Overtaking guides use an 8 s per-guide
 cooldown and 0.5 s clear period before repeating. Capture/telemetry gaps and section changes restart the
 hold; session/stream resets clear history and invalidate previous vision.
-Speed falls back to the magnitude of all three velocity channels, converted to
-km/h. G-forces and brake input are not required.
+Overtaking speed falls back to the magnitude of all three velocity channels,
+converted to km/h. G-forces and brake input are not required for overtaking.

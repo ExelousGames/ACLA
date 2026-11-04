@@ -110,6 +110,18 @@ describe('Live phrase overlay addons', () => {
         expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
     });
 
+    it('expires a reference cue at its action deadline and does not show a late cue', async () => {
+        await overlaySessionClient.create(session);
+        const index = PHRASE_DEFINITIONS.findIndex((rule) => rule.referenceCue === 'brake');
+        const event = { ...phraseEvent(index), expiresAt: Date.now() + 1000 };
+        overlay.update(snapshot(event));
+        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
+        jest.advanceTimersByTime(1000);
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
+        overlay.update(snapshot({ ...event, id: event.id + 1 }));
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
+    });
+
     it('clears cards on reset, accepts a fresh trigger and releases all sources on unmount', async () => {
         await overlaySessionClient.create(session);
         overlay.update(snapshot(phraseEvent()));
@@ -191,6 +203,7 @@ describe('Live phrase overlay addons', () => {
             getTrackVisionDetection: () => detection,
             subscribeTrackVision: () => () => undefined,
             getLiveCircuitMap: () => map,
+            getLiveReferenceLap: () => null,
             getLiveCornerSummaries: () => [],
             subscribeLiveCircuitMap: () => () => undefined,
         };

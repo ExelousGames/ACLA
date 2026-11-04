@@ -26,6 +26,8 @@ export interface DrivingObservation {
     speed: number;
     /** Adapter-local X/Y/Z velocity in m/s: ACC right/forward/up; iRacing right/up/forward. */
     localVelocity: [number, number, number];
+    /** Adapter XYZ acceleration in g, preserving source signs and gravity contribution. */
+    gForce: [number, number, number];
     /** Signed yaw rate in rad/s: ACC adapter-local Z; iRacing adapter-local Y. */
     yawRate: number;
     /** Forward gears start at 1; neutral is 0 and reverse is -1. */
@@ -67,6 +69,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
     if (!game || !car || !map) return { error: 'Game, car and map are required.' };
     // Preserve adapter XYZ order and signs. ACC has already swapped Y/Z at capture.
     const velocity = [sample.Physics_local_velocity_x, sample.Physics_local_velocity_y, sample.Physics_local_velocity_z];
+    const gForce = [sample.Physics_g_force_x, sample.Physics_g_force_y, sample.Physics_g_force_z];
     const yawRate = game === 'iracing' ? sample.Physics_local_angular_vel_y : sample.Physics_local_angular_vel_z;
     const controls = [sample.Physics_gas, sample.Physics_brake, sample.Physics_steer_angle];
     const speed = sample.Physics_speed_kmh, position = sample.Graphics_normalized_car_position;
@@ -75,8 +78,8 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
     const gear = finite(sample.Physics_gear) ? sample.Physics_gear : 1;
     const rpm = finite(sample.Physics_rpm) ? sample.Physics_rpm : 0;
     if (sample.Physics_autoshifter_on === true) return { error: 'Disable automatic gear shifting in the simulator so the model can learn gear changes.' };
-    if (![...velocity, yawRate, ...controls, speed, position].every(finite)) {
-        return { error: 'Local velocity, speed, yaw rate, steering, throttle, brake and normalized position are required.' };
+    if (![...velocity, ...gForce, yawRate, ...controls, speed, position].every(finite)) {
+        return { error: 'Local velocity, g-force XYZ, speed, yaw rate, steering, throttle, brake and normalized position are required.' };
     }
     if (position! < 0 || position! > 1 || speed! < 0 || controls[0]! < 0 || controls[0]! > 1
         || controls[1]! < 0 || controls[1]! > 1 || Math.abs(controls[2]!) > 1) return { error: 'Telemetry inputs are outside their valid ranges.' };
@@ -107,6 +110,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         position: [Math.sin(2 * Math.PI * position!), Math.cos(2 * Math.PI * position!)], controls: controls as number[],
         referenceOffset: prediction.referenceDelta.map((v) => clamp(v / o.referenceOffsetScale)),
         gear: [clamp((gear - 1) / o.gearScale)], rpm: [clamp(rpm / o.rpmScale, 0, 1)], yawRate: [clamp(yawRate! / o.yawRateScale)],
+        gForce: (gForce as number[]).map((v) => clamp(v / o.gForceScale)),
         camera: [],
         aggression: [normalizedAggression(aggression)], referenceSpeed: [clamp(speedTargets.reference / o.speedScale, 0, 1)],
         targetSpeed: [clamp(speedTargets.target / o.speedScale, 0, 1)],
@@ -124,6 +128,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         referenceError: [prediction.referenceDelta[0], prediction.referenceDelta[1]],
         speed: speed!, gear: gear - 1, rpm, controls: action,
         localVelocity: velocity as [number, number, number], yawRate: yawRate!,
+        gForce: gForce as [number, number, number],
         reference, aggression, speedTargets,
     } };
 }

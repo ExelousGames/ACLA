@@ -32,10 +32,29 @@ describe('live phrase closure tree', () => {
         expect(engine.root).toBeInstanceOf(Closure);
         expect(engine.state).toBeInstanceOf(State);
         expect(engine.state.current).toBe(engine.root);
-        expect(engine.root.children.map((child) => child.name)).toEqual(PHRASE_DEFINITIONS.map((phrase) => phrase.name));
+        expect(engine.root.children.map((child) => child.name)).toEqual([
+            'Chicane overtake', 'One Tight Slow Corner', 'Slipstream', 'Pressure and a feint',
+            'Cornering', 'Turn to reference line',
+        ]);
         const snapshot = engine.evaluate(0);
+        const cornering = snapshot.root.children.find((child) => child.name === 'Cornering')!;
+        const corneringClosures = cornering.children.filter((child) => child.kind === 'closure');
+        expect(corneringClosures.map((child) => child.name)).toEqual([
+            'Brake zone', 'Throttle zone',
+        ]);
+        expect(corneringClosures[0].children.filter((child) => child.kind === 'closure').map((child) => child.name))
+            .toEqual(['Brake', 'More brake', 'Release the brake', 'Less brake', 'Steer soon']);
+        expect(corneringClosures[1].children.filter((child) => child.kind === 'closure').map((child) => child.name))
+            .toEqual(['Throttle', 'More throttle', 'Less throttle']);
+        expect(cornering.conditions).toEqual([
+            expect.objectContaining({ description: 'Inside an interpolated reference brake or throttle zone', conditionFit: false, inputMissing: true }),
+        ]);
         expect(snapshot.root).toMatchObject({ name: engine.root.name, description: engine.root.description });
-        engine.root.children.forEach((child, index) => {
+        const descendants = (closure: Closure<any>): Closure<any>[] => closure.children.flatMap((node) =>
+            node instanceof Closure ? [node, ...descendants(node)] : []);
+        const catalog = descendants(engine.root);
+        PHRASE_DEFINITIONS.forEach((phrase, index) => {
+            const child = catalog.find((node) => node.metadata.id === phrase.id)!;
             expect(child).toBeInstanceOf(Closure);
             expect(child.description).toBe(PHRASE_DEFINITIONS[index].description);
             expect(child.description.trim()).not.toBe('');
@@ -43,7 +62,8 @@ describe('live phrase closure tree', () => {
             const speech = getPhraseActions(PHRASE_DEFINITIONS[index]);
             const parentSpeech = PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2)
                 : PHRASE_DEFINITIONS[index].id === 'second-apex' ? speech.slice(0, 2) : speech;
-            expect(actions.map((action) => action.name)).toEqual([...parentSpeech.map(() => 'say phrase'), 'exit to root']);
+            expect(actions.map((action) => action.name)).toEqual([...parentSpeech.map(() => 'say phrase'),
+                phrase.referenceCue ? 'exit to parent' : 'exit to root']);
             actions.forEach((action) => {
                 expect(action).toBeInstanceOf(Action);
                 expect(action.description.trim()).not.toBe('');
@@ -478,11 +498,11 @@ describe('vision and Live Map overtaking guides', () => {
         expect(ids(engine, 800)).toEqual([defaultRule]);
     });
 
-    it('lists only the remaining guides in priority order', () => {
-        expect(PHRASE_DEFINITIONS.map((rule) => rule.id)).toEqual([
+    it('keeps overtaking guides in priority order alongside reference-line cues', () => {
+        expect(PHRASE_DEFINITIONS.filter((rule) => !rule.referenceCue).map((rule) => rule.id)).toEqual([
             'second-apex', 'one-tight-slow-corner', 'slipstream', 'pressure-feint',
         ]);
-        PHRASE_DEFINITIONS.forEach((rule) => {
+        PHRASE_DEFINITIONS.filter((rule) => !rule.referenceCue).forEach((rule) => {
             expect(rule.sentence).not.toMatch(/you are .+; the opponent ahead is/);
             const timed = rule.id === 'second-apex';
             const standalone = rule.id === 'one-tight-slow-corner';

@@ -2,6 +2,22 @@ import { createPhraseMapContext } from './phrase-map-context';
 import { circuitMap } from './test-fixtures';
 
 describe('Live Map phrase context', () => {
+    it.each(['straight', 'long straight'])('uses %s bounds through wraparound and approach, but excludes overlapping corners', (label) => {
+        const map = circuitMap();
+        map.centerline_segments = [
+            { id: 'straight', tags: [label], start_position: 0.95, end_position: 0.15 },
+            { id: 'corner', tags: ['corner'], start_position: 0.1, end_position: 0.2 },
+        ];
+        const context = createPhraseMapContext(map);
+        expect(context.at(0.099).phase).toBe('entry');
+        [0.95, 0.99, 0, 1, 0.099].forEach((position) => expect(context.isStraightAt(position)).toBe(true));
+        [0.94, 0.1, 0.12, 0.2, 0.3].forEach((position) => expect(context.isStraightAt(position)).toBe(false));
+        expect(context.isStraightAt(undefined)).toBeUndefined();
+        expect(context.isStraightAt(NaN)).toBeUndefined();
+        expect(createPhraseMapContext(null).isStraightAt(0)).toBeUndefined();
+        expect(createPhraseMapContext({ ...map, centerline_segments: [] }).isStraightAt(0)).toBeUndefined();
+    });
+
     it('requires a nearby long straight after the corner without an intervening corner', () => {
         const map = circuitMap();
         map.centerline_segments = [

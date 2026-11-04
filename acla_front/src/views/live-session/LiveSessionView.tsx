@@ -18,6 +18,7 @@ import {
 } from 'views/ai-chat/operation-base';
 import { BaselineCollectionNotStartedError } from 'contexts/OperationComponentError';
 import apiService from 'services/api.service';
+import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import type {
     BaselineCollectionHandle,
     BaselineCollectionOptions,
@@ -142,6 +143,7 @@ export interface LiveSessionHandle extends ObservableOperationComponentHandle<Li
     getTrackVisionDetection(): TrackVisionDetection | null;
     subscribeTrackVision(listener: () => void): () => void;
     getLiveCircuitMap(): CircuitMapDto | null;
+    getLiveReferenceLap(): TopLapReferenceEntry | null;
     subscribeLiveCircuitMap(listener: () => void): () => void;
     getLiveCornerSummaries(): DriverCornerSummary[];
     queryTelemetryMetric<TReduce extends ReduceOp>(args: TelemetryQuery<TReduce>): Promise<QueryResult<TReduce>>;
@@ -419,6 +421,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                 return () => { trackVisionListenersRef.current.delete(listener); };
             },
             getLiveCircuitMap: () => liveMapRef.current?.getCircuitMap() ?? null,
+            getLiveReferenceLap: () => liveMapRef.current?.getReferenceLap() ?? null,
             getLiveCornerSummaries: () => getMountedEventLog()?.getCornerSummaries() ?? [],
             subscribeLiveCircuitMap: (listener) => {
                 circuitMapListenersRef.current.add(listener);

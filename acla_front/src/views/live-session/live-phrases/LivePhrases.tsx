@@ -10,10 +10,13 @@ import { synthesizeTts, type TtsPack } from 'components/tts';
 import { audioManager, type PlaybackHandle } from 'services/audio';
 import { getPhraseActions, PHRASE_DEFINITIONS, PhraseEngine, PhraseSnapshot, type PhraseEvent } from './phrase-engine';
 import { LivePhraseOverlay, LIVE_PHRASE_DISPLAY_MS } from './LivePhraseOverlay';
+import { MAX_DRIVING_CAUTION, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
 import ClosureTree from './ClosureTree';
 import './LivePhrases.css';
 
-const speechActions = PHRASE_DEFINITIONS.flatMap(getPhraseActions);
+// Prepare the time-sensitive, short cues first.
+const speechSentences = [...PHRASE_DEFINITIONS.filter((phrase) => phrase.referenceCue),
+    ...PHRASE_DEFINITIONS.filter((phrase) => !phrase.referenceCue)].flatMap(getPhraseActions).flatMap((action) => action.sentences);
 
 export interface LivePhrasesHandle extends NamedOperationComponentHandle {
     getSnapshot(): PhraseSnapshot;
@@ -24,6 +27,10 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
     const directory = useOptionalOperationComponentRefDirectory();
     const root = directory?.findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)?.current ?? null;
     const [enabled, setEnabled] = useState(false);
+    const [drivingAggression, setDrivingAggression] = useState(REFERENCE_DRIVING_AGGRESSION);
+    const aggressionRef = useRef(drivingAggression);
+    aggressionRef.current = drivingAggression;
+    const updateAggression = useRef<((value: number) => void) | null>(null);
     const [snapshot, setSnapshot] = useState(() => new PhraseEngine().evaluate(Date.now()));
     const [overlayError, setOverlayError] = useState<string | null>(null);
     const [voiceError, setVoiceError] = useState<string | null>(null);
@@ -34,6 +41,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
 
     useEffect(() => {
         const engine = new PhraseEngine();
+        engine.setDrivingAggression(aggressionRef.current, Date.now());
         setOverlayError(null);
         setVoiceError(null);
         if (!enabled) {
@@ -51,12 +59,18 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         let lastVoiceEventId = 0;
         const playReadyVoice = () => {
             if (controller.signal.aborted || !pendingVoice) return;
-            if (Date.now() >= pendingVoice.timestamp + LIVE_PHRASE_DISPLAY_MS) {
+            if (Date.now() >= (pendingVoice.expiresAt ?? pendingVoice.timestamp + LIVE_PHRASE_DISPLAY_MS)) {
                 pendingVoice = null;
                 return;
             }
             const pack = voicePacks.current.get(pendingVoice.sentence);
             if (!pack) return;
+            // The longer brake-release prompt may continue until Turn interrupts it.
+            if (pendingVoice.steeringPhase !== 'easeBrake' && pendingVoice.expiresAt !== undefined
+                && Date.now() + pack.durationMs >= pendingVoice.expiresAt) {
+                pendingVoice = null;
+                return;
+            }
             // Consume the event even if live chat rejects or interrupts its audio.
             pendingVoice = null;
             playback?.stop();
@@ -69,7 +83,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         };
         // Prepare sequentially through the system TTS service; retain completed clips across toggles.
         void (async () => {
-            for (const { sentence } of speechActions) {
+            for (const sentence of speechSentences) {
                 if (controller.signal.aborted) return;
                 if (voicePacks.current.has(sentence)) continue;
                 try {
@@ -82,9 +96,10 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                     setVoiceError(error instanceof Error ? error.message : String(error));
                 }
             }
-            setSpeechStatus(speechActions.every(({ sentence }) => voicePacks.current.has(sentence)) ? 'Ready' : 'Incomplete');
+            setSpeechStatus(speechSentences.every((sentence) => voicePacks.current.has(sentence)) ? 'Ready' : 'Incomplete');
         })();
         const dispose = () => {
+            updateAggression.current = null;
             controller.abort();
             pendingVoice = null;
             playback?.stop();
@@ -107,17 +122,21 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 pendingVoice = event;
             }
             // Never speak a delayed preparation after its driving conditions have passed.
-            if (!next.telemetryReady || !next.closures.some((rule) => rule.id === pendingVoice?.ruleId && rule.status === 'Active')) {
+            if (!next.telemetryReady || (pendingVoice?.steeringPhase !== undefined
+                && next.referenceSteeringPhase !== pendingVoice.steeringPhase)
+                || !next.closures.some((rule) => rule.id === pendingVoice?.ruleId
+                && (pendingVoice.expiresAt !== undefined ? rule.conditions.every((condition) => condition.conditionFit) : rule.status === 'Active'))) {
                 pendingVoice = null;
             }
             playReadyVoice();
         };
+        updateAggression.current = (value) => publish(engine.setDrivingAggression(value, Date.now()));
         publish(engine.evaluate(Date.now()));
         if (!root) return dispose;
         const updateVision = () => publish(engine.receiveVision(root.getTrackVisionDetection(), Date.now()));
         const unsubscribeVision = root.subscribeTrackVision(updateVision);
         updateVision();
-        const updateMap = () => publish(engine.receiveMap(root.getLiveCircuitMap(), Date.now()));
+        const updateMap = () => publish(engine.receiveMap(root.getLiveCircuitMap(), Date.now(), root.getLiveReferenceLap()));
         const unsubscribeMap = root.subscribeLiveCircuitMap(updateMap);
         updateMap();
         const unsubscribeTelemetry = root.subscribeTelemetry((event) => {
@@ -153,23 +172,38 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         {enabled ? 'Disable' : 'Enable'} detection
                     </button>
                 </div>
-                <p>Overtaking guidance combines Track Vision BEV positions with Live Map corner shapes, consecutive corners and your progress through the corner.</p>
+                <p>Live Phrases keeps its own copy of Live Map’s reference line and centerline map for all guidance. Keep Live Map open: it is still required for location through Track Vision’s position model.</p>
+                <p>Cornering follows the reference brake and throttle zones. Inside Brake zone, Steer soon guides brake release as reference deceleration eases, then calls Turn at reference turn-in. Left and right movement cues adapt to your distance and progress toward the line on mapped straights.</p>
+                <p>Overtaking guidance combines Track Vision BEV positions with Live Map corner shapes and your progress through the corner.</p>
                 <p>Triggered phrases pop out automatically when the Assistant overlay is enabled.</p>
                 <p>Enabling detection prepares spoken guidance. Live chat audio takes priority over spoken phrases.</p>
             </header>
+            <div className="live-phrases__aggression">
+                <label>
+                    <span>Driving aggression</span>
+                    <input type="range" min="0" max={MAX_DRIVING_CAUTION} step="1" value={drivingAggression}
+                        aria-valuetext={drivingAggression === 0 ? '0% caution (Reference)' : `${drivingAggression}% caution relative to reference`}
+                        onChange={(event) => {
+                            const value = Number(event.target.value);
+                            setDrivingAggression(value);
+                            updateAggression.current?.(value);
+                        }} />
+                </label>
+                <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% caution</span><span>50% · Cautious</span></div>
+                <p className="live-phrases__hint">Caution lowers each corner’s minimum speed and local deceleration by the selected percentage. Braking starts earlier by the distance needed to reach that speed, following the reference’s braking pattern. 0% follows the reference. Acceleration starts at the reference position from the lower minimum speed, with no throttle-zone stretching. Pedal guidance follows the adjusted speed using reference brake pressure, throttle and acceleration.</p>
+            </div>
             {overlayError && <p role="alert">Unable to display live phrase in the overlay: {overlayError}</p>}
             {voiceError && <p role="alert">Unable to prepare or play live phrase speech: {voiceError}</p>}
             <div className="live-phrases__sources" role="status">
                 <span data-ready={enabled}>Detection: {enabled ? 'Enabled' : 'Disabled'}</span>
                 <span data-ready={speechStatus === 'Ready'}>Speech: {speechStatus}</span>
                 <span data-ready={snapshot.telemetryReady}>Telemetry: {snapshot.telemetryReady ? 'Live' : 'Waiting for live data'}</span>
-                <span data-ready={snapshot.visionReady}>Track Vision: {snapshot.visionReady ? 'Live' : 'Unavailable or stale'}</span>
                 <span data-ready={snapshot.mapReady}>Live Map: {snapshot.mapReady ? 'Ready' : 'Waiting for a tagged circuit map'}</span>
+                <span data-ready={snapshot.referenceLoaded}>Reference copy: {snapshot.referenceLoaded ? 'Loaded from Live Map' : 'Waiting for Live Map reference'}</span>
                 {snapshot.mapContext.phase && <span>Current section: {snapshot.mapContext.cornerSpeed ? `${snapshot.mapContext.cornerSpeed} corner · ` : ''}{snapshot.mapContext.phase}</span>}
                 {snapshot.mapContext.cornerShape && <span>Corner shape: {snapshot.mapContext.cornerShape}</span>}
                 {snapshot.mapContext.sequenceId && <span>Corner sequence: {snapshot.mapContext.sequenceShape ?? 'Shape unavailable'} · {snapshot.mapContext.sequenceCornerIndex ? `${snapshot.mapContext.sequenceCornerIndex} of ` : ''}{snapshot.mapContext.sequenceCornerCount} corners</span>}
             </div>
-            {!snapshot.visionReady && <p className="live-phrases__hint">Open Track Vision in Add Visualization, share your forward-facing driving view, and apply the camera calibration to enable overtaking guidance.</p>}
             {!snapshot.mapReady && <p className="live-phrases__hint">Open Live Map in Add Visualization. In Circuit Maps, tag corners with corner and slow or fast, and tag straights with straight or long straight.</p>}
             <section aria-label="Sentence catalog">
                 <p className="live-phrases__state" aria-label="Closure state">State: {snapshot.state.path.join(' → ')}</p>
@@ -183,7 +217,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             <section aria-label="Triggered sentences" className="live-phrases__output">
                 <h3>Triggered sentences</h3>
                 {snapshot.events.length === 0
-                    ? <p>{enabled ? 'No phrases yet. Waiting for an opponent ahead, a tagged Live Map section, and live driving data.' : 'Enable detection to start live phrase guidance.'}</p>
+                    ? <p>{enabled ? 'No phrases yet. Waiting for live driving data and a matching reference cue or overtaking opportunity.' : 'Enable detection to start live phrase guidance.'}</p>
                     : <ol>{snapshot.events.slice().reverse().map((event) => (
                         <li key={event.id}><time dateTime={new Date(event.timestamp).toISOString()}>{new Date(event.timestamp).toLocaleTimeString()}</time><span>{event.sentence}</span></li>
                     ))}</ol>}

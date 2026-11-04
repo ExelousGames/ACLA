@@ -169,6 +169,7 @@ it.each([
     (c: any) => { c.observation.features[0] = 'unknown'; },
     (c: any) => { c.observation.features[0] = c.observation.features[1]; },
     (c: any) => { c.observation.cameraWidth = 8; },
+    (c: any) => { c.observation.gForceScale = 0; },
     (c: any) => { c.network.type = 'lstm'; },
     (c: any) => { c.network.cameraLayers.pop(); },
     (c: any) => { c.network.cameraLayers[0].kernelSize = 4; },

@@ -164,7 +164,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     const bounds = useMemo(() => getBounds([...middleLine, ...referenceLine], verticalAxis), [middleLine, referenceLine, verticalAxis]);
     const playerPosition = cars.find((car) => car.isPlayer)?.position;
 
-    useEffect(() => { mapListenersRef.current.forEach((listener) => listener()); }, [circuitMap]);
+    useEffect(() => { mapListenersRef.current.forEach((listener) => listener()); }, [circuitMap, referenceLap]);
 
     useEffect(() => {
         if (!canLoadReference) return;

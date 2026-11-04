@@ -20,7 +20,7 @@ export function drivingFeatureEncoding(config = DEFAULT_DRIVING_CONFIG): string 
 export function drivingFeatureSizes(config = DEFAULT_DRIVING_CONFIG): Record<string, number> {
     const o = config.observation;
     return { localVelocity: 3, speed: 1, game: o.categoryBits, car: o.categoryBits, map: o.categoryBits,
-        position: 2, controls: 3, referenceOffset: 3, gear: 1, rpm: 1, yawRate: 1,
+        position: 2, controls: 3, referenceOffset: 3, gear: 1, rpm: 1, yawRate: 1, gForce: 3,
         camera: 0, aggression: 1, referenceSpeed: 1, targetSpeed: 1 };
 }
 
@@ -96,7 +96,7 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || o.cameraWidth !== POLICY_CAMERA_WIDTH || o.cameraHeight !== POLICY_CAMERA_HEIGHT
         || 4 * c.network.hiddenUnits * (drivingPolicyInputs(c) + c.network.hiddenUnits + 1) > 2000000
         || !o.features.includes('camera')
-        || ![o.velocityScale, o.speedScale, o.referenceOffsetScale, o.gearScale, o.rpmScale, o.yawRateScale,
+        || ![o.velocityScale, o.speedScale, o.referenceOffsetScale, o.gearScale, o.rpmScale, o.yawRateScale, o.gForceScale,
             l.explorationSigma, l.discountIntervalSeconds, l.weightLimit, l.advantageLimit, l.policyGradientLimit,
             l.demonstrationGradientLimit, c.reward.proximityScale, c.reward.totalLimit,
             c.reward.speedTolerance, c.reward.accelerationTolerance,

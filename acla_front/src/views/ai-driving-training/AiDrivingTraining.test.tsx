@@ -365,21 +365,23 @@ it('reports the saved history scope when a model selects only some observation i
 
 it('shows motion and reference inputs with axes and units, and clears them when observations are unavailable', async () => {
     await renderTraining();
-    const labels = ['Local velocity', 'Yaw rate', 'Reference error'];
+    const labels = ['Local velocity', 'G-force', 'Yaw rate', 'Reference error'];
     labels.forEach((label) => expect(getDefinition(label)).toHaveTextContent('—'));
     mockInput = { observation: { ...trainingFixture(Date.now()).observation,
         referenceError: [-23.25, 4.5] } };
     act(() => { jest.advanceTimersByTime(250); });
     expect(getDefinition('Local velocity')).toHaveTextContent('X 1.00 · Y 30.00 · Z 0.00 m/s');
+    expect(getDefinition('G-force')).toHaveTextContent('X 0.50 · Y -1.00 · Z 1.00 g');
     expect(getDefinition('Reference error')).toHaveTextContent('X (right) -23.25 · Y (forward) 4.50 coordinate units');
     expect(screen.queryByText('World-space velocity')).not.toBeInTheDocument();
     expect(screen.queryByText('Orientation')).not.toBeInTheDocument();
     expect(getDefinition('Yaw rate')).toHaveTextContent('-0.200 rad/s');
     const observation = trainingFixture(Date.now()).observation;
     mockInput = { observation: { ...observation, context: { ...observation.context, game: 'iracing' },
-        localVelocity: [1, 0, 30], yawRate: -0.2, referenceError: [12.34, -26.75] } };
+        localVelocity: [1, 0, 30], gForce: [-0.5, 1, 2], yawRate: -0.2, referenceError: [12.34, -26.75] } };
     act(() => { jest.advanceTimersByTime(250); });
     expect(getDefinition('Local velocity')).toHaveTextContent('X 1.00 · Y 0.00 · Z 30.00 m/s');
+    expect(getDefinition('G-force')).toHaveTextContent('X -0.50 · Y 1.00 · Z 2.00 g');
     expect(getDefinition('Reference error')).toHaveTextContent('X (right) 12.34 · Y (forward) -26.75 coordinate units');
     expect(getDefinition('Yaw rate')).toHaveTextContent('-0.200 rad/s');
     mockInput = { error: 'Waiting for fresh, running live telemetry.' };

@@ -99,7 +99,7 @@ describe('impact reward', () => {
 
 it('uses telemetry and the full-resolution camera from the capture time', () => {
     const { live, vision, referenceLap, observation } = trainingFixture();
-    expect(observation.features).toHaveLength(66);
+    expect(observation.features).toHaveLength(69);
     expect(observation).toMatchObject({ gear: 3, rpm: 6000 });
     expect(observation.features.slice(60, 62)).toEqual([3 / 8, 6000 / 20000]);
     expect(observation.camera).toBe(vision.camera);
@@ -142,23 +142,49 @@ it('preserves adapted ACC axes and signs in capture-time policy inputs and drivi
     Object.assign(vision.telemetry!.currentTelemetry, new AccAdapter().adapt({ type: 'sample', broadcasting: {}, sharedMemory: {
         Physics: {
             local_velocity: { x: -12, y: 2.5, z: 40 }, velocity: { x: 40, y: 2.5, z: 12 },
+            g_force: { x: -1.5, y: 1, z: 2.5 },
             heading: Math.PI / 2, pitch: -0.2, roll: 0.3,
             local_angular_vel: { x: -Math.PI / 2, y: -Math.PI / 8, z: Math.PI / 4 },
         },
     } }));
     const later = { ...live, currentTelemetry: { ...live.currentTelemetry,
-        Physics_local_velocity_x: 90, Physics_heading: 0, Physics_local_angular_vel_z: 1 } };
+        Physics_local_velocity_x: 90, Physics_heading: 0, Physics_local_angular_vel_z: 1,
+        Physics_g_force_x: 4, Physics_g_force_y: 3, Physics_g_force_z: -2 } };
     const observation = readDrivingObservation(later, vision, referenceLap, 50, 1000).observation!;
-    expect(observation).toMatchObject({ localVelocity: [-12, 40, 2.5],
+    expect(observation).toMatchObject({ localVelocity: [-12, 40, 2.5], gForce: [-1.5, 2.5, 1],
         yawRate: Math.PI / 8 });
     expect(observation.features.slice(0, 3)).toEqual([-0.12, 0.4, 0.025]);
     expect(observation.features[62]).toBe(0.125);
+    expect(observation.features.slice(63, 66)).toEqual([-0.3, 0.5, 0.2]);
     const memory = new DrivingMemory();
     memory.encode(observation);
     const encoded = memory.encode({ ...observation, capturedAt: 1200, measuredAt: 1200 }).features;
     expect(encoded.slice(2, 5)).toEqual([-0.12, 0.4, 0.025]);
     expect(encoded[2 + 62]).toBe(0.125);
+    expect(encoded.slice(2 + 63, 2 + 66)).toEqual([-0.3, 0.5, 0.2]);
     expect(encoded.slice(drivingMemoryInputs())).toEqual(observation.features);
+});
+
+it.each(['acc', 'iracing'] as const)('normalizes g-force in adapter XYZ order for %s using the configured scale', (game) => {
+    const { live, vision, referenceLap } = trainingFixture();
+    live.game = vision.telemetry!.game = game;
+    referenceLap.game = game;
+    Object.assign(vision.telemetry!.currentTelemetry, {
+        Physics_g_force_x: -8, Physics_g_force_y: 1, Physics_g_force_z: 6,
+    });
+    const config = cloneConfig();
+    config.observation.gForceScale = 4;
+    const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000, config).observation!;
+    expect(observation.gForce).toEqual([-8, 1, 6]);
+    expect(observation.features.slice(63, 66)).toEqual([-1, 0.25, 1]);
+});
+
+describe.each(['x', 'y', 'z'])('g-force %s validation', (axis) => {
+    it.each([undefined, NaN, Infinity, -Infinity, '0'])('rejects invalid g-force %s', (value) => {
+        const { live, vision, referenceLap } = trainingFixture();
+        Object.assign(vision.telemetry!.currentTelemetry, { [`Physics_g_force_${axis}`]: value });
+        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/g-force XYZ/);
+    });
 });
 
 it('ignores world-space velocity when building policy inputs', () => {

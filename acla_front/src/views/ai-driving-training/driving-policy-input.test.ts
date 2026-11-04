@@ -6,11 +6,12 @@ import { trainingFixture } from './training-fixtures';
 
 it('processes sparse history chronologically, aligning custom feature layouts and cameras', () => {
     const config = cloneConfig();
-    config.memory.features = ['controls', 'speed'];
+    config.memory.features = ['controls', 'gForce', 'speed'];
     const { observation } = trainingFixture();
     const memory = new DrivingMemory(config);
     const frame = (capturedAt: number, speed: number) => {
         const features = observation.features.slice(); features[3] = speed;
+        features.splice(63, 3, speed, -speed, speed * 2);
         return { ...observation, capturedAt, features };
     };
     memory.encode(frame(1000, 0.1));
@@ -19,6 +20,8 @@ it('processes sparse history chronologically, aligning custom feature layouts an
     const width = drivingPolicyInputs(config);
     expect(input.steps).toBe(3);
     expect([input.features[5], input.features[width + 5], input.features[2 * width + 5]]).toEqual([0.1, 0.2, 0.3]);
+    expect(Array.from({ length: input.steps }, (_, i) => input.features.slice(i * width + 65, i * width + 68)))
+        .toEqual([[0.1, -0.1, 0.2], [0.2, -0.2, 0.4], [0.3, -0.3, 0.6]]);
     expect([input.features[1], input.features[width + 1], input.features[2 * width + 1]]).toEqual([600 / 5000, 200 / 5000, 0]);
     expect(input.features.slice(2, 5)).toEqual([0, 0, 0]);
     expect(input.cameras).toHaveLength(1);

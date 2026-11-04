@@ -31,7 +31,7 @@ describe('LivePhrases root connection', () => {
         const root = {
             getComponentName: () => 'live-session', subscribeTelemetry: telemetry.subscribeEvents,
             getTrackVisionDetection: () => detection, subscribeTrackVision: () => () => undefined,
-            getLiveCircuitMap: () => map, subscribeLiveCircuitMap: () => () => undefined,
+            getLiveCircuitMap: () => map, getLiveReferenceLap: () => null, subscribeLiveCircuitMap: () => () => undefined,
             getLiveCornerSummaries: () => summaries,
         };
         const Root = () => { useRegisterOperationComponentRef(React.useRef(root)); return null; };
@@ -63,7 +63,11 @@ describe('LivePhrases root connection', () => {
         expect(screen.getByText('Detection: Disabled')).toBeInTheDocument();
         expect(jest.getTimerCount()).toBe(0);
         const catalog = within(screen.getByRole('region', { name: 'Sentence catalog' }));
-        PHRASE_DEFINITIONS.forEach((rule) => {
+        PHRASE_DEFINITIONS.filter((rule) => !rule.movementDirection).forEach((rule) => {
+            if (rule.referenceCue) fireEvent.click(catalog.getByLabelText('Cornering closure'));
+            const zone = rule.referenceCue
+                ? rule.referenceCue.toLowerCase().includes('brake') || rule.referenceCue === 'steerSoon' ? 'Brake zone' : 'Throttle zone' : undefined;
+            if (zone) fireEvent.click(catalog.getByLabelText(`${zone} closure`));
             const summary = catalog.getByLabelText(`${rule.name} closure`);
             expect(summary).toBeVisible();
             expect(within(summary).getByText('Missing input')).toBeVisible();
@@ -77,6 +81,8 @@ describe('LivePhrases root connection', () => {
             expect(conditions.getAllByText('AND')).toHaveLength(rule.conditions.length - 1);
             expect(within(conditions.getAllByRole('listitem')[0]).queryByText('AND')).not.toBeInTheDocument();
             fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
+            if (zone) fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
+            if (rule.referenceCue) fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
         });
         expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
         expect(screen.getByText('Live Map: Waiting for a tagged circuit map')).toBeInTheDocument();
@@ -86,6 +92,80 @@ describe('LivePhrases root connection', () => {
         for (const subject of ['Player', 'Opponent']) {
             expect(positions.getByText(`${subject} in a left or right turn corner`)).toBeVisible();
             expect(positions.getByText(`${subject} near the left edge or middle of the track or right edge`)).toBeVisible();
+        }
+    });
+
+    it('groups pedal phrases into reference zones under Cornering', () => {
+        render(<LivePhrases name="live-phrases" />);
+        const names = ['Brake', 'More brake', 'Release the brake', 'Less brake', 'Steer soon', 'Throttle', 'More throttle', 'Less throttle'];
+        names.forEach((name) => expect(screen.queryByLabelText(`${name} closure`)).not.toBeInTheDocument());
+        fireEvent.click(screen.getByLabelText('Cornering closure'));
+        expect(screen.queryByLabelText('Steer soon closure')).not.toBeInTheDocument();
+        for (const [zone, members] of [['Brake zone', names.slice(0, 5)], ['Throttle zone', names.slice(5)]] as const) {
+            fireEvent.click(screen.getByLabelText(`${zone} closure`));
+            members.forEach((name) => expect(screen.getByLabelText(`${name} closure`)).toBeVisible());
+            expect(screen.queryByLabelText('Release the throttle closure')).not.toBeInTheDocument();
+            expect(screen.getByLabelText(`${zone} action 1: ${zone === 'Brake zone' ? 'exit to parent' : 'exit to root'}`)).toBeVisible();
+            fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+            expect(screen.getByText(`Inside the interpolated reference ${zone === 'Brake zone' ? 'brake' : 'throttle'} zone`)).toBeVisible();
+            fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+        }
+        expect(screen.queryByLabelText('Prepare to brake closure')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Increase braking closure')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Prepare to accelerate closure')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Increase throttle closure')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        const conditions = within(screen.getByRole('list', { name: 'Cornering conditions' }));
+        expect(conditions.getByText('Inside an interpolated reference brake or throttle zone')).toBeVisible();
+        expect(conditions.getByText('Missing input')).toBeVisible();
+    });
+
+    it('shows reference-timed brake-release and turn actions inside Steer soon', () => {
+        render(<LivePhrases name="live-phrases" />);
+        fireEvent.click(screen.getByLabelText('Cornering closure'));
+        fireEvent.click(screen.getByLabelText('Brake zone closure'));
+        fireEvent.click(screen.getByLabelText('Steer soon closure'));
+        expect(screen.getAllByRole('button', { name: /^Steer soon action \d+: say phrase$/ })).toHaveLength(2);
+        for (const [index, sentence, condition] of [
+            [1, 'turn, slowly lift up the brake', 'Reference deceleration is easing before turn-in'],
+            [2, 'Turn', 'Reference steering has reached the corner turn-in threshold'],
+        ] as const) {
+            fireEvent.click(screen.getByLabelText(`Steer soon action ${index}: say phrase`));
+            expect(screen.getByText(sentence)).toBeVisible();
+            fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+            expect(screen.getByText(condition)).toBeVisible();
+            fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+        }
+    });
+
+    it('opens small and medium reference movements on both sides, with progress and completion phrases', () => {
+        render(<LivePhrases name="live-phrases" />);
+        expect(screen.queryByLabelText('Increase steering closure')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByLabelText('Turn to reference line closure'));
+        for (const direction of ['left', 'right']) {
+            fireEvent.click(screen.getByLabelText(`Move to the ${direction} closure`));
+            expect(within(screen.getByRole('list', { name: `Move to the ${direction} children` }))
+                .getAllByRole('listitem').map((item) => within(item).getByRole('button').getAttribute('aria-label'))).toEqual([
+                'Small movement closure', 'Medium movement closure',
+                'A little bit more closure', 'Enough movement closure',
+                `Move to the ${direction} action 5: exit to parent`,
+            ]);
+            for (const [name, sentence] of [
+                ['Small movement', `Move to the ${direction}.`],
+                ['Medium movement', `Further to the ${direction}.`],
+                ['A little bit more', 'A little bit more.'],
+                ['Enough movement', "OK, that's enough."],
+            ]) {
+                fireEvent.click(screen.getByLabelText(`${name} closure`));
+                fireEvent.click(screen.getByLabelText(`${name} action 1: say phrase`));
+                expect(screen.getByText(sentence)).toBeVisible();
+                expect(screen.getByText('Random (equal chance)')).toBeVisible();
+                const rule = PHRASE_DEFINITIONS.find((item) => item.name === name && item.movementDirection === direction)!;
+                rule.sentenceAlternatives!.forEach((alternative) => expect(screen.getByText(alternative)).toBeVisible());
+                fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+                fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+            }
+            fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         }
     });
 
@@ -296,6 +376,7 @@ describe('LivePhrases root connection', () => {
                 return () => { stopVision(); listeners.delete(listener); };
             },
             getLiveCircuitMap: () => map,
+            getLiveReferenceLap: () => null,
             getLiveCornerSummaries: () => [],
             subscribeLiveCircuitMap: (listener: () => void) => { notifyMap = listener; return stopMap; },
         };
@@ -379,7 +460,7 @@ describe('LivePhrases root connection', () => {
         expect(catalog.getByRole('tab', { name: 'Conditions' })).toHaveAttribute('aria-selected', 'true');
         act(() => { jest.advanceTimersByTime(2250); });
         expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
-        expect(screen.getByText('Track Vision: Unavailable or stale')).toBeInTheDocument();
+        expect(screen.queryByText(/^Track Vision:/)).not.toBeInTheDocument();
         expect(conditions.getAllByText('Missing input')).toHaveLength(conditionCount);
         conditions.getAllByRole('listitem').forEach((condition) => expect(condition).toHaveAttribute('data-condition-fit', 'false'));
         act(() => { telemetry.resetSession(); });
