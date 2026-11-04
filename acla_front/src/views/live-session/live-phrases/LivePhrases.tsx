@@ -190,7 +190,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         }} />
                 </label>
                 <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% caution</span><span>50% · Cautious</span></div>
-                <p className="live-phrases__hint">Caution lowers each corner’s minimum speed and local deceleration by the selected percentage. Braking starts earlier by the distance needed to reach that speed, following the reference’s braking pattern. 0% follows the reference. Acceleration starts at the reference position from the lower minimum speed, with no throttle-zone stretching. Pedal guidance follows the adjusted speed using reference brake pressure, throttle and acceleration.</p>
+                <p className="live-phrases__hint">Caution lowers each corner’s minimum speed and local deceleration by the selected percentage. Braking starts earlier by the distance needed to reach that speed, following the reference’s braking pattern. 0% follows the reference. Acceleration starts at the reference position from the lower minimum speed, with no throttle-zone stretching. More brake and Less brake compare your speed and deceleration with the adjusted reference speed profile. Throttle and More throttle use reference throttle and acceleration. Less throttle responds when you are faster than the local reference and moving outward from its line, using curvature to identify the outside of the corner.</p>
             </div>
             {overlayError && <p role="alert">Unable to display live phrase in the overlay: {overlayError}</p>}
             {voiceError && <p role="alert">Unable to prepare or play live phrase speech: {voiceError}</p>}

@@ -11,7 +11,7 @@ import { PhraseOpponentMotion } from './phrase-opponent-motion';
 import { lapDistance } from './phrase-corner-geometry';
 import type { DriverCornerSummary } from '../event-log/corner-summary';
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
-import { readReferenceGuidance, REFERENCE_CUE_COOLDOWN_MS, REFERENCE_POSITION_MAX_AGE_MS, type ReferenceCue, type ReferencePedalZone, type ReferenceSteeringPhase } from './phrase-reference-guidance';
+import { readReferenceGuidance, REFERENCE_CUE_COOLDOWN_MS, REFERENCE_POSITION_MAX_AGE_MS, type ReferenceCue, type ReferencePedalZone, type ReferenceSteeringPhase, type ReferencePositionSample } from './phrase-reference-guidance';
 import { ReferenceMovement, REFERENCE_MOVEMENTS, type ReferenceMovementCue, type MovementDirection } from './phrase-reference-movement';
 import { copyPhraseMap, copyPhraseReference, normalizeDrivingAggression, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
 
@@ -82,11 +82,11 @@ export class PhraseCondition {
                 brake: 'Brake demand for the target speed is at least 10% and the brake is not yet applied',
                 steerSoon: 'Reference turn-in is approaching or reference steering is turning into the corner',
                 throttle: 'Throttle demand for the target speed is at least 15% and the throttle is not yet applied, near the line and clear of braking',
-                moreBrake: 'Applied brake is at least 20 points below demand from reference braking response and target speed',
+                moreBrake: 'Speed is at least 5 km/h above the interpolated reference and live deceleration is at least 0.1 m/s² lower, with brake applied below full pressure',
                 releaseBrake: 'The brake is applied but demand for the target speed is below 10%',
-                lessBrake: 'Applied brake is at least 20 points above demand, with some braking still needed',
+                lessBrake: 'Speed is at least 5 km/h below the interpolated reference and live deceleration is at least 0.1 m/s² higher, with brake applied',
                 moreThrottle: 'Applied throttle is at least 15 points below demand from reference throttle, acceleration and target speed, near the line and clear of braking',
-                lessThrottle: 'Applied throttle is at least 15 points above demand, with some throttle still needed',
+                lessThrottle: 'Speed is at least 5 km/h above the local reference and the driver is moving outward from the reference line, with throttle applied',
             };
             const movement = REFERENCE_MOVEMENTS.find(({ cue }) => cue === this.value);
             return movement ? `Move to the ${movement.direction}: ${movement.description}`
@@ -273,9 +273,9 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
     },
     ...([
         ['brake', 'Brake', 'Brake.', 'Apply the brake to follow the speed profile adjusted by Driving aggression.'],
-        ['moreBrake', 'More brake', 'More brake.', 'Increase pressure using reference brake and deceleration to follow the adjusted speed target.'],
+        ['moreBrake', 'More brake', 'More brake.', 'Increase pressure when faster than the interpolated speed target and decelerating less than the reference.'],
         ['releaseBrake', 'Release the brake', 'Release the brake.', 'Release the pedal when the adjusted speed target no longer requires braking.'],
-        ['lessBrake', 'Less brake', 'Less brake.', 'Reduce pressure when reference braking response indicates less braking is needed for the adjusted speed target.'],
+        ['lessBrake', 'Less brake', 'Less brake.', 'Reduce pressure when slower than the interpolated speed target and decelerating more than the reference.'],
     ] as const).map(([referenceCue, name, sentence, description]) => ({
         id: `reference-${referenceCue}`, referenceCue, name, sentence, description,
         holdMs: referenceCue === 'moreBrake' || referenceCue === 'lessBrake' ? 300 : 0,
@@ -298,7 +298,7 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
     ...([
         ['throttle', 'Throttle', 'Throttle.', 'Apply throttle using reference throttle and acceleration to follow the speed profile adjusted by Driving aggression.'],
         ['moreThrottle', 'More throttle', 'More throttle.', 'Increase throttle when reference acceleration response indicates more is needed for the adjusted speed target.'],
-        ['lessThrottle', 'Less throttle', 'Less throttle.', 'Reduce throttle when reference acceleration response indicates less is needed for the adjusted speed target.'],
+        ['lessThrottle', 'Less throttle', 'Less throttle.', 'Reduce throttle when faster than the local reference and moving outward from its line, using reference curvature to identify the outside of the corner.'],
     ] as const).map(([referenceCue, name, sentence, description]) => ({
         id: `reference-${referenceCue}`, referenceCue, name, sentence, description, holdMs: 0,
         conditions: [condition('speed', '>=', 20), condition('referencePedalZone', '=', 'throttle'), condition('referenceCue', '=', referenceCue)],
@@ -449,7 +449,7 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                     phrase.referenceCue === 'steerSoon' ? 'The Turn phrase has run' : 'The phrase action has run'))],
                 { id: phrase.id, inspect: (context) => ({
                     ...context.inspections.get(phrase.id),
-                    fields: { 'Hold for': `${phrase.holdMs / 1000} s`, Cooldown: `${(phrase.referenceCue ? REFERENCE_CUE_COOLDOWN_MS : COOLDOWN_MS) / 1000} s`, 'Clear period': `${REARM_MS / 1000} s` },
+                    fields: { 'Hold for': `${phrase.holdMs / 1000} s`, Cooldown: `${(phrase.referenceCue ? REFERENCE_CUE_COOLDOWN_MS : COOLDOWN_MS) / 1000} s`, 'Clear period': phrase.referenceCue === 'brake' ? 'Until brake zone exit' : `${REARM_MS / 1000} s` },
                 }) },
             );
         });
@@ -498,7 +498,7 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
         ...zoneClosures],
         { id: CORNERING_CLOSURE_ID });
     return new Closure('root',
-        'Select a matching guide after its entry hold time. Reference-line cues take priority, with a 2 s cooldown; overtaking guides use 8 s. Each guide requires a 0.5 s clear period before repeating.',
+        'Select a matching guide after its entry hold time. Reference-line cues take priority, with a 2 s cooldown; overtaking guides use 8 s. Brake speaks once per brake zone; other guides require a 0.5 s clear period before repeating.',
         describeCondition(() => true, 'Always eligible'), closures.flatMap((closure, index) =>
             phrases[index].movementDirection ? phrases[index] === movements[0] ? [movementRoot] : []
                 : phrases[index].referenceCue ? phrases[index] === corneringPhrases[0] ? [corneringRoot] : [] : [closure]));
@@ -535,6 +535,9 @@ export class PhraseEngine {
     state: State<PhraseContext>;
     private sample: StandardTelemetrySample = {};
     private receivedAt = -Infinity;
+    private deceleration?: number;
+    private referencePosition?: ReferencePositionSample;
+    private previousReferencePosition?: ReferencePositionSample;
     private vision: PhraseVisionInput | null = null;
     private visionAfter = -Infinity;
     private opponentDistanceM?: number;
@@ -583,12 +586,16 @@ export class PhraseEngine {
             this.phrases.filter((phrase) => phrase.referenceCue).forEach((phrase) => this.memory.delete(phrase.id));
             this.lastReferenceSpeech = -Infinity;
             this.referenceMovement.reset();
+            this.referencePosition = this.previousReferencePosition = undefined;
         }
         if (map !== this.sourceMap) {
             this.sourceMap = map;
             this.map = copyPhraseMap(map);
             this.mapContext = createPhraseMapContext(this.map);
-            this.memory.forEach((memory) => { memory.since = undefined; memory.armed = true; });
+            this.memory.forEach((memory, id) => {
+                memory.since = undefined;
+                if (!this.phrases.some((phrase) => phrase.id === id && phrase.referenceCue === 'brake')) memory.armed = true;
+            });
             this.sectionId = undefined;
             this.opponentMotion.reset();
             this.cornerSummaries = [];
@@ -607,6 +614,7 @@ export class PhraseEngine {
             this.events = [];
             this.lastReferenceSpeech = -Infinity;
             this.referenceMovement.reset();
+            this.referencePosition = this.previousReferencePosition = undefined;
         }
         return this.evaluate(now);
     }
@@ -614,6 +622,7 @@ export class PhraseEngine {
     reset(now: number) {
         this.sample = {};
         this.receivedAt = -Infinity;
+        this.deceleration = undefined;
         this.vision = null;
         this.visionAfter = now;
         this.opponentDistanceM = undefined;
@@ -627,12 +636,20 @@ export class PhraseEngine {
         this.cornerSummaries = [];
         this.lastReferenceSpeech = -Infinity;
         this.referenceMovement.reset();
+        this.referencePosition = this.previousReferencePosition = undefined;
     }
 
     receiveTelemetry(event: LiveTelemetryEvent, now: number, cornerSummaries: readonly DriverCornerSummary[] = []): PhraseSnapshot {
         if (event.type !== 'frame') {
             this.reset(now);
         } else {
+            const previousSpeed = nonnegative(this.sample.Physics_speed_kmh), speed = nonnegative(event.sample.Physics_speed_kmh);
+            const elapsed = now - this.receivedAt;
+            this.deceleration = event.telemetryStatus === 2 && elapsed > 0 && elapsed <= TELEMETRY_MAX_AGE_MS
+                && previousSpeed !== undefined && speed !== undefined && this.game === event.update.game
+                && this.sample.Static_track === event.sample.Static_track && this.sample.Static_car_model === event.sample.Static_car_model
+                && this.sessionGeneration === event.sessionGeneration && this.streamGeneration === event.streamGeneration
+                ? (previousSpeed - speed) / 3.6 / (elapsed / 1000) : undefined;
             if (this.game !== event.update.game || this.sample.Static_track !== event.sample.Static_track) this.opponentMotion.reset();
             this.game = event.update.game;
             this.sessionGeneration = event.sessionGeneration;
@@ -652,7 +669,10 @@ export class PhraseEngine {
 
     receiveVision(vision: PhraseVisionInput | null, now: number): PhraseSnapshot {
         const sameCalibration = JSON.stringify(vision?.calibration) === JSON.stringify(this.vision?.calibration);
-        if (!sameCalibration) this.referenceMovement.reset();
+        if (!sameCalibration) {
+            this.referenceMovement.reset();
+            this.referencePosition = this.previousReferencePosition = undefined;
+        }
         // Repeated or out-of-order captures cannot establish a new relative-motion sample.
         if (vision && this.vision && sameCalibration && this.vision.capturedAt <= now
             && vision.capturedAt <= this.vision.capturedAt) return this.evaluate(now);
@@ -701,8 +721,16 @@ export class PhraseEngine {
             && paired.receivedAt !== undefined && paired.receivedAt <= this.vision.capturedAt
             && this.vision.capturedAt - paired.receivedAt <= REFERENCE_POSITION_MAX_AGE_MS
             ? this.vision : null;
+        const previousPosition = positionVision?.capturedAt === this.referencePosition?.capturedAt
+            ? this.previousReferencePosition : this.referencePosition;
         const guidance = readReferenceGuidance(this.sample, positionVision, this.referenceLap, this.game, now,
-            this.sourceReferenceLap, this.originalReferenceLap);
+            this.sourceReferenceLap, this.originalReferenceLap, telemetryReady ? this.deceleration : undefined, previousPosition);
+        if (guidance.lateralOffset === undefined || !positionVision) {
+            this.referencePosition = this.previousReferencePosition = undefined;
+        } else if (positionVision.capturedAt !== this.referencePosition?.capturedAt) {
+            this.previousReferencePosition = this.referencePosition;
+            this.referencePosition = { capturedAt: positionVision.capturedAt, lateralOffset: guidance.lateralOffset };
+        }
         const driverCornerIds = telemetryReady && sameMap
             ? this.mapContext.cornersAt(this.sample.Graphics_normalized_car_position) : undefined;
         const referenceThrottleOutsideCorner = driverCornerIds?.length === 0 && guidance.pedalZone === 'throttle';
@@ -730,7 +758,8 @@ export class PhraseEngine {
                 && (phrase.movementDirection ? !inCornering : corneringAllowed)
                 && (!zone || guidance.pedalZone === zone.zone)
                 && (!phrase.movementDirection || this.referenceMovement.canSpeak(now))
-                && (!memory || memory.armed || (memory.clearSince !== undefined && now - memory.clearSince >= REARM_MS))
+                && (!memory || memory.armed || (phrase.referenceCue !== 'brake'
+                    && memory.clearSince !== undefined && now - memory.clearSince >= REARM_MS))
                 && (memory?.lastEmitted === undefined || now - memory.lastEmitted >= REFERENCE_CUE_COOLDOWN_MS);
         }) : undefined;
         inputs.closingOnOpponent = visionReady ? this.closingOnOpponent : undefined;
@@ -776,7 +805,11 @@ export class PhraseEngine {
             const missing = conditionFit ? [] : missingConditionInputs(conditions);
             const fits = telemetryReady && conditionFit && (!phrase.referenceCue || Boolean(phrase.movementDirection) || corneringAllowed);
             matched.set(phrase.id, fits);
-            if (!fits) {
+            if (phrase.referenceCue === 'brake') {
+                // Pedal changes and missing inputs cannot rearm Brake within the same zone.
+                if (!fits) memory.since = undefined;
+                if (guidance.pedalZone !== undefined && guidance.pedalZone !== 'brake') memory.armed = true;
+            } else if (!fits) {
                 memory.since = undefined;
                 memory.clearSince ??= now;
                 if (now - memory.clearSince >= REARM_MS) memory.armed = true;

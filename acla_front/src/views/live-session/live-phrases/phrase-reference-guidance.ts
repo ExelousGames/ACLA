@@ -9,6 +9,7 @@ export const REFERENCE_CUE_COOLDOWN_MS = 2000;
 export type ReferenceCue = 'brake' | 'moreBrake' | 'releaseBrake' | 'lessBrake' | 'steerSoon' | 'throttle' | 'moreThrottle' | 'lessThrottle' | ReferenceMovementCue;
 export type ReferencePedalZone = 'brake' | 'throttle' | 'none';
 export type ReferenceSteeringPhase = 'prepare' | 'easeBrake' | 'turn';
+export interface ReferencePositionSample { capturedAt: number; lateralOffset: number }
 export type ReferenceGuidance = Partial<Record<ReferenceCue, number>> & {
     ready?: boolean; lateralOffset?: number; braking?: boolean; pedalZone?: ReferencePedalZone;
     steeringPhase?: ReferenceSteeringPhase;
@@ -17,6 +18,7 @@ type Control = 'steering' | 'brake' | 'throttle';
 type Channel = Control | 'speed';
 interface Point {
     position: number; distance: number; steering?: number; brake?: number; throttle?: number; speed?: number;
+    x: number; ground: number;
     deceleration?: number; decelerationEasing?: boolean;
 }
 interface Reference {
@@ -30,7 +32,7 @@ const controls: Control[] = ['steering', 'brake', 'throttle'];
 const channels: Channel[] = [...controls, 'speed'];
 const thresholds = { steering: 0.08, brake: 0.1, throttle: 0.15 };
 const SPEED_TOLERANCE_KMH = 5;
-const BRAKE_TOLERANCE = 0.2;
+const DECELERATION_TOLERANCE = 0.1;
 const THROTTLE_TOLERANCE = 0.15;
 const SPEED_CORRECTION_SECONDS = 1.5;
 const cache = new WeakMap<TopLapReferenceEntry, Reference | null>();
@@ -50,7 +52,7 @@ function prepare(lap: TopLapReferenceEntry): Reference | null {
         let cumulative = 0;
         const points = lap.x.map((position, i) => {
             if (i) cumulative += distance(positions[i - 1], positions[i]);
-            const point: Point = { position, distance: cumulative };
+            const point: Point = { position, distance: cumulative, x: positions[i][0], ground: positions[i][lap.game === 'acc' ? 1 : 2] };
             channels.forEach((channel, j) => { if (valid[j]) point[channel] = lap.y[i][indices[j]]; });
             return point;
         });
@@ -149,6 +151,18 @@ function speedSlope(reference: Reference, distance: number): number {
     return (b.speed - a.speed) / (3.6 * span);
 }
 
+/** Signed horizontal curvature from reference points 10 m either side of the aligned position. */
+function curvatureAt(reference: Reference, distance: number): number {
+    const points = [-10, 0, 10].map((offset) => {
+        const { a, b, fraction } = bracket(reference, wrap(distance + offset, reference.length), 'distance');
+        return { x: a.x + (b.x - a.x) * fraction, y: a.ground + (b.ground - a.ground) * fraction };
+    });
+    const [a, b, c] = points;
+    const ux = b.x - a.x, uy = b.y - a.y, vx = c.x - b.x, vy = c.y - b.y;
+    const span = Math.hypot(ux, uy) * Math.hypot(vx, vy) * Math.hypot(c.x - a.x, c.y - a.y);
+    return span > 0 ? 2 * (ux * vy - uy * vx) / span : 0;
+}
+
 /** Estimate pedal demand from the original lap's braking response and the adjusted speed slope. */
 function brakeTarget(reference: Reference, baseline: Reference | null, distance: number,
     target: Partial<Record<Channel, number>>, speed: number): number | undefined {
@@ -196,7 +210,8 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
     vision: Pick<TrackVisionDetection, 'capturedAt' | 'position'> | null,
     lap: TopLapReferenceEntry | null, game: string | undefined, now: number,
     locationReference: TopLapReferenceEntry | null = lap,
-    responseReference: TopLapReferenceEntry | null = lap): ReferenceGuidance {
+    responseReference: TopLapReferenceEntry | null = lap,
+    liveDeceleration?: number, previousPosition?: ReferencePositionSample): ReferenceGuidance {
     const prediction = vision?.position, position = sample.Graphics_normalized_car_position, speed = sample.Physics_speed_kmh;
     if (!vision || !prediction || !lap || !locationReference || prediction.referenceLap !== locationReference
         || now < vision.capturedAt || now - vision.capturedAt > REFERENCE_POSITION_MAX_AGE_MS
@@ -222,23 +237,27 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
     const baseline = responseReference ? prepare(responseReference) : null;
     const desiredBrake = brakeTarget(reference, baseline, distance, target, speed);
     // Zone membership follows the local reference, never the live driver's speed or pedals.
-    // Use reference-speed demand so Driving aggression can advance braking for the lower corner speed.
-    const referenceBrake = brakeTarget(reference, baseline, distance, target, target.speed ?? 0);
     const referenceThrottle = throttleTarget(reference, baseline, distance, target, target.speed ?? 0);
     const result: ReferenceGuidance = { ready: true, lateralOffset: lateral,
         pedalZone: target.brake === undefined ? undefined
-            : target.brake >= thresholds.brake || (referenceBrake !== undefined && referenceBrake >= thresholds.brake) ? 'brake'
+            : target.brake >= thresholds.brake ? 'brake'
                 : referenceThrottle !== undefined && referenceThrottle >= thresholds.throttle ? 'throttle' : 'none',
         braking: target.brake === undefined ? undefined : target.brake >= thresholds.brake || tooFast
             || (desiredBrake !== undefined && desiredBrake >= thresholds.brake) };
-    if (valid('brake') && desiredBrake !== undefined) {
+    if (valid('brake')) {
         const pedal = actual.brake!;
         let cue: ReferenceCue | undefined;
-        if (desiredBrake >= thresholds.brake && pedal < thresholds.brake) cue = 'brake';
-        else if (desiredBrake < thresholds.brake && pedal >= thresholds.brake) cue = 'releaseBrake';
-        // Include exact 20-point differences despite floating-point subtraction (e.g. 1 - 0.8).
-        else if (desiredBrake - pedal >= BRAKE_TOLERANCE - Number.EPSILON) cue = 'moreBrake';
-        else if (pedal - desiredBrake >= BRAKE_TOLERANCE - Number.EPSILON) cue = 'lessBrake';
+        if (pedal >= thresholds.brake && target.speed !== undefined && finite(liveDeceleration)) {
+            // Compare motion with the local speed profile, independent of reference brake pressure.
+            const referenceDeceleration = Math.max(0, -target.speed / 3.6 * speedSlope(reference, distance));
+            if (tooFast && referenceDeceleration - liveDeceleration >= DECELERATION_TOLERANCE && pedal < 1) cue = 'moreBrake';
+            else if (target.speed - speed >= SPEED_TOLERANCE_KMH
+                && liveDeceleration - referenceDeceleration >= DECELERATION_TOLERANCE) cue = 'lessBrake';
+        }
+        if (!cue && desiredBrake !== undefined) {
+            if (desiredBrake >= thresholds.brake && pedal < thresholds.brake) cue = 'brake';
+            else if (desiredBrake < thresholds.brake && pedal >= thresholds.brake) cue = 'releaseBrake';
+        }
         if (cue) {
             result[cue] = now + 1500;
             result.braking = true;
@@ -267,8 +286,16 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
         const pedal = actual.throttle!;
         const demand = braking || actual.brake! >= thresholds.brake ? 0 : desiredThrottle;
         let cue: ReferenceCue | undefined;
-        if (demand >= thresholds.throttle && pedal - demand >= THROTTLE_TOLERANCE) cue = 'lessThrottle';
-        else if (!braking && actual.brake! < thresholds.brake && Math.abs(lateral) <= 2) {
+        const elapsed = previousPosition ? vision.capturedAt - previousPosition.capturedAt : 0;
+        if (tooFast && result.pedalZone === 'throttle' && pedal >= thresholds.throttle && actual.brake! < thresholds.brake
+            && previousPosition && elapsed > 0 && elapsed <= REFERENCE_POSITION_MAX_AGE_MS) {
+            const curvature = curvatureAt(reference, distance) * (lap.game === 'iracing' ? -1 : 1);
+            const direction = Math.sign(curvature);
+            // Delta points from the driver to the reference: on the outside it points into the bend.
+            const outwardRate = (lateral - previousPosition.lateralOffset) * direction / (elapsed / 1000);
+            if (Math.abs(curvature) >= 0.0015 && lateral * direction > 0 && outwardRate > 0.05) cue = 'lessThrottle';
+        }
+        if (!cue && !braking && actual.brake! < thresholds.brake && Math.abs(lateral) <= 2) {
             if (demand >= thresholds.throttle && pedal < thresholds.throttle) cue = 'throttle';
             else if (demand - pedal >= THROTTLE_TOLERANCE) cue = 'moreThrottle';
         }

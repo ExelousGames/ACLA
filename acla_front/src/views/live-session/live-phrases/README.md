@@ -34,11 +34,11 @@ Reference-line guidance has two root closures: **Cornering** and **Turn to refer
 Brake zone groups **Brake**, **More brake**, **Release the brake**, **Less brake**, and **Steer soon**;
 Throttle zone groups **Throttle**, **More throttle**, and
 **Less throttle**. Each zone enters from the aligned, interpolated Live Phrases
-reference, even when the driver's pedals already match. Zone membership uses
-reference-speed pedal demand from the local aggression-adjusted speed profile,
-without live speed-error corrections. Reference brake pressure of at least 0.10
-also identifies a brake zone; brake zones take precedence over throttle zones.
-Otherwise reference throttle demand of at least 0.15 identifies a throttle zone.
+reference, even when the driver's pedals already match. A brake zone requires
+interpolated reference brake pressure of at least 0.10; calculated braking demand
+does not extend its bounds. Brake zones take precedence over throttle zones.
+Otherwise reference throttle demand of at least 0.15 identifies a throttle zone,
+using the local aggression-adjusted speed profile without live speed-error corrections.
 The reference brake channel must be available. With a matching, tagged centerline
 map, throttle zones are limited to actual corner bounds, including start/finish
 wraparound. Reference throttle on a straight or an untagged gap cannot enter or
@@ -60,7 +60,9 @@ Brake zone. Throttle zone returns to root only when the driver leaves
 the corner. If throttle pickup occurs beyond the corner, Cornering returns
 to root without entering the throttle zone. Movement cues wait
 until Cornering has exited. The former **Prepare to brake** cue is removed;
-**Brake** speaks when braking is needed now. **Prepare to accelerate** is also removed;
+**Brake** speaks once per brake-zone entry when braking is needed now. Pedal changes,
+expired inputs, and map refreshes cannot repeat it within the same zone; a confirmed
+zone exit rearms it for the next entry. **Prepare to accelerate** is also removed;
 **Throttle** speaks when throttle is needed now.
 Open Live Map with a reference lap for the current game/car/track and run Track
 Vision's position model. These cues do not require opponents, BEV
@@ -76,11 +78,11 @@ driver-to-reference delta, then uses live speed to locate input onsets 0.6–1.8
 ahead, including steering reversals and start/finish crossings. Onset thresholds
 are 0.08 steering magnitude and 0.10 brake. Only steering
 has an advance speech cue; upcoming reference braking still suppresses acceleration.
-Throttle cues compare the applied pedal with demand for the adjusted speed profile
+**Throttle** and **More throttle** compare the applied pedal with demand for the adjusted speed profile
 and never request more throttle at full pedal. Missing or invalid control channels disable their
 cues rather than being treated as zero.
 
-Brake demand uses the original local reference's brake pressure and deceleration.
+Demand for **Brake** and **Release the brake** uses the original local reference's brake pressure and deceleration.
 For each decelerating interval, `(startSpeed² - endSpeed²) / (2 × distance)` in
 m/s units gives deceleration; dividing by its mean brake pressure estimates the
 response per unit of pedal. The nearest valid interval around the lap supplies
@@ -92,19 +94,30 @@ response gives a pedal target clamped to 0–100%. The response is a reference-b
 estimate, not a measurement of the live car's deceleration.
 
 - **Brake**: demand is at least 10% and the driver is below 10% pedal.
-- **More brake**: the applied pedal is at least 20 percentage points below demand for 300 ms.
+- **More brake**: speed is at least 5 km/h above the interpolated target and live
+  deceleration is at least 0.1 m/s² lower than the reference, with at least 10% brake
+  applied and the pedal below 100%.
 - **Release the brake**: demand is below 10% while the driver is applying at least 10%.
-- **Less brake**: the applied pedal is at least 20 percentage points above demand for 300 ms,
-  with braking still required.
+- **Less brake**: speed is at least 5 km/h below the interpolated target and live
+  deceleration is at least 0.1 m/s² higher than the reference, with at least 10% brake applied.
 
-The confirmation period restarts if the correction clears or changes direction,
-filtering out brief pedal fluctuations. **Brake** and **Release the brake** do not
-require this hold.
+**More brake** and **Less brake** use the aligned, aggression-adjusted speed profile,
+independently of reference brake pressure. Reference deceleration comes from that
+profile's speed and local slope. Live deceleration is the speed decrease in m/s
+divided by elapsed seconds between consecutive active telemetry frames. Missing or
+invalid speed, non-increasing timestamps, gaps over 1.5 s, pauses, resets, or changes
+of game, track, car, session or stream clear this measurement. No pedal comparison
+is used as a fallback for these two cues.
 
-Only one brake cue can match at a time. Matching pressure stays quiet, and full
-pedal never receives **More brake**. Without usable reference speed or braking
-response, demand falls back to reference pressure; if speed is available and the
-driver is at least 5 km/h below target, demand is zero. Brake corrections are
+Both corrections require 300 ms of continuous evidence. Confirmation restarts if
+the correction clears or changes direction. **Brake** and **Release the brake**
+do not require this hold.
+
+Only one brake cue can match at a time; speed/deceleration corrections take priority
+over the demand-based cues. Full pedal never receives **More brake**. Without usable
+reference speed or braking response, **Brake** and **Release the brake** demand
+falls back to reference pressure; if speed is available and the driver is at least
+5 km/h below target, demand is zero. Brake corrections are
 spoken only inside the reference brake zone, including release corrections when
 the driver is too slow while still inside that zone.
 
@@ -141,16 +154,27 @@ The response is an estimate from the reference, not measured live acceleration.
 
 - **Throttle**: demand is at least 15% and the driver is below 15% pedal.
 - **More throttle**: the applied pedal is at least 15 percentage points below demand.
-- **Less throttle**: the applied pedal is at least 15 percentage points above demand,
-  with throttle still required.
+- **Less throttle**: speed is at least 5 km/h above the interpolated local reference,
+  at least 15% throttle is applied, and the driver is moving outward from the reference
+  line. It uses the local speed profile adjusted by Driving aggression, independently
+  of calculated throttle demand.
+
+Signed horizontal curvature of the local reference, sampled 10 m before and after
+the aligned position, identifies the inside and outside of the bend using each
+game's coordinate convention. Curvature below 0.0015/m is treated as straight.
+Two distinct, validated position captures at most 500 ms apart must show the driver
+on the outside and moving farther outward at more than 0.05 source units/s. A steady
+outside offset, inward movement, and missing or stale position data stay quiet.
+Reference replacement, caution changes, calibration changes and session resets
+clear the position history.
 
 Only one throttle cue can match at a time. Applying or adding throttle requires
 the driver to be within 2 m of the line, with no braking required or imminent and
-no applied brake. Braking sets throttle demand to zero; easing throttle
-can still be suggested away from the line when demand is at least 15%.
+no applied brake. Braking sets throttle demand to zero. **Less throttle** can still
+be suggested away from the line during outward overspeed, with no applied brake.
 Throttle corrections are spoken only inside the reference throttle zone.
 Overspeed can request less throttle there, but cannot switch to a brake correction.
-Demand below 15% stays quiet.
+Demand below 15% withholds **Throttle** and **More throttle**.
 Without usable speed or acceleration response, demand falls back to reference
 throttle, or zero when usable speed shows the driver at least 5 km/h above target.
 Missing reference throttle/brake or live pedal data withholds throttle instructions.
@@ -202,7 +226,8 @@ the thresholds and lead time still need validation during simulator driving.
 Cornering can interrupt waiting overtaking closures when a reference brake or
 throttle zone starts, even when no speech cue matches. Its pedal cues run only
 inside their matching zone; steering cues run inside Brake zone. Cues are spaced by at least 1 s,
-with a 2 s per-closure cooldown and 0.5 s clear period before rearming. Short
+with a 2 s per-closure cooldown. **Brake** rearms only after leaving its zone;
+other cues require a 0.5 s clear period before rearming. Short
 clips prepare first. Upcoming cues expire 100 ms before the predicted action;
 corrections expire after 1.5 s. Speech is discarded if its prepared clip cannot
 finish by that deadline or its conditions clear, and overlays use the same
