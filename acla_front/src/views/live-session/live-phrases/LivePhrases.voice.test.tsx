@@ -80,10 +80,11 @@ it('prepares on enable, speaks each trigger once without an overlay, and reuses 
     expect(screen.getByText('Speech: Disabled')).toHaveAttribute('data-ready', 'false');
     await view.enable();
     expect(synthesize.mock.calls.map(([request]) => request.text)).toEqual(sentences);
-    expect(sentences).toEqual(expect.arrayContaining(['Throttle.', 'More throttle.', 'Less throttle.']));
+    expect(sentences).toEqual(expect.arrayContaining(['Ease the brake.', 'Throttle.', 'More throttle.', 'Less throttle.']));
+    expect(sentences).not.toContain('Less brake.');
     expect(sentences).not.toContain('Release the throttle.');
     expect(sentences).not.toContain('Throttle soon.');
-    expect(sentences).not.toContain('Steer soon.');
+    expect(sentences).not.toContain('Steering.');
     expect(screen.getByText('Speech: Ready')).toHaveAttribute('data-ready', 'true');
     expect(play).not.toHaveBeenCalled();
     await view.trigger();
@@ -231,16 +232,14 @@ it.each(['on time', 'too late', 'clip too long', 'condition cleared'])(
         } finally { receive.mockRestore(); }
     });
 
-it('plays the longer brake-release cue and lets Turn interrupt it', async () => {
-    const release = 'turn, slowly lift up the brake';
+it('lets Turn interrupt an earlier phrase', async () => {
     synthesize.mockImplementation(async ({ text }) => ({ ...pack(text), durationMs: text === 'Turn' ? 400 : 3000 }));
     const snapshot = new PhraseEngine().evaluate(Date.now());
     snapshot.telemetryReady = true;
-    snapshot.referenceSteeringPhase = 'easeBrake';
-    const rule = snapshot.closures.find((item) => item.id === 'reference-steerSoon')!;
+    snapshot.referenceSteeringPhase = 'prepare';
+    const rule = snapshot.closures.find((item) => item.id === 'reference-steering')!;
     rule.conditions = [new PhraseCondition('speed', '>=', 20, 80)];
-    snapshot.events = [{ id: 1, ruleId: rule.id, sentence: release, timestamp: Date.now(),
-        expiresAt: Date.now() + 1500, steeringPhase: 'easeBrake' }];
+    snapshot.events = [{ id: 1, ruleId: rule.id, sentence, timestamp: Date.now(), expiresAt: Date.now() + 5000 }];
     const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
     const receiveVision = jest.spyOn(PhraseEngine.prototype, 'receiveVision');
     const play = jest.spyOn(audioManager, 'play');
@@ -250,7 +249,7 @@ it('plays the longer brake-release cue and lets Turn interrupt it', async () => 
         receiveVision.mockReturnValue(snapshot);
         await act(async () => { view.frame(); });
         expect(play).toHaveBeenCalledTimes(1);
-        expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack(release).audioDataUrl }));
+        expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack(sentence).audioDataUrl }));
         jest.setSystemTime(Date.now() + 1100);
         snapshot.referenceSteeringPhase = 'turn';
         snapshot.events = [...snapshot.events, { id: 2, ruleId: rule.id, sentence: 'Turn', timestamp: Date.now(),
@@ -262,27 +261,26 @@ it('plays the longer brake-release cue and lets Turn interrupt it', async () => 
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
 
-it('discards an unprepared brake-release cue when the reference reaches turn-in', async () => {
-    const release = 'turn, slowly lift up the brake';
+it('discards an unprepared Turn cue when the reference leaves turn-in', async () => {
     const snapshot = new PhraseEngine().evaluate(Date.now());
     snapshot.telemetryReady = true;
-    snapshot.referenceSteeringPhase = 'easeBrake';
-    const rule = snapshot.closures.find((item) => item.id === 'reference-steerSoon')!;
+    snapshot.referenceSteeringPhase = 'turn';
+    const rule = snapshot.closures.find((item) => item.id === 'reference-steering')!;
     rule.conditions = [new PhraseCondition('speed', '>=', 20, 80)];
-    snapshot.events = [{ id: 1, ruleId: rule.id, sentence: release, timestamp: Date.now(),
-        expiresAt: Date.now() + 1500, steeringPhase: 'easeBrake' }];
+    snapshot.events = [{ id: 1, ruleId: rule.id, sentence: 'Turn', timestamp: Date.now(),
+        expiresAt: Date.now() + 1500, steeringPhase: 'turn' }];
     const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
     const receiveVision = jest.spyOn(PhraseEngine.prototype, 'receiveVision');
     let resolve!: (value: TtsPack) => void;
     const pending = new Promise<TtsPack>((done) => { resolve = done; });
-    synthesize.mockImplementation(async ({ text }) => text === release ? pending : pack(text));
+    synthesize.mockImplementation(async ({ text }) => text === 'Turn' ? pending : pack(text));
     try {
         const view = mount();
         await view.enable();
         receiveVision.mockReturnValue(snapshot);
         await act(async () => { view.frame(); });
-        snapshot.referenceSteeringPhase = 'turn';
-        await act(async () => { view.frame(); resolve(pack(release)); });
+        snapshot.referenceSteeringPhase = 'prepare';
+        await act(async () => { view.frame(); resolve({ ...pack('Turn'), durationMs: 400 }); });
         expect(audio.play).not.toHaveBeenCalled();
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });

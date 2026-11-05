@@ -27,28 +27,27 @@ const slipstreamVision = (capturedAt: number, x = 2, y = 9) => {
 };
 
 describe('live phrase closure tree', () => {
-    it('starts at a root containing a separate closure with speech actions and an exit for every guide', () => {
+    it('starts at a root containing guide closures, with Steering relying on the brake zone exit', () => {
         const engine = new PhraseEngine();
         expect(engine.root).toBeInstanceOf(Closure);
         expect(engine.state).toBeInstanceOf(State);
         expect(engine.state.current).toBe(engine.root);
         expect(engine.root.children.map((child) => child.name)).toEqual([
             'Chicane overtake', 'One Tight Slow Corner', 'Slipstream', 'Pressure and a feint',
-            'Cornering', 'Turn to reference line',
+            'Brake zone', 'Throttle zone', 'Turn to reference line',
         ]);
         const snapshot = engine.evaluate(0);
-        const cornering = snapshot.root.children.find((child) => child.name === 'Cornering')!;
-        const corneringClosures = cornering.children.filter((child) => child.kind === 'closure');
-        expect(corneringClosures.map((child) => child.name)).toEqual([
-            'Brake zone', 'Throttle zone',
-        ]);
-        expect(corneringClosures[0].children.filter((child) => child.kind === 'closure').map((child) => child.name))
-            .toEqual(['Brake', 'More brake', 'Release the brake', 'Less brake', 'Steer soon']);
-        expect(corneringClosures[1].children.filter((child) => child.kind === 'closure').map((child) => child.name))
+        const brakeZone = snapshot.root.children.find((child) => child.name === 'Brake zone')!;
+        const throttleZone = snapshot.root.children.find((child) => child.name === 'Throttle zone')!;
+        expect(brakeZone.children.filter((child) => child.kind === 'closure').map((child) => child.name))
+            .toEqual(['Brake', 'More brake', 'Release the brake', 'Ease the brake', 'Steering']);
+        expect(throttleZone.children.filter((child) => child.kind === 'closure').map((child) => child.name))
             .toEqual(['Throttle', 'More throttle', 'Less throttle']);
-        expect(cornering.conditions).toEqual([
-            expect.objectContaining({ description: 'Inside an interpolated reference brake or throttle zone', conditionFit: false, inputMissing: true }),
-        ]);
+        for (const [zone, pedal] of [[brakeZone, 'brake'], [throttleZone, 'throttle']] as const) {
+            expect(zone.conditions).toEqual([
+                expect.objectContaining({ description: `Inside the interpolated reference ${pedal} zone`, conditionFit: false, inputMissing: true }),
+            ]);
+        }
         expect(snapshot.root).toMatchObject({ name: engine.root.name, description: engine.root.description });
         const descendants = (closure: Closure<any>): Closure<any>[] => closure.children.flatMap((node) =>
             node instanceof Closure ? [node, ...descendants(node)] : []);
@@ -63,12 +62,13 @@ describe('live phrase closure tree', () => {
             const parentSpeech = PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2)
                 : PHRASE_DEFINITIONS[index].id === 'second-apex' ? speech.slice(0, 2) : speech;
             expect(actions.map((action) => action.name)).toEqual([...parentSpeech.map(() => 'say phrase'),
-                phrase.referenceCue ? 'exit to parent' : 'exit to root']);
+                ...(phrase.referenceCue === 'steering' ? [] : [phrase.referenceCue ? 'exit to parent' : 'exit to root'])]);
             actions.forEach((action) => {
                 expect(action).toBeInstanceOf(Action);
                 expect(action.description.trim()).not.toBe('');
             });
-            expect(actions.slice(0, -1).map((action) => action.description)).toEqual(parentSpeech.map((action) => action.sentence));
+            expect(actions.filter((action) => action.name === 'say phrase').map((action) => action.description))
+                .toEqual(parentSpeech.map((action) => action.sentence));
             expect(snapshot.closures[index]).toMatchObject({
                 id: PHRASE_DEFINITIONS[index].id, name: child.name, description: child.description,
                 actions: actions.map(({ name, description }) => ({ name, description })),

@@ -18,7 +18,7 @@ export function copyPhraseMap(map: CircuitMapDto | null): CircuitMapDto | null {
     };
 }
 
-/** Phrase-owned data. Added braking samples interpolate the original controls and geometry. */
+/** Phrase-owned data. Brake pressure follows the stretched braking progress; other controls stay local. */
 export function copyPhraseReference(lap: TopLapReferenceEntry | null,
     aggression = REFERENCE_DRIVING_AGGRESSION): TopLapReferenceEntry | null {
     if (!lap) return null;
@@ -27,6 +27,8 @@ export function copyPhraseReference(lap: TopLapReferenceEntry | null,
     if (!caution) return copy;
     const speed = lap.target_features.indexOf('expert_optimal_speed');
     if (speed < 0 || !lap.y.every((row) => Number.isFinite(row[speed]) && row[speed] >= 0)) return copy;
+    const brake = lap.target_features.indexOf('expert_optimal_brake');
+    const stretchBrake = brake >= 0 && lap.y.every((row) => Number.isFinite(row[brake]) && row[brake] >= 0 && row[brake] <= 1);
     const line = getLiveMapReferenceLine(lap);
     if (line.length < 2 || line.length !== lap.x.length
         || !lap.x.every((position, i) => Number.isFinite(position) && position >= 0 && position <= 1 && (!i || position > lap.x[i - 1]))
@@ -133,12 +135,27 @@ export function copyPhraseReference(lap: TopLapReferenceEntry | null,
     }
     energies[count] = energies[0];
     const speeds = new Map(samples.map((position, i) => [position, Math.sqrt(energies[i]) * 3.6]));
-    copy.y.forEach((row, i) => { row[speed] = speeds.get(distance[i])!; });
+    const adjust = (row: number[], position: number) => {
+        row[speed] = speeds.get(position)!;
+        if (!stretchBrake) return;
+        position %= length;
+        let pressure: number | undefined;
+        // Use the same source progress as the deceleration cap. Overlapping
+        // approaches retain the strongest mapped brake pressure.
+        zones.forEach((zone) => {
+            if (position < zone.start || position > zone.bottom || zone.bottom - position > length) return;
+            const { a, b, fraction } = at(zone.bottom - (zone.bottom - position) / zone.stretch);
+            const value = a.row[brake] + (b.row[brake] - a.row[brake]) * fraction;
+            pressure = Math.max(pressure ?? 0, value);
+        });
+        if (pressure !== undefined) row[brake] = pressure;
+    };
+    copy.y.forEach((row, i) => { adjust(row, distance[i]); });
     samples.forEach((position) => {
         const { a, b, fraction } = at(position);
         if (position <= 0 || position >= length || position === a.distance || position === b.distance) return;
         const row = a.row.map((value, i) => value + (b.row[i] - value) * fraction);
-        row[speed] = speeds.get(position)!;
+        adjust(row, position);
         const normalized = a.position + (b.position - a.position) * fraction;
         copy.x.push(normalized >= 1 ? normalized - 1 : normalized);
         copy.y.push(row);

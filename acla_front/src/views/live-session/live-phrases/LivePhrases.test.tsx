@@ -64,9 +64,8 @@ describe('LivePhrases root connection', () => {
         expect(jest.getTimerCount()).toBe(0);
         const catalog = within(screen.getByRole('region', { name: 'Sentence catalog' }));
         PHRASE_DEFINITIONS.filter((rule) => !rule.movementDirection).forEach((rule) => {
-            if (rule.referenceCue) fireEvent.click(catalog.getByLabelText('Cornering closure'));
             const zone = rule.referenceCue
-                ? rule.referenceCue.toLowerCase().includes('brake') || rule.referenceCue === 'steerSoon' ? 'Brake zone' : 'Throttle zone' : undefined;
+                ? rule.referenceCue.toLowerCase().includes('brake') || rule.referenceCue === 'steering' ? 'Brake zone' : 'Throttle zone' : undefined;
             if (zone) fireEvent.click(catalog.getByLabelText(`${zone} closure`));
             const summary = catalog.getByLabelText(`${rule.name} closure`);
             expect(summary).toBeVisible();
@@ -82,7 +81,6 @@ describe('LivePhrases root connection', () => {
             expect(within(conditions.getAllByRole('listitem')[0]).queryByText('AND')).not.toBeInTheDocument();
             fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
             if (zone) fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
-            if (rule.referenceCue) fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
         });
         expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
         expect(screen.getByText('Live Map: Waiting for a tagged circuit map')).toBeInTheDocument();
@@ -95,12 +93,13 @@ describe('LivePhrases root connection', () => {
         }
     });
 
-    it('groups pedal phrases into reference zones under Cornering', () => {
+    it('groups pedal phrases into reference zones directly under root', () => {
         render(<LivePhrases name="live-phrases" />);
-        const names = ['Brake', 'More brake', 'Release the brake', 'Less brake', 'Steer soon', 'Throttle', 'More throttle', 'Less throttle'];
+        const names = ['Brake', 'More brake', 'Release the brake', 'Ease the brake', 'Steering', 'Throttle', 'More throttle', 'Less throttle'];
         names.forEach((name) => expect(screen.queryByLabelText(`${name} closure`)).not.toBeInTheDocument());
-        fireEvent.click(screen.getByLabelText('Cornering closure'));
-        expect(screen.queryByLabelText('Steer soon closure')).not.toBeInTheDocument();
+        expect(screen.queryByLabelText('Cornering closure')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Brake zone closure')).toBeVisible();
+        expect(screen.getByLabelText('Throttle zone closure')).toBeVisible();
         for (const [zone, members] of [['Brake zone', names.slice(0, 5)], ['Throttle zone', names.slice(5)]] as const) {
             fireEvent.click(screen.getByLabelText(`${zone} closure`));
             members.forEach((name) => expect(screen.getByLabelText(`${name} closure`)).toBeVisible());
@@ -114,28 +113,22 @@ describe('LivePhrases root connection', () => {
         expect(screen.queryByLabelText('Increase braking closure')).not.toBeInTheDocument();
         expect(screen.queryByLabelText('Prepare to accelerate closure')).not.toBeInTheDocument();
         expect(screen.queryByLabelText('Increase throttle closure')).not.toBeInTheDocument();
-        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        const conditions = within(screen.getByRole('list', { name: 'Cornering conditions' }));
-        expect(conditions.getByText('Inside an interpolated reference brake or throttle zone')).toBeVisible();
-        expect(conditions.getByText('Missing input')).toBeVisible();
     });
 
-    it('shows reference-timed brake-release and turn actions inside Steer soon', () => {
+    it('shows only the Turn action inside Steering', () => {
         render(<LivePhrases name="live-phrases" />);
-        fireEvent.click(screen.getByLabelText('Cornering closure'));
         fireEvent.click(screen.getByLabelText('Brake zone closure'));
-        fireEvent.click(screen.getByLabelText('Steer soon closure'));
-        expect(screen.getAllByRole('button', { name: /^Steer soon action \d+: say phrase$/ })).toHaveLength(2);
-        for (const [index, sentence, condition] of [
-            [1, 'turn, slowly lift up the brake', 'Reference deceleration is easing before turn-in'],
-            [2, 'Turn', 'Reference steering has reached the corner turn-in threshold'],
-        ] as const) {
-            fireEvent.click(screen.getByLabelText(`Steer soon action ${index}: say phrase`));
-            expect(screen.getByText(sentence)).toBeVisible();
-            fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-            expect(screen.getByText(condition)).toBeVisible();
-            fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
-        }
+        fireEvent.click(screen.getByLabelText('Steering closure'));
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        expect(screen.getByText('The signed sum of reference steering over the next 0.8 seconds of travel is nonzero and matches the corner direction')).toBeVisible();
+        expect(screen.getByText('Speed is equal to or below the local live phrase reference speed')).toBeVisible();
+        expect(screen.queryByText(/0.6–1.8 seconds/)).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('tab', { name: /Contents/ }));
+        expect(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })).toHaveLength(1);
+        fireEvent.click(screen.getByLabelText('Steering action 1: say phrase'));
+        expect(screen.getByText('Turn')).toBeVisible();
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        expect(screen.getByText('The steering window sum matches the corner direction and local reference steering has reached the turn-in threshold in that direction')).toBeVisible();
     });
 
     it('opens small and medium reference movements on both sides, with progress and completion phrases', () => {

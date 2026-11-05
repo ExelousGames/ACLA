@@ -65,9 +65,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             }
             const pack = voicePacks.current.get(pendingVoice.sentence);
             if (!pack) return;
-            // The longer brake-release prompt may continue until Turn interrupts it.
-            if (pendingVoice.steeringPhase !== 'easeBrake' && pendingVoice.expiresAt !== undefined
-                && Date.now() + pack.durationMs >= pendingVoice.expiresAt) {
+            if (pendingVoice.expiresAt !== undefined && Date.now() + pack.durationMs >= pendingVoice.expiresAt) {
                 pendingVoice = null;
                 return;
             }
@@ -172,8 +170,8 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         {enabled ? 'Disable' : 'Enable'} detection
                     </button>
                 </div>
-                <p>Live Phrases keeps its own copy of Live Map’s reference line and centerline map for all guidance. Keep Live Map open: it is still required for location through Track Vision’s position model.</p>
-                <p>Cornering follows the reference brake and throttle zones. Inside Brake zone, Steer soon guides brake release as reference deceleration eases, then calls Turn at reference turn-in. Left and right movement cues adapt to your distance and progress toward the line on mapped straights.</p>
+                <p>Keep Live Map open to supply the reference lap and centerline map. Live Phrases uses your normalized lap position to read its own reference copy. Track Vision’s position model supplies lateral checks for line movement and throttle guidance, including Less throttle.</p>
+                <p>Brake zone and Throttle zone follow the reference adjusted by Driving aggression. Brake zone activates when that reference’s brake value reaches 10%. Inside Brake zone, Steering adds the reference steering over the next 0.8 seconds and activates when the nonzero total matches the corner direction and your speed is equal to or below the live phrase reference speed at your current position, then calls Turn at reference turn-in. Left and right movement cues adapt to your distance and progress toward the line on mapped straights.</p>
                 <p>Overtaking guidance combines Track Vision BEV positions with Live Map corner shapes and your progress through the corner.</p>
                 <p>Triggered phrases pop out automatically when the Assistant overlay is enabled.</p>
                 <p>Enabling detection prepares spoken guidance. Live chat audio takes priority over spoken phrases.</p>
@@ -190,7 +188,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         }} />
                 </label>
                 <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% caution</span><span>50% · Cautious</span></div>
-                <p className="live-phrases__hint">Caution lowers each corner’s minimum speed and local deceleration by the selected percentage. Braking starts earlier by the distance needed to reach that speed, following the reference’s braking pattern. 0% follows the reference. Acceleration starts at the reference position from the lower minimum speed, with no throttle-zone stretching. More brake and Less brake compare your speed and deceleration with the adjusted reference speed profile. Throttle and More throttle use reference throttle and acceleration. Less throttle responds when you are faster than the local reference and moving outward from its line, using curvature to identify the outside of the corner.</p>
+                <p className="live-phrases__hint">Caution lowers each corner’s minimum speed and local deceleration by the selected percentage. Braking starts earlier by the distance needed to reach that speed. The reference brake pressure pattern stretches with it, moving Brake zone and its callout earlier. 0% follows the reference. Acceleration starts at the reference position from the lower minimum speed, with no throttle-zone stretching. More brake compares your speed and deceleration with the adjusted reference speed profile. Ease the brake triggers when your speed is equal to or below that reference and the remaining Brake zone decelerates overall, while you are still braking. Throttle and More throttle use that same reference’s throttle and acceleration. Less throttle responds when you are faster than the local reference, at least 5 units outside its line and moving farther outward, using curvature to identify the outside of the corner.</p>
             </div>
             {overlayError && <p role="alert">Unable to display live phrase in the overlay: {overlayError}</p>}
             {voiceError && <p role="alert">Unable to prepare or play live phrase speech: {voiceError}</p>}

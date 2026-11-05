@@ -56,8 +56,10 @@ it('derives braking distance from reduced local rates and the lower corner minim
     expect(speedAt(middle, 0.65)).toBeCloseTo(90);
     expect(speedAt(cautious, 0.7)).toBeCloseTo(120);
     lap.y.forEach((row, i) => {
-        expect(rowAt(cautious, lap.x[i]).slice(0, 6)).toEqual(row.slice(0, 6));
-        expect(rowAt(middle, lap.x[i]).slice(0, 6)).toEqual(row.slice(0, 6));
+        for (const channel of [0, 1, 2, 4, 5]) {
+            expect(rowAt(cautious, lap.x[i])[channel]).toBe(row[channel]);
+            expect(rowAt(middle, lap.x[i])[channel]).toBe(row[channel]);
+        }
         expect(speedAt(cautious, lap.x[i])).toBeLessThanOrEqual(speedAt(middle, lap.x[i]) + 1e-8);
         expect(speedAt(middle, lap.x[i])).toBeLessThanOrEqual(row[6] + 1e-8);
         expect(speedAt(cautious, lap.x[i])).toBeGreaterThanOrEqual(40 - 1e-8);
@@ -66,10 +68,28 @@ it('derives braking distance from reduced local rates and the lower corner minim
     expect(copyPhraseReference(lap, 0)).toEqual(lap);
 });
 
+it.each([[25, 1.8], [50, 3.2]])('stretches the brake pressure pattern with braking distance at %s%% caution', (caution, stretch) => {
+    const lap = reference();
+    // Include a pressure ramp, a lift and a second application before release.
+    const pressures = [0, 0.4, 0.8, 0.6, 0.2, 0, 0.3, 0.7, 0.5, 0.2, 0];
+    pressures.forEach((pressure, i) => { lap.y[20 + i][3] = pressure; });
+    const copy = copyPhraseReference(lap, caution)!;
+    pressures.forEach((pressure, i) => {
+        const position = ((300 - (100 - i * 10) * stretch + 1000) % 1000) / 1000;
+        const index = copy.x.findIndex((p) => Math.abs(p - position) < 1e-8);
+        expect(index).toBeGreaterThanOrEqual(0);
+        expect(copy.y[index][3]).toBeCloseTo(pressure, 8);
+    });
+    expect(rowAt(copy, 0.3)[3]).toBe(0);
+    expect(rowAt(copy, 0.6)[3]).toBe(0);
+    expect(lap.y.slice(20, 31).map((row) => row[3])).toEqual(pressures);
+    expect(copyPhraseReference(lap, 0)).toEqual(lap);
+});
+
 it.each([false, true])('wraps braking and lower corner speeds across start/finish (duplicated endpoint: %s)', (duplicate) => {
-    const lap = reference(), originalSpeeds = lap.y.map((row) => row[6]);
+    const lap = reference(), original = lap.y.map((row) => [...row]);
     // Move the known corner 300 m back, so braking finishes at the start/finish line.
-    lap.y.forEach((row, i) => { row[6] = originalSpeeds[(i + 30) % 100]; });
+    lap.y.forEach((row, i) => { row[6] = original[(i + 30) % 100][6]; row[3] = original[(i + 30) % 100][3]; });
     if (duplicate) { lap.x.push(1); lap.y.push([...lap.y[0]]); }
     const copy = copyPhraseReference(lap, 50)!;
     expect(speedAt(copy, 0.68)).toBeCloseTo(120);
@@ -79,7 +99,11 @@ it.each([false, true])('wraps braking and lower corner speeds across start/finis
     expect(speedAt(copy, 0.3)).toBeCloseTo(40);
     expect(speedAt(copy, 0.31)).toBeCloseTo(48);
     expect(speedAt(copy, 0.4)).toBeCloseTo(120);
-    lap.y.forEach((row, i) => expect(rowAt(copy, lap.x[i]).slice(0, 6)).toEqual(row.slice(0, 6)));
+    expect(rowAt(copy, 0.68)[3]).toBeCloseTo(0);
+    expect(rowAt(copy, 0.69)[3]).toBeCloseTo(0.25);
+    expect(rowAt(copy, 0.9)[3]).toBeCloseTo(0.8);
+    expect(rowAt(copy, 0)[3]).toBeCloseTo(0);
+    lap.y.forEach((row, i) => [0, 1, 2, 4, 5].forEach((channel) => expect(rowAt(copy, lap.x[i])[channel]).toBe(row[channel])));
     if (duplicate) expect(rowAt(copy, 1)).toEqual(rowAt(copy, 0));
 });
 
@@ -93,7 +117,16 @@ it('uses physical distance rather than sample counts or normalized position spac
     const original = copyPhraseReference(lap, 50)!, resampled = copyPhraseReference(dense, 50)!;
     lap.x.forEach((position) => {
         expect(speedAt(resampled, position ** 2)).toBeCloseTo(speedAt(original, position));
+        expect(rowAt(resampled, position ** 2)[3]).toBeCloseTo(rowAt(original, position)[3]);
     });
+});
+
+it.each([NaN, Infinity, -0.1, 1.1])('preserves an invalid brake channel (%s) while adjusting speed', (invalid) => {
+    const lap = reference();
+    lap.y[21][3] = invalid;
+    const copy = copyPhraseReference(lap, 50)!;
+    expect(speedAt(copy, 0.3)).toBeCloseTo(40);
+    lap.x.forEach((position, i) => expect(rowAt(copy, position)[3]).toBe(lap.y[i][3]));
 });
 
 it.each(['missing', NaN, Infinity, -1])('leaves the reference unchanged when speed is %s', (invalid) => {
@@ -178,11 +211,11 @@ it.each([10, 25, 50])('caps each local braking rate at matching zone progress (%
         brakingIntervals++;
     });
     expect(brakingIntervals).toBeGreaterThan(10);
-    // Every added point stays on the original polyline with the same interpolated controls.
+    // Every added point stays on the original polyline with local throttle and steering.
     copy.x.forEach((p, i) => {
         const index = Math.floor(p * 100), fraction = p * 100 - index;
         const a = lap.y[index % 100], b = lap.y[(index + 1) % 100];
-        copy.y[i].slice(0, 6).forEach((value, j) => expect(value).toBeCloseTo(a[j] + (b[j] - a[j]) * fraction, 8));
+        [0, 1, 2, 4, 5].forEach((j) => expect(copy.y[i][j]).toBeCloseTo(a[j] + (b[j] - a[j]) * fraction, 8));
     });
 });
 
@@ -193,6 +226,7 @@ it('satisfies both local rate limits when stretched braking zones overlap', () =
             : i > 30 && i < 35 ? 108 + (i - 30) * 7.2
                 : i >= 40 && i <= 50 ? Math.sqrt(1600 - 120 * (i - 40)) * 3.6
                     : i > 50 && i < 60 ? 72 + (i - 50) * 7.2 : 144;
+        row[3] = i >= 21 && i < 30 ? 0.4 : i >= 41 && i < 50 ? 0.8 : 0;
     });
     const copy = copyPhraseReference(lap, 50)!;
     copy.y.forEach((row, i) => {
@@ -211,6 +245,10 @@ it('satisfies both local rate limits when stretched braking zones overlap', () =
     expect(speedAt(copy, 0.35)).toBeLessThan(144);
     expect(speedAt(copy, 0.3)).toBeCloseTo(54);
     expect(speedAt(copy, 0.5)).toBeCloseTo(36);
+    expect(rowAt(copy, 0.25)[3]).toBeCloseTo(0.4);
+    expect(rowAt(copy, 0.28)[3]).toBeCloseTo(0.8);
+    expect(rowAt(copy, 0.3)[3]).toBeCloseTo(0.8);
+    expect(rowAt(copy, 0.5)[3]).toBeCloseTo(0);
 });
 
 it('preserves a zero-deceleration section inside the stretched braking approach', () => {
