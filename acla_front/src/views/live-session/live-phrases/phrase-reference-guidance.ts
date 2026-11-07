@@ -178,6 +178,11 @@ function prepare(lap: TopLapReferenceEntry): Reference | null {
     return result;
 }
 
+/** Physical-distance ranges shared by braking adjustment and steering guidance. */
+export function referenceDirectionChanges(lap: TopLapReferenceEntry): readonly { start: number; end: number }[] {
+    return prepare(lap)?.directionChanges ?? [];
+}
+
 function bracket(reference: Reference, value: number, key: 'position' | 'distance') {
     const { points, length } = reference, period = key === 'position' ? 1 : length;
     let low = 0, high = points.length;

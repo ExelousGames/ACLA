@@ -82,11 +82,11 @@ describe('Brake-zone direction-change exit', () => {
             const approaching = at(0.249, 1000);
             expect(approaching.state.path).toEqual(['root', 'Brake zone', 'Release the brake', 'say phrase']);
             const exited = at(0.25, 1100);
-            expect(exited.state.path).toEqual(['root', 'Steering']);
+            expect(exited.state.path).toEqual(['root', 'Steering', 'say phrase']);
             expect(exited.referenceSteeringPhase).toBe('prepare');
-            expect(exited.events).toEqual(approaching.events);
-            expect(at(0.251, 1200).state.path).toEqual(['root', 'Steering']);
-            expect(at(0.26, 1300).state.path).toEqual(['root', 'Steering']);
+            expect(exited.events).toEqual([...approaching.events, expect.objectContaining({ sentence: 'Turn', timestamp: 1100 })]);
+            expect(at(0.251, 1200).state.path).toEqual(['root', 'Steering', 'say phrase']);
+            expect(at(0.26, 1300).state.path).toEqual(['root', 'Steering', 'say phrase']);
         }
     });
 
@@ -118,10 +118,10 @@ describe('Brake-zone direction-change exit', () => {
             expect(at(0.249, 0, 900).state.path).toContain('Brake zone');
             const started = at(0.25, 1, 1000);
             expect(started.referenceSteeringPhase).toBe('prepare');
-            expect(started.state.path).toEqual(['root', 'Steering']);
-            expect(at(0.265, 0.000001, 1100).state.path).toEqual(['root', 'Steering']);
-            expect(at(0.265, 0, 1200).state.path).toEqual(['root', 'Steering']);
-            expect(at(0.266, -1, 1300).state.path).toEqual(['root', 'Steering']);
+            expect(started.state.path).toEqual(['root', 'Steering', 'say phrase']);
+            expect(at(0.265, 0.000001, 1100).state.path).toEqual(['root', 'Steering', 'say phrase']);
+            expect(at(0.265, 0, 1200).state.path).toEqual(['root', 'Steering', 'say phrase']);
+            expect(at(0.266, -1, 1300).state.path).toEqual(['root', 'Steering', 'say phrase']);
         });
 
     it.each(['opposite turn', 'no overlap', 'flat trajectory'])(
@@ -152,9 +152,9 @@ describe('Brake-zone direction-change exit', () => {
             expect(at(0.249, 42, 1000).state.path).toContain('Brake zone');
             const entered = at(0.250001, 42, 1100);
             expect(entered.referenceSteeringPhase).toBe('prepare');
-            expect(entered.state.path).toEqual(['root', 'Steering']);
-            expect(at(0.265, 36.000001, 1200).state.path).toEqual(['root', 'Steering']);
-            expect(at(0.265, 36, 1300).state.path).toEqual(['root', 'Steering']);
+            expect(entered.state.path).toEqual(['root', 'Steering', 'say phrase']);
+            expect(at(0.265, 36.000001, 1200).state.path).toEqual(['root', 'Steering', 'say phrase']);
+            expect(at(0.265, 36, 1300).state.path).toEqual(['root', 'Steering', 'say phrase']);
         });
 
     it.each([36, 35, 42])('enters the next Steering range without cooldown at %s km/h while reference brake remains applied', (speed) => {
@@ -184,8 +184,8 @@ describe('Brake-zone direction-change exit', () => {
         expect(at(0.32, 42, 1200).state.path).toContain('Brake zone');
         const entered = at(0.36, speed, 1300);
         expect(entered.referenceSteeringPhase).toBe('prepare');
-        expect(entered.state.path).toEqual(['root', 'Steering']);
-        expect(at(0.361, speed, 1500).state.path).toEqual(['root', 'Steering']);
+        expect(entered.state.path).toEqual(['root', 'Steering', 'say phrase']);
+        expect(at(0.361, speed, 1500).state.path).toEqual(['root', 'Steering', 'say phrase']);
     });
 
     it.each([false, true])('exits during a brake phrase with fresh telemetry (expired first: %s)', (expired) => {
@@ -195,8 +195,8 @@ describe('Brake-zone direction-change exit', () => {
         expect(braking.state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
         if (expired) expect(engine.evaluate(2601).state.path).toContain('Brake zone');
         const exited = engine.receiveTelemetry(frame({ ...driving(0.25), Physics_brake: 0.8 }), expired ? 2700 : 1100);
-        expect(exited.state.path).toEqual(['root', 'Steering']);
-        expect(exited.events).toEqual(braking.events);
+        expect(exited.state.path).toEqual(['root', 'Steering', 'say phrase']);
+        expect(exited.events).toEqual([...braking.events, expect.objectContaining({ sentence: 'Turn' })]);
     });
 
     it('exits without waiting for a usable 500 ms heading endpoint', () => {
@@ -222,18 +222,18 @@ describe('Brake-zone direction-change exit', () => {
     });
 });
 
-it.each([-1, 1] as const)('exits silent preparation when trajectory flattens in direction %s without Turn or orientation', (sign) => {
+it.each([-1, 1] as const)('speaks Turn without orientation and exits when trajectory flattens in direction %s', (sign) => {
     const lap = trajectoryLap(12, sign);
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(steeringMap(sign), 0, lap);
     const at = (position: number, now: number) => engine.receiveTelemetry(frame({
         ...driving(position), Physics_steer_angle: sign,
     }), now);
-    expect(at(0.26, 1000).state.path).toEqual(['root', 'Steering']);
-    expect(at(0.28, 1100).state.path).toEqual(['root', 'Steering']);
+    expect(at(0.26, 1000).state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(at(0.28, 1100).state.path).toEqual(['root', 'Steering', 'say phrase']);
     const exited = at(0.41, 1200);
     expect(exited.state.path).toEqual(['root']);
-    expect(exited.events).toEqual([]);
+    expect(exited.events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
 });
 
 it.each([20, 36, 180])('compares steering directions to the same 10 m endpoint at %s km/h', (speed) => {
@@ -390,11 +390,11 @@ it.each(['acc', 'iracing'] as const)('holds Steering through a gentler turn unti
         event.update.game = game;
         return engine.receiveTelemetry(event, now);
     };
-    expect(at(0.26, 1000).state.path).toEqual(['root', 'Steering']);
-    expect(at(0.32, 1100).state.path).toEqual(['root', 'Steering']);
-    expect(at(0.37, 1200).state.path).toEqual(['root', 'Steering']);
+    expect(at(0.26, 1000).state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(at(0.32, 1100).state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(at(0.37, 1200).state.path).toEqual(['root', 'Steering', 'say phrase']);
     // The mapped corner has already ended (0.35), and the local angle is below 5 degrees.
-    expect(at(0.409, 1300).state.path).toEqual(['root', 'Steering']);
+    expect(at(0.409, 1300).state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(at(0.41, 1400).state.path).toEqual(['root']);
 });
 
@@ -486,7 +486,7 @@ it.each(['reversal', 'later turn'])('exits the captured range even when the next
         : kind === 'reversal' ? 60 - 24 * Math.min(10, i - 30) : 60 + 12 * Math.max(0, Math.min(10, i - 35)));
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(steeringMap(), 0, lap);
-    expect(engine.receiveTelemetry(frame(driving(0.26)), 1000).state.path).toEqual(['root', 'Steering']);
+    expect(engine.receiveTelemetry(frame(driving(0.26)), 1000).state.path).toEqual(['root', 'Steering', 'say phrase']);
     // Both positions are still turning; the latter belongs to a different range.
     const position = kind === 'reversal' ? 0.32 : 0.36;
     expect(steeringGuidance(driving(position), lap).steeringRange).toEqual(expect.any(Object));
@@ -494,13 +494,13 @@ it.each(['reversal', 'later turn'])('exits the captured range even when the next
 });
 
 describe.each([-1, 1])('Steering re-entry into a range with relative direction %s', (direction) => {
-    it.each([false, true])('rearms at range exit with a short gap (first Turn spoken: %s)', (spoken) => {
+    it.each([false, true])('rearms at range exit with a short gap (reference steering applied: %s)', (steeringApplied) => {
         const lap = trajectoryLap();
         const nextStart = direction === -1 ? 35 : 38;
         setTrajectory(lap, (i) => 6 * Math.max(0, Math.min(10, i - 25))
             + direction * 6 * Math.max(0, Math.min(10, i - nextStart)));
         lap.y.forEach((row, i) => {
-            row[3] = spoken ? (i < nextStart ? 0.2 : direction * 0.2) : 0;
+            row[3] = steeringApplied ? (i < nextStart ? 0.2 : direction * 0.2) : 0;
             row[4] = row[5] = 0;
             row[6] = 180;
         });
@@ -523,7 +523,7 @@ describe.each([-1, 1])('Steering re-entry into a range with relative direction %
         for (let i = 272; i <= 440; i++) {
             snapshot = at(i);
             if (i === (direction === -1 ? 350 : 360)) expect(snapshot.state.path).toEqual(['root']);
-            if (direction === -1 && spoken && i === 360) {
+            if (direction === -1 && steeringApplied && i === 360) {
                 expect(snapshot.referenceSteeringPhase).toBe('turn');
                 expect(snapshot.state.path).toContain('Steering');
                 expect(snapshot.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Turn']);
@@ -531,7 +531,7 @@ describe.each([-1, 1])('Steering re-entry into a range with relative direction %
             if (i === secondEntry) expect(snapshot.state.path).toContain('Steering');
         }
         expect(snapshot.state.path).toContain('Steering');
-        expect(snapshot.events.map(({ sentence }) => sentence)).toEqual(spoken ? ['Turn', 'Turn'] : []);
+        expect(snapshot.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Turn']);
     });
 });
 
@@ -541,14 +541,14 @@ it('keeps Steering through low reference speed and missing telemetry, then exits
     const map = steeringMap();
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(map, 0, lap);
-    expect(engine.receiveTelemetry(frame(driving(0.26)), 1000).state.path).toEqual(['root', 'Steering']);
-    expect(engine.receiveTelemetry(frame(driving(0.32)), 1100).state.path).toEqual(['root', 'Steering']);
-    expect(engine.evaluate(3000).state.path).toEqual(['root', 'Steering']);
+    expect(engine.receiveTelemetry(frame(driving(0.26)), 1000).state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(engine.receiveTelemetry(frame(driving(0.32)), 1100).state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(engine.evaluate(3000).state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(engine.receiveTelemetry(frame({ ...driving(0.4), Graphics_normalized_car_position: undefined }), 3100).state.path)
-        .toEqual(['root', 'Steering']);
+        .toEqual(['root', 'Steering', 'say phrase']);
     const missingSpeed = { ...lap, target_features: lap.target_features.map((name) => name === 'expert_optimal_speed' ? 'missing' : name) };
     engine.receiveMap(map, 3200, missingSpeed);
-    expect(engine.receiveTelemetry(frame(driving(0.409)), 3300).state.path).toEqual(['root', 'Steering']);
+    expect(engine.receiveTelemetry(frame(driving(0.409)), 3300).state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(engine.receiveTelemetry(frame(driving(0.41)), 3400).state.path).toEqual(['root']);
 });
 
@@ -567,7 +567,7 @@ it.each([false, true])('tracks a captured direction-change range across start/fi
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(map, 0, lap);
     [0.91, 0.99, 1, 0, 0.059].forEach((position, index) => {
-        expect(engine.receiveTelemetry(frame(driving(position)), 1000 + index * 100).state.path).toEqual(['root', 'Steering']);
+        expect(engine.receiveTelemetry(frame(driving(position)), 1000 + index * 100).state.path).toEqual(['root', 'Steering', 'say phrase']);
     });
     expect(engine.receiveTelemetry(frame(driving(0.06)), 1500).state.path).toEqual(['root']);
 });
@@ -851,7 +851,7 @@ it.each([25, 50])('keeps cornering cues identical when the adjusted reference is
     }
 });
 
-it('includes early braking demand in the stretched reference brake zone', () => {
+it('includes early braking demand in the shifted reference brake zone', () => {
     const lap = referenceLap();
     addSpeed(lap);
     const cautious = copyPhraseReference(lap, 50)!;
@@ -861,29 +861,30 @@ it('includes early braking demand in the stretched reference brake zone', () => 
     const missingPedal = { ...early, Physics_brake: undefined };
     expect(readReferenceGuidance(missingPedal, detection(lap, missingPedal), cautious, 'acc', 1000, lap))
         .toEqual({ ready: true, lateralOffset: 0, braking: true, pedalZone: 'brake', steeringRange: null });
-    const slowed = { ...driving(0.299), Physics_speed_kmh: 30, Physics_brake: 0.8 };
+    const slowed = { ...driving(0.269), Physics_speed_kmh: 30, Physics_brake: 0.8 };
     const guidance = readReferenceGuidance(slowed, detection(lap, slowed), cautious, 'acc', 1000, lap);
     expect(guidance.releaseBrake).toBe(2500);
     expect(guidance.moreBrake).toBeUndefined();
+    expect(readReferenceGuidance({ ...slowed, Graphics_normalized_car_position: 0.27 }, null, cautious, 'acc', 1000, lap).pedalZone).toBe('none');
     expect(lap.y[19][4]).toBe(0);
     expect(lap.y[29][4]).toBe(0.8);
 });
 
-it.each([0.201, 0.205, 0.209, 0.255, 0.299])('preserves the local deceleration cap between samples at %s', (position) => {
+it.each([0.201, 0.205, 0.209, 0.255, 0.279])('preserves the reference deceleration between shifted samples at %s', (position) => {
     const lap = referenceLap();
     addSpeed(lap);
     // Reference: 40 -> 30 m/s over 100 m, giving 3.5 m/s² at full brake.
     lap.y.forEach((row, i) => {
-        row[4] = i >= 20 && i <= 30 ? 1 : 0;
+        row[4] = i >= 21 && i < 30 ? 1 : 0;
         row[6] = i < 20 || i >= 70 ? 144 : i < 30 ? Math.sqrt(1600 - 70 * (i - 20)) * 3.6
             : i <= 60 ? 108 : 108 + (i - 60) * 3.6;
     });
     const cautious = copyPhraseReference(lap, 25)!;
-    // At 25% caution the target rate is 2.625 m/s², ending at 22.5 m/s.
-    const speed = Math.sqrt(22.5 ** 2 + 2 * 2.625 * (300 - position * 1000)) * 3.6;
+    // At 25% braking finishes 15 m earlier, still at 30 m/s and 3.5 m/s².
+    const speed = Math.sqrt(30 ** 2 + 2 * 3.5 * (285 - position * 1000)) * 3.6;
     for (const [speedError, deceleration, cue] of [
-        [6, 2.3, 'moreBrake'], [6, 2.4, 'moreBrake'], [6, 2.7, 'moreBrake'],
-        [-6, 2.8, 'releaseBrakeFaster'], [-6, 2.9, 'releaseBrakeFaster'],
+        [6, 3.2, 'moreBrake'], [6, 3.5, 'moreBrake'], [6, 3.7, 'moreBrake'],
+        [-6, 3.8, 'releaseBrakeFaster'], [-6, 4, 'releaseBrakeFaster'],
     ] as const) {
         const sample = { ...driving(position), Physics_speed_kmh: speed + speedError, Physics_brake: 0.8 };
         const guidance = readReferenceGuidance(sample, detection(lap, sample), cautious, 'acc', 1000, lap, deceleration);
@@ -894,10 +895,11 @@ it.each([0.201, 0.205, 0.209, 0.255, 0.299])('preserves the local deceleration c
 it('aligns braking responses when added samples precede the first original normalized position', () => {
     const lap = referenceLap();
     addSpeed(lap);
+    lap.y = lap.y.slice(15).concat(lap.y.slice(0, 15));
     const shifted = { ...lap, x: lap.x.map((p) => p + 0.005), y: lap.y.map((row) => [...row]) };
-    const cautious = copyPhraseReference(lap, 48)!, shiftedCautious = copyPhraseReference(shifted, 48)!;
+    const cautious = copyPhraseReference(lap, 100)!, shiftedCautious = copyPhraseReference(shifted, 100)!;
     expect(shiftedCautious.x[0]).toBeLessThan(shifted.x[0]);
-    for (const position of [0.245, 0.25, 0.255, 0.61, 0.65]) {
+    for (const position of [0.045, 0.05, 0.055, 0.46, 0.5]) {
         const index = cautious.x.findIndex((p) => p >= position);
         const speed = cautious.y[index][6];
         for (let pedal = 0; pedal <= 1; pedal += 0.01) {
@@ -1316,10 +1318,10 @@ it('uses the interpolated local speed threshold even when the applied throttle i
     expect(update(5, 1100, patch).events.map(({ sentence }) => sentence)).toEqual(['Less throttle.']);
 });
 
-it('compares outward overspeed with the cautious local reference instead of the source lap', () => {
+it('preserves the corner-exit overspeed threshold when braking moves earlier', () => {
     const { engine, update } = throttleCornerSetup();
     engine.setDrivingAggression(50, 0);
-    const patch = { Physics_speed_kmh: 90 }; // Local target is 84; the unadjusted source target is 102.
+    const patch = { Physics_speed_kmh: 108 }; // The exit target stays at the reference 102 km/h.
     update(4, 1000, patch);
     expect(update(5, 1100, patch).events.map(({ sentence }) => sentence)).toEqual(['Less throttle.']);
 });
@@ -1393,7 +1395,7 @@ it('withholds throttle while steering changes and enters after reference steerin
         brakingTurn(lap);
         lap.y.forEach((row, i) => { row[4] = 0; row[5] = i >= 21 && i <= 50 ? 0.8 : 0; });
     }, steeringMap());
-    expect(update(0.25, 1000, { Physics_speed_kmh: 180, Physics_gas: 0.8 }).state.path).toEqual(['root', 'Steering']);
+    expect(update(0.25, 1000, { Physics_speed_kmh: 180, Physics_gas: 0.8 }).state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(update(0.285, 1100, { Physics_gas: 0.8 }).state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(update(0.32, 1200, { Physics_gas: 0.8 }).state.path).toContain('Steering');
     expect(update(0.32, 1250, { Physics_gas: 0.8, Physics_heading: 0, Physics_pitch: 0, Physics_roll: 0 }).state.path).toContain('Steering');
@@ -1406,7 +1408,7 @@ it.each([0, 0.8])('defers Brake zone until the active Steering range ends with l
         brakingTurn(lap);
         lap.y.forEach((row, i) => { row[4] = i >= 28 && i <= 50 ? 0.8 : 0; });
     }, steeringMap());
-    expect(update(0.26, 1000).state.path).toEqual(['root', 'Steering']);
+    expect(update(0.26, 1000).state.path).toEqual(['root', 'Steering', 'say phrase']);
     const braking = update(0.285, 1100, { Physics_speed_kmh: 180, Physics_brake: brake });
     expect(braking.state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(braking.events.map(({ sentence }) => sentence)).toEqual(['Turn']);
@@ -1414,15 +1416,15 @@ it.each([0, 0.8])('defers Brake zone until the active Steering range ends with l
     expect(update(0.42, 1300, { Physics_speed_kmh: 180, Physics_brake: brake }).state.path).toContain('Brake zone');
 });
 
-it('keeps forward-aligned preparation silent and does not exit just because Turn completes', () => {
+it('speaks Turn on forward-aligned entry and does not exit just because Turn completes', () => {
     const lap = referenceLap();
     brakingTurn(lap);
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(steeringMap(), 0, lap);
     const patch = { Physics_brake: 0.8, Physics_heading: 0, Physics_pitch: 0, Physics_roll: 0 };
     const update = (position: number, now: number) => engine.receiveTelemetry(frame({ ...driving(position), ...patch }), now);
-    expect(update(0.256, 1000).state.path).toEqual(['root', 'Steering']);
-    expect(update(0.26, 1100).state.path).toEqual(['root', 'Steering']);
+    expect(update(0.256, 1000).state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(update(0.26, 1100).state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(update(0.285, 1200).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
     expect(engine.evaluate(1201).state.path).toContain('Steering');
     expect(update(0.285, 1300).state.path).toContain('Steering');
@@ -1434,6 +1436,7 @@ it('exits an active direction correction when the captured trajectory direction-
     brakingTurn(lap);
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(steeringMap(), 0, lap);
+    engine.setDrivingAggression(100, 0);
     const at = (now: number, heading: number, position = 0.285) => {
         const sample = { ...driving(position), Physics_heading: heading, Physics_pitch: 0, Physics_roll: 0,
             Physics_velocity_x: 2, Physics_velocity_y: 10 };
@@ -1448,37 +1451,63 @@ it('exits an active direction correction when the captured trajectory direction-
     expect(at(5200, 0.1, 0.43).events).toEqual(exited.events);
 });
 
-it('guides direction repeatedly inside Steering after Turn above reference speed', () => {
+it('guides direction without a timed gap after Turn or between corrections above reference speed', () => {
     const lap = referenceLap();
     brakingTurn(lap);
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(steeringMap(), 0, lap);
+    engine.setDrivingAggression(100, 0);
     const at = (now: number, vx: number, speed = 40, position = 0.285, heading = 0.1) => {
         const sample = { ...driving(position), Physics_brake: 0.8, Physics_speed_kmh: speed,
             Physics_heading: heading, Physics_pitch: 0, Physics_roll: 0, Physics_velocity_x: vx, Physics_velocity_y: 10 };
         engine.receiveVision(detection(lap, sample, now), now);
         return engine.receiveTelemetry(frame(sample), now);
     };
-    expect(at(1000, 2, 40, 0.26).events).toEqual([]); // Silent preparation.
-    expect(at(1100, 2).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(at(3000, 2).events).toHaveLength(1);
-    const wide = at(3100, 2, 180);
+    expect(at(1000, 2, 40, 0.26).events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
+    const wide = at(1100, 2, 180);
     expect(wide.state.path).toContain('Steering');
     expect(wide.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide']);
-    expect(wide.events[1]).toMatchObject({ steeringDirection: 'tooWide', expiresAt: 4600 });
-    expect(at(5100, 2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide']);
-    expect(at(5200, -2, 180).events).toHaveLength(3);
-    expect(at(7100, -2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight']);
-    const alignedVelocity = at(9100, 0, 180);
+    expect(wide.events[1]).toMatchObject({ timestamp: 1100, steeringDirection: 'tooWide', expiresAt: 2600 });
+    expect(at(1200, 2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide']);
+    expect(at(1300, -2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight']);
+    const alignedVelocity = at(1400, 0, 180);
     expect(alignedVelocity.events).toHaveLength(4);
     expect(alignedVelocity.state.path).toContain('Steering');
-    const stale = engine.receiveTelemetry(frame({ ...driving(0.285), Physics_speed_kmh: 180 }), 9700);
+    const stale = engine.receiveTelemetry(frame({ ...driving(0.285), Physics_speed_kmh: 180 }), 2000);
     expect(stale.referenceSteeringDirection).toBeUndefined();
     expect(stale.events).toHaveLength(4);
     expect(stale.state.path).toContain('Steering');
-    expect(at(9800, 2, 40, 0.419, 0.1).state.path).toEqual(['root']);
-    expect(at(9900, 2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight', 'Turn']);
-    expect(at(12000, 2).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight', 'Turn', 'Too wide']);
+    expect(at(2100, 2, 40, 0.419, 0.1).state.path).toEqual(['root']);
+    expect(at(2200, 2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight', 'Turn']);
+    expect(at(2300, 2).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight', 'Turn', 'Too wide']);
+    expect(engine.setDrivingAggression(99, 2400).events).toEqual([]);
+    expect(at(2500, 2).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    expect(at(2600, 2).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    expect(at(2700, -2).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+});
+
+it.each([0, 50, 99, 99.9, 100])('gates direction corrections but preserves Turn at driving aggression %s', (aggression) => {
+    for (const [vx, direction, sentence] of [[2, 'tooWide', 'Too wide'], [-2, 'tooTight', 'Too tight']] as const) {
+        const lap = referenceLap();
+        brakingTurn(lap);
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        engine.receiveMap(steeringMap(), 0, lap);
+        engine.setDrivingAggression(aggression, 0);
+        const at = (now: number, position = 0.285) => {
+            const sample = { ...driving(position), Physics_heading: 0.1, Physics_pitch: 0, Physics_roll: 0,
+                Physics_velocity_x: vx, Physics_velocity_y: 10 };
+            engine.receiveVision(detection(lap, sample, now), now);
+            return engine.receiveTelemetry(frame(sample), now);
+        };
+        expect(at(1000, 0.26).events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
+        const correction = at(1100);
+        expect(correction.referenceSteeringDirection).toBe(direction);
+        expect(correction.events.map(({ sentence }) => sentence)).toEqual(aggression === 100 ? ['Turn', sentence] : ['Turn']);
+        expect(correction.root.children.find(({ id }) => id === 'reference-steering')!.children
+            .find(({ name }) => name === sentence)!.conditions).toContainEqual(expect.objectContaining({
+                description: 'Driving aggression = 100', conditionFit: aggression === 100, inputMissing: false,
+            }));
+    }
 });
 
 it.each([
@@ -1502,7 +1531,7 @@ it.each([
         }), 1000);
         expect(entered.referenceSteeringPhase).toBe(phase);
         expect(entered.state.path).toContain('Steering');
-        expect(entered.events.map(({ sentence }) => sentence)).toEqual(phase === 'turn' ? ['Turn'] : []);
+        expect(entered.events.map(({ sentence }) => sentence)).toEqual(['Turn']);
     }
 });
 
@@ -1514,8 +1543,8 @@ it.each(['missing', 'NaN', 'infinite', 'negative'])('exits Brake zone and enters
     }, steeringMap());
     expect(update(0.24, 900, { Physics_brake: 0.8 }).state.path).toEqual(['root', 'Brake zone']);
     const snapshot = update(0.26, 1000, { Physics_brake: 0.8 });
-    expect(snapshot.state.path).toEqual(['root', 'Steering']);
-    expect(snapshot.events).toEqual([]);
+    expect(snapshot.state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(snapshot.events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
     expect(snapshot.closures.find(({ id }) => id === 'reference-steering')!.conditions
         .every((condition) => condition.conditionFit)).toBe(true);
 });
@@ -1526,28 +1555,30 @@ it('enters Steering above reference speed and keeps Turn available after speed r
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(steeringMap(), 0, lap);
     const entered = engine.receiveTelemetry(frame({ ...driving(0.26), Physics_speed_kmh: lap.y[26][6] + 10 }), 1000);
-    expect(entered.state.path).toEqual(['root', 'Steering']);
+    expect(entered.state.path).toEqual(['root', 'Steering', 'say phrase']);
     const turned = engine.receiveTelemetry(frame({ ...driving(0.285), Physics_speed_kmh: lap.y[28][6] + 10 }), 1100);
     expect(turned.state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(turned.events.map(({ sentence }) => sentence)).toEqual(['Turn']);
 });
 
-it('enters Steering with zero reference steering once the direction-change range starts', () => {
+it.each(['zero', 'opposite', 'missing', 'invalid'])('speaks Turn on Steering entry with %s reference steering', (kind) => {
     const lap = referenceLap();
     brakingTurn(lap);
+    lap.y.forEach((row) => { row[3] = kind === 'opposite' ? -0.5 : kind === 'invalid' ? NaN : 0; });
+    if (kind === 'missing') lap.target_features[3] = 'missing';
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(steeringMap(), 0, lap);
     for (const position of [0.25, 0.254, 0.255]) {
         const snapshot = engine.receiveTelemetry(frame(driving(position)), 1000);
-        expect(snapshot.state.path).toEqual(['root', 'Steering']);
-        expect(snapshot.events).toEqual([]);
+        expect(snapshot.state.path).toEqual(['root', 'Steering', 'say phrase']);
+        expect(snapshot.events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
     }
     const entered = engine.receiveTelemetry(frame(driving(0.256)), 1100);
-    expect(entered.state.path).toEqual(['root', 'Steering']);
-    expect(entered.events).toEqual([]);
+    expect(entered.state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(entered.events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
 });
 
-it('enters Steering silently, speaks Turn once, and keeps pedal zones out until the trajectory range ends', () => {
+it('speaks Turn once on Steering entry and keeps pedal zones out until the trajectory range ends', () => {
     const { engine, lap, update } = setup(brakingTurn, steeringMap());
     const at = (position: number, now: number, speed: number, heading = 0.1) => update(position, now, {
         Physics_speed_kmh: speed - 1, Physics_brake: 0.8, Physics_steer_angle: -0.5,
@@ -1557,15 +1588,15 @@ it('enters Steering silently, speaks Turn once, and keeps pedal zones out until 
     expect(approaching.state.path).toEqual(['root', 'Brake zone']);
     expect(approaching.events.map(({ sentence }) => sentence)).toEqual([]);
     const prepared = at(0.256, 1000, lap.y[26][6]);
-    expect(prepared.state.path).toEqual(['root', 'Steering']);
-    expect(prepared.events).toEqual(approaching.events);
+    expect(prepared.state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(prepared.events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
     const eased = at(0.26, 2100, lap.y[26][6]);
-    expect(eased.events).toEqual(approaching.events);
+    expect(eased.events).toEqual(prepared.events);
     expect(eased.state.path).toContain('Steering');
-    expect(at(0.26, 2300, lap.y[26][6]).events).toEqual(approaching.events);
+    expect(at(0.26, 2300, lap.y[26][6]).events).toEqual(prepared.events);
     const turned = at(0.283, 2500, lap.y[28][6]);
     expect(turned.events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(turned.events[0].steeringPhase).toBe('turn');
+    expect(turned.events).toEqual(prepared.events);
     expect(turned.state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(at(0.285, 5500, lap.y[28][6]).events).toHaveLength(1);
     expect(engine.evaluate(5501).state.path).toContain('Steering');
@@ -1592,9 +1623,8 @@ it.each([[0.26, 'prepare'], [0.283, 'turn']] as const)(
             Physics_speed_kmh: lap.y[Math.floor(position * 100)][6] - 1, Physics_brake: 0.8,
         });
         expect(entered.referenceSteeringPhase).toBe(phase);
-        expect(entered.state.path).toEqual(phase === 'prepare'
-            ? ['root', 'Steering'] : ['root', 'Steering', 'say phrase']);
-        expect(entered.events).toHaveLength(phase === 'prepare' ? 1 : 2);
+        expect(entered.state.path).toEqual(['root', 'Steering', 'say phrase']);
+        expect(entered.events).toHaveLength(2);
 
         const turning = { Physics_speed_kmh: lap.y[28][6], Physics_brake: 0.8 };
         const turned = update(0.283, 1200, turning);
@@ -1621,7 +1651,7 @@ it('keeps Turn available when steering unwinds but trajectory direction still qu
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(steeringMap(), 0, lap);
     const at = (position: number, now: number) => engine.receiveTelemetry(frame(driving(position)), now);
-    expect(at(0.26, 1000).state.path).toEqual(['root', 'Steering']);
+    expect(at(0.26, 1000).state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(at(0.28, 1100).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
 });
 
@@ -1654,8 +1684,8 @@ it('paces brake release before the direction-change range and exits at matching 
     expect(update(0.24, 1000, { Physics_speed_kmh: lap.y[24][6], Physics_brake: 0.3 }).events
         .map(({ sentence }) => sentence)).toEqual(['Release brake faster.']);
     const prepared = update(0.25, 2100, { Physics_speed_kmh: lap.y[25][6], Physics_brake: 0.8 });
-    expect(prepared.state.path).toEqual(['root', 'Steering']);
-    expect(prepared.events.map(({ sentence }) => sentence)).toEqual(['Release brake faster.']);
+    expect(prepared.state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(prepared.events.map(({ sentence }) => sentence)).toEqual(['Release brake faster.', 'Turn']);
     expect(update(0.283, 3200, { Physics_speed_kmh: lap.y[28][6] - 1, Physics_brake: 0.8 }).events
         .map(({ sentence }) => sentence)).toEqual(['Release brake faster.', 'Turn']);
 });
@@ -1669,7 +1699,7 @@ it('continues Steering beyond the brake boundary and exits at the trajectory ran
     update(0.256, 1000, { Physics_speed_kmh: lap.y[26][6], Physics_brake: 0.8 });
     const stale = engine.receiveTelemetry(frame({ ...driving(0.26), Physics_speed_kmh: lap.y[26][6], Physics_brake: 0.8 }), 2100);
     expect(stale.state.path).toContain('Steering');
-    expect(stale.events.map(({ sentence }) => sentence)).toEqual([]);
+    expect(stale.events.map(({ sentence }) => sentence)).toEqual(['Turn']);
     const turned = engine.receiveTelemetry(frame({ ...driving(0.283), Physics_speed_kmh: lap.y[28][6] - 1, Physics_brake: 0.8 }), 2150);
     expect(turned.events.map(({ sentence }) => sentence)).toEqual(['Turn']);
     expect(turned.state.path).toContain('Steering');
@@ -1744,7 +1774,7 @@ it('reads zone membership from normalized position in the private aggression-adj
     expect(readReferenceGuidance(sample, view, lap, 'acc', 1000).pedalZone).toBe('brake');
     const cautious = copyPhraseReference(lap, 50)!;
     expect(readReferenceGuidance(sample, view, cautious, 'acc', 1000, lap).pedalZone).toBe('brake');
-    for (const [position, zone] of [[0.979, 'none'], [0.985, 'brake'], [0.201, 'brake'], [0.295, 'brake'], [0.297, 'brake']] as const) {
+    for (const [position, zone] of [[0.17, 'none'], [0.18, 'brake'], [0.201, 'brake'], [0.269, 'brake'], [0.27, 'none'], [0.297, 'none']] as const) {
         const braking = { ...driving(position), Physics_speed_kmh: 160 };
         expect(readReferenceGuidance(braking, detection(lap, braking), cautious, 'acc', 1000, lap).pedalZone).toBe(zone);
     }
@@ -1756,15 +1786,15 @@ it('reads zone membership from normalized position in the private aggression-adj
     }
 });
 
-it.each([[0, 0.2, 0.3], [25, 0.12, 0.3], [50, 0.98, 0.3]])(
-    'uses stretched reference brake boundaries at %s%% caution independently of live speed and pedals', (caution, start, end) => {
+it.each([[0, 0.2, 0.3], [25, 0.18728813559322033, 0.285], [50, 0.17457627118644067, 0.27], [100, 0.14915254237288136, 0.24]])(
+    'uses shifted reference brake boundaries at %s%% caution independently of live speed and pedals', (caution, start, end) => {
         const lap = referenceLap();
         addSpeed(lap);
         const cautious = copyPhraseReference(lap, caution)!;
         for (const speed of [36, 120, 160]) {
             for (const pedal of [0, 0.8, undefined]) {
                 for (const [position, zone] of [[start - 0.00001, 'none'], [start + 0.00001, 'brake'],
-                    [0.25, 'brake'], [end - 0.00001, 'brake'], [end, 'none'], [end + 0.00001, 'none'], [0.6, 'throttle']] as const) {
+                    [(start + end) / 2, 'brake'], [end - 0.00001, 'brake'], [end, 'none'], [end + 0.00001, 'none'], [0.6, 'throttle']] as const) {
                     const sample = { ...driving(position), Physics_speed_kmh: speed, Physics_brake: pedal, Physics_gas: pedal };
                     const guidance = readReferenceGuidance(sample, detection(lap, sample), cautious, 'acc', 1000, lap);
                     expect(guidance).toMatchObject(zone === 'brake' ? { pedalZone: zone, braking: true } : { pedalZone: zone });
@@ -2557,7 +2587,7 @@ it('keeps brake priority and does not confirm a movement that was never requeste
     expect(engine.evaluate(1250).events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
 });
 
-it('uses the private stretched brake copy for cues and restores the baseline when caution is reset', () => {
+it('uses the private shifted brake copy for cues and restores the baseline when caution is reset', () => {
     const { engine, lap, update } = setup(addSpeed);
     const speed = { Physics_speed_kmh: 122 };
     expect(update(0.19, 1000, speed).events).toEqual([]);
@@ -2571,7 +2601,7 @@ it('uses the private stretched brake copy for cues and restores the baseline whe
     engine.setDrivingAggression(25, 1300);
     expect(update(0.20, 1400, speed).state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
     expect(update(0.21, 1450, speed).events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
-    // Restoring Reference must use the original local baseline, not the stretched copy or a mutated source.
+    // Restoring Reference must use the original local baseline, not the shifted copy or a mutated source.
     lap.y.forEach((row) => { row[4] = 0; row[6] = 200; });
     engine.setDrivingAggression(0, 1500);
     expect(update(0.19, 1600, speed).state.path).toEqual(['root']);
@@ -2582,8 +2612,9 @@ it('uses the private stretched brake copy for cues and restores the baseline whe
         .toMatchObject({ status: 'Inactive', missing: [] });
 });
 
-it.each([[0, 0.1999, 0.202, 0.2999, 0.3], [25, 0.1199, 0.123, 0.2999, 0.3], [50, 0.9799, 0.985, 0.2999, 0.3]])(
-    'enters and exits the stretched brake zone at %s%% caution, speaking Brake once per entry', (caution, before, entry, last, exit) => {
+it.each([[0, 0.1999, 0.202, 0.2999, 0.3], [25, 0.187, 0.189, 0.2849, 0.285],
+    [50, 0.174, 0.176, 0.2699, 0.27], [100, 0.149, 0.151, 0.2399, 0.24]])(
+    'enters and exits the shifted brake zone at %s%% caution, speaking Brake once per entry', (caution, before, entry, last, exit) => {
         const { engine, lap, update } = setup(addSpeed);
         const map = circuitMap();
         map.centerline_segments = [
@@ -2603,7 +2634,7 @@ it.each([[0, 0.1999, 0.202, 0.2999, 0.3], [25, 0.1199, 0.123, 0.2999, 0.3], [50,
         expect(entered.events.map(({ sentence, timestamp }) => ({ sentence, timestamp })))
             .toEqual([{ sentence: 'Brake.', timestamp: 1300 }]);
         expect(engine.evaluate(1301).state.path).toEqual(['root', 'Brake zone']);
-        for (const [position, now] of [[caution === 50 ? 0.99 : 0.21, 2000], [0.25, 3400], [last, 4600]]) {
+        for (const [position, now] of [[entry + 0.005, 2000], [(entry + last) / 2, 3400], [last, 4600]]) {
             const snapshot = update(position, now, speed);
             expect(snapshot.state.path).toEqual(['root', 'Brake zone']);
             expect(snapshot.events.filter(({ sentence }) => sentence === 'Brake.')).toHaveLength(1);
@@ -2617,23 +2648,27 @@ it.each([[0, 0.1999, 0.202, 0.2999, 0.3], [25, 0.1199, 0.123, 0.2999, 0.3], [50,
         expect(lap.y[19][6]).toBe(120);
     });
 
-it('uses the lower cautious speed for throttle cues without delaying the acceleration zone', () => {
+it('keeps reference exit speeds and throttle timing when braking moves earlier', () => {
     const { engine, lap, update } = setup(addSpeed);
     expect(update(0.61, 1000, { Physics_speed_kmh: 84 }).events.map(({ sentence }) => sentence)).toEqual(['Throttle.']);
     engine.setDrivingAggression(50, 1100);
-    expect(update(0.61, 1200, { Physics_speed_kmh: 84 }).events).toEqual([]);
-    expect(update(0.61, 1300, { Physics_speed_kmh: 48 }).events.map(({ sentence }) => sentence)).toEqual(['Throttle.']);
+    expect(update(0.61, 1200, { Physics_speed_kmh: 84 }).events.map(({ sentence }) => sentence)).toEqual(['Throttle.']);
     expect(lap.y[61][5]).toBe(0.8);
     engine.setDrivingAggression(0, 1400);
     expect(update(0.61, 1500, { Physics_speed_kmh: 84 }).events.map(({ sentence }) => sentence)).toEqual(['Throttle.']);
 });
 
-it('uses copied centerline tags and the lower speed target to end movement guidance', () => {
+it('uses copied centerline tags and the earlier braking target to end movement guidance', () => {
     const map = circuitMap();
     const { engine, update } = movementSetup(map, (lap) => {
         brakingMovementReference(lap, 0.435);
         lap.target_features.push('expert_optimal_speed');
-        lap.y.forEach((row, i) => row.push(i >= 47 && i < 51 ? 80 : 216));
+        lap.y.forEach((row, i) => {
+            const position = lap.x[i];
+            row[4] = position > 0.45 && position < 0.52 ? 0.8 : 0;
+            row.push(position < 0.45 || position > 0.6 ? 216 : position <= 0.52
+                ? Math.sqrt(216 ** 2 - (216 ** 2 - 80 ** 2) * (position - 0.45) / 0.07) : 80);
+        });
     });
     map.centerline_tags!.find(({ id }) => id === 'straight')!.label = 'corner';
     expect(update(-4, 1000, 0.449, { Physics_speed_kmh: 216 }).state.path).toContain('Turn to reference line');

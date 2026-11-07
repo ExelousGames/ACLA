@@ -119,9 +119,9 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 lastVoiceEventId = event.id;
                 pendingVoice = event;
             }
-            // Direction corrections use the entered Steering scope and current direction.
+            // Turn uses the entered Steering scope; corrections also require the current direction.
             if (!next.telemetryReady || (pendingVoice?.steeringPhase !== undefined
-                && (next.referenceSteeringPhase !== pendingVoice.steeringPhase || !next.state.path.includes('Steering')))
+                && !next.state.path.includes('Steering'))
                 || (pendingVoice?.steeringDirection !== undefined
                     ? next.referenceSteeringDirection !== pendingVoice.steeringDirection || !next.state.path.includes('Steering')
                     : !next.closures.some((rule) => rule.id === pendingVoice?.ruleId
@@ -177,14 +177,15 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 <label>
                     <span>Driving aggression</span>
                     <input type="range" min="0" max={MAX_DRIVING_CAUTION} step="1" value={drivingAggression}
-                        aria-valuetext={drivingAggression === 0 ? '0% caution (Reference)' : `${drivingAggression}% caution relative to reference`}
+                        aria-valuetext={drivingAggression === 0 ? '0% earlier braking (Reference)' : drivingAggression === 100
+                            ? '100% earlier braking (Direction guide)' : `${drivingAggression}% earlier braking`}
                         onChange={(event) => {
                             const value = Number(event.target.value);
                             setDrivingAggression(value);
                             updateAggression.current?.(value);
                         }} />
                 </label>
-                <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% caution</span><span>50% · Cautious</span></div>
+                <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% earlier braking</span><span>100% · Direction guide</span></div>
             </div>
             {overlayError && <p role="alert">Unable to display live phrase in the overlay: {overlayError}</p>}
             {voiceError && <p role="alert">Unable to prepare or play live phrase speech: {voiceError}</p>}

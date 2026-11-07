@@ -137,8 +137,8 @@ it('changes driving aggression without restarting detection or speech preparatio
         const slider = screen.getByRole('slider', { name: 'Driving aggression' });
         expect(slider).toHaveValue('0');
         expect(slider).toHaveAttribute('min', '0');
-        expect(slider).toHaveAttribute('max', '50');
-        expect(slider).toHaveAttribute('aria-valuetext', '0% caution (Reference)');
+        expect(slider).toHaveAttribute('max', '100');
+        expect(slider).toHaveAttribute('aria-valuetext', '0% earlier braking (Reference)');
         fireEvent.change(slider, { target: { value: '25' } });
         await view.enable();
         expect(aggression).toHaveBeenLastCalledWith(25, Date.now());
@@ -146,10 +146,11 @@ it('changes driving aggression without restarting detection or speech preparatio
         await view.trigger();
         expect(play).toHaveBeenCalledTimes(1);
         const signal = synthesize.mock.calls[0][1]!;
-        fireEvent.change(slider, { target: { value: '50' } });
-        expect(slider).toHaveAttribute('aria-valuetext', '50% caution relative to reference');
-        expect(screen.getByText('50% caution')).toBeVisible();
-        expect(aggression).toHaveBeenLastCalledWith(50, Date.now());
+        fireEvent.change(slider, { target: { value: '100' } });
+        expect(slider).toHaveAttribute('aria-valuetext', '100% earlier braking (Direction guide)');
+        expect(screen.getByText('100% · Direction guide')).toBeVisible();
+        expect(screen.getByText('100% earlier braking')).toBeVisible();
+        expect(aggression).toHaveBeenLastCalledWith(100, Date.now());
         expect(play.mock.results[0].value.outcome).toEqual({ status: 'cancelled' });
         expect(receiveMap).toHaveBeenCalledTimes(mapCalls);
         expect(signal.aborted).toBe(false);
@@ -159,8 +160,8 @@ it('changes driving aggression without restarting detection or speech preparatio
         expect(screen.getByRole('region', { name: 'Triggered sentences' })).not.toHaveTextContent(sentence);
         fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
         await view.enable();
-        expect(slider).toHaveValue('50');
-        expect(aggression).toHaveBeenLastCalledWith(50, Date.now());
+        expect(slider).toHaveValue('100');
+        expect(aggression).toHaveBeenLastCalledWith(100, Date.now());
     } finally {
         play.mockRestore();
         receiveMap.mockRestore();
@@ -252,9 +253,8 @@ it('lets Turn interrupt an earlier phrase', async () => {
         expect(play).toHaveBeenCalledTimes(1);
         expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack(sentence).audioDataUrl }));
         jest.setSystemTime(Date.now() + 1100);
-        snapshot.referenceSteeringPhase = 'turn';
         snapshot.events = [...snapshot.events, { id: 2, ruleId: rule.id, sentence: 'Turn', timestamp: Date.now(),
-            expiresAt: Date.now() + 1500, steeringPhase: 'turn' }];
+            expiresAt: Date.now() + 1500, steeringPhase: 'prepare' }];
         await act(async () => { view.frame(); });
         expect(play).toHaveBeenCalledTimes(2);
         expect(play.mock.results[0].value.outcome).toEqual({ status: 'cancelled' });
@@ -262,15 +262,15 @@ it('lets Turn interrupt an earlier phrase', async () => {
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
 
-it.each(['reference leaves turn-in', 'Steering exits'])('discards an unprepared Turn cue when %s', async (state) => {
+it.each(['reference starts turn-in', 'reference leaves turn-in', 'Steering exits'])('checks a queued Turn when %s', async (state) => {
     const snapshot = new PhraseEngine().evaluate(Date.now());
     snapshot.telemetryReady = true;
-    snapshot.referenceSteeringPhase = 'turn';
+    snapshot.referenceSteeringPhase = state === 'reference starts turn-in' ? 'prepare' : 'turn';
     snapshot.state.path = ['root', 'Steering', 'say phrase'];
     const rule = snapshot.closures.find((item) => item.id === 'reference-steering')!;
     rule.conditions = [new PhraseCondition('speed', '>=', 20, 80)];
     snapshot.events = [{ id: 1, ruleId: rule.id, sentence: 'Turn', timestamp: Date.now(),
-        expiresAt: Date.now() + 1500, steeringPhase: 'turn' }];
+        expiresAt: Date.now() + 1500, steeringPhase: snapshot.referenceSteeringPhase }];
     const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
     const receiveVision = jest.spyOn(PhraseEngine.prototype, 'receiveVision');
     let resolve!: (value: TtsPack) => void;
@@ -282,9 +282,9 @@ it.each(['reference leaves turn-in', 'Steering exits'])('discards an unprepared 
         receiveVision.mockReturnValue(snapshot);
         await act(async () => { view.frame(); });
         if (state === 'Steering exits') snapshot.state.path = ['root'];
-        else snapshot.referenceSteeringPhase = 'prepare';
+        else snapshot.referenceSteeringPhase = state === 'reference starts turn-in' ? 'turn' : 'prepare';
         await act(async () => { view.frame(); resolve({ ...pack('Turn'), durationMs: 400 }); });
-        expect(audio.play).not.toHaveBeenCalled();
+        expect(audio.play).toHaveBeenCalledTimes(state === 'Steering exits' ? 0 : 1);
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
 

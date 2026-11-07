@@ -23,6 +23,7 @@ export const COOLDOWN_MS = 8000;
 const HISTORY_LIMIT = 50;
 
 const INPUT_LABELS = {
+    drivingAggression: 'Driving aggression',
     speed: 'Speed (km/h)', carAhead: 'Opponent ahead on visible track',
     playerCorner: 'Player turn corner', opponentCorner: 'Opponent turn corner',
     playerPosition: 'Player track position', opponentPosition: 'Opponent track position',
@@ -49,6 +50,7 @@ const INPUT_LABELS = {
 } as const;
 type Input = keyof typeof INPUT_LABELS;
 type Inputs = PhraseMapContext & ReturnType<typeof getPhrasePositions> & {
+    drivingAggression?: number;
     speed?: number; referenceCue?: ReferenceCue | 'none'; driverOnStraight?: 0 | 1; referenceBraking?: 0 | 1;
     referencePedalZone?: ReferencePedalZone;
     referenceSteeringPhase?: ReferenceSteeringPhase | 'none';
@@ -292,13 +294,12 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
     })),
     {
         id: STEERING_CLOSURE_ID, referenceCue: 'steering', name: 'Steering', holdMs: 0,
-        description: 'Enter from root once the live phrase reference direction-change range starts toward an overlapping corner. Turn at the 0.08 local reference steering threshold. After Turn, give Too wide or Too tight direction guidance. Stay entered until the continuous reference trajectory direction-change range ends, even if Turn has not run.',
+        description: 'Enter from root once the live phrase reference direction-change range starts toward an overlapping corner and immediately say Turn. After Turn, give Too wide or Too tight direction guidance only when Driving aggression is 100. Stay entered until the continuous reference trajectory direction-change range ends.',
         sentence: 'Turn',
         conditions: [condition('speed', '>=', 20), condition('referenceCue', '=', 'steering')],
-        actionConditions: [condition('referenceSteeringPhase', '=', 'turn')],
         additionalActions: [
-            { sentence: 'Too wide', actionConditions: [condition('referenceSteeringDirection', '=', 'tooWide')] },
-            { sentence: 'Too tight', actionConditions: [condition('referenceSteeringDirection', '=', 'tooTight')] },
+            { sentence: 'Too wide', actionConditions: [condition('drivingAggression', '=', 100), condition('referenceSteeringDirection', '=', 'tooWide')] },
+            { sentence: 'Too tight', actionConditions: [condition('drivingAggression', '=', 100), condition('referenceSteeringDirection', '=', 'tooTight')] },
         ],
     },
     ...REFERENCE_MOVEMENTS.map(({ cue, direction, name, sentence, sentenceAlternatives, description }) => ({
@@ -524,7 +525,6 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                     const index = action.sentences.length > 1 ? Math.floor(Math.random() * action.sentences.length) : 0;
                     context.publish(phrase, action.sentences[index]);
                 },
-                // Steering stays entered during silent preparation until Turn is ready.
                 describeCondition((context, state) => measureAction(context, action.id, action.conditions)
                     && state.current === state.closure && context.emit,
                     action.conditions
@@ -539,20 +539,16 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                 : phrase.id === 'second-apex' ? say.slice(0, 2) : say;
             const children = phrase.referenceCue === 'steering' ? say.slice(1).map((action, index) =>
                 new Closure<PhraseContext>(action.description,
-                    'Compare directions after Turn; repeat at most every 2 seconds while the correction is needed.',
+                    'Compare directions after Turn; repeat without a timed gap while the correction is needed.',
                     describeCondition((context, state) => state.getExecution(say[0]).status === 'completed'
-                        && measureAction(context, `${phrase.id}:say:${index + 1}`, getPhraseActions(phrase)[index + 1].conditions) && context.emit
-                        && context.now - (context.memory.get(phrase.id)?.lastEmitted ?? -Infinity) >= REFERENCE_CUE_COOLDOWN_MS,
+                        && measureAction(context, `${phrase.id}:say:${index + 1}`, getPhraseActions(phrase)[index + 1].conditions) && context.emit,
                     (context, state) => [
                         { description: 'Turn has been spoken', conditionFit: state.getExecution(say[0]).status === 'completed', inputMissing: false },
                         ...snapshotConditions(context.actionConditions.get(`${phrase.id}:say:${index + 1}`)
                             ?? unevaluatedConditions(getPhraseActions(phrase)[index + 1].conditions ?? [])),
-                        { description: 'At least 2 seconds since the last steering phrase',
-                            conditionFit: context.now - (context.memory.get(phrase.id)?.lastEmitted ?? -Infinity) >= REFERENCE_CUE_COOLDOWN_MS, inputMissing: false },
                     ], [
                         { description: 'Turn has been spoken', conditionFit: null, inputMissing: false },
                         ...snapshotConditions(unevaluatedConditions(getPhraseActions(phrase)[index + 1].conditions ?? [])),
-                        { description: 'At least 2 seconds since the last steering phrase', conditionFit: null, inputMissing: false },
                     ]), [action, Action.exitToParent(describeCondition((_context, state) => state.current === action,
                         'The direction correction has been spoken'))], { id: `${phrase.id}:direction:${index}` }))
                 : phrase.id === 'one-tight-slow-corner'
@@ -875,6 +871,7 @@ export class PhraseEngine {
             this.sectionId = mapContext.sectionId;
         }
         const inputs = readInputs(telemetryReady ? this.sample : {}, visionReady ? this.vision!.birdsEyeScene : null, mapContext);
+        inputs.drivingAggression = this.drivingAggression;
         const paired = this.vision?.telemetry;
         const positionVision = telemetryReady && this.vision && this.vision.capturedAt >= this.visionAfter
             && paired?.telemetryStatus === 2 && paired.game === this.game

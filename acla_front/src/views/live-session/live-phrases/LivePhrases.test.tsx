@@ -141,6 +141,13 @@ describe('LivePhrases root connection', () => {
         fireEvent.click(screen.getByRole('tab', { name: /Contents/ }));
         expect(screen.getByLabelText('Too wide closure')).toBeVisible();
         expect(screen.getByLabelText('Too tight closure')).toBeVisible();
+        for (const name of ['Too wide', 'Too tight']) {
+            fireEvent.click(screen.getByLabelText(`${name} closure`));
+            fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+            expect(screen.getByText('Driving aggression = 100')).toBeVisible();
+            expect(screen.queryByText('At least 2 seconds since the last steering phrase')).not.toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+        }
         fireEvent.click(screen.getByRole('button', { name: 'Steering action 1: exit to root' }));
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         expect(screen.getByText('The continuous reference trajectory direction-change range captured on Steering entry has ended')).toBeVisible();
@@ -151,7 +158,8 @@ describe('LivePhrases root connection', () => {
         fireEvent.click(screen.getByRole('button', { name: /^Steering action \d+: say phrase$/ }));
         expect(screen.getByText('Turn')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('The reference direction-change range has started toward an overlapping corner; reference steering has reached the 0.08 turn-in threshold')).toBeVisible();
+        expect(screen.getByText('Always eligible')).toBeVisible();
+        expect(screen.queryByText('Driving aggression = 100')).not.toBeInTheDocument();
     });
 
     it('opens small and medium reference movements on both sides, with progress and completion phrases', () => {

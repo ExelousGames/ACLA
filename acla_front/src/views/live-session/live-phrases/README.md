@@ -10,29 +10,34 @@ must match its current source reference. Copies refresh when Live Map publishes
 a replacement; removing Live Map clears them and invalidates retained location
 predictions.
 
-**Driving aggression** selects **0–50% caution relative to the reference**, defaulting
-to **0% (Reference)**, which preserves the original lap exactly. At 20% caution,
-each corner's minimum **speed** is 20% lower and local deceleration is capped at
-80% of the reference rate at the same normalized progress through its braking zone.
-Rates use `(startSpeed² - endSpeed²) / (2 × distance)` in m/s units. The braking
-distance is derived from those reduced rates and the lower minimum, rather than
-increased by a fixed percentage or determined by stretching speed values.
-Braking starts earlier and reaches the lower minimum at the original position.
-Reference brake pressure uses the same distance stretch, preserving its pressure
-pattern through the braking section. Its rise from zero therefore moves earlier
-with caution, allowing **Brake** to speak on the stretched approach. Overlapping
-approaches use the strongest mapped brake pressure.
-The acceleration section keeps its original start and end positions, rising from
-the lower minimum back to the reference exit speed without stretching the throttle
-zone. Adjustments use physical XYZ distance and wrap at start/finish. Mapped rate
-boundaries add samples along the existing reference polyline, interpolating local
-throttle and steering and the stretched brake profile. A backward speed calculation enforces local deceleration caps,
-including the tightest cap in overlapping braking zones; a nearby corner can
-therefore lower an earlier target further. Braking interpolates squared speed so
-the rate stays feasible between samples. Reference throttle, steering,
-racing-line geometry, centerline geometry and tags retain their original profiles. Missing or
-invalid speed leaves the lap unchanged. Missing or invalid brake data is preserved;
-caution does not invent brake pressure when the reference has none.
+**Driving aggression** selects **0–100% earlier braking**, defaulting to **0%
+(Reference)**, which preserves the original lap exactly. The reference corner minimum
+speed and peak deceleration stay unchanged. At 100%, braking reaches that minimum
+by the start of the reference trajectory's direction-change range, using the same
+range calculation as Steering. Intermediate values advance completion proportionally.
+The minimum is then held until the original acceleration section begins, leaving
+zero deceleration through turn-in at 100%. Braking already completed before the
+direction change needs no adjustment.
+
+Rates use `(startSpeed² - endSpeed²) / (2 × distance)` in m/s units. The lead-in
+moves earlier and the release after the peak compresses in proportion to the
+advance divided by the original braking distance. The lost integral of deceleration
+over distance is replaced by holding the original peak longer. Integrating these
+rates preserves the required speed reduction without changing the graph's height.
+The approach follows the original speed until it meets the earlier braking curve;
+its brake-pedal rise starts at that intersection. Closely spaced corners can use
+the lower available entry speed, but limit the shift if completing it would lower
+the preceding minimum or lose the reference peak.
+
+Reference brake pressure follows the moved lead-in, peak hold and compressed release,
+then stays at zero through the remaining minimum-speed section. Its earlier rise
+allows **Brake** to speak on the adjusted approach. Adjustments use physical XYZ
+distance and wrap at start/finish. Rate boundaries and approach intersections add
+samples along the existing reference polyline. Braking interpolates squared speed
+so the rate remains correct between samples. Reference acceleration, throttle,
+steering, racing-line geometry, centerline geometry and tags retain their original
+profiles. Missing or invalid speed leaves the lap unchanged. Missing or invalid
+brake data is preserved; the adjustment does not invent a missing brake channel.
 Each adjustment rebuilds from the untouched local baseline, clears current cues
 and movement progress, and keeps detection and prepared speech running.
 The baseline is used only to rebuild the active reference. Every condition and
@@ -71,7 +76,7 @@ travel time at live speed. This is a duration filter, not an entry hold: qualify
 zones enter immediately at the start of the interpolated rise when their steering
 requirement is met. A short opposite zone still ends the preceding zone, but cannot itself enter. A pedal with no ending boundary
 occupies the whole cyclic lap; all-zero and constant-full-throttle references have no pedal zones.
-Driving aggression stretches this brake profile together with the braking speed
+Driving aggression advances this brake profile together with the braking speed
 profile. Calculated braking demand alone does not extend its bounds. Live pedal
 inputs do not change zone membership. With reference speed available, live speed
 does not change the pedal interval itself. Both pedal zones defer while Steering is
@@ -117,7 +122,7 @@ current or upcoming mapped corner direction; other reference cues do not require
 `expert_optimal_speed`, `expert_optimal_steering`, `expert_optimal_brake`, and `expert_optimal_throttle`
 channels at `Graphics_normalized_car_position`. Steering becomes eligible from the start
 of a continuous trajectory direction-change range toward an overlapping mapped corner,
-with a 0.08 local steering threshold for **Turn**.
+and **Turn** speaks immediately on entry.
 It uses live speed to locate reference brake rises from zero up to
 1.8 s ahead, including start/finish crossings, to suppress **Throttle** before braking.
 **Throttle** and **More throttle** compare the applied pedal with demand for the adjusted speed profile
@@ -195,8 +200,8 @@ Only the trailing weak section is removed; the original start and easing before 
 apex remain. Direction changes and interpolation wrap across start/finish, including
 a duplicated endpoint; exit trimming uses the whole joined range.
 
-Preparation is silent. **Turn** speaks once per entry while the direction-change range
-overlaps the corner and local reference steering reaches magnitude 0.08 in the corner direction.
+**Turn** speaks immediately once per Steering entry, without a reference steering
+threshold. Changes in reference steering do not cancel a queued **Turn** cue.
 Steering captures the continuous trajectory direction-change range on entry and
 exits to root only when live normalized progress leaves that range, using the trimmed
 endpoint described above. The discarded tail cannot re-enter Steering. Exit does not depend on
@@ -204,16 +209,18 @@ mapped corner bounds, reference speed, or completion of **Turn**.
 Leaving that captured range also rearms Steering for the next qualifying range,
 without a timed clear period or entry cooldown. Steering evaluates its own direction-change
 condition independently of Brake-zone exit. Direction corrections inside Steering
-retain their 2 s speech interval.
+have no timed speech interval.
 
 Reference steering changes, steering smoothing, live steering, orientation, velocity
 and position-model error do not determine entry or exit. Missing reference steering
-still permits silent entry and exit, but withholds **Turn**. Missing or invalid reference
+still permits entry, **Turn**, and exit. Missing or invalid reference
 speed withholds the entry speed comparison. Future reference speed does not determine
 direction-change range membership. Missing trajectory direction withholds entry and exit. Missing or stale telemetry withholds speech;
 expired position-model captures do not prevent **Turn**.
 
-After **Turn**, nested **Too wide** and **Too tight** corrections compare the driver's
+After **Turn**, nested **Too wide** and **Too tight** corrections enter only when
+**Driving aggression = 100** (**Direction guide**). **Turn** remains available at
+every aggression setting. These corrections compare the driver's
 normalized horizontal world velocity with the direction to a reference endpoint
 10 m ahead along the reference polyline, interpolating across samples and start/finish.
 The position model's error points from the driver to the reference in car-local
@@ -231,7 +238,8 @@ relative to the mapped corner's turn sign: outside is **Too wide**, inside is
 **Too tight**. A 3° tolerance is silent. Neither velocity magnitude, reference speed
 nor live speed changes the endpoint or the angular comparison. The existing speed
 condition still gates entry into Steering, but is not reapplied to its corrections.
-Corrections can repeat every 2 seconds while needed, sharing that interval with **Turn**.
+Corrections can speak on the next eligible telemetry update after **Turn** and repeat
+while needed, without a timed gap between steering phrases.
 
 Direction comparison uses reference progress, error, orientation and velocity from
 the same validated capture (at most 500 ms old), so a delayed error is never rotated
