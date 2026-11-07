@@ -64,19 +64,21 @@ describe('LivePhrases root connection', () => {
         expect(jest.getTimerCount()).toBe(0);
         const catalog = within(screen.getByRole('region', { name: 'Sentence catalog' }));
         PHRASE_DEFINITIONS.filter((rule) => !rule.movementDirection).forEach((rule) => {
-            const zone = rule.referenceCue
-                ? rule.referenceCue.toLowerCase().includes('brake') || rule.referenceCue === 'steering' ? 'Brake zone' : 'Throttle zone' : undefined;
+            const zone = rule.referenceCue && rule.referenceCue !== 'steering'
+                ? rule.referenceCue.toLowerCase().includes('brake') ? 'Brake zone' : 'Throttle zone' : undefined;
             if (zone) fireEvent.click(catalog.getByLabelText(`${zone} closure`));
             const summary = catalog.getByLabelText(`${rule.name} closure`);
             expect(summary).toBeVisible();
-            expect(within(summary).getByText('Missing input')).toBeVisible();
+            expect(within(summary).getByText(zone ? 'Inactive' : 'Missing input')).toBeVisible();
             expect(catalog.queryByText(rule.sentence)).not.toBeInTheDocument();
             fireEvent.click(summary);
             fireEvent.click(catalog.getByRole('tab', { name: 'Conditions' }));
             const conditions = within(catalog.getByRole('list', { name: `${rule.name} conditions` }));
             expect(conditions.getAllByRole('listitem')).toHaveLength(rule.conditions.length);
-            expect(conditions.getAllByText('Missing input')).toHaveLength(rule.conditions.length);
-            conditions.getAllByRole('listitem').forEach((condition) => expect(condition).toHaveAttribute('data-condition-fit', 'false'));
+            expect(conditions.getAllByText(zone ? 'Not evaluated' : 'Missing input')).toHaveLength(rule.conditions.length);
+            conditions.getAllByRole('listitem').forEach((condition) => zone
+                ? expect(condition).not.toHaveAttribute('data-condition-fit')
+                : expect(condition).toHaveAttribute('data-condition-fit', 'false'));
             expect(conditions.getAllByText('AND')).toHaveLength(rule.conditions.length - 1);
             expect(within(conditions.getAllByRole('listitem')[0]).queryByText('AND')).not.toBeInTheDocument();
             fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
@@ -95,14 +97,16 @@ describe('LivePhrases root connection', () => {
 
     it('groups pedal phrases into reference zones directly under root', () => {
         render(<LivePhrases name="live-phrases" />);
-        const names = ['Brake', 'More brake', 'Release the brake', 'Ease the brake', 'Steering', 'Throttle', 'More throttle', 'Less throttle'];
+        const names = ['Brake', 'More brake', 'Release the brake', 'Release brake slower', 'Release brake faster', 'Hold brake pressure', 'Throttle', 'More throttle', 'Less throttle'];
         names.forEach((name) => expect(screen.queryByLabelText(`${name} closure`)).not.toBeInTheDocument());
+        expect(screen.getByLabelText('Steering closure')).toBeVisible();
         expect(screen.queryByLabelText('Cornering closure')).not.toBeInTheDocument();
         expect(screen.getByLabelText('Brake zone closure')).toBeVisible();
         expect(screen.getByLabelText('Throttle zone closure')).toBeVisible();
-        for (const [zone, members] of [['Brake zone', names.slice(0, 5)], ['Throttle zone', names.slice(5)]] as const) {
+        for (const [zone, members] of [['Brake zone', names.slice(0, 6)], ['Throttle zone', names.slice(6)]] as const) {
             fireEvent.click(screen.getByLabelText(`${zone} closure`));
             members.forEach((name) => expect(screen.getByLabelText(`${name} closure`)).toBeVisible());
+            expect(screen.queryByLabelText('Steering closure')).not.toBeInTheDocument();
             expect(screen.queryByLabelText('Release the throttle closure')).not.toBeInTheDocument();
             expect(screen.getByLabelText(`${zone} action 1: ${zone === 'Brake zone' ? 'exit to parent' : 'exit to root'}`)).toBeVisible();
             fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
@@ -115,20 +119,39 @@ describe('LivePhrases root connection', () => {
         expect(screen.queryByLabelText('Increase throttle closure')).not.toBeInTheDocument();
     });
 
-    it('shows only the Turn action inside Steering', () => {
+    it('shows the direction-range check without a reference-speed requirement on brake-zone exit', () => {
         render(<LivePhrases name="live-phrases" />);
         fireEvent.click(screen.getByLabelText('Brake zone closure'));
+        fireEvent.click(screen.getByRole('button', { name: 'Brake zone action 1: exit to parent' }));
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        expect(screen.getByText('The driver has left the interpolated reference brake zone')).toBeVisible();
+        expect(screen.getByText('The live phrase reference direction-change range has started toward an overlapping corner')).toBeVisible();
+        expect(screen.queryByText(/speed is equal to or below/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/500 ms/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/0.08/)).not.toBeInTheDocument();
+    });
+
+    it('shows Turn and direction corrections inside Steering', () => {
+        render(<LivePhrases name="live-phrases" />);
         fireEvent.click(screen.getByLabelText('Steering closure'));
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('The signed sum of reference steering over the next 0.8 seconds of travel is nonzero and matches the corner direction')).toBeVisible();
-        expect(screen.getByText('Speed is equal to or below the local live phrase reference speed')).toBeVisible();
+        expect(screen.getByText('The live phrase reference direction-change range has started toward an overlapping corner; the remaining trajectory is partially or fully inside the corner.')).toBeVisible();
+        expect(screen.queryByText('Speed is equal to or below the local live phrase reference speed')).not.toBeInTheDocument();
         expect(screen.queryByText(/0.6–1.8 seconds/)).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('tab', { name: /Contents/ }));
+        expect(screen.getByLabelText('Too wide closure')).toBeVisible();
+        expect(screen.getByLabelText('Too tight closure')).toBeVisible();
+        fireEvent.click(screen.getByRole('button', { name: 'Steering action 1: exit to root' }));
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        expect(screen.getByText('The continuous reference trajectory direction-change range captured on Steering entry has ended')).toBeVisible();
+        expect(screen.queryByText('Turn has been spoken')).not.toBeInTheDocument();
+        expect(screen.queryByText('The reference line direction is within 3 degrees of local forward')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         expect(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })).toHaveLength(1);
-        fireEvent.click(screen.getByLabelText('Steering action 1: say phrase'));
+        fireEvent.click(screen.getByRole('button', { name: /^Steering action \d+: say phrase$/ }));
         expect(screen.getByText('Turn')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('The steering window sum matches the corner direction and local reference steering has reached the turn-in threshold in that direction')).toBeVisible();
+        expect(screen.getByText('The reference direction-change range has started toward an overlapping corner; reference steering has reached the 0.08 turn-in threshold')).toBeVisible();
     });
 
     it('opens small and medium reference movements on both sides, with progress and completion phrases', () => {
@@ -284,8 +307,6 @@ describe('LivePhrases root connection', () => {
         expect(within(items[1]).getByText('OR')).toBeVisible();
         expect(within(items[2]).getByText('AND')).toBeVisible();
         expect(conditions.getAllByText('Missing input')).toHaveLength(3);
-        fireEvent.click(screen.getByText('How conditions are evaluated'));
-        expect(screen.getByText(/AND is evaluated before OR/)).toBeVisible();
     });
 
     it('displays nested group boundaries, connectors and each independent status', () => {
@@ -344,8 +365,6 @@ describe('LivePhrases root connection', () => {
         expect(missing.getByText('OR')).toBeVisible();
         const firstGuide = within(screen.getByRole('region', { name: 'Sentence catalog' })).getAllByRole('listitem')[0];
         expect(within(firstGuide).queryByText(/Waiting for:/)).not.toBeInTheDocument();
-        fireEvent.click(screen.getByText('How conditions are evaluated'));
-        expect(screen.getByText(/Groups are evaluated first/)).toBeVisible();
     });
 
     it('consumes only root events, expires stale input, resets history and releases subscriptions', () => {

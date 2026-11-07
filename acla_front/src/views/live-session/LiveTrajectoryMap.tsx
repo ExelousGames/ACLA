@@ -1,5 +1,5 @@
 import React, { forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { Badge, Box, Button, Card, Flex, Text } from '@radix-ui/themes';
+import { Badge, Box, Button, Card, Checkbox, Flex, Text } from '@radix-ui/themes';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
 import { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
@@ -9,12 +9,14 @@ import { LiveSessionContext } from './LiveSessionContext';
 import { useLiveTelemetrySelector } from './live-telemetry-store';
 import { getLiveMapCars, getLiveMapMiddleLine, getLiveMapPosition } from './live-map-data';
 import { loadTopLapReferenceModel, TopLapReferenceEntry } from 'services/topLapReferenceService';
-import { getLiveMapReferenceLine, selectLiveMapReference } from './live-map-reference';
+import { getLiveMapReferenceHit, getLiveMapReferenceLine, getLiveMapReferencePedal, selectLiveMapReference } from './live-map-reference';
 import 'views/session-shared/visualization/charts/MapVisualization.css';
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 
 const PLAYER_COLOR = '#00e676';
 const REFERENCE_COLOR = '#e879f9';
+const REFERENCE_BRAKE_COLOR = '#ef5350';
+const REFERENCE_THROTTLE_COLOR = '#00e676';
 const OPPONENT_COLORS = ['#29b6f6', '#ffca28', '#ef5350', '#ab47bc', '#ff8a65', '#26c6da'];
 
 type CameraMode = 'driver' | 'fit';
@@ -69,6 +71,34 @@ const drawPolyline = (
     context.stroke();
 };
 
+const drawReferencePedal = (
+    context: CanvasRenderingContext2D,
+    points: Vec3[],
+    values: number[],
+    project: (point: Vec3) => { x: number; y: number },
+    color: string,
+    width: number,
+) => {
+    if (points.length < 2 || values.length !== points.length) return;
+    context.lineWidth = width;
+    context.lineJoin = 'round';
+    context.lineCap = 'round';
+    for (let index = 1; index < points.length; index += 1) {
+        if (values[index - 1] === 0 && values[index] === 0) continue;
+        const start = project(points[index - 1]);
+        const end = project(points[index]);
+        const gradient = context.createLinearGradient(start.x, start.y, end.x, end.y);
+        // Interpolate pedal strength along the same segment as the reference line.
+        gradient.addColorStop(0, `${color}${Math.round(values[index - 1] * 255).toString(16).padStart(2, '0')}`);
+        gradient.addColorStop(1, `${color}${Math.round(values[index] * 255).toString(16).padStart(2, '0')}`);
+        context.beginPath();
+        context.moveTo(start.x, start.y);
+        context.lineTo(end.x, end.y);
+        context.strokeStyle = gradient;
+        context.stroke();
+    }
+};
+
 export interface LiveTrajectoryMapHandle extends NamedOperationComponentHandle {
     focusDriver(): void;
     fitTrack(): void;
@@ -109,6 +139,9 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     const [referenceModel, setReferenceModel] = useState<TopLapReferenceEntry[]>([]);
     const [referenceStatus, setReferenceStatus] = useState<'loading' | 'ready' | 'error'>('loading');
     const [referenceRequest, setReferenceRequest] = useState(0);
+    const [showReferenceBrake, setShowReferenceBrake] = useState(false);
+    const [showReferenceThrottle, setShowReferenceThrottle] = useState(false);
+    const [hoverPointer, setHoverPointer] = useState<{ clientX: number; clientY: number } | null>(null);
     const circuitMapRef = useRef<CircuitMapDto | null>(null);
     const referenceLapRef = useRef<TopLapReferenceEntry | null>(null);
     const positionLookupRef = useRef<LiveTrajectoryMapHandle['getPositionReferences']>(() => null);
@@ -151,6 +184,10 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     const canLoadReference = Boolean(track && car && (game === 'acc' || game === 'iracing'));
     const referenceLap = useMemo(() => selectLiveMapReference(referenceModel, game, track, car, grip), [referenceModel, game, track, car, grip]);
     const referenceLine = useMemo(() => getLiveMapReferenceLine(referenceLap), [referenceLap]);
+    const referenceBrake = useMemo(() => getLiveMapReferencePedal(referenceLap, 'brake'), [referenceLap]);
+    const referenceThrottle = useMemo(() => getLiveMapReferencePedal(referenceLap, 'throttle'), [referenceLap]);
+    const hasReferenceBrake = referenceLine.length > 1 && referenceBrake.length === referenceLine.length;
+    const hasReferenceThrottle = referenceLine.length > 1 && referenceThrottle.length === referenceLine.length;
     const referencePoints = useMemo(() => referenceLine.map((point, index) => ({
         ...point, normalized_position: referenceLap!.x[index],
     })), [referenceLine, referenceLap]);
@@ -226,6 +263,23 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
         };
     }, [bounds, cameraMode, canvasSize, playerPosition, flipX, flipVertical, game, verticalAxis, zoom]);
 
+    const projectedReferenceLine = useMemo(() => referenceLine.map(project), [referenceLine, project]);
+    const referenceHover = useMemo(() => {
+        if (!hoverPointer || !canvasRef.current || !referenceLap) return null;
+        const rect = canvasRef.current.getBoundingClientRect();
+        if (!rect.width || !rect.height) return null;
+        const pointer = {
+            x: (hoverPointer.clientX - rect.left) * canvasSize.width / rect.width,
+            y: (hoverPointer.clientY - rect.top) * canvasSize.height / rect.height,
+        };
+        if (pointer.x < 0 || pointer.x > canvasSize.width || pointer.y < 0 || pointer.y > canvasSize.height) return null;
+        const hit = getLiveMapReferenceHit(projectedReferenceLine, pointer);
+        if (!hit) return null;
+        const interpolate = (values: number[]) => values.length === referenceLine.length
+            ? values[hit.index] + (values[hit.index + 1] - values[hit.index]) * hit.fraction : null;
+        return { ...hit, position: interpolate(referenceLap.x), brake: interpolate(referenceBrake), throttle: interpolate(referenceThrottle) };
+    }, [hoverPointer, canvasSize, projectedReferenceLine, referenceLap, referenceLine, referenceBrake, referenceThrottle]);
+
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -258,6 +312,9 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
             drawPolyline(context, loop, project, 'rgba(255,255,255,.7)', 2);
         }
         drawPolyline(context, referenceLine, project, REFERENCE_COLOR, 3);
+        // Keep throttle visible around the narrower brake trace when both pedals overlap.
+        if (showReferenceThrottle) drawReferencePedal(context, referenceLine, referenceThrottle, project, REFERENCE_THROTTLE_COLOR, 7);
+        if (showReferenceBrake) drawReferencePedal(context, referenceLine, referenceBrake, project, REFERENCE_BRAKE_COLOR, 3);
         cars.forEach((car) => {
             const point = project(car.position);
             context.beginPath();
@@ -268,7 +325,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
             context.fill();
             context.shadowBlur = 0;
         });
-    }, [canvasSize, cars, middleLine, project, referenceLine]);
+    }, [canvasSize, cars, middleLine, project, referenceLine, referenceBrake, referenceThrottle, showReferenceBrake, showReferenceThrottle]);
 
     const stateMessage = !trackKey || !game
         ? ['Waiting for circuit', 'Start live telemetry to load the circuit map.']
@@ -285,7 +342,28 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     return (
         <Card className="map-visualization-card live-trajectory-map" style={{ width, height }} data-testid="live-trajectory-map">
             <Box ref={wrapperRef} className="map-visualization">
-                <canvas ref={canvasRef} className="map-visualization__canvas" role="img" aria-label="Live circuit map" />
+                <canvas ref={canvasRef} className="map-visualization__canvas" role="img" aria-label="Live circuit map"
+                    onMouseMove={(event) => setHoverPointer({ clientX: event.clientX, clientY: event.clientY })}
+                    onMouseLeave={() => setHoverPointer(null)} />
+                {referenceHover ? (
+                    <>
+                        <div className="map-visualization__reference-hover-point" aria-hidden="true"
+                            style={{ left: referenceHover.x, top: referenceHover.y }} />
+                        <div className="map-visualization__reference-tooltip" role="tooltip" style={{
+                            left: Math.max(8, Math.min(referenceHover.x + 12, canvasSize.width - 188)),
+                            top: referenceHover.y,
+                            transform: referenceHover.y > canvasSize.height / 2 ? 'translateY(calc(-100% - 12px))' : 'translateY(12px)',
+                        }}>
+                            <Text size="1" weight="bold">Reference lap · {((referenceHover.position ?? 0) * 100).toFixed(1)}%</Text>
+                            <Text size="1" style={{ color: REFERENCE_BRAKE_COLOR }}>
+                                Brake: {referenceHover.brake === null ? 'Unavailable' : `${(referenceHover.brake * 100).toFixed(1)}%`}
+                            </Text>
+                            <Text size="1" style={{ color: REFERENCE_THROTTLE_COLOR }}>
+                                Throttle: {referenceHover.throttle === null ? 'Unavailable' : `${(referenceHover.throttle * 100).toFixed(1)}%`}
+                            </Text>
+                        </div>
+                    </>
+                ) : null}
                 <div className={`map-visualization__hud map-visualization__hud--top ${live ? 'map-visualization__hud--live' : 'map-visualization__hud--standby'}`}>
                     <Flex align="center" gap="2" wrap="wrap">
                         <Badge color={live ? 'green' : 'gray'} variant="soft">{live ? 'Live Telemetry' : 'Telemetry Standby'}</Badge>
@@ -313,6 +391,31 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
                         <Button size="1" variant="soft" onClick={() => setZoom((value) => Math.min(6, value * 1.25))}>+</Button>
                         <Button size="1" variant="soft" onClick={() => setZoom((value) => Math.max(0.35, value / 1.25))}>−</Button>
                     </Flex>
+                </div>
+                <div className="map-visualization__hud map-visualization__hud--reference-pedals" role="group" aria-label="Reference lap pedals">
+                    <Text as="p" size="1" mb="1" color="gray">Hover the reference line to inspect pedal values.</Text>
+                    <Flex align="center" gap="3" wrap="wrap">
+                        <Text as="label" size="1" style={{ color: REFERENCE_BRAKE_COLOR }}>
+                            <Flex align="center" gap="2">
+                                <Checkbox color="red" checked={showReferenceBrake} disabled={!hasReferenceBrake}
+                                    onCheckedChange={(checked) => setShowReferenceBrake(checked === true)} aria-label="Reference brake" />
+                                Reference brake{!hasReferenceBrake ? ' (unavailable)' : ''}
+                            </Flex>
+                        </Text>
+                        <Text as="label" size="1" style={{ color: REFERENCE_THROTTLE_COLOR }}>
+                            <Flex align="center" gap="2">
+                                <Checkbox color="green" checked={showReferenceThrottle} disabled={!hasReferenceThrottle}
+                                    onCheckedChange={(checked) => setShowReferenceThrottle(checked === true)} aria-label="Reference throttle" />
+                                Reference throttle{!hasReferenceThrottle ? ' (unavailable)' : ''}
+                            </Flex>
+                        </Text>
+                    </Flex>
+                    {(showReferenceBrake && hasReferenceBrake) || (showReferenceThrottle && hasReferenceThrottle) ? (
+                        <Text as="p" size="1" mt="1" color="gray">
+                            Brighter = more input{showReferenceBrake && hasReferenceBrake && showReferenceThrottle && hasReferenceThrottle
+                                ? ' · Brake inside, throttle outside' : ''}
+                        </Text>
+                    ) : null}
                 </div>
                 {stateMessage ? (
                     <div className="map-visualization__state">

@@ -15,8 +15,9 @@ it('renders arbitrary mixed nodes, condition groups and extra fields from a seri
     let branch: Closure<{ ready: boolean }> = new Closure('level 4', 'Deepest scope.', () => true, [action]);
     for (let depth = 3; depth >= 1; depth--) branch = new Closure(`level ${depth}`, 'Nested scope.', () => true, [branch]);
     const state = new State(new Closure('root', 'Root.', () => true, [
-        new Action('record telemetry', 'Work at root.', run), branch,
+        new Action('record telemetry', 'Work at root.', run, () => false), branch,
     ]));
+    state.step({ ready: false });
     const view = render(<ClosureTree node={JSON.parse(JSON.stringify(state.snapshot({ ready: false })))} />);
     expect(screen.getByRole('button', { name: 'Go back one level' })).toBeDisabled();
     expect(screen.getByLabelText('root action 1: record telemetry')).toBeVisible();
@@ -45,6 +46,7 @@ it('renders arbitrary mixed nodes, condition groups and extra fields from a seri
     expect(conditions.getByText('AND')).toBeVisible();
     expect(run).not.toHaveBeenCalled();
     // A data-only refresh retains the inspected directory and tab.
+    state.step({ ready: true });
     view.rerender(<ClosureTree node={JSON.parse(JSON.stringify(state.snapshot({ ready: true })))} />);
     expect(conditions.getByText('Recorder available')).toBeVisible();
     expect(conditions.getAllByText('Met')).toHaveLength(3);

@@ -119,11 +119,13 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 lastVoiceEventId = event.id;
                 pendingVoice = event;
             }
-            // Never speak a delayed preparation after its driving conditions have passed.
+            // Direction corrections use the entered Steering scope and current direction.
             if (!next.telemetryReady || (pendingVoice?.steeringPhase !== undefined
-                && next.referenceSteeringPhase !== pendingVoice.steeringPhase)
-                || !next.closures.some((rule) => rule.id === pendingVoice?.ruleId
-                && (pendingVoice.expiresAt !== undefined ? rule.conditions.every((condition) => condition.conditionFit) : rule.status === 'Active'))) {
+                && (next.referenceSteeringPhase !== pendingVoice.steeringPhase || !next.state.path.includes('Steering')))
+                || (pendingVoice?.steeringDirection !== undefined
+                    ? next.referenceSteeringDirection !== pendingVoice.steeringDirection || !next.state.path.includes('Steering')
+                    : !next.closures.some((rule) => rule.id === pendingVoice?.ruleId
+                        && (pendingVoice.expiresAt !== undefined ? rule.conditions.every((condition) => condition.conditionFit) : rule.status === 'Active')))) {
                 pendingVoice = null;
             }
             playReadyVoice();
@@ -170,11 +172,6 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         {enabled ? 'Disable' : 'Enable'} detection
                     </button>
                 </div>
-                <p>Keep Live Map open to supply the reference lap and centerline map. Live Phrases uses your normalized lap position to read its own reference copy. Track Vision’s position model supplies lateral checks for line movement and throttle guidance, including Less throttle.</p>
-                <p>Brake zone and Throttle zone follow the reference adjusted by Driving aggression. Brake zone activates when that reference’s brake value reaches 10%. Inside Brake zone, Steering adds the reference steering over the next 0.8 seconds and activates when the nonzero total matches the corner direction and your speed is equal to or below the live phrase reference speed at your current position, then calls Turn at reference turn-in. Left and right movement cues adapt to your distance and progress toward the line on mapped straights.</p>
-                <p>Overtaking guidance combines Track Vision BEV positions with Live Map corner shapes and your progress through the corner.</p>
-                <p>Triggered phrases pop out automatically when the Assistant overlay is enabled.</p>
-                <p>Enabling detection prepares spoken guidance. Live chat audio takes priority over spoken phrases.</p>
             </header>
             <div className="live-phrases__aggression">
                 <label>
@@ -188,7 +185,6 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         }} />
                 </label>
                 <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% caution</span><span>50% · Cautious</span></div>
-                <p className="live-phrases__hint">Caution lowers each corner’s minimum speed and local deceleration by the selected percentage. Braking starts earlier by the distance needed to reach that speed. The reference brake pressure pattern stretches with it, moving Brake zone and its callout earlier. 0% follows the reference. Acceleration starts at the reference position from the lower minimum speed, with no throttle-zone stretching. More brake compares your speed and deceleration with the adjusted reference speed profile. Ease the brake triggers when your speed is equal to or below that reference and the remaining Brake zone decelerates overall, while you are still braking. Throttle and More throttle use that same reference’s throttle and acceleration. Less throttle responds when you are faster than the local reference, at least 5 units outside its line and moving farther outward, using curvature to identify the outside of the corner.</p>
             </div>
             {overlayError && <p role="alert">Unable to display live phrase in the overlay: {overlayError}</p>}
             {voiceError && <p role="alert">Unable to prepare or play live phrase speech: {voiceError}</p>}
@@ -206,11 +202,6 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             <section aria-label="Sentence catalog">
                 <p className="live-phrases__state" aria-label="Closure state">State: {snapshot.state.path.join(' → ')}</p>
                 <ClosureTree node={snapshot.root} />
-                <details className="live-phrases__disclosure live-phrases__help">
-                    <summary>How conditions are evaluated</summary>
-                    <p className="live-phrases__hint">AND requires both conditions; OR allows either alternative. Groups are evaluated first; within each group, AND is evaluated before OR.</p>
-                    <p className="live-phrases__hint">Live Map tags identify slow and fast corners; centerline geometry estimates their shapes. Tag an enclosing area with consecutive corners to link the corner segments inside it. Lap position estimates entry, middle and exit. Track Vision BEV estimates visible positions using camera calibration and a flat road, but cannot confirm overlap, a clear passing lane or an opponent’s intent. Guidance depends on those conditions being met. Telemetry expires after 1.5 s and vision after 2 s; missing inputs do not match a condition, but an OR alternative can still match. Live telemetry is always required.</p>
-                </details>
             </section>
             <section aria-label="Triggered sentences" className="live-phrases__output">
                 <h3>Triggered sentences</h3>

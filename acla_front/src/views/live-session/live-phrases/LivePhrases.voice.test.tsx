@@ -80,7 +80,7 @@ it('prepares on enable, speaks each trigger once without an overlay, and reuses 
     expect(screen.getByText('Speech: Disabled')).toHaveAttribute('data-ready', 'false');
     await view.enable();
     expect(synthesize.mock.calls.map(([request]) => request.text)).toEqual(sentences);
-    expect(sentences).toEqual(expect.arrayContaining(['Ease the brake.', 'Throttle.', 'More throttle.', 'Less throttle.']));
+    expect(sentences).toEqual(expect.arrayContaining(['Release brake slower.', 'Release brake faster.', 'Hold brake pressure.', 'Throttle.', 'More throttle.', 'Less throttle.']));
     expect(sentences).not.toContain('Less brake.');
     expect(sentences).not.toContain('Release the throttle.');
     expect(sentences).not.toContain('Throttle soon.');
@@ -237,6 +237,7 @@ it('lets Turn interrupt an earlier phrase', async () => {
     const snapshot = new PhraseEngine().evaluate(Date.now());
     snapshot.telemetryReady = true;
     snapshot.referenceSteeringPhase = 'prepare';
+    snapshot.state.path = ['root', 'Steering'];
     const rule = snapshot.closures.find((item) => item.id === 'reference-steering')!;
     rule.conditions = [new PhraseCondition('speed', '>=', 20, 80)];
     snapshot.events = [{ id: 1, ruleId: rule.id, sentence, timestamp: Date.now(), expiresAt: Date.now() + 5000 }];
@@ -261,10 +262,11 @@ it('lets Turn interrupt an earlier phrase', async () => {
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
 
-it('discards an unprepared Turn cue when the reference leaves turn-in', async () => {
+it.each(['reference leaves turn-in', 'Steering exits'])('discards an unprepared Turn cue when %s', async (state) => {
     const snapshot = new PhraseEngine().evaluate(Date.now());
     snapshot.telemetryReady = true;
     snapshot.referenceSteeringPhase = 'turn';
+    snapshot.state.path = ['root', 'Steering', 'say phrase'];
     const rule = snapshot.closures.find((item) => item.id === 'reference-steering')!;
     rule.conditions = [new PhraseCondition('speed', '>=', 20, 80)];
     snapshot.events = [{ id: 1, ruleId: rule.id, sentence: 'Turn', timestamp: Date.now(),
@@ -279,11 +281,42 @@ it('discards an unprepared Turn cue when the reference leaves turn-in', async ()
         await view.enable();
         receiveVision.mockReturnValue(snapshot);
         await act(async () => { view.frame(); });
-        snapshot.referenceSteeringPhase = 'prepare';
+        if (state === 'Steering exits') snapshot.state.path = ['root'];
+        else snapshot.referenceSteeringPhase = 'prepare';
         await act(async () => { view.frame(); resolve({ ...pack('Turn'), durationMs: 400 }); });
         expect(audio.play).not.toHaveBeenCalled();
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
+
+it.each(['still wide', 'aligned', 'opposite', 'missing direction', 'exited Steering', 'stale telemetry'])(
+    'checks a queued direction correction when %s, independently of Steering entry conditions', async (state) => {
+        const snapshot = new PhraseEngine().evaluate(Date.now());
+        snapshot.telemetryReady = true;
+        snapshot.referenceSteeringDirection = 'tooWide';
+        snapshot.state.path = ['root', 'Steering', 'Too wide', 'say phrase'];
+        const rule = snapshot.closures.find((item) => item.id === 'reference-steering')!;
+        rule.conditions = [new PhraseCondition('referenceCue', '=', 'steering', 'none')];
+        snapshot.events = [{ id: 1, ruleId: rule.id, sentence: 'Too wide', timestamp: Date.now(),
+            expiresAt: Date.now() + 1500, steeringDirection: 'tooWide' }];
+        const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
+        const receiveVision = jest.spyOn(PhraseEngine.prototype, 'receiveVision');
+        let resolve!: (value: TtsPack) => void;
+        const pending = new Promise<TtsPack>((done) => { resolve = done; });
+        synthesize.mockImplementation(async ({ text }) => text === 'Too wide' ? pending : pack(text));
+        try {
+            const view = mount();
+            await view.enable();
+            receiveVision.mockReturnValue(snapshot);
+            await act(async () => { view.frame(); });
+            if (state === 'aligned') snapshot.referenceSteeringDirection = 'aligned';
+            if (state === 'opposite') snapshot.referenceSteeringDirection = 'tooTight';
+            if (state === 'missing direction') snapshot.referenceSteeringDirection = undefined;
+            if (state === 'exited Steering') snapshot.state.path = ['root'];
+            if (state === 'stale telemetry') snapshot.telemetryReady = false;
+            await act(async () => { view.frame(); resolve({ ...pack('Too wide'), durationMs: 400 }); });
+            expect(audio.play).toHaveBeenCalledTimes(state === 'still wide' ? 1 : 0);
+        } finally { receive.mockRestore(); receiveVision.mockRestore(); }
+    });
 
 it('lets live chat interrupt and suppress phrases without replaying discarded events', async () => {
     const play = jest.spyOn(audioManager, 'play');

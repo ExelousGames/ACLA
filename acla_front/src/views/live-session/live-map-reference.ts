@@ -34,3 +34,33 @@ export const getLiveMapReferenceLine = (entry: TopLapReferenceEntry | null): Vec
     if (indices.some((index) => index < 0)) return [];
     return entry.y.map((row) => ({ x: row[indices[0]], y: row[indices[1]], z: row[indices[2]] }));
 };
+
+export const getLiveMapReferencePedal = (entry: TopLapReferenceEntry | null, pedal: 'brake' | 'throttle'): number[] => {
+    if (!entry || entry.x.length < 2) return [];
+    const index = entry.target_features.indexOf(`expert_optimal_${pedal}`);
+    if (index < 0) return [];
+    const values = entry.y.map((row) => row[index]);
+    return values.every((value) => Number.isFinite(value) && value >= 0 && value <= 1) ? values : [];
+};
+
+// Hit-test the rendered segments in canvas CSS pixels, independent of zoom and pixel density.
+export const getLiveMapReferenceHit = (points: { x: number; y: number }[], pointer: { x: number; y: number }) => {
+    let closest: { index: number; fraction: number; x: number; y: number } | null = null;
+    let closestDistance = 8 ** 2;
+    for (let index = 0; index < points.length - 1; index += 1) {
+        const start = points[index];
+        const dx = points[index + 1].x - start.x;
+        const dy = points[index + 1].y - start.y;
+        const lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared === 0) continue;
+        const fraction = Math.max(0, Math.min(1, ((pointer.x - start.x) * dx + (pointer.y - start.y) * dy) / lengthSquared));
+        const x = start.x + dx * fraction;
+        const y = start.y + dy * fraction;
+        const distance = (pointer.x - x) ** 2 + (pointer.y - y) ** 2;
+        if (distance <= closestDistance && (!closest || distance < closestDistance)) {
+            closest = { index, fraction, x, y };
+            closestDistance = distance;
+        }
+    }
+    return closest;
+};

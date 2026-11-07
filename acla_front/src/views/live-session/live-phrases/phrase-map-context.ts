@@ -12,6 +12,8 @@ export interface PhraseMapContext {
     cornerShape?: PhraseCornerGeometry['shape'];
     cornerGeometry?: PhraseCornerGeometry;
     cornerDirection?: 'left' | 'right';
+    cornerStartPosition?: number;
+    cornerEndPosition?: number;
     sequenceId?: string;
     sequenceShape?: 'alternating' | 'same-direction' | 'mixed';
     sequenceCornerCount?: number;
@@ -135,6 +137,8 @@ export function createPhraseMapContext(map: CircuitMapDto | null) {
             });
             return {
                 sectionId: corner.id,
+                cornerStartPosition: corner.start_position,
+                cornerEndPosition: corner.end_position,
                 phase: progress < 0.35 ? 'entry' : progress < 0.7 ? 'middle' : 'exit',
                 cornerSpeed: slow !== fast ? slow ? 'slow' : 'fast' : undefined,
                 longStraightAfterCorner: longStraightAfterCorner ? 1 : 0,

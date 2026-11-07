@@ -65,13 +65,15 @@ describe('reference lap overlay', () => {
     let canvas: jest.SpyInstance;
     let context: any;
     let path: number[][];
-    let strokes: { color: string; points: number[][] }[];
+    let strokes: { color: string | { stops: [number, string][] }; points: number[][]; width: number }[];
     let telemetry: {
         currentTelemetry: StandardTelemetrySample;
         telemetryStatus: number;
         game: string;
     };
     const referenceStrokes = () => strokes.filter(({ color }) => color === '#e879f9');
+    const pedalStrokes = (pedal: 'brake' | 'throttle') => strokes.filter(({ color }) => typeof color !== 'string'
+        && color.stops.some(([, value]) => value.startsWith(pedal === 'brake' ? '#ef5350' : '#00e676')));
 
     beforeEach(() => {
         window.ResizeObserver = jest.fn(() => ({ observe: jest.fn(), disconnect: jest.fn() })) as any;
@@ -80,9 +82,13 @@ describe('reference lap overlay', () => {
         context = {
             setTransform: jest.fn(), clearRect: jest.fn(() => { strokes = []; }),
             createRadialGradient: () => ({ addColorStop: jest.fn() }), fillRect: jest.fn(),
+            createLinearGradient: jest.fn(() => {
+                const stops: [number, string][] = [];
+                return { stops, addColorStop: (offset: number, color: string) => stops.push([offset, color]) };
+            }),
             beginPath: jest.fn(() => { path = []; }),
             moveTo: jest.fn((x, y) => path.push([x, y])), lineTo: jest.fn((x, y) => path.push([x, y])),
-            stroke: jest.fn(() => strokes.push({ color: context.strokeStyle, points: path })),
+            stroke: jest.fn(() => strokes.push({ color: context.strokeStyle, points: path, width: context.lineWidth })),
             arc: jest.fn(), fill: jest.fn(),
         };
         canvas = jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context);
@@ -96,6 +102,188 @@ describe('reference lap overlay', () => {
     afterEach(() => {
         canvas.mockRestore();
         window.ResizeObserver = originalObserver;
+    });
+
+    it('toggles pedal strength on the reference line and keeps both inputs visible through camera changes', async () => {
+        const reference = { ...fixtures.expected, x: [0, 0.3, 0.7, 1],
+            target_features: ['expert_optimal_throttle', 'expert_optimal_player_pos_z', 'expert_optimal_brake',
+                'expert_optimal_player_pos_x', 'expert_optimal_player_pos_y'],
+            y: [[1, 20, 0, 10, 1], [0.5, 40, 0.5, 30, 2], [0, 70, 1, 55, 8], [1, 20, 0, 10, 1]],
+        };
+        (loadTopLapReferenceModel as jest.Mock).mockResolvedValue([reference]);
+        render(<LiveTrajectoryMap name="live-map" />);
+        const brake = screen.getByRole('checkbox', { name: 'Reference brake' });
+        const throttle = screen.getByRole('checkbox', { name: 'Reference throttle' });
+        expect(brake).toBeDisabled();
+        expect(throttle).toBeDisabled();
+        await screen.findByText('Reference lap · car-a · grip 2');
+        expect(brake).toBeEnabled();
+        expect(throttle).toBeEnabled();
+        expect(brake).not.toBeChecked();
+        expect(throttle).not.toBeChecked();
+        expect(pedalStrokes('brake')).toHaveLength(0);
+        expect(pedalStrokes('throttle')).toHaveLength(0);
+
+        fireEvent.click(brake);
+        expect(brake).toBeChecked();
+        expect(pedalStrokes('brake')).toHaveLength(3);
+        expect(pedalStrokes('brake')[0].color).toMatchObject({ stops: [[0, '#ef535000'], [1, '#ef535080']] });
+        expect(pedalStrokes('throttle')).toHaveLength(0);
+        fireEvent.click(throttle);
+        expect(throttle).toBeChecked();
+        expect(pedalStrokes('throttle')).toHaveLength(3);
+        expect(pedalStrokes('throttle')[0].color).toMatchObject({ stops: [[0, '#00e676ff'], [1, '#00e67680']] });
+        expect(pedalStrokes('throttle')[0].width).toBeGreaterThan(pedalStrokes('brake')[0].width);
+        expect(strokes.indexOf(pedalStrokes('throttle')[0])).toBeLessThan(strokes.indexOf(pedalStrokes('brake')[0]));
+        expect(screen.getByText('Brighter = more input · Brake inside, throttle outside')).toBeVisible();
+
+        const expectAligned = () => {
+            const line = referenceStrokes()[0].points;
+            for (const pedal of ['brake', 'throttle'] as const) {
+                pedalStrokes(pedal).forEach((stroke, index) => expect(stroke.points).toEqual(line.slice(index, index + 2)));
+            }
+            expect(context.stroke.mock.invocationCallOrder.slice(-1)[0]).toBeLessThan(context.fill.mock.invocationCallOrder.slice(-1)[0]);
+        };
+        expectAligned();
+        for (const name of ['X', 'Y', '+', 'Driver', 'Fit']) {
+            fireEvent.click(screen.getByRole('button', { name }));
+            expectAligned();
+        }
+        fireEvent.click(brake);
+        expect(pedalStrokes('brake')).toHaveLength(0);
+        expect(pedalStrokes('throttle')).toHaveLength(3);
+        fireEvent.click(throttle);
+        expect(pedalStrokes('throttle')).toHaveLength(0);
+        expect(referenceStrokes()).toHaveLength(1);
+        expect(loadTopLapReferenceModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('refreshes selected pedals with the reference lap and disables missing channels without drawing stale inputs', async () => {
+        const reference = { ...fixtures.expected,
+            target_features: [...fixtures.expected.target_features, 'expert_optimal_brake', 'expert_optimal_throttle'],
+            y: fixtures.expected.y.map((row) => [...row, 0.5, 0]),
+        };
+        const wet = { ...reference, avg_grip_int: 5,
+            target_features: [...fixtures.expected.target_features, 'expert_optimal_throttle'],
+            y: fixtures.expected.y.map((row) => [...row, 1]),
+        };
+        (loadTopLapReferenceModel as jest.Mock).mockResolvedValue([reference, wet]);
+        const view = render(<LiveTrajectoryMap name="live-map" />);
+        await screen.findByText('Reference lap · car-a · grip 2');
+        const brake = screen.getByRole('checkbox', { name: 'Reference brake' });
+        const throttle = screen.getByRole('checkbox', { name: 'Reference throttle' });
+        fireEvent.click(brake);
+        fireEvent.click(throttle);
+        expect(pedalStrokes('brake')).toHaveLength(2);
+        expect(pedalStrokes('throttle')).toHaveLength(0);
+        expect(throttle).toBeEnabled();
+        telemetry.currentTelemetry = { ...telemetry.currentTelemetry, Graphics_track_grip_status: 5 };
+        view.rerender(<LiveTrajectoryMap name="live-map" />);
+        expect(brake).toBeDisabled();
+        expect(screen.getByText('Reference brake (unavailable)')).toBeVisible();
+        expect(pedalStrokes('brake')).toHaveLength(0);
+        expect(pedalStrokes('throttle')).toHaveLength(2);
+        telemetry.currentTelemetry = { ...telemetry.currentTelemetry, Static_car_model: 'missing' };
+        view.rerender(<LiveTrajectoryMap name="live-map" />);
+        expect(throttle).toBeDisabled();
+        expect(pedalStrokes('throttle')).toHaveLength(0);
+        expect(loadTopLapReferenceModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('disables pedal overlays when the reference has no racing line', async () => {
+        (loadTopLapReferenceModel as jest.Mock).mockResolvedValue([{ ...fixtures.expected,
+            target_features: ['expert_optimal_brake', 'expert_optimal_throttle'], y: [[1, 0], [0, 1], [1, 0]],
+        }]);
+        render(<LiveTrajectoryMap name="live-map" />);
+        await screen.findByText('Reference lap has no racing line');
+        expect(screen.getByRole('checkbox', { name: 'Reference brake' })).toBeDisabled();
+        expect(screen.getByRole('checkbox', { name: 'Reference throttle' })).toBeDisabled();
+        expect(pedalStrokes('brake')).toHaveLength(0);
+        expect(pedalStrokes('throttle')).toHaveLength(0);
+    });
+
+    it('shows interpolated pedal percentages on hover with scaled canvas coordinates and camera controls', async () => {
+        const reference = { ...fixtures.expected, x: [0, 0.4, 0.8, 1],
+            target_features: ['expert_optimal_throttle', 'expert_optimal_player_pos_z', 'expert_optimal_brake',
+                'expert_optimal_player_pos_x', 'expert_optimal_player_pos_y'],
+            y: [[1, 20, 0, 0, 0], [0.2, 40, 1, 100, 0], [0, 70, 0.5, 100, 100], [1, 20, 0, 0, 0]],
+        };
+        const map = { ...circuitMap(), samples: { middle_line: reference.y.map((row, index) => ({
+            bin: index, normalized_position: reference.x[index], x: row[3], y: row[4], z: row[1],
+            sample_count: 1, updated_at: '',
+        })) } };
+        (useCircuitMaps as jest.Mock).mockReturnValue({ getCircuitMapByTrack: jest.fn().mockResolvedValue(map) });
+        (loadTopLapReferenceModel as jest.Mock).mockResolvedValue([reference]);
+        render(<LiveTrajectoryMap name="live-map" />);
+        await screen.findByText('Reference lap · car-a · grip 2');
+        const mapCanvas = screen.getByRole('img', { name: 'Live circuit map' });
+        jest.spyOn(mapCanvas, 'getBoundingClientRect').mockReturnValue({ left: 120, top: 40, width: 400, height: 260 } as DOMRect);
+        const hover = (index: number, fraction: number) => {
+            const points = referenceStrokes()[0].points;
+            const x = points[index][0] + (points[index + 1][0] - points[index][0]) * fraction;
+            const y = points[index][1] + (points[index + 1][1] - points[index][1]) * fraction;
+            // Preserve the exact subpixel location; jsdom's MouseEvent constructor truncates it.
+            const event = new MouseEvent('mousemove', { bubbles: true });
+            Object.defineProperties(event, {
+                clientX: { value: 120 + x / 2 }, clientY: { value: 40 + y / 2 },
+            });
+            fireEvent(mapCanvas, event);
+        };
+        expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+        hover(0, 0.5);
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Reference lap · 20.0%');
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: 50.0%');
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Throttle: 60.0%');
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Reference brake' }));
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Reference throttle' }));
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: 50.0%');
+        hover(0, 0);
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: 0.0%');
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Throttle: 100.0%');
+        for (const name of ['X', 'Y', '+', 'Fit']) {
+            fireEvent.click(screen.getByRole('button', { name }));
+            hover(2, 0.5);
+            expect(screen.getByRole('tooltip')).toHaveTextContent('Reference lap · 90.0%');
+            expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: 25.0%');
+            expect(screen.getByRole('tooltip')).toHaveTextContent('Throttle: 50.0%');
+        }
+        fireEvent.mouseMove(mapCanvas, { clientX: 120, clientY: 40 });
+        expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+        hover(2, 0.5);
+        expect(screen.getByRole('tooltip')).toBeVisible();
+        fireEvent.mouseLeave(mapCanvas);
+        expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+        expect(loadTopLapReferenceModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('updates hover values under a stationary pointer and clears them when the reference or camera changes', async () => {
+        const reference = { ...fixtures.expected,
+            target_features: [...fixtures.expected.target_features, 'expert_optimal_brake', 'expert_optimal_throttle'],
+            y: fixtures.expected.y.map((row) => [...row, 0.5, 1]),
+        };
+        const wet = { ...reference, avg_grip_int: 5,
+            target_features: [...fixtures.expected.target_features, 'expert_optimal_throttle'],
+            y: fixtures.expected.y.map((row) => [...row, 0]),
+        };
+        (loadTopLapReferenceModel as jest.Mock).mockResolvedValue([reference, wet]);
+        const view = render(<LiveTrajectoryMap name="live-map" />);
+        await screen.findByText('Reference lap · car-a · grip 2');
+        const mapCanvas = screen.getByRole('img', { name: 'Live circuit map' });
+        jest.spyOn(mapCanvas, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 800, height: 520 } as DOMRect);
+        const [x, y] = referenceStrokes()[0].points[0];
+        fireEvent.mouseMove(mapCanvas, { clientX: x, clientY: y });
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: 50.0%');
+        telemetry.currentTelemetry = { ...telemetry.currentTelemetry, Graphics_track_grip_status: 5 };
+        view.rerender(<LiveTrajectoryMap name="live-map" />);
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: Unavailable');
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Throttle: 0.0%');
+        fireEvent.click(screen.getByRole('button', { name: '+' }));
+        expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Fit' }));
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Throttle: 0.0%');
+        telemetry.currentTelemetry = { ...telemetry.currentTelemetry, Static_car_model: 'missing' };
+        view.rerender(<LiveTrajectoryMap name="live-map" />);
+        expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
     });
 
     it('draws the downloaded racing line below car markers and applies the map camera controls', async () => {

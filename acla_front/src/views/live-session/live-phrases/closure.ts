@@ -6,18 +6,31 @@ export interface ConditionSnapshot {
     conditions?: readonly ConditionSnapshot[];
 }
 
+function copyCondition(condition: ConditionSnapshot): ConditionSnapshot {
+    return {
+        description: condition.description, conditionFit: condition.conditionFit, inputMissing: condition.inputMissing,
+        ...(condition.connector ? { connector: condition.connector } : {}),
+        ...(condition.conditions ? { conditions: condition.conditions.map(copyCondition) } : {}),
+    };
+}
+
 export type Condition<Context> = ((context: Context, state: State<Context>) => boolean) & {
-    describe?: (context: Context, state: State<Context>) => readonly ConditionSnapshot[];
+    describe?: (context: Context, state: State<Context>, conditionFit?: boolean) => readonly ConditionSnapshot[];
+    unevaluated?: readonly ConditionSnapshot[];
+    reset?: (state: State<Context>, parentExited: boolean) => void;
 };
 
-/** Descriptions must be read-only. A string description requires a pure predicate. */
+/** Descriptions are read only and run with the condition, never during inspection. */
 export function describeCondition<Context>(
     predicate: Condition<Context>,
     description: string | ((context: Context, state: State<Context>) => readonly ConditionSnapshot[]),
+    unevaluated?: readonly ConditionSnapshot[],
 ): Condition<Context> {
     return Object.assign((context: Context, state: State<Context>) => predicate(context, state), {
+        unevaluated: unevaluated ?? (typeof description === 'string'
+            ? [{ description, conditionFit: null, inputMissing: false }] : undefined),
         describe: typeof description === 'string'
-            ? (context: Context, state: State<Context>) => [{ description, conditionFit: predicate(context, state), inputMissing: false }]
+            ? (_context: Context, _state: State<Context>, conditionFit?: boolean) => [{ description, conditionFit: conditionFit ?? null, inputMissing: false }]
             : description,
     });
 }
@@ -30,6 +43,12 @@ export interface NodeInspection {
 export interface NodeMetadata<Context> {
     id?: string;
     inspect?: (context: Context, state: State<Context>) => NodeInspection;
+    fields?: NodeInspection['fields'];
+    /** Higher-priority siblings are checked first. Interrupts may leave an entered child. */
+    priority?: number;
+    interrupt?: boolean;
+    /** Let a later interrupt take over when this scope has no action to run. */
+    yieldToSiblings?: boolean;
 }
 
 export interface ActionExecution {
@@ -52,8 +71,12 @@ export interface NodeSnapshot {
     children: NodeSnapshot[];
 }
 
-/** An entered scope never returns to its parent automatically. */
-export class Closure<Context> {
+export interface Evaluable<Context> {
+    evaluate(context: Context, state: State<Context>, onActionError?: (error: unknown) => void): unknown;
+}
+
+/** An entered scope evaluates its own children and leaves through an explicit action or interrupt. */
+export class Closure<Context> implements Evaluable<Context> {
     constructor(
         readonly name: string,
         readonly description: string,
@@ -61,10 +84,32 @@ export class Closure<Context> {
         readonly children: readonly (Closure<Context> | Action<Context>)[] = [],
         readonly metadata: NodeMetadata<Context> = {},
     ) {}
+
+    evaluate(context: Context, state: State<Context>, onActionError?: (error: unknown) => void): unknown {
+        if (!state.path.includes(this)) return;
+        let active = this.children.find((child) => child instanceof Closure && state.path.includes(child));
+        const children = [...this.children].sort((a, b) => (b.metadata.priority ?? 0) - (a.metadata.priority ?? 0));
+        for (const child of children) {
+            if (child === active) {
+                const before = state.executionCount;
+                const result = child.evaluate(context, state, onActionError);
+                if (!child.metadata.yieldToSiblings || state.executionCount !== before) return result;
+                continue;
+            }
+            if (active && !child.metadata.interrupt) continue;
+            if (!state.check(child, context)) continue;
+            while (state.closure !== this) state.exitToParent();
+            state.enter(child);
+            const before = state.executionCount;
+            const result = child.evaluate(context, state, onActionError);
+            if (!child.metadata.yieldToSiblings || state.executionCount !== before) return result;
+            active = child;
+        }
+    }
 }
 
 /** The callback may run any operation, including an asynchronous one. */
-export class Action<Context> {
+export class Action<Context> implements Evaluable<Context> {
     constructor(
         readonly name: string,
         readonly description: string,
@@ -73,14 +118,18 @@ export class Action<Context> {
         readonly metadata: NodeMetadata<Context> = {},
     ) {}
 
-    static exitToRoot<Context>(condition?: Condition<Context>): Action<Context> {
-        return new Action('exit to root', 'Return to the root closure so another guide can be selected.',
-            (_context, state) => state.exitToRoot(), condition);
+    evaluate(context: Context, state: State<Context>, onActionError?: (error: unknown) => void): unknown {
+        return state.execute(this, context, onActionError);
     }
 
-    static exitToParent<Context>(condition?: Condition<Context>): Action<Context> {
+    static exitToRoot<Context>(condition?: Condition<Context>, metadata: NodeMetadata<Context> = {}): Action<Context> {
+        return new Action('exit to root', 'Return to the root closure so another guide can be selected.',
+            (_context, state) => state.exitToRoot(), condition, metadata);
+    }
+
+    static exitToParent<Context>(condition?: Condition<Context>, metadata: NodeMetadata<Context> = {}): Action<Context> {
         return new Action('exit to parent', 'Return to the enclosing closure.',
-            (_context, state) => state.exitToParent(), condition);
+            (_context, state) => state.exitToParent(), condition, metadata);
     }
 }
 
@@ -89,15 +138,25 @@ export class State<Context> {
     private scopes: Closure<Context>[];
     private location: Closure<Context> | Action<Context>;
     private executions = new Map<Action<Context>, ActionExecution>();
-    private checked = new Map<Closure<Context> | Action<Context>, boolean>();
+    private checked = new Map<Closure<Context> | Action<Context>, readonly ConditionSnapshot[]>();
+    private inspections = new Map<Closure<Context> | Action<Context>, NodeInspection>();
     private pending = false;
+    private parents = new Map<Closure<Context> | Action<Context>, Closure<Context>>();
+    private results = new Map<Closure<Context> | Action<Context>, boolean>();
+    private actionCount = 0;
 
     constructor(readonly root: Closure<Context>) {
         this.scopes = [root];
         this.location = root;
+        const register = (parent: Closure<Context>) => parent.children.forEach((child) => {
+            this.parents.set(child, parent);
+            if (child instanceof Closure) register(child);
+        });
+        register(root);
     }
 
     get current(): Closure<Context> | Action<Context> { return this.location; }
+    get executionCount(): number { return this.actionCount; }
     get closure(): Closure<Context> { return this.scopes[this.scopes.length - 1]; }
     get path(): readonly (Closure<Context> | Action<Context>)[] {
         return this.location === this.closure ? [...this.scopes] : [...this.scopes, this.location];
@@ -108,37 +167,58 @@ export class State<Context> {
     }
 
     exitToRoot(): void {
+        this.root.children.forEach((child) => this.clear(child, false));
         this.scopes = [this.root];
         this.location = this.root;
         this.executions.clear();
         this.checked.clear();
+        this.inspections.clear();
     }
 
     exitToParent(): void {
         if (this.scopes.length === 1) return;
         const exited = this.scopes.pop()!;
         this.location = this.closure;
-        const clear = (node: Closure<Context> | Action<Context>) => {
-            this.checked.delete(node);
-            if (node instanceof Action) this.executions.delete(node);
-            else node.children.forEach(clear);
-        };
-        clear(exited);
+        this.clear(exited, false);
     }
 
-    /** Inspect the entire tree without stepping it or invoking opaque predicates. */
-    snapshot(context: Context): NodeSnapshot {
+    private clear(node: Closure<Context> | Action<Context>, parentExited: boolean): void {
+        this.checked.delete(node);
+        this.results.delete(node);
+        this.inspections.delete(node);
+        node.condition.reset?.(this, parentExited);
+        if (node instanceof Action) this.executions.delete(node);
+        else node.children.forEach((child) => this.clear(child, true));
+    }
+
+    check(node: Closure<Context> | Action<Context>, context: Context): boolean {
+        const parent = this.parents.get(node);
+        if (parent && !this.scopes.includes(parent)) return false;
+        if (node instanceof Action && this.executions.has(node)) return false;
+        if (this.results.has(node)) return this.results.get(node)!;
+        const matches = node.condition(context, this);
+        this.results.set(node, matches);
+        this.checked.set(node, (node.condition.describe?.(context, this, matches) ?? [{
+            description: 'Custom condition (last checked)', conditionFit: matches, inputMissing: false,
+        }]).map(copyCondition));
+        const inspection = node.metadata.inspect?.(context, this);
+        if (inspection) this.inspections.set(node, { ...inspection, fields: { ...inspection.fields } });
+        return matches;
+    }
+
+    enter(node: Closure<Context> | Action<Context>): void {
+        this.location = node;
+        if (node instanceof Closure) this.scopes.push(node);
+    }
+
+    /** Copy recorded results and static descriptions; inspection never measures conditions. */
+    snapshot(_context?: Context): NodeSnapshot {
         const path = this.path;
-        const copyCondition = (condition: ConditionSnapshot): ConditionSnapshot => ({
-            description: condition.description, conditionFit: condition.conditionFit, inputMissing: condition.inputMissing,
-            ...(condition.connector ? { connector: condition.connector } : {}),
-            ...(condition.conditions ? { conditions: condition.conditions.map(copyCondition) } : {}),
-        });
         const visit = (node: Closure<Context> | Action<Context>, id: string, parent?: Closure<Context>): NodeSnapshot => {
-            const inspection = node.metadata.inspect?.(context, this);
-            const conditions = node.condition.describe?.(context, this) ?? [{
+            const inspection = this.inspections.get(node);
+            const conditions = this.checked.get(node) ?? node.condition.unevaluated ?? [{
                 description: 'Custom condition (last checked)',
-                conditionFit: this.checked.get(node) ?? null,
+                conditionFit: null,
                 inputMissing: false,
             }];
             const execution = node instanceof Action ? this.getExecution(node) : undefined;
@@ -151,7 +231,8 @@ export class State<Context> {
             return {
                 id: nodeId, kind: node instanceof Closure ? 'closure' : 'action',
                 name: node.name, description: node.description, current: node === this.current, onPath,
-                status: inspection?.status ?? status, conditions: conditions.map(copyCondition), fields: { ...inspection?.fields },
+                status: onPath && node instanceof Closure ? 'Active' : inspection?.status ?? status,
+                conditions: conditions.map(copyCondition), fields: { ...node.metadata.fields, ...inspection?.fields },
                 ...(execution ? { execution } : {}),
                 children: node instanceof Closure ? node.children.map((child, index) => visit(child, `${nodeId}/${index}`, node)) : [],
             };
@@ -161,46 +242,39 @@ export class State<Context> {
 
     step(context: Context, onActionError?: (error: unknown) => void): unknown {
         if (this.pending) return;
-        while (true) {
-            const next = this.closure.children.find((child) => {
-                if (child instanceof Action && this.executions.has(child)) return false;
-                const matches = child.condition(context, this);
-                this.checked.set(child, matches);
-                return matches;
-            });
-            if (!next) return;
-            this.location = next;
-            if (next instanceof Closure) {
-                this.scopes.push(next);
-                continue;
+        this.results.clear();
+        return this.root.evaluate(context, this, onActionError);
+    }
+
+    execute(next: Action<Context>, context: Context, onActionError?: (error: unknown) => void): unknown {
+        if (this.pending || this.current !== next || this.executions.has(next)) return;
+        this.actionCount++;
+        // Claim the action before invoking user code, so reentrant steps cannot repeat it.
+        const execution: ActionExecution = { status: 'running' };
+        this.executions.set(next, execution);
+        this.pending = true;
+        try {
+            const result = next.run(context, this);
+            if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+                return Promise.resolve(result).then((value) => {
+                    execution.status = 'completed';
+                    return value;
+                }, (error) => {
+                    execution.status = 'failed';
+                    execution.error = error instanceof Error ? error.message : String(error);
+                    if (onActionError) return onActionError(error);
+                    throw error;
+                }).finally(() => { this.pending = false; });
             }
-            // Claim the action before invoking user code, so reentrant steps cannot repeat it.
-            const execution: ActionExecution = { status: 'running' };
-            this.executions.set(next, execution);
-            this.pending = true;
-            try {
-                const result = next.run(context, this);
-                if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-                    return Promise.resolve(result).then((value) => {
-                        execution.status = 'completed';
-                        return value;
-                    }, (error) => {
-                        execution.status = 'failed';
-                        execution.error = error instanceof Error ? error.message : String(error);
-                        if (onActionError) return onActionError(error);
-                        throw error;
-                    }).finally(() => { this.pending = false; });
-                }
-                execution.status = 'completed';
-                this.pending = false;
-                return result;
-            } catch (error) {
-                execution.status = 'failed';
-                execution.error = error instanceof Error ? error.message : String(error);
-                this.pending = false;
-                if (onActionError) return onActionError(error);
-                throw error;
-            }
+            execution.status = 'completed';
+            this.pending = false;
+            return result;
+        } catch (error) {
+            execution.status = 'failed';
+            execution.error = error instanceof Error ? error.message : String(error);
+            this.pending = false;
+            if (onActionError) return onActionError(error);
+            throw error;
         }
     }
 }

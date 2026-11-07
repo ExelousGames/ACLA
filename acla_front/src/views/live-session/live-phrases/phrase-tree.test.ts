@@ -1,6 +1,49 @@
 import { Action, Closure, describeCondition } from './closure';
-import { createPhraseRoot, PHRASE_DEFINITIONS, PhraseEngine, type PhraseContext } from './phrase-engine';
+import { createPhraseRoot, PHRASE_DEFINITIONS, PhraseCondition, PhraseEngine, type PhraseContext } from './phrase-engine';
 import { circuitMap, vision } from './test-fixtures';
+
+it('starts child measurement and holds only after parent activation and restarts them on re-entry', () => {
+    let open = false;
+    const condition = new PhraseCondition('speed', '>=', 50);
+    const actionCondition = new PhraseCondition('speed', '>=', 50);
+    const measure = jest.spyOn(condition, 'evaluate');
+    const measureAction = jest.spyOn(actionCondition, 'evaluate');
+    const phrase = { ...PHRASE_DEFINITIONS.find(({ id }) => id === 'pressure-feint')!,
+        conditions: [condition], actionConditions: [actionCondition] };
+    const engine = new PhraseEngine([phrase], (phrases) => {
+        const exit = Action.exitToRoot<PhraseContext>(() => !open);
+        Object.assign(exit.metadata, { interrupt: true });
+        return new Closure('root', 'Root.', () => true, [new Closure('parent', 'Parent.', () => open,
+            [exit, ...createPhraseRoot(phrases).children])]);
+    });
+    const update = (now: number) => {
+        const sample = { Physics_speed_kmh: 100 };
+        return engine.receiveTelemetry({ type: 'frame', sample, sampleIndex: 0, telemetryStatus: 2,
+            committedSampleCount: 0, sessionGeneration: 0, streamGeneration: 0,
+            update: { type: 'frame', game: 'acc', sample, sequence: 1, committedSequence: 0, committedCount: 0 } }, now);
+    };
+    update(0);
+    const inactive = update(4000);
+    expect(measure).not.toHaveBeenCalled();
+    expect(measureAction).not.toHaveBeenCalled();
+    expect(inactive.closures[0]).toMatchObject({ status: 'Inactive', conditions: [{ conditionFit: null, inputMissing: false }] });
+    open = true;
+    expect(update(5000).events).toEqual([]);
+    expect(measure).toHaveBeenCalled();
+    expect(measureAction).not.toHaveBeenCalled();
+    open = false;
+    update(5400);
+    measure.mockClear();
+    update(8000);
+    expect(measure).not.toHaveBeenCalled();
+    open = true;
+    expect(update(9000).events).toEqual([]);
+    expect(update(9799).events).toEqual([]);
+    expect(measureAction).not.toHaveBeenCalled();
+    expect(update(9800).events.map(({ ruleId }) => ruleId)).toEqual([phrase.id]);
+    expect(measureAction).toHaveBeenCalledTimes(1);
+    expect(inactive.closures[0].conditions[0].conditionFit).toBeNull();
+});
 
 it('snapshots arbitrary root actions and nested catalog closures without relying on catalog position', () => {
     const run = jest.fn();

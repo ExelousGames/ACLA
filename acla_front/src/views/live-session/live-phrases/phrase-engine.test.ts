@@ -27,25 +27,30 @@ const slipstreamVision = (capturedAt: number, x = 2, y = 9) => {
 };
 
 describe('live phrase closure tree', () => {
-    it('starts at a root containing guide closures, with Steering relying on the brake zone exit', () => {
+    it('starts at a root containing independent Steering and pedal zone closures', () => {
         const engine = new PhraseEngine();
         expect(engine.root).toBeInstanceOf(Closure);
         expect(engine.state).toBeInstanceOf(State);
         expect(engine.state.current).toBe(engine.root);
         expect(engine.root.children.map((child) => child.name)).toEqual([
             'Chicane overtake', 'One Tight Slow Corner', 'Slipstream', 'Pressure and a feint',
-            'Brake zone', 'Throttle zone', 'Turn to reference line',
+            'Brake zone', 'Throttle zone', 'Steering', 'Turn to reference line',
         ]);
         const snapshot = engine.evaluate(0);
         const brakeZone = snapshot.root.children.find((child) => child.name === 'Brake zone')!;
         const throttleZone = snapshot.root.children.find((child) => child.name === 'Throttle zone')!;
+        expect(snapshot.root.children.find((child) => child.name === 'Steering')!.fields).not.toHaveProperty('Cooldown');
         expect(brakeZone.children.filter((child) => child.kind === 'closure').map((child) => child.name))
-            .toEqual(['Brake', 'More brake', 'Release the brake', 'Ease the brake', 'Steering']);
+            .toEqual(['Brake', 'More brake', 'Release the brake', 'Release brake slower', 'Release brake faster', 'Hold brake pressure']);
         expect(throttleZone.children.filter((child) => child.kind === 'closure').map((child) => child.name))
             .toEqual(['Throttle', 'More throttle', 'Less throttle']);
         for (const [zone, pedal] of [[brakeZone, 'brake'], [throttleZone, 'throttle']] as const) {
             expect(zone.conditions).toEqual([
                 expect.objectContaining({ description: `Inside the interpolated reference ${pedal} zone`, conditionFit: false, inputMissing: true }),
+                ...(pedal === 'brake' ? [expect.objectContaining({
+                    description: 'The direction-change condition for brake-zone exit is not met', conditionFit: true,
+                })] : []),
+                expect.objectContaining({ description: 'Steering is not active', conditionFit: true }),
             ]);
         }
         expect(snapshot.root).toMatchObject({ name: engine.root.name, description: engine.root.description });
@@ -59,9 +64,10 @@ describe('live phrase closure tree', () => {
             expect(child.description.trim()).not.toBe('');
             const actions = (child as Closure<unknown>).children.filter((node) => node instanceof Action);
             const speech = getPhraseActions(PHRASE_DEFINITIONS[index]);
-            const parentSpeech = PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2)
+            const parentSpeech = phrase.referenceCue === 'steering' ? speech.slice(0, 1)
+                : PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2)
                 : PHRASE_DEFINITIONS[index].id === 'second-apex' ? speech.slice(0, 2) : speech;
-            expect(actions.map((action) => action.name)).toEqual([...parentSpeech.map(() => 'say phrase'),
+            expect(actions.map((action) => action.name)).toEqual([...(phrase.referenceCue === 'steering' ? ['exit to root'] : []), ...parentSpeech.map(() => 'say phrase'),
                 ...(phrase.referenceCue === 'steering' ? [] : [phrase.referenceCue ? 'exit to parent' : 'exit to root'])]);
             actions.forEach((action) => {
                 expect(action).toBeInstanceOf(Action);
@@ -846,7 +852,8 @@ describe('vision and Live Map overtaking guides', () => {
         update(engine, 0);
         update(engine, 800);
         const reset = engine.receiveTelemetry({ type, snapshot: createLiveTelemetryStore().getSnapshot() }, 900);
-        expect(reset.closures.every((rule) => rule.conditions.every((condition) => !condition.conditionFit && condition.inputMissing))).toBe(true);
+        expect(reset.closures.every((rule) => rule.conditions.every((condition) => rule.status === 'Inactive'
+            ? condition.conditionFit === null && !condition.inputMissing : !condition.conditionFit && condition.inputMissing))).toBe(true);
         engine.receiveVision(vision(800), 900);
         engine.receiveTelemetry(frame(driving), 1000);
         engine.receiveTelemetry(frame(driving), 1800);

@@ -162,8 +162,8 @@ describe('tree inspection', () => {
         expect(snapshot.children.map((child) => child.kind)).toEqual(['action', 'closure']);
         expect(snapshot.children[1].children[0]).toMatchObject({
             id: 'root/1/0', name: 'same name', description: 'Nested work.', kind: 'action', status: 'Inactive',
-            execution: { status: 'idle' }, fields: { Ready: false, Attempts: 0, Destination: 'logger' },
-            conditions: [{ description: 'Work ready', conditionFit: false }], children: [],
+            execution: { status: 'idle' }, fields: {},
+            conditions: [{ description: 'Work ready', conditionFit: null }], children: [],
         });
         expect(snapshot.children[0].id).not.toBe(snapshot.children[1].id);
         expect(JSON.parse(JSON.stringify(snapshot))).toMatchObject(snapshot);
@@ -223,12 +223,40 @@ describe('tree inspection', () => {
         const group = { ...leaf, description: 'Group', conditions: [leaf] };
         const fields = { Count: 1 };
         const state = new State(new Closure<Context>('root', 'Root.', () => true, [new Action(
-            'work', 'Work.', jest.fn(), describeCondition(() => true, () => [group]), { inspect: () => ({ fields }) },
+            'work', 'Work.', jest.fn(), describeCondition(() => false, () => [group]), { inspect: () => ({ fields }) },
         )]));
+        state.step(context);
         const before = state.snapshot(context);
         leaf.conditionFit = false;
         fields.Count = 2;
         expect(before.children[0]).toMatchObject({ fields: { Count: 1 }, conditions: [{ conditions: [{ conditionFit: true }] }] });
+        state.step(context);
         expect(state.snapshot(context).children[0]).toMatchObject({ fields: { Count: 2 }, conditions: [{ conditions: [{ conditionFit: false }] }] });
+    });
+});
+
+it('does not measure or inspect descendants until their parent is entered, including during snapshots', () => {
+    const measure = jest.fn(({ ready }: Context) => ready);
+    const describe = jest.fn(({ ready }: Context) => [{ description: 'Ready', conditionFit: ready, inputMissing: false }]);
+    const inspect = jest.fn(() => ({ fields: { Count: 1 } }));
+    const action = new Action<Context>('work', 'Work.', jest.fn(), describeCondition(measure, describe), { inspect });
+    const parent = new Closure<Context>('parent', 'Parent.', ({ enter }) => enter, [action]);
+    const state = new State(new Closure<Context>('root', 'Root.', () => true, [parent]));
+    state.step({ ...context, enter: false });
+    state.snapshot(context);
+    state.snapshot(context);
+    expect(measure).not.toHaveBeenCalled();
+    expect(describe).not.toHaveBeenCalled();
+    expect(inspect).not.toHaveBeenCalled();
+    expect(state.snapshot(context).children[0].children[0].conditions[0].conditionFit).toBeNull();
+    state.step({ ...context, ready: false });
+    expect(measure).toHaveBeenCalledTimes(1);
+    expect(describe).toHaveBeenCalledTimes(1);
+    state.snapshot(context);
+    expect(measure).toHaveBeenCalledTimes(1);
+    expect(describe).toHaveBeenCalledTimes(1);
+    state.exitToRoot();
+    expect(state.snapshot(context).children[0].children[0]).toMatchObject({
+        status: 'Inactive', conditions: [{ conditionFit: null, inputMissing: false }],
     });
 });
