@@ -25,6 +25,7 @@ from app.chat_llm import (
     parse_chat_llm_model_selector,
 )
 from app.voice import get_speech_core
+from app.voice.prosody import PhonemePreview, ProsodyControls
 from app.voice.session_modes import (
     VALID_CHATBOT_SESSION_MODES,
 )
@@ -62,6 +63,17 @@ class SynthesizeRequest(BaseModel):
         "en-us",
         description="Language code passed to Kokoro (e.g. 'en-us', 'en-gb').",
     )
+
+
+class PhonemizeRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    language: str = "en-us"
+
+
+class SynthesizeProsodyRequest(SynthesizeRequest):
+    model_config = {"extra": "forbid", "allow_inf_nan": False}
+
+    prosody: ProsodyControls
 
 
 # ----------------------------------------------------------------------
@@ -113,6 +125,49 @@ async def synthesize(req: SynthesizeRequest) -> Response:
     )
 
 
+@router.post("/phonemes", response_model=PhonemePreview)
+async def phonemize(req: PhonemizeRequest) -> PhonemePreview:
+    """Preview the exact indexed model symbols used by curve synthesis.
+
+    Indices include spaces, punctuation and stress markers, exclude model boundary
+    tokens, and refer to phonetic symbols rather than letters in the input text.
+    """
+    try:
+        return await get_speech_core().phonemize(req.text, req.language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        LOGGER.exception("Kokoro phoneme preview failed")
+        raise HTTPException(status_code=500, detail="Phoneme preview failed") from exc
+
+
+@router.post(
+    "/synthesize/prosody",
+    response_class=Response,
+    responses={200: {"content": {"audio/wav": {}}, "description": "Speech with phoneme curves."}},
+)
+async def synthesize_prosody(req: SynthesizeProsodyRequest) -> Response:
+    """Modify duration, F0 and log-energy predictions before Kokoro decodes audio.
+
+    Curves are linearly interpolated over non-overlapping phoneme ranges.
+    Timing is sampled at phoneme centers. Pitch/energy follow the resulting
+    acoustic frames, so they remain aligned when phoneme durations change.
+    """
+    try:
+        wav_bytes = await get_speech_core().synthesize_prosody(
+            req.text, req.prosody, voice=req.voice, speed=req.speed, language=req.language,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        LOGGER.exception("Kokoro prosody synthesis failed")
+        raise HTTPException(status_code=500, detail="Prosody synthesis failed") from exc
+    return Response(
+        content=wav_bytes, media_type="audio/wav",
+        headers={"Content-Disposition": 'inline; filename="speech.wav"', "Cache-Control": "no-store"},
+    )
+
+
 @router.get("/voices")
 async def list_voices() -> dict:
     """List available Kokoro voice IDs."""
@@ -131,13 +186,14 @@ async def list_voices() -> dict:
 
 @router.get("/health")
 async def voice_health() -> dict:
-    """Report loaded model counts and availability without warming either pool."""
+    """Report engine counts and availability without warming any speech pool."""
     service = get_speech_core()
     tts = service.tts.stats
     return {
         "loaded": tts["total"] >= tts["minimum"],
         "engine": "kokoro-onnx",
-        "pools": {"tts": tts, "stt": service.stt.stats},
+        "prosody_engine": "kokoro-native",
+        "pools": {"tts": tts, "stt": service.stt.stats, "prosody_tts": service.prosody_tts.stats},
     }
 
 

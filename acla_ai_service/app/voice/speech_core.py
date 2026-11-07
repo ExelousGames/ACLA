@@ -1,6 +1,7 @@
 """Application-owned TTS and STT pools, independent of chat sessions.
 
-Each pool lazily loads ten real engines on first use and grows on contention.
+The ordinary TTS/STT pools lazily load ten real engines on first use and grow
+on contention. Phoneme curve synthesis has a separate pool starting at one.
 Only inference engines are shared; Pipecat processors and their audio/text
 buffers remain local to each connection. Pools are process-local, so every
 ASGI worker has its own model population and memory cost.
@@ -13,6 +14,7 @@ import io
 
 from app.voice.instance_pool import InstancePool
 from app.voice.kokoro_service import KokoroService
+from app.voice.prosody import PhonemePreview, ProsodyControls
 
 MIN_SPEECH_INSTANCES = 10
 
@@ -34,12 +36,20 @@ async def _create_stt():
     return await asyncio.to_thread(load)
 
 
+async def _create_prosody_tts():
+    from app.voice.kokoro_prosody import KokoroProsodyService
+
+    return KokoroProsodyService()
+
+
 class SpeechCore:
     """Facade routing speech operations through independent elastic pools."""
 
     def __init__(self) -> None:
         self.tts = InstancePool(_create_tts, min_size=MIN_SPEECH_INSTANCES)
         self.stt = InstancePool(_create_stt, min_size=MIN_SPEECH_INSTANCES)
+        # Native weights are only needed by curve synthesis; start with one engine.
+        self.prosody_tts = InstancePool(_create_prosody_tts, min_size=1)
 
     async def synthesize(
         self,
@@ -56,6 +66,17 @@ class SpeechCore:
 
     async def list_voices(self) -> list[str]:
         return await self.tts.run(lambda engine: engine.list_voices())
+
+    async def phonemize(self, text: str, language: str = "en-us") -> PhonemePreview:
+        return await self.prosody_tts.run(lambda engine: engine.phonemize(text, language))
+
+    async def synthesize_prosody(
+        self, text: str, controls: ProsodyControls, voice: str | None = None,
+        speed: float = 1.0, language: str = "en-us",
+    ) -> bytes:
+        return await self.prosody_tts.run(
+            lambda engine: engine.synthesize(text, controls, voice, speed, language),
+        )
 
     async def transcribe(self, audio: bytes) -> str:
         """Transcribe a complete WAV segment supplied by SegmentedSTTService."""
@@ -74,7 +95,7 @@ class SpeechCore:
         )
 
     async def aclose(self) -> None:
-        await asyncio.gather(self.tts.aclose(), self.stt.aclose())
+        await asyncio.gather(self.tts.aclose(), self.stt.aclose(), self.prosody_tts.aclose())
 
 
 _speech_core: SpeechCore | None = None

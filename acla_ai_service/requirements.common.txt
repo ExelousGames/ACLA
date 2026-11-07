@@ -39,7 +39,9 @@ llama-index-retrievers-bm25>=0.3.0,<0.6
 
 # Voice — Kokoro neural TTS (Phase 2). Apache-2.0, runs on CPU or GPU via ONNX.
 # `onnxruntime` (CPU) is in common; nvidia.txt overrides with onnxruntime-gpu.
-kokoro-onnx>=0.4.0
+kokoro-onnx>=0.6.1
+# Native inference exposes duration, F0 and log-energy before audio decoding.
+kokoro==0.9.4
 onnxruntime>=1.18.0
 soundfile>=0.12.1
 
