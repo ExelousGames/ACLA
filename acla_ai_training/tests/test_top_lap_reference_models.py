@@ -12,7 +12,8 @@ from app.shared.expert_features import ExpertFeatureCatalog
 from app.shared.telemetry import FeatureProcessor
 from app.top_laps.runtime import RuntimeTopLapReferenceModel
 from training.top_laps.service import TopLapReferenceModelService
-from training.pipelines.training.pipeline.cleaning import _update_top_lap, process_single_chunk
+from training.pipelines.training.pipeline.cleaning import process_single_chunk
+from training.pipelines.training.pipeline.selection import _iter_lap_candidates, _update_top_lap
 
 
 def _top_lap(track: str = "spa", car: str = "car-a", grip: int = 2):
@@ -172,12 +173,21 @@ async def test_session_metadata_game_survives_download_cleaning_and_top_lap_sele
     from app.integrations.backend import client as backend_client
 
     metadata = [
-        {"sessionId": "session-acc", "game_recorded_from": "acc", "chunkCount": 1, "dataPoints": 2},
-        {"sessionId": "session-iracing", "game_recorded_from": "iracing_recorded", "chunkCount": 1, "dataPoints": 2},
+        {"sessionId": "session-acc", "game_recorded_from": "acc", "chunkCount": 1, "dataPoints": 21},
+        {"sessionId": "session-iracing", "game_recorded_from": "iracing_recorded", "chunkCount": 1, "dataPoints": 21},
     ]
     source = [
-        {**row, "Graphics_completed_lap": 1, "game_recorded_from": "incorrect-row-game"}
-        for row in _top_lap()
+        {
+            **_top_lap()[0],
+            "Graphics_completed_lap": 1,
+            "game_recorded_from": "incorrect-row-game",
+            "Graphics_normalized_car_position": i / 20,
+            "Graphics_current_time": i * 500.0,
+            "Graphics_player_pos_x": i / 2,
+            "Graphics_player_pos_y": 1.0 + i / 10,
+            "Graphics_player_pos_z": 2.0 + i / 10,
+        }
+        for i in range(21)
     ]
     backend = backend_client.BackendService()
     monkeypatch.setattr(backend, "call_backend_function", AsyncMock(side_effect=[
@@ -207,9 +217,10 @@ async def test_session_metadata_game_survives_download_cleaning_and_top_lap_sele
     features = [name for name in source[0] if name != "game_recorded_from"]
     for (records, chunk_id), session in zip(cached_chunks, metadata):
         assert all(row["game_recorded_from"] == session["game_recorded_from"] for row in records)
-        _, count, candidates, cleaned, error, _ = process_single_chunk(records, chunk_id, features, 500)
+        cleaned, error, _ = process_single_chunk(records, chunk_id, features, 500)
         assert error is None
-        assert count == 1
+        candidates = list(_iter_lap_candidates(cleaned, chunk_id))
+        assert len(candidates) == 1
         assert all(row["game_recorded_from"] == session["game_recorded_from"] for row in cleaned)
         for axis in ("y", "z"):
             column = f"Graphics_player_pos_{axis}"

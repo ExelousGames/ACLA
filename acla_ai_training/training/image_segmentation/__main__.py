@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     prepared.add_argument("--data", type=Path, required=True, help="Prepared data.yaml file.")
 
     position = argparse.ArgumentParser(add_help=False)
-    position.add_argument("--manifest", type=Path, help="Required for training: recursively scan a folder for .position.json files, or read a positions.json index; split whole sessions within each game/map, balancing frame counts.")
+    position.add_argument("--manifest", type=Path, help="Required for training: recursively scan a folder for .position.json files, or read a positions.json index; split whole sessions within each game/map unless density sampling is enabled.")
     position.add_argument("--output", type=Path, help="Required for training: new directory for position checkpoints, ONNX, and metrics.")
     position.add_argument("--epochs", type=int, default=100)
     position.add_argument("--imgsz", type=int, default=768)
@@ -68,10 +68,10 @@ def main(argv: list[str] | None = None) -> int:
                           help="Causal history window including the current frame (default: 4); 1 uses only the current frame. Batch counts windows.")
     position.add_argument("--device", default="0", help="0 for the first GPU (default), cpu, or mps.")
     position.add_argument("--workers", type=int, default=0)
-    position.add_argument("--val-fraction", type=float, default=0.2, help="Target validation share of frames per game/map (default: 0.2), using whole sessions; at least two sessions per map are required.")
+    position.add_argument("--val-fraction", type=float, default=0.2, help="Target validation share of frames per game/map (default: 0.2), using whole sessions; at least two sessions per map are required. Ignored with density sampling, which uses all excluded endpoints for validation.")
     position.add_argument("--seed", type=int, default=42, help="Random session split, frame shuffle, and training seed (default: 42).")
     position.add_argument("--density-position-radius", type=float,
-                          help="Enable density filtering across all sessions before splitting for validation: remove endpoints within this driver world-XYZ radius (source units) and the orientation threshold, per game/map. Must be positive; disabled by default. Original temporal history is retained in both splits; at least two sessions per map must retain endpoints.")
+                          help="Select training endpoints across all sessions using this driver world-XYZ radius (source units) and the orientation threshold, per game/map. All excluded endpoints become validation targets; --val-fraction is ignored. Must be positive; disabled by default. Sessions and original temporal history may be shared across splits; at least one endpoint must be excluded.")
     position.add_argument("--density-orientation-deg", type=float, default=5.0,
                           help="Maximum wrapped difference in each heading/pitch/roll angle for density filtering (0 < value <= 180, default: 5 degrees). Used with --density-position-radius.")
     position_upload = position.add_mutually_exclusive_group()

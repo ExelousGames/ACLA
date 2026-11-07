@@ -107,11 +107,12 @@ def test_disabled_sampling_accepts_legacy_frames_without_driver_xyz():
         select_position_endpoints([row], position_radius=1)
 
 
-def test_density_sampling_requires_two_retained_sessions_per_map(tmp_path, monkeypatch):
-    sessions = {str(index): [record(index)] for index in range(2)}
+@pytest.mark.parametrize("count", [1, 2])
+def test_density_sampling_requires_excluded_validation_samples(tmp_path, monkeypatch, count):
+    sessions = {str(index): [record(index, xyz=(index * 10, 0, 0))] for index in range(count)}
     monkeypatch.setattr(position_training, "load_position_manifest", lambda path: sessions)
     output = tmp_path / "run"
-    with pytest.raises(ValueError, match="at least two sessions per map"):
+    with pytest.raises(ValueError, match="no excluded samples for validation"):
         position_training.train_position_model(
             tmp_path, output=output, density_position_radius=1, device="cpu", upload=False,
         )

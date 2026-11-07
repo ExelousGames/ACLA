@@ -22,6 +22,7 @@ each column so the user can grow the pipeline incrementally.
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any, Optional
 
@@ -52,7 +53,7 @@ from training.pipelines.manifest.source_copy import (
     sync_source_copy,
 )
 from training.pipelines.training.config import TrainingPipelineConfig
-from segment_tabs._training_runner import render_card, spawn
+from segment_tabs._training_runner import pid_alive, read_marker, render_card, spawn
 from segment_tabs.components.annotation_key_reference import (
     render_annotation_key_reference,
 )
@@ -797,7 +798,7 @@ def _render_maintenance_dropdown(
 def _prepare_cache_rows(store: Any, cfg: TrainingPipelineConfig) -> list[tuple[str, str, str]]:
     rows = [
         ("Raw sessions", cfg.session_data_cache_key),
-        ("Processed sessions", cfg.processed_session_data_cache_key),
+        ("Cleaned sessions", cfg.processed_session_data_cache_key),
         ("Top laps", cfg.top_laps_cache_key),
         ("Enriched sessions", cfg.enriched_sessions_cache_key),
     ]
@@ -826,27 +827,64 @@ def _render_prepare_cache_status(store: Any, cfg: TrainingPipelineConfig) -> Non
 def _render_data_preparation_card(store: Any, cfg: TrainingPipelineConfig) -> None:
     _render_prepare_cache_status(store, cfg)
 
-    def _start_form() -> None:
-        with st.form("prepare_data_form"):
-            if st.form_submit_button("Start data preparation", width="stretch"):
-                cmd = [
-                    sys.executable,
-                    "-u",
-                    "-m",
-                    "training.pipelines.training.prepare_training_data",
-                ]
-                spawn("prepare_data", cmd)
-                st.rerun()
-
-    render_card(
-        "prepare_data",
-        title="Data Preparation",
-        description=(
-            "Downloads backend sessions, selects top laps, and enriches "
-            "telemetry for annotation."
+    steps = (
+        (
+            "prepare_data", "cleanup", "1. Data Cleanup",
+            "Download backend sessions and save cleaned telemetry.",
+            "Start data cleanup", (),
         ),
-        render_start_form=_start_form,
+        (
+            "select_top_laps", "top_laps", "2. Select Top Laps",
+            "Select the fastest valid lap for each game, track, car, and grip from the cleaned sessions.",
+            "Select top laps", (cfg.processed_session_data_cache_key,),
+        ),
+        (
+            "add_expert_features", "enrich", "3. Add Expert Features",
+            "Use the selected top laps to add expert features to the cleaned telemetry for annotation.",
+            "Add expert features", (cfg.processed_session_data_cache_key, cfg.top_laps_cache_key),
+        ),
     )
+    running = any(
+        marker and pid_alive(int(marker["pid"]))
+        for marker in (read_marker(step[0]) for step in steps)
+    )
+    available_cpus = os.cpu_count() or 1
+    workers = st.number_input(
+        "Workers",
+        min_value=1,
+        max_value=available_cpus,
+        value=min(4, available_cpus),
+        step=1,
+        key="data_preparation_workers",
+        disabled=running,
+        help="Applies to Data Cleanup, Select Top Laps, and Add Expert Features. "
+        "More workers process sessions in parallel and use more memory.",
+    )
+    for job, stage, title, description, button, required_keys in steps:
+        ready = all(has_cached_data(store, key) for key in required_keys)
+
+        def _start_form() -> None:
+            if not ready:
+                st.caption("Complete the preceding steps first.")
+            with st.form(f"{job}_form"):
+                if st.form_submit_button(button, width="stretch", disabled=running or not ready):
+                    cmd = [
+                        sys.executable,
+                        "-u",
+                        "-m",
+                        "training.pipelines.training.prepare_training_data",
+                        "--stage", stage,
+                        "--workers", str(workers),
+                    ]
+                    spawn(job, cmd)
+                    st.rerun()
+
+        render_card(
+            job,
+            title=title,
+            description=description,
+            render_start_form=_start_form,
+        )
 
 
 # ── Annotation card ──────────────────────────────────────────────────────────

@@ -260,7 +260,7 @@ Use `scripts/train_position.py` with the same options to train the original
 Folder input includes all `.position.json` files recursively. To train on a subset,
 pass a folder containing only those image/position pairs to `--manifest`.
 
-After image extraction, training assigns whole sessions from each
+Without density filtering, training assigns whole sessions from each
 `(game, map_name)` to validation and the rest to training, using
 `--val-fraction 0.2` and `--seed 42` by default. Every map appears in both sets.
 Each map needs at least two sessions. Validation uses the session combination
@@ -280,14 +280,17 @@ An endpoint is removed only when a retained endpoint in the same game/map is
 within 0.5 source coordinate units of its **driver world XYZ**, and each wrapped
 heading/pitch/roll difference is at most 5 degrees. Tune these example thresholds
 to your dataset's units; larger thresholds remove more examples. A spatial index
-finds nearby positions, with seeded representative selection across all sessions
-before splitting selected endpoints into training and validation. Whole-session
-splitting balances the selected counts; at least two sessions per map must retain
-endpoints. Both splits build temporal windows from their sessions' original
+finds nearby positions, with seeded representative selection across all sessions.
+Selected endpoints are used for training; **all excluded endpoints are used for
+validation**. `--val-fraction` is ignored in density mode. At least one endpoint
+must be excluded; otherwise training fails before model initialization. Training
+and validation targets are disjoint, but sessions and temporal history may be
+shared across splits. Both splits build temporal windows from their sessions' original
 frames, preserving all history steps, ordering, and padding, including frames
 removed as endpoints. Prepared files stay unchanged. Driver coordinates are used
 only for selection. `split.json` saves thresholds, total candidate/selected counts,
-selected endpoints, and full `train_history`/`val_history` for temporal runs.
+train/val target paths, and full `train_history`/`val_history` for temporal runs;
+`val_fraction` is `null` when density sampling determines the split.
 Omit the radius to disable filtering.
 
 The regression trainer uses images, reference XYZ, game/map names, normalized lap

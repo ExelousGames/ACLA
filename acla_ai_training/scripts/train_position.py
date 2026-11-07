@@ -25,7 +25,7 @@ scripts/prepare_position_dataset.py and retrain older checkpoints.
 The preparation workflow currently supports ACC only and skips iRacing sessions.
 Game/map names are one-hot encoded, with the
 category order saved in each checkpoint for inference.
-A positions.json index is also accepted. After image extraction, whole sessions
+A positions.json index is also accepted. Without density filtering, whole sessions
 from each game/map are assigned to validation with a frame count as close as
 possible to 20% by default, with the rest used for training. The seed randomizes
 equally balanced session choices. Every map appears in both sets, with at least
@@ -38,13 +38,14 @@ game/map: an endpoint is redundant only within radius R (source units) of a
 retained endpoint and within --density-orientation-deg D in each wrapped heading,
 pitch, roll angle (default D=5 degrees). Larger thresholds remove more examples.
 A spatial index avoids all-pairs comparisons; --seed controls representative
-selection across all sessions before the selected endpoints are split into
-training and validation. Whole-session splitting balances the selected counts;
-at least two sessions per map must retain endpoints. Both splits build temporal
+selection across all sessions. Selected endpoints are used for training; all
+excluded endpoints are used for validation. --val-fraction is ignored in density
+mode; at least one endpoint must be excluded. Targets are disjoint, but sessions
+and temporal history may be shared across splits. Both splits build temporal
 windows from their sessions' original frames, preserving history, order, and
 padding. No files are deleted. Driver XYZ is selection metadata, never a model
 input. Filtering requires finite driver_position triples in the prepared files.
-split.json saves the thresholds, total candidate/selected counts, selected paths,
+split.json saves the thresholds, total candidate/selected counts, train/val target paths,
 and full train_history/val_history for temporal runs. Omit
 --density-position-radius to keep every frame.
 Preparation aligns images to telemetry using Graphics_analyst_session_time.

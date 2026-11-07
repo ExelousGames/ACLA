@@ -6,6 +6,7 @@ cached session chunks through both models to produce the enriched dataset used
 by segmentation and transformer training.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -21,9 +22,32 @@ from training.pipelines.inference.visualizer import (
     visualize_segment_position_coverage,
 )
 from training.pipelines.training.pipeline.cleaning import print_section_divider
+from training.pipelines.training.pipeline.parallel import map_chunks_in_processes
 from training.pipelines.manifest.protection import is_protected_chunk_id
 from app.top_laps.model import NoTopLapReferenceError
 from training.top_laps.service import TopLapReferenceModelService
+
+
+_worker_reference_model: Optional[TopLapReferenceModelService] = None
+_worker_tire_service: Optional[TireGripAnalysisService] = None
+
+
+def _initialize_enrichment_worker(reference_data, tire_data) -> None:
+    global _worker_reference_model, _worker_tire_service
+    _worker_reference_model = TopLapReferenceModelService().load_reference_model(reference_data)
+    _worker_tire_service = TireGripAnalysisService().deserialize_tire_grip_model(tire_data)
+
+
+def _enrich_chunk(chunk):
+    records, chunk_id = chunk
+    chunk_df = pd.DataFrame(records)
+    if chunk_df.empty:
+        return [], chunk_id
+    print(f"[INFO] Enriching chunk {chunk_id}: {len(chunk_df)} records")
+    enriched = asyncio.run(enrich_sessions_with_context(
+        chunk_df.to_dict("records"), _worker_reference_model, _worker_tire_service,
+    ))
+    return enriched, chunk_id
 
 
 async def enrich_sessions_with_context(
@@ -146,6 +170,7 @@ async def enriched_contextual_data(
     backend_service=None,
     logger: Optional[logging.Logger] = None,
     protected_session_ids: Optional[Iterable[Any]] = None,
+    max_workers: int = 4,
 ) -> Tuple[str, Any]:
     """
     Streamlined contextual data enrichment using chunk iterator approach.
@@ -155,6 +180,8 @@ async def enriched_contextual_data(
     3. Enrich each chunk with contextual features
     4. Cache enriched data
     """
+    if max_workers < 1:
+        raise ValueError("Workers must be at least 1")
     backend = backend_service or default_backend_service
     log = logger or logging.getLogger(__name__)
 
@@ -242,31 +269,37 @@ async def enriched_contextual_data(
     processed_chunks = 0
     protected_chunks_skipped = 0
 
-    for chunk_tuple in session_chunks_iterator:
-        session_chunk_df, chunk_id = chunk_tuple
-        if is_protected_chunk_id(chunk_id, protected_session_ids):
-            protected_chunks_skipped += 1
-            continue
-        session_chunk_df = pd.DataFrame(session_chunk_df)
+    def unprotected_chunks():
+        nonlocal protected_chunks_skipped
+        for chunk_data, chunk_id in session_chunks_iterator:
+            if is_protected_chunk_id(chunk_id, protected_session_ids):
+                protected_chunks_skipped += 1
+                continue
+            yield chunk_data, chunk_id
 
-        if session_chunk_df is None or session_chunk_df.empty:
-            continue
+    async def enriched_chunks():
+        if max_workers == 1:
+            for records, chunk_id in unprotected_chunks():
+                chunk_df = pd.DataFrame(records)
+                yield await enrich_sessions_with_context(
+                    chunk_df.to_dict("records"), top_lap_reference_model, tire_service,
+                ), chunk_id
+            return
+        async for result in map_chunks_in_processes(
+            _enrich_chunk, unprotected_chunks(), max_workers=max_workers,
+            initializer=_initialize_enrichment_worker,
+            initargs=(serialized_data, tire_service_serialized),
+        ):
+            yield result
 
+    print(f"[INFO] Adding expert features with {max_workers} worker(s)")
+    async for enriched_chunk_data, chunk_id in enriched_chunks():
         processed_chunks += 1
-        chunk_data = session_chunk_df.to_dict('records')
-
-        print(f"[INFO] Processing chunk {processed_chunks}: {len(chunk_data)} records")
-
-        enriched_chunk_data = await enrich_sessions_with_context(
-            chunk_data, top_lap_reference_model, tire_service
-        )
-
         if not enriched_chunk_data:
             print(
-                f"[INFO] Chunk {processed_chunks} skipped "
-                "(no top-lap reference); not cached"
+                f"[INFO] Chunk {chunk_id} skipped "
+                "(empty or no top-lap reference); not cached"
             )
-            del chunk_data
             continue
 
         async def enriched_chunk_generator():
@@ -277,7 +310,7 @@ async def enriched_contextual_data(
             chunks_iterator=enriched_chunk_generator(),
         )
 
-        del chunk_data, enriched_chunk_data
+        del enriched_chunk_data
 
         if processed_chunks % 5 == 0:
             print(f"[INFO] Progress: {processed_chunks} chunks enriched and cached")

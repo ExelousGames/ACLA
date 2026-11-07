@@ -1,12 +1,13 @@
 """
-Training pipeline split into three stages:
+Training pipeline stages:
 
-- ``cleaning``: stream raw sessions, filter laps, select top laps per track.
+- ``cleaning``: stream raw sessions and cache cleaned telemetry.
+- ``selection``: select top laps from the cleaned telemetry.
 - ``enrich``: build enrichment models (top-lap reference, tire grip) and enrich sessions
   with contextual features; segment enriched data.
 - ``training``: filter annotated segments and train the coach transformer.
 
-``prepare_training_data`` orchestrates ``cleaning`` followed by ``enrich`` and is
+``prepare_training_data`` runs these preparation stages in order or individually and is
 the entry point used by ``scripts/open_pipeline_management.py``.
 ``run_transformer_guidance_training`` is re-exported here for convenience.
 """
@@ -27,6 +28,7 @@ from training.pipelines.training.pipeline.enrich import (
     get_cached_all_top_laps_in_one_list,
     process_and_cache_segments,
 )
+from training.pipelines.training.pipeline.selection import select_top_laps
 from training.pipelines.training.pipeline.training import run_transformer_guidance_training
 
 __all__ = [
@@ -35,6 +37,7 @@ __all__ = [
     "print_section_divider",
     "process_lap_sessions_efficiently",
     "process_single_chunk",
+    "select_top_laps",
     "enrich_sessions_with_context",
     "enriched_contextual_data",
     "get_cached_all_top_laps_in_one_list",
@@ -50,84 +53,90 @@ async def prepare_training_data(
     cache_config: Optional[TrainingPipelineConfig] = None,
     backend_service=None,
     top_lap_reference_feature_names: List[str],
+    stage: str = "all",
+    max_workers: int = 4,
 ) -> Dict[str, Any]:
-    """Stream telemetry and build a segment-purpose training dataset."""
+    """Run cleanup, top-lap selection, and expert enrichment in order."""
 
     pipeline_config = config or cache_config
     if pipeline_config is None:
         raise ValueError("prepare_training_data requires a TrainingPipelineConfig")
+    if stage not in ("all", "cleanup", "top_laps", "enrich"):
+        raise ValueError(f"Unknown data preparation stage: {stage}")
+    if max_workers < 1:
+        raise ValueError("Workers must be at least 1")
 
     backend = backend_service or default_backend_service
-
-    print_section_divider("STREAMING TELEMETRY DATA FROM BACKEND DIRECTLY TO CACHE")
 
     dataset_cache_key = pipeline_config.session_data_cache_key
     processed_sessions_cache_key = pipeline_config.processed_session_data_cache_key
     enriched_sessions_cache_key = pipeline_config.enriched_sessions_cache_key
     segments_cache_key = pipeline_config.segments_cache_key
-    try:
-        sessions_metadata = await backend.get_all_racing_sessions_streaming(
-            cache_key=dataset_cache_key,
-            cleanup_cache=pipeline_config.session_cleanup,
-            data_cache=telemetry_store,
-        )
-    except Exception as streaming_error:
-        raise RuntimeError(f"Backend streaming failed: {streaming_error}") from streaming_error
-
-    if not sessions_metadata.get("success"):
-        raise RuntimeError(sessions_metadata.get("message") or "Backend streaming request failed")
-
-    print_section_divider("LARGE DATASET ASSUMED - USING EFFICIENT PROCESSING")
-
     top_laps_cache_key = pipeline_config.top_laps_cache_key
-    top_laps_available = False
 
-    if pipeline_config.top_laps_cleanup:
-        if telemetry_store.has_cached_data(top_laps_cache_key):
-            print(f"[INFO] Cleaning up existing top laps cache: {top_laps_cache_key}")
-            telemetry_store.clear_cache(top_laps_cache_key)
-        top_laps_available = False
-    elif telemetry_store.has_cached_data(top_laps_cache_key) and telemetry_store.has_cached_data(processed_sessions_cache_key):
-        top_laps_available = True
-        print(f"[INFO] Using existing top laps from cache: {top_laps_cache_key}")
+    def clear_caches(*keys: str) -> None:
+        for key in keys:
+            if telemetry_store.has_cached_data(key):
+                print(f"[INFO] Clearing stale preparation cache: {key}")
+                telemetry_store.clear_cache(key)
 
-    if not top_laps_available:
-        if pipeline_config.processed_session_cleanup and telemetry_store.has_cached_data(processed_sessions_cache_key):
-            print(f"[INFO] Cleaning up existing processed sessions cache: {processed_sessions_cache_key}")
-            telemetry_store.clear_cache(processed_sessions_cache_key)
-
-        await process_lap_sessions_efficiently(
-            session_data_cache_key=dataset_cache_key,
-            telemetry_store=telemetry_store,
-            cache_config=pipeline_config,
-            top_lap_reference_feature_names=top_lap_reference_feature_names,
-            telemetry_time_gap_ms=500,
-            processed_sessions_cache_key=processed_sessions_cache_key,
-        )
-
-    print_section_divider("ENRICHING CONTEXTUAL DATA")
-    max_segment_length = 20
+    def require_cache(key: str, instruction: str) -> None:
+        if not telemetry_store.has_cached_data(key):
+            raise RuntimeError(instruction)
 
     try:
-        if pipeline_config.segment_cleanup:
-            if telemetry_store.has_cached_data(enriched_sessions_cache_key):
-                print(f"[INFO] Cleaning up existing enriched sessions cache: {enriched_sessions_cache_key}")
-                telemetry_store.clear_cache(enriched_sessions_cache_key)
-            if telemetry_store.has_cached_data(segments_cache_key):
-                print(f"[INFO] Cleaning up existing segments cache: {segments_cache_key}")
-                telemetry_store.clear_cache(segments_cache_key)
+        if stage in ("all", "cleanup"):
+            print_section_divider("DOWNLOADING AND CLEANING TELEMETRY")
+            sessions_metadata = await backend.get_all_racing_sessions_streaming(
+                cache_key=dataset_cache_key,
+                cleanup_cache=pipeline_config.session_cleanup,
+                data_cache=telemetry_store,
+            )
+            if not sessions_metadata.get("success"):
+                raise RuntimeError(sessions_metadata.get("message") or "Backend streaming request failed")
 
-        print("[INFO] Enriching telemetry sessions with segment data...")
-        enriched_sessions_cache_key = await enriched_contextual_data(
-            processed_sessions_cache_key,
-            telemetry_store=telemetry_store,
-            cache_config=pipeline_config,
-            backend_service=backend,
-        )
+            if pipeline_config.processed_session_cleanup or not telemetry_store.has_cached_data(processed_sessions_cache_key):
+                clear_caches(processed_sessions_cache_key, top_laps_cache_key,
+                             enriched_sessions_cache_key, segments_cache_key)
+                await process_lap_sessions_efficiently(
+                    session_data_cache_key=dataset_cache_key,
+                    telemetry_store=telemetry_store,
+                    top_lap_reference_feature_names=top_lap_reference_feature_names,
+                    telemetry_time_gap_ms=500,
+                    processed_sessions_cache_key=processed_sessions_cache_key,
+                    max_workers=max_workers,
+                )
+
+        if stage in ("all", "top_laps", "enrich"):
+            require_cache(processed_sessions_cache_key, "Run data cleanup before selecting top laps or adding expert features.")
+
+        if stage in ("all", "top_laps"):
+            print_section_divider("SELECTING TOP LAPS FROM CLEANED TELEMETRY")
+            if pipeline_config.top_laps_cleanup or not telemetry_store.has_cached_data(top_laps_cache_key):
+                clear_caches(top_laps_cache_key, enriched_sessions_cache_key, segments_cache_key)
+                await select_top_laps(
+                    processed_sessions_cache_key,
+                    telemetry_store=telemetry_store,
+                    cache_config=pipeline_config,
+                    max_workers=max_workers,
+                )
+
+        if stage in ("all", "enrich"):
+            require_cache(top_laps_cache_key, "Select top laps before adding expert features.")
+            print_section_divider("ADDING EXPERT FEATURES TO CLEANED TELEMETRY")
+            if pipeline_config.segment_cleanup:
+                clear_caches(enriched_sessions_cache_key, segments_cache_key)
+            await enriched_contextual_data(
+                processed_sessions_cache_key,
+                telemetry_store=telemetry_store,
+                cache_config=pipeline_config,
+                backend_service=backend,
+                max_workers=max_workers,
+            )
 
         return {
             "success": True,
-            "max_segment_length": max_segment_length,
+            "max_segment_length": 20,
         }
 
     except RuntimeError as runtime_error:

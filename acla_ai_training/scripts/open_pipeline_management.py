@@ -44,8 +44,9 @@ def main() -> None:
     log_message(" Pipeline Management")
     log_message("=" * 50)
     log_message("Opening Streamlit pipeline management for data preparation, annotation, and training...")
-    log_message("Run Data Preparation from the left-most Pipeline card to download,")
-    log_message("process, and enrich telemetry before selecting annotation sources.")
+    log_message("Run the Data Preparation steps in the left-most Pipeline column:")
+    log_message("Data Cleanup -> Select Top Laps -> Add Expert Features.")
+    log_message("Then select the enriched telemetry as an annotation source.")
     log_message("Close the Streamlit app (Ctrl+C in terminal) when finished.")
 
     app_path = Path(__file__).resolve().parents[1] / "ui" / "segment_annotation_app.py"

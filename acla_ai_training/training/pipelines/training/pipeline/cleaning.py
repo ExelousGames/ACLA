@@ -1,9 +1,8 @@
 """
 Cleaning stage of the training pipeline.
 
-Streams raw session telemetry, filters / cleans per-session via FeatureProcessor,
-selects the top laps per track, and caches the processed chunks for downstream
-enrichment.
+Streams raw session telemetry, cleans each session via FeatureProcessor, and
+caches the processed chunks for top-lap selection and downstream enrichment.
 """
 
 import asyncio
@@ -32,8 +31,6 @@ MAX_PLAYER_POSITION_JUMP_M = 500.0
 MAX_PLAYER_POSITION_SPEED_MPS = 250.0
 MAX_OPPONENT_POSITION_JUMP_M = 1_000.0
 MAX_OPPONENT_DISTANCE_FROM_PLAYER_M = 20_000.0
-TopLapKey = Tuple[str, str, str, int]
-TopLapMap = Dict[TopLapKey, Dict[str, Any]]
 
 
 def _records_from_chunk_payload(chunk_data: Any) -> List[Dict[str, Any]]:
@@ -258,79 +255,32 @@ def _clean_position_anomalies(df: pd.DataFrame, context: str = "") -> pd.DataFra
     return cleaned.reset_index(drop=True)
 
 
-def _update_top_lap(
-    top_laps: TopLapMap,
-    candidate: Dict[str, Any],
-) -> Tuple[Optional[TopLapKey], Optional[Dict[str, Any]], bool]:
-    records = candidate.get("records", [])
-    if not records:
-        return None, None, False
-
-    key = (
-        _resolve_game(None, records[0]),
-        records[0].get("Static_track", "unknown_track"),
-        candidate.get("car", "unknown_car"),
-        candidate.get("avg_grip_int", 2),
-    )
-    current_top_lap = top_laps.get(key)
-    if (
-        current_top_lap is None
-        or candidate["lap_time_ms"] < current_top_lap["lap_time_ms"]
-    ):
-        top_laps[key] = candidate
-        return key, current_top_lap, True
-
-    return key, None, False
-
-
 async def process_lap_sessions_efficiently(
     session_data_cache_key: str,
     *,
     telemetry_store,
-    cache_config,
     top_lap_reference_feature_names: List[str],
     telemetry_time_gap_ms: int = 100,
     processed_sessions_cache_key: Optional[str] = None,
     protected_session_ids: Optional[Iterable[Any]] = None,
+    max_workers: int = 4,
 ) -> None:
     """
     Streamlined processing of large cached datasets with a bounded memory footprint while caching
     full session telemetry for downstream training.
     """
+    if max_workers < 1:
+        raise ValueError("Workers must be at least 1")
+    print(f"[INFO] Cleaning telemetry with {max_workers} worker(s)")
     print(
         f"[INFO] Processing cached dataset '{session_data_cache_key}' with immediate caching"
     )
 
-    # Keyed by (game, track, car, avg_grip_int). Stores the fastest lap per combo.
-    top_laps: TopLapMap = {}
     total_sessions_cached = 0
     total_processed = 0
     chunk_idx = 0
 
     features = top_lap_reference_feature_names
-
-    def update_top_laps(candidate: Dict[str, Any]) -> None:
-        records = candidate.get("records", [])
-        print(
-            f"[DEBUG] Evaluating lap {candidate.get('id', 'unknown')} with {len(records)} telemetry records"
-        )
-
-        key, replaced_lap, updated = _update_top_lap(top_laps, candidate)
-        if key is None:
-            return
-
-        if updated and replaced_lap is None:
-            print(
-                f"[DEBUG] Added top lap {candidate['id']} for {key} "
-                f"(time: {candidate['lap_time_ms']}ms)"
-            )
-            return
-
-        if replaced_lap is not None:
-            print(
-                f"[DEBUG] Replaced top lap {replaced_lap['id']} with "
-                f"{candidate['id']} for {key} (time: {candidate['lap_time_ms']}ms)"
-            )
 
     session_chunks_iterator = telemetry_store.get_cached_data_chunks(cache_key=session_data_cache_key, include_ids=True)
     print(f"[DEBUG] Created chunk iterator for cache key: {session_data_cache_key}")
@@ -340,7 +290,8 @@ async def process_lap_sessions_efficiently(
 
     async def process_chunk_result(result_tuple):
         nonlocal chunk_idx, total_processed, total_sessions_cached
-        c_idx, laps_processed, candidates, records, error, chunk_id = result_tuple
+        records, error, chunk_id = result_tuple
+        c_idx = chunk_id
 
         if error:
             print(f"[WARNING] Chunk {c_idx} processing failed: {error}")
@@ -348,9 +299,6 @@ async def process_lap_sessions_efficiently(
 
         chunk_idx += 1
         total_processed += len(records)
-
-        for candidate in candidates:
-            update_top_laps(candidate)
 
         if records:
             async def single_chunk_generator():
@@ -369,11 +317,7 @@ async def process_lap_sessions_efficiently(
             except Exception as cache_error:
                 print(f"[ERROR] Exception caching chunk {c_idx}: {cache_error}")
 
-        print(
-            f"[DEBUG] Chunk {c_idx}: Processed {laps_processed} full valid laps. Top laps: {len(top_laps)}"
-        )
-
-    with ProcessPoolExecutor(max_workers=4) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         pending_aws = set()
 
         for session_records, session_id, session_chunk_count in _iter_session_payloads(
@@ -393,7 +337,7 @@ async def process_lap_sessions_efficiently(
             aw = asyncio.wrap_future(future)
             pending_aws.add(aw)
 
-            if len(pending_aws) >= 4:
+            if len(pending_aws) >= max_workers:
                 done, pending_aws = await asyncio.wait(pending_aws, return_when=asyncio.FIRST_COMPLETED)
                 for aw_done in done:
                     try:
@@ -416,12 +360,7 @@ async def process_lap_sessions_efficiently(
     print(f"[DEBUG] - Protected chunks skipped: {chunk_stats.get('protected_chunks_skipped', 0)}")
     print(f"[DEBUG] - Valid sessions processed: {chunk_idx}")
     print(f"[DEBUG] - Total records processed: {total_processed}")
-    print(f"[DEBUG] - Tracks found: {len(top_laps)}")
     print(f"[DEBUG] - Session chunks cached: {total_sessions_cached}")
-
-    if top_laps:
-        for key, lap_info in top_laps.items():
-            print(f"[DEBUG] Top lap time for {key}: {lap_info['lap_time_ms']}")
 
     if not session_chunks_processed:
         if chunk_stats.get("protected_chunks_skipped", 0):
@@ -436,41 +375,11 @@ async def process_lap_sessions_efficiently(
             f"All {session_chunks_processed} chunks failed processing for cache key {session_data_cache_key}. Check data quality."
         )
 
-    if not top_laps:
-        raise ValueError(
-            f"No top laps found. Processed {chunk_idx} valid sessions from {session_chunks_processed} raw chunks."
-        )
-
     if total_sessions_cached == 0:
         raise ValueError("No session data cached for transformer training")
 
     print(f"[SUCCESS] Processed {chunk_idx} sessions from {session_chunks_processed} raw chunks")
-    print(f"[SUCCESS] Selected top laps from {len(top_laps)} (game, track, car, grip) buckets")
     print(f"[SUCCESS] Cached {total_sessions_cached} session batches across {chunk_idx} sessions")
-
-    top_laps_cache_key = cache_config.top_laps_cache_key
-    try:
-        async def top_laps_generator():
-            for key, lap_info in top_laps.items():
-                game, track_name, car_name, avg_grip_int = key
-                bucket_records = [lap_info["records"]]
-
-                if bucket_records:
-                    chunk_id = f"{game}|{track_name}|{car_name}|grip{avg_grip_int}"
-                    print(f"[DEBUG] Yielding top lap chunk for {key}")
-                    yield (bucket_records, chunk_id)
-
-        cache_success = await telemetry_store.cache_chunks_streaming(
-            cache_key=top_laps_cache_key,
-            chunks_iterator=top_laps_generator(),
-        )
-
-        if cache_success:
-            print(f"[SUCCESS] Cached top lap telemetry records to {top_laps_cache_key} (separate chunks per track)")
-        else:
-            print(f"[WARNING] Failed to cache top laps to {top_laps_cache_key}")
-    except Exception as cache_error:
-        print(f"[WARNING] Error caching top laps: {cache_error}")
 
 
 def process_single_chunk(
@@ -478,22 +387,19 @@ def process_single_chunk(
     chunk_idx: Union[int, str],
     features: List[str],
     telemetry_time_gap_ms: int,
-) -> Tuple[Union[int, str], int, List[Dict[str, Any]], List[Dict[str, Any]], Optional[Exception], Optional[str]]:
-    """Process a single chunk of telemetry data in a separate process."""
+) -> Tuple[List[Dict[str, Any]], Optional[Exception], str]:
+    """Clean a session in a worker without selecting or enriching laps."""
     chunk_id = str(chunk_idx)
     actual_data = chunk_data
 
     print(f"[DEBUG] Thread started processing chunk {chunk_idx} (ID: {chunk_id}) ({len(actual_data)} records)")
-    laps_processed_in_chunk = 0
-    candidates: List[Dict[str, Any]] = []
-    session_records: List[Dict[str, Any]] = []
 
     try:
         session_chunk_df = pd.DataFrame(actual_data)
         telemetry_df = session_chunk_df
 
         if telemetry_df.empty:
-            return chunk_idx, 0, [], [], None, chunk_id
+            return [], None, chunk_id
 
         game = _resolve_game(None, telemetry_df.iloc[0].to_dict())
         processor = FeatureProcessor(telemetry_df)
@@ -505,7 +411,7 @@ def process_single_chunk(
         processor.df = processed_df
 
         if processed_df.empty:
-            return chunk_idx, 0, [], [], None, chunk_id
+            return [], None, chunk_id
 
         stripped_session_df = processor.strip_dataframe_by_time_gap(processed_df, telemetry_time_gap_ms)
         stripped_session_df = _clean_position_anomalies(
@@ -514,75 +420,16 @@ def process_single_chunk(
         )
 
         if stripped_session_df.empty:
-            return chunk_idx, 0, [], [], None, chunk_id
+            return [], None, chunk_id
 
         filtered_session_df = processor.filter_features_by_list(stripped_session_df, features)
         filtered_session_df = filtered_session_df.reset_index(drop=True)
 
         if filtered_session_df.empty:
-            return chunk_idx, 0, [], [], None, chunk_id
+            return [], None, chunk_id
 
         filtered_session_df["game_recorded_from"] = game
-        session_records = filtered_session_df.to_dict("records")
-
-        lap_structs = processor.split_into_laps(filtered_session_df)
-        if not lap_structs:
-            return chunk_idx, 0, [], session_records, None, chunk_id
-
-        for i, lap_struct in enumerate(lap_structs):
-            lap_df = lap_struct["dataframe"]
-            lap_time_ms = lap_struct["lap_time_ms"]
-
-            if "Graphics_is_valid_lap" in lap_df.columns:
-                if not (lap_df["Graphics_is_valid_lap"] == 1).all():
-                    continue
-
-            if "Graphics_current_time" in lap_df.columns and len(lap_df) > 2:
-                time_diffs = lap_df["Graphics_current_time"].diff().dropna()
-                valid_diffs = time_diffs[time_diffs > 0]
-
-                if not valid_diffs.empty:
-                    mean_diff = valid_diffs.mean()
-                    std_diff = valid_diffs.std()
-
-                    if std_diff > 0:
-                        if std_diff > (mean_diff * 0.5):
-                            continue
-
-            lap_records = lap_df.to_dict("records") if not lap_df.empty else []
-
-            lap_identifier = (
-                f"{chunk_id}_{i}_{lap_time_ms or 'na'}"
-            )
-
-            if "Static_car_model" in lap_df.columns and not lap_df["Static_car_model"].empty:
-                car_name = str(lap_df["Static_car_model"].iloc[0])
-            else:
-                car_name = "unknown_car"
-
-            if "Graphics_track_grip_status" in lap_df.columns:
-                grip_mean = pd.to_numeric(lap_df["Graphics_track_grip_status"], errors="coerce").mean()
-                if pd.isna(grip_mean):
-                    avg_grip_int = 2
-                else:
-                    avg_grip_int = max(0, min(6, int(round(float(grip_mean)))))
-            else:
-                avg_grip_int = 2
-
-            candidate_entry = {
-                "id": lap_identifier,
-                "lap_time_ms": lap_time_ms if lap_time_ms is not None else float("inf"),
-                "lap_num": lap_struct["lap_num"],
-                "records": lap_records,
-                "car": car_name,
-                "avg_grip_int": avg_grip_int,
-            }
-
-            if lap_time_ms is not None and lap_records:
-                laps_processed_in_chunk += 1
-                candidates.append(candidate_entry)
-
-        return chunk_idx, laps_processed_in_chunk, candidates, session_records, None, chunk_id
+        return filtered_session_df.to_dict("records"), None, chunk_id
 
     except Exception as e:
-        return chunk_idx, 0, [], [], e, chunk_id
+        return [], e, chunk_id

@@ -23,10 +23,10 @@ def offline_resnet(monkeypatch):
 
 @pytest.mark.parametrize("sequence_length", [1, 4])
 @pytest.mark.parametrize("model_class", [PositionModel, PositionModelV2])
-@pytest.mark.parametrize("density_radius", [None, 0.5])
-def test_training_retains_all_frames_history_and_correct_metric_denominators(tmp_path, monkeypatch, sequence_length, model_class, density_radius):
+@pytest.mark.parametrize("density_radius,session_ids", [(None, ("a", "b")), (0.5, ("a", "b")), (0.5, ("a",))])
+def test_training_retains_all_frames_history_and_correct_metric_denominators(tmp_path, monkeypatch, sequence_length, model_class, density_radius, session_ids):
     sessions = {}
-    for session in ("a", "b"):
+    for session in session_ids:
         folder = tmp_path / session
         folder.mkdir()
         rows = []
@@ -71,11 +71,16 @@ def test_training_retains_all_frames_history_and_correct_metric_denominators(tmp
     finally:
         torch.set_num_threads(previous_threads)
     train, val = [loader.dataset for loader in loaders]
-    assert len(train) == len(val) == (5 if density_radius is None else 1)
+    if density_radius is None:
+        assert len(train) == len(val) == 5
+    else:
+        assert len(train) == 2
+        assert len(val) == 5 * len(session_ids) - len(train)
     originals = [dataset if density_radius is None else dataset.dataset for dataset in (train, val)]
-    assert {row["session_id"] for row in originals[0].records}.isdisjoint(
-        row["session_id"] for row in originals[1].records
-    )
+    if density_radius is None:
+        assert {row["session_id"] for row in originals[0].records}.isdisjoint(
+            row["session_id"] for row in originals[1].records
+        )
     records = [row for rows in sessions.values() for row in rows]
     assert {row["image"] for original in originals for row in original.records} == {row["image"] for row in records}
     split = json.loads((output / "split.json").read_text())
@@ -96,13 +101,17 @@ def test_training_retains_all_frames_history_and_correct_metric_denominators(tmp
             assert f"{name}_history" not in split
     selected = select_position_endpoints(records, position_radius=density_radius)
     assert set(split["train"]).isdisjoint(split["val"])
-    assert set(split["train"] + split["val"]) == {str(records[index]["image"]) for index in selected}
+    assert set(split["train"] + split["val"]) == {str(row["image"]) for row in records}
     if density_radius is None:
         assert "density_sampling" not in split
     else:
+        selected_paths = {str(records[index]["image"]) for index in selected}
+        assert set(split["train"]) == selected_paths
+        assert set(split["val"]) == {str(row["image"]) for row in records} - selected_paths
+        assert split["val_fraction"] is None
         assert split["density_sampling"] == {
             "position_radius": density_radius, "orientation_degrees": 5.0,
-            "candidate_count": 10, "selected_count": 2,
+            "candidate_count": 5 * len(session_ids), "selected_count": 2,
         }
     metrics = json.loads((output / "results.json").read_text())[0]
     assert metrics["train_loss"] == pytest.approx(sum(loss for loss, _ in totals) / len(train))

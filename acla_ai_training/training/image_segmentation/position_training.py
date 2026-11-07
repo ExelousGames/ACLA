@@ -1,4 +1,4 @@
-"""Train position models with per-map session splits and car-local XYZ errors."""
+"""Train position models with session or density splits and car-local XYZ errors."""
 
 from __future__ import annotations
 
@@ -116,7 +116,19 @@ def train_position_model(
         records, position_radius=density_position_radius,
         orientation_degrees=density_orientation_deg, seed=seed,
     )
-    splits = split_position_frames([records[index] for index in selected_indices], val_fraction=val_fraction, seed=seed)
+    if density_position_radius is None:
+        splits = split_position_frames(records, val_fraction=val_fraction, seed=seed)
+    else:
+        selected = set(selected_indices)
+        splits = {
+            "train": [records[index] for index in selected_indices],
+            "val": [row for index, row in enumerate(records) if index not in selected],
+        }
+        if not splits["val"]:
+            raise ValueError(
+                "Density sampling left no excluded samples for validation. "
+                "Increase the density thresholds or disable density sampling."
+            )
     history_splits = splits
     if density_position_radius is not None:
         history_splits = {}
@@ -153,7 +165,8 @@ def train_position_model(
             datasets[split] = Subset(datasets[split], [indices[row["image"]] for row in frames])
         print(
             f"Density sampling: kept {len(selected_indices)}/{len(records)} "
-            "endpoints across all sessions before train/validation splitting; original temporal history retained", flush=True,
+            f"endpoints for training; using all {len(splits['val'])} excluded endpoints for validation "
+            "(--val-fraction ignored); original temporal history retained", flush=True,
         )
     loaders = {
         split: DataLoader(
@@ -171,7 +184,8 @@ def train_position_model(
         for split, frames in splits.items()
     }
     (output / "split.json").write_text(
-        json.dumps({"seed": seed, "val_fraction": val_fraction, "sequence_length": sequence_length,
+        json.dumps({"seed": seed, "val_fraction": val_fraction if density_position_radius is None else None,
+                    "sequence_length": sequence_length,
                     "maps": maps, **assignments, **sampling_metadata}, indent=2) + "\n",
         encoding="utf-8",
     )

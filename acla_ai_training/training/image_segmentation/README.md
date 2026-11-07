@@ -582,7 +582,7 @@ them does not download anything. The original CNN/GRU architecture remains in
 Use a new output directory; every v2 run starts from the pretrained encoder and a
 new temporal/regression head, while the original model starts from scratch. The first GPU
 is the default if `--device` is omitted; use `--device cpu` for CPU training.
-After image extraction and before the first epoch, training assigns whole sessions
+Without density filtering, training assigns whole sessions
 from each `(game, map_name)` to validation, targeting `--val-fraction 0.2` of that
 map's frames using `--seed 42` by default. It chooses the closest achievable frame
 count, accounting for unequal session sizes; equally balanced session choices
@@ -619,18 +619,21 @@ define redundancy. Each removed endpoint is covered by a retained pose. A SciPy
 building an all-pairs matrix or full neighbor graph. Representatives are chosen
 in a seeded shuffled traversal, then returned in original dataset order.
 
-Filtering runs across **all sessions before splitting** the selected endpoints
-into training and validation. Whole-session splitting balances selected frame
-counts; at least two sessions per map must retain endpoints. Both splits construct
-temporal windows from **all original frames in their assigned sessions**, so
-original steps, order, and padding are preserved. A redundant endpoint can still
-supply history to another window. This compares final-frame poses, not entire
+Filtering runs across **all sessions**. Selected endpoints are used for training;
+**all excluded endpoints are used for validation**. `--val-fraction` is ignored
+in density mode. At least one endpoint must be excluded; otherwise training fails
+before model initialization. Targets are disjoint, but sessions may appear in
+both sets. Both splits construct temporal windows from **all original frames in
+their sessions**, so original steps, order, and padding are preserved. A validation
+endpoint can supply history to a training window and vice versa; this is not a
+held-out-session evaluation. This compares final-frame poses, not entire
 motion trajectories. Filtering requires finite XYZ triples in
 `driver_position`; regenerate older files missing them. Driver positions never
 become model inputs. Larger thresholds remove more examples; tune the example
 values to the dataset's source units. Omit the radius to retain every endpoint.
 `split.json` records `density_sampling` thresholds and total candidate/selected
-counts across all sessions; `train` and `val` list selected endpoints, while
+counts across all sessions; `train` lists selected endpoints and `val` lists all
+excluded endpoints. `val_fraction` is `null` in density mode, while
 `train_history` and `val_history` list the original frames in each split's sessions
 for temporal runs. Source files are never removed or rewritten.
 

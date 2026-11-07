@@ -969,6 +969,7 @@ async def test_pipeline_builds_uploads_and_reuses_local_reference(
             telemetry_store=telemetry_store,
             cache_config=cache_config,
             backend_service=backend,
+            max_workers=1,
         )
     )
 
