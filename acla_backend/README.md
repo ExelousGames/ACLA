@@ -27,6 +27,56 @@
 
 Trained Ultralytics model storage: see the [Ultralytics model API contract](src/modules/ai-model/ultralytics/README.md).
 
+## Live Phrase voice APIs
+
+Both endpoints require `Authorization: Bearer <token>` and forward JSON bodies
+to the AI service configured by `AI_SERVICE_URL` (default `http://localhost:8000`).
+The AI service validates the payloads; its HTTP status and JSON error details
+are preserved, including `400` for stale phonemes and `422` for invalid curves.
+Connection failures return `503`.
+
+`POST /voice/phonemes` previews the indexed phonemes for a phrase:
+
+```json
+{ "text": "Brake smoothly.", "language": "en-us" }
+```
+
+The `200` JSON response contains `phonemes`, `tokens` (each with `index`,
+`symbol`, and `token_id`), `sample_rate`, and `max_phonemes`. Indices include
+spaces, punctuation, and stress markers, and exclude model boundary tokens.
+
+`POST /voice/synthesize/prosody` returns `200 audio/wav` bytes with
+`Cache-Control: no-store`:
+
+```json
+{
+  "text": "Brake smoothly.",
+  "voice": "af_bella",
+  "speed": 1,
+  "language": "en-us",
+  "prosody": {
+    "expected_phonemes": "<exact phonemes string from the preview>",
+    "curves": [
+      {
+        "start": 0,
+        "end": 1,
+        "pitch": [{ "position": 0, "value": 0 }, { "position": 1, "value": 2 }]
+      }
+    ]
+  }
+}
+```
+
+Use the same text and language for preview and synthesis. `language` defaults
+to `en-us`; `voice` uses the AI service default and `speed` defaults to `1`
+(range `0.5`–`2`). `text` supports 1–4000 characters, subject to the preview's
+phoneme limit. `prosody.expected_phonemes` is required; `curves` defaults to an
+empty list. Curve ranges are non-overlapping, with an inclusive `start` and
+exclusive `end`. Each curve supplies `timing` (duration multiplier `0.25`–`4`),
+`energy` (dB `-12`–`12`), or `pitch` (semitones `-12`–`12`), or a combination.
+Each control has 2–64 points in increasing `position` order, starting at `0`
+and ending at `1`.
+
 ## Sessions with video attachments
 
 `GET /racing-session/with-videos` requires an `Authorization: Bearer <token>` header and returns the authenticated user's sessions with at least one MP4 video attachment, newest first. No request body or query parameters are required.

@@ -214,6 +214,38 @@ export interface VoiceSynthesizeRequest {
     language?: string;    // e.g. "en-us"
 }
 
+export interface VoicePhonemesRequest {
+    text: string;
+    language?: string;
+}
+
+export interface VoicePhonemesResponse {
+    phonemes: string;
+    tokens: { index: number; symbol: string; token_id: number }[];
+    sample_rate: number;
+    max_phonemes: number;
+}
+
+export interface VoiceCurvePoint {
+    position: number; // 0..1 within the selected phoneme range
+    value: number;
+}
+
+export interface VoicePhonemeCurve {
+    start: number; // inclusive phoneme index
+    end: number;   // exclusive phoneme index
+    timing?: VoiceCurvePoint[] | null; // duration multiplier, 0.25..4
+    energy?: VoiceCurvePoint[] | null; // dB, -12..12
+    pitch?: VoiceCurvePoint[] | null;  // semitones, -12..12
+}
+
+export interface VoiceSynthesizeProsodyRequest extends VoiceSynthesizeRequest {
+    prosody: {
+        expected_phonemes: string;
+        curves?: VoicePhonemeCurve[];
+    };
+}
+
 @Injectable()
 export class AiServiceClient {
     private readonly aiServiceUrl: string;
@@ -385,6 +417,52 @@ export class AiServiceClient {
                 HttpStatus.SERVICE_UNAVAILABLE
             );
         }
+    }
+
+    async previewVoicePhonemes(request: VoicePhonemesRequest): Promise<VoicePhonemesResponse> {
+        try {
+            const response = await axios.post<VoicePhonemesResponse>(
+                `${this.aiServiceUrl}/voice/phonemes`,
+                request,
+            );
+            return response.data;
+        } catch (error) {
+            throw this.voiceRequestError(error, 'phoneme preview');
+        }
+    }
+
+    async synthesizeVoiceProsody(request: VoiceSynthesizeProsodyRequest): Promise<Buffer> {
+        try {
+            const response = await axios.post(
+                `${this.aiServiceUrl}/voice/synthesize/prosody`,
+                request,
+                { responseType: 'arraybuffer' },
+            );
+            return Buffer.from(response.data);
+        } catch (error) {
+            throw this.voiceRequestError(error, 'prosody synthesis');
+        }
+    }
+
+    private voiceRequestError(error: unknown, operation: string): HttpException {
+        const fallback = `AI Service ${operation} failed`;
+        if (!axios.isAxiosError(error)) {
+            return new HttpException(fallback, HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
+        let body: unknown = error.response?.data;
+        // Axios also buffers JSON error responses when requesting WAV bytes.
+        if (Buffer.isBuffer(body)) {
+            try {
+                body = JSON.parse(body.toString('utf8'));
+            } catch {
+                body = undefined;
+            }
+        }
+        return new HttpException(
+            body && typeof body === 'object' && !Array.isArray(body) ? body : fallback,
+            error.response?.status ?? HttpStatus.SERVICE_UNAVAILABLE,
+        );
     }
 
     /** Phase 2 — list available Kokoro voices. */
