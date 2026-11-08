@@ -3,8 +3,40 @@ import { DEFAULT_CAMERA } from '../track-vision/camera-projection';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import type { PhraseCornerGeometry } from './phrase-corner-geometry';
 import { evaluateRoad } from '../track-vision/road-polynomial';
+import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 
 type CornerPosition = 'inside' | 'middle' | 'outside';
+
+/** A reference turn starts before the tagged corner, with both captured track edges. */
+export function steeringCornerFixture(game: 'acc' | 'iracing' = 'acc') {
+    let x = 0, ground = 0;
+    const reference: TopLapReferenceEntry = {
+        game, track: 'test', car: 'car', avg_grip_int: 2,
+        target_features: ['expert_optimal_player_pos_x', 'expert_optimal_player_pos_y', 'expert_optimal_player_pos_z',
+            'expert_optimal_steering', 'expert_optimal_brake', 'expert_optimal_throttle', 'expert_optimal_speed'],
+        x: Array.from({ length: 100 }, (_, index) => index / 100),
+        y: Array.from({ length: 100 }, (_, index) => {
+            const row = [x, game === 'acc' ? ground : 0, game === 'iracing' ? ground : 0, 0, 0, 0, 36];
+            const angle = 12 * Math.max(0, Math.min(15, index - 25)) * Math.PI / 180;
+            x += 10 * Math.cos(angle);
+            ground += 10 * Math.sin(angle);
+            return row;
+        }),
+    };
+    const line = reference.y.map((row, index) => ({
+        bin: index, normalized_position: reference.x[index], x: row[0], y: row[1], z: row[2], sample_count: 1, updated_at: '',
+    }));
+    const map: CircuitMapDto = {
+        id: 'steering-map', game, circuit_name: 'Test circuit', source_track_key: 'test', resolution: 1000,
+        samples: {
+            middle_line: line,
+            left_boundary: line.map((point) => ({ ...point, x: point.x - 5 })),
+            right_boundary: line.map((point) => ({ ...point, x: point.x + 5 })),
+        },
+        centerline_segments: [{ id: 'turn-1', name: 'Turn 1', tags: ['corner'], start_position: 0.27, end_position: 0.45 }],
+    };
+    return { map, reference };
+}
 
 export const circuitMap = (speed: 'slow' | 'fast' = 'slow', linked = false): CircuitMapDto => ({
     id: 'test-map', game: 'acc', circuit_name: 'test', source_track_key: 'test', resolution: 1000,

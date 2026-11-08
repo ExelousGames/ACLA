@@ -1,0 +1,52 @@
+.steering-corner-display__header { flex-direction: row; align-items: center; }
+.steering-corner-display__status { width: auto; }
+
+.steering-corner-display__eyebrow {
+    display: block;
+    margin-bottom: 5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #9badbf;
+    font-size: 10px;
+}
+
+.steering-corner-display__map {
+    display: block;
+    width: 100%;
+    height: 280px;
+}
+
+.steering-corner-display__map text {
+    fill: #e9f4ff;
+    font-family: var(--lp-mono, 'Geist Mono', monospace);
+    font-size: 10px;
+}
+
+.steering-corner-display__road { fill: rgba(171, 175, 181, 0.09); }
+
+.steering-corner-display__map polyline {
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+}
+
+.steering-corner-display__left { stroke: #b4c2d0; }
+.steering-corner-display__right { stroke: #b4c2d0; stroke-dasharray: 4 4; }
+.steering-corner-display__map .steering-corner-display__reference { stroke: #448aff; stroke-width: 3; }
+
+.steering-corner-display__legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin-top: 10px;
+    color: #bdd0e2;
+    font-size: 10px;
+}
+
+.steering-corner-display__legend span { display: inline-flex; align-items: center; gap: 6px; }
+.steering-corner-display__legend span::before { content: ''; width: 18px; border-top: 2px solid #b4c2d0; }
+.steering-corner-display__legend [data-line='reference']::before { border-color: #448aff; }
+.steering-corner-display__legend [data-line='right']::before { border-top-style: dashed; }
+.steering-corner-display__missing { margin: 8px 0 0; color: #bdd0e2; font-size: 11px; }

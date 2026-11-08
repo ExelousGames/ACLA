@@ -330,6 +330,7 @@ export interface PhraseSnapshot {
     referenceSteeringPhase?: ReferenceSteeringPhase;
     referenceSteeringDirection?: ReferenceSteeringDirection;
     mapContext: PhraseMapContext;
+    steeringCorner?: PhraseMapContext;
     root: NodeSnapshot;
     // Compatibility summary for phrase events, overlays and speech. The UI renders root.
     closures: Array<{
@@ -1030,6 +1031,7 @@ export class PhraseEngine {
             referenceLoaded: this.referenceLap !== null,
             referenceSteeringPhase: guidance.steeringPhase,
             referenceSteeringDirection: guidance.steeringDirection,
+            steeringCorner: guidance.ready ? steeringCorner : undefined,
             root,
             state: { current: this.state.current.name, description: this.state.current.description,
                 kind: this.state.current instanceof Closure ? 'closure' : 'action', path: this.state.path.map((node) => node.name) },

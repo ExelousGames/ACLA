@@ -107,7 +107,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             setSnapshot((previous) => (
                 JSON.stringify(previous) === JSON.stringify(next) ? previous : next
             ));
-            overlay?.update(next);
+            overlay?.update(next, root?.getLiveCircuitMap() ?? null, root?.getLiveReferenceLap() ?? null);
             if (next.events.length === 0) {
                 lastVoiceEventId = 0;
                 pendingVoice = null;

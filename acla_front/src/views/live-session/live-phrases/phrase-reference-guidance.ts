@@ -3,7 +3,7 @@ import type { StandardTelemetrySample } from '../live-session-types';
 import type { TrackVisionDetection } from '../track-vision/track-vision-types';
 import { selectLiveMapReference } from '../live-map-reference';
 import type { ReferenceMovementCue } from './phrase-reference-movement';
-import { compareSteeringDirection, type ReferenceSteeringDirection } from './phrase-steering-direction';
+import { compareSteeringDirection, type ReferenceSteeringDirection, type SteeringTrajectory } from './phrase-steering-direction';
 
 export const REFERENCE_POSITION_MAX_AGE_MS = 500;
 export const REFERENCE_CUE_COOLDOWN_MS = 2000;
@@ -24,7 +24,7 @@ type Control = 'steering' | 'brake' | 'throttle';
 type Channel = Control | 'speed';
 interface Point {
     position: number; distance: number; steering?: number; brake?: number; throttle?: number; speed?: number;
-    x: number; ground: number; xyz: [number, number, number];
+    x: number; ground: number;
     deceleration?: number;
     heading?: number;
 }
@@ -51,7 +51,6 @@ const ANGLE_EPSILON = 1e-9;
 const TRAJECTORY_END_PEAK_RATIO = 0.1;
 const MAX_TRAJECTORY_END_CURVATURE = Math.PI / 180 / 10; // 1 degree per 10 m.
 const angleDifference = (from: number, to: number) => Math.atan2(Math.sin(to - from), Math.cos(to - from));
-const STEERING_DIRECTION_LOOKAHEAD = 10;
 const BRAKE_LOOKAHEAD_SECONDS = 1.8;
 const cache = new WeakMap<TopLapReferenceEntry, Reference | null>();
 
@@ -70,8 +69,7 @@ function prepare(lap: TopLapReferenceEntry): Reference | null {
         let cumulative = 0;
         const points = lap.x.map((position, i) => {
             if (i) cumulative += distance(positions[i - 1], positions[i]);
-            const point: Point = { position, distance: cumulative, x: positions[i][0], ground: positions[i][lap.game === 'acc' ? 1 : 2],
-                xyz: positions[i] as [number, number, number] };
+            const point: Point = { position, distance: cumulative, x: positions[i][0], ground: positions[i][lap.game === 'acc' ? 1 : 2] };
             channels.forEach((channel, j) => { if (valid[j]) point[channel] = lap.y[i][indices[j]]; });
             return point;
         });
@@ -263,12 +261,13 @@ function headingAt(reference: Reference, distance: number): number | undefined {
         : a.heading + angleDifference(a.heading, b.heading) * fraction;
 }
 
-function steeringDisplacementAt(reference: Reference, distance: number): [number, number, number] {
-    const positions = [0, STEERING_DIRECTION_LOOKAHEAD].map((offset) => {
-        const { a, b, fraction } = bracket(reference, wrap(distance + offset, reference.length), 'distance');
-        return a.xyz.map((value, axis) => value + (b.xyz[axis] - value) * fraction);
-    });
-    return positions[1].map((value, axis) => value - positions[0][axis]) as [number, number, number];
+function steeringTrajectoryAt(reference: Reference, distance: number, cornerTurnSign?: -1 | 1): SteeringTrajectory | undefined {
+    const range = reference.directionChanges.find(({ start, end, turnSign }) => turnSign === cornerTurnSign
+        && wrap(distance - start, reference.length) < end - start);
+    const heading = headingAt(reference, distance);
+    if (!range || heading === undefined) return undefined;
+    const remainingDistance = range.end - range.start - wrap(distance - range.start, reference.length);
+    return { heading, remainingDistance };
 }
 
 /** Every reference steering segment from the current position to the throttle endpoint must be flat. */
@@ -419,11 +418,11 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
     result.brakeZoneExit = result.steeringRange === undefined
         || cornerTurnSign === undefined || !cornerBounds ? undefined
         : trajectoryTurnOverlapsCorner(reference, distance, cornerTurnSign, cornerBounds);
-    if (lateral !== undefined && prediction && vision?.telemetry && reference.length > STEERING_DIRECTION_LOOKAHEAD) {
+    if (lateral !== undefined && prediction && vision?.telemetry) {
         // Use the capture's progress, orientation and velocity together; never rotate an old error with a newer heading.
         const capturedDistance = distanceAt(reference, prediction.normalizedPosition);
-        result.steeringDirection = compareSteeringDirection(
-            steeringDisplacementAt(reference, capturedDistance),
+        const trajectory = steeringTrajectoryAt(reference, capturedDistance, cornerTurnSign);
+        if (trajectory) result.steeringDirection = compareSteeringDirection(trajectory,
             prediction.referenceDelta, vision.telemetry.currentTelemetry, lap.game, cornerTurnSign);
     }
     if (valid('brake')) {

@@ -8,6 +8,7 @@ import { aiMessageDisplayOverlayRenderer } from 'views/ai-chat/AiMessageDisplay'
 import { toolMessageDisplayOverlayRenderer } from 'views/ai-chat/ToolMessageDisplay';
 import { baselineProgressDisplayOverlayRenderer } from 'views/live-session/baseline-collection/BaselineProgressDisplay';
 import { livePhraseOverlayRenderer } from 'views/live-session/live-phrases/graphs/LivePhraseDisplay';
+import { steeringCornerOverlayRenderer } from 'views/live-session/live-phrases/graphs/SteeringCornerDisplay';
 
 const builtInRenderers: readonly AiOverlayRenderer[] = [
     repeatablePlanOverlayRenderer,
@@ -19,6 +20,7 @@ const builtInRenderers: readonly AiOverlayRenderer[] = [
     toolMessageDisplayOverlayRenderer,
     baselineProgressDisplayOverlayRenderer,
     livePhraseOverlayRenderer,
+    steeringCornerOverlayRenderer,
 ];
 
 const renderers = new Map<string, AiOverlayRenderer>();

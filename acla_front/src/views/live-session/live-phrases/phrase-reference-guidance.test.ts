@@ -32,6 +32,11 @@ function addSpeed(lap: TopLapReferenceEntry) {
 }
 const driving = (position: number): StandardTelemetrySample => ({ Static_track: 'test', Static_car_model: 'car',
     Graphics_normalized_car_position: position, Physics_speed_kmh: 36, Physics_steer_angle: 0, Physics_brake: 0, Physics_gas: 0 });
+const localMotion = (vx: number, vy: number, heading = 0): StandardTelemetrySample => ({
+    Physics_heading: heading, Physics_pitch: 0, Physics_roll: 0,
+    Physics_local_velocity_x: vx * Math.cos(heading) + vy * Math.sin(heading),
+    Physics_local_velocity_y: -vx * Math.sin(heading) + vy * Math.cos(heading), Physics_local_velocity_z: 0,
+});
 function detection(lap: TopLapReferenceEntry, sample: StandardTelemetrySample, now = 1000): TrackVisionDetection {
     return { capturedAt: now, width: 100, height: 100, detections: {}, reconstruction: null, geometry: null,
         telemetry: { ...createLiveTelemetryStore().getSnapshot(), game: 'acc', receivedAt: now, currentTelemetry: sample,
@@ -236,31 +241,57 @@ it.each([-1, 1] as const)('speaks Turn without orientation and exits when trajec
     expect(exited.events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
 });
 
-it.each([20, 36, 180])('compares steering directions to the same 10 m endpoint at %s km/h', (speed) => {
-    const lap = referenceLap();
-    const sample = { ...driving(0.25), Physics_speed_kmh: speed, Physics_heading: 0, Physics_pitch: 0, Physics_roll: 0,
-        Physics_velocity_x: -3 * speed, Physics_velocity_y: 15 * speed };
+it.each([20, 36, 180])('uses the curve through Steering end for correction at %s km/h', (speed) => {
+    const lap = trajectoryLap();
+    // At 300 the reference tangent is 54 degrees; Steering ends at 410, leaving 110 coordinate units.
+    const angle = 54 * Math.PI / 180;
+    const sample = { ...driving(0.30), Physics_speed_kmh: speed,
+        ...localMotion((Math.cos(angle) - 4 / 110) * speed, Math.sin(angle) * speed) };
     const view = detection(lap, sample);
-    view.position!.referenceDelta = [3, 5, 0];
+    view.position!.referenceDelta = [4, 5, 0];
     expect(readReferenceGuidance(sample, view, lap, 'acc', 1000, lap, undefined, undefined, 1).steeringDirection).toBe('aligned');
 });
 
-it.each([[0.245, 5, 5], [0.995, 5, -5], [1, 10, 0]])(
-    'interpolates the reference endpoint across segments and start/finish at %s', (position, vx, vy) => {
-        const lap = referenceLap();
-        const sample = { ...driving(position), Physics_heading: 0, Physics_pitch: 0, Physics_roll: 0,
-            Physics_velocity_x: vx, Physics_velocity_y: vy };
-        expect(readReferenceGuidance(sample, detection(lap, sample), lap, 'acc', 1000, lap, undefined, undefined, 1)
-            .steeringDirection).toBe('aligned');
-    });
+it.each([-1, 1] as const)('follows the curved reference tangent instead of aiming across a hairpin in direction %s', (sign) => {
+    const lap = trajectoryLap(12, sign);
+    const angle = sign * 6 * Math.PI / 180;
+    const sample = { ...driving(0.26), ...localMotion(10 * Math.cos(angle), 10 * Math.sin(angle)) };
+    expect(readReferenceGuidance(sample, detection(lap, sample), lap, 'acc', 1000, lap, undefined, undefined, sign)
+        .steeringDirection).toBe('aligned');
+});
+
+it('changes the correction with Steering end while the current reference geometry stays the same', () => {
+    const angle = 6 * Math.PI / 180;
+    const sample = { ...driving(0.26), ...localMotion(10 * Math.cos(angle), 10 * Math.sin(angle), angle - Math.PI / 2) };
+    for (const [turnSegments, expected] of [[5, 'tooWide'], [15, 'aligned']] as const) {
+        const lap = trajectoryLap();
+        setTrajectory(lap, (i) => 12 * Math.max(0, Math.min(turnSegments, i - 25)));
+        const view = detection(lap, sample);
+        view.position!.referenceDelta = [6, 0, 0];
+        // The shorter turn leaves 50 units to rejoin; the longer turn leaves 150.
+        expect(readReferenceGuidance(sample, view, lap, 'acc', 1000, lap, undefined, undefined, 1).steeringDirection).toBe(expected);
+    }
+});
+
+it.each([false, true])('uses the remaining Steering range across start/finish with duplicated endpoint=%s', (duplicate) => {
+    const lap = referenceLap();
+    if (duplicate) { lap.x.push(1); lap.y.push([...lap.y[0]]); }
+    // The corner straddles start/finish from distance 990 to 1010. At 995, 15 units remain.
+    const angle = -3 * Math.PI / 8;
+    const sample = { ...driving(0.995), ...localMotion(10 * (Math.cos(angle) - 3 / 15), 10 * Math.sin(angle)) };
+    const view = detection(lap, sample);
+    view.position!.referenceDelta = [3, 0, 0];
+    expect(readReferenceGuidance(sample, view, lap, 'acc', 1000, lap, undefined, undefined, 1).steeringDirection).toBe('aligned');
+    const end = { ...sample, Graphics_normalized_car_position: 0.01 };
+    expect(readReferenceGuidance(end, detection(lap, end), lap, 'acc', 1000, lap, undefined, undefined, 1).steeringDirection).toBeUndefined();
+});
 
 it('uses capture-paired motion and progress, and withholds direction when the reference error expires', () => {
     const lap = referenceLap();
-    const captured = { ...driving(0.25), Physics_heading: 0, Physics_pitch: 0, Physics_roll: 0,
-        Physics_velocity_x: -3, Physics_velocity_y: 10 };
+    const captured = { ...driving(0.25), ...localMotion(10 / Math.sqrt(2) - 3, 10 / Math.sqrt(2)) };
     const view = detection(lap, captured);
     view.position!.referenceDelta = [3, 0, 0];
-    const live = { ...captured, Graphics_normalized_car_position: 0.251, Physics_heading: Math.PI, Physics_velocity_x: 3 };
+    const live = { ...captured, Graphics_normalized_car_position: 0.251, ...localMotion(-10, 0, Math.PI) };
     expect(readReferenceGuidance(live, view, lap, 'acc', 1100, lap, undefined, undefined, 1).steeringDirection).toBe('aligned');
     expect(readReferenceGuidance(live, view, lap, 'acc', 1501, lap, undefined, undefined, 1).steeringDirection).toBeUndefined();
     view.position!.referenceDelta[0] = NaN;
@@ -1438,8 +1469,7 @@ it('exits an active direction correction when the captured trajectory direction-
     engine.receiveMap(steeringMap(), 0, lap);
     engine.setDrivingAggression(100, 0);
     const at = (now: number, heading: number, position = 0.285) => {
-        const sample = { ...driving(position), Physics_heading: heading, Physics_pitch: 0, Physics_roll: 0,
-            Physics_velocity_x: 2, Physics_velocity_y: 10 };
+        const sample = { ...driving(position), ...localMotion(3, 10, heading) };
         engine.receiveVision(detection(lap, sample, now), now);
         return engine.receiveTelemetry(frame(sample), now);
     };
@@ -1458,19 +1488,21 @@ it('guides direction without a timed gap after Turn or between corrections above
     engine.receiveMap(steeringMap(), 0, lap);
     engine.setDrivingAggression(100, 0);
     const at = (now: number, vx: number, speed = 40, position = 0.285, heading = 0.1) => {
-        const sample = { ...driving(position), Physics_brake: 0.8, Physics_speed_kmh: speed,
-            Physics_heading: heading, Physics_pitch: 0, Physics_roll: 0, Physics_velocity_x: vx, Physics_velocity_y: 10 };
+        const sample = { ...driving(position), Physics_brake: 0.8, Physics_speed_kmh: speed, ...localMotion(vx, 10, heading) };
         engine.receiveVision(detection(lap, sample, now), now);
         return engine.receiveTelemetry(frame(sample), now);
     };
     expect(at(1000, 2, 40, 0.26).events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
-    const wide = at(1100, 2, 180);
+    // The reference tangent here is 84 degrees; small deviations on either side stay silent.
+    expect(at(1050, 10 / Math.tan(80 * Math.PI / 180), 180).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    expect(at(1075, 10 / Math.tan(88 * Math.PI / 180), 180).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    const wide = at(1100, 3, 180);
     expect(wide.state.path).toContain('Steering');
     expect(wide.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide']);
     expect(wide.events[1]).toMatchObject({ timestamp: 1100, steeringDirection: 'tooWide', expiresAt: 2600 });
-    expect(at(1200, 2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide']);
+    expect(at(1200, 3, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide']);
     expect(at(1300, -2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight']);
-    const alignedVelocity = at(1400, 0, 180);
+    const alignedVelocity = at(1400, 10 / Math.tan(84 * Math.PI / 180), 180);
     expect(alignedVelocity.events).toHaveLength(4);
     expect(alignedVelocity.state.path).toContain('Steering');
     const stale = engine.receiveTelemetry(frame({ ...driving(0.285), Physics_speed_kmh: 180 }), 2000);
@@ -1479,23 +1511,22 @@ it('guides direction without a timed gap after Turn or between corrections above
     expect(stale.state.path).toContain('Steering');
     expect(at(2100, 2, 40, 0.419, 0.1).state.path).toEqual(['root']);
     expect(at(2200, 2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight', 'Turn']);
-    expect(at(2300, 2).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight', 'Turn', 'Too wide']);
+    expect(at(2300, 3).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight', 'Turn', 'Too wide']);
     expect(engine.setDrivingAggression(99, 2400).events).toEqual([]);
-    expect(at(2500, 2).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(at(2600, 2).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    expect(at(2500, 3).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    expect(at(2600, 3).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
     expect(at(2700, -2).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
 });
 
 it.each([0, 50, 99, 99.9, 100])('gates direction corrections but preserves Turn at driving aggression %s', (aggression) => {
-    for (const [vx, direction, sentence] of [[2, 'tooWide', 'Too wide'], [-2, 'tooTight', 'Too tight']] as const) {
+    for (const [vx, direction, sentence] of [[3, 'tooWide', 'Too wide'], [-2, 'tooTight', 'Too tight']] as const) {
         const lap = referenceLap();
         brakingTurn(lap);
         const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
         engine.receiveMap(steeringMap(), 0, lap);
         engine.setDrivingAggression(aggression, 0);
         const at = (now: number, position = 0.285) => {
-            const sample = { ...driving(position), Physics_heading: 0.1, Physics_pitch: 0, Physics_roll: 0,
-                Physics_velocity_x: vx, Physics_velocity_y: 10 };
+            const sample = { ...driving(position), ...localMotion(vx, 10, 0.1) };
             engine.receiveVision(detection(lap, sample, now), now);
             return engine.receiveTelemetry(frame(sample), now);
         };

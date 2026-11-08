@@ -220,31 +220,42 @@ expired position-model captures do not prevent **Turn**.
 
 After **Turn**, nested **Too wide** and **Too tight** corrections enter only when
 **Driving aggression = 100** (**Direction guide**). **Turn** remains available at
-every aggression setting. These corrections compare the driver's
-normalized horizontal world velocity with the direction to a reference endpoint
-10 m ahead along the reference polyline, interpolating across samples and start/finish.
-The position model's error points from the driver to the reference in car-local
-right/forward/up coordinates. Rotate it into world coordinates using the capture's
-heading, pitch and roll and the simulator's axis convention, then calculate:
+every aggression setting. These corrections use the remaining reference curve from
+the captured normalized position through the trimmed end of its continuous Steering
+direction-change range, including start/finish wraparound. Shift its starting point
+left or right using the position model's lateral reference error, then taper that
+shift to zero at Steering's end. The rest of the reference's bends are retained.
+An absolute lateral error below **3 coordinate units** produces no starting-point
+shift. These are position-model units, not metres. This tolerance does not silence
+direction corrections: local velocity can still indicate deviation from the unshifted curve.
+At exactly 3 units or above, apply the full lateral shift.
 
-`driverStart = referenceStart - worldReferenceError`
+The model error points from the driver to the reference in car-local right/forward/up
+coordinates. Rotate only its lateral component into world coordinates using the
+capture's heading, pitch and roll. Forward and vertical model errors do not shift
+the starting point. For remaining reference curve `R(s)` of length `L`, calculate:
 
-`desiredDirection = normalize(referenceEnd - driverStart)`
+`adjustedCurve(s) = R(s) - worldLateralError * (1 - s / L)`
 
-The endpoint remains on the reference. Both lateral and forward error shift the
-start; vertical error is also rotated before projecting onto the horizontal plane.
-The signed angle between normalized velocity and desired direction is classified
-relative to the mapped corner's turn sign: outside is **Too wide**, inside is
-**Too tight**. A 3° tolerance is silent. Neither velocity magnitude, reference speed
-nor live speed changes the endpoint or the angular comparison. The existing speed
+Its current tangent is the reference tangent plus `worldLateralError / L`; compare
+against that tangent, rather than a chord across the corner. Use the capture's local
+velocity, rotated by the same orientation and projected onto the simulator's ground
+plane. ACC supplies forward velocity on Y and body X opposite the model's right
+axis; iRacing supplies forward on Z and right on X. Local vertical velocity is
+included in the rotation for pitched or banked cars. World velocity fields do not
+drive this comparison. The signed angle between normalized velocity and the adjusted
+tangent is classified relative to the mapped corner's turn sign: outside is **Too wide**,
+inside is **Too tight**. The separate 6° angular tolerance keeps small direction errors silent. Neither velocity
+magnitude, reference speed nor live speed changes the endpoint or angular comparison. The existing speed
 condition still gates entry into Steering, but is not reapplied to its corrections.
 Corrections can speak on the next eligible telemetry update after **Turn** and repeat
 while needed, without a timed gap between steering phrases.
 
 Direction comparison uses reference progress, error, orientation and velocity from
 the same validated capture (at most 500 ms old), so a delayed error is never rotated
-using a newer heading. Missing or invalid error, orientation or world velocity,
-unknown corner direction, zero vectors, and targets behind the velocity direction
+using a newer heading. Missing or invalid error, orientation or local velocity,
+unknown corner direction, an unavailable remaining Steering range, zero vectors,
+and a desired tangent opposing the velocity direction
 withhold corrections. Pending correction audio is discarded if its direction no
 longer matches, required data expires, or the driver leaves Steering.
 
@@ -632,6 +643,17 @@ presentation. Expired events never replay when a presentation changes.
 All phrase display components, styles and future overlay graphs belong in
 `live-phrases/graphs/`. `graphs/LivePhraseDisplay` implements the renderer and its
 snapshot validation; the floating overlay only registers and displays it.
+
+Entering **Steering** immediately inserts a separate `live_steering_corner` addon,
+independently of speech preparation or phrase events. `PhraseSnapshot.steeringCorner`
+identifies the same mapped corner used by the steering guidance, including an
+approaching corner before its entry. The card uses the analyst presentation's
+styling and displays the Live Map reference line plus the Circuit Map's saved left
+and right boundaries, clipped to that corner with interpolated endpoints and
+start/finish wrapping. Missing boundaries are reported instead of synthesized.
+The card stays visible while Steering is entered, without republishing on every
+telemetry frame, and clears on exit, stale input, reset or detection shutdown.
+`graphs/SteeringCornerDisplay` owns its rendering and snapshot validation.
 
 Each leaf condition is a `PhraseCondition` instance with a boolean `conditionFit`
 after measurement, or `null` before it can be evaluated.
