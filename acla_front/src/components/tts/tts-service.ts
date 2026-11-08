@@ -42,6 +42,16 @@ const wavDurationMs = (bytes: Uint8Array): number => {
     return (dataSize / byteRate) * 1000;
 };
 
+export const createTtsPack = (text: string, audio: ArrayBuffer): TtsPack => {
+    const bytes = new Uint8Array(audio);
+    const durationMs = wavDurationMs(bytes);
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 32768) {
+        binary += String.fromCharCode(...Array.from(bytes.subarray(offset, offset + 32768)));
+    }
+    return { text, audioDataUrl: `data:audio/wav;base64,${btoa(binary)}`, durationMs };
+};
+
 export const synthesizeTts = async (request: TtsRequest, signal?: AbortSignal): Promise<TtsPack> => {
     const text = request.text.trim();
     if (!text || text.length > 4000) throw new Error('Speech text must contain 1 to 4000 characters.');
@@ -53,13 +63,7 @@ export const synthesizeTts = async (request: TtsRequest, signal?: AbortSignal): 
         language: request.language ?? 'en-us',
     }, { responseType: 'arraybuffer', timeout: 120_000, signal });
     if (signal?.aborted) throw new DOMException('Speech generation was cancelled.', 'AbortError');
-    const bytes = new Uint8Array(response.data);
-    const durationMs = wavDurationMs(bytes);
-    let binary = '';
-    for (let offset = 0; offset < bytes.length; offset += 32768) {
-        binary += String.fromCharCode(...Array.from(bytes.subarray(offset, offset + 32768)));
-    }
-    return { text, audioDataUrl: `data:audio/wav;base64,${btoa(binary)}`, durationMs };
+    return createTtsPack(text, response.data);
 };
 
 /** Prepare in order without overloading the backend speech model. */

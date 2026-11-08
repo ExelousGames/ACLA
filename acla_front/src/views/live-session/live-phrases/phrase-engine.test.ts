@@ -64,7 +64,7 @@ describe('live phrase closure tree', () => {
             expect(child.description.trim()).not.toBe('');
             const actions = (child as Closure<unknown>).children.filter((node) => node instanceof Action);
             const speech = getPhraseActions(PHRASE_DEFINITIONS[index]);
-            const parentSpeech = phrase.referenceCue === 'steering' ? speech.slice(0, 1)
+            const parentSpeech = phrase.referenceCue === 'steering' ? [speech[0], ...speech.slice(3)]
                 : PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2)
                 : PHRASE_DEFINITIONS[index].id === 'second-apex' ? speech.slice(0, 2) : speech;
             expect(actions.map((action) => action.name)).toEqual([...(phrase.referenceCue === 'steering' ? ['exit to root'] : []), ...parentSpeech.map(() => 'say phrase'),

@@ -218,6 +218,18 @@ speed withholds the entry speed comparison. Future reference speed does not dete
 direction-change range membership. Missing trajectory direction withholds entry and exit. Missing or stale telemetry withholds speech;
 expired position-model captures do not prevent **Turn**.
 
+After **Turn**, **Slowly release brake** speaks once per Steering entry when the
+driver still applies at least 10% brake and the active phrase reference's deceleration
+is decreasing by more than 0.01 m/s³. The rate comes from the change between adjacent
+reference deceleration intervals divided by their reference travel time; it does not
+use live car speed or brake-pedal release speed. Missing speed data, constant or
+increasing deceleration, and a released brake do not trigger this instruction.
+The phrase instance selects one of four prepared timing inputs: 1 for easing up to
+0.5 m/s³, 2/3 up to 1 m/s³, 1/3 up to 2 m/s³, and 0 above 2 m/s³. The curve in
+`curves/slowly-release-brake.json` stretches slower easing more. Pending speech is
+discarded when easing stops, Steering exits, telemetry expires, or its four-second
+deadline cannot accommodate the audio.
+
 After **Turn**, nested **Too wide** and **Too tight** corrections enter only when
 **Driving aggression = 100** (**Direction guide**). **Turn** remains available at
 every aggression setting. These corrections use the remaining reference curve from
@@ -609,10 +621,11 @@ it keeps listening when the sidebar is folded or the Assistant tab is selected.
 **Disable detection** stops listening and clears triggered sentences and active
 phrase cards. Enabling again starts fresh with new telemetry.
 
-Enabling detection also prepares every catalog sentence, including alternative actions, through the system TTS
-service at 1.2× speed, one request at a time. Completed clips stay cached while the panel is
+Enabling detection prepares every catalog sentence and declared instance variant through
+`POST /voice/phonemes` followed by `POST /voice/synthesize/prosody`, at a default 1.2× speed,
+one synthesis at a time. Completed clips stay cached while the panel is
 mounted. The Speech indicator shows **Preparing** until all requests finish,
-then turns green with **Ready** only when every catalog sentence has received
+then turns green with **Ready** only when every catalog instance has received
 its audio. Failed requests leave it **Incomplete**; disabling detection shows
 **Disabled**. Enabling again reuses cached clips and retries missing ones.
 Each new phrase event attempts playback once through `audioManager`,
@@ -620,13 +633,85 @@ using type `voice` and priority 25, below live chat's default priority 50. Live
 chat can interrupt or suppress a phrase; discarded phrases are not queued for
 replay. Speech works independently of overlay visibility.
 
-If a triggered clip is still being prepared, only the latest event can play once
-ready. Overtaking clips require an active rule and an event less than eight
+While the startup batch is being prepared, only the latest event can play once
+the batch finishes. Overtaking clips require an active rule and an event less than eight
 seconds old; reference cues require matching conditions and enough time to finish
 before their shorter deadline.
 Session/stream resets stop phrase speech and discard pending events. Disabling
 detection or unmounting also aborts preparation and stops owned playback. Speech
 errors appear in the panel without stopping rule detection or overlay cards.
+
+### Runtime phrase instances and prosody curves
+
+`phrase.ts` provides the `Phrase` prototype and its `createInstance(settings)` factory.
+Every executed speech action creates a `PhraseInstance` with independent, immutable
+copies of its text, voice settings, float inputs and three amplify curves. Instances
+live only in memory and are attached to their phrase events; no instance is saved
+to local storage, project files or the backend. Alternative wordings and additional
+actions each have their own speech prototype. Rule conditions and closure state
+stay in the engine.
+
+Curve points are edited in project JSON files, with no curve controls in the UI.
+`curves/default.json` supplies three zero curves for unconfigured phrases.
+`curves/reference-brake.json` is a configured example attached to **Brake**.
+Import another phrase's JSON in `phrase-engine.ts` and assign it to that action's
+`amplifyCurves`. Each file contains `timing`, `energy` and `pitch` arrays of
+`{ "position": number, "value": number }` points. Positions run from 0 to 1 across
+the selected wording's complete indexed phoneme range. Each curve needs 2–64
+points, endpoints at 0 and 1, and strictly increasing positions. The backend
+interpolates between points. Rebuild/reload the frontend after saving JSON edits.
+
+An action's optional `speechSettings` sets its default voice, language, speed and
+named `inputs`. Inputs default to zero, so even the Brake example initially applies
+neutral controls. Set `speechSettings.inputs` for fixed settings, or supply an
+`instanceSettings(context)` strategy on the action to compute overrides when it
+actually speaks. This callback runs once per execution, after choosing the wording;
+it is not called during inspection or catalog preparation. Declare every possible
+override in the action's `preloadSettings`; runtime playback never generates audio.
+**Slowly release brake** uses this mechanism to select its timing from the active
+reference's deceleration change rate.
+
+For explicit startup preparation:
+
+```ts
+const phrase = new Phrase('reference-brake:say:0', 'Brake.', brakeCurves);
+const instance = phrase.createInstance({
+    inputs: { timing: 0.5, energy: 0.75, pitch: -0.25 },
+    speed: 1.2,
+});
+const packs = new Map<string, TtsPack>();
+await loadAllPhraseSpeech([instance], packs, signal);
+const voice = packs.get(instance.cacheKey);
+```
+
+The shared `components/tts` function `synthesizeProsodyTts(curves, inputs, speech, signal?)`
+also works without a phrase. Each curve is `{ setting, points }` with setting
+`timing`, `energy` or `pitch`; `inputs[i]` is the float multiplier for `curves[i]`.
+The phrase adapter emits these arrays in timing/energy/pitch order. At every point:
+
+- Timing multiplier = `1 + curve.value × input` (allowed range 0.25–4).
+- Energy adjustment = `curve.value × input` dB (allowed range −12–12).
+- Pitch adjustment = `curve.value × input` semitones (allowed range −12–12).
+
+Timing changes duration relative to the model's prediction at the requested speed;
+energy and pitch add to the model's predictions in their respective units. Finite
+negative and fractional inputs are supported. Invalid curves, mismatched input
+counts and amplified values outside backend limits are rejected, without clipping.
+The helper previews phonemes for the exact text/language, sends the returned
+`expected_phonemes` and index range to synthesis, then returns a WAV `TtsPack`
+with its measured duration. `previewTtsPhonemes` is also exported for inspecting
+indexed phonemes independently. The same abort signal covers both requests.
+
+Speech caching includes text, voice, language, speed, curves and input values.
+`getPhraseSpeechInstances()` enumerates all wordings and declared instance settings.
+`loadAllPhraseSpeech(instances, packs, signal)` requests that entire batch when
+detection is enabled, deduplicates identical audio identities, serializes model work,
+and returns completion status and any errors. Playback waits until the batch finishes.
+Completed clips, including all release variants, are reused across detection toggles;
+unmounting releases the cache. Failed clips can be retried on the next enable.
+Telemetry events only read prepared audio. An unprepared instance is skipped without
+requesting audio or substituting a different delivery. Pending events must still meet
+their conditions and playback deadlines when startup preparation completes.
 
 Every triggered phrase also publishes a pop-out card (eight seconds for overtaking,
 or until the reference cue's deadline) through the

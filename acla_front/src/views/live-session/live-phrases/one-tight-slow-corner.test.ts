@@ -1,3 +1,4 @@
+import { PhraseInstance } from './phrase';
 import type { LiveTelemetryFrameEvent } from '../live-telemetry-store';
 import type { StandardTelemetrySample } from '../live-session-types';
 import { VISION_MAX_AGE_MS } from '../track-vision/track-vision-types';
@@ -95,7 +96,7 @@ describe('One Tight Slow Corner', () => {
             expect(exited.events).toEqual([]);
             engine.receiveVision(closeVision(600, 'right', 'middle'), 600);
             expect(engine.receiveTelemetry(frame(sample(3)), 600).events).toEqual([
-                { id: 1, ruleId: rule.id, sentence: defending, timestamp: 600 },
+                { id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: defending, timestamp: 600 },
             ]);
         });
 
@@ -179,7 +180,7 @@ describe('One Tight Slow Corner', () => {
             // The existing inside-overtake action also matches; exit preparation takes priority.
             engine.receiveVision(closeVision(0, 'left', 'left', 2), 0);
             const spoken = engine.receiveTelemetry(frame(drivingAt(0.11)), 0, history);
-            expect(spoken.events).toEqual([{ id: 1, ruleId: rule.id, sentence: exitAdvice, timestamp: 0 }]);
+            expect(spoken.events).toEqual([{ id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: exitAdvice, timestamp: 0 }]);
             expect(spoken.state.path).toEqual([...path, 'say phrase']);
             expect(spoken.root.children[0].children[0].children[1].conditions.map((condition) => condition.conditionFit))
                 .toEqual([true, true, true]);
@@ -254,7 +255,7 @@ describe('One Tight Slow Corner', () => {
             const approaching = engine.receiveTelemetry(frame(drivingAt(0.11)), 100);
             expect(approaching.mapContext.phase).toBe('entry');
             expect(approaching.state.path).toEqual([...path, 'say phrase']);
-            expect(approaching.events).toEqual([{ id: 1, ruleId: rule.id, sentence: slipstream, timestamp: 100 }]);
+            expect(approaching.events).toEqual([{ id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: slipstream, timestamp: 100 }]);
             const staying = engine.receiveTelemetry(frame(drivingAt(0.115)), 150);
             expect(staying.state.path).toEqual([...path, 'say phrase']);
             expect(staying.events).toEqual(approaching.events);
@@ -263,7 +264,7 @@ describe('One Tight Slow Corner', () => {
             expect(exited.events).toEqual(approaching.events);
             engine.receiveVision(closeVision(300, 'right', 'middle'), 300);
             const spoken = engine.receiveTelemetry(frame(drivingAt(0.117)), 300);
-            expect(spoken.events).toEqual([...approaching.events, { id: 2, ruleId: rule.id, sentence: defending, timestamp: 300 }]);
+            expect(spoken.events).toEqual([...approaching.events, { id: 2, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: defending, timestamp: 300 }]);
             expect(engine.evaluate(300).state.path).toEqual(['root']);
         });
 
@@ -276,7 +277,7 @@ describe('One Tight Slow Corner', () => {
                     const snapshot = engine.receiveTelemetry(frame(drivingAt(0.05)), 0);
                     const matches = opponent !== 'middle' && opponent !== corner;
                     expect(snapshot.state.path).toEqual([...path, ...(matches ? ['say phrase'] : [])]);
-                    expect(snapshot.events).toEqual(matches ? [{ id: 1, ruleId: rule.id, sentence: slipstream, timestamp: 0 }] : []);
+                    expect(snapshot.events).toEqual(matches ? [{ id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: slipstream, timestamp: 0 }] : []);
                 }
             }
         });
@@ -357,7 +358,7 @@ describe('One Tight Slow Corner', () => {
         expect(engine.receiveVision(detection, 1000).events).toEqual([]);
         const snapshot = engine.receiveTelemetry(frame(sample(2)), 1000);
         expect(snapshot.state.path).toEqual(['root', rule.name, ...(sentence ? ['say phrase'] : [])]);
-        expect(snapshot.events).toEqual(sentence ? [{ id: 1, ruleId: rule.id, sentence, timestamp: 1000 }] : []);
+        expect(snapshot.events).toEqual(sentence ? [{ id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence, timestamp: 1000 }] : []);
         if (sentence) {
             expect(engine.evaluate(1000).state.path).toEqual(['root']);
             expect(engine.receiveTelemetry(frame(sample(1.9)), 1100).events).toEqual(snapshot.events);
@@ -378,7 +379,7 @@ describe('One Tight Slow Corner', () => {
             ]);
             expect(snapshot.state.path).toEqual(['root', rule.name, 'Inside the Long Straight', ...(distance <= 2 ? ['say phrase'] : [])]);
             expect(snapshot.events).toEqual(distance <= 2 ? [
-                { id: 1, ruleId: rule.id, sentence: slipstream, timestamp: 1000 },
+                { id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: slipstream, timestamp: 1000 },
             ] : []);
         },
     );
@@ -411,7 +412,7 @@ describe('One Tight Slow Corner', () => {
         expect(waiting.events).toEqual([]);
         expect(engine.receiveVision(closeVision(now), now).events).toEqual([]);
         expect(engine.receiveTelemetry(frame(sample(3)), now).events).toEqual([
-            { id: 1, ruleId: rule.id, sentence: slipstream, timestamp: now },
+            { id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: slipstream, timestamp: now },
         ]);
     });
 
@@ -425,7 +426,7 @@ describe('One Tight Slow Corner', () => {
         engine.receiveTelemetry(frame(sample(4)), 0);
         engine.receiveVision(closeVision(1000), 1000);
         expect(engine.receiveTelemetry(frame(sample(3)), 1000).events).toEqual([
-            { id: 1, ruleId: rule.id, sentence: slipstream, timestamp: 1000 },
+            { id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: slipstream, timestamp: 1000 },
         ]);
     });
 
@@ -475,7 +476,7 @@ describe('One Tight Slow Corner', () => {
         const detection = closeVision(1100, 'right', 'middle');
         expect(engine.receiveVision(detection, 1100).events).toEqual([]);
         const spoken = engine.receiveTelemetry(frame(sample(1.9)), 1100);
-        expect(spoken.events).toEqual([{ id: 1, ruleId: rule.id, sentence: defending, timestamp: 1100 }]);
+        expect(spoken.events).toEqual([{ id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: defending, timestamp: 1100 }]);
         // Make the first action eligible before the next step without evaluating an exit in between.
         detection.birdsEyeScene!.cars = closeVision(1110, 'right', 'left').birdsEyeScene!.cars;
         const exited = engine.receiveTelemetry(frame(sample(1.89)), 1110);

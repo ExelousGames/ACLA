@@ -1,3 +1,4 @@
+import { PhraseInstance } from './phrase';
 import { createLiveTelemetryStore, type LiveTelemetryFrameEvent } from '../live-telemetry-store';
 import type { StandardTelemetrySample } from '../live-session-types';
 import { PHRASE_DEFINITIONS, PhraseEngine, TELEMETRY_MAX_AGE_MS } from './phrase-engine';
@@ -78,7 +79,7 @@ describe('second-apex closure', () => {
             engine.receiveVision(closeVision(0, 'right', 2), 0);
             const spoken = engine.receiveTelemetry(frame(sample(3)), 0, exitHistory());
             expect(spoken.state.path).toEqual([...path, 'say phrase']);
-            expect(spoken.events).toEqual([{ id: 1, ruleId: rule.id, sentence: exitAdvice, timestamp: 0 }]);
+            expect(spoken.events).toEqual([{ id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: exitAdvice, timestamp: 0 }]);
             expect(spoken.root.children[0].children[0]).toMatchObject({
                 id: 'second-apex:inside-long-straight', kind: 'closure', name: 'Inside the Long Straight',
                 children: [{ name: 'exit to parent' }, { name: 'say phrase', description: exitAdvice,
@@ -88,7 +89,7 @@ describe('second-apex closure', () => {
             expect(update(engine, 2000, 1).events).toEqual(spoken.events);
             expect(update(engine, 2500, 0.5).state.path).toEqual(['root', rule.name]);
             const parentSpoken = update(engine, 2750, 0.25);
-            expect(parentSpoken.events).toEqual([...spoken.events, { id: 2, ruleId: rule.id, sentence, timestamp: 2750 }]);
+            expect(parentSpoken.events).toEqual([...spoken.events, { id: 2, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence, timestamp: 2750 }]);
             expect(engine.evaluate(2750).state.path).toEqual(['root']);
         });
 
@@ -119,7 +120,7 @@ describe('second-apex closure', () => {
             expect(missing.state.path).toEqual(path);
             expect(missing.events).toEqual([]);
             const spoken = engine.receiveTelemetry(frame(sample(3)), 200, exitHistory());
-            expect(spoken.events).toEqual([{ id: 1, ruleId: rule.id, sentence: exitAdvice, timestamp: 200 }]);
+            expect(spoken.events).toEqual([{ id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: exitAdvice, timestamp: 200 }]);
         });
     });
 
@@ -141,7 +142,7 @@ describe('second-apex closure', () => {
         expect(positions.opponentPosition).toBe(corner);
         expect(engine.receiveVision(detection, 2750).events).toEqual([]);
         const spoken = engine.receiveTelemetry(frame(sample(0.25)), 2750);
-        expect(spoken.events).toEqual([{ id: 1, ruleId: rule.id, sentence, timestamp: 2750 }]);
+        expect(spoken.events).toEqual([{ id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence, timestamp: 2750 }]);
         expect(spoken.state.path).toEqual(['root', rule.name, 'say phrase']);
         expect(spoken.closures[0].status).toBe('Active');
         expect(engine.evaluate(2750).state.path).toEqual(['root']);
@@ -211,7 +212,7 @@ describe('second-apex closure', () => {
             expect(getPhrasePositions(detection.birdsEyeScene).opponentPosition).toBe(corner);
             engine.receiveVision(detection, 2750);
             expect(engine.receiveTelemetry(frame(sample(0.25)), 2750).events).toEqual([
-                { id: 1, ruleId: rule.id, sentence, timestamp: 2750 },
+                { id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence, timestamp: 2750 },
             ]);
         },
     );
@@ -240,7 +241,7 @@ describe('second-apex closure', () => {
             expect(advance(2000, 1).events).toEqual([]);
             expect(advance(2500, 0.5).events).toEqual([]);
             const spoken = advance(2750, 0.25);
-            expect(spoken.events).toEqual([{ id: 1, ruleId: rule.id, sentence: holdInsideSentence, timestamp: 2750 }]);
+            expect(spoken.events).toEqual([{ id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: holdInsideSentence, timestamp: 2750 }]);
             expect(spoken.closures[0].status).toBe('Active');
             expect(spoken.root.children[0].children[1].execution?.status).toBe('idle');
             expect(spoken.root.children[0].children[2]).toMatchObject({

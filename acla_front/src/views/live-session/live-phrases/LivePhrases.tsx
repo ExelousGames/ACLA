@@ -6,17 +6,21 @@ import {
     useRegisterOperationComponentRef,
 } from 'contexts/OperationComponentRefContext';
 import type { LiveSessionHandle } from '../LiveSessionView';
-import { synthesizeTts, type TtsPack } from 'components/tts';
+import type { TtsPack } from 'components/tts';
 import { audioManager, type PlaybackHandle } from 'services/audio';
-import { getPhraseActions, PHRASE_DEFINITIONS, PhraseEngine, PhraseSnapshot, type PhraseEvent } from './phrase-engine';
+import { PHRASE_DEFINITIONS, PhraseEngine, PhraseSnapshot, type PhraseEvent } from './phrase-engine';
 import { LivePhraseOverlay, LIVE_PHRASE_DISPLAY_MS } from './LivePhraseOverlay';
 import { MAX_DRIVING_CAUTION, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
 import ClosureTree from './ClosureTree';
+import { Phrase, type PhraseInstance } from './phrase';
+import { getPhraseSpeechInstances, loadAllPhraseSpeech } from './phrase-speech';
 import './LivePhrases.css';
 
 // Prepare the time-sensitive, short cues first.
-const speechSentences = [...PHRASE_DEFINITIONS.filter((phrase) => phrase.referenceCue),
-    ...PHRASE_DEFINITIONS.filter((phrase) => !phrase.referenceCue)].flatMap(getPhraseActions).flatMap((action) => action.sentences);
+const speechCatalog = getPhraseSpeechInstances();
+const eventInstance = (event: PhraseEvent): PhraseInstance => event.instance
+    ?? speechCatalog.find((instance) => instance.id.startsWith(`${event.ruleId}:say:`) && instance.speech.text === event.sentence)
+    ?? new Phrase(event.ruleId, event.sentence).createInstance();
 
 export interface LivePhrasesHandle extends NamedOperationComponentHandle {
     getSnapshot(): PhraseSnapshot;
@@ -56,15 +60,20 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         const controller = new AbortController();
         let playback: PlaybackHandle | null = null;
         let pendingVoice: PhraseEvent | null = null;
+        let pendingInstance: PhraseInstance | null = null;
+        let speechPrepared = false;
         let lastVoiceEventId = 0;
         const playReadyVoice = () => {
-            if (controller.signal.aborted || !pendingVoice) return;
+            if (controller.signal.aborted || !speechPrepared || !pendingVoice || !pendingInstance) return;
             if (Date.now() >= (pendingVoice.expiresAt ?? pendingVoice.timestamp + LIVE_PHRASE_DISPLAY_MS)) {
                 pendingVoice = null;
                 return;
             }
-            const pack = voicePacks.current.get(pendingVoice.sentence);
-            if (!pack) return;
+            const pack = voicePacks.current.get(pendingInstance.cacheKey);
+            if (!pack) {
+                pendingVoice = null;
+                return;
+            }
             if (pendingVoice.expiresAt !== undefined && Date.now() + pack.durationMs >= pendingVoice.expiresAt) {
                 pendingVoice = null;
                 return;
@@ -79,27 +88,24 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 },
             });
         };
-        // Prepare sequentially through the system TTS service; retain completed clips across toggles.
-        void (async () => {
-            for (const sentence of speechSentences) {
-                if (controller.signal.aborted) return;
-                if (voicePacks.current.has(sentence)) continue;
-                try {
-                    const pack = await synthesizeTts({ text: sentence, speed: 1.2 }, controller.signal);
-                    if (controller.signal.aborted) return;
-                    voicePacks.current.set(sentence, pack);
-                    playReadyVoice();
-                } catch (error) {
-                    if (controller.signal.aborted) return;
-                    setVoiceError(error instanceof Error ? error.message : String(error));
-                }
+        // All variants are requested here; telemetry and playback never request speech.
+        void loadAllPhraseSpeech(speechCatalog, voicePacks.current, controller.signal).then(({ complete, errors }) => {
+            if (controller.signal.aborted) return;
+            speechPrepared = true;
+            setSpeechStatus(complete ? 'Ready' : 'Incomplete');
+            if (errors.length) setVoiceError(errors.map((error) => error instanceof Error ? error.message : String(error)).join('; '));
+            playReadyVoice();
+        }).catch((error) => {
+            if (!controller.signal.aborted) {
+                setSpeechStatus('Incomplete');
+                setVoiceError(error instanceof Error ? error.message : String(error));
             }
-            setSpeechStatus(speechSentences.every((sentence) => voicePacks.current.has(sentence)) ? 'Ready' : 'Incomplete');
-        })();
+        });
         const dispose = () => {
             updateAggression.current = null;
             controller.abort();
             pendingVoice = null;
+            pendingInstance = null;
             playback?.stop();
             overlay?.dispose();
         };
@@ -111,6 +117,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             if (next.events.length === 0) {
                 lastVoiceEventId = 0;
                 pendingVoice = null;
+                pendingInstance = null;
                 playback?.stop();
                 playback = null;
             }
@@ -118,11 +125,14 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 if (event.id <= lastVoiceEventId) continue;
                 lastVoiceEventId = event.id;
                 pendingVoice = event;
+                pendingInstance = eventInstance(event);
             }
             // Turn uses the entered Steering scope; corrections also require the current direction.
             if (!next.telemetryReady || (pendingVoice?.steeringPhase !== undefined
                 && !next.state.path.includes('Steering'))
-                || (pendingVoice?.steeringDirection !== undefined
+                || (pendingVoice?.brakeRelease
+                    ? next.referenceBrakeReleaseRate === undefined || !next.state.path.includes('Steering')
+                    : pendingVoice?.steeringDirection !== undefined
                     ? next.referenceSteeringDirection !== pendingVoice.steeringDirection || !next.state.path.includes('Steering')
                     : !next.closures.some((rule) => rule.id === pendingVoice?.ruleId
                         && (pendingVoice.expiresAt !== undefined ? rule.conditions.every((condition) => condition.conditionFit) : rule.status === 'Active')))) {

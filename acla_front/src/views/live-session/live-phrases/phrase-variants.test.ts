@@ -1,5 +1,7 @@
 import type { LiveTelemetryFrameEvent } from '../live-telemetry-store';
 import { COOLDOWN_MS, PhraseCondition, PhraseEngine, type PhraseDefinition } from './phrase-engine';
+import { PhraseInstance } from './phrase';
+import brakeCurves from './curves/reference-brake.json';
 
 const frame = (speed: number): LiveTelemetryFrameEvent => {
     const sample = { Physics_speed_kmh: speed };
@@ -15,6 +17,25 @@ const phrase: PhraseDefinition = {
 };
 
 afterEach(() => jest.restoreAllMocks());
+
+it('creates a fresh instance at execution using the action runtime settings strategy', () => {
+    const instanceSettings = jest.fn(() => ({ inputs: { timing: 0.5, energy: 0.75, pitch: -0.25 }, speed: 1.4 }));
+    const engine = new PhraseEngine([{ ...phrase, sentenceAlternatives: [], amplifyCurves: brakeCurves, instanceSettings }]);
+    engine.evaluate(0);
+    expect(instanceSettings).not.toHaveBeenCalled();
+    const event = engine.receiveTelemetry(frame(100), 100).events[0];
+    expect(event.instance).toBeInstanceOf(PhraseInstance);
+    expect(event.instance!.speech.text).toBe(event.sentence);
+    expect(event.instance!.speech.speed).toBe(1.4);
+    expect(event.instance!.inputValues).toEqual([0.5, 0.75, -0.25]);
+    expect(event.instance!.amplifyCurves).toEqual(brakeCurves);
+    engine.evaluate(200);
+    expect(instanceSettings).toHaveBeenCalledTimes(1);
+    engine.receiveTelemetry(frame(10), 300);
+    engine.evaluate(1000);
+    const next = engine.receiveTelemetry(frame(100), COOLDOWN_MS + 1500).events;
+    expect(next[next.length - 1].instance).not.toBe(event.instance);
+});
 
 it.each(['primary', 'additional'])('chooses once per execution of a %s action, after its conditions match', (kind) => {
     const random = jest.spyOn(Math, 'random').mockReturnValueOnce(0).mockReturnValueOnce(1 / 3).mockReturnValueOnce(0.999999);

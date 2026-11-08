@@ -8,7 +8,7 @@ import { PHRASE_DEFINITIONS, PhraseCondition, PhraseEngine, conditionGroup } fro
 import { circuitMap, vision } from './test-fixtures';
 import type { DriverCornerSummary } from '../event-log/corner-summary';
 
-jest.mock('components/tts', () => ({ synthesizeTts: jest.fn(() => new Promise(() => undefined)) }));
+jest.mock('components/tts', () => ({ synthesizeProsodyTts: jest.fn(() => new Promise(() => undefined)) }));
 
 describe('LivePhrases root connection', () => {
     beforeEach(() => { jest.useFakeTimers(); jest.setSystemTime(10000); });
@@ -154,8 +154,13 @@ describe('LivePhrases root connection', () => {
         expect(screen.queryByText('Turn has been spoken')).not.toBeInTheDocument();
         expect(screen.queryByText('The reference line direction is within 3 degrees of local forward')).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
-        expect(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })).toHaveLength(1);
-        fireEvent.click(screen.getByRole('button', { name: /^Steering action \d+: say phrase$/ }));
+        expect(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })).toHaveLength(2);
+        fireEvent.click(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })[1]);
+        expect(screen.getByText('Slowly release brake')).toBeVisible();
+        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+        expect(screen.getByText('Reference deceleration easing rate while braking (m/s³) >= 0.01')).toBeVisible();
+        fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+        fireEvent.click(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })[0]);
         expect(screen.getByText('Turn')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         expect(screen.getByText('Always eligible')).toBeVisible();

@@ -13,6 +13,8 @@ export type ReferenceSteeringPhase = 'prepare' | 'turn';
 export interface ReferencePositionSample { capturedAt: number; lateralOffset: number }
 export type ReferenceGuidance = Partial<Record<ReferenceCue, number>> & {
     ready?: boolean; lateralOffset?: number; braking?: boolean; pedalZone?: ReferencePedalZone;
+    /** Positive easing of reference deceleration (m/s³), while the driver is braking. */
+    brakeReleaseRate?: number;
     /** Brake-zone exit uses the trajectory range from its start, independently of Steering eligibility. */
     brakeZoneExit?: boolean;
     steeringPhase?: ReferenceSteeringPhase;
@@ -26,6 +28,7 @@ interface Point {
     position: number; distance: number; steering?: number; brake?: number; throttle?: number; speed?: number;
     x: number; ground: number;
     deceleration?: number;
+    brakeReleaseRate?: number;
     heading?: number;
 }
 interface Reference {
@@ -122,6 +125,25 @@ function prepare(lap: TopLapReferenceEntry): Reference | null {
             } else if (point.throttle === 0 && next.throttle !== undefined && next.throttle > 0) {
                 boundaries.push({ pedal: 'throttle', index: i });
             }
+        });
+        points.forEach((point, i) => {
+            let previous = points[(i + points.length - 1) % points.length];
+            // A duplicated start/finish sample has no interval of its own.
+            for (let offset = 2; offset < points.length && wrap(point.distance - previous.distance, length) === 0; offset++) {
+                previous = points[(i + points.length - offset) % points.length];
+            }
+            const next = points[(i + 1) % points.length];
+            if (point.deceleration === undefined || previous.deceleration === undefined
+                || point.deceleration <= 0 || previous.deceleration <= point.deceleration
+                || !point.speed || !previous.speed || !next.speed) return;
+            const before = wrap(point.distance - previous.distance, length);
+            const after = wrap(next.distance - point.distance, length);
+            // Deceleration belongs to interval midpoints. Use reference travel time, not live speed.
+            const seconds = before / ((previous.speed + point.speed) / 3.6)
+                + after / ((point.speed + next.speed) / 3.6);
+            if (before <= 0 || after <= 0 || !finite(seconds) || seconds <= 0) return;
+            const rate = (previous.deceleration - point.deceleration) / seconds;
+            if (finite(rate) && rate > 0.01) point.brakeReleaseRate = rate;
         });
         const pedalZones: PedalZone[] = [];
         if (points[0].brake !== undefined && points[0].throttle !== undefined) {
@@ -411,6 +433,8 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
     const brakeZone = pedalZone === undefined ? undefined : pedalZone === 'brake';
     const result: ReferenceGuidance = { ready: true, lateralOffset: lateral,
         pedalZone,
+        brakeReleaseRate: valid('brake') && actual.brake! >= thresholds.brake
+            ? bracket(reference, distance, 'distance').a.brakeReleaseRate : undefined,
         braking: target.brake === undefined ? undefined : (brakeZone ?? target.brake > 0) || tooFast
             || (desiredBrake !== undefined && desiredBrake >= thresholds.brake) };
     result.steeringRange = headingAt(reference, distance) === undefined ? undefined

@@ -1,0 +1,5 @@
+{
+    "timing": [{ "position": 0, "value": -0.15 }, { "position": 1, "value": -0.1 }],
+    "energy": [{ "position": 0, "value": 2 }, { "position": 1, "value": 1 }],
+    "pitch": [{ "position": 0, "value": 1 }, { "position": 1, "value": 0 }]
+}

@@ -15,6 +15,10 @@ import { readReferenceGuidance, REFERENCE_CUE_COOLDOWN_MS, REFERENCE_POSITION_MA
 import { ReferenceMovement, REFERENCE_MOVEMENTS, type ReferenceMovementCue, type MovementDirection } from './phrase-reference-movement';
 import { copyPhraseMap, copyPhraseReference, normalizeDrivingAggression, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
 import type { ReferenceSteeringDirection } from './phrase-steering-direction';
+import { Phrase, type PhraseCurves, type PhraseInstance, type PhraseSettings } from './phrase';
+import brakeCurves from './curves/reference-brake.json';
+import releaseBrakeCurves from './curves/slowly-release-brake.json';
+import { BRAKE_RELEASE_SETTINGS, brakeReleaseSettings, SLOWLY_RELEASE_BRAKE } from './phrase-brake-release';
 
 export const TELEMETRY_MAX_AGE_MS = 1500;
 const DECELERATION_INTERVAL_MS = 500;
@@ -47,12 +51,14 @@ const INPUT_LABELS = {
     referencePedalZone: 'Interpolated reference pedal zone',
     referenceSteeringPhase: 'Reference steering phase',
     referenceSteeringDirection: 'Direction toward the reference endpoint',
+    referenceBrakeReleaseRate: 'Reference deceleration easing rate while braking (m/s³)',
 } as const;
 type Input = keyof typeof INPUT_LABELS;
 type Inputs = PhraseMapContext & ReturnType<typeof getPhrasePositions> & {
     drivingAggression?: number;
     speed?: number; referenceCue?: ReferenceCue | 'none'; driverOnStraight?: 0 | 1; referenceBraking?: 0 | 1;
     referencePedalZone?: ReferencePedalZone;
+    referenceBrakeReleaseRate?: number;
     referenceSteeringPhase?: ReferenceSteeringPhase | 'none';
     referenceSteeringDirection?: ReferenceSteeringDirection;
     insideLine?: 0 | 1; outsideLine?: 0 | 1; opponentDistanceM?: number;
@@ -181,6 +187,11 @@ function missingConditionInputs(conditions: readonly PhraseConditionNode[]): str
 
 export interface PhraseActionDefinition {
     sentence: string;
+    amplifyCurves?: PhraseCurves;
+    speechSettings?: PhraseSettings;
+    /** All possible overrides must be included in preloadSettings; playback never synthesizes. */
+    instanceSettings?: (context: PhraseContext) => PhraseSettings;
+    preloadSettings?: readonly PhraseSettings[];
     /** Additional wordings, chosen with the same probability as sentence on each execution. */
     sentenceAlternatives?: readonly string[];
     actionConditions?: readonly PhraseConditionNode[];
@@ -196,10 +207,16 @@ export interface PhraseDefinition extends PhraseActionDefinition {
     additionalActions?: readonly PhraseActionDefinition[];
 }
 export function getPhraseActions(phrase: PhraseDefinition) {
-    return [phrase, ...(phrase.additionalActions ?? [])].map((action, index) => ({
-        id: `${phrase.id}:say:${index}`, sentence: action.sentence, conditions: action.actionConditions,
-        sentences: [action.sentence, ...(action.sentenceAlternatives ?? [])],
-    }));
+    return [phrase, ...(phrase.additionalActions ?? [])].map((action, index) => {
+        const id = `${phrase.id}:say:${index}`;
+        const sentences = [action.sentence, ...(action.sentenceAlternatives ?? [])];
+        return {
+            id, sentence: action.sentence, conditions: action.actionConditions, sentences,
+            phrases: sentences.map((sentence) => new Phrase(id, sentence, action.amplifyCurves, action.speechSettings)),
+            instanceSettings: action.instanceSettings,
+            preloadSettings: action.preloadSettings,
+        };
+    });
 }
 const condition = (input: Input, operator: PhraseCondition['operator'], value: PhraseCondition['value'], connector: PhraseConditionConnector = 'and'): PhraseCondition => new PhraseCondition(input, operator, value, undefined, connector);
 const movementConditions = [condition('driverOnStraight', '=', 1), condition('referenceBraking', '=', 0)];
@@ -289,17 +306,22 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
         ['holdBrake', 'Hold brake pressure', 'Hold brake pressure.', 'Keep brake pressure steady while deceleration matches the rate needed to reach the adjusted speed target.'],
     ] as const).map(([referenceCue, name, sentence, description]) => ({
         id: `reference-${referenceCue}`, referenceCue, name, sentence, description,
+        ...(referenceCue === 'brake' ? { amplifyCurves: brakeCurves } : {}),
         holdMs: 0,
         conditions: [condition('speed', '>=', 20), condition('referencePedalZone', '=', 'brake'), condition('referenceCue', '=', referenceCue)],
     })),
     {
         id: STEERING_CLOSURE_ID, referenceCue: 'steering', name: 'Steering', holdMs: 0,
-        description: 'Enter from root once the live phrase reference direction-change range starts toward an overlapping corner and immediately say Turn. After Turn, give Too wide or Too tight direction guidance only when Driving aggression is 100. Stay entered until the continuous reference trajectory direction-change range ends.',
+        description: 'Enter from root once the live phrase reference direction-change range starts toward an overlapping corner and immediately say Turn. After Turn, say Slowly release brake once when reference deceleration eases while braking; delivery follows its change rate. Give Too wide or Too tight direction guidance only when Driving aggression is 100. Stay entered until the continuous reference trajectory direction-change range ends.',
         sentence: 'Turn',
         conditions: [condition('speed', '>=', 20), condition('referenceCue', '=', 'steering')],
         additionalActions: [
             { sentence: 'Too wide', actionConditions: [condition('drivingAggression', '=', 100), condition('referenceSteeringDirection', '=', 'tooWide')] },
             { sentence: 'Too tight', actionConditions: [condition('drivingAggression', '=', 100), condition('referenceSteeringDirection', '=', 'tooTight')] },
+            { sentence: SLOWLY_RELEASE_BRAKE, amplifyCurves: releaseBrakeCurves,
+                actionConditions: [condition('referenceBrakeReleaseRate', '>=', 0.01)],
+                instanceSettings: (context) => brakeReleaseSettings(context.guidance.brakeReleaseRate!),
+                preloadSettings: BRAKE_RELEASE_SETTINGS },
         ],
     },
     ...REFERENCE_MOVEMENTS.map(({ cue, direction, name, sentence, sentenceAlternatives, description }) => ({
@@ -319,8 +341,11 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
 export type ClosureStatus = 'Inactive' | 'Missing input' | 'Not matched' | 'Confirming' | 'Waiting for action' | 'Active' | 'Cooldown';
 export interface PhraseEvent {
     id: number; ruleId: string; sentence: string; timestamp: number; expiresAt?: number;
+    /** Present on engine-produced events; optional for older snapshot consumers. */
+    instance?: PhraseInstance;
     steeringPhase?: ReferenceSteeringPhase;
     steeringDirection?: ReferenceSteeringDirection;
+    brakeRelease?: boolean;
 }
 export interface PhraseSnapshot {
     telemetryReady: boolean;
@@ -329,6 +354,7 @@ export interface PhraseSnapshot {
     referenceLoaded: boolean;
     referenceSteeringPhase?: ReferenceSteeringPhase;
     referenceSteeringDirection?: ReferenceSteeringDirection;
+    referenceBrakeReleaseRate?: number;
     mapContext: PhraseMapContext;
     steeringCorner?: PhraseMapContext;
     root: NodeSnapshot;
@@ -362,7 +388,7 @@ export interface PhraseContext {
     actionConditions: Map<string, readonly PhraseConditionNode[]>;
     inspections: Map<string, NodeInspection>;
     candidate?: string;
-    publish: (phrase: PhraseDefinition, sentence?: string) => void;
+    publish: (phrase: PhraseDefinition, instance: PhraseInstance) => void;
 }
 
 function unevaluatedConditions(conditions: readonly PhraseConditionNode[]): PhraseConditionNode[] {
@@ -524,21 +550,22 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
             const say: Action<PhraseContext>[] = getPhraseActions(phrase).map((action) => new Action<PhraseContext>(
                 'say phrase', action.sentence, (context) => {
                     const index = action.sentences.length > 1 ? Math.floor(Math.random() * action.sentences.length) : 0;
-                    context.publish(phrase, action.sentences[index]);
+                    context.publish(phrase, action.phrases[index].createInstance(action.instanceSettings?.(context)));
                 },
                 describeCondition((context, state) => measureAction(context, action.id, action.conditions)
-                    && state.current === state.closure && context.emit,
+                    && (phrase.referenceCue === 'steering' && action.sentence === SLOWLY_RELEASE_BRAKE
+                        ? state.getExecution(say[0]).status === 'completed' : state.current === state.closure) && context.emit,
                     action.conditions
                         ? (context) => snapshotConditions(context.actionConditions.get(action.id) ?? [])
                         : 'Always eligible', action.conditions ? snapshotConditions(unevaluatedConditions(action.conditions)) : undefined),
-                { id: action.id, ...(action.sentences.length > 1 ? { fields: {
+                { id: action.id, ...(action.sentence === SLOWLY_RELEASE_BRAKE ? { priority: 1 } : {}), ...(action.sentences.length > 1 ? { fields: {
                     'Phrase selection': 'Random (equal chance)',
                     ...Object.fromEntries(action.sentences.slice(1).map((sentence, index) => [`Alternative ${index + 1}`, sentence])),
                 } } : {}) }));
-            const parentSay = phrase.referenceCue === 'steering' ? say.slice(0, 1)
+            const parentSay = phrase.referenceCue === 'steering' ? [say[0], ...say.slice(3)]
                 : phrase.id === 'one-tight-slow-corner' ? say.slice(1, 2)
                 : phrase.id === 'second-apex' ? say.slice(0, 2) : say;
-            const children = phrase.referenceCue === 'steering' ? say.slice(1).map((action, index) =>
+            const children = phrase.referenceCue === 'steering' ? say.slice(1, 3).map((action, index) =>
                 new Closure<PhraseContext>(action.description,
                     'Compare directions after Turn; repeat without a timed gap while the correction is needed.',
                     describeCondition((context, state) => state.getExecution(say[0]).status === 'completed'
@@ -908,6 +935,7 @@ export class PhraseEngine {
         inputs.referencePedalZone = guidance.pedalZone;
         inputs.referenceSteeringPhase = guidance.steeringPhase ?? (guidance.ready ? 'none' : undefined);
         inputs.referenceSteeringDirection = guidance.steeringDirection;
+        inputs.referenceBrakeReleaseRate = guidance.brakeReleaseRate;
         const referenceZone = pedalZones.find(({ zone, id }) => guidance.pedalZone === zone && this.phraseClosures.has(id));
         const pedalGuidanceAllowed = Boolean(activeZone || referenceZone);
         const referenceMovementAllowed = !pedalGuidanceAllowed && driverOnStraight === true && guidance.braking === false
@@ -979,12 +1007,15 @@ export class PhraseEngine {
                 ? this.mapContext.longStraightsAt(this.sample.Graphics_normalized_car_position) : undefined,
             driverCornerIds,
             entryConditions: new Map(), actionConditions: new Map(), inspections: new Map(),
-            publish: (phrase, sentence = phrase.sentence) => {
-                const steeringCorrection = phrase.referenceCue === 'steering' && sentence !== phrase.sentence;
-                const expiresAt = steeringCorrection ? now + 1500 : phrase.referenceCue ? guidance[phrase.referenceCue] : undefined;
-                this.events = [...this.events, { id: ++this.nextId, ruleId: phrase.id, sentence, timestamp: now,
+            publish: (phrase, instance) => {
+                const sentence = instance.speech.text;
+                const brakeRelease = phrase.referenceCue === 'steering' && sentence === SLOWLY_RELEASE_BRAKE;
+                const steeringCorrection = phrase.referenceCue === 'steering' && sentence !== phrase.sentence && !brakeRelease;
+                const expiresAt = brakeRelease ? now + 4000 : steeringCorrection ? now + 1500 : phrase.referenceCue ? guidance[phrase.referenceCue] : undefined;
+                this.events = [...this.events, { id: ++this.nextId, ruleId: phrase.id, sentence, instance, timestamp: now,
                     ...(steeringCorrection ? { steeringDirection: guidance.steeringDirection }
                         : phrase.referenceCue === 'steering' ? { steeringPhase: guidance.steeringPhase } : {}),
+                    ...(brakeRelease ? { brakeRelease: true } : {}),
                     ...(expiresAt !== undefined ? { expiresAt } : {}) }].slice(-HISTORY_LIMIT);
                 if (phrase.movementDirection) this.referenceMovement.spoken(phrase.referenceCue as ReferenceMovementCue, now);
                 const memory = this.memory.get(phrase.id)!;
@@ -1031,6 +1062,7 @@ export class PhraseEngine {
             referenceLoaded: this.referenceLap !== null,
             referenceSteeringPhase: guidance.steeringPhase,
             referenceSteeringDirection: guidance.steeringDirection,
+            referenceBrakeReleaseRate: guidance.brakeReleaseRate,
             steeringCorner: guidance.ready ? steeringCorner : undefined,
             root,
             state: { current: this.state.current.name, description: this.state.current.description,

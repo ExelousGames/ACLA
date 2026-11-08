@@ -13,7 +13,7 @@ import LivePhrases from './LivePhrases';
 import { createLiveTelemetryStore } from '../live-telemetry-store';
 import { circuitMap, steeringCornerFixture, vision } from './test-fixtures';
 
-jest.mock('components/tts', () => ({ synthesizeTts: jest.fn(() => new Promise(() => undefined)) }));
+jest.mock('components/tts', () => ({ synthesizeProsodyTts: jest.fn(() => new Promise(() => undefined)) }));
 
 const session = {
     presentationId: 'phrases-presentation', aiSessionId: 'live-session', mode: 'live' as const,
