@@ -159,9 +159,11 @@ describe('tree inspection', () => {
             new Action('same name', 'Root work.', run), branch,
         ]));
         const snapshot = state.snapshot({ ...context, ready: false });
+        expect(snapshot.status).toBe('Active');
+        expect(snapshot.children.map((child) => child.status)).toEqual(['Not evaluated', 'Not evaluated']);
         expect(snapshot.children.map((child) => child.kind)).toEqual(['action', 'closure']);
         expect(snapshot.children[1].children[0]).toMatchObject({
-            id: 'root/1/0', name: 'same name', description: 'Nested work.', kind: 'action', status: 'Inactive',
+            id: 'root/1/0', name: 'same name', description: 'Nested work.', kind: 'action', status: 'Not evaluated',
             execution: { status: 'idle' }, fields: {},
             conditions: [{ description: 'Work ready', conditionFit: null }], children: [],
         });
@@ -178,8 +180,8 @@ describe('tree inspection', () => {
         expect(state.snapshot(context).children[0].conditions[0].conditionFit).toBeNull();
         expect(predicate).not.toHaveBeenCalled();
         state.step({ ...context, ready: false });
-        expect(state.snapshot(context).children[0].conditions[0]).toMatchObject({
-            description: 'Custom condition (last checked)', conditionFit: false,
+        expect(state.snapshot(context).children[0]).toMatchObject({
+            status: 'Not matched', conditions: [{ description: 'Custom condition (last checked)', conditionFit: false }],
         });
         expect(predicate).toHaveBeenCalledTimes(1);
     });
@@ -229,7 +231,7 @@ describe('tree inspection', () => {
         const before = state.snapshot(context);
         leaf.conditionFit = false;
         fields.Count = 2;
-        expect(before.children[0]).toMatchObject({ fields: { Count: 1 }, conditions: [{ conditions: [{ conditionFit: true }] }] });
+        expect(before.children[0]).toMatchObject({ status: 'Not matched', fields: { Count: 1 }, conditions: [{ conditions: [{ conditionFit: true }] }] });
         state.step(context);
         expect(state.snapshot(context).children[0]).toMatchObject({ fields: { Count: 2 }, conditions: [{ conditions: [{ conditionFit: false }] }] });
     });
@@ -248,8 +250,13 @@ it('does not measure or inspect descendants until their parent is entered, inclu
     expect(measure).not.toHaveBeenCalled();
     expect(describe).not.toHaveBeenCalled();
     expect(inspect).not.toHaveBeenCalled();
-    expect(state.snapshot(context).children[0].children[0].conditions[0].conditionFit).toBeNull();
+    expect(state.snapshot(context).children[0]).toMatchObject({
+        status: 'Not matched', children: [{ status: 'Not evaluated', conditions: [{ conditionFit: null }] }],
+    });
     state.step({ ...context, ready: false });
+    expect(state.snapshot(context).children[0]).toMatchObject({
+        status: 'Active', children: [{ status: 'Not matched', conditions: [{ conditionFit: false }] }],
+    });
     expect(measure).toHaveBeenCalledTimes(1);
     expect(describe).toHaveBeenCalledTimes(1);
     state.snapshot(context);
@@ -257,6 +264,6 @@ it('does not measure or inspect descendants until their parent is entered, inclu
     expect(describe).toHaveBeenCalledTimes(1);
     state.exitToRoot();
     expect(state.snapshot(context).children[0].children[0]).toMatchObject({
-        status: 'Inactive', conditions: [{ conditionFit: null, inputMissing: false }],
+        status: 'Not evaluated', conditions: [{ conditionFit: null, inputMissing: false }],
     });
 });

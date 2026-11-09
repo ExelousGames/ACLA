@@ -1,0 +1,14 @@
+.reference-range-map { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--lp-border, #343b46); max-height: none; }
+.reference-range-map__track { display: block; width: 100%; height: auto; border-radius: 6px; background: var(--lp-bg, #10131a); }
+.reference-range-map__track path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.reference-range-map__line { stroke: #687487; stroke-width: 10; }
+.reference-range-map__deceleration { stroke: #ffae66; stroke-width: 10; }
+.reference-range-map__direction { stroke: #80b1ff; stroke-width: 4; }
+.reference-range-map__start { fill: #e7ecf2; stroke: #10131a; stroke-width: 2; }
+.reference-range-map__track text { fill: #e7ecf2; font-size: 11px; paint-order: stroke; stroke: #10131a; stroke-width: 3px; stroke-linejoin: round; }
+.reference-range-map__legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; }
+.reference-range-map__legend span { display: inline-flex; align-items: center; gap: 6px; }
+.reference-range-map__legend span::before { content: ''; width: 18px; height: 6px; border-radius: 3px; background: #687487; }
+.reference-range-map__legend [data-line="deceleration"]::before { background: #ffae66; }
+.reference-range-map__legend [data-line="direction"]::before { height: 3px; background: #80b1ff; }
+.reference-range-map .live-phrases__hint { margin: 8px 0 0; }

@@ -26,7 +26,7 @@ it('starts child measurement and holds only after parent activation and restarts
     const inactive = update(4000);
     expect(measure).not.toHaveBeenCalled();
     expect(measureAction).not.toHaveBeenCalled();
-    expect(inactive.closures[0]).toMatchObject({ status: 'Inactive', conditions: [{ conditionFit: null, inputMissing: false }] });
+    expect(inactive.closures[0]).toMatchObject({ status: 'Not evaluated', conditions: [{ conditionFit: null, inputMissing: false }] });
     open = true;
     expect(update(5000).events).toEqual([]);
     expect(measure).toHaveBeenCalled();

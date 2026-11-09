@@ -202,11 +202,11 @@ describe('reference lap overlay', () => {
         expect(pedalStrokes('throttle')).toHaveLength(0);
     });
 
-    it('shows interpolated pedal percentages on hover with scaled canvas coordinates and camera controls', async () => {
+    it('shows interpolated speed and pedal percentages on hover with scaled canvas coordinates and camera controls', async () => {
         const reference = { ...fixtures.expected, x: [0, 0.4, 0.8, 1],
             target_features: ['expert_optimal_throttle', 'expert_optimal_player_pos_z', 'expert_optimal_brake',
-                'expert_optimal_player_pos_x', 'expert_optimal_player_pos_y'],
-            y: [[1, 20, 0, 0, 0], [0.2, 40, 1, 100, 0], [0, 70, 0.5, 100, 100], [1, 20, 0, 0, 0]],
+                'expert_optimal_player_pos_x', 'expert_optimal_player_pos_y', 'expert_optimal_speed'],
+            y: [[1, 20, 0, 0, 0, 0], [0.2, 40, 1, 100, 0, 200], [0, 70, 0.5, 100, 100, 150], [1, 20, 0, 0, 0, 0]],
         };
         const map = { ...circuitMap(), samples: { middle_line: reference.y.map((row, index) => ({
             bin: index, normalized_position: reference.x[index], x: row[3], y: row[4], z: row[1],
@@ -232,18 +232,21 @@ describe('reference lap overlay', () => {
         expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
         hover(0, 0.5);
         expect(screen.getByRole('tooltip')).toHaveTextContent('Reference lap · 20.0%');
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Speed: 100.0 km/h');
         expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: 50.0%');
         expect(screen.getByRole('tooltip')).toHaveTextContent('Throttle: 60.0%');
         fireEvent.click(screen.getByRole('checkbox', { name: 'Reference brake' }));
         fireEvent.click(screen.getByRole('checkbox', { name: 'Reference throttle' }));
         expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: 50.0%');
         hover(0, 0);
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Speed: 0.0 km/h');
         expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: 0.0%');
         expect(screen.getByRole('tooltip')).toHaveTextContent('Throttle: 100.0%');
         for (const name of ['X', 'Y', '+', 'Fit']) {
             fireEvent.click(screen.getByRole('button', { name }));
             hover(2, 0.5);
             expect(screen.getByRole('tooltip')).toHaveTextContent('Reference lap · 90.0%');
+            expect(screen.getByRole('tooltip')).toHaveTextContent('Speed: 75.0 km/h');
             expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: 25.0%');
             expect(screen.getByRole('tooltip')).toHaveTextContent('Throttle: 50.0%');
         }
@@ -262,7 +265,7 @@ describe('reference lap overlay', () => {
             y: fixtures.expected.y.map((row) => [...row, 0.5, 1]),
         };
         const wet = { ...reference, avg_grip_int: 5,
-            target_features: [...fixtures.expected.target_features, 'expert_optimal_throttle'],
+            target_features: [...fixtures.expected.target_features.map((name) => name === 'expert_optimal_speed' ? 'unused' : name), 'expert_optimal_throttle'],
             y: fixtures.expected.y.map((row) => [...row, 0]),
         };
         (loadTopLapReferenceModel as jest.Mock).mockResolvedValue([reference, wet]);
@@ -272,10 +275,12 @@ describe('reference lap overlay', () => {
         jest.spyOn(mapCanvas, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 800, height: 520 } as DOMRect);
         const [x, y] = referenceStrokes()[0].points[0];
         fireEvent.mouseMove(mapCanvas, { clientX: x, clientY: y });
+        expect(screen.getByRole('tooltip')).toHaveTextContent(`Speed: ${fixtures.expected.y[0][fixtures.expected.target_features.indexOf('expert_optimal_speed')].toFixed(1)} km/h`);
         expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: 50.0%');
         telemetry.currentTelemetry = { ...telemetry.currentTelemetry, Graphics_track_grip_status: 5 };
         view.rerender(<LiveTrajectoryMap name="live-map" />);
         expect(screen.getByRole('tooltip')).toHaveTextContent('Brake: Unavailable');
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Speed: Unavailable');
         expect(screen.getByRole('tooltip')).toHaveTextContent('Throttle: 0.0%');
         fireEvent.click(screen.getByRole('button', { name: '+' }));
         expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();

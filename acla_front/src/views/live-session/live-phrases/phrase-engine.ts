@@ -12,6 +12,7 @@ import { lapDistance } from './phrase-corner-geometry';
 import type { DriverCornerSummary } from '../event-log/corner-summary';
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import { readReferenceGuidance, REFERENCE_CUE_COOLDOWN_MS, REFERENCE_POSITION_MAX_AGE_MS, type ReferenceCue, type ReferencePedalZone, type ReferenceSteeringPhase, type ReferencePositionSample } from './phrase-reference-guidance';
+import { BRAKE_RELEASE_RATE_THRESHOLD, PhraseLookahead } from './phrase-lookahead';
 import { ReferenceMovement, REFERENCE_MOVEMENTS, type ReferenceMovementCue, type MovementDirection } from './phrase-reference-movement';
 import { copyPhraseMap, copyPhraseReference, normalizeDrivingAggression, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
 import type { ReferenceSteeringDirection } from './phrase-steering-direction';
@@ -22,6 +23,7 @@ import { BRAKE_RELEASE_SETTINGS, brakeReleaseSettings, SLOWLY_RELEASE_BRAKE } fr
 
 export const TELEMETRY_MAX_AGE_MS = 1500;
 const DECELERATION_INTERVAL_MS = 500;
+const STEERING_DEVIATION_HOLD_MS = 500;
 export const REARM_MS = 500;
 export const COOLDOWN_MS = 8000;
 const HISTORY_LIMIT = 50;
@@ -50,7 +52,9 @@ const INPUT_LABELS = {
     referenceBraking: 'Reference braking or brake correction needed',
     referencePedalZone: 'Interpolated reference pedal zone',
     referenceSteeringPhase: 'Reference steering phase',
-    referenceSteeringDirection: 'Direction toward the reference endpoint',
+    referenceSteeringDirection: 'Required steering correction',
+    referenceSteeringDeviationMs: 'Same direction deviation duration (ms)',
+    referenceSteeringCorrectionSpoken: 'Direction correction already spoken during this deviation',
     referenceBrakeReleaseRate: 'Reference deceleration easing rate while braking (m/s³)',
 } as const;
 type Input = keyof typeof INPUT_LABELS;
@@ -61,6 +65,8 @@ type Inputs = PhraseMapContext & ReturnType<typeof getPhrasePositions> & {
     referenceBrakeReleaseRate?: number;
     referenceSteeringPhase?: ReferenceSteeringPhase | 'none';
     referenceSteeringDirection?: ReferenceSteeringDirection;
+    referenceSteeringDeviationMs?: number;
+    referenceSteeringCorrectionSpoken?: 0 | 1;
     insideLine?: 0 | 1; outsideLine?: 0 | 1; opponentDistanceM?: number;
     closingOnOpponent?: 0 | 1; directlyBehindOpponent?: 0 | 1;
     opponentCornerEtaS?: number; approachCornerSpeed?: PhraseMapContext['cornerSpeed'];
@@ -94,11 +100,11 @@ export class PhraseCondition {
                 brake: 'Brake demand for the target speed is at least 10% and the brake is not yet applied',
                 steering: 'The live phrase reference direction-change range has started toward an overlapping corner; the remaining trajectory is partially or fully inside the corner.',
                 throttle: 'Throttle demand for the target speed is at least 15% and the throttle is not yet applied, near the line and clear of braking',
-                moreBrake: 'Measured deceleration is below the rate needed to follow the reference and close the speed error, without an active pedal release and with brake applied below full pressure',
+                moreBrake: 'Speed is at least 5 km/h above the local reference, or within the speed tolerance with deceleration below the required rate; the brake is applied below full pressure and is not being released',
                 releaseBrake: 'The brake is applied and the speed profile needs no further deceleration; without reference speed, pedal demand is below 10%',
-                releaseBrakeSlower: 'The brake pedal is being released and measured deceleration is below the required rate by more than 10% or 0.1 m/s², whichever is greater',
-                releaseBrakeFaster: 'Measured deceleration exceeds the rate needed to follow the reference and close the speed error by more than 10% or 0.1 m/s², whichever is greater',
-                holdBrake: 'Measured deceleration matches the rate needed to follow the reference and close the speed error within 10% or 0.1 m/s², whichever is greater',
+                releaseBrakeSlower: 'The brake pedal is being released while speed is at least 5 km/h above the local reference, or within the speed tolerance with deceleration below the required rate by more than 10% or 0.1 m/s², whichever is greater',
+                releaseBrakeFaster: 'Speed is at least 5 km/h below the local reference with positive braking demand, or within the speed tolerance with deceleration above the required rate by more than 10% or 0.1 m/s², whichever is greater',
+                holdBrake: 'Speed is within 5 km/h of the local reference and lookahead deceleration matches the required rate within 10% or 0.1 m/s², whichever is greater',
                 moreThrottle: 'Applied throttle is at least 15% and at least 15 points below demand from reference throttle, acceleration and target speed, within 2 m of the line, with brake below 10% and speed less than 5 km/h above the reference',
                 lessThrottle: 'Speed is at least 5 km/h above the local reference and the driver is at least 5 units outside the reference line and moving farther outward, with throttle applied',
             };
@@ -107,9 +113,8 @@ export class PhraseCondition {
                 : descriptions[this.value as ReferenceCue] ?? INPUT_LABELS.referenceCue;
         }
         if (this.operator === 'in' || this.operator === '=') {
-            if (this.input === 'referenceSteeringDirection') return this.value === 'tooWide'
-                ? 'Normalized velocity points outside the direction from the error-adjusted start to the reference endpoint'
-                : 'Normalized velocity points inside the direction from the error-adjusted start to the reference endpoint';
+            if (this.input === 'referenceSteeringCorrectionSpoken' && this.value === 0) return 'No direction correction has been spoken during this deviation';
+            if (this.input === 'referenceSteeringDirection') return `Predicted motion needs a correction to the ${this.value} along the adjusted reference curve`;
             if (this.input === 'referenceSteeringPhase') return this.value === 'prepare'
                 ? 'The reference direction-change range has started toward an overlapping corner; reference steering has not reached the 0.08 turn-in threshold'
                 : 'The reference direction-change range has started toward an overlapping corner; reference steering has reached the 0.08 turn-in threshold';
@@ -299,25 +304,27 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
     },
     ...([
         ['brake', 'Brake', 'Brake.', 'Apply the brake to follow the speed profile adjusted by Driving aggression.'],
-        ['moreBrake', 'More brake', 'More brake.', 'Increase pressure when deceleration falls short of the rate needed to reach the adjusted speed target and the pedal is not being released.'],
+        ['moreBrake', 'More brake', 'More brake.', 'Increase pressure when faster than the local adjusted reference, or near its speed but decelerating too little, without an active pedal release.'],
         ['releaseBrake', 'Release the brake', 'Release the brake.', 'Release the pedal when the adjusted speed target no longer requires braking.'],
-        ['releaseBrakeSlower', 'Release brake slower', 'Release brake slower.', 'Slow the current pedal release to retain the deceleration needed to reach the adjusted turn-in speed.'],
-        ['releaseBrakeFaster', 'Release brake faster', 'Release brake faster.', 'Release pressure faster when deceleration would bring speed below the adjusted target.'],
-        ['holdBrake', 'Hold brake pressure', 'Hold brake pressure.', 'Keep brake pressure steady while deceleration matches the rate needed to reach the adjusted speed target.'],
+        ['releaseBrakeSlower', 'Release brake slower', 'Release brake slower.', 'Slow the current pedal release when faster than the local adjusted reference, or near its speed but decelerating too little.'],
+        ['releaseBrakeFaster', 'Release brake faster', 'Release brake faster.', 'Reduce pressure when already slower than the local adjusted reference, or near its speed but decelerating too much.'],
+        ['holdBrake', 'Hold brake pressure', 'Hold brake pressure.', 'Keep brake pressure steady while both speed and deceleration match the local adjusted reference.'],
     ] as const).map(([referenceCue, name, sentence, description]) => ({
         id: `reference-${referenceCue}`, referenceCue, name, sentence, description,
         ...(referenceCue === 'brake' ? { amplifyCurves: brakeCurves } : {}),
         holdMs: 0,
-        conditions: [condition('speed', '>=', 20), condition('referencePedalZone', '=', 'brake'), condition('referenceCue', '=', referenceCue)],
+        conditions: [condition('referencePedalZone', '=', 'brake'), condition('referenceCue', '=', referenceCue)],
     })),
     {
         id: STEERING_CLOSURE_ID, referenceCue: 'steering', name: 'Steering', holdMs: 0,
-        description: 'Enter from root once the live phrase reference direction-change range starts toward an overlapping corner and immediately say Turn. After Turn, say Slowly release brake once when reference deceleration eases while braking; delivery follows its change rate. Give Too wide or Too tight direction guidance only when Driving aggression is 100. Stay entered until the continuous reference trajectory direction-change range ends.',
+        description: 'Enter from root once the live phrase reference direction-change range starts toward an overlapping corner and immediately say Turn. After Turn, say Slowly release brake once when reference deceleration eases while braking; delivery follows its change rate. Say Stay right a bit or Stay left a bit once when the same direction deviation persists for 500 ms and Driving aggression is 100; realignment rearms these cues. Stay entered until the continuous reference trajectory direction-change range ends.',
         sentence: 'Turn',
-        conditions: [condition('speed', '>=', 20), condition('referenceCue', '=', 'steering')],
+        conditions: [condition('referenceCue', '=', 'steering')],
         additionalActions: [
-            { sentence: 'Too wide', actionConditions: [condition('drivingAggression', '=', 100), condition('referenceSteeringDirection', '=', 'tooWide')] },
-            { sentence: 'Too tight', actionConditions: [condition('drivingAggression', '=', 100), condition('referenceSteeringDirection', '=', 'tooTight')] },
+            { sentence: 'Stay right a bit', actionConditions: [condition('drivingAggression', '=', 100), condition('referenceSteeringDirection', '=', 'right'),
+                condition('referenceSteeringDeviationMs', '>=', STEERING_DEVIATION_HOLD_MS), condition('referenceSteeringCorrectionSpoken', '=', 0)] },
+            { sentence: 'Stay left a bit', actionConditions: [condition('drivingAggression', '=', 100), condition('referenceSteeringDirection', '=', 'left'),
+                condition('referenceSteeringDeviationMs', '>=', STEERING_DEVIATION_HOLD_MS), condition('referenceSteeringCorrectionSpoken', '=', 0)] },
             { sentence: SLOWLY_RELEASE_BRAKE, amplifyCurves: releaseBrakeCurves,
                 actionConditions: [condition('referenceBrakeReleaseRate', '>=', 0.01)],
                 instanceSettings: (context) => brakeReleaseSettings(context.guidance.brakeReleaseRate!),
@@ -338,7 +345,7 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
     })),
 ];
 
-export type ClosureStatus = 'Inactive' | 'Missing input' | 'Not matched' | 'Confirming' | 'Waiting for action' | 'Active' | 'Cooldown';
+export type ClosureStatus = 'Not evaluated' | 'Missing input' | 'Not matched' | 'Confirming' | 'Waiting' | 'Active' | 'Cooldown';
 export interface PhraseEvent {
     id: number; ruleId: string; sentence: string; timestamp: number; expiresAt?: number;
     /** Present on engine-produced events; optional for older snapshot consumers. */
@@ -373,6 +380,7 @@ export interface PhraseContext {
     now: number;
     emit: boolean;
     telemetryReady: boolean;
+    intendedTelemetry: StandardTelemetrySample;
     inputs: Inputs;
     guidance: ReturnType<typeof readReferenceGuidance>;
     movementCue: () => ReferenceMovementCue | undefined;
@@ -472,7 +480,7 @@ function phraseEntry(phrase: PhraseDefinition) {
         const cooldown = phrase.referenceCue !== 'steering' && memory.lastEmitted !== undefined
             && now - memory.lastEmitted < (phrase.referenceCue ? REFERENCE_CUE_COOLDOWN_MS : COOLDOWN_MS);
         const status: ClosureStatus = !context.telemetryReady || (!fits && missingConditionInputs(conditions).length > 0) ? 'Missing input'
-            : !fits || !selected ? 'Not matched' : !memory.armed ? phrase.referenceCue ? 'Not matched' : 'Active'
+            : !fits ? 'Not matched' : !selected || !memory.armed ? 'Waiting'
                 : memory.since === undefined || now - memory.since < phrase.holdMs ? 'Confirming' : cooldown ? 'Cooldown' : 'Confirming';
         context.inspections.set(phrase.id, { status });
         return fits && selected && context.emit && memory.armed && memory.since !== undefined
@@ -567,7 +575,7 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                 : phrase.id === 'second-apex' ? say.slice(0, 2) : say;
             const children = phrase.referenceCue === 'steering' ? say.slice(1, 3).map((action, index) =>
                 new Closure<PhraseContext>(action.description,
-                    'Compare directions after Turn; repeat without a timed gap while the correction is needed.',
+                    'After Turn, require the same direction deviation for 500 ms; speak once until the car realigns.',
                     describeCondition((context, state) => state.getExecution(say[0]).status === 'completed'
                         && measureAction(context, `${phrase.id}:say:${index + 1}`, getPhraseActions(phrase)[index + 1].conditions) && context.emit,
                     (context, state) => [
@@ -709,12 +717,15 @@ export class PhraseEngine {
     readonly root: Closure<PhraseContext>;
     state: State<PhraseContext>;
     private sample: StandardTelemetrySample = {};
+    private lookahead = new PhraseLookahead();
     private receivedAt = -Infinity;
     private deceleration?: number;
     private brakeReleasing = false;
     private decelerationSample?: { speed: number; brake?: number; receivedAt: number };
     private referencePosition?: ReferencePositionSample;
     private previousReferencePosition?: ReferencePositionSample;
+    private steeringDeviation?: { direction: ReferenceSteeringDirection; since: number };
+    private steeringCorrectionSpoken = false;
     private vision: PhraseVisionInput | null = null;
     private visionAfter = -Infinity;
     private opponentDistanceM?: number;
@@ -756,6 +767,8 @@ export class PhraseEngine {
 
     receiveMap(map: CircuitMapDto | null, now: number, referenceLap: TopLapReferenceEntry | null = null): PhraseSnapshot {
         if (referenceLap !== this.sourceReferenceLap) {
+            this.steeringDeviation = undefined;
+            this.steeringCorrectionSpoken = false;
             // Keep source identity only to validate Live Map's fresh lateral-position predictions.
             this.sourceReferenceLap = referenceLap;
             this.referenceBaseline = copyPhraseReference(referenceLap);
@@ -765,6 +778,8 @@ export class PhraseEngine {
             this.referencePosition = this.previousReferencePosition = undefined;
         }
         if (map !== this.sourceMap) {
+            this.steeringDeviation = undefined;
+            this.steeringCorrectionSpoken = false;
             this.sourceMap = map;
             this.map = copyPhraseMap(map);
             this.mapContext = createPhraseMapContext(this.map);
@@ -782,6 +797,8 @@ export class PhraseEngine {
     setDrivingAggression(value: number, now: number): PhraseSnapshot {
         const aggression = normalizeDrivingAggression(value);
         if (aggression !== this.drivingAggression) {
+            this.steeringDeviation = undefined;
+            this.steeringCorrectionSpoken = false;
             this.drivingAggression = aggression;
             // Always rebuild from the untouched local baseline, never from an already adjusted speed profile.
             this.referenceLap = copyPhraseReference(this.referenceBaseline, aggression);
@@ -795,7 +812,10 @@ export class PhraseEngine {
     }
 
     reset(now: number) {
+        this.steeringDeviation = undefined;
+        this.steeringCorrectionSpoken = false;
         this.sample = {};
+        this.lookahead.reset();
         this.receivedAt = -Infinity;
         this.deceleration = undefined;
         this.brakeReleasing = false;
@@ -826,6 +846,7 @@ export class PhraseEngine {
                 && this.sample.Static_track === event.sample.Static_track && this.sample.Static_car_model === event.sample.Static_car_model
                 && this.sessionGeneration === event.sessionGeneration && this.streamGeneration === event.streamGeneration;
             if (!continuous) {
+                this.steeringDeviation = undefined;
                 this.deceleration = undefined;
                 this.brakeReleasing = false;
                 this.decelerationSample = undefined;
@@ -845,6 +866,7 @@ export class PhraseEngine {
             }
             // Paused, replay and off frames cannot generate live guidance.
             this.sample = event.telemetryStatus === 2 ? event.sample : {};
+            this.lookahead.update(this.sample, now, continuous, this.referenceLap);
             this.receivedAt = event.telemetryStatus === 2 ? now : -Infinity;
             this.opponentMotion.update(this.sample, now, TELEMETRY_MAX_AGE_MS);
             this.cornerSummaries = cornerSummaries;
@@ -854,6 +876,9 @@ export class PhraseEngine {
 
     receiveVision(vision: PhraseVisionInput | null, now: number): PhraseSnapshot {
         const sameCalibration = JSON.stringify(vision?.calibration) === JSON.stringify(this.vision?.calibration);
+        if (!sameCalibration || !this.vision || now - this.vision.capturedAt > REFERENCE_POSITION_MAX_AGE_MS) {
+            this.steeringDeviation = undefined;
+        }
         if (!sameCalibration) {
             this.referenceMovement.reset();
             this.referencePosition = this.previousReferencePosition = undefined;
@@ -918,23 +943,43 @@ export class PhraseEngine {
         if (activeZone?.zone !== 'throttle') this.referencePosition = this.previousReferencePosition = undefined;
         const previousPosition = positionVision?.capturedAt === this.referencePosition?.capturedAt
             ? this.previousReferencePosition : this.referencePosition;
+        // Anticipate reference conditions in the input layer, before normal parent/child evaluation.
+        // Freshness, capture validation and closure clocks still use measured telemetry and real time.
+        const intendedTelemetry = telemetryReady ? this.lookahead.project(this.sample, this.referenceLap) : {};
+        const intendedDeceleration = telemetryReady ? this.lookahead.projectDeceleration(this.sample) : undefined;
+        const intendedBrakeReleasing = telemetryReady ? this.lookahead.projectBrakeReleasing(this.sample) : undefined;
+        const referencePosition = intendedTelemetry.Graphics_normalized_car_position;
+        const referenceMapContext = telemetryReady && sameMap ? this.mapContext.at(referencePosition) : {};
         const steeringCorner = telemetryReady && sameMap
-            ? mapContext.cornerGeometry ? mapContext : this.mapContext.approaching(this.sample.Graphics_normalized_car_position)
+            ? referenceMapContext.cornerGeometry ? referenceMapContext : this.mapContext.approaching(referencePosition)
             : undefined;
         const steeringBounds = steeringCorner?.cornerStartPosition !== undefined && steeringCorner.cornerEndPosition !== undefined
             ? { start: steeringCorner.cornerStartPosition, end: steeringCorner.cornerEndPosition } : undefined;
         const readGuidance = () => readReferenceGuidance(telemetryReady ? this.sample : {}, positionVision, this.referenceLap, this.game, now,
-            this.sourceReferenceLap, telemetryReady ? this.deceleration : undefined, previousPosition, steeringCorner?.cornerGeometry?.turnSign, steeringBounds, this.brakeReleasing);
+            this.sourceReferenceLap, intendedDeceleration ?? (telemetryReady ? this.deceleration : undefined), previousPosition,
+            steeringCorner?.cornerGeometry?.turnSign, steeringBounds, intendedBrakeReleasing ?? this.brakeReleasing,
+            referencePosition, intendedTelemetry);
         let guidance = readGuidance();
         const driverCornerIds = telemetryReady && sameMap
             ? this.mapContext.cornersAt(this.sample.Graphics_normalized_car_position) : undefined;
         const driverOnStraight = telemetryReady && sameMap
-            ? this.mapContext.isStraightAt(this.sample.Graphics_normalized_car_position) : undefined;
+            ? this.mapContext.isStraightAt(referencePosition) : undefined;
         inputs.driverOnStraight = driverOnStraight === undefined ? undefined : driverOnStraight ? 1 : 0;
         inputs.referenceBraking = guidance.braking === undefined ? undefined : guidance.braking ? 1 : 0;
         inputs.referencePedalZone = guidance.pedalZone;
         inputs.referenceSteeringPhase = guidance.steeringPhase ?? (guidance.ready ? 'none' : undefined);
         inputs.referenceSteeringDirection = guidance.steeringDirection;
+        const direction = guidance.steeringDirection;
+        // Missing samples reset the hold but do not prove that the car has realigned.
+        if (direction === 'aligned') this.steeringCorrectionSpoken = false;
+        inputs.referenceSteeringCorrectionSpoken = this.steeringCorrectionSpoken ? 1 : 0;
+        if (this.drivingAggression === 100 && direction !== undefined && direction !== 'aligned'
+            && this.state.path.some((node) => node.metadata.id === STEERING_CLOSURE_ID)) {
+            if (this.steeringDeviation?.direction !== direction || now < this.steeringDeviation.since) {
+                this.steeringDeviation = { direction, since: now };
+            }
+            inputs.referenceSteeringDeviationMs = now - this.steeringDeviation.since;
+        } else this.steeringDeviation = undefined;
         inputs.referenceBrakeReleaseRate = guidance.brakeReleaseRate;
         const referenceZone = pedalZones.find(({ zone, id }) => guidance.pedalZone === zone && this.phraseClosures.has(id));
         const pedalGuidanceAllowed = Boolean(activeZone || referenceZone);
@@ -966,7 +1011,7 @@ export class PhraseEngine {
             }
         }
         const context: PhraseContext = {
-            now, emit, telemetryReady, inputs, guidance, memory: this.memory,
+            now, emit, telemetryReady, intendedTelemetry, inputs, guidance, memory: this.memory,
             referenceMovementAllowed, referencePedalZone: guidance.pedalZone,
             movementCue: () => {
                 const cue = this.referenceMovement.update(referenceMovementAllowed ? guidance.lateralOffset : undefined, positionVision?.capturedAt);
@@ -990,7 +1035,8 @@ export class PhraseEngine {
                         else if (this.receivedAt - baseline.receivedAt >= DECELERATION_INTERVAL_MS) {
                             const seconds = (this.receivedAt - baseline.receivedAt) / 1000;
                             this.deceleration = (baseline.speed - speed) / 3.6 / seconds;
-                            this.brakeReleasing = baseline.brake !== undefined && brake !== undefined && (baseline.brake - brake) / seconds > 0.01;
+                            this.brakeReleasing = baseline.brake !== undefined && brake !== undefined
+                                && (baseline.brake - brake) / seconds > BRAKE_RELEASE_RATE_THRESHOLD;
                             this.decelerationSample = { speed, brake, receivedAt: this.receivedAt };
                             guidance = readGuidance();
                             context.guidance = guidance;
@@ -1011,6 +1057,7 @@ export class PhraseEngine {
                 const sentence = instance.speech.text;
                 const brakeRelease = phrase.referenceCue === 'steering' && sentence === SLOWLY_RELEASE_BRAKE;
                 const steeringCorrection = phrase.referenceCue === 'steering' && sentence !== phrase.sentence && !brakeRelease;
+                if (steeringCorrection) this.steeringCorrectionSpoken = true;
                 const expiresAt = brakeRelease ? now + 4000 : steeringCorrection ? now + 1500 : phrase.referenceCue ? guidance[phrase.referenceCue] : undefined;
                 this.events = [...this.events, { id: ++this.nextId, ruleId: phrase.id, sentence, instance, timestamp: now,
                     ...(steeringCorrection ? { steeringDirection: guidance.steeringDirection }
@@ -1034,6 +1081,14 @@ export class PhraseEngine {
             if (previousClosure === this.root || previousClosure.metadata.id === STEERING_CLOSURE_ID
                 || (this.state.current !== this.root && !previousClosure.metadata.id?.startsWith('reference-'))) break;
         }
+        if (!this.state.path.some((node) => node.metadata.id === STEERING_CLOSURE_ID)) {
+            this.steeringDeviation = undefined;
+            this.steeringCorrectionSpoken = false;
+        }
+        else if (!this.steeringDeviation && this.drivingAggression === 100 && direction !== undefined && direction !== 'aligned') {
+            // Count the first valid deviation on the same frame that enters Steering and says Turn.
+            this.steeringDeviation = { direction, since: now };
+        }
         const root = this.state.snapshot(context);
         const nodes = new Map<string, NodeSnapshot>();
         const collect = (node: NodeSnapshot) => {
@@ -1048,9 +1103,7 @@ export class PhraseEngine {
                 ? context.entryConditions.get(phrase.id) ?? unevaluatedConditions(phrase.conditions) : unevaluatedConditions(phrase.conditions);
             const actionConditions = context.actionConditions.get(`${phrase.id}:say:0`);
             const missing = conditionsMatch(conditions) ? [] : missingConditionInputs(conditions);
-            const status: ClosureStatus = node.onPath
-                ? node.current && (phrase.actionConditions || phrase.additionalActions?.length) ? 'Waiting for action' : 'Active'
-                : node.status as ClosureStatus;
+            const status = node.status as ClosureStatus;
             return [{
                 id: phrase.id, name: node.name, description: node.description, holdMs: phrase.holdMs,
                 status, missing, conditions, actionConditions,

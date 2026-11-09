@@ -10,7 +10,7 @@ import { brakeReleaseSettings, SLOWLY_RELEASE_BRAKE } from './phrase-brake-relea
 import { getPhraseSpeechInstances } from './phrase-speech';
 import { createPhraseRoot, PHRASE_DEFINITIONS, PhraseEngine } from './phrase-engine';
 import { Closure } from './closure';
-import { circuitMap, vision as trafficVision } from './test-fixtures';
+import { circuitMap, variableBrakingReference, vision as trafficVision } from './test-fixtures';
 
 beforeEach(() => jest.spyOn(Math, 'random').mockReturnValue(0));
 afterEach(() => jest.restoreAllMocks());
@@ -35,6 +35,14 @@ function addSpeed(lap: TopLapReferenceEntry) {
 }
 const driving = (position: number): StandardTelemetrySample => ({ Static_track: 'test', Static_car_model: 'car',
     Graphics_normalized_car_position: position, Physics_speed_kmh: 36, Physics_steer_angle: 0, Physics_brake: 0, Physics_gas: 0 });
+// These fixtures have 10 m per 0.01 progress (the circular fixture supplies its chord length).
+// Position-based rule tests specify the decision point, so place measured telemetry 500 ms before it.
+const beforeDecision = (sample: StandardTelemetrySample, metresPerLap = 1000): StandardTelemetrySample => {
+    const position = sample.Graphics_normalized_car_position, speed = sample.Physics_speed_kmh;
+    if (position === undefined || speed === undefined || !Number.isFinite(speed) || speed < 0) return sample;
+    const before = position - speed / 3.6 * 0.5 / metresPerLap;
+    return { ...sample, Graphics_normalized_car_position: before < 0 ? before + 1 : before };
+};
 const localMotion = (vx: number, vy: number, heading = 0): StandardTelemetrySample => ({
     Physics_heading: heading, Physics_pitch: 0, Physics_roll: 0,
     Physics_local_velocity_x: vx * Math.cos(heading) + vy * Math.sin(heading),
@@ -77,6 +85,22 @@ function trajectoryLap(degrees = 12, sign = 1, game = 'acc') {
 }
 
 describe('Brake-zone direction-change exit', () => {
+    it.each([0, 10, 19.99])('enters Brake and then Steering without a minimum speed at %s km/h', (speed) => {
+        const lap = trajectoryLap(2);
+        lap.target_features[6] = 'missing speed';
+        const engine = new PhraseEngine();
+        engine.receiveMap(steeringMap(), 0, lap);
+        const at = (position: number, now: number) => engine.receiveTelemetry(frame({
+            ...driving(position), Physics_speed_kmh: speed,
+        }), now);
+        const braking = at(0.24, 1000);
+        expect(braking.state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
+        expect(braking.events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
+        const steering = at(0.25, 1100);
+        expect(steering.state.path).toEqual(['root', 'Steering', 'say phrase']);
+        expect(steering.events.map(({ sentence }) => sentence)).toEqual(['Brake.', 'Turn']);
+    });
+
     it.each(['acc', 'iracing'] as const)('gives way to Steering at a gentle range start in %s', (game) => {
         for (const sign of [-1, 1] as const) {
             const lap = trajectoryLap(2, sign, game);
@@ -87,9 +111,9 @@ describe('Brake-zone direction-change exit', () => {
                 event.update.game = game;
                 return engine.receiveTelemetry(event, now);
             };
-            const approaching = at(0.249, 1000);
+            const approaching = at(0.2441, 1000);
             expect(approaching.state.path).toEqual(['root', 'Brake zone', 'Release the brake', 'say phrase']);
-            const exited = at(0.25, 1100);
+            const exited = at(0.2451, 1100);
             expect(exited.state.path).toEqual(['root', 'Steering', 'say phrase']);
             expect(exited.referenceSteeringPhase).toBe('prepare');
             expect(exited.events).toEqual([...approaching.events, expect.objectContaining({ sentence: 'Turn', timestamp: 1100 })]);
@@ -123,7 +147,7 @@ describe('Brake-zone direction-change exit', () => {
                     ...driving(position), Physics_speed_kmh: speed + excess, Physics_brake: 0.8,
                 }), now);
             };
-            expect(at(0.249, 0, 900).state.path).toContain('Brake zone');
+            expect(at(0.244, 0, 900).state.path).toContain('Brake zone');
             const started = at(0.25, 1, 1000);
             expect(started.referenceSteeringPhase).toBe('prepare');
             expect(started.state.path).toEqual(['root', 'Steering', 'say phrase']);
@@ -157,7 +181,7 @@ describe('Brake-zone direction-change exit', () => {
             const at = (position: number, speed: number, now: number) => engine.receiveTelemetry(frame({
                 ...driving(position), Physics_speed_kmh: speed, Physics_brake: 0.8,
             }), now);
-            expect(at(0.249, 42, 1000).state.path).toContain('Brake zone');
+            expect(at(0.244, 42, 1000).state.path).toContain('Brake zone');
             const entered = at(0.250001, 42, 1100);
             expect(entered.referenceSteeringPhase).toBe('prepare');
             expect(entered.state.path).toEqual(['root', 'Steering', 'say phrase']);
@@ -165,7 +189,7 @@ describe('Brake-zone direction-change exit', () => {
             expect(at(0.265, 36, 1300).state.path).toEqual(['root', 'Steering', 'say phrase']);
         });
 
-    it.each([36, 35, 42])('enters the next Steering range without cooldown at %s km/h while reference brake remains applied', (speed) => {
+    it.each([0, 10, 19.99, 36, 35, 42])('enters the next Steering range without cooldown at %s km/h while reference brake remains applied', (speed) => {
         const lap = trajectoryLap(2);
         setTrajectory(lap, (i) => 2 * Math.max(0, Math.min(5, i - 25))
             + 2 * Math.max(0, Math.min(10, i - 35)));
@@ -215,11 +239,11 @@ describe('Brake-zone direction-change exit', () => {
         expect(guidance.steeringPhase).toBe('prepare');
     });
 
-    it.each([false, true])('checks a gentle direction-change range across start/finish (duplicate: %s)', (duplicate) => {
+    it.each([false, true])('checks a qualifying direction-change range across start/finish (duplicate: %s)', (duplicate) => {
         const lap = trajectoryLap(2);
         lap.y.forEach((row, i) => {
-            row[0] = 1000 * Math.cos(i * 2 * Math.PI / 100);
-            row[1] = 1000 * Math.sin(i * 2 * Math.PI / 100);
+            row[0] = 300 * Math.cos(i * 2 * Math.PI / 100);
+            row[1] = 300 * Math.sin(i * 2 * Math.PI / 100);
         });
         if (duplicate) { lap.x.push(1); lap.y.push([...lap.y[0]]); }
         for (const position of [0.99, 0.999, 0, 1, 0.01]) {
@@ -266,12 +290,12 @@ it.each([-1, 1] as const)('follows the curved reference tangent instead of aimin
 it('changes the correction with Steering end while the current reference geometry stays the same', () => {
     const angle = 6 * Math.PI / 180;
     const sample = { ...driving(0.26), ...localMotion(10 * Math.cos(angle), 10 * Math.sin(angle), angle - Math.PI / 2) };
-    for (const [turnSegments, expected] of [[5, 'tooWide'], [15, 'aligned']] as const) {
+    for (const [turnSegments, expected] of [[2, 'right'], [15, 'aligned']] as const) {
         const lap = trajectoryLap();
         setTrajectory(lap, (i) => 12 * Math.max(0, Math.min(turnSegments, i - 25)));
         const view = detection(lap, sample);
-        view.position!.referenceDelta = [6, 0, 0];
-        // The shorter turn leaves 50 units to rejoin; the longer turn leaves 150.
+        view.position!.referenceDelta = [12, 0, 0];
+        // The shorter turn leaves 20 units to rejoin; the longer turn leaves 150.
         expect(readReferenceGuidance(sample, view, lap, 'acc', 1000, lap, undefined, undefined, 1).steeringDirection).toBe(expected);
     }
 });
@@ -301,9 +325,9 @@ it('uses capture-paired motion and progress, and withholds direction when the re
     expect(readReferenceGuidance(live, view, lap, 'acc', 1100, lap, undefined, undefined, 1).steeringDirection).toBeUndefined();
 });
 
-it.each(['acc', 'iracing'])('matches the direction-change range from its start without an angle threshold in %s', (game) => {
+it.each(['acc', 'iracing'])('starts qualifying direction-change ranges at the same absolute threshold in %s', (game) => {
     for (const sign of [-1, 1] as const) {
-        for (const degrees of [0.1, 2, 9.998, 10, 10.002]) {
+        for (const degrees of [2, 9.998, 10, 10.002]) {
             const lap = trajectoryLap(degrees, sign, game);
             expect(steeringGuidance(driving(0.2499), lap, sign).steering).toBeUndefined();
             for (const position of [0.25, 0.2501, 0.26]) {
@@ -428,11 +452,53 @@ it.each(['acc', 'iracing'] as const)('holds Steering through a gentler turn unti
     expect(at(0.32, 1100).state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(at(0.37, 1200).state.path).toEqual(['root', 'Steering', 'say phrase']);
     // The mapped corner has already ended (0.35), and the local angle is below 5 degrees.
-    expect(at(0.409, 1300).state.path).toEqual(['root', 'Steering', 'say phrase']);
-    expect(at(0.41, 1400).state.path).toEqual(['root']);
+    expect(at(0.4049, 1300).state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(at(0.4059, 1400).state.path).toEqual(['root']);
 });
 
-describe.each(['acc', 'iracing'] as const)('direction-change exit tails in %s', (game) => {
+describe.each(['acc', 'iracing'] as const)('direction-change boundaries in %s', (game) => {
+    it.each([-1, 1] as const)('rejects nearly straight ranges below 0.5 degrees per 10 m in direction %s', (sign) => {
+        for (const degrees of [0.1, 0.499, 0.5, 0.501, 0.75, 1]) {
+            const lap = trajectoryLap(degrees, sign, game);
+            const guidance = steeringGuidance(driving(0.30), lap, sign);
+            if (degrees < 0.5) {
+                expect(guidance).toMatchObject({ steeringRange: null, brakeZoneExit: false });
+                expect(guidance.steeringPhase).toBeUndefined();
+            } else {
+                expect(guidance).toMatchObject({ steeringRange: expect.any(Object), brakeZoneExit: true });
+            }
+        }
+    });
+
+    it.each([-1, 1] as const)('uses the same curvature threshold at entry and exit in direction %s', (sign) => {
+        const lap = trajectoryLap(6, sign, game);
+        setTrajectory(lap, (i) => sign * (0.05 * Math.max(0, Math.min(5, i - 20))
+            + 6 * Math.max(0, Math.min(10, i - 25)) + 0.05 * Math.max(0, Math.min(10, i - 35))));
+        const read = (position: number) => steeringGuidance(driving(position), lap, sign);
+        for (const position of [0.20, 0.24, 0.2499, 0.36, 0.40]) {
+            expect(read(position)).toMatchObject({ steeringRange: null, brakeZoneExit: false });
+            expect(read(position).steeringPhase).toBeUndefined();
+        }
+        const entered = read(0.25).steeringRange!;
+        expect(entered).toMatchObject({ turnSign: sign });
+        expect(entered.start).toBeCloseTo(250, 6);
+        expect(entered.end).toBeCloseTo(360, 6);
+        for (const position of [0.25, 0.30, 0.3599]) {
+            expect(read(position)).toMatchObject({ steeringRange: entered, steeringPhase: 'prepare', brakeZoneExit: true });
+        }
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        engine.receiveMap(steeringMap(sign, game), 0, lap);
+        const at = (position: number, now: number) => {
+            const event = frame(driving(position));
+            event.update.game = game;
+            return engine.receiveTelemetry(event, now);
+        };
+        expect(at(0.2441, 1000).state.path).toEqual(['root']);
+        expect(at(0.2451, 1100).state.path).toContain('Steering');
+        expect(at(0.3549, 1200).state.path).toContain('Steering');
+        expect(at(0.3559, 1300).state.path).toEqual(['root']);
+    });
+
     it.each([-1, 1] as const)('ends Steering before a long near-straight tail in direction %s', (sign) => {
         const lap = trajectoryLap(6, sign, game);
         setTrajectory(lap, (i) => sign * (6 * Math.max(0, Math.min(10, i - 25))
@@ -446,7 +512,7 @@ describe.each(['acc', 'iracing'] as const)('direction-change exit tails in %s', 
             return engine.receiveTelemetry(event, now);
         };
         expect(at(0.25, 1000).state.path).toContain('Steering');
-        expect(at(0.359, 1100).state.path).toContain('Steering');
+        expect(at(0.3549, 1100).state.path).toContain('Steering');
         // The reference keeps bending slightly until 0.61; that tail must not retain or re-enter Steering.
         for (const position of [0.36, 0.37, 0.45, 0.60]) {
             const guidance = steeringGuidance(driving(position), lap, sign, { start: 0.25, end: 0.70 });
@@ -456,32 +522,96 @@ describe.each(['acc', 'iracing'] as const)('direction-change exit tails in %s', 
         }
     });
 
-    it('trims a gradual unwind while keeping a uniformly shallow bend', () => {
+    it('ends a gradual unwind at the absolute threshold and rejects a uniformly near-straight bend', () => {
         const lap = trajectoryLap(6, 1, game);
         setTrajectory(lap, (i) => i <= 35 ? 6 * Math.max(0, i - 25)
             : 60 + 6 * (1 - 0.5 ** Math.min(25, i - 35)));
-        expect(steeringGuidance(driving(0.379), lap).steeringRange).toEqual(expect.any(Object));
-        expect(steeringGuidance(driving(0.38), lap).steeringRange).toBeNull();
+        // The smoothed segment at 0.38 still turns 0.5625 degrees per 10 m; the next is below 0.5 degrees.
+        expect(steeringGuidance(driving(0.3899), lap).steeringRange).toEqual(expect.any(Object));
+        expect(steeringGuidance(driving(0.39), lap).steeringRange).toBeNull();
         expect(steeringGuidance(driving(0.40), lap).steeringRange).toBeNull();
         const shallow = trajectoryLap(0.1, 1, game);
-        expect(steeringGuidance(driving(0.40), shallow).steeringRange).toEqual(expect.any(Object));
+        expect(steeringGuidance(driving(0.40), shallow).steeringRange).toBeNull();
     });
 });
 
-it('keeps a meaningful gentle exit after a sharp bend', () => {
+it('keeps meaningful gentle entry and exit sections around a sharp bend', () => {
     const lap = trajectoryLap();
-    setTrajectory(lap, (i) => 24 * Math.max(0, Math.min(3, i - 25))
+    setTrajectory(lap, (i) => 2 * Math.max(0, Math.min(5, i - 20)) + 24 * Math.max(0, Math.min(3, i - 25))
         + 2 * Math.max(0, Math.min(20, i - 28)));
+    expect(steeringGuidance(driving(0.21), lap).steeringRange).toEqual(expect.any(Object));
     expect(steeringGuidance(driving(0.47), lap).steeringRange).toEqual(expect.any(Object));
 });
 
-it('keeps a brief easing between two substantial parts of the same turn', () => {
+it.each(['acc', 'iracing'] as const)('splits same-direction turns at a nearly straight section in %s', (game) => {
+    for (const sign of [-1, 1] as const) {
+        const lap = trajectoryLap(6, sign, game);
+        setTrajectory(lap, (i) => sign * (6 * Math.max(0, Math.min(10, i - 25))
+            + 0.05 * Math.max(0, Math.min(5, i - 35)) + 6 * Math.max(0, Math.min(10, i - 40))));
+        const read = (position: number) => steeringGuidance(driving(position), lap, sign);
+        const entered = read(0.26).steeringRange!;
+        expect(entered.end).toBeCloseTo(360, 6);
+        for (const position of [0.36, 0.38, 0.3999]) {
+            expect(read(position)).toMatchObject({ steeringRange: null, brakeZoneExit: false });
+        }
+        const next = read(0.49).steeringRange!;
+        expect(next.start).toBeCloseTo(400, 6);
+        expect(next).not.toEqual(entered);
+        // The first turn must not borrow overlap from a corner beyond the near-straight gap.
+        expect(steeringGuidance(driving(0.26), lap, sign, { start: 0.40, end: 0.55 }).steeringPhase).toBeUndefined();
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        const map = steeringMap(sign, game);
+        map.samples.middle_line = lap.y.map((row, i) => ({ bin: i, normalized_position: lap.x[i],
+            x: row[0], y: row[1], z: row[2], sample_count: 1, updated_at: '' }));
+        map.centerline_tags = [];
+        map.centerline_segments = [
+            { id: 'first', tags: ['corner'], start_position: 0.25, end_position: 0.36 },
+            { id: 'second', tags: ['corner'], start_position: 0.40, end_position: 0.51 },
+        ];
+        engine.receiveMap(map, 0, lap);
+        const at = (position: number, now: number) => {
+            const event = frame(driving(position));
+            event.update.game = game;
+            return engine.receiveTelemetry(event, now);
+        };
+        expect(at(0.26, 1000).state.path).toContain('Steering');
+        expect(at(0.38, 1100).state.path).toEqual(['root']);
+        expect(at(0.41, 1200).state.path).toContain('Steering');
+    }
+});
+
+it.each([false, true])('keeps a near-straight gap across start/finish (duplicated endpoint: %s)', (duplicate) => {
     const lap = trajectoryLap();
     setTrajectory(lap, (i) => 6 * Math.max(0, Math.min(10, i - 25))
         + 0.05 * Math.max(0, Math.min(5, i - 35)) + 6 * Math.max(0, Math.min(10, i - 40)));
-    const entered = steeringGuidance(driving(0.26), lap).steeringRange;
-    expect(steeringGuidance(driving(0.38), lap).steeringRange).toEqual(entered);
-    expect(steeringGuidance(driving(0.49), lap).steeringRange).toEqual(entered);
+    lap.y = [...lap.y.slice(38), ...lap.y.slice(0, 38)];
+    if (duplicate) { lap.x.push(1); lap.y.push([...lap.y[0]]); }
+    const read = (position: number) => steeringGuidance(driving(position), lap, 1, { start: 0.87, end: 0.17 });
+    for (const position of [0.99, 0.999, 1, 0, 0.01]) {
+        expect(read(position)).toMatchObject({ steeringRange: null, brakeZoneExit: false });
+    }
+    const before = read(0.97).steeringRange, after = read(0.03).steeringRange;
+    expect(before).toEqual(expect.any(Object));
+    expect(after).toEqual(expect.any(Object));
+    expect(before).not.toEqual(after);
+});
+
+describe.each([23, 30])('direction-change boundaries rotated by %s samples', (rotation) => {
+    it.each([false, true])('trims both boundaries across start/finish (duplicated endpoint: %s)', (duplicate) => {
+        const lap = trajectoryLap();
+        setTrajectory(lap, (i) => 0.05 * Math.max(0, Math.min(5, i - 20))
+            + 6 * Math.max(0, Math.min(10, i - 25)) + 0.05 * Math.max(0, Math.min(10, i - 35)));
+        lap.y = [...lap.y.slice(rotation), ...lap.y.slice(0, rotation)];
+        if (duplicate) { lap.x.push(1); lap.y.push([...lap.y[0]]); }
+        const shifted = (position: number) => (position - rotation / 100 + 1) % 1;
+        const read = (position: number) => steeringGuidance(driving(shifted(position)), lap, 1,
+            { start: shifted(0.25), end: shifted(0.55) });
+        const entered = read(0.26).steeringRange!;
+        expect(entered).toEqual(expect.any(Object));
+        if (rotation === 23) expect(entered.start).toBeCloseTo(20, 6);
+        for (const position of [0.251, 0.30, 0.3599]) expect(read(position).steeringRange).toEqual(entered);
+        for (const position of [0.20, 0.23, 0.2499, 0.3601, 0.40]) expect(read(position).steeringRange).toBeNull();
+    });
 });
 
 it.each([false, true])('trims the tail after a start/finish crossing (duplicated endpoint: %s)', (duplicate) => {
@@ -548,7 +678,7 @@ describe.each([-1, 1])('Steering re-entry into a range with relative direction %
         };
         const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
         engine.receiveMap(map, 0, lap);
-        const at = (index: number) => engine.receiveTelemetry(frame({ ...driving(index / 1000), Physics_speed_kmh: 180 }),
+        const at = (index: number) => engine.receiveTelemetry(frame(beforeDecision({ ...driving(index / 1000 + 1e-10), Physics_speed_kmh: 180 })),
             1000 + (index - 270) * 20);
         expect(at(270).state.path).toContain('Steering');
         // Samples are 1 m / 20 ms apart. The flat gap is shorter than the old 500 ms clear period.
@@ -582,7 +712,7 @@ it('keeps Steering through low reference speed and missing telemetry, then exits
         .toEqual(['root', 'Steering', 'say phrase']);
     const missingSpeed = { ...lap, target_features: lap.target_features.map((name) => name === 'expert_optimal_speed' ? 'missing' : name) };
     engine.receiveMap(map, 3200, missingSpeed);
-    expect(engine.receiveTelemetry(frame(driving(0.409)), 3300).state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(engine.receiveTelemetry(frame(driving(0.4049)), 3300).state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(engine.receiveTelemetry(frame(driving(0.41)), 3400).state.path).toEqual(['root']);
 });
 
@@ -600,7 +730,7 @@ it.each([false, true])('tracks a captured direction-change range across start/fi
     }));
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(map, 0, lap);
-    [0.91, 0.99, 1, 0, 0.059].forEach((position, index) => {
+    [0.91, 0.99, 1, 0, 0.0549].forEach((position, index) => {
         expect(engine.receiveTelemetry(frame(driving(position)), 1000 + index * 100).state.path).toEqual(['root', 'Steering', 'say phrase']);
     });
     expect(engine.receiveTelemetry(frame(driving(0.06)), 1500).state.path).toEqual(['root']);
@@ -739,6 +869,45 @@ const brakeCueNames = ['brake', 'moreBrake', 'releaseBrake', 'releaseBrakeSlower
 // At 250 m: 100 -> 96 km/h over 10 m gives 3.02469 m/s².
 const localBrakeDeceleration = (100 ** 2 - 96 ** 2) / (2 * 3.6 ** 2 * 10);
 it.each([
+    [95, 0.8, undefined, false, 'releaseBrakeFaster'],
+    [95, 0.8, 0, false, 'releaseBrakeFaster'],
+    [95, 0.8, 0, true, 'releaseBrakeFaster'],
+    [95, 0, 0, false, undefined],
+    [105, 0.8, undefined, false, 'moreBrake'],
+    [105, 0.8, 10, false, 'moreBrake'],
+    [105, 0.8, 10, true, 'releaseBrakeSlower'],
+    [105, 1, 10, false, undefined],
+] as const)('prioritizes local speed over deceleration at %s km/h, pedal %s, deceleration %s, releasing %s',
+    (speed, pedal, deceleration, releasing, cue) => {
+        const lap = referenceLap();
+        addSpeed(lap);
+        const sample = { ...driving(0.25), Physics_speed_kmh: speed, Physics_brake: pedal };
+        const guidance = readReferenceGuidance(sample, null, lap, 'acc', 1000, lap, deceleration, undefined, undefined, undefined, releasing);
+        expect(brakeCueNames.filter((key) => key in guidance)).toEqual(cue ? [cue] : []);
+    });
+
+it.each([0, 25, 50])('corrects speed immediately against the interpolated active reference at %s%% braking adjustment', (caution) => {
+    const { engine, lap } = setup(addSpeed);
+    engine.setDrivingAggression(caution, 0);
+    const local = copyPhraseReference(lap, caution)!;
+    const a = local.y[22][6], b = local.y[23][6];
+    const targetSpeed = Math.sqrt((a ** 2 + b ** 2) / 2);
+    // Between samples, before turn-in and the minimum, with no position model or rate measurement.
+    const at = (speed: number, now: number) => engine.receiveTelemetry(frame(beforeDecision({
+        ...driving(0.225), Physics_speed_kmh: speed, Physics_brake: 0.8,
+    })), now);
+    const slow = at(targetSpeed - 6, 1000);
+    expect(slow.state.path).toEqual(['root', 'Brake zone', 'Release brake faster', 'say phrase']);
+    expect(slow.events.map(({ sentence }) => sentence)).toEqual(['Release brake faster.']);
+    const fast = at(targetSpeed + 6, 1100);
+    expect(fast.events.map(({ sentence }) => sentence)).toEqual(['Release brake faster.', 'More brake.']);
+    const belowMinimum = at(74, 1200);
+    expect(belowMinimum.events.map(({ sentence }) => sentence)).toEqual([
+        'Release brake faster.', 'More brake.', 'Release the brake.',
+    ]);
+});
+
+it.each([
     [100, 0, undefined, false, 'brake'],
     [100, 0.8, 1, true, 'releaseBrakeSlower'],
     [100, 0.8, 1, false, 'moreBrake'],
@@ -848,7 +1017,7 @@ it.each([0, 25, 50])('accepts matching throttle on the active speed profile at %
     const lap = referenceLap();
     addSpeed(lap);
     const local = copyPhraseReference(lap, caution)!;
-    const sample = { ...driving(0.65), Physics_speed_kmh: local.y[local.x.indexOf(0.65)][6], Physics_gas: 0.8 };
+    const sample = beforeDecision({ ...driving(0.65), Physics_speed_kmh: local.y[local.x.indexOf(0.65)][6], Physics_gas: 0.8 });
     const engine = new PhraseEngine();
     engine.receiveMap(null, 0, lap);
     engine.setDrivingAggression(caution, 0);
@@ -885,26 +1054,26 @@ it.each([25, 50])('keeps cornering cues identical when the adjusted reference is
     }
 });
 
-it('includes early braking demand in the shifted reference brake zone', () => {
+it('keeps braking demand active until the original minimum-speed point', () => {
     const lap = referenceLap();
     addSpeed(lap);
     const cautious = copyPhraseReference(lap, 50)!;
-    const early = { ...driving(0.19), Physics_speed_kmh: 116 };
+    const early = { ...driving(0.21), Physics_speed_kmh: 116 };
     expect(readReferenceGuidance(early, detection(lap, early), cautious, 'acc', 1000, lap).brake).toBe(2500);
     expect(readReferenceGuidance(early, detection(lap, early), cautious, 'acc', 1000, lap).pedalZone).toBe('brake');
     const missingPedal = { ...early, Physics_brake: undefined };
     expect(readReferenceGuidance(missingPedal, detection(lap, missingPedal), cautious, 'acc', 1000, lap))
         .toEqual({ ready: true, lateralOffset: 0, braking: true, pedalZone: 'brake', steeringRange: null });
-    const slowed = { ...driving(0.269), Physics_speed_kmh: 30, Physics_brake: 0.8 };
+    const slowed = { ...driving(0.299), Physics_speed_kmh: 30, Physics_brake: 0.8 };
     const guidance = readReferenceGuidance(slowed, detection(lap, slowed), cautious, 'acc', 1000, lap);
     expect(guidance.releaseBrake).toBe(2500);
     expect(guidance.moreBrake).toBeUndefined();
-    expect(readReferenceGuidance({ ...slowed, Graphics_normalized_car_position: 0.27 }, null, cautious, 'acc', 1000, lap).pedalZone).toBe('none');
+    expect(readReferenceGuidance({ ...slowed, Graphics_normalized_car_position: 0.3 }, null, cautious, 'acc', 1000, lap).pedalZone).toBe('none');
     expect(lap.y[19][4]).toBe(0);
     expect(lap.y[29][4]).toBe(0.8);
 });
 
-it.each([0.201, 0.205, 0.209, 0.255, 0.279])('preserves the reference deceleration between shifted samples at %s', (position) => {
+it.each([0.201, 0.205, 0.209, 0.255, 0.279])('preserves constant deceleration between samples with the minimum fixed at %s', (position) => {
     const lap = referenceLap();
     addSpeed(lap);
     // Reference: 40 -> 30 m/s over 100 m, giving 3.5 m/s² at full brake.
@@ -914,8 +1083,8 @@ it.each([0.201, 0.205, 0.209, 0.255, 0.279])('preserves the reference decelerati
             : i <= 60 ? 108 : 108 + (i - 60) * 3.6;
     });
     const cautious = copyPhraseReference(lap, 25)!;
-    // At 25% braking finishes 15 m earlier, still at 30 m/s and 3.5 m/s².
-    const speed = Math.sqrt(30 ** 2 + 2 * 3.5 * (285 - position * 1000)) * 3.6;
+    // Constant deceleration still reaches 30 m/s at the original 300 m endpoint.
+    const speed = Math.sqrt(30 ** 2 + 2 * 3.5 * (300 - position * 1000)) * 3.6;
     for (const [speedError, deceleration, cue] of [
         [6, 3.2, 'moreBrake'], [6, 3.5, 'moreBrake'], [6, 3.7, 'moreBrake'],
         [-6, 3.8, 'releaseBrakeFaster'], [-6, 4, 'releaseBrakeFaster'],
@@ -926,13 +1095,13 @@ it.each([0.201, 0.205, 0.209, 0.255, 0.279])('preserves the reference decelerati
     }
 });
 
-it('aligns braking responses when added samples precede the first original normalized position', () => {
+it('aligns braking responses while retaining a nonzero first normalized position', () => {
     const lap = referenceLap();
     addSpeed(lap);
     lap.y = lap.y.slice(15).concat(lap.y.slice(0, 15));
     const shifted = { ...lap, x: lap.x.map((p) => p + 0.005), y: lap.y.map((row) => [...row]) };
     const cautious = copyPhraseReference(lap, 100)!, shiftedCautious = copyPhraseReference(shifted, 100)!;
-    expect(shiftedCautious.x[0]).toBeLessThan(shifted.x[0]);
+    expect(shiftedCautious.x).toEqual(shifted.x);
     for (const position of [0.045, 0.05, 0.055, 0.46, 0.5]) {
         const index = cautious.x.findIndex((p) => p >= position);
         const speed = cautious.y[index][6];
@@ -963,7 +1132,7 @@ it.each([false, true])('uses reference deceleration across start/finish (duplica
     expect(readReferenceGuidance(sample, detection(lap, sample), lap, 'acc', 1000, lap, 1).moreBrake).toBe(2500);
 });
 
-it.each(['missing brake', 'invalid brake', 'missing pedal', 'invalid pedal', 'missing speed', 'flat speed'])(
+it.each(['missing brake', 'invalid brake', 'missing pedal', 'invalid pedal', 'missing speed'])(
     'handles %s without assuming missing data is a released pedal or inventing deceleration', (kind) => {
         const lap = referenceLap();
         addSpeed(lap);
@@ -973,7 +1142,6 @@ it.each(['missing brake', 'invalid brake', 'missing pedal', 'invalid pedal', 'mi
         if (kind === 'missing pedal') sample.Physics_brake = undefined;
         if (kind === 'invalid pedal') sample.Physics_brake = NaN;
         if (kind === 'missing speed') lap.target_features[6] = 'missing speed';
-        if (kind === 'flat speed') lap.y.forEach((row) => { row[6] = 98; });
         const guidance = readReferenceGuidance(sample, detection(lap, sample), lap, 'acc', 1000);
         expect(brakeCueNames.filter((key) => key in guidance)).toEqual([]);
     });
@@ -1024,7 +1192,7 @@ it('interpolates brake demand across start/finish without a prepare-to-brake cue
     expect(readReferenceGuidance(sample, view, lap, 'acc', 1000)).not.toHaveProperty('brakeSoon');
     const before = driving(0.98);
     expect(readReferenceGuidance(before, detection(lap, before), lap, 'acc', 1000).brake).toBeUndefined();
-    expect(readReferenceGuidance({ ...sample, Physics_speed_kmh: 10 }, view, lap, 'acc', 1000)).toEqual({});
+    expect(readReferenceGuidance({ ...sample, Physics_speed_kmh: 10 }, view, lap, 'acc', 1000).brake).toBe(2500);
 });
 
 it.each(['wrong car', 'wrong track', 'wrong game', 'bad lap', 'missing position', 'invalid position', 'out-of-range position'])(
@@ -1159,7 +1327,7 @@ function setup(configure?: (lap: TopLapReferenceEntry) => void, map: CircuitMapD
     configure?.(lap);
     engine.receiveMap(map, 0, lap);
     const update = (position: number, now: number, patch: StandardTelemetrySample = {}) => {
-        const sample = { ...driving(position), ...patch };
+        const sample = beforeDecision({ ...driving(position), ...patch });
         engine.receiveVision(detection(lap, sample, now), now);
         return engine.receiveTelemetry(frame(sample), now);
     };
@@ -1171,16 +1339,16 @@ it('enters and exits reference brake zones using telemetry without any position-
     const at = (position: number, now: number) => engine.receiveTelemetry(frame(driving(position)), now);
     expect(at(0.19, 1000).state.path).toEqual(['root']);
     expect(at(0.202, 1100).events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
-    expect(at(0.299, 1200).state.path).toEqual(['root', 'Brake zone']);
-    expect(at(0.3, 1225).state.path).toEqual(['root']);
-    expect(at(0.5999, 1250).state.path).toEqual(['root']);
+    expect(at(0.2949, 1200).state.path).toEqual(['root', 'Brake zone']);
+    expect(at(0.2951, 1225).state.path).toEqual(['root']);
+    expect(at(0.5949, 1250).state.path).toEqual(['root']);
     const throttle = at(0.7, 1300);
     expect(throttle.state.path).toEqual(['root', 'Throttle zone']);
     expect(throttle.events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
     expect(throttle.closures.find(({ id }) => id === 'reference-throttle')).toMatchObject({ status: 'Missing input' });
     const expired = engine.evaluate(2801);
     expect(expired.telemetryReady).toBe(false);
-    expect(expired.closures.find(({ id }) => id === 'reference-brake')).toMatchObject({ status: 'Inactive' });
+    expect(expired.closures.find(({ id }) => id === 'reference-brake')).toMatchObject({ status: 'Not evaluated' });
     expect(expired.referenceSteeringPhase).toBeUndefined();
 });
 
@@ -1211,34 +1379,34 @@ it.each([0, 0.8])('keeps brake active through light pressure until reference rel
     expect(at(0.25, 4400, 0).events.filter(({ sentence }) => sentence === 'Brake.')).toHaveLength(2);
 });
 
-it('checks brake deceleration at 500 ms intervals without position-model captures', () => {
+it('uses predicted brake deceleration as soon as two samples are available without position-model captures', () => {
     const { engine } = setup(addSpeed);
     for (const now of [900, 1000, 1100, 1399, 1400, 1500]) {
         engine.receiveVision(null, now);
-        const result = engine.receiveTelemetry(frame({ ...driving(0.255), Physics_brake: 0.8,
-            Physics_speed_kmh: 106 - (now - 1000) / 1000 * 3.6 }), now);
+        const result = engine.receiveTelemetry(frame({ ...driving(0.235 + (now - 900) * 0.000028), Physics_brake: 0.8,
+            Physics_speed_kmh: 102 - (now - 1000) / 1000 * 3.6 }), now);
         expect(result.events.map(({ sentence, timestamp }) => ({ sentence, timestamp })))
-            .toEqual(now >= 1400 ? [{ sentence: 'More brake.', timestamp: 1400 }] : []);
+            .toEqual(now >= 1000 ? [{ sentence: 'More brake.', timestamp: 1000 }] : []);
     }
 });
 
 it('starts a fresh brake measurement interval on zone activation and re-entry', () => {
     const { engine } = setup(addSpeed);
-    const at = (position: number, now: number, speed: number) => engine.receiveTelemetry(frame({
+    const at = (position: number, now: number, speed: number) => engine.receiveTelemetry(frame(beforeDecision({
         ...driving(position), Physics_brake: 0.8, Physics_speed_kmh: speed,
-    }), now);
+    })), now);
     const moreBrake = (snapshot: ReturnType<typeof at>) => snapshot.closures.find(({ id }) => id === 'reference-moreBrake')!;
     at(0.19, 1000, 106);
-    expect(moreBrake(at(0.19, 1400, 105.8)).conditions[2].conditionFit).toBeNull();
-    expect(moreBrake(at(0.255, 1500, 105.6)).conditions[2].conditionFit).toBe(false);
-    expect(moreBrake(at(0.255, 1999, 105.3)).conditions[2].conditionFit).toBe(false);
-    expect(at(0.255, 2000, 105.24).events).toEqual([
+    expect(moreBrake(at(0.19, 1400, 105.8)).conditions[1].conditionFit).toBeNull();
+    expect(moreBrake(at(0.255, 1500, 102.6)).conditions[1].conditionFit).toBe(false);
+    expect(moreBrake(at(0.255, 1999, 102.3)).conditions[1].conditionFit).toBe(false);
+    expect(at(0.255, 2000, 102.24).events).toEqual([
         expect.objectContaining({ sentence: 'More brake.', timestamp: 2000 }),
     ]);
     at(0.61, 2100, 106);
-    expect(moreBrake(at(0.255, 2200, 105.6)).conditions[2].conditionFit).toBe(false);
-    expect(moreBrake(at(0.255, 2699, 105.3)).conditions[2].conditionFit).toBe(false);
-    expect(moreBrake(at(0.255, 2700, 105.24)).conditions[2].conditionFit).toBe(true);
+    expect(moreBrake(at(0.255, 2200, 102.6)).conditions[1].conditionFit).toBe(false);
+    expect(moreBrake(at(0.255, 2699, 102.3)).conditions[1].conditionFit).toBe(false);
+    expect(moreBrake(at(0.255, 2700, 102.24)).conditions[1].conditionFit).toBe(true);
 });
 
 function throttleCornerSetup(direction: 'left' | 'right' = 'right', game: 'acc' | 'iracing' = 'acc') {
@@ -1257,7 +1425,8 @@ function throttleCornerSetup(direction: 'left' | 'right' = 'right', game: 'acc' 
     });
     engine.receiveMap(null, 0, lap);
     const update = (lateral: number, now: number, patch: StandardTelemetrySample = {}, capturedAt = now) => {
-        const sample = { ...driving(0.655), Physics_speed_kmh: 110, Physics_gas: 0.4, ...patch };
+        const sample = beforeDecision({ ...driving(0.655), Physics_speed_kmh: 110, Physics_gas: 0.4, ...patch },
+            20000 * Math.sin(Math.PI / 100));
         const view = detection(lap, sample, capturedAt), event = frame(sample);
         view.position!.referenceDelta[0] = lateral;
         view.telemetry!.game = event.update.game = game;
@@ -1274,7 +1443,8 @@ it('starts outward-motion measurement only after entering the throttle parent', 
         [new Closure('parent', 'Parent.', () => open, createPhraseRoot(phrases).children)]));
     engine.receiveMap(null, 0, lap);
     const at = (lateral: number, now: number) => {
-        const sample = { ...driving(0.655), Physics_speed_kmh: 110, Physics_gas: 0.4 };
+        const sample = beforeDecision({ ...driving(0.655), Physics_speed_kmh: 110, Physics_gas: 0.4 },
+            20000 * Math.sin(Math.PI / 100));
         const view = detection(lap, sample, now);
         view.position!.referenceDelta[0] = lateral;
         engine.receiveVision(view, now);
@@ -1465,7 +1635,7 @@ it.each([[0.1, 1], [0.2, 2 / 3], [0.4, 1 / 3], [0.8, 0]])(
         const lap = easingLap(drop);
         const engine = new PhraseEngine();
         engine.receiveMap(steeringMap(), 0, lap);
-        const at = (position: number, now: number) => engine.receiveTelemetry(frame({ ...driving(position), Physics_brake: 0.8 }), now);
+        const at = (position: number, now: number) => engine.receiveTelemetry(frame(beforeDecision({ ...driving(position), Physics_brake: 0.8 })), now);
         expect(at(0.255, 1000).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
         const released = at(0.265, 1100);
         expect(released.events.map(({ sentence }) => sentence)).toEqual(['Turn', SLOWLY_RELEASE_BRAKE]);
@@ -1515,7 +1685,7 @@ it.each([0, 0.8])('defers Brake zone until the active Steering range ends with l
     const braking = update(0.285, 1100, { Physics_speed_kmh: 180, Physics_brake: brake });
     expect(braking.state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(braking.events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(update(0.41, 1200, { Physics_speed_kmh: 180, Physics_brake: brake }).state.path).toEqual(['root']);
+    expect(update(0.410001, 1200, { Physics_speed_kmh: 180, Physics_brake: brake }).state.path).toEqual(['root']);
     expect(update(0.42, 1300, { Physics_speed_kmh: 180, Physics_brake: brake }).state.path).toContain('Brake zone');
 });
 
@@ -1527,7 +1697,7 @@ it('speaks Turn on forward-aligned entry and does not exit just because Turn com
     const patch = { Physics_brake: 0.8, Physics_heading: 0, Physics_pitch: 0, Physics_roll: 0 };
     const update = (position: number, now: number) => engine.receiveTelemetry(frame({ ...driving(position), ...patch }), now);
     expect(update(0.256, 1000).state.path).toEqual(['root', 'Steering', 'say phrase']);
-    expect(update(0.26, 1100).state.path).toEqual(['root', 'Steering', 'say phrase']);
+    expect(update(0.257, 1100).state.path).toEqual(['root', 'Steering', 'say phrase']);
     expect(update(0.285, 1200).events.map(({ sentence }) => sentence)).toEqual(['Turn', SLOWLY_RELEASE_BRAKE]);
     expect(engine.evaluate(1201).state.path).toContain('Steering');
     expect(update(0.285, 1300).state.path).toContain('Steering');
@@ -1541,26 +1711,29 @@ it('exits an active direction correction when the captured trajectory direction-
     engine.receiveMap(steeringMap(), 0, lap);
     engine.setDrivingAggression(100, 0);
     const at = (now: number, heading: number, position = 0.285) => {
-        const sample = { ...driving(position), ...localMotion(3, 10, heading) };
+        const sample = { ...driving(position), ...localMotion(6, 10, heading) };
         engine.receiveVision(detection(lap, sample, now), now);
         return engine.receiveTelemetry(frame(sample), now);
     };
     expect(at(1000, 0.1).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(at(3000, 0.1).state.path).toEqual(['root', 'Steering', 'Too wide', 'say phrase']);
-    const exited = at(3100, 0.1, 0.419);
+    expect(at(1100, 0.1).events).toHaveLength(1);
+    expect(at(1499, 0.1).events).toHaveLength(1);
+    expect(at(1500, 0.1).state.path).toEqual(['root', 'Steering', 'Stay right a bit', 'say phrase']);
+    const exited = at(1700, 0.1, 0.419);
     expect(exited.state.path).toEqual(['root']);
-    expect(exited.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide']);
+    expect(exited.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Stay right a bit']);
     expect(at(5200, 0.1, 0.43).events).toEqual(exited.events);
 });
 
-it('guides direction without a timed gap after Turn or between corrections above reference speed', () => {
+it('requires 500 ms of deviation after Turn and speaks once until realignment', () => {
     const lap = referenceLap();
     brakingTurn(lap);
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(steeringMap(), 0, lap);
     engine.setDrivingAggression(100, 0);
     const at = (now: number, vx: number, speed = 40, position = 0.285, heading = 0.1) => {
-        const sample = { ...driving(position), Physics_brake: 0.8, Physics_speed_kmh: speed, ...localMotion(vx, 10, heading) };
+        // Keep the pedal released so this test isolates direction cues from brake-release speech.
+        const sample = beforeDecision({ ...driving(position), Physics_brake: 0, Physics_speed_kmh: speed, ...localMotion(vx, 10, heading) });
         engine.receiveVision(detection(lap, sample, now), now);
         return engine.receiveTelemetry(frame(sample), now);
     };
@@ -1568,30 +1741,171 @@ it('guides direction without a timed gap after Turn or between corrections above
     // The reference tangent here is 84 degrees; small deviations on either side stay silent.
     expect(at(1050, 10 / Math.tan(80 * Math.PI / 180), 180).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
     expect(at(1075, 10 / Math.tan(88 * Math.PI / 180), 180).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    const wide = at(1100, 3, 180);
+    expect(at(1100, 6, 180).events).toHaveLength(1);
+    expect(at(1599, 6, 180).events).toHaveLength(1);
+    const wide = at(1600, 6, 180);
     expect(wide.state.path).toContain('Steering');
-    expect(wide.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide']);
-    expect(wide.events[1]).toMatchObject({ timestamp: 1100, steeringDirection: 'tooWide', expiresAt: 2600 });
-    expect(at(1200, 3, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide']);
-    expect(at(1300, -2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight']);
-    const alignedVelocity = at(1400, 10 / Math.tan(84 * Math.PI / 180), 180);
-    expect(alignedVelocity.events).toHaveLength(4);
+    expect(wide.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Stay right a bit']);
+    expect(wide.events[1]).toMatchObject({ timestamp: 1600, steeringDirection: 'right', expiresAt: 3100 });
+    expect(at(1700, 6, 180).events).toEqual(wide.events);
+    expect(at(1800, -4, 180).events).toEqual(wide.events);
+    expect(at(2299, -4, 180).events).toEqual(wide.events);
+    expect(at(2300, -4, 180).events).toEqual(wide.events);
+    const alignedVelocity = at(2400, 10 / Math.tan(84 * Math.PI / 180), 180);
+    expect(alignedVelocity.events).toHaveLength(2);
     expect(alignedVelocity.state.path).toContain('Steering');
-    const stale = engine.receiveTelemetry(frame({ ...driving(0.285), Physics_speed_kmh: 180 }), 2000);
+    const stale = engine.receiveTelemetry(frame({ ...driving(0.285), Physics_speed_kmh: 180 }), 3000);
     expect(stale.referenceSteeringDirection).toBeUndefined();
-    expect(stale.events).toHaveLength(4);
+    expect(stale.events).toHaveLength(2);
     expect(stale.state.path).toContain('Steering');
-    expect(at(2100, 2, 40, 0.419, 0.1).state.path).toEqual(['root']);
-    expect(at(2200, 2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight', 'Turn']);
-    expect(at(2300, 3).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Too wide', 'Too wide', 'Too tight', 'Turn', 'Too wide']);
-    expect(engine.setDrivingAggression(99, 2400).events).toEqual([]);
-    expect(at(2500, 3).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(at(2600, 3).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(at(2700, -2).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    expect(at(3100, 2, 40, 0.419, 0.1).state.path).toEqual(['root']);
+    expect(at(3200, 2, 180).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Stay right a bit', 'Turn']);
+    expect(at(3300, 6).events).toHaveLength(3);
+    expect(at(3800, 6).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Stay right a bit', 'Turn', 'Stay right a bit']);
+    expect(engine.setDrivingAggression(99, 3900).events).toEqual([]);
+    expect(at(4000, 6).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    expect(at(4100, 6).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    expect(at(4600, -4).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+});
+
+it.each([[6, 'Stay right a bit'], [-4, 'Stay left a bit']] as const)(
+    'speaks %s motion correction %s once and rearms after realignment', (vx, sentence) => {
+        const lap = referenceLap();
+        brakingTurn(lap);
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        engine.receiveMap(steeringMap(), 0, lap);
+        engine.setDrivingAggression(100, 0);
+        const at = (now: number, velocity = vx as number) => {
+            const sample = beforeDecision({ ...driving(0.285), ...localMotion(velocity, 10) });
+            engine.receiveVision(detection(lap, sample, now), now);
+            return engine.receiveTelemetry(frame(sample), now);
+        };
+        expect(at(1000).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+        expect(at(1499).events).toHaveLength(1);
+        const spoken = at(1500);
+        expect(spoken.events.map(({ sentence }) => sentence)).toEqual(['Turn', sentence]);
+        for (const now of [1750, 2000, 2250, 2500]) expect(at(now).events).toEqual(spoken.events);
+        const aligned = at(2600, 10 / Math.tan(84 * Math.PI / 180));
+        expect(aligned.referenceSteeringDirection).toBe('aligned');
+        expect(aligned.events).toEqual(spoken.events);
+        expect(at(2700).events).toEqual(spoken.events);
+        expect(at(3199).events).toEqual(spoken.events);
+        expect(at(3200).events.map(({ sentence }) => sentence)).toEqual(['Turn', sentence, sentence]);
+        expect(at(3300).events.map(({ sentence }) => sentence)).toEqual(['Turn', sentence, sentence]);
+    });
+
+it.each(['missing motion', 'missing capture', 'capture gap', 'telemetry gap', 'paused'])(
+    'does not rearm a spoken correction after %s without realignment', (interruption) => {
+        const lap = referenceLap();
+        brakingTurn(lap);
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        engine.receiveMap(steeringMap(), 0, lap);
+        engine.setDrivingAggression(100, 0);
+        const sample = beforeDecision({ ...driving(0.285), ...localMotion(6, 10) });
+        const at = (now: number) => {
+            engine.receiveVision(detection(lap, sample, now), now);
+            return engine.receiveTelemetry(frame(sample), now);
+        };
+        at(1000);
+        at(1100);
+        const spoken = at(1500);
+        expect(spoken.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Stay right a bit']);
+        if (interruption === 'missing capture') engine.receiveVision(null, 1600);
+        if (interruption === 'missing motion') engine.receiveTelemetry(frame({ ...sample, Physics_local_velocity_x: undefined }), 1600);
+        if (interruption === 'paused') engine.receiveTelemetry({ ...frame(sample), telemetryStatus: 1 }, 1600);
+        const resume = interruption === 'capture gap' ? 2001 : interruption === 'telemetry gap' ? 3101 : 1700;
+        expect(at(resume).events).toEqual(spoken.events);
+        expect(at(resume + 499).events).toEqual(spoken.events);
+        expect(at(resume + 500).events).toEqual(spoken.events);
+        expect(at(resume + 1000).events).toEqual(spoken.events);
+    });
+
+it.each(['aligned', 'opposite', 'missing motion', 'missing capture', 'expired capture', 'paused'])(
+    'restarts the 500 ms steering hold after %s input', (interruption) => {
+        const lap = referenceLap();
+        brakingTurn(lap);
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        engine.receiveMap(steeringMap(), 0, lap);
+        engine.setDrivingAggression(100, 0);
+        const sampleAt = (vx = 6) => beforeDecision({ ...driving(0.285), ...localMotion(vx, 10) });
+        const at = (now: number) => {
+            const sample = sampleAt();
+            engine.receiveVision(detection(lap, sample, now), now);
+            return engine.receiveTelemetry(frame(sample), now);
+        };
+        at(1000);
+        at(1100);
+        expect(at(1400).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+        let sample = sampleAt(interruption === 'aligned' ? 10 / Math.tan(84 * Math.PI / 180)
+            : interruption === 'opposite' ? -4 : 6);
+        if (interruption === 'missing motion') sample = { ...sample, Physics_local_velocity_x: undefined };
+        if (interruption === 'missing capture') engine.receiveVision(null, 1450);
+        else if (interruption === 'expired capture') {
+            // No fresh capture arrives: the previously valid capture expires during telemetry updates.
+            engine.receiveTelemetry(frame(sample), 1901);
+        } else {
+            engine.receiveVision(detection(lap, sample, 1450), 1450);
+            const event = frame(sample);
+            if (interruption === 'paused') event.telemetryStatus = 1;
+            engine.receiveTelemetry(event, 1450);
+        }
+        const restart = interruption === 'expired capture' ? 2000 : 1500;
+        expect(at(restart).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+        expect(at(restart + 499).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+        expect(at(restart + 500).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Stay right a bit']);
+    });
+
+it.each([501, 1600])('does not count an unobserved %s ms gap toward the steering hold', (gap) => {
+    const lap = referenceLap();
+    brakingTurn(lap);
+    const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+    engine.receiveMap(steeringMap(), 0, lap);
+    engine.setDrivingAggression(100, 0);
+    const at = (now: number) => {
+        const sample = beforeDecision({ ...driving(0.285), ...localMotion(6, 10) });
+        engine.receiveVision(detection(lap, sample, now), now);
+        return engine.receiveTelemetry(frame(sample), now);
+    };
+    at(1000);
+    at(1100);
+    expect(at(1400).events).toHaveLength(1);
+    const restart = 1400 + gap;
+    expect(at(restart).events).toHaveLength(1);
+    expect(at(restart + 499).events).toHaveLength(1);
+    expect(at(restart + 500).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Stay right a bit']);
+});
+
+it.each(['acc', 'iracing'] as const)('speaks the required correction side in either corner direction in %s', (game) => {
+    for (const sign of [-1, 1] as const) {
+        for (const side of ['right', 'left'] as const) {
+            const lap = trajectoryLap(2, sign, game);
+            const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+            engine.receiveMap(steeringMap(sign, game), 0, lap);
+            engine.setDrivingAggression(100, 0);
+            // At the decision point the reference tangent is sign * 6 degrees.
+            const angle = (sign * 6 - (side === 'right' ? 30 : -30) * (game === 'iracing' ? -1 : 1)) * Math.PI / 180;
+            const sample = beforeDecision({ ...driving(0.285), Physics_heading: 0, Physics_pitch: 0, Physics_roll: 0,
+                Physics_local_velocity_x: 10 * Math.cos(angle),
+                Physics_local_velocity_y: game === 'acc' ? 10 * Math.sin(angle) : 0,
+                Physics_local_velocity_z: game === 'iracing' ? 10 * Math.sin(angle) : 0 });
+            const at = (now: number) => {
+                const view = detection(lap, sample, now);
+                view.telemetry!.game = game;
+                engine.receiveVision(view, now);
+                const event = frame(sample);
+                event.update.game = game;
+                return engine.receiveTelemetry(event, now);
+            };
+            at(1000);
+            expect(at(1100).referenceSteeringDirection).toBe(side);
+            expect(at(1499).events).toHaveLength(1);
+            expect(at(1500).events.map(({ sentence }) => sentence)).toEqual(['Turn', `Stay ${side} a bit`]);
+        }
+    }
 });
 
 it.each([0, 50, 99, 99.9, 100])('gates direction corrections but preserves Turn at driving aggression %s', (aggression) => {
-    for (const [vx, direction, sentence] of [[3, 'tooWide', 'Too wide'], [-2, 'tooTight', 'Too tight']] as const) {
+    for (const [vx, direction, sentence] of [[6, 'right', 'Stay right a bit'], [-4, 'left', 'Stay left a bit']] as const) {
         const lap = referenceLap();
         brakingTurn(lap);
         const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
@@ -1602,8 +1916,10 @@ it.each([0, 50, 99, 99.9, 100])('gates direction corrections but preserves Turn 
             engine.receiveVision(detection(lap, sample, now), now);
             return engine.receiveTelemetry(frame(sample), now);
         };
-        expect(at(1000, 0.26).events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
-        const correction = at(1100);
+        expect(at(1000).events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1000 })]);
+        expect(at(1100).events).toHaveLength(1);
+        expect(at(1499).events).toHaveLength(1);
+        const correction = at(1500);
         expect(correction.referenceSteeringDirection).toBe(direction);
         expect(correction.events.map(({ sentence }) => sentence)).toEqual(aggression === 100 ? ['Turn', sentence] : ['Turn']);
         expect(correction.root.children.find(({ id }) => id === 'reference-steering')!.children
@@ -1778,19 +2094,19 @@ it('does not enter Steering for easing deceleration before the trajectory starts
     const snapshot = update(0.26, 1000, { Physics_speed_kmh: lap.y[26][6], Physics_brake: 0.3 });
     expect(snapshot.state.path).toEqual(['root', 'Brake zone', 'Release brake faster', 'say phrase']);
     expect(snapshot.referenceSteeringPhase).toBeUndefined();
-    expect(snapshot.events.map(({ sentence }) => sentence)).toEqual(['Release brake faster.']);
+    expect(snapshot.events.map(({ sentence }) => sentence)).toEqual(['More brake.', 'Release brake faster.']);
 });
 
 it('paces brake release before the direction-change range and exits at matching speed', () => {
     const { lap, update } = setup(brakingTurn, steeringMap());
     update(0.24, 500, { Physics_speed_kmh: lap.y[24][6] + 7.2, Physics_brake: 0.8 });
     expect(update(0.24, 1000, { Physics_speed_kmh: lap.y[24][6], Physics_brake: 0.3 }).events
-        .map(({ sentence }) => sentence)).toEqual(['Release brake faster.']);
+        .map(({ sentence }) => sentence)).toEqual(['More brake.', 'Release brake faster.']);
     const prepared = update(0.25, 2100, { Physics_speed_kmh: lap.y[25][6], Physics_brake: 0.8 });
     expect(prepared.state.path).toEqual(['root', 'Steering', 'say phrase']);
-    expect(prepared.events.map(({ sentence }) => sentence)).toEqual(['Release brake faster.', 'Turn']);
+    expect(prepared.events.map(({ sentence }) => sentence)).toEqual(['More brake.', 'Release brake faster.', 'Turn']);
     expect(update(0.283, 3200, { Physics_speed_kmh: lap.y[28][6] - 1, Physics_brake: 0.8 }).events
-        .map(({ sentence }) => sentence)).toEqual(['Release brake faster.', 'Turn']);
+        .map(({ sentence }) => sentence)).toEqual(['More brake.', 'Release brake faster.', 'Turn']);
 });
 
 it('continues Steering beyond the brake boundary and exits at the trajectory range end despite expired position-model data', () => {
@@ -1800,7 +2116,7 @@ it('continues Steering beyond the brake boundary and exits at the trajectory ran
     }, steeringMap());
     update(0.24, 900, { Physics_speed_kmh: lap.y[24][6], Physics_brake: 0.8 });
     update(0.256, 1000, { Physics_speed_kmh: lap.y[26][6], Physics_brake: 0.8 });
-    const stale = engine.receiveTelemetry(frame({ ...driving(0.26), Physics_speed_kmh: lap.y[26][6], Physics_brake: 0.8 }), 2100);
+    const stale = engine.receiveTelemetry(frame(beforeDecision({ ...driving(0.260001), Physics_speed_kmh: lap.y[26][6], Physics_brake: 0.8 })), 2100);
     expect(stale.state.path).toContain('Steering');
     expect(stale.events.map(({ sentence }) => sentence)).toEqual(['Turn', SLOWLY_RELEASE_BRAKE]);
     const turned = engine.receiveTelemetry(frame({ ...driving(0.283), Physics_speed_kmh: lap.y[28][6] - 1, Physics_brake: 0.8 }), 2150);
@@ -1877,7 +2193,7 @@ it('reads zone membership from normalized position in the private aggression-adj
     expect(readReferenceGuidance(sample, view, lap, 'acc', 1000).pedalZone).toBe('brake');
     const cautious = copyPhraseReference(lap, 50)!;
     expect(readReferenceGuidance(sample, view, cautious, 'acc', 1000, lap).pedalZone).toBe('brake');
-    for (const [position, zone] of [[0.17, 'none'], [0.18, 'brake'], [0.201, 'brake'], [0.269, 'brake'], [0.27, 'none'], [0.297, 'none']] as const) {
+    for (const [position, zone] of [[0.1899, 'none'], [0.19, 'brake'], [0.1999, 'brake'], [0.201, 'brake'], [0.269, 'brake'], [0.297, 'brake'], [0.3, 'none']] as const) {
         const braking = { ...driving(position), Physics_speed_kmh: 160 };
         expect(readReferenceGuidance(braking, detection(lap, braking), cautious, 'acc', 1000, lap).pedalZone).toBe(zone);
     }
@@ -1889,8 +2205,9 @@ it('reads zone membership from normalized position in the private aggression-adj
     }
 });
 
-it.each([[0, 0.2, 0.3], [25, 0.18728813559322033, 0.285], [50, 0.17457627118644067, 0.27], [100, 0.14915254237288136, 0.24]])(
-    'uses shifted reference brake boundaries at %s%% caution independently of live speed and pedals', (caution, start, end) => {
+// Pedal transitions use the unchanged 10 m sample spacing of this reference.
+it.each([[0, 0.2, 0.3], [25, 0.19, 0.3], [50, 0.19, 0.3], [100, 0.19, 0.3]])(
+    'keeps the brake endpoint fixed at %s%% caution independently of live speed and pedals', (caution, start, end) => {
         const lap = referenceLap();
         addSpeed(lap);
         const cautious = copyPhraseReference(lap, caution)!;
@@ -2003,7 +2320,7 @@ it('exits throttle at brake onset with fresh telemetry even when reference locat
     engine.receiveMap(map, 0, lap);
     update(0.699, 1000, { Physics_gas: 0.8 });
     expect(engine.evaluate(1501).state.path).toEqual(['root', 'Throttle zone']);
-    expect(engine.receiveTelemetry(frame(driving(0.200001)), 1600).state.path).toEqual(['root', 'Brake zone']);
+    expect(engine.receiveTelemetry(frame(driving(0.195001)), 1600).state.path).toEqual(['root', 'Brake zone']);
 });
 
 it('keeps the brake zone before mapped corner entry when reference location expires', () => {
@@ -2098,8 +2415,8 @@ it('keeps a throttle closure across start/finish until reference release to zero
         expect(update(position, 1000 + index * 100, { Physics_gas: position === 0.015 ? 0.4 : 0.8 }).state.path)
             .toEqual(['root', 'Throttle zone']);
     });
-    expect(update(0.019, 1400, { Physics_gas: 0.8 }).state.path).toEqual(['root', 'Throttle zone']);
-    expect(update(0.02, 1450, { Physics_gas: 0.8 }).state.path).toEqual(['root']);
+    expect(update(0.019, 1325, { Physics_gas: 0.8 }).state.path).toEqual(['root', 'Throttle zone']);
+    expect(update(0.02025, 1450, { Physics_gas: 0.8 }).state.path).toEqual(['root']);
     expect(update(0.031, 1500, { Physics_gas: 0.8 }).state.path).toEqual(['root']);
     expect(update(0.040001, 1600).state.path).toEqual(['root', 'Brake zone']);
 });
@@ -2122,9 +2439,14 @@ it('transitions through all six brake cues as speed, deceleration and release pa
         [0.295, 80, 0.8, undefined, 0.8, 'Release the brake.']] as const)
         .forEach(([position, speed, pedal, deceleration, previousPedal, sentence], index) => {
             const now = 1000 + index * 2500;
-            if (deceleration !== undefined) update(position, now - 500, {
-                Physics_speed_kmh: speed + deceleration * 3.6 * 0.5, Physics_brake: previousPedal,
-            });
+            if (deceleration !== undefined) {
+                const previousSpeed = speed + deceleration * 3.6 * 0.5;
+                // Freeze the setup position to clear prediction history while the measured-rate
+                // interval continues. The final frame supplies the full 500 ms measurement.
+                for (const at of [now - 500, now - 1]) update(position - (previousSpeed - 100) / 400, at, {
+                    Physics_speed_kmh: previousSpeed, Physics_brake: previousPedal,
+                });
+            }
             const snapshot = update(position, now, { Physics_speed_kmh: speed, Physics_brake: pedal });
             expected.push(sentence);
             expect(snapshot.events.map((event) => event.sentence)).toEqual(expected);
@@ -2135,10 +2457,11 @@ it('transitions through all six brake cues as speed, deceleration and release pa
 });
 
 it.each([500, 640])(
-    'measures More brake over the full sampling interval when the next check arrives after %s ms', (interval) => {
+    'measures More brake over %s ms when frozen progress prevents prediction', (interval) => {
         const { engine, update } = setup(addSpeed);
-        const speed = 120, deceleration = 2.5;
-        const at = (elapsed: number) => update(0.255, 1000 + elapsed, {
+        const speed = 102, deceleration = 1.5;
+        // Offset the decision point so beforeDecision keeps measured progress frozen.
+        const at = (elapsed: number) => update(0.255 - deceleration * elapsed / 2000000, 1000 + elapsed, {
             Physics_speed_kmh: speed - deceleration * 3.6 * elapsed / 1000, Physics_brake: 0.8,
         });
         for (const elapsed of [0, 16, 100, 250, 499]) expect(at(elapsed).events).toEqual([]);
@@ -2151,20 +2474,22 @@ it.each([500, 640])(
         expect(result.state.path).toEqual(['root', 'Brake zone', 'More brake', 'say phrase']);
     });
 
-it('keeps the measured rate between checks instead of reacting to individual speed changes', () => {
+it('keeps the measured rate between checks but overrides it as soon as speed falls below the local reference', () => {
     const { update } = setup(addSpeed);
-    const at = (now: number, speed: number) => update(0.25, now, { Physics_speed_kmh: speed, Physics_brake: 0.8 });
-    expect(at(1000, 105.4).events).toEqual([]);
+    const at = (now: number, speed: number) => update(0.250001, now, { Physics_speed_kmh: speed, Physics_brake: 0.8 });
+    expect(at(1000, 104.95).events).toEqual([]);
     expect(at(1499, 100).events).toEqual([]);
     const matching = at(1500, 100);
     expect(matching.events).toEqual([expect.objectContaining({ sentence: 'Hold brake pressure.', timestamp: 1500 })]);
     expect(at(1999, 100).events).toEqual(matching.events);
     const result = at(2000, 100);
     expect(result.events.map(({ sentence }) => sentence)).toEqual(['Hold brake pressure.', 'More brake.']);
-    // The new interval remains at zero deceleration until the next check.
-    expect(at(2016, 99).closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[2].conditionFit).toBe(true);
-    expect(at(2499, 94.6).closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[2].conditionFit).toBe(true);
-    expect(at(2500, 94.6).closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[2].conditionFit).toBe(false);
+    // The new interval remains at zero deceleration, but underspeed must still prompt release immediately.
+    expect(at(2016, 99).closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[1].conditionFit).toBe(true);
+    const tooSlow = at(2499, 94.6);
+    expect(tooSlow.closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[1].conditionFit).toBe(false);
+    expect(tooSlow.events.map(({ sentence }) => sentence)).toEqual(['Hold brake pressure.', 'More brake.', 'Release brake faster.']);
+    expect(at(2500, 94.6).closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[1].conditionFit).toBe(false);
 });
 
 it.each([0, 25, 50])('waits for measured deceleration before pacing release at %s%% caution', (caution) => {
@@ -2172,7 +2497,8 @@ it.each([0, 25, 50])('waits for measured deceleration before pacing release at %
     engine.setDrivingAggression(caution, 0);
     const local = copyPhraseReference(lap, caution)!;
     const speed = local.y[local.x.indexOf(0.25)][6];
-    expect(update(0.25, 1000, { Physics_speed_kmh: speed + 7.2, Physics_brake: 0.8 }).events).toEqual([]);
+    // A position jump at the next frame clears prediction history and leaves the measured-rate fallback.
+    expect(update(0.225, 1000, { Physics_speed_kmh: speed + 7.2, Physics_brake: 0.8 }).events).toEqual([]);
     expect(update(0.25, 1499, { Physics_speed_kmh: speed, Physics_brake: 0.4 }).events).toEqual([]);
     const result = update(0.25, 1500, { Physics_speed_kmh: speed, Physics_brake: 0.4 });
     expect(result.events).toEqual([
@@ -2183,7 +2509,7 @@ it.each([0, 25, 50])('waits for measured deceleration before pacing release at %
     expect(update(0.25, 1600, { Physics_speed_kmh: speed, Physics_brake: 0.4 }).events).toEqual(result.events);
 });
 
-it.each([500, 640])('measures pedal release over the same %s ms interval as deceleration', (interval) => {
+it.each([500, 640])('falls back to measured pedal release and deceleration over %s ms with discontinuous progress', (interval) => {
     for (const [before, after, cue] of [[0.8, 0.4, 'Release brake slower.'],
         [0.8, 0.8, 'More brake.'], [0.4, 0.8, 'More brake.'], [0.801, 0.8, 'More brake.']] as const) {
         const { engine, update } = setup(addSpeed);
@@ -2203,32 +2529,32 @@ it.each([undefined, NaN, -0.1, 1.1])('discards release evidence across an invali
 });
 
 it.each(['gap', 'pause', 'stream reset', 'missing speed', 'invalid speed', 'repeated time', 'backward time', 'session change', 'stream change'])(
-    'requires a new 500 ms speed interval after %s before correcting brake pressure', (kind) => {
+    'requires a new 500 ms speed interval after %s for rate corrections near reference speed', (kind) => {
         const { engine, lap, update } = setup(addSpeed);
-        const patch = { Physics_speed_kmh: 106, Physics_brake: 0.8 };
+        const patch = { Physics_speed_kmh: 102, Physics_brake: 0.8 };
         update(0.255, 1000, patch);
-        const active = update(0.255, 1500, { ...patch, Physics_speed_kmh: 105.64 });
-        expect(active.closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[2].conditionFit).toBe(true);
+        const active = update(0.255, 1500, { ...patch, Physics_speed_kmh: 101.64 });
+        expect(active.closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[1].conditionFit).toBe(true);
         if (kind === 'pause') engine.receiveTelemetry({ ...frame({ ...driving(0.255), ...patch }), telemetryStatus: 1 }, 1600);
         if (kind === 'stream reset') engine.receiveTelemetry({ type: 'stream-reset', snapshot: createLiveTelemetryStore().getSnapshot() }, 1600);
         if (kind === 'missing speed' || kind === 'invalid speed') {
             update(0.255, 1600, { ...patch, Physics_speed_kmh: kind === 'missing speed' ? undefined : NaN });
         }
         const now = kind === 'gap' ? 3101 : kind === 'repeated time' ? 1500 : kind === 'backward time' ? 1499 : 1700;
-        const sample = { ...driving(0.255), ...patch, Physics_speed_kmh: 105.28 };
+        const sample = beforeDecision({ ...driving(0.255), ...patch, Physics_speed_kmh: 101.28 });
         const event = frame(sample), view = detection(lap, sample, now);
         if (kind === 'session change') event.sessionGeneration = view.telemetry!.sessionGeneration = 1;
         if (kind === 'stream change') event.streamGeneration = view.telemetry!.streamGeneration = 1;
         engine.receiveVision(view, now);
         const result = engine.receiveTelemetry(event, now);
         const conditions = result.closures.find(({ id }) => id === 'reference-moreBrake')!.conditions;
-        expect(conditions[1].conditionFit).toBe(true);
-        expect(conditions[2].conditionFit).toBe(false);
+        expect(conditions[0].conditionFit).toBe(true);
+        expect(conditions[1].conditionFit).toBe(false);
         expect(result.events).toEqual(kind === 'stream reset' ? [] : active.events);
         const before = engine.receiveTelemetry(event, now + 499);
-        expect(before.closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[2].conditionFit).toBe(false);
-        const recovered = engine.receiveTelemetry({ ...event, sample: { ...sample, Physics_speed_kmh: 103.48 } }, now + 500);
-        expect(recovered.closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[2].conditionFit).toBe(true);
+        expect(before.closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[1].conditionFit).toBe(false);
+        const recovered = engine.receiveTelemetry({ ...event, sample: { ...sample, Physics_speed_kmh: 99.48 } }, now + 500);
+        expect(recovered.closures.find(({ id }) => id === 'reference-moreBrake')!.conditions[1].conditionFit).toBe(true);
     });
 
 it('withholds pedal corrections outside reference pedal zones', () => {
@@ -2297,7 +2623,7 @@ it('emits short, expiring cues without opponents, calibration or circuit tags an
     expect(update(0.25, 2000).events.map((event) => event.sentence)).toEqual(['Brake.']);
     expect(update(0.25, 3000).events).toHaveLength(1);
     expect(engine.evaluate(3501).closures.find((closure) => closure.id === 'reference-brake'))
-        .toMatchObject({ status: 'Not matched', missing: [] });
+        .toMatchObject({ status: 'Waiting', missing: [] });
     expect(engine.evaluate(4501).closures.find((closure) => closure.id === 'reference-brake'))
         .toMatchObject({ status: 'Missing input' });
     update(0.61, 4600, { Physics_gas: 0.8 });
@@ -2415,7 +2741,7 @@ it('withholds reference guidance while paused and resumes from telemetry after r
     expect(engine.receiveTelemetry(frame(sample), 1300).events).toEqual([]);
     update(0.19, 2000);
     expect(engine.receiveTelemetry({ ...frame(sample), telemetryStatus: 1 }, 2100).closures.find((closure) => closure.id === 'reference-brake'))
-        .toMatchObject({ status: 'Inactive' });
+        .toMatchObject({ status: 'Not evaluated' });
     engine.receiveMap(null, 2200, referenceLap());
     expect(engine.receiveTelemetry(frame(driving(0.25)), 2200).events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
 });
@@ -2444,7 +2770,7 @@ function movementSetup(map: CircuitMapDto | null = circuitMap(), configure?: (la
     configure?.(lap);
     engine.receiveMap(map, 0, lap);
     const update = (lateral: number, now: number, position = 0.45, patch: StandardTelemetrySample = {}) => {
-        const sample = { ...driving(position), Physics_steer_angle: undefined, ...patch };
+        const sample = beforeDecision({ ...driving(position), Physics_steer_angle: undefined, ...patch });
         const view = detection(lap, sample, now);
         view.position!.referenceDelta[0] = lateral;
         engine.receiveVision(view, now);
@@ -2498,7 +2824,7 @@ it('interrupts movement at reference brake onset and resumes movement after the 
         expect(update(-4, now, 0.4495).state.path).toContain('Turn to reference line');
     }
     expect(engine.evaluate(1400).state.path).toEqual(['root', 'Turn to reference line']);
-    const braking = update(-4, 1500, 0.450001, { Physics_brake: 0 });
+    const braking = update(-4, 1500, 0.450501, { Physics_brake: 0 });
     expect(braking.state.path).toEqual(['root', 'Brake zone']);
     expect(braking.events).toHaveLength(1);
     expect(braking.closures.find(({ id }) => id === 'reference-move-left-small')!.conditions.every((condition) => condition.conditionFit)).toBe(false);
@@ -2589,7 +2915,7 @@ it.each([0, -0.35, 0.35, -0.6, 0.6, -1.5, 1.5, -2.99, 2.99, -13.01, 13.01, NaN])
     expect(movementSetup().update(offset, 1000).events).toEqual([]);
 });
 
-it.each([-1, 1])('uses alternative wordings for movement, progress and completion on side %s', (sign) => {
+it.each([-1, 1])('uses alternative wordings for movement and progress on side %s', (sign) => {
     const random = jest.spyOn(Math, 'random').mockReturnValue(0.5);
     const { update } = movementSetup();
     const direction = sign < 0 ? 'left' : 'right';
@@ -2599,14 +2925,14 @@ it.each([-1, 1])('uses alternative wordings for movement, progress and completio
     update(sign, 3500);
     update(sign * 0.6, 3750);
     const snapshot = update(sign * 0.3, 4000);
-    expect(snapshot.events.map(({ sentence }) => sentence)).toEqual([`Shift to the ${direction}.`, 'A bit more.', "That's enough."]);
+    expect(snapshot.events.map(({ sentence }) => sentence)).toEqual([`Shift to the ${direction}.`, 'A bit more.']);
     expect(snapshot.events.map(({ ruleId }) => ruleId)).toEqual([
-        `reference-move-${direction}-small`, `reference-move-${direction}-more`, `reference-move-${direction}-enough`,
+        `reference-move-${direction}-small`, `reference-move-${direction}-more`,
     ]);
-    expect(random).toHaveBeenCalledTimes(3);
+    expect(random).toHaveBeenCalledTimes(2);
 });
 
-it.each([-1, 1])('nudges slow progress and confirms enough movement on side %s', (sign) => {
+it.each([-1, 1])('nudges slow progress and stays silent on reaching the line on side %s', (sign) => {
     const { engine, update } = movementSetup();
     const direction = sign < 0 ? 'left' : 'right';
     update(sign * 4, 1000);
@@ -2615,11 +2941,11 @@ it.each([-1, 1])('nudges slow progress and confirms enough movement on side %s',
     update(sign * 1.4, 3250);
     update(sign, 3500);
     update(sign * 0.6, 3750);
-    const enough = update(sign * 0.3, 4000);
-    expect(enough.events.map(({ sentence }) => sentence)).toEqual([`Move to the ${direction}.`, 'A little bit more.', "OK, that's enough."]);
-    expect(enough.state.path).toContain('Enough movement');
+    const completed = update(sign * 0.3, 4000);
+    expect(completed.events.map(({ sentence }) => sentence)).toEqual([`Move to the ${direction}.`, 'A little bit more.']);
+    expect(completed.state.path).toEqual(['root', 'Turn to reference line']);
     for (let now = 4250; now <= 7000; now += 250) update(sign * 0.2, now);
-    expect(engine.evaluate(7000).events).toHaveLength(3);
+    expect(engine.evaluate(7000).events).toHaveLength(2);
 });
 
 it.each([0, 1.25, -0.1])('does not request more for stopped, adequate or wrong-way progress (%s units/s)', (rate) => {
@@ -2629,25 +2955,25 @@ it.each([0, 1.25, -0.1])('does not request more for stopped, adequate or wrong-w
     expect(engine.evaluate(3250).events.map(({ sentence }) => sentence)).toEqual(['Move to the right.']);
 });
 
-it('does not delay completion after a movement prompt', () => {
+it('stays silent when reaching the line immediately after a movement prompt', () => {
     const { update } = movementSetup();
     update(-4, 1000);
     const completed = update(-0.3, 1100);
     expect(completed.events.map(({ sentence, timestamp }) => ({ sentence, timestamp }))).toEqual([
-        { sentence: 'Move to the left.', timestamp: 1000 }, { sentence: "OK, that's enough.", timestamp: 1100 },
+        { sentence: 'Move to the left.', timestamp: 1000 },
     ]);
 });
 
-it('confirms crossing the line before issuing an opposite-side correction', () => {
+it('stays silent when crossing the line before issuing an opposite-side correction', () => {
     const { update } = movementSetup();
     update(-4, 1000);
     for (let now = 1250; now <= 1750; now += 250) update(-4, now);
-    expect(update(0.8, 2000).events.map(({ sentence }) => sentence)).toEqual(['Move to the left.', "OK, that's enough."]);
+    expect(update(0.8, 2000).events.map(({ sentence }) => sentence)).toEqual(['Move to the left.']);
     for (let now = 2250; now <= 4000; now += 250) {
-        expect(update(0.8, now).events).toHaveLength(2);
+        expect(update(0.8, now).events).toHaveLength(1);
     }
     expect(update(3, 4250).events.map(({ sentence }) => sentence)).toEqual([
-        'Move to the left.', "OK, that's enough.", 'Move to the right.',
+        'Move to the left.', 'Move to the right.',
     ]);
 });
 
@@ -2659,7 +2985,6 @@ it.each(['capture gap', 'invalid position', 'pause', 'stream reset', 'reference 
     if (kind === 'stream reset') engine.receiveTelemetry({ type: 'stream-reset', snapshot: createLiveTelemetryStore().getSnapshot() }, 1250);
     if (kind === 'reference change') engine.receiveMap(null, 1250, referenceLap());
     const snapshot = update(0.1, kind === 'capture gap' ? 1600 : 1500);
-    expect(snapshot.events.some(({ sentence }) => sentence === "OK, that's enough.")).toBe(false);
     expect(snapshot.events.some(({ sentence }) => sentence === 'A little bit more.')).toBe(false);
 });
 
@@ -2674,7 +2999,7 @@ it('does not treat repeated or out-of-order captures or timer evaluations as mov
     engine.receiveVision({ ...view, capturedAt: 900 }, 1400);
     engine.receiveTelemetry(frame(sample), 1400);
     expect(engine.evaluate(1500).events.map(({ sentence }) => sentence)).toEqual(['Move to the left.']);
-    expect(engine.evaluate(1501).closures.find(({ id }) => id === 'reference-move-left-small')?.status).toBe('Inactive');
+    expect(engine.evaluate(1501).closures.find(({ id }) => id === 'reference-move-left-small')?.status).toBe('Not evaluated');
 });
 
 it('keeps brake priority and does not confirm a movement that was never requested', () => {
@@ -2690,21 +3015,50 @@ it('keeps brake priority and does not confirm a movement that was never requeste
     expect(engine.evaluate(1250).events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
 });
 
-it('uses the private shifted brake copy for cues and restores the baseline when caution is reset', () => {
+it('keeps guidance available after repeatedly rebuilding a reference with nearly coincident braking boundaries', () => {
+    const lap = variableBrakingReference(), engine = new PhraseEngine();
+    engine.receiveMap(circuitMap(), 0, lap);
+    const sample = { ...driving(0.05), Physics_speed_kmh: 220 };
+    [0, 1, 25, 50, 100, 50, 1, 0].forEach((aggression, i) => {
+        const now = 1000 + i * 100;
+        engine.setDrivingAggression(aggression, now);
+        const snapshot = engine.receiveTelemetry(frame(sample), now);
+        expect(snapshot.state.path).toEqual(['root', 'Steering', 'say phrase']);
+        expect(snapshot.events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    });
+});
+
+it('keeps brake and reference-line movement available across aggression changes', () => {
+    const braking = setup(addSpeed), movement = movementSetup(circuitMap(), addSpeed);
+    [0, 1, 25, 50, 100, 25, 0].forEach((aggression, i) => {
+        const now = 1000 + i * 100;
+        braking.engine.setDrivingAggression(aggression, now);
+        const brake = braking.update(0.21, now, { Physics_speed_kmh: 122 });
+        expect(brake.state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
+        expect(brake.events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
+        movement.engine.setDrivingAggression(aggression, now);
+        const move = movement.update(-4, now);
+        expect(move.state.path).toContain('Turn to reference line');
+        expect(move.events.map(({ sentence }) => sentence)).toEqual(['Move to the left.']);
+    });
+});
+
+it('uses the private adjusted brake copy for cues and restores the baseline when caution is reset', () => {
     const { engine, lap, update } = setup(addSpeed);
     const speed = { Physics_speed_kmh: 122 };
     expect(update(0.19, 1000, speed).events).toEqual([]);
     engine.setDrivingAggression(50, 1100);
-    const beforeBrake = update(0.19, 1200, speed);
+    expect(update(0.1899, 1150, speed).state.path).toEqual(['root']);
+    const beforeBrake = update(0.195, 1200, speed);
     expect(beforeBrake.state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
     expect(beforeBrake.events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
     expect(update(0.21, 1250, speed).events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
     expect(lap.y[19][4]).toBe(0);
     expect(lap.y[19][6]).toBe(120);
     engine.setDrivingAggression(25, 1300);
-    expect(update(0.20, 1400, speed).state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
+    expect(update(0.21, 1400, speed).state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
     expect(update(0.21, 1450, speed).events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
-    // Restoring Reference must use the original local baseline, not the shifted copy or a mutated source.
+    // Restoring Reference must use the original local baseline, not the adjusted copy or a mutated source.
     lap.y.forEach((row) => { row[4] = 0; row[6] = 200; });
     engine.setDrivingAggression(0, 1500);
     expect(update(0.19, 1600, speed).state.path).toEqual(['root']);
@@ -2712,12 +3066,12 @@ it('uses the private shifted brake copy for cues and restores the baseline when 
     const view = detection(referenceLap(), driving(0.19), 1700);
     engine.receiveVision(view, 1700);
     expect(engine.receiveTelemetry(frame(driving(0.19)), 1700).closures.find(({ id }) => id === 'reference-brake'))
-        .toMatchObject({ status: 'Inactive', missing: [] });
+        .toMatchObject({ status: 'Not evaluated', missing: [] });
 });
 
-it.each([[0, 0.1999, 0.202, 0.2999, 0.3], [25, 0.187, 0.189, 0.2849, 0.285],
-    [50, 0.174, 0.176, 0.2699, 0.27], [100, 0.149, 0.151, 0.2399, 0.24]])(
-    'enters and exits the shifted brake zone at %s%% caution, speaking Brake once per entry', (caution, before, entry, last, exit) => {
+it.each([[0, 0.1999, 0.215, 0.2999, 0.3], [25, 0.1899, 0.205, 0.2999, 0.3],
+    [50, 0.1899, 0.195, 0.2999, 0.3], [100, 0.1799, 0.195, 0.2999, 0.3]])(
+    'enters and exits the adjusted brake zone at %s%% caution, speaking Brake once per entry', (caution, before, entry, last, exit) => {
         const { engine, lap, update } = setup(addSpeed);
         const map = circuitMap();
         map.centerline_segments = [
@@ -2731,19 +3085,21 @@ it.each([[0, 0.1999, 0.202, 0.2999, 0.3], [25, 0.187, 0.189, 0.2849, 0.285],
         const approach = update(before, 1200, speed);
         expect(approach.state.path).toEqual(['root']);
         expect(approach.events).toEqual([]);
-        // Normalized telemetry alone can enter the earlier zone and speak.
+        // Normalized telemetry alone can enter the adjusted zone and speak.
         const entered = engine.receiveTelemetry(frame({ ...driving(entry), ...speed }), 1300);
         expect(entered.state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
         expect(entered.events.map(({ sentence, timestamp }) => ({ sentence, timestamp })))
             .toEqual([{ sentence: 'Brake.', timestamp: 1300 }]);
         expect(engine.evaluate(1301).state.path).toEqual(['root', 'Brake zone']);
-        for (const [position, now] of [[entry + 0.005, 2000], [(entry + last) / 2, 3400], [last, 4600]]) {
+        for (const [position, now] of [[entry + 0.005, 2000], [(entry + last) / 2, 3400]]) {
             const snapshot = update(position, now, speed);
             expect(snapshot.state.path).toEqual(['root', 'Brake zone']);
             expect(snapshot.events.filter(({ sentence }) => sentence === 'Brake.')).toHaveLength(1);
         }
+        // Increasing progress rate predicts the zone endpoint before the constant-speed decision point reaches it.
+        expect(update(last, 4600, speed).state.path).toEqual(['root']);
         expect(update(exit, 4700, speed).state.path).toEqual(['root']);
-        expect(update(0.6, 4800, speed).state.path).toEqual(['root', 'Throttle zone']);
+        expect(update(0.600001, 4800, speed).state.path).toEqual(['root', 'Throttle zone']);
         const next = update(entry, 6000, speed);
         expect(next.state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
         expect(next.events.filter(({ sentence }) => sentence === 'Brake.')).toHaveLength(2);
@@ -2751,7 +3107,7 @@ it.each([[0, 0.1999, 0.202, 0.2999, 0.3], [25, 0.187, 0.189, 0.2849, 0.285],
         expect(lap.y[19][6]).toBe(120);
     });
 
-it('keeps reference exit speeds and throttle timing when braking moves earlier', () => {
+it('keeps reference exit speeds and throttle timing when deceleration is adjusted', () => {
     const { engine, lap, update } = setup(addSpeed);
     expect(update(0.61, 1000, { Physics_speed_kmh: 84 }).events.map(({ sentence }) => sentence)).toEqual(['Throttle.']);
     engine.setDrivingAggression(50, 1100);
@@ -2761,7 +3117,7 @@ it('keeps reference exit speeds and throttle timing when braking moves earlier',
     expect(update(0.61, 1500, { Physics_speed_kmh: 84 }).events.map(({ sentence }) => sentence)).toEqual(['Throttle.']);
 });
 
-it('uses copied centerline tags and the earlier braking target to end movement guidance', () => {
+it('uses copied centerline tags and the adjusted braking target to end movement guidance', () => {
     const map = circuitMap();
     const { engine, update } = movementSetup(map, (lap) => {
         brakingMovementReference(lap, 0.435);
@@ -2776,15 +3132,13 @@ it('uses copied centerline tags and the earlier braking target to end movement g
     map.centerline_tags!.find(({ id }) => id === 'straight')!.label = 'corner';
     expect(update(-4, 1000, 0.449, { Physics_speed_kmh: 216 }).state.path).toContain('Turn to reference line');
     engine.setDrivingAggression(50, 1100);
-    const cautious = update(-4, 1500, 0.449, { Physics_speed_kmh: 216, Physics_brake: 0.5 });
-    expect(cautious.state.path).toEqual(['root', 'Brake zone']);
-    expect(cautious.events).toEqual([]);
-    // Speed observations from movement guidance cannot confirm a brake correction.
-    const measured = update(-4, 2000, 0.449, { Physics_speed_kmh: 216, Physics_brake: 0.5 });
-    expect(measured.state.path).toEqual(['root', 'Brake zone', 'More brake', 'say phrase']);
-    expect(measured.events).toEqual([
-        expect.objectContaining({ sentence: 'More brake.', timestamp: 2000 }),
+    const cautious = update(-4, 1500, 0.46, { Physics_speed_kmh: 216, Physics_brake: 0.5 });
+    expect(cautious.state.path).toEqual(['root', 'Brake zone', 'More brake', 'say phrase']);
+    expect(cautious.events).toEqual([
+        expect.objectContaining({ sentence: 'More brake.', timestamp: 1500 }),
     ]);
+    // The local speed difference needs no previous braking measurement and does not repeat at the first check.
+    expect(update(-4, 2000, 0.46, { Physics_speed_kmh: 216, Physics_brake: 0.5 }).events).toEqual(cautious.events);
 });
 
 it('uses a replacement reference before new position captures arrive and clears guidance when the reference is removed', () => {
@@ -2795,17 +3149,17 @@ it('uses a replacement reference before new position captures arrive and clears 
     replacement.y.forEach((row) => { row[4] = 0; });
     engine.receiveMap(circuitMap(), 1100, replacement);
     const stale = update(0.17, 1200);
-    expect(stale.closures.find(({ id }) => id === 'reference-brake')).toMatchObject({ status: 'Inactive', missing: [] });
+    expect(stale.closures.find(({ id }) => id === 'reference-brake')).toMatchObject({ status: 'Not evaluated', missing: [] });
     const sample = driving(0.17);
     engine.receiveVision(detection(replacement, sample, 1300), 1300);
     const fresh = engine.receiveTelemetry(frame(sample), 1300);
-    expect(fresh.closures.find(({ id }) => id === 'reference-brake')).toMatchObject({ status: 'Inactive' });
+    expect(fresh.closures.find(({ id }) => id === 'reference-brake')).toMatchObject({ status: 'Not evaluated' });
     expect(fresh.referenceLoaded).toBe(true);
     expect(engine.receiveMap(null, 1400).referenceLoaded).toBe(false);
     engine.setDrivingAggression(0, 1450);
     engine.receiveVision(detection(lap, sample, 1500), 1500);
     const removed = engine.receiveTelemetry(frame(sample), 1500);
     expect(removed.mapReady).toBe(false);
-    expect(removed.closures.find(({ id }) => id === 'reference-brake')).toMatchObject({ status: 'Inactive' });
+    expect(removed.closures.find(({ id }) => id === 'reference-brake')).toMatchObject({ status: 'Not evaluated' });
     expect(removed.events).toEqual([]);
 });

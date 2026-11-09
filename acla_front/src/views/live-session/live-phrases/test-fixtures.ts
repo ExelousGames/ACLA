@@ -7,6 +7,25 @@ import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 
 type CornerPosition = 'inside' | 'middle' | 'outside';
 
+/** Repeated variable braking on a 400 m radius turn above the 0.5 degree / 10 m minimum. */
+export function variableBrakingReference(): TopLapReferenceEntry {
+    let energy = 3600;
+    return {
+        game: 'acc', track: 'test', car: 'car', avg_grip_int: 2,
+        target_features: ['expert_optimal_player_pos_x', 'expert_optimal_player_pos_y', 'expert_optimal_player_pos_z',
+            'expert_optimal_brake', 'expert_optimal_throttle', 'expert_optimal_steering', 'expert_optimal_speed'],
+        x: Array.from({ length: 500 }, (_, i) => i / 500),
+        y: Array.from({ length: 500 }, (_, i) => {
+            const phase = i % 50, braking = phase >= 15 && phase < 35;
+            if (phase === 0) energy = 3600;
+            energy += (braking ? -1 : 1) * (10 + (i % 7) * 5);
+            const angle = i * 2 * Math.PI / 500;
+            return [Math.cos(angle) * 400, Math.sin(angle) * 400, 0,
+                braking ? 0.8 : 0, braking ? 0 : 0.8, 0.3, Math.sqrt(energy) * 3.6];
+        }),
+    };
+}
+
 /** A reference turn starts before the tagged corner, with both captured track edges. */
 export function steeringCornerFixture(game: 'acc' | 'iracing' = 'acc') {
     let x = 0, ground = 0;

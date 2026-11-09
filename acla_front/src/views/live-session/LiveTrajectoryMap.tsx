@@ -9,7 +9,7 @@ import { LiveSessionContext } from './LiveSessionContext';
 import { useLiveTelemetrySelector } from './live-telemetry-store';
 import { getLiveMapCars, getLiveMapMiddleLine, getLiveMapPosition } from './live-map-data';
 import { loadTopLapReferenceModel, TopLapReferenceEntry } from 'services/topLapReferenceService';
-import { getLiveMapReferenceHit, getLiveMapReferenceLine, getLiveMapReferencePedal, selectLiveMapReference } from './live-map-reference';
+import { getLiveMapReferenceHit, getLiveMapReferenceLine, getLiveMapReferencePedal, getLiveMapReferenceSpeed, selectLiveMapReference } from './live-map-reference';
 import 'views/session-shared/visualization/charts/MapVisualization.css';
 import { NamedOperationComponentHandle, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 
@@ -186,6 +186,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
     const referenceLine = useMemo(() => getLiveMapReferenceLine(referenceLap), [referenceLap]);
     const referenceBrake = useMemo(() => getLiveMapReferencePedal(referenceLap, 'brake'), [referenceLap]);
     const referenceThrottle = useMemo(() => getLiveMapReferencePedal(referenceLap, 'throttle'), [referenceLap]);
+    const referenceSpeed = useMemo(() => getLiveMapReferenceSpeed(referenceLap), [referenceLap]);
     const hasReferenceBrake = referenceLine.length > 1 && referenceBrake.length === referenceLine.length;
     const hasReferenceThrottle = referenceLine.length > 1 && referenceThrottle.length === referenceLine.length;
     const referencePoints = useMemo(() => referenceLine.map((point, index) => ({
@@ -277,8 +278,8 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
         if (!hit) return null;
         const interpolate = (values: number[]) => values.length === referenceLine.length
             ? values[hit.index] + (values[hit.index + 1] - values[hit.index]) * hit.fraction : null;
-        return { ...hit, position: interpolate(referenceLap.x), brake: interpolate(referenceBrake), throttle: interpolate(referenceThrottle) };
-    }, [hoverPointer, canvasSize, projectedReferenceLine, referenceLap, referenceLine, referenceBrake, referenceThrottle]);
+        return { ...hit, position: interpolate(referenceLap.x), brake: interpolate(referenceBrake), throttle: interpolate(referenceThrottle), speed: interpolate(referenceSpeed) };
+    }, [hoverPointer, canvasSize, projectedReferenceLine, referenceLap, referenceLine, referenceBrake, referenceThrottle, referenceSpeed]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -355,6 +356,9 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
                             transform: referenceHover.y > canvasSize.height / 2 ? 'translateY(calc(-100% - 12px))' : 'translateY(12px)',
                         }}>
                             <Text size="1" weight="bold">Reference lap · {((referenceHover.position ?? 0) * 100).toFixed(1)}%</Text>
+                            <Text size="1">
+                                Speed: {referenceHover.speed === null ? 'Unavailable' : `${referenceHover.speed.toFixed(1)} km/h`}
+                            </Text>
                             <Text size="1" style={{ color: REFERENCE_BRAKE_COLOR }}>
                                 Brake: {referenceHover.brake === null ? 'Unavailable' : `${(referenceHover.brake * 100).toFixed(1)}%`}
                             </Text>
@@ -393,7 +397,7 @@ const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapP
                     </Flex>
                 </div>
                 <div className="map-visualization__hud map-visualization__hud--reference-pedals" role="group" aria-label="Reference lap pedals">
-                    <Text as="p" size="1" mb="1" color="gray">Hover the reference line to inspect pedal values.</Text>
+                    <Text as="p" size="1" mb="1" color="gray">Hover the reference line to inspect speed, brake and throttle.</Text>
                     <Flex align="center" gap="3" wrap="wrap">
                         <Text as="label" size="1" style={{ color: REFERENCE_BRAKE_COLOR }}>
                             <Flex align="center" gap="2">

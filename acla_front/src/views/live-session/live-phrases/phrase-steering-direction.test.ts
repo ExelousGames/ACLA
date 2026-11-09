@@ -10,8 +10,9 @@ const trajectory = (remainingDistance = 100, heading = Math.PI / 2) => ({ headin
 it.each(['acc', 'iracing'])('classifies both corner directions using local velocity in %s', (game) => {
     for (const sign of [-1, 1] as const) {
         for (const scale of [0.01, 1, 100]) {
-            expect(compareSteeringDirection(trajectory(), [0, 0, 0], motion(2 * sign * scale, 10 * scale, game), game, sign)).toBe('tooWide');
-            expect(compareSteeringDirection(trajectory(), [0, 0, 0], motion(-2 * sign * scale, 10 * scale, game), game, sign)).toBe('tooTight');
+            const inside = sign * (game === 'iracing' ? -1 : 1) > 0 ? 'right' : 'left';
+            expect(compareSteeringDirection(trajectory(), [0, 0, 0], motion(4 * sign * scale, 10 * scale, game), game, sign)).toBe(inside);
+            expect(compareSteeringDirection(trajectory(), [0, 0, 0], motion(-4 * sign * scale, 10 * scale, game), game, sign)).toBe(inside === 'right' ? 'left' : 'right');
             expect(compareSteeringDirection(trajectory(), [0, 0, 0], motion(0, 10 * scale, game), game, sign)).toBe('aligned');
         }
     }
@@ -23,27 +24,27 @@ it.each(['acc', 'iracing'])('shifts the start sideways and rejoins the reference
     for (const lateral of [-4, 4]) {
         const desiredX = rightToWorld * lateral / 10;
         expect(compareSteeringDirection(trajectory(), [lateral, 0, 0], motion(desiredX, 10, game), game, 1)).toBe('aligned');
-        expect(compareSteeringDirection(trajectory(), [lateral, 0, 0], motion(desiredX + 2, 10, game), game, 1)).toBe('tooWide');
-        expect(compareSteeringDirection(trajectory(), [lateral, 0, 0], motion(desiredX - 2, 10, game), game, 1)).toBe('tooTight');
+        expect(compareSteeringDirection(trajectory(), [lateral, 0, 0], motion(desiredX + 4, 10, game), game, 1)).toBe(game === 'acc' ? 'right' : 'left');
+        expect(compareSteeringDirection(trajectory(), [lateral, 0, 0], motion(desiredX - 4, 10, game), game, 1)).toBe(game === 'acc' ? 'left' : 'right');
     }
 });
 
 it('spreads the correction over the remaining curve instead of a fixed distance', () => {
     expect(compareSteeringDirection(trajectory(100), [4, 0, 0], motion(0, 10), 'acc', 1)).toBe('aligned');
-    expect(compareSteeringDirection(trajectory(10), [4, 0, 0], motion(0, 10), 'acc', 1)).toBe('tooWide');
+    expect(compareSteeringDirection(trajectory(10), [4, 0, 0], motion(0, 10), 'acc', 1)).toBe('right');
     expect(compareSteeringDirection(trajectory(10), [4, 0, 0], motion(-4, 10), 'acc', 1)).toBe('aligned');
 });
 
 it.each([-2.999, 0, 2.999])('does not shift below 3 coordinate units, but still warns about deviation at %s', (lateral) => {
     expect(compareSteeringDirection(trajectory(10), [lateral, 20, 30], motion(0, 10), 'acc', 1)).toBe('aligned');
-    expect(compareSteeringDirection(trajectory(10), [lateral, 20, 30], motion(2, 10), 'acc', 1)).toBe('tooWide');
-    expect(compareSteeringDirection(trajectory(10), [lateral, 20, 30], motion(-2, 10), 'acc', 1)).toBe('tooTight');
+    expect(compareSteeringDirection(trajectory(10), [lateral, 20, 30], motion(4, 10), 'acc', 1)).toBe('right');
+    expect(compareSteeringDirection(trajectory(10), [lateral, 20, 30], motion(-4, 10), 'acc', 1)).toBe('left');
 });
 
 it.each([-3, 3])('shifts at exactly %s coordinate units without converting the error to metres', (lateral) => {
-    expect(compareSteeringDirection(trajectory(10), [lateral, 0, 0], motion(-lateral, 10), 'acc', 1)).toBe('aligned');
-    expect(compareSteeringDirection(trajectory(10), [lateral, 0, 0], motion(0, 10), 'acc', 1))
-        .toBe(lateral > 0 ? 'tooWide' : 'tooTight');
+    expect(compareSteeringDirection(trajectory(5), [lateral, 0, 0], motion(-2 * lateral, 10), 'acc', 1)).toBe('aligned');
+    expect(compareSteeringDirection(trajectory(5), [lateral, 0, 0], motion(0, 10), 'acc', 1))
+        .toBe(lateral > 0 ? 'right' : 'left');
 });
 
 it('uses only lateral error to shift the starting point', () => {
@@ -70,15 +71,16 @@ it.each(['acc', 'iracing'])('accounts for pitch, roll and the local vertical vel
 
 it('ignores contradictory world velocity and uses local telemetry', () => {
     expect(compareSteeringDirection(trajectory(), [0, 0, 0], {
-        ...motion(2, 10), Physics_velocity_x: -20, Physics_velocity_y: 10, Physics_velocity_z: 0,
-    }, 'acc', 1)).toBe('tooWide');
+        ...motion(4, 10), Physics_velocity_x: -20, Physics_velocity_y: 10, Physics_velocity_z: 0,
+    }, 'acc', 1)).toBe('right');
 });
 
-it.each(['acc', 'iracing'])('ignores small direction errors within 6 degrees in %s', (game) => {
+it.each(['acc', 'iracing'])('ignores direction errors within 20 degrees in %s', (game) => {
     for (const sign of [-1, 1] as const) {
-        for (const [degrees, expected] of [[-6.01, 'tooTight'], [-5.99, 'aligned'], [-4, 'aligned'],
-            [0, 'aligned'], [4, 'aligned'], [5.99, 'aligned'], [6.01, 'tooWide']] as const) {
+        for (const degrees of [-20.01, -19.99, -10, 0, 10, 19.99, 20.01]) {
             const x = 10 * Math.tan(degrees * Math.PI / 180) * sign;
+            const expected = Math.abs(degrees) < 20 ? 'aligned'
+                : degrees * sign * (game === 'iracing' ? -1 : 1) > 0 ? 'right' : 'left';
             expect(compareSteeringDirection(trajectory(), [0, 0, 0], motion(x, 10, game), game, sign)).toBe(expected);
         }
     }
@@ -86,7 +88,7 @@ it.each(['acc', 'iracing'])('ignores small direction errors within 6 degrees in 
 
 it('handles angle wraparound on both sides of the angular tolerance', () => {
     expect(compareSteeringDirection(trajectory(100, -Math.PI + 0.05), [0, 0, 0], motion(-10, 0.5), 'acc', 1)).toBe('aligned');
-    expect(compareSteeringDirection(trajectory(100, -Math.PI + 0.1), [0, 0, 0], motion(-10, 0.5), 'acc', 1)).toBe('tooWide');
+    expect(compareSteeringDirection(trajectory(100, -Math.PI + 0.4), [0, 0, 0], motion(-10, 0.5), 'acc', 1)).toBe('right');
 });
 
 it.each([

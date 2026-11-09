@@ -5,7 +5,7 @@ import { createLiveTelemetryStore } from '../live-telemetry-store';
 import type { TrackVisionDetection } from '../track-vision/track-vision-types';
 import LivePhrases from './LivePhrases';
 import { PHRASE_DEFINITIONS, PhraseCondition, PhraseEngine, conditionGroup } from './phrase-engine';
-import { circuitMap, vision } from './test-fixtures';
+import { circuitMap, variableBrakingReference, vision } from './test-fixtures';
 import type { DriverCornerSummary } from '../event-log/corner-summary';
 
 jest.mock('components/tts', () => ({ synthesizeProsodyTts: jest.fn(() => new Promise(() => undefined)) }));
@@ -13,6 +13,48 @@ jest.mock('components/tts', () => ({ synthesizeProsodyTts: jest.fn(() => new Pro
 describe('LivePhrases root connection', () => {
     beforeEach(() => { jest.useFakeTimers(); jest.setSystemTime(10000); });
     afterEach(() => { jest.useRealTimers(); jest.restoreAllMocks(); });
+
+    it('previews adjusted ranges with detection disabled and follows reference replacement and removal', () => {
+        let reference: ReturnType<typeof variableBrakingReference> | null = variableBrakingReference();
+        const listeners = new Set<() => void>();
+        const root = {
+            getComponentName: () => 'live-session',
+            getLiveReferenceLap: () => reference,
+            subscribeLiveCircuitMap: (listener: () => void) => {
+                listeners.add(listener);
+                return () => { listeners.delete(listener); };
+            },
+        };
+        const Root = () => {
+            useRegisterOperationComponentRef(React.useRef(root));
+            return null;
+        };
+        const view = render(<OperationComponentRefProvider><Root /><LivePhrases name="live-phrases" /></OperationComponentRefProvider>);
+        const original = reference.y.map((row) => [...row]);
+        const path = (label: string) => screen.getByLabelText(label).getAttribute('d');
+        const deceleration = path('Deceleration ranges'), direction = path('Direction-change ranges');
+        expect(deceleration).not.toBe('');
+        expect(direction).not.toBe('');
+        fireEvent.change(screen.getByRole('slider', { name: 'Driving aggression' }), { target: { value: '100' } });
+        expect(path('Deceleration ranges')).not.toBe(deceleration);
+        expect(path('Direction-change ranges')).toBe(direction);
+        expect(reference.y).toEqual(original);
+        expect(screen.getByText('Detection: Disabled')).toBeVisible();
+        fireEvent.change(screen.getByRole('slider', { name: 'Driving aggression' }), { target: { value: '0' } });
+        expect(path('Deceleration ranges')).toBe(deceleration);
+        act(() => {
+            reference = variableBrakingReference();
+            reference.y.forEach((row) => { row[6] = 100; });
+            listeners.forEach((listener) => listener());
+        });
+        expect(path('Deceleration ranges')).toBe('');
+        expect(path('Direction-change ranges')).toBe(direction);
+        act(() => { reference = null; listeners.forEach((listener) => listener()); });
+        expect(screen.queryByRole('img')).not.toBeInTheDocument();
+        expect(screen.getByText(/Open Live Map with a reference lap/)).toBeVisible();
+        view.unmount();
+        expect(listeners.size).toBe(0);
+    });
 
     it('uses newly available event-log exit speeds to trigger the long-straight advice', async () => {
         const telemetry = createLiveTelemetryStore();
@@ -69,7 +111,7 @@ describe('LivePhrases root connection', () => {
             if (zone) fireEvent.click(catalog.getByLabelText(`${zone} closure`));
             const summary = catalog.getByLabelText(`${rule.name} closure`);
             expect(summary).toBeVisible();
-            expect(within(summary).getByText(zone ? 'Inactive' : 'Missing input')).toBeVisible();
+            expect(within(summary).getByText(zone ? 'Not evaluated' : 'Missing input')).toBeVisible();
             expect(catalog.queryByText(rule.sentence)).not.toBeInTheDocument();
             fireEvent.click(summary);
             fireEvent.click(catalog.getByRole('tab', { name: 'Conditions' }));
@@ -79,7 +121,7 @@ describe('LivePhrases root connection', () => {
             conditions.getAllByRole('listitem').forEach((condition) => zone
                 ? expect(condition).not.toHaveAttribute('data-condition-fit')
                 : expect(condition).toHaveAttribute('data-condition-fit', 'false'));
-            expect(conditions.getAllByText('AND')).toHaveLength(rule.conditions.length - 1);
+            expect(conditions.queryAllByText('AND')).toHaveLength(rule.conditions.length - 1);
             expect(within(conditions.getAllByRole('listitem')[0]).queryByText('AND')).not.toBeInTheDocument();
             fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
             if (zone) fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
@@ -139,12 +181,14 @@ describe('LivePhrases root connection', () => {
         expect(screen.queryByText('Speed is equal to or below the local live phrase reference speed')).not.toBeInTheDocument();
         expect(screen.queryByText(/0.6–1.8 seconds/)).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('tab', { name: /Contents/ }));
-        expect(screen.getByLabelText('Too wide closure')).toBeVisible();
-        expect(screen.getByLabelText('Too tight closure')).toBeVisible();
-        for (const name of ['Too wide', 'Too tight']) {
+        expect(screen.getByLabelText('Stay right a bit closure')).toBeVisible();
+        expect(screen.getByLabelText('Stay left a bit closure')).toBeVisible();
+        for (const name of ['Stay right a bit', 'Stay left a bit']) {
             fireEvent.click(screen.getByLabelText(`${name} closure`));
             fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
             expect(screen.getByText('Driving aggression = 100')).toBeVisible();
+            expect(screen.getByText('Same direction deviation duration (ms) >= 500')).toBeVisible();
+            expect(screen.getByText('No direction correction has been spoken during this deviation')).toBeVisible();
             expect(screen.queryByText('At least 2 seconds since the last steering phrase')).not.toBeInTheDocument();
             fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         }
@@ -167,7 +211,7 @@ describe('LivePhrases root connection', () => {
         expect(screen.queryByText('Driving aggression = 100')).not.toBeInTheDocument();
     });
 
-    it('opens small and medium reference movements on both sides, with progress and completion phrases', () => {
+    it('opens small and medium reference movements on both sides, with progress phrases', () => {
         render(<LivePhrases name="live-phrases" />);
         expect(screen.queryByLabelText('Increase steering closure')).not.toBeInTheDocument();
         fireEvent.click(screen.getByLabelText('Turn to reference line closure'));
@@ -176,14 +220,13 @@ describe('LivePhrases root connection', () => {
             expect(within(screen.getByRole('list', { name: `Move to the ${direction} children` }))
                 .getAllByRole('listitem').map((item) => within(item).getByRole('button').getAttribute('aria-label'))).toEqual([
                 'Small movement closure', 'Medium movement closure',
-                'A little bit more closure', 'Enough movement closure',
-                `Move to the ${direction} action 5: exit to parent`,
+                'A little bit more closure',
+                `Move to the ${direction} action 4: exit to parent`,
             ]);
             for (const [name, sentence] of [
                 ['Small movement', `Move to the ${direction}.`],
                 ['Medium movement', `Further to the ${direction}.`],
                 ['A little bit more', 'A little bit more.'],
-                ['Enough movement', "OK, that's enough."],
             ]) {
                 fireEvent.click(screen.getByLabelText(`${name} closure`));
                 fireEvent.click(screen.getByLabelText(`${name} action 1: say phrase`));
@@ -388,7 +431,8 @@ describe('LivePhrases root connection', () => {
         const stopVision = jest.fn();
         const stopMap = jest.fn();
         let map: ReturnType<typeof circuitMap> | null = null;
-        let notifyMap!: () => void;
+        const mapListeners = new Set<() => void>();
+        const notifyMap = () => mapListeners.forEach((listener) => listener());
         const root = {
             getComponentName: () => 'live-session',
             subscribeTelemetry: jest.fn((listener) => {
@@ -403,7 +447,10 @@ describe('LivePhrases root connection', () => {
             getLiveCircuitMap: () => map,
             getLiveReferenceLap: () => null,
             getLiveCornerSummaries: () => [],
-            subscribeLiveCircuitMap: (listener: () => void) => { notifyMap = listener; return stopMap; },
+            subscribeLiveCircuitMap: (listener: () => void) => {
+                mapListeners.add(listener);
+                return () => { stopMap(); mapListeners.delete(listener); };
+            },
         };
         const Root = () => {
             const ref = React.useRef(root);
@@ -451,7 +498,8 @@ describe('LivePhrases root connection', () => {
         expect(screen.queryByRole('list', { name: 'Pressure and a feint conditions' })).not.toBeInTheDocument();
         act(() => { publish(4); });
         const closure = screen.getByLabelText('Pressure and a feint closure');
-        expect(within(closure).getByText('Active')).toBeVisible();
+        expect(within(closure).getByText('Waiting')).toBeVisible();
+        expect(closure).toHaveAttribute('data-on-path', 'false');
         fireEvent.click(closure);
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         conditions = within(screen.getByRole('list', { name: 'Pressure and a feint conditions' }));
@@ -495,7 +543,8 @@ describe('LivePhrases root connection', () => {
         view.unmount();
         expect(stopTelemetry).toHaveBeenCalledTimes(2);
         expect(stopVision).toHaveBeenCalledTimes(2);
-        expect(stopMap).toHaveBeenCalledTimes(2);
+        expect(stopMap).toHaveBeenCalledTimes(3); // Two detection runs and the always-available range preview.
+        expect(mapListeners.size).toBe(0);
         expect(listeners.size).toBe(0);
         expect(jest.getTimerCount()).toBe(0);
     });

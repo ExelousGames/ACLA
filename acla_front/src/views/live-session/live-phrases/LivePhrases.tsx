@@ -7,10 +7,12 @@ import {
 } from 'contexts/OperationComponentRefContext';
 import type { LiveSessionHandle } from '../LiveSessionView';
 import type { TtsPack } from 'components/tts';
+import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import { audioManager, type PlaybackHandle } from 'services/audio';
 import { PHRASE_DEFINITIONS, PhraseEngine, PhraseSnapshot, type PhraseEvent } from './phrase-engine';
 import { LivePhraseOverlay, LIVE_PHRASE_DISPLAY_MS } from './LivePhraseOverlay';
-import { MAX_DRIVING_CAUTION, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
+import { copyPhraseReference, MAX_DRIVING_CAUTION, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
+import ReferenceRangeMap from './graphs/ReferenceRangeMap';
 import ClosureTree from './ClosureTree';
 import { Phrase, type PhraseInstance } from './phrase';
 import { getPhraseSpeechInstances, loadAllPhraseSpeech } from './phrase-speech';
@@ -32,6 +34,8 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
     const root = directory?.findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)?.current ?? null;
     const [enabled, setEnabled] = useState(false);
     const [drivingAggression, setDrivingAggression] = useState(REFERENCE_DRIVING_AGGRESSION);
+    const [rangeBaseline, setRangeBaseline] = useState<TopLapReferenceEntry | null>(null);
+    const rangeReference = useMemo(() => copyPhraseReference(rangeBaseline, drivingAggression), [rangeBaseline, drivingAggression]);
     const aggressionRef = useRef(drivingAggression);
     aggressionRef.current = drivingAggression;
     const updateAggression = useRef<((value: number) => void) | null>(null);
@@ -42,6 +46,14 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
     const voicePacks = useRef(new Map<string, TtsPack>());
     const snapshotRef = useRef(snapshot);
     snapshotRef.current = snapshot;
+
+    // Keep the range preview available while detection and speech are disabled.
+    useEffect(() => {
+        const update = () => setRangeBaseline(copyPhraseReference(root?.getLiveReferenceLap() ?? null));
+        const unsubscribe = root?.subscribeLiveCircuitMap(update);
+        update();
+        return unsubscribe;
+    }, [root]);
 
     useEffect(() => {
         const engine = new PhraseEngine();
@@ -187,15 +199,16 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 <label>
                     <span>Driving aggression</span>
                     <input type="range" min="0" max={MAX_DRIVING_CAUTION} step="1" value={drivingAggression}
-                        aria-valuetext={drivingAggression === 0 ? '0% earlier braking (Reference)' : drivingAggression === 100
-                            ? '100% earlier braking (Direction guide)' : `${drivingAggression}% earlier braking`}
+                        aria-valuetext={drivingAggression === 0 ? '0% braking adjustment (Reference)' : drivingAggression === 100
+                            ? '100% braking adjustment (Direction guide)' : `${drivingAggression}% braking adjustment`}
                         onChange={(event) => {
                             const value = Number(event.target.value);
                             setDrivingAggression(value);
                             updateAggression.current?.(value);
                         }} />
                 </label>
-                <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% earlier braking</span><span>100% · Direction guide</span></div>
+                <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% braking adjustment</span><span>100% · Direction guide</span></div>
+                <ReferenceRangeMap reference={rangeReference} />
             </div>
             {overlayError && <p role="alert">Unable to display live phrase in the overlay: {overlayError}</p>}
             {voiceError && <p role="alert">Unable to prepare or play live phrase speech: {voiceError}</p>}
@@ -219,7 +232,14 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 {snapshot.events.length === 0
                     ? <p>{enabled ? 'No phrases yet. Waiting for live driving data and a matching reference cue or overtaking opportunity.' : 'Enable detection to start live phrase guidance.'}</p>
                     : <ol>{snapshot.events.slice().reverse().map((event) => (
-                        <li key={event.id}><time dateTime={new Date(event.timestamp).toISOString()}>{new Date(event.timestamp).toLocaleTimeString()}</time><span>{event.sentence}</span></li>
+                        <li key={event.id}>
+                            <time dateTime={new Date(event.timestamp).toISOString()}>
+                                {new Date(event.timestamp).toLocaleTimeString(undefined, {
+                                    hour: 'numeric', minute: 'numeric', second: 'numeric', fractionalSecondDigits: 3,
+                                })}
+                            </time>
+                            <span>{event.sentence}</span>
+                        </li>
                     ))}</ol>}
             </section>
         </section>

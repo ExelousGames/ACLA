@@ -51,9 +51,10 @@ describe.each(['brake', 'throttle'] as const)('%s zone onsets', (pedal) => {
     it('enters immediately below the old pressure threshold and exits on the first opposite rise', () => {
         const engine = new PhraseEngine();
         engine.receiveMap(null, 0, lapWithShortZone(pedal, 36));
-        expect(engine.receiveTelemetry(frame(sampleAt(0.200001)), 1000).state.path).toEqual(['root', name]);
-        expect(engine.receiveTelemetry(frame(sampleAt(0.209999)), 1001).state.path).toEqual(['root', name]);
-        expect(engine.receiveTelemetry(frame(sampleAt(0.210001)), 1002).state.path)
+        // At 36 km/h the decision position leads telemetry by 5 m / 0.005 of this lap.
+        expect(engine.receiveTelemetry(frame(sampleAt(0.195001)), 1000).state.path).toEqual(['root', name]);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.204999)), 1001).state.path).toEqual(['root', name]);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.205001)), 1002).state.path)
             .toEqual(['root', opposite === 'brake' ? 'Brake zone' : 'Throttle zone']);
     });
 
@@ -64,9 +65,9 @@ describe.each(['brake', 'throttle'] as const)('%s zone onsets', (pedal) => {
         lap.y.forEach((row, i) => { if (i < 20 || i >= 90) row[pedal === 'brake' ? 4 : 3] = 0.001; });
         engine.receiveMap(null, 0, lap);
         const otherName = opposite === 'brake' ? 'Brake zone' : 'Throttle zone';
-        expect(engine.receiveTelemetry(frame(sampleAt(0.1999)), 1000).state.path).toEqual(['root', otherName]);
-        expect(engine.receiveTelemetry(frame(sampleAt(0.200001)), 1001).state.path).toEqual(['root']);
-        expect(engine.receiveTelemetry(frame(sampleAt(0.210001)), 1002).state.path).toEqual(['root', otherName]);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.1949)), 1000).state.path).toEqual(['root', otherName]);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.195001)), 1001).state.path).toEqual(['root']);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.205001)), 1002).state.path).toEqual(['root', otherName]);
     });
 
     it('tracks zone membership through release and reapplication of the same pedal', () => {
@@ -136,7 +137,8 @@ it.each([0, 0.5, 1])('ends braking at reference release to zero regardless of li
         const sample = { ...sampleAt(position), Physics_brake: pedal };
         const inside = position < 0.24;
         expect(readReferenceGuidance(sample, null, lap, 'acc', 1000).pedalZone).toBe(inside ? 'brake' : 'none');
-        expect(engine.receiveTelemetry(frame(sample), 1000).state.path.slice(0, 2)).toEqual(inside ? ['root', 'Brake zone'] : ['root']);
+        expect(engine.receiveTelemetry(frame(sample), 1000).state.path.slice(0, 2))
+            .toEqual(position < 0.235 ? ['root', 'Brake zone'] : ['root']);
     }
 });
 

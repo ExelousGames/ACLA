@@ -43,6 +43,14 @@ export const getLiveMapReferencePedal = (entry: TopLapReferenceEntry | null, ped
     return values.every((value) => Number.isFinite(value) && value >= 0 && value <= 1) ? values : [];
 };
 
+export const getLiveMapReferenceSpeed = (entry: TopLapReferenceEntry | null): number[] => {
+    if (!entry || entry.x.length < 2) return [];
+    const index = entry.target_features.indexOf('expert_optimal_speed');
+    if (index < 0) return [];
+    const values = entry.y.map((row) => row[index]);
+    return values.every((value) => Number.isFinite(value) && value >= 0) ? values : [];
+};
+
 // Hit-test the rendered segments in canvas CSS pixels, independent of zoom and pixel density.
 export const getLiveMapReferenceHit = (points: { x: number; y: number }[], pointer: { x: number; y: number }) => {
     let closest: { index: number; fraction: number; x: number; y: number } | null = null;

@@ -98,8 +98,12 @@ describe('live phrase closure tree', () => {
         const next = engine.evaluate(800);
         expect(leave).toHaveBeenCalledTimes(1);
         expect(next.state).toEqual({ current: 'root', description: engine.root.description, kind: 'closure', path: ['root'] });
+        expect(next.closures.find((closure) => closure.id === defaultRule)?.status).toBe('Waiting');
         expect(snapshot.state.path).toEqual(['root', child.name, action.name]);
-        update(engine, 1000);
+        const waiting = update(engine, 1000);
+        expect(waiting.closures.find((closure) => closure.id === defaultRule)?.status).toBe('Waiting');
+        expect(waiting.root.children.find((node) => node.id === defaultRule)).toMatchObject({ status: 'Waiting', onPath: false });
+        expect(waiting.closures.some((closure) => closure.status === 'Active')).toBe(false);
         expect(run).toHaveBeenCalledTimes(1);
     });
 
@@ -111,7 +115,7 @@ describe('live phrase closure tree', () => {
         expect(snapshot.events.map((event) => event.ruleId)).toEqual([defaultRule]);
         expect(snapshot.state.path).toEqual(['root', 'Shared guide name', 'say phrase']);
         expect(snapshot.closures.filter((closure) => closure.status === 'Active').map((closure) => closure.id)).toEqual([defaultRule]);
-        expect(snapshot.closures.find((closure) => closure.id === 'second-apex')!.status).not.toBe('Waiting for action');
+        expect(snapshot.closures.find((closure) => closure.id === 'second-apex')!.status).not.toBe('Active');
     });
 
     it.each(['session-reset', 'stream-reset'] as const)('creates a fresh state at root on %s', (type) => {
@@ -472,7 +476,7 @@ describe('vision and Live Map overtaking guides', () => {
         const snapshot = update(engine, 0);
         expect(snapshot.closures.find((rule) => rule.id === 'priority-guide')?.status).toBe('Confirming');
         const suppressed = snapshot.closures.find((rule) => rule.id === defaultRule)!;
-        expect(suppressed.status).toBe('Not matched');
+        expect(suppressed.status).toBe('Waiting');
         expect(suppressed.conditions.every((condition) => condition.conditionFit)).toBe(true);
     });
 
@@ -852,7 +856,7 @@ describe('vision and Live Map overtaking guides', () => {
         update(engine, 0);
         update(engine, 800);
         const reset = engine.receiveTelemetry({ type, snapshot: createLiveTelemetryStore().getSnapshot() }, 900);
-        expect(reset.closures.every((rule) => rule.conditions.every((condition) => rule.status === 'Inactive'
+        expect(reset.closures.every((rule) => rule.conditions.every((condition) => rule.status === 'Not evaluated'
             ? condition.conditionFit === null && !condition.inputMissing : !condition.conditionFit && condition.inputMissing))).toBe(true);
         engine.receiveVision(vision(800), 900);
         engine.receiveTelemetry(frame(driving), 1000);

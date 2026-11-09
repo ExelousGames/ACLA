@@ -37,7 +37,7 @@ it('orders a corner across start/finish without drawing the rest of the lap', ()
     expect(display.rightBoundary).toHaveLength(5);
 });
 
-it('renders the analyst-style map in focus and expanded states, and just the title when folded', () => {
+it('renders the vehicle view in focus and expanded states, and just the title when folded', () => {
     const { map, reference } = steeringCornerFixture();
     const display = buildSteeringCornerOverlay(map, reference, corner)!;
     for (const status of ['focus', 'expanded', 'folded'] as const) {
@@ -46,14 +46,27 @@ it('renders the analyst-style map in focus and expanded states, and just the tit
         })}</>);
         expect(screen.getByText('Steering · Turn 1')).toBeVisible();
         if (status !== 'folded') {
-            expect(screen.getByRole('img', { name: 'Incoming corner reference line and track boundaries' })).toBeVisible();
+            expect(screen.getByRole('img', { name: 'Vehicle view of incoming corner reference line and track boundaries' })).toBeVisible();
             for (const label of ['Reference line', 'Left boundary', 'Right boundary']) {
-                expect(screen.getByLabelText(label).getAttribute('points')).not.toBe('');
+                expect(screen.getByLabelText(label).getAttribute('d')).toMatch(/^M /);
             }
             expect(screen.getByText('Entry')).toBeVisible();
-            expect(screen.getByText('Exit')).toBeVisible();
+            expect(screen.getByText('Vehicle view')).toBeVisible();
         } else expect(screen.queryByRole('img')).not.toBeInTheDocument();
         view.unmount();
+    }
+});
+
+it('only labels the exit when it is in front of the vehicle and inside the view', () => {
+    const display = { title: 'Steering · Turn 1', circuitName: 'Test circuit',
+        referenceLine: [{ x: 0, y: 0 }, { x: 0, y: 10 }, { x: 2, y: 30 }],
+        leftBoundary: [], rightBoundary: [] };
+    const view = render(<SteeringCornerDisplay snapshot={display} />);
+    expect(screen.getByText('Exit')).toBeVisible();
+    for (const exit of [{ x: 0, y: -10 }, { x: 100, y: 10 }]) {
+        view.rerender(<SteeringCornerDisplay snapshot={{ ...display,
+            referenceLine: [...display.referenceLine.slice(0, 2), exit] }} />);
+        expect(screen.queryByText('Exit')).not.toBeInTheDocument();
     }
 });
 

@@ -7,6 +7,7 @@ import { compareSteeringDirection, type ReferenceSteeringDirection, type Steerin
 
 export const REFERENCE_POSITION_MAX_AGE_MS = 500;
 export const REFERENCE_CUE_COOLDOWN_MS = 2000;
+export const REFERENCE_LOOKAHEAD_MS = 500;
 export type ReferenceCue = 'brake' | 'moreBrake' | 'releaseBrake' | 'releaseBrakeSlower' | 'releaseBrakeFaster' | 'holdBrake' | 'steering' | 'throttle' | 'moreThrottle' | 'lessThrottle' | ReferenceMovementCue;
 export type ReferencePedalZone = 'brake' | 'throttle' | 'none';
 export type ReferenceSteeringPhase = 'prepare' | 'turn';
@@ -19,7 +20,7 @@ export type ReferenceGuidance = Partial<Record<ReferenceCue, number>> & {
     brakeZoneExit?: boolean;
     steeringPhase?: ReferenceSteeringPhase;
     steeringDirection?: ReferenceSteeringDirection;
-    /** Current trajectory turn after exit-tail trimming; null means outside a turn, undefined means unavailable. */
+    /** Current continuous turn above the curvature threshold; null means outside a turn, undefined means unavailable. */
     steeringRange?: { start: number; end: number; turnSign: -1 | 1 } | null;
 };
 type Control = 'steering' | 'brake' | 'throttle';
@@ -50,9 +51,8 @@ const SPEED_TOLERANCE_KMH = 5;
 const DECELERATION_TOLERANCE_RATIO = 0.1;
 const THROTTLE_TOLERANCE = 0.15;
 const SPEED_CORRECTION_SECONDS = 1.5;
-const ANGLE_EPSILON = 1e-9;
-const TRAJECTORY_END_PEAK_RATIO = 0.1;
-const MAX_TRAJECTORY_END_CURVATURE = Math.PI / 180 / 10; // 1 degree per 10 m.
+const MIN_TRAJECTORY_CURVATURE = 0.5 * Math.PI / 180 / 10; // 0.5 degrees per 10 m, for entry and exit.
+const CURVATURE_EPSILON = 1e-12;
 const angleDifference = (from: number, to: number) => Math.atan2(Math.sin(to - from), Math.cos(to - from));
 const BRAKE_LOOKAHEAD_SECONDS = 1.8;
 const cache = new WeakMap<TopLapReferenceEntry, Reference | null>();
@@ -203,6 +203,25 @@ export function referenceDirectionChanges(lap: TopLapReferenceEntry): readonly {
     return prepare(lap)?.directionChanges ?? [];
 }
 
+/** Map intervals use the same speed profile and cyclic direction ranges as guidance. */
+export function referenceRangeSegments(lap: TopLapReferenceEntry | null) {
+    const reference = lap && prepare(lap);
+    if (!reference) return null;
+    const { points, length, directionChanges } = reference;
+    return {
+        speedAvailable: points[0].speed !== undefined,
+        segments: points.flatMap((point, i) => {
+            const next = points[(i + 1) % points.length];
+            const end = i + 1 === points.length ? length : next.distance;
+            if (end <= point.distance) return [];
+            const middle = (point.distance + end) / 2;
+            return [{ start: { x: point.x, y: point.ground }, end: { x: next.x, y: next.ground },
+                deceleration: point.deceleration,
+                changesDirection: directionChanges.some((range) => wrap(middle - range.start, length) < range.end - range.start) }];
+        }),
+    };
+}
+
 function bracket(reference: Reference, value: number, key: 'position' | 'distance') {
     const { points, length } = reference, period = key === 'position' ? 1 : length;
     let low = 0, high = points.length;
@@ -221,6 +240,26 @@ function distanceAt(reference: Reference, position: number): number {
     const end = b.distance + (index === reference.points.length ? reference.length : 0);
     return wrap(start + (end - start) * fraction, reference.length);
 }
+
+/** Signed travel between telemetry samples, unwrapped over the nearest lap seam. */
+export function referenceTravelDistance(lap: TopLapReferenceEntry | null, from: number, to: number): number | undefined {
+    const reference = lap && prepare(lap);
+    if (!reference || !finite(from) || !finite(to) || from < 0 || from > 1 || to < 0 || to > 1) return undefined;
+    return wrap(distanceAt(reference, to) - distanceAt(reference, from) + reference.length / 2, reference.length) - reference.length / 2;
+}
+
+/** Shared decision position for the reference-guide tree; measured telemetry stays untouched. */
+export function referencePositionAhead(sample: StandardTelemetrySample, lap: TopLapReferenceEntry | null): number | undefined {
+    const position = sample.Graphics_normalized_car_position, speed = sample.Physics_speed_kmh;
+    if (!lap || !finite(position) || position < 0 || position > 1 || !finite(speed) || speed < 0) return undefined;
+    const reference = prepare(lap);
+    if (!reference) return undefined;
+    if (speed === 0) return position;
+    const distance = wrap(distanceAt(reference, position) + speed / 3.6 * REFERENCE_LOOKAHEAD_MS / 1000, reference.length);
+    const { a, b, fraction, index } = bracket(reference, distance, 'distance');
+    const start = a.position - (index === 0 ? 1 : 0), end = b.position + (index === reference.points.length ? 1 : 0);
+    return wrap(start + (end - start) * fraction, 1);
+}
 function targetsAt(reference: Reference, distance: number): Partial<Record<Channel, number>> {
     const { a, b, fraction } = bracket(reference, wrap(distance, reference.length), 'distance');
     const targets: Partial<Record<Channel, number>> = {};
@@ -238,7 +277,7 @@ function targetsAt(reference: Reference, distance: number): Partial<Record<Chann
 /** Estimate horizontal tangents over 10 m so inserted reference samples do not create false plateaus. */
 function prepareTrajectoryDirections(reference: Reference): void {
     const { points, length } = reference;
-    const ranges: (Reference['directionChanges'][number] & { changes: { end: number; curvature: number }[] })[] = [];
+    const ranges: Reference['directionChanges'] = [];
     points.forEach((point) => {
         const positions = [-1, 1].map((sign) => {
             const { a, b, fraction } = bracket(reference, wrap(point.distance + sign * Math.min(5, length / 4), length), 'distance');
@@ -252,29 +291,21 @@ function prepareTrajectoryDirections(reference: Reference): void {
         const end = i + 1 === points.length ? length : next.distance;
         if (end <= point.distance || point.heading === undefined || next.heading === undefined) return;
         const delta = angleDifference(point.heading, next.heading);
-        if (Math.abs(delta) <= ANGLE_EPSILON) return;
+        // Apply the same absolute threshold throughout the turn so near-straights split ranges.
+        const curvature = Math.abs(delta) / (end - point.distance);
+        if (curvature < MIN_TRAJECTORY_CURVATURE - CURVATURE_EPSILON) return;
         const turnSign = delta > 0 ? 1 : -1;
-        const change = { end, curvature: Math.abs(delta) / (end - point.distance) };
         const previous = ranges[ranges.length - 1];
         if (previous?.turnSign === turnSign && previous.end === point.distance) {
             previous.end = end;
-            previous.changes.push(change);
-        } else ranges.push({ start: point.distance, end, turnSign, changes: [change] });
+        } else ranges.push({ start: point.distance, end, turnSign });
     });
     const first = ranges[0], last = ranges[ranges.length - 1];
     if (first && last !== first && first.start === 0 && last.end === length && first.turnSign === last.turnSign) {
         last.end = length + first.end;
-        last.changes = last.changes.concat(first.changes.map((change) => ({ ...change, end: length + change.end })));
         ranges.shift();
     }
-    reference.directionChanges = ranges.map(({ start, turnSign, changes }) => {
-        // Trim only the trailing weak curvature, retaining the original entry and any easing before a later apex.
-        // A relative threshold preserves shallow bends; the cap preserves meaningful exits after sharp turns.
-        const peak = changes.reduce((value, change) => Math.max(value, change.curvature), 0);
-        const threshold = Math.min(MAX_TRAJECTORY_END_CURVATURE, peak * TRAJECTORY_END_PEAK_RATIO);
-        const end = changes.reduce((value, change) => change.curvature >= threshold ? change.end : value, start);
-        return { start, end, turnSign };
-    });
+    reference.directionChanges = ranges;
 }
 
 function headingAt(reference: Reference, distance: number): number | undefined {
@@ -363,11 +394,12 @@ function brakeTarget(reference: Reference, distance: number,
     target: Partial<Record<Channel, number>>, speed: number): number | undefined {
     if (target.brake === undefined) return undefined;
     if (target.speed === undefined) return target.brake;
+    if (target.speed - speed >= SPEED_TOLERANCE_KMH) return 0;
     const deceleration = brakingDecelerationTarget(reference, distance, target.speed, speed);
     if (deceleration === 0) return 0;
     const response = nearestResponse(reference.brakeResponses, distance, reference.length);
     // Without a measured reference response, keep pedal comparisons; never invent braking strength.
-    if (!response) return target.speed - speed >= SPEED_TOLERANCE_KMH ? 0 : target.brake;
+    if (!response) return target.brake;
     return Math.max(0, Math.min(1, deceleration / response.decelerationPerBrake));
 }
 
@@ -396,15 +428,22 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
     vision: Pick<TrackVisionDetection, 'capturedAt' | 'position' | 'telemetry'> | null,
     lap: TopLapReferenceEntry | null, game: string | undefined, now: number,
     locationReference: TopLapReferenceEntry | null = lap,
-    liveDeceleration?: number, previousPosition?: ReferencePositionSample,
-    cornerTurnSign?: -1 | 1, cornerBounds?: { start: number; end: number }, brakeReleasing = false): ReferenceGuidance {
-    const prediction = vision?.position, position = sample.Graphics_normalized_car_position, speed = sample.Physics_speed_kmh;
-    if (!lap || !finite(position) || position < 0 || position > 1 || !finite(speed) || speed < 20
+    intendedDeceleration?: number, previousPosition?: ReferencePositionSample,
+    cornerTurnSign?: -1 | 1, cornerBounds?: { start: number; end: number }, brakeReleasing = false,
+    evaluationPosition = sample.Graphics_normalized_car_position,
+    intendedTelemetry?: StandardTelemetrySample): ReferenceGuidance {
+    const prediction = vision?.position, position = sample.Graphics_normalized_car_position;
+    const intended = intendedTelemetry ?? sample;
+    const speed = intended.Physics_speed_kmh, liveSpeed = sample.Physics_speed_kmh;
+    if (!lap || !finite(position) || position < 0 || position > 1 || !finite(speed) || speed < 0
+        || !finite(liveSpeed) || liveSpeed < 0
+        || !finite(evaluationPosition) || evaluationPosition < 0 || evaluationPosition > 1
         || !selectLiveMapReference([lap], game ?? null, sample.Static_track, sample.Static_car_model, sample.Graphics_track_grip_status)) return {};
     const reference = prepare(lap);
     if (!reference) return {};
-    // Reference channels and cue timing follow live normalized progress in the private lap.
-    const distance = distanceAt(reference, position);
+    // All reference conditions share the decision position; capture validation uses actual progress.
+    const liveDistance = distanceAt(reference, position);
+    const distance = distanceAt(reference, evaluationPosition);
     const metresPerSecond = speed / 3.6;
     // Position-model validation only gates lateral checks, never reference lookup.
     let lateral: number | undefined;
@@ -414,16 +453,17 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
         && prediction.referenceDelta.length === 3 && finite(prediction.normalizedPosition)
         && prediction.normalizedPosition >= 0 && prediction.normalizedPosition <= 1) {
         const captureDistance = distanceAt(reference, prediction.normalizedPosition);
-        const moved = wrap(distance - captureDistance + reference.length / 2, reference.length) - reference.length / 2;
-        if (moved >= -2 && moved <= metresPerSecond * ((now - vision.capturedAt) / 1000 + 0.5) + 5
+        const moved = wrap(liveDistance - captureDistance + reference.length / 2, reference.length) - reference.length / 2;
+        if (moved >= -2 && moved <= liveSpeed / 3.6 * ((now - vision.capturedAt) / 1000 + 0.5) + 5
             && Math.abs(prediction.referenceDelta[0]) <= 13 && Math.abs(prediction.referenceDelta[1]) <= 30) {
             lateral = prediction.referenceDelta[0];
         }
     }
     const target = targetsAt(reference, distance);
-    const actual = { brake: sample.Physics_brake, throttle: sample.Physics_gas };
+    const actual = { brake: intended.Physics_brake, throttle: intended.Physics_gas };
     const valid = (control: keyof typeof actual) => finite(actual[control]) && actual[control]! >= 0 && actual[control]! <= 1;
     const tooFast = target.speed !== undefined && speed - target.speed >= SPEED_TOLERANCE_KMH;
+    const tooSlow = target.speed !== undefined && target.speed - speed >= SPEED_TOLERANCE_KMH;
     const desiredBrake = brakeTarget(reference, distance, target, speed);
     const zone = reference.pedalZones.find((zone) => wrap(distance - zone.start, reference.length) < zone.length);
     // Filter the complete reference interval; never wait 500 ms after entering it.
@@ -443,11 +483,12 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
         || cornerTurnSign === undefined || !cornerBounds ? undefined
         : trajectoryTurnOverlapsCorner(reference, distance, cornerTurnSign, cornerBounds);
     if (lateral !== undefined && prediction && vision?.telemetry) {
-        // Use the capture's progress, orientation and velocity together; never rotate an old error with a newer heading.
-        const capturedDistance = distanceAt(reference, prediction.normalizedPosition);
-        const trajectory = steeringTrajectoryAt(reference, capturedDistance, cornerTurnSign);
+        // Keep the error's captured orientation; compare the intended motion at the decision position.
+        const leadDistance = wrap(distance - liveDistance, reference.length);
+        const capturedDistance = wrap(distanceAt(reference, prediction.normalizedPosition) + leadDistance, reference.length);
+        const trajectory = steeringTrajectoryAt(reference, intendedTelemetry ? distance : capturedDistance, cornerTurnSign);
         if (trajectory) result.steeringDirection = compareSteeringDirection(trajectory,
-            prediction.referenceDelta, vision.telemetry.currentTelemetry, lap.game, cornerTurnSign);
+            prediction.referenceDelta, vision.telemetry.currentTelemetry, lap.game, cornerTurnSign, intendedTelemetry);
     }
     if (valid('brake')) {
         const pedal = actual.brake!;
@@ -455,13 +496,18 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
         if (brakeZone && pedal >= thresholds.brake && target.speed !== undefined) {
             const requiredDeceleration = brakingDecelerationTarget(reference, distance, target.speed, speed);
             if (requiredDeceleration === 0) cue = 'releaseBrake';
-            else if (finite(liveDeceleration)) {
+            // Correct the speed at this position before matching rates; a rate can look right at the wrong speed.
+            else if (tooSlow) cue = 'releaseBrakeFaster';
+            else if (tooFast) {
+                if (brakeReleasing) cue = 'releaseBrakeSlower';
+                else if (pedal < 1) cue = 'moreBrake';
+            } else if (finite(intendedDeceleration)) {
                 const tolerance = Math.max(0.1, requiredDeceleration * DECELERATION_TOLERANCE_RATIO);
-                if (liveDeceleration < requiredDeceleration - tolerance) {
-                    // Slow an actual pedal release; otherwise the driver needs to add pressure.
+                if (intendedDeceleration < requiredDeceleration - tolerance) {
+                    // Slow the pedal release; otherwise the driver needs to add pressure.
                     if (brakeReleasing) cue = 'releaseBrakeSlower';
                     else if (pedal < 1) cue = 'moreBrake';
-                } else if (liveDeceleration > requiredDeceleration + tolerance) cue = 'releaseBrakeFaster';
+                } else if (intendedDeceleration > requiredDeceleration + tolerance) cue = 'releaseBrakeFaster';
                 else cue = 'holdBrake';
             }
         }

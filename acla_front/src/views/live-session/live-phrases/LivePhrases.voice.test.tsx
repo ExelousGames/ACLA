@@ -141,7 +141,7 @@ it('changes driving aggression without restarting detection or speech preparatio
         expect(slider).toHaveValue('0');
         expect(slider).toHaveAttribute('min', '0');
         expect(slider).toHaveAttribute('max', '100');
-        expect(slider).toHaveAttribute('aria-valuetext', '0% earlier braking (Reference)');
+        expect(slider).toHaveAttribute('aria-valuetext', '0% braking adjustment (Reference)');
         fireEvent.change(slider, { target: { value: '25' } });
         await view.enable();
         expect(aggression).toHaveBeenLastCalledWith(25, Date.now());
@@ -150,9 +150,9 @@ it('changes driving aggression without restarting detection or speech preparatio
         expect(play).toHaveBeenCalledTimes(1);
         const signal = synthesize.mock.calls[0][3]!;
         fireEvent.change(slider, { target: { value: '100' } });
-        expect(slider).toHaveAttribute('aria-valuetext', '100% earlier braking (Direction guide)');
+        expect(slider).toHaveAttribute('aria-valuetext', '100% braking adjustment (Direction guide)');
         expect(screen.getByText('100% · Direction guide')).toBeVisible();
-        expect(screen.getByText('100% earlier braking')).toBeVisible();
+        expect(screen.getByText('100% braking adjustment')).toBeVisible();
         expect(aggression).toHaveBeenLastCalledWith(100, Date.now());
         expect(play.mock.results[0].value.outcome).toEqual({ status: 'cancelled' });
         expect(receiveMap).toHaveBeenCalledTimes(mapCalls);
@@ -295,28 +295,28 @@ it.each(['still wide', 'aligned', 'opposite', 'missing direction', 'exited Steer
     'checks a queued direction correction when %s, independently of Steering entry conditions', async (state) => {
         const snapshot = new PhraseEngine().evaluate(Date.now());
         snapshot.telemetryReady = true;
-        snapshot.referenceSteeringDirection = 'tooWide';
-        snapshot.state.path = ['root', 'Steering', 'Too wide', 'say phrase'];
+        snapshot.referenceSteeringDirection = 'right';
+        snapshot.state.path = ['root', 'Steering', 'Stay right a bit', 'say phrase'];
         const rule = snapshot.closures.find((item) => item.id === 'reference-steering')!;
         rule.conditions = [new PhraseCondition('referenceCue', '=', 'steering', 'none')];
-        snapshot.events = [{ id: 1, ruleId: rule.id, sentence: 'Too wide', timestamp: Date.now(),
-            expiresAt: Date.now() + 1500, steeringDirection: 'tooWide' }];
+        snapshot.events = [{ id: 1, ruleId: rule.id, sentence: 'Stay right a bit', timestamp: Date.now(),
+            expiresAt: Date.now() + 1500, steeringDirection: 'right' }];
         const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
         const receiveVision = jest.spyOn(PhraseEngine.prototype, 'receiveVision');
         let resolve!: (value: TtsPack) => void;
         const pending = new Promise<TtsPack>((done) => { resolve = done; });
-        synthesize.mockImplementation(async (_curves, _inputs, { text }) => text === 'Too wide' ? pending : pack(text));
+        synthesize.mockImplementation(async (_curves, _inputs, { text }) => text === 'Stay right a bit' ? pending : pack(text));
         try {
             const view = mount();
             await view.enable();
             receiveVision.mockReturnValue(snapshot);
             await act(async () => { view.frame(); });
             if (state === 'aligned') snapshot.referenceSteeringDirection = 'aligned';
-            if (state === 'opposite') snapshot.referenceSteeringDirection = 'tooTight';
+            if (state === 'opposite') snapshot.referenceSteeringDirection = 'left';
             if (state === 'missing direction') snapshot.referenceSteeringDirection = undefined;
             if (state === 'exited Steering') snapshot.state.path = ['root'];
             if (state === 'stale telemetry') snapshot.telemetryReady = false;
-            await act(async () => { view.frame(); resolve({ ...pack('Too wide'), durationMs: 400 }); });
+            await act(async () => { view.frame(); resolve({ ...pack('Stay right a bit'), durationMs: 400 }); });
             expect(audio.play).toHaveBeenCalledTimes(state === 'still wide' ? 1 : 0);
         } finally { receive.mockRestore(); receiveVision.mockRestore(); }
     });

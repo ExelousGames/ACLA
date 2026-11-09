@@ -138,7 +138,7 @@ export class State<Context> {
     private scopes: Closure<Context>[];
     private location: Closure<Context> | Action<Context>;
     private executions = new Map<Action<Context>, ActionExecution>();
-    private checked = new Map<Closure<Context> | Action<Context>, readonly ConditionSnapshot[]>();
+    private checked = new Map<Closure<Context> | Action<Context>, { matches: boolean; conditions: readonly ConditionSnapshot[] }>();
     private inspections = new Map<Closure<Context> | Action<Context>, NodeInspection>();
     private pending = false;
     private parents = new Map<Closure<Context> | Action<Context>, Closure<Context>>();
@@ -198,9 +198,9 @@ export class State<Context> {
         if (this.results.has(node)) return this.results.get(node)!;
         const matches = node.condition(context, this);
         this.results.set(node, matches);
-        this.checked.set(node, (node.condition.describe?.(context, this, matches) ?? [{
+        this.checked.set(node, { matches, conditions: (node.condition.describe?.(context, this, matches) ?? [{
             description: 'Custom condition (last checked)', conditionFit: matches, inputMissing: false,
-        }]).map(copyCondition));
+        }]).map(copyCondition) });
         const inspection = node.metadata.inspect?.(context, this);
         if (inspection) this.inspections.set(node, { ...inspection, fields: { ...inspection.fields } });
         return matches;
@@ -214,9 +214,10 @@ export class State<Context> {
     /** Copy recorded results and static descriptions; inspection never measures conditions. */
     snapshot(_context?: Context): NodeSnapshot {
         const path = this.path;
-        const visit = (node: Closure<Context> | Action<Context>, id: string, parent?: Closure<Context>): NodeSnapshot => {
+        const visit = (node: Closure<Context> | Action<Context>, id: string): NodeSnapshot => {
             const inspection = this.inspections.get(node);
-            const conditions = this.checked.get(node) ?? node.condition.unevaluated ?? [{
+            const checked = this.checked.get(node);
+            const conditions = checked?.conditions ?? node.condition.unevaluated ?? [{
                 description: 'Custom condition (last checked)',
                 conditionFit: null,
                 inputMissing: false,
@@ -225,16 +226,16 @@ export class State<Context> {
             const onPath = path.includes(node);
             const status = execution && execution.status !== 'idle'
                 ? { running: 'Running', completed: 'Completed', failed: 'Failed' }[execution.status]
-                : node instanceof Action ? parent === this.closure ? 'Waiting' : 'Inactive'
-                    : onPath ? 'Active' : 'Inactive';
+                : onPath ? 'Active' : !checked ? 'Not evaluated'
+                    : inspection?.status ?? (checked.matches ? 'Waiting' : 'Not matched');
             const nodeId = node.metadata.id ?? id;
             return {
                 id: nodeId, kind: node instanceof Closure ? 'closure' : 'action',
                 name: node.name, description: node.description, current: node === this.current, onPath,
-                status: onPath && node instanceof Closure ? 'Active' : inspection?.status ?? status,
+                status,
                 conditions: conditions.map(copyCondition), fields: { ...node.metadata.fields, ...inspection?.fields },
                 ...(execution ? { execution } : {}),
-                children: node instanceof Closure ? node.children.map((child, index) => visit(child, `${nodeId}/${index}`, node)) : [],
+                children: node instanceof Closure ? node.children.map((child, index) => visit(child, `${nodeId}/${index}`)) : [],
             };
         };
         return visit(this.root, 'root');

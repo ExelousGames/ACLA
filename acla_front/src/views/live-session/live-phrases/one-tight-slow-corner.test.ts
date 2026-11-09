@@ -471,7 +471,7 @@ describe('One Tight Slow Corner', () => {
         engine.receiveVision(closeVision(1000, 'left', 'middle'), 1000);
         const waiting = engine.receiveTelemetry(frame(sample(2)), 1000);
         expect(waiting.state.path).toEqual(['root', rule.name]);
-        expect(waiting.closures[0].status).toBe('Waiting for action');
+        expect(waiting.closures[0].status).toBe('Active');
         expect(waiting.events).toEqual([]);
         const detection = closeVision(1100, 'right', 'middle');
         expect(engine.receiveVision(detection, 1100).events).toEqual([]);

@@ -1,7 +1,7 @@
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import { copyPhraseMap, copyPhraseReference, normalizeDrivingAggression } from './phrase-driving-reference';
-import { referenceDirectionChanges } from './phrase-reference-guidance';
-import { circuitMap } from './test-fixtures';
+import { readReferenceGuidance, referenceDirectionChanges } from './phrase-reference-guidance';
+import { circuitMap, variableBrakingReference } from './test-fixtures';
 
 // A 1 km loop with known 10 m sample spacing and a direction-change range at 240 m.
 const reference = (): TopLapReferenceEntry => ({
@@ -62,14 +62,42 @@ it('copies the complete reference and map without sharing editable arrays, sampl
     expect(map.centerline_tags![0].label).toBe('corner');
 });
 
-it.each([10, 25, 50, 75, 100])('advances braking at %s%% without lowering the corner minimum or peak deceleration', (caution) => {
+it.each(['acc', 'iracing'])('rebuilds the complete %s lap on its original samples at every aggression setting', (game) => {
+    const lap = variableBrakingReference();
+    lap.game = game;
+    if (game === 'iracing') lap.y.forEach((row) => { [row[1], row[2]] = [row[2], row[1]]; });
+    const baseline = JSON.parse(JSON.stringify(lap));
+    const unchangedChannels = lap.y.map((row) => [...row.slice(0, 3), ...row.slice(4, 6)]);
+    for (let aggression = 0; aggression <= 100; aggression++) {
+        const copy = copyPhraseReference(lap, aggression)!;
+        expect(copy.x).toEqual(lap.x);
+        expect(copy.y).toHaveLength(lap.y.length);
+        expect(copy.target_features).toEqual(lap.target_features);
+        expect(copy.y.map((row) => [...row.slice(0, 3), ...row.slice(4, 6)])).toEqual(unchangedChannels);
+        expect(readReferenceGuidance({ Static_track: 'test', Static_car_model: 'car',
+            Graphics_normalized_car_position: 0.05, Physics_speed_kmh: 220, Physics_brake: 0, Physics_gas: 0,
+        }, null, copy, game, 1000).ready).toBe(true);
+        if (aggression > 0) expect(copy.y.some((row, i) => row[6] < lap.y[i][6] - 1e-8)).toBe(true);
+        lap.y.forEach((row, i) => {
+            if (i > 0 && i + 1 < lap.y.length && row[6] < lap.y[i - 1][6] && row[6] <= lap.y[i + 1][6]) {
+                expect(copy.y[i][6]).toBeCloseTo(row[6], 8);
+                expect(copy.y[i - 1][6]).toBeGreaterThan(row[6]);
+            }
+        });
+    }
+    expect(lap).toEqual(baseline);
+});
+
+it.each([10, 25, 50, 75, 100])('keeps the minimum at its original position at %s%% while preserving braking work', (caution) => {
     const lap = reference(), copy = copyPhraseReference(lap, caution)!;
-    const end = (300 - 60 * caution / 100) / 1000;
+    const end = 0.3;
     expect(referenceDirectionChanges(lap)[0].start).toBe(240);
     expect(speedAt(copy, end)).toBeCloseTo(80, 8);
+    expect(copy.x[copy.y.findIndex((row) => Math.abs(row[6] - 80) < 1e-8)]).toBe(end);
     expect(Math.min(...copy.y.map((row) => row[6]))).toBeCloseTo(80, 8);
     const originalRates = rates(lap), adjustedRates = rates(copy);
-    expect(Math.max(...adjustedRates.map(({ rate }) => rate))).toBeCloseTo(Math.max(...originalRates.map(({ rate }) => rate)), 7);
+    // Intervals crossing adjusted boundaries average the rates without exceeding the original peak.
+    expect(Math.max(...adjustedRates.map(({ rate }) => rate))).toBeLessThanOrEqual(Math.max(...originalRates.map(({ rate }) => rate)) + 1e-7);
     expect(adjustedRates.find(({ rate }) => rate > 1e-7)!.start).toBeLessThan(0.2);
     const area = (values: ReturnType<typeof rates>) => values.reduce((sum, { rate, distance }) => sum + Math.max(0, rate) * distance, 0);
     expect(area(adjustedRates)).toBeCloseTo(area(originalRates), 7);
@@ -83,16 +111,28 @@ it.each([10, 25, 50, 75, 100])('advances braking at %s%% without lowering the co
     expect(copyPhraseReference(lap, 0)).toEqual(lap);
 });
 
-it.each([25, 50, 100])('compresses the release and replaces lost braking work with an unchanged peak hold at %s%%', (caution) => {
+it('does not advance braking for a uniformly near-straight trajectory', () => {
+    const lap = variableBrakingReference();
+    // A 1600 m radius changes heading by only about 0.36 degrees per 10 m.
+    lap.y.forEach((row) => { row[0] *= 4; row[1] *= 4; });
+    expect(referenceDirectionChanges(lap)).toEqual([]);
+    expect(copyPhraseReference(lap, 100)).toEqual(lap);
+});
+
+it.each([25, 50, 100])('integrates adjusted deceleration backward from the original minimum at %s%%', (caution) => {
     const lap = twoRates(), copy = copyPhraseReference(lap, caution)!;
-    const fraction = caution / 100, start = 200 - 35 * fraction, transition = 250 - 30 * fraction, end = 300 - 60 * fraction;
-    expect(speedAt(copy, start / 1000)).toBeCloseTo(144, 8);
-    expect(speedAt(copy, transition / 1000)).toBeCloseTo(Math.sqrt(900 + 2 * (end - transition)) * 3.6, 8);
-    expect(speedAt(copy, end / 1000)).toBeCloseTo(108, 8);
-    rates(copy).filter(({ rate }) => rate > 1e-7).forEach(({ start: position, distance, rate }) => {
-        expect(rate).toBeCloseTo(position * 1000 + distance / 2 < transition ? 6 : 1, 7);
+    const fraction = caution / 100, releaseRate = 1;
+    const start = 200 - 25 * fraction / 3, transition = 250 - 10 * fraction, end = 300;
+    // Extend the 1 m/s² section toward turn-in at 240 m, compensating with earlier braking.
+    copy.x.forEach((position, i) => {
+        if (position > 0.6) return;
+        const remainingWork = 6 * Math.max(0, transition - Math.max(start, position * 1000))
+            + releaseRate * Math.max(0, end - Math.max(transition, position * 1000));
+        expect(copy.y[i][6]).toBeCloseTo(Math.sqrt(900 + 2 * remainingWork) * 3.6, 8);
     });
-    expect(rowAt(copy, start / 1000)[3]).toBeCloseTo(0);
+    expect(Math.max(...rates(copy).map(({ rate }) => rate))).toBeCloseTo(6, 7);
+    expect(rates(copy).find(({ rate }) => rate > 1e-7)!.start).toBeLessThan(0.2);
+    expect(rowAt(copy, Math.floor(start / 10) / 100)[3]).toBe(0);
     copy.x.forEach((p, i) => {
         if (p >= end / 1000 && p <= 0.6) expect(copy.y[i][3]).toBe(0);
         const index = Math.floor(p * 100), f = p * 100 - index;
@@ -101,21 +141,79 @@ it.each([25, 50, 100])('compresses the release and replaces lost braking work wi
     });
 });
 
-it.each([false, true])('wraps earlier braking across start/finish (duplicated endpoint: %s)', (duplicate) => {
+it.each([25, 50, 100])('moves the low-deceleration boundary toward turn-in at %s%%', (caution) => {
+    for (const entry of [15, 20, 24]) {
+        const lap = twoRates();
+        turnTrajectory(lap, entry);
+        expect(referenceDirectionChanges(lap).some(({ start }) => Math.abs(start - entry * 10) < 1e-7)).toBe(true);
+        const copy = copyPhraseReference(lap, caution)!;
+        const transition = 250 + caution / 100 * (entry * 10 - 250);
+        rates(copy).filter(({ start }) => start * 1000 >= transition && start < 0.3).forEach(({ rate }) => {
+            expect(rate).toBeCloseTo(1, 7);
+        });
+        const before = Math.ceil(transition / 10) - 1;
+        expect(rates(copy)[before].rate).toBeGreaterThan(1 + 1e-7);
+        expect(speedAt(copy, 0.3)).toBeCloseTo(108, 8);
+        expect(copy.y[29][6]).toBeGreaterThan(108);
+    }
+});
+
+it.each([25, 26, 29])('preserves a release already at minimum deceleration before turn-in at sample %s', (entry) => {
+    const lap = twoRates();
+    turnTrajectory(lap, entry);
+    expect(copyPhraseReference(lap, 100)).toEqual(lap);
+});
+
+it.each([false, true])('keeps the minimum fixed across start/finish (duplicated endpoint: %s)', (duplicate) => {
     const lap = reference(), original = lap.y.map((row) => [...row]);
     // Rotate geometry and controls together: braking ends at 20 m, turn-in begins at 960 m.
     lap.y = original.map((_, i) => [...original[(i + 28) % 100]]);
     if (duplicate) { lap.x.push(1); lap.y.push([...lap.y[0]]); }
     const copy = copyPhraseReference(lap, 100)!;
+    expect(speedAt(copy, 0.92)).toBeLessThan(speedAt(lap, 0.92));
+    expect(rowAt(copy, 0.92)[3]).toBeGreaterThan(0);
     expect(speedAt(copy, 0.95)).toBeGreaterThan(80);
-    expect(speedAt(copy, 0.96)).toBeCloseTo(80, 8);
-    for (const p of [0.96, 0.99, 0, 0.02, 0.32]) {
+    for (const p of [0.96, 0.99, 0, 0.01]) expect(speedAt(copy, p)).toBeGreaterThan(80);
+    const floor = rates(reference()).find(({ start }) => start === 0.29)!.rate;
+    rates(copy).filter(({ start }) => start >= 0.96 || start < 0.02)
+        .forEach(({ rate }) => expect(rate).toBeCloseTo(floor, 7));
+    for (const p of [0.02, 0.32]) {
         expect(speedAt(copy, p)).toBeCloseTo(80, 8);
         expect(rowAt(copy, p)[3]).toBe(0);
     }
     expect(speedAt(copy, 0.33)).toBeCloseTo(84);
-    expect(Math.max(...rates(copy).map(({ rate }) => rate))).toBeCloseTo(Math.max(...rates(lap).map(({ rate }) => rate)), 7);
+    expect(Math.max(...rates(copy).map(({ rate }) => rate))).toBeLessThanOrEqual(Math.max(...rates(lap).map(({ rate }) => rate)) + 1e-7);
     if (duplicate) expect(rowAt(copy, 1)).toEqual(rowAt(copy, 0));
+});
+
+it.each([false, true])('advances brake-zone entry into the previous lap (duplicated endpoint: %s)', (duplicate) => {
+    const lap = reference(), original = lap.y;
+    lap.y = original.map((_, i) => [...original[(i + 20) % 100]]);
+    if (duplicate) { lap.x.push(1); lap.y.push([...lap.y[0]]); }
+    const copy = copyPhraseReference(lap, 100)!;
+    const sample = { Static_track: 'test', Static_car_model: 'car',
+        Graphics_normalized_car_position: 0.995, Physics_speed_kmh: 120, Physics_brake: 0, Physics_gas: 0 };
+    expect(readReferenceGuidance(sample, null, lap, 'acc', 1000).pedalZone).toBe('none');
+    expect(readReferenceGuidance(sample, null, copy, 'acc', 1000)).toMatchObject({ pedalZone: 'brake', brake: 2500 });
+    expect(speedAt(copy, 0)).toBeLessThan(speedAt(lap, 0));
+    expect(speedAt(copy, 0.09)).toBeGreaterThan(80);
+    expect(speedAt(copy, 0.1)).toBeCloseTo(80, 8);
+    if (duplicate) expect(rowAt(copy, 1)).toEqual(rowAt(copy, 0));
+});
+
+it('limits the earlier extension at a preceding minimum and joins without exceeding peak deceleration', () => {
+    const lap = twoRates();
+    // A shallow preceding minimum only 1 m before braking leaves too little approach
+    // for the full 8.33 m extension. Preserve it and reduce the requested compression.
+    lap.x[19] = 0.199;
+    lap.y[19][0] = 199;
+    lap.y[19][6] = 143.99;
+    const copy = copyPhraseReference(lap, 100)!;
+    expect(speedAt(copy, 0.199)).toBeCloseTo(143.99, 8);
+    expect(speedAt(copy, 0.2)).toBeLessThan(144);
+    expect(speedAt(copy, 0.3)).toBeCloseTo(108, 8);
+    expect(Math.max(...rates(copy).map(({ rate }) => rate))).toBeCloseTo(6, 7);
+    lap.y.forEach((row, i) => expect(copy.y[i][6]).toBeLessThanOrEqual(row[6] + 1e-8));
 });
 
 it('uses physical distance with nonuniform lap positions and resampled braking data', () => {
@@ -132,11 +230,12 @@ it('uses physical distance with nonuniform lap positions and resampled braking d
     });
 });
 
-it.each([NaN, Infinity, -0.1, 1.1])('preserves an invalid brake channel (%s) while shifting speed', (invalid) => {
+it.each([NaN, Infinity, -0.1, 1.1])('preserves an invalid brake channel (%s) while recalculating speed', (invalid) => {
     const lap = reference();
     lap.y[21][3] = invalid;
     const copy = copyPhraseReference(lap, 100)!;
-    expect(speedAt(copy, 0.24)).toBeCloseTo(80);
+    expect(speedAt(copy, 0.24)).toBeLessThan(speedAt(lap, 0.24));
+    expect(speedAt(copy, 0.3)).toBeCloseTo(80);
     lap.x.forEach((position, i) => expect(rowAt(copy, position)[3]).toBe(lap.y[i][3]));
 });
 
@@ -152,7 +251,8 @@ it('adjusts speed independently of missing or invalid control channels', () => {
     lap.target_features[3] = 'missing brake';
     lap.y[0][4] = NaN;
     const copy = copyPhraseReference(lap, 100)!;
-    expect(speedAt(copy, 0.24)).toBeCloseTo(80);
+    expect(speedAt(copy, 0.24)).toBeLessThan(speedAt(lap, 0.24));
+    expect(speedAt(copy, 0.3)).toBeCloseTo(80);
     lap.y.forEach((row, i) => expect(rowAt(copy, lap.x[i]).slice(0, 6)).toEqual(row.slice(0, 6)));
     expect(copyPhraseReference(null, 0)).toBeNull();
     expect(copyPhraseMap(null)).toBeNull();
@@ -164,7 +264,7 @@ it.each([-10, 0, 10, 25, 50, 100, 150, NaN, Infinity])('clamps %s to 0–100%% w
     expect(copyPhraseReference(reference(), value)).toEqual(copyPhraseReference(reference(), normalized));
 });
 
-it('preserves distinct corner minima and their peaks when an earlier approach would overlap', () => {
+it('preserves constant deceleration and distinct corner minima at their original positions', () => {
     const lap = reference();
     lap.y.forEach((row, i) => {
         row[6] = i >= 20 && i <= 30 ? Math.sqrt(1600 - 70 * (i - 20)) * 3.6
@@ -174,9 +274,9 @@ it('preserves distinct corner minima and their peaks when an earlier approach wo
         row[3] = i >= 21 && i < 30 ? 0.4 : i >= 41 && i < 50 ? 0.8 : 0;
     });
     const copy = copyPhraseReference(lap, 100)!;
-    expect(speedAt(copy, 0.24)).toBeCloseTo(108);
+    expect(speedAt(copy, 0.24)).toBeCloseTo(speedAt(lap, 0.24));
     expect(speedAt(copy, 0.3)).toBeCloseTo(108);
-    expect(speedAt(copy, 0.49)).toBeCloseTo(72);
+    expect(speedAt(copy, 0.49)).toBeCloseTo(speedAt(lap, 0.49));
     expect(speedAt(copy, 0.5)).toBeCloseTo(72);
     const adjustedRates = rates(copy);
     expect(Math.max(...adjustedRates.filter(({ start }) => start < 0.3).map(({ rate }) => rate))).toBeCloseTo(3.5, 7);
@@ -194,22 +294,25 @@ it('preserves flat profiles, already completed braking, and finite zero-speed mi
     lap.y.forEach((row) => { row[6] -= 80; });
     const copy = copyPhraseReference(lap, 100)!;
     expect(copy.y.every((row) => Number.isFinite(row[6]) && row[6] >= 0)).toBe(true);
-    expect(speedAt(copy, 0.24)).toBe(0);
+    expect(speedAt(copy, 0.29)).toBeGreaterThan(0);
+    expect(speedAt(copy, 0.3)).toBe(0);
     expect(speedAt(copy, 0.61)).toBeCloseTo(4);
 });
 
-it('retains a coast inside the earlier braking curve', () => {
+it('retains a coast inside the adjusted braking curve with its minimum fixed', () => {
     const lap = reference();
     lap.y.forEach((row, i) => {
-        if (i >= 20 && i <= 30) row[6] = i < 24 ? 120 - (i - 20) * 5 : i <= 26 ? 100 : 100 - (i - 26) * 5;
+        // A coast within the release keeps its distance and zero deceleration.
+        if (i >= 20 && i <= 30) row[6] = i < 22 ? 120 - (i - 20) * 10 : i <= 27 ? 100 : 100 - (i - 27) * 20 / 3;
     });
     const copy = copyPhraseReference(lap, 100)!;
-    const intervals = rates(copy).filter(({ start }) => start > 0.16 && start < 0.23);
+    const intervals = rates(copy).filter(({ start }) => start > 0.2 && start < 0.29);
     expect(intervals.some(({ rate }) => Math.abs(rate) < 1e-7)).toBe(true);
-    expect(speedAt(copy, 0.24)).toBeCloseTo(80, 8);
+    expect(speedAt(copy, 0.29)).toBeGreaterThan(80);
+    expect(speedAt(copy, 0.3)).toBeCloseTo(80, 8);
 });
 
-it.each(['acc', 'iracing'])('finishes before a continuous direction change even when turn-in precedes reference braking in %s', (game) => {
+it.each(['acc', 'iracing'])('keeps the minimum fixed when turn-in precedes reference braking in %s', (game) => {
     for (const sign of [-1, 1]) {
         const lap = twoRates();
         lap.game = game;
@@ -217,16 +320,20 @@ it.each(['acc', 'iracing'])('finishes before a continuous direction change even 
         const range = referenceDirectionChanges(lap).find(({ start }) => Math.abs(start - 150) < 1e-7)!;
         expect(range).toBeDefined();
         const copy = copyPhraseReference(lap, 100)!;
-        expect(speedAt(copy, 0.15)).toBeCloseTo(108, 8);
-        expect(rowAt(copy, 0.15)[3]).toBe(0);
+        expect(speedAt(copy, 0.15)).toBeCloseTo(Math.sqrt(900 + 2 * 150) * 3.6, 8);
+        expect(rowAt(copy, 0.15)[3]).toBeGreaterThan(0);
         const braking = rates(copy).filter(({ rate }) => rate > 1e-7);
+        braking.filter(({ start }) => start >= 0.15 && start < 0.3)
+            .forEach(({ rate }) => expect(rate).toBeCloseTo(1, 7));
         expect(Math.max(...braking.map(({ rate }) => rate))).toBeCloseTo(6, 7);
-        braking.forEach(({ start }) => expect(start).toBeLessThan(0.15));
+        expect(speedAt(copy, 0.29)).toBeGreaterThan(108);
+        expect(speedAt(copy, 0.3)).toBeCloseTo(108, 8);
+        braking.forEach(({ start }) => expect(start).toBeLessThan(0.3));
         expect(braking.reduce((sum, { rate, distance }) => sum + rate * distance, 0)).toBeCloseTo(350, 7);
     }
 });
 
-it.each([31, 35])('uses the available entry speed without changing either corner minimum or peak (turn-in sample %s)', (entry) => {
+it.each([31, 35])('keeps consecutive corner minima fixed when turn-in starts at sample %s', (entry) => {
     const lap = reference();
     turnTrajectory(lap, entry);
     lap.y.forEach((row, i) => {
@@ -238,14 +345,14 @@ it.each([31, 35])('uses the available entry speed without changing either corner
     const copy = copyPhraseReference(lap, 100)!;
     expect(speedAt(copy, 0.3)).toBeCloseTo(108, 8);
     expect(speedAt(copy, 0.31)).toBeGreaterThan(72); // 10 m cannot dissipate the required energy at 6 m/s².
-    expect(speedAt(copy, 0.4)).toBeCloseTo(72, 8);
+    expect(speedAt(copy, 0.4)).toBeCloseTo(144, 8);
     expect(speedAt(copy, 0.5)).toBeCloseTo(72, 8);
-    if (entry === 35) expect(speedAt(copy, 0.35)).toBeCloseTo(72, 8);
+    expect(speedAt(copy, 0.35)).toBeCloseTo(speedAt(lap, 0.35), 8);
     expect(Math.max(...rates(copy).filter(({ start }) => start >= 0.3 && start < 0.5).map(({ rate }) => rate))).toBeCloseTo(6, 7);
     expect(copy.x.every((p, i) => Number.isFinite(p) && (!i || p > copy.x[i - 1]))).toBe(true);
 });
 
-it('moves a ramped braking profile progressively earlier while retaining its rise and peak', () => {
+it('recalculates a ramped braking profile while retaining its rise, peak and fixed minimum', () => {
     const lap = reference();
     const referenceRates = [1, 2, 4, 6, 6, 4, 3, 2, 1, 1];
     let energy = 1600;
@@ -254,13 +361,24 @@ it('moves a ramped braking profile progressively earlier while retaining its ris
         row[6] = i <= 20 || i >= 70 ? 144 : i <= 60 ? Math.sqrt(energy) * 3.6
             : Math.sqrt(energy) * 3.6 + (144 - Math.sqrt(energy) * 3.6) * (i - 60) / 10;
     });
-    let previous = lap;
-    for (const caution of [1, 10, 50, 90, 100]) {
+    let previous = lap, previousReleaseSpan = 0.03;
+    for (const caution of [25, 50, 75, 100]) {
         const copy = copyPhraseReference(lap, caution)!;
         const braking = rates(copy).filter(({ rate }) => rate > 1e-7);
-        expect(braking[0].rate).toBeCloseTo(1, 7);
+        const transition = 0.28 - 0.04 * caution / 100;
+        braking.filter(({ start }) => start >= transition - 1e-9 && start < 0.3)
+            .forEach(({ rate }) => expect(rate).toBeCloseTo(1, 7));
+        expect(braking.find(({ start }) => Math.abs(start - transition + 0.01) < 1e-9)!.rate).toBeGreaterThan(1);
+        expect(braking[0].rate).toBeLessThanOrEqual(1 + 1e-7);
+        expect(braking[0].start).toBeLessThan(0.2);
         expect(Math.max(...braking.map(({ rate }) => rate))).toBeCloseTo(6, 7);
-        expect(speedAt(copy, (300 - caution * 0.6) / 1000)).toBeCloseTo(lap.y[30][6], 7);
+        const peakIntervals = braking.filter(({ rate }) => Math.abs(rate - 6) < 1e-7);
+        const releaseSpan = transition - (peakIntervals[peakIntervals.length - 1].start + 0.01);
+        expect(releaseSpan).toBeLessThanOrEqual(previousReleaseSpan + 1e-9);
+        if (caution === 100) expect(releaseSpan).toBeLessThan(0.03);
+        previousReleaseSpan = releaseSpan;
+        expect(speedAt(copy, 0.29)).toBeGreaterThan(lap.y[30][6]);
+        expect(speedAt(copy, 0.3)).toBeCloseTo(lap.y[30][6], 7);
         lap.x.forEach((p) => expect(speedAt(copy, p)).toBeLessThanOrEqual(speedAt(previous, p) + 1e-7));
         previous = copy;
     }

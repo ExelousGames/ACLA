@@ -2,28 +2,18 @@ import React from 'react';
 import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
 import { isOverlayNonEmptyString, isOverlayRecord } from 'views/floating-chat/overlay-renderer-validation';
 import type { SteeringCornerOverlaySnapshot, SteeringCornerPoint } from '../steering-corner-overlay';
+import { createSteeringCornerCamera } from './steering-corner-camera';
 import analystStyles from 'views/session-shared/driver-expert-comparison/DriverExpertComparisonGraph.module.css';
 import './SteeringCornerDisplay.css';
 
-const WIDTH = 480, HEIGHT = 280, PADDING = 28;
+const WIDTH = 480, HEIGHT = 280;
 
 export const SteeringCornerDisplay = ({ snapshot }: { snapshot: SteeringCornerOverlaySnapshot }) => {
-    const gridId = React.useId();
     const { referenceLine, leftBoundary, rightBoundary } = snapshot;
-    const points = [...referenceLine, ...leftBoundary, ...rightBoundary];
-    const xs = points.map(({ x }) => x), ys = points.map(({ y }) => y);
-    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-    const scale = Math.min((WIDTH - PADDING * 2) / Math.max(1, maxX - minX),
-        (HEIGHT - PADDING * 2) / Math.max(1, maxY - minY));
-    const project = ({ x, y }: SteeringCornerPoint) => ({
-        x: WIDTH / 2 + (x - (minX + maxX) / 2) * scale,
-        y: HEIGHT / 2 - (y - (minY + maxY) / 2) * scale,
-    });
-    const path = (line: SteeringCornerPoint[]) => line.map((point) => {
-        const { x, y } = project(point);
-        return `${x},${y}`;
-    }).join(' ');
+    const { project, path, horizon } = createSteeringCornerCamera(referenceLine, WIDTH, HEIGHT);
     const entry = project(referenceLine[0]), exit = project(referenceLine[referenceLine.length - 1]);
+    const visible = (point: SteeringCornerPoint | undefined): point is SteeringCornerPoint => !!point
+        && point.x >= 16 && point.x <= WIDTH - 16 && point.y >= 20 && point.y <= HEIGHT - 20;
     const missing = [!leftBoundary.length && 'Left boundary', !rightBoundary.length && 'Right boundary'].filter(Boolean);
     return (
         <section className={`${analystStyles.root} steering-corner-display`} aria-label={snapshot.title}>
@@ -38,23 +28,24 @@ export const SteeringCornerDisplay = ({ snapshot }: { snapshot: SteeringCornerOv
                 </span>
             </header>
             <div className={analystStyles.trackPanel}>
-                <svg className="steering-corner-display__map" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img"
-                    aria-label="Incoming corner reference line and track boundaries">
-                    <defs>
-                        <pattern id={gridId} width="24" height="24" patternUnits="userSpaceOnUse">
-                            <path d="M 24 0 H 0 V 24" fill="none" stroke="#abb0b8" strokeOpacity="0.08" />
-                        </pattern>
-                    </defs>
-                    <rect width={WIDTH} height={HEIGHT} fill={`url(#${gridId})`} />
-                    {leftBoundary.length > 0 && rightBoundary.length > 0 && <polygon
-                        className="steering-corner-display__road" points={path([...leftBoundary, ...rightBoundary.slice().reverse()])} />}
-                    <polyline className="steering-corner-display__left" points={path(leftBoundary)} aria-label="Left boundary" />
-                    <polyline className="steering-corner-display__right" points={path(rightBoundary)} aria-label="Right boundary" />
-                    <polyline className="steering-corner-display__reference" points={path(referenceLine)} aria-label="Reference line" />
-                    <circle cx={entry.x} cy={entry.y} r="4" fill="#80b1ff" />
-                    <text x={entry.x} y={entry.y + 17} textAnchor="middle">Entry</text>
-                    <circle cx={exit.x} cy={exit.y} r="4" fill="#e9f4ff" />
-                    <text x={exit.x} y={exit.y - 10} textAnchor="middle">Exit</text>
+                <svg className="steering-corner-display__map" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="none" role="img"
+                    aria-label="Vehicle view of incoming corner reference line and track boundaries">
+                    <rect className="steering-corner-display__ground" y={horizon} width={WIDTH} height={HEIGHT - horizon} />
+                    <line className="steering-corner-display__horizon" x1="0" x2={WIDTH} y1={horizon} y2={horizon} />
+                    <text className="steering-corner-display__view-label" x="14" y="22">Vehicle view</text>
+                    {leftBoundary.length > 0 && rightBoundary.length > 0 && <path
+                        className="steering-corner-display__road" d={path([...leftBoundary, ...rightBoundary.slice().reverse()], true)} />}
+                    <path className="steering-corner-display__left" d={path(leftBoundary)} aria-label="Left boundary" />
+                    <path className="steering-corner-display__right" d={path(rightBoundary)} aria-label="Right boundary" />
+                    <path className="steering-corner-display__reference" d={path(referenceLine)} aria-label="Reference line" />
+                    {visible(entry) && <>
+                        <circle cx={entry.x} cy={entry.y} r="4" fill="#80b1ff" />
+                        <text x={entry.x} y={entry.y + 17} textAnchor="middle">Entry</text>
+                    </>}
+                    {visible(exit) && <>
+                        <circle cx={exit.x} cy={exit.y} r="3" fill="#e9f4ff" />
+                        <text x={exit.x} y={exit.y - 10} textAnchor="middle">Exit</text>
+                    </>}
                 </svg>
             </div>
             <div className="steering-corner-display__legend" aria-label="Map legend">

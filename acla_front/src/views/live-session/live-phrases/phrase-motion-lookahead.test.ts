@@ -1,0 +1,312 @@
+import type { StandardTelemetrySample } from '../live-session-types';
+import { Action, Closure } from './closure';
+import { PhraseEngine, type PhraseContext } from './phrase-engine';
+import { PhraseLookahead } from './phrase-lookahead';
+import { readReferenceGuidance, referencePositionAhead, type ReferenceGuidance } from './phrase-reference-guidance';
+import { compareSteeringDirection } from './phrase-steering-direction';
+import { steeringCornerFixture } from './test-fixtures';
+
+const motion = (t: number): StandardTelemetrySample => ({
+    Static_track: 'test', Static_car_model: 'car',
+    Graphics_normalized_car_position: 0.1 + 0.01 * t + 0.004 * t ** 2,
+    Physics_speed_kmh: 36 + 28.8 * t + 4 * t ** 2,
+    Physics_steer_angle: 0.1 + 0.2 * t + 0.1 * t ** 2,
+    Physics_brake: 0.1 + 0.2 * t + 0.1 * t ** 2, Physics_gas: 0.8 - 0.3 * t - 0.1 * t ** 2,
+    Physics_heading: 0.1 * t ** 2, Physics_pitch: 0, Physics_roll: 0,
+    Physics_velocity_x: 10 + 2 * t + 3 * t ** 2,
+    Physics_velocity_y: 1 - 2 * t + t ** 2, Physics_velocity_z: -(t ** 2),
+    Physics_local_velocity_x: t ** 2, Physics_local_velocity_y: 10 + 2 * t ** 2, Physics_local_velocity_z: 0,
+    Graphics_player_car_id: 42, Graphics_car_id: [7, 42],
+    Graphics_car_coordinates: [{ x: 1000, y: 0, z: 0 }, { x: 100 + 10 * t + 2 * t ** 2, y: t ** 2, z: -(t ** 2) }],
+});
+
+const frame = (sample: StandardTelemetrySample) => ({
+    type: 'frame' as const, sample, sampleIndex: 0, telemetryStatus: 2, sessionGeneration: 0, streamGeneration: 0,
+    committedSampleCount: 0,
+    update: { type: 'frame' as const, game: 'acc' as const, sample, sequence: 1, committedCount: 0, committedSequence: 0 },
+});
+
+it.each([false, true])('projects the latest rate without curvature or telemetry mutation (older sample: %s)', (older) => {
+    const predictor = new PhraseLookahead();
+    const times = older ? [0, 0.13, 0.4] : [0.13, 0.4];
+    const samples = times.map(motion);
+    const before = JSON.stringify(samples);
+    times.forEach((at, i) => predictor.update(samples[i], at * 1000, i > 0));
+    const current = samples[samples.length - 1], projected = predictor.project(current, null);
+    // The curved measurements keep their latest secant rate for the next 500 ms.
+    const expected = {
+        Graphics_normalized_car_position: 0.1107, Physics_speed_kmh: 63.62,
+        Physics_steer_angle: 0.3225, Physics_heading: 0.0425, Physics_brake: 0.3225, Physics_gas: 0.4875,
+        Physics_velocity_x: 13.075, Physics_velocity_y: -0.375, Physics_velocity_z: -0.425,
+        Physics_local_velocity_x: 0.425, Physics_local_velocity_y: 10.85, Physics_local_velocity_z: 0,
+        Graphics_car_coordinates: [{ x: 1000, y: 0, z: 0 }, { x: 109.85, y: 0.425, z: -0.425 }],
+    };
+    for (const field of ['Graphics_normalized_car_position', 'Physics_speed_kmh', 'Physics_steer_angle', 'Physics_heading',
+        'Physics_brake', 'Physics_gas',
+        'Physics_velocity_x', 'Physics_velocity_y', 'Physics_velocity_z',
+        'Physics_local_velocity_x', 'Physics_local_velocity_y', 'Physics_local_velocity_z'] as const) {
+        expect(projected[field]).toBeCloseTo(expected[field]!, 9);
+    }
+    for (const axis of ['x', 'y', 'z'] as const) {
+        expect(projected.Graphics_car_coordinates![1][axis]).toBeCloseTo(expected.Graphics_car_coordinates![1][axis], 9);
+    }
+    expect(projected.Graphics_car_coordinates![0]).toEqual(current.Graphics_car_coordinates![0]);
+    expect(JSON.stringify(samples)).toBe(before);
+});
+
+it('waits for 100 ms of history and uses the eligible anchor between stored samples', () => {
+    const predictor = new PhraseLookahead();
+    predictor.update(motion(0), 0, false);
+    predictor.update(motion(0.05), 50, true);
+    expect(predictor.project(motion(0.05), null).Physics_steer_angle).toBe(motion(0.05).Physics_steer_angle);
+    predictor.update(motion(0.1), 100, true);
+    expect(predictor.project(motion(0.1), null).Physics_steer_angle).toBeCloseTo(0.226, 9);
+    [0.2, 0.4, 0.45].forEach((t) => predictor.update(motion(t), t * 1000, true));
+    expect(predictor.project(motion(0.45), null).Physics_steer_angle).toBeCloseTo(0.34275, 9);
+});
+
+it('tracks the player by ID when coordinate slots change', () => {
+    const predictor = new PhraseLookahead();
+    [0, 0.2, 0.4].forEach((t, i) => {
+        const sample = motion(t);
+        if (i === 1) { sample.Graphics_car_id!.reverse(); sample.Graphics_car_coordinates!.reverse(); }
+        predictor.update(sample, t * 1000, i > 0);
+    });
+    expect(predictor.project(motion(0.4), null).Graphics_car_coordinates![1].x).toBeCloseTo(109.92);
+});
+
+it.each([[0, 4], [2, 4.53], [-2, 3.47], [-6, 2.41]])('keeps the latest deceleration constant despite a %s m/s³ change', (change, expected) => {
+    const predictor = new PhraseLookahead();
+    const sampleAt = (t: number) => ({ ...motion(t), Physics_speed_kmh: (30 - 4 * t - change * t ** 2 / 2) * 3.6 });
+    [0, 0.13, 0.4].forEach((t, i) => predictor.update(sampleAt(t), t * 1000, i > 0));
+    expect(predictor.projectDeceleration(sampleAt(0.4))).toBeCloseTo(expected, 9);
+});
+
+it.each([undefined, NaN, Infinity, -1])('withholds predicted deceleration with insufficient or invalid speed history: %s', (speed) => {
+    const predictor = new PhraseLookahead();
+    predictor.update(motion(0), 0, false);
+    expect(predictor.projectDeceleration(motion(0))).toBeUndefined();
+    predictor.update({ ...motion(0.2), Physics_speed_kmh: speed }, 200, true);
+    predictor.update(motion(0.4), 400, true);
+    expect(predictor.projectDeceleration(motion(0.4))).toBeUndefined();
+    predictor.reset();
+    expect(predictor.projectDeceleration(motion(0.4))).toBeUndefined();
+});
+
+it.each([
+    ['still applying', 0.4, -0.8, false], ['still releasing', -0.4, 0.8, true],
+    ['holding', 0, 0, false], ['slow release', -0.005, 0, false], ['release', -0.02, 0, true],
+] as const)('detects %s from the first brake derivative with uneven samples', (_name, rate, acceleration, releasing) => {
+    const predictor = new PhraseLookahead();
+    const sampleAt = (t: number) => ({ ...motion(t), Physics_brake: 0.5 + rate * t + acceleration * t ** 2 / 2 });
+    [0, 0.13, 0.4].forEach((t, i) => predictor.update(sampleAt(t), t * 1000, i > 0));
+    expect(predictor.projectBrakeReleasing(sampleAt(0.4))).toBe(releasing);
+    predictor.reset();
+    expect(predictor.projectBrakeReleasing(sampleAt(0.4))).toBeUndefined();
+});
+
+it.each([undefined, NaN, Infinity, -0.1, 1.1])('withholds predicted brake release with insufficient or invalid pressure history: %s', (pressure) => {
+    const predictor = new PhraseLookahead();
+    predictor.update(motion(0), 0, false);
+    expect(predictor.projectBrakeReleasing(motion(0))).toBeUndefined();
+    predictor.update({ ...motion(0.2), Physics_brake: pressure }, 200, true);
+    predictor.update(motion(0.4), 400, true);
+    expect(predictor.projectBrakeReleasing(motion(0.4))).toBeUndefined();
+    predictor.update(motion(0.6), 600, true);
+    predictor.update(motion(0.8), 800, true);
+    expect(predictor.projectBrakeReleasing(motion(0.8))).toBe(false);
+    expect(predictor.projectBrakeReleasing({ ...motion(0.8), Physics_brake: pressure })).toBeUndefined();
+});
+
+it('unwraps normalized position and heading before taking derivatives', () => {
+    const predictor = new PhraseLookahead();
+    const sampleAt = (t: number) => ({ ...motion(t),
+        Graphics_normalized_car_position: (0.999 + 0.01 * t + 0.004 * t ** 2) % 1,
+        Physics_heading: ((Math.PI - 0.01 + 0.1 * t ** 2 + Math.PI) % (2 * Math.PI)) - Math.PI,
+    });
+    [0, 0.2, 0.4].forEach((t, i) => predictor.update(sampleAt(t), t * 1000, i > 0));
+    const projected = predictor.project(sampleAt(0.4), null);
+    expect(projected.Graphics_normalized_car_position).toBeCloseTo(0.00984, 9);
+    expect(Math.sin(projected.Physics_heading!)).toBeCloseTo(Math.sin(Math.PI + 0.036), 9);
+});
+
+it('bounds speed and steering and keeps position fixed when live speed is zero', () => {
+    const predictor = new PhraseLookahead();
+    const sampleAt = (t: number) => ({ ...motion(t),
+        Graphics_normalized_car_position: 0.1 + 0.01 * t - 0.01 * t ** 2,
+        Physics_speed_kmh: 36 - 72 * t, Physics_steer_angle: 0.4 + t + t ** 2,
+    });
+    [0, 0.2, 0.4].forEach((t, i) => predictor.update(sampleAt(t), t * 1000, i > 0));
+    const projected = predictor.project(sampleAt(0.4), null);
+    expect(projected.Graphics_normalized_car_position).toBeCloseTo(0.1044, 9);
+    expect(projected.Physics_speed_kmh).toBe(0);
+    expect(predictor.projectDeceleration(sampleAt(0.4))).toBe(0);
+    expect(projected.Physics_steer_angle).toBe(1);
+    const stopped = { ...sampleAt(0.4), Physics_speed_kmh: 0 };
+    expect(predictor.project(stopped, null).Graphics_normalized_car_position).toBe(stopped.Graphics_normalized_car_position);
+});
+
+it('falls back per channel when history is insufficient or a measurement is missing', () => {
+    const { reference } = steeringCornerFixture(), predictor = new PhraseLookahead();
+    predictor.update(motion(0), 0, false);
+    const initial = predictor.project(motion(0), reference);
+    expect(initial.Graphics_normalized_car_position).toBeCloseTo(0.105, 9);
+    expect(initial.Physics_steer_angle).toBe(0.1);
+    predictor.update({ ...motion(0.2), Physics_velocity_x: undefined }, 200, true);
+    predictor.update(motion(0.4), 400, true);
+    const projected = predictor.project(motion(0.4), reference);
+    expect(projected.Physics_velocity_x).toBe(motion(0.4).Physics_velocity_x);
+    expect(projected.Physics_velocity_y).toBeCloseTo(-0.34);
+});
+
+it.each(['Physics_brake', 'Physics_gas'] as const)('bounds intended %s during application and release', (field) => {
+    for (const releasing of [false, true]) {
+        const predictor = new PhraseLookahead();
+        const sampleAt = (t: number) => ({ ...motion(t), [field]: releasing ? 0.8 - t : 0.2 + t });
+        [0, 0.2, 0.4].forEach((t, i) => predictor.update(sampleAt(t), t * 1000, i > 0));
+        expect(predictor.project(sampleAt(0.4), null)[field]).toBe(releasing ? 0 : 1);
+        if (field === 'Physics_brake') expect(predictor.projectBrakeReleasing(sampleAt(0.4))).toBe(false);
+    }
+});
+
+it.each(['Physics_brake', 'Physics_gas'] as const)('preserves measured %s until its history is valid', (field) => {
+    for (const invalid of [undefined, NaN, Infinity, -0.1, 1.1]) {
+        const predictor = new PhraseLookahead(), sample = motion(0.4);
+        predictor.update(motion(0), 0, false);
+        expect(predictor.project(motion(0), null)[field]).toBe(motion(0)[field]);
+        predictor.update({ ...motion(0.2), [field]: invalid }, 200, true);
+        predictor.update(sample, 400, true);
+        expect(predictor.project(sample, null)[field]).toBe(sample[field]);
+        expect(predictor.project(sample, null).Physics_steer_angle).toBeCloseTo(0.326);
+        predictor.update({ ...motion(0.6), [field]: invalid }, 600, true);
+        expect(predictor.project({ ...motion(0.6), [field]: invalid }, null)[field]).toBe(invalid);
+    }
+});
+
+it('uses predicted local velocity but preserves the captured orientation of the lateral error', () => {
+    const predictor = new PhraseLookahead();
+    const sampleAt = (t: number) => ({ ...motion(t), Physics_heading: 0, Physics_local_velocity_x: 10 * t ** 2,
+        Physics_local_velocity_y: 10, Physics_local_velocity_z: 0 });
+    [0, 0.2, 0.4].forEach((t, i) => predictor.update(sampleAt(t), t * 1000, i > 0));
+    const sample = sampleAt(0.4), trajectory = { heading: Math.PI / 2, remainingDistance: 100 };
+    expect(compareSteeringDirection(trajectory, [0, 0, 0], sample, 'acc', 1)).toBe('aligned');
+    expect(compareSteeringDirection(trajectory, [0, 0, 0], sample, 'acc', 1, predictor.project(sample, null))).toBe('right');
+    // The newer heading must rotate motion only; the old lateral error still points along world -X.
+    expect(compareSteeringDirection({ heading: Math.PI / 2, remainingDistance: 10 }, [4, 0, 0], sample, 'acc', 1,
+        { ...sample, Physics_heading: Math.PI / 2, Physics_local_velocity_x: 10, Physics_local_velocity_y: 4 })).toBe('aligned');
+});
+
+it('does not anticipate a speed reversal from curvature in engine reference comparisons', () => {
+    const { reference } = steeringCornerFixture();
+    reference.y.forEach((row) => { row[4] = 0.8; });
+    let guidance: ReferenceGuidance = {};
+    let intendedSpeed: number | undefined;
+    const engine = new PhraseEngine([], () => new Closure<PhraseContext>('root', '', () => true, [
+        new Closure('inspect', '', (context) => {
+            guidance = context.guidance; intendedSpeed = context.intendedTelemetry.Physics_speed_kmh; return false;
+        }, []),
+    ]));
+    engine.receiveMap(null, 0, reference);
+    const sampleAt = (t: number) => ({ ...motion(t), Physics_brake: 0, Physics_speed_kmh: 36 + 24 * (t - 0.4) ** 2 });
+    [0, 0.2, 0.4].forEach((t) => engine.receiveTelemetry(frame(sampleAt(t)), 1000 + t * 1000));
+    // Measured speed is 36 km/h; its latest downward rate predicts 33.6, not a rebound to 42.
+    expect(readReferenceGuidance(sampleAt(0.4), null, reference, 'acc', 1400).brake).toBeUndefined();
+    expect(intendedSpeed).toBeCloseTo(33.6);
+    expect(guidance.brake).toBeUndefined();
+});
+
+it.each([[3.2, 'Hold brake pressure.'], [4, 'More brake.']] as const)(
+    'compares predicted deceleration with the %s m/s² target at the lookahead position', (required, sentence) => {
+        const { reference } = steeringCornerFixture(), engine = new PhraseEngine();
+        const sampleAt = (t: number) => ({ ...motion(t), Graphics_normalized_car_position: 0.1 + 0.03 * t,
+            Physics_speed_kmh: (30 - 4 * t + t ** 2) * 3.6, Physics_brake: 0.8, Physics_gas: 0 });
+        // At t=0.6, the latest rate predicts 133 m, 26.36 m/s and 3.2 m/s² deceleration.
+        reference.y.forEach((row, i) => {
+            row[4] = i >= 5 && i < 23 ? 0.8 : 0;
+            row[6] = i <= 12 ? 108 + (12 - i) * 4
+                : Math.sqrt(Math.max(1, 26.36 ** 2 + 2 * required * (133 - i * 10))) * 3.6;
+        });
+        engine.setDrivingAggression(0, 0);
+        engine.receiveMap(null, 0, reference);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.2)), 1200).events).toEqual([]);
+        const result = engine.receiveTelemetry(frame(sampleAt(0.6)), 1600);
+        expect(result.events).toEqual([expect.objectContaining({ sentence, timestamp: 1600 })]);
+        // A second-order rate of 1.8 m/s² would incorrectly request more brake for both targets.
+        const intended = { ...sampleAt(0.6), Physics_speed_kmh: 26.36 * 3.6, Graphics_normalized_car_position: 0.133 };
+        const measured = readReferenceGuidance(sampleAt(0.6), null, reference, 'acc', 1600, reference, 1.8,
+            undefined, undefined, undefined, false, 0.133, intended);
+        expect(measured.moreBrake).toBe(3100);
+        expect(engine.evaluate(1700).events).toEqual(result.events);
+    });
+
+it.each([[1, 'More brake.'], [-1, 'Release brake slower.']] as const)(
+    'uses the current brake derivative when the measured pedal trend is %s', (direction, sentence) => {
+        const { reference } = steeringCornerFixture(), engine = new PhraseEngine();
+        const sampleAt = (t: number) => ({ ...motion(t), Graphics_normalized_car_position: 0.1 + 0.03 * t,
+            Physics_speed_kmh: (30 - 4 * t + t ** 2) * 3.6,
+            Physics_brake: 0.5 + direction * (0.4 * t - 0.25 * t ** 2), Physics_gas: 0 });
+        reference.y.forEach((row, i) => {
+            row[4] = i >= 5 && i < 23 ? 0.8 : 0;
+            row[6] = i <= 12 ? 108 + (12 - i) * 4
+                : Math.sqrt(Math.max(1, 26.36 ** 2 + 2 * 4 * (133 - i * 10))) * 3.6;
+        });
+        engine.setDrivingAggression(0, 0);
+        engine.receiveMap(null, 0, reference);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.2)), 1200).events).toEqual([]);
+        // Keep the observed trend instead of predicting a reversal from pedal curvature.
+        const result = engine.receiveTelemetry(frame(sampleAt(0.6)), 1600);
+        expect(result.events).toEqual([expect.objectContaining({ sentence, timestamp: 1600 })]);
+        expect(engine.evaluate(1700).events).toEqual(result.events);
+    });
+
+it.each(['frozen', 'teleport'] as const)('discards %s position history before projecting motion', (change) => {
+    const { reference } = steeringCornerFixture(), predictor = new PhraseLookahead();
+    [0, 0.2, 0.4].forEach((t, i) => predictor.update(motion(t), t * 1000, i > 0, reference));
+    const sample = { ...motion(0.45), Graphics_normalized_car_position: change === 'frozen'
+        ? motion(0.4).Graphics_normalized_car_position : 0.8 };
+    predictor.update(sample, change === 'frozen' ? 500 : 450, true, reference);
+    const projected = predictor.project(sample, reference);
+    expect(projected.Physics_steer_angle).toBe(sample.Physics_steer_angle);
+    expect(projected.Graphics_normalized_car_position).toBe(referencePositionAhead(sample, reference));
+    expect(predictor.projectDeceleration(sample)).toBeUndefined();
+    expect(predictor.projectBrakeReleasing(sample)).toBeUndefined();
+});
+
+it.each(['Physics_steer_angle', 'Physics_brake', 'Physics_gas'] as const)(
+    'supplies intended %s to closure entry and exit, without advancing on timer evaluations', (field) => {
+    const observed: StandardTelemetrySample[] = [];
+    const sampleAt = (t: number) => ({ ...motion(t), [field]: 0.1 + 0.2 * t + 0.1 * t ** 2 });
+    const engine = new PhraseEngine([], () => new Closure<PhraseContext>('root', '', () => true, [
+        new Closure('prediction', '', ({ intendedTelemetry }) => {
+            observed.push(intendedTelemetry);
+            return (intendedTelemetry[field] ?? 0) >= 0.32;
+        }, [Action.exitToRoot(({ intendedTelemetry }) => (intendedTelemetry[field] ?? 0) >= 0.4)]),
+    ]));
+    engine.receiveTelemetry(frame(sampleAt(0)), 1000);
+    engine.receiveTelemetry(frame(sampleAt(0.2)), 1200);
+    expect(engine.receiveTelemetry(frame(sampleAt(0.4)), 1400).state.path).toEqual(['root', 'prediction']);
+    expect(observed[observed.length - 1].Physics_speed_kmh).toBeCloseTo(63.76);
+    expect(engine.evaluate(1450).state.path).toEqual(['root', 'prediction']);
+    // Actual control is 0.256; the intended 0.406 crosses the exit threshold.
+    expect(engine.receiveTelemetry(frame(sampleAt(0.6)), 1600).state.path).toEqual(['root']);
+});
+
+it.each(['session', 'stream', 'track', 'car', 'pause', 'gap', 'clock'] as const)(
+    'discards derivative history after a %s discontinuity', (change) => {
+        let intended: StandardTelemetrySample = {};
+        const engine = new PhraseEngine([], () => new Closure<PhraseContext>('root', '', () => true, [
+            new Closure('inspect', '', (context) => { intended = context.intendedTelemetry; return false; }, []),
+        ]));
+        [0, 0.2, 0.4].forEach((t) => engine.receiveTelemetry(frame(motion(t)), 1000 + t * 1000));
+        expect(intended.Physics_steer_angle).toBeCloseTo(0.326);
+        const next = frame(motion(0.6));
+        if (change === 'session') next.sessionGeneration++;
+        if (change === 'stream') next.streamGeneration++;
+        if (change === 'track') next.sample = { ...next.sample, Static_track: 'other' };
+        if (change === 'car') next.sample = { ...next.sample, Static_car_model: 'other' };
+        if (change === 'pause') engine.receiveTelemetry({ ...next, telemetryStatus: 1 }, 1500);
+        engine.receiveTelemetry(next, change === 'gap' ? 3000 : change === 'clock' ? 1400 : 1600);
+        expect(intended.Physics_steer_angle).toBe(next.sample.Physics_steer_angle);
+        expect(intended.Physics_brake).toBe(next.sample.Physics_brake);
+        expect(intended.Physics_gas).toBe(next.sample.Physics_gas);
+    });

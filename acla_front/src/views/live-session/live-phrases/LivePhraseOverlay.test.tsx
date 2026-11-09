@@ -1,12 +1,12 @@
 import React from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import {
     createOperationComponentRefDirectory, OperationComponentRefProvider, useRegisterOperationComponentRef,
 } from 'contexts/OperationComponentRefContext';
 import { AiOverlayManagerController } from 'views/floating-chat/AiOverlayManager';
-import { isAiOverlayComponentHandle, isJsonSafe } from 'views/floating-chat/ai-overlay-types';
+import { isAiOverlayComponentHandle } from 'views/floating-chat/ai-overlay-types';
 import { overlaySessionClient } from 'views/floating-chat/overlay-display-client';
-import { LivePhraseOverlay, LIVE_PHRASE_DISPLAY_MS, type LivePhraseOverlaySnapshot } from './LivePhraseOverlay';
+import { LivePhraseOverlay, LIVE_PHRASE_DISPLAY_MS } from './LivePhraseOverlay';
 import { livePhraseOverlayRenderer } from './graphs/LivePhraseDisplay';
 import { PHRASE_DEFINITIONS, PhraseEngine, type PhraseEvent, type PhraseSnapshot } from './phrase-engine';
 import LivePhrases from './LivePhrases';
@@ -69,114 +69,58 @@ describe('Live phrase overlay addons', () => {
         jest.useRealTimers();
     });
 
-    it('registers every phrase as an addon and renders its JSON-safe snapshot in all supported states', async () => {
+    it('keeps triggered phrases out of the overlay and registers only the steering addon', async () => {
         await overlaySessionClient.create(session);
-        expect(directory.getComponentNames()).toHaveLength(PHRASE_DEFINITIONS.length + 1);
+        expect(directory.getComponentNames()).toEqual(['live-phrases:steering-corner']);
         expect(directory.getComponentRefs().every((ref) => isAiOverlayComponentHandle(ref.current))).toBe(true);
         PHRASE_DEFINITIONS.forEach((_rule, index) => overlay.update(snapshot(phraseEvent(index))));
-        const cards = manager.getPresentationSnapshot()!.cards;
-        expect(cards).toHaveLength(PHRASE_DEFINITIONS.length);
-        cards.forEach((card) => {
-            expect(card.componentName).toBe(`live-phrases:${(card.snapshot as PhraseEvent).ruleId}`);
-            expect(card.componentType).toBe('live_phrase');
-            expect(isJsonSafe(card.snapshot)).toBe(true);
-            expect(livePhraseOverlayRenderer.validateSnapshot(card.snapshot)).toBe(true);
-            const data = card.snapshot as LivePhraseOverlaySnapshot;
-            for (const status of ['expanded', 'focus', 'folded'] as const) {
-                const view = render(<>{livePhraseOverlayRenderer.renderOverlay(data, status, {
-                    componentName: card.componentName, revision: card.revision, emitRendererEvent: jest.fn(),
-                })}</>);
-                expect(screen.getByText(data.name)).toBeVisible();
-                expect(Boolean(screen.queryByText(data.sentence))).toBe(status !== 'folded');
-                view.unmount();
-            }
-        });
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
         expect(createSession).toHaveBeenCalledTimes(1);
         expect(setEnabled).not.toHaveBeenCalled();
     });
 
-    it('does not republish retained events or extend their lifetime on telemetry updates', async () => {
-        await overlaySessionClient.create(session);
-        const event = phraseEvent();
-        overlay.update(snapshot(event));
-        const calls = send.mock.calls.length;
-        jest.advanceTimersByTime(1_000);
-        overlay.update({ ...snapshot(event), telemetryReady: true });
-        expect(send).toHaveBeenCalledTimes(calls);
-        jest.advanceTimersByTime(LIVE_PHRASE_DISPLAY_MS - 1_000);
-        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
-        manager.setPresentation({ ...session, presentationId: 'next-presentation' });
-        manager.setPresentation(session);
-        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
-    });
-
-    it('expires a reference cue at its action deadline and does not show a late cue', async () => {
-        await overlaySessionClient.create(session);
-        const index = PHRASE_DEFINITIONS.findIndex((rule) => rule.referenceCue === 'brake');
-        const event = { ...phraseEvent(index), expiresAt: Date.now() + 1000 };
-        overlay.update(snapshot(event));
-        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
-        jest.advanceTimersByTime(1000);
-        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
-        overlay.update(snapshot({ ...event, id: event.id + 1 }));
-        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
-    });
-
-    it('clears cards on reset, accepts a fresh trigger and releases all sources on unmount', async () => {
-        await overlaySessionClient.create(session);
-        overlay.update(snapshot(phraseEvent()));
-        overlay.update(snapshot());
-        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
-        overlay.update(snapshot(phraseEvent(0, 2)));
-        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
-        overlay.dispose();
-        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
-        expect(directory.getComponentNames()).toEqual([]);
-        expect(jest.getTimerCount()).toBe(0);
-        // This presentation belongs to the Assistant, not to Live Phrases.
-        expect(destroySession).not.toHaveBeenCalled();
-    });
-
-    it('creates one local presentation for pending phrases and preserves overlay visibility', async () => {
+    it('does not create a presentation for triggered phrases', async () => {
         await act(async () => {
             overlay.update(snapshot(phraseEvent()));
             overlay.update(snapshot(phraseEvent(1)));
         });
+        expect(createSession).not.toHaveBeenCalled();
+        expect(manager.getPresentationSnapshot()).toBeNull();
+        expect(setEnabled).not.toHaveBeenCalled();
+    });
+
+    it('creates one local presentation for the steering corner and preserves overlay visibility', async () => {
+        const { map, reference } = steeringCornerFixture();
+        await act(async () => {
+            overlay.update(steeringSnapshot(), map, reference);
+            overlay.update(steeringSnapshot(), map, reference);
+        });
         expect(createSession).toHaveBeenCalledTimes(1);
         expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ aiSessionId: 'live-phrases', mode: 'live' }));
-        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(2);
+        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
         expect(setEnabled).not.toHaveBeenCalled();
         await act(async () => overlay.dispose());
         expect(destroySession).toHaveBeenCalledWith(session.presentationId);
     });
 
-    it.each(['reset', 'unmount', 'expiry'] as const)('drops pending phrases after %s', async (action) => {
-        let finish!: (value: unknown) => void;
-        createSession.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
-        overlay.update(snapshot(phraseEvent()));
-        if (action === 'reset') overlay.update(snapshot());
-        if (action === 'unmount') overlay.dispose();
-        if (action === 'expiry') jest.advanceTimersByTime(LIVE_PHRASE_DISPLAY_MS);
-        await act(async () => finish({ success: true, presentation: session }));
-        expect(manager.getPresentationSnapshot()?.cards ?? []).toEqual([]);
-        expect(destroySession.mock.calls).toEqual(action === 'unmount' ? [[session.presentationId]] : []);
-    });
-
     it('does not publish live guidance into another mode or replace its presentation', async () => {
         createSession.mockResolvedValue({ success: true, presentation: { ...session, mode: 'recorded' } });
         await overlaySessionClient.create({ ...session, mode: 'recorded' });
-        overlay.update(snapshot(phraseEvent()));
+        const { map, reference } = steeringCornerFixture();
+        overlay.update(steeringSnapshot(), map, reference);
         expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
         expect(createSession).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps phrases local in the browser and reports a failed desktop presentation', async () => {
+    it('keeps steering local in the browser and reports a failed desktop presentation', async () => {
+        const { map, reference } = steeringCornerFixture();
         delete (window as any).electronAPI.createOverlaySession;
-        overlay.update(snapshot(phraseEvent()));
+        overlay.update(steeringSnapshot(), map, reference);
         expect(createSession).not.toHaveBeenCalled();
         (window as any).electronAPI.createOverlaySession = createSession;
         createSession.mockRejectedValue(new Error('Window unavailable'));
-        await act(async () => overlay.update(snapshot(phraseEvent(1))));
+        overlay.update(snapshot());
+        await act(async () => overlay.update(steeringSnapshot(), map, reference));
         expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'Window unavailable' }));
     });
 
@@ -213,6 +157,8 @@ describe('Live phrase overlay addons', () => {
         overlay.dispose();
         expect(directory.getComponentNames()).toEqual([]);
         expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
+        // This presentation belongs to the Assistant, not to Live Phrases.
+        expect(destroySession).not.toHaveBeenCalled();
     });
 
     it.each(['exit', 'stale', 'map removed', 'unmount'] as const)('cancels a pending corner on %s', async (action) => {
@@ -229,12 +175,12 @@ describe('Live phrase overlay addons', () => {
         expect(manager.getPresentationSnapshot()?.cards ?? []).toEqual([]);
     });
 
-    it('shares one live presentation with Turn and does not insert a corner into recorded mode', async () => {
+    it('shows only the corner when a phrase triggers and does not insert it into recorded mode', async () => {
         const { map, reference } = steeringCornerFixture();
         const active = { ...steeringSnapshot(), events: [phraseEvent(PHRASE_DEFINITIONS.findIndex((rule) => rule.name === 'Steering'))] };
         await act(async () => overlay.update(active, map, reference));
         expect(createSession).toHaveBeenCalledTimes(1);
-        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(2);
+        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
         expect(manager.getPresentationSnapshot()!.cards[0].componentType).toBe('live_steering_corner');
         expect(setEnabled).not.toHaveBeenCalled();
         overlay.update(snapshot());
@@ -282,7 +228,7 @@ describe('Live phrase overlay addons', () => {
         view.unmount();
     });
 
-    it('automatically sends a real rule trigger through the registered manager under StrictMode', async () => {
+    it('keeps a real rule trigger in the local history without an overlay card under StrictMode', async () => {
         await overlaySessionClient.create(session);
         const submit = jest.fn(async (presentation) => ({
             presentationId: presentation.presentationId,
@@ -321,11 +267,10 @@ describe('Live phrase overlay addons', () => {
             publish(2);
         });
         const cards = submit.mock.calls[submit.mock.calls.length - 1][0].cards;
-        expect(cards).toHaveLength(1);
-        expect(cards[0]).toMatchObject({
-            componentName: 'live-phrases:pressure-feint', componentType: 'live_phrase', status: 'focus',
-            snapshot: { ruleId: 'pressure-feint', sentence: PHRASE_DEFINITIONS.find((rule) => rule.id === 'pressure-feint')!.sentence },
-        });
+        expect(cards).toEqual([]);
+        expect(within(screen.getByRole('region', { name: 'Triggered sentences' })).getByText(
+            PHRASE_DEFINITIONS.find((rule) => rule.id === 'pressure-feint')!.sentence,
+        )).toBeVisible();
         await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Disable detection' })); });
         expect(submit.mock.calls[submit.mock.calls.length - 1][0].cards).toEqual([]);
         view.unmount();

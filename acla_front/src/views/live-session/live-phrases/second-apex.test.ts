@@ -130,7 +130,7 @@ describe('second-apex closure', () => {
         expect(update(engine, 0, 3, corner).state.path).toEqual(['root', rule.name]);
         const entered = update(engine, 1000, 2, corner);
         expect(entered.state.path).toEqual(['root', rule.name]);
-        expect(entered.closures[0].status).toBe('Waiting for action');
+        expect(entered.closures[0].status).toBe('Active');
         expect(entered.events).toEqual([]);
         expect(update(engine, 2000, 1, corner).events).toEqual([]);
         expect(update(engine, 2500, 0.5, corner).events).toEqual([]);
@@ -154,7 +154,7 @@ describe('second-apex closure', () => {
         engine.receiveMap(linkedMap(), 0);
         const entered = engine.receiveTelemetry(frame(sample(3)), 0);
         expect(entered.state.path).toEqual(['root', rule.name]);
-        expect(entered.closures[0].status).toBe('Waiting for action');
+        expect(entered.closures[0].status).toBe('Active');
         expect(entered.events).toEqual([]);
     });
 
@@ -168,7 +168,7 @@ describe('second-apex closure', () => {
             const eta = reason === 'stationary' ? 4 : reason === 'reversing' ? 5 : 3;
             const snapshot = engine.receiveTelemetry(frame(sample(eta)), 1000);
             expect(snapshot.state.path).toEqual(['root', rule.name]);
-            expect(snapshot.closures[0].status).toBe('Waiting for action');
+            expect(snapshot.closures[0].status).toBe('Active');
             expect(snapshot.events).toEqual([]);
         },
     );
@@ -237,7 +237,7 @@ describe('second-apex closure', () => {
                 return engine.receiveTelemetry(frame(sample(eta)), now);
             };
             update(engine, 0, 3, corner);
-            expect(update(engine, 1000, 2, corner).closures[0].status).toBe('Waiting for action');
+            expect(update(engine, 1000, 2, corner).closures[0].status).toBe('Active');
             expect(advance(2000, 1).events).toEqual([]);
             expect(advance(2500, 0.5).events).toEqual([]);
             const spoken = advance(2750, 0.25);

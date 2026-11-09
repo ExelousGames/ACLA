@@ -3,6 +3,36 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { Action, Closure, State, describeCondition } from './closure';
 import ClosureTree from './ClosureTree';
 
+it('distinguishes unchecked, failed and entered closures as the tree advances and resets', () => {
+    const nested = new Closure<{ enter: boolean; ready: boolean }>('nested', 'Nested scope.', ({ ready }) => ready);
+    const parent = new Closure<{ enter: boolean; ready: boolean }>('parent', 'Parent scope.', ({ enter }) => enter, [nested]);
+    const state = new State(new Closure('root', 'Root.', () => true, [parent]));
+    const view = render(<ClosureTree node={state.snapshot()} />);
+    expect(within(screen.getByLabelText('parent closure')).getByText('Not evaluated')).toBeVisible();
+
+    state.step({ enter: false, ready: true });
+    view.rerender(<ClosureTree node={state.snapshot()} />);
+    expect(within(screen.getByLabelText('parent closure')).getByText('Not matched')).toBeVisible();
+    fireEvent.click(screen.getByLabelText('parent closure'));
+    expect(within(screen.getByLabelText('nested closure')).getByText('Not evaluated')).toBeVisible();
+
+    state.step({ enter: true, ready: false });
+    view.rerender(<ClosureTree node={state.snapshot()} />);
+    expect(screen.getByText('Active')).toBeVisible();
+    expect(within(screen.getByLabelText('nested closure')).getByText('Not matched')).toBeVisible();
+
+    state.step({ enter: true, ready: true });
+    state.step({ enter: false, ready: false });
+    view.rerender(<ClosureTree node={state.snapshot()} />);
+    expect(within(screen.getByLabelText('nested closure')).getByText('Active')).toBeVisible();
+
+    state.exitToRoot();
+    view.rerender(<ClosureTree node={state.snapshot()} />);
+    expect(screen.getAllByText('Not evaluated')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+    expect(within(screen.getByLabelText('parent closure')).getByText('Not evaluated')).toBeVisible();
+});
+
 it('renders arbitrary mixed nodes, condition groups and extra fields from a serialized recursive snapshot', () => {
     const run = jest.fn();
     const action = new Action<{ ready: boolean }>('record telemetry', 'Save a diagnostic sample.', run,

@@ -15,6 +15,7 @@
     display: block;
     width: 100%;
     height: 280px;
+    overflow: hidden;
 }
 
 .steering-corner-display__map text {
@@ -24,8 +25,13 @@
 }
 
 .steering-corner-display__road { fill: rgba(171, 175, 181, 0.09); }
+.steering-corner-display__ground { fill: #27292d; }
+.steering-corner-display__horizon { stroke: rgba(171, 175, 181, 0.12); }
+.steering-corner-display__map .steering-corner-display__view-label { fill: #9badbf; }
 
-.steering-corner-display__map polyline {
+.steering-corner-display__left,
+.steering-corner-display__right,
+.steering-corner-display__reference {
     fill: none;
     stroke-linecap: round;
     stroke-linejoin: round;
