@@ -56,31 +56,25 @@ it.each([36, 72, 180])('enters Brake and speaks its child one second early at %s
     expect(engine.receiveTelemetry(frame(speaking), 1403).events).toEqual(result.events);
 });
 
-it('keeps the parent preparation at one second regardless of the child clip length', () => {
+it.each([200, 2000])('uses the %s ms clip duration for Brake entry and its parent forecast', (durationMs) => {
     const definition = PHRASE_DEFINITIONS.find(({ referenceCue }) => referenceCue === 'brake')!;
     const measure = jest.spyOn(definition.conditions[0], 'evaluate');
     const instance = getPhraseActions(definition)[0].phrases[0].createInstance();
-    const short = new PhraseEngine([definition]), long = new PhraseEngine([definition]);
-    short.setSpeechDurations(new Map([[instance.cacheKey, 200]]));
-    long.setSpeechDurations(new Map([[instance.cacheKey, 2000]]));
-    const lap = referenceLap();
-    for (const engine of [short, long]) engine.receiveMap(null, 0, lap);
-    measure.mockClear();
-    for (const engine of [short, long]) {
-        expect(engine.receiveTelemetry(frame(sampleAt(0.182)), 1000).state.path).toEqual(['root']);
-    }
-    expect(measure).not.toHaveBeenCalled();
-    const waiting = short.receiveTelemetry(frame(sampleAt(0.1901)), 1100);
-    expect(waiting.state.path).toEqual(['root', 'Brake zone']);
-    const entered = long.receiveTelemetry(frame(sampleAt(0.1901)), 1100);
-    expect(entered.state.path).toEqual(['root', 'Brake zone']);
-    // Brake's own closure also has a one-second preparation window.
-    const spoken = long.receiveTelemetry(frame(sampleAt(0.1913)), 1200);
-    expect(spoken.state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
-    expect(spoken.events[0].speech).toMatchObject({ durationMs: 2000, preparationTimeMs: 2000 });
-    expect(short.receiveTelemetry(frame(sampleAt(0.1913)), 1200).events).toHaveLength(0);
-    expect(short.receiveTelemetry(frame(sampleAt(0.1993)), 1300).events).toHaveLength(1);
-    measure.mockRestore();
+    try {
+        const engine = new PhraseEngine([definition]);
+        engine.setSpeechDurations(new Map([[instance.cacheKey, durationMs]]));
+        engine.receiveMap(null, 0, referenceLap());
+        const lead = durationMs / 100000;
+        measure.mockClear();
+        expect(engine.receiveTelemetry(frame(sampleAt(0.2 - lead - 0.00001)), 1000).state.path).toEqual(['root']);
+        expect(measure).not.toHaveBeenCalled();
+        expect(engine.receiveTelemetry(frame(sampleAt(0.2 - lead + 0.00001)), 1001).state.path).toEqual(['root', 'Brake zone']);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.20125 - lead - 0.00001)), 1002).events).toEqual([]);
+        const spoken = engine.receiveTelemetry(frame(sampleAt(0.20125 - lead + 0.00001)), 1003);
+        expect(spoken.state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
+        expect(spoken.events).toEqual([expect.objectContaining({ timestamp: 1003,
+            speech: { durationMs, preparationTimeMs: durationMs, reactionAllowanceMs: 0 } })]);
+    } finally { measure.mockRestore(); }
 });
 
 it.each([['Throttle', 0, 0.601875], ['More throttle', 0.3, 0.605625]] as const)(

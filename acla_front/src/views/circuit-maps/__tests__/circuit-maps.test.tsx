@@ -978,6 +978,244 @@ describe('CircuitMaps', () => {
             clickCanvas(screen.getByLabelText('Centerline map'), clientX, clientY);
         };
 
+        it('creates and reloads a precise range using only text fields, including entering the end first', async () => {
+            await openTaggedMap();
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            const start = screen.getByRole('spinbutton', { name: 'Range start (%)' });
+            const end = screen.getByRole('spinbutton', { name: 'Range end (%)' });
+            expect(start).toHaveValue(null);
+            expect(end).toHaveValue(null);
+            await userEvent.type(end, '87.654');
+            await userEvent.click(screen.getByRole('checkbox', { name: 'corner' }));
+            expect(screen.getByRole('button', { name: 'Add segment' })).toBeDisabled();
+            await userEvent.type(start, '12.345');
+            await userEvent.click(screen.getByRole('button', { name: 'Add segment' }));
+            expect(screen.getByRole('button', { name: 'corner 12.3% → 87.7%' })).toBeInTheDocument();
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                samples: { middle_line: samples, left_boundary: [samples[0]], right_boundary: [], pit_lane: [] },
+                centerline_segments: [expect.objectContaining({
+                    tags: ['corner'], start_position: 12.345 / 100, end_position: 87.654 / 100,
+                })],
+            })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: /new map/i }));
+            await userEvent.click(screen.getByRole('button', { name: 'Tagged Circuit ACC' }));
+            await userEvent.click(await screen.findByRole('button', { name: 'corner 12.3% → 87.7%' }));
+            expect(Number((screen.getByRole('spinbutton', { name: 'Range start (%)' }) as HTMLInputElement).value)).toBeCloseTo(12.345, 10);
+            expect(Number((screen.getByRole('spinbutton', { name: 'Range end (%)' }) as HTMLInputElement).value)).toBeCloseTo(87.654, 10);
+        });
+
+        it('synchronizes range fields with map picks and swaps, and preserves segment identity when editing a wrapping range', async () => {
+            const namedTag = { ...tag, name: 'Final turn' };
+            await openTaggedMap([namedTag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Final turn Final corner 50.0% → 75.0%' }));
+            const start = screen.getByRole('spinbutton', { name: 'Range start (%)' });
+            const end = screen.getByRole('spinbutton', { name: 'Range end (%)' });
+            expect(start).toHaveValue(50);
+            expect(end).toHaveValue(75);
+            clickMap(182, 42);
+            expect(start).toHaveValue(0);
+            expect(end).toHaveValue(null);
+            clickMap(718, 578);
+            expect(end).toHaveValue(50);
+            await userEvent.click(screen.getByRole('button', { name: 'Swap start/end' }));
+            expect(start).toHaveValue(50);
+            expect(end).toHaveValue(0);
+            await userEvent.clear(start);
+            await userEvent.type(start, '85.25');
+            await userEvent.clear(end);
+            await userEvent.type(end, '5.75');
+            expect(screen.getByRole('status')).toHaveTextContent('across start/finish');
+            await userEvent.click(screen.getByRole('button', { name: 'Update segment' }));
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                centerline_segments: [{ ...namedTag, start_position: 0.8525, end_position: 0.0575 }],
+            })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+        });
+
+        it('drags both selected segment endpoints, previews wrapping, and saves the updated range without changing samples', async () => {
+            const namedTag = { ...tag, name: 'Final turn', tags: ['corner', 'slow'] };
+            await openTaggedMap([namedTag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Final turn corner, slow 50.0% → 75.0%' }));
+            const canvas = screen.getByLabelText('Centerline map');
+            const start = screen.getByRole('spinbutton', { name: 'Range start (%)' });
+            const end = screen.getByRole('spinbutton', { name: 'Range end (%)' });
+
+            canvasPointer(canvas, 'pointerdown', 718, 578);
+            canvasPointer(canvas, 'pointermove', 718, 42);
+            expect(start).toHaveValue(25);
+            expect(end).toHaveValue(75);
+            expect(screen.getByRole('status')).toHaveTextContent('25.0% → 75.0%');
+            canvasPointer(canvas, 'pointerup', 718, 42);
+            dragCanvas(canvas, 182, 578, 182, 42);
+            expect(start).toHaveValue(25);
+            expect(end).toHaveValue(0);
+            expect(screen.getByRole('status')).toHaveTextContent('25.0% → 0.0% (across start/finish)');
+            expect(canvas).not.toHaveClass('circuit-maps__canvas--panning');
+            const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
+            expect(contexts[contexts.length - 1].value.arc.mock.calls[0].slice(0, 2)).toEqual([182, 42]);
+            expect(screen.queryByText('Bin 0')).not.toBeInTheDocument();
+            expect(mockedApi.put).not.toHaveBeenCalled();
+
+            await userEvent.click(screen.getByRole('button', { name: 'Update segment' }));
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                samples: { middle_line: samples, left_boundary: [samples[0]], right_boundary: [], pit_lane: [] },
+                centerline_segments: [{ ...namedTag, start_position: 0.25, end_position: 0 }],
+            })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: /new map/i }));
+            await userEvent.click(screen.getByRole('button', { name: 'Tagged Circuit ACC' }));
+            await userEvent.click(await screen.findByRole('button', { name: 'Final turn corner, slow 25.0% → 0.0% (across start/finish)' }));
+            expect(screen.getByRole('spinbutton', { name: 'Range start (%)' })).toHaveValue(25);
+            expect(screen.getByRole('spinbutton', { name: 'Range end (%)' })).toHaveValue(0);
+        });
+
+        it('keeps a valid range when clicking a handle or dragging onto the opposite endpoint, and allows dragging again after Update', async () => {
+            await openTaggedMap([tag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Final corner 50.0% → 75.0%' }));
+            const canvas = screen.getByLabelText('Centerline map');
+            clickCanvas(canvas, 718, 578);
+            expect(screen.getByRole('spinbutton', { name: 'Range start (%)' })).toHaveValue(50);
+            expect(screen.getByRole('spinbutton', { name: 'Range end (%)' })).toHaveValue(75);
+            dragCanvas(canvas, 718, 578, 182, 578);
+            expect(screen.getByRole('spinbutton', { name: 'Range start (%)' })).toHaveValue(50);
+            expect(screen.getByRole('spinbutton', { name: 'Range end (%)' })).toHaveValue(75);
+            expect(screen.getByRole('button', { name: 'Update segment' })).toBeEnabled();
+
+            dragCanvas(canvas, 718, 578, 718, 42);
+            await userEvent.click(screen.getByRole('button', { name: 'Update segment' }));
+            expect(screen.getByRole('button', { name: 'Final corner 25.0% → 75.0%' })).toHaveAttribute('aria-pressed', 'true');
+            dragCanvas(canvas, 182, 578, 182, 42);
+            expect(screen.getByRole('spinbutton', { name: 'Range start (%)' })).toHaveValue(25);
+            expect(screen.getByRole('spinbutton', { name: 'Range end (%)' })).toHaveValue(0);
+            expect(screen.getByRole('checkbox', { name: 'Final corner' })).toBeChecked();
+            expect(screen.getByRole('button', { name: 'Update segment' })).toBeEnabled();
+        });
+
+        it('keeps the untouched endpoint exact when dragging the other endpoint', async () => {
+            const preciseTag = { ...tag, start_position: 0.25, end_position: 0.623456789012345 };
+            await openTaggedMap([preciseTag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Final corner 25.0% → 62.3%' }));
+            dragCanvas(screen.getByLabelText('Centerline map'), 718, 42, 182, 42);
+            expect(screen.getByRole('spinbutton', { name: 'Range start (%)' })).toHaveValue(0);
+            await userEvent.click(screen.getByRole('button', { name: 'Update segment' }));
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                centerline_segments: [{ ...preciseTag, start_position: 0 }],
+            })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+        });
+
+        it('drags endpoint handles at their zoomed and panned positions without moving the map', async () => {
+            await openTaggedMap([tag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Final corner 50.0% → 75.0%' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
+            const canvas = screen.getByLabelText('Centerline map');
+            dragCanvas(canvas, 450, 310, 500, 330);
+            expect(screen.getByRole('spinbutton', { name: 'Range start (%)' })).toHaveValue(50);
+            expect(screen.getByRole('spinbutton', { name: 'Range end (%)' })).toHaveValue(75);
+            dragCanvas(canvas, 714.4, 544.4, 714.4, 115.6);
+            dragCanvas(canvas, 285.6, 544.4, 285.6, 115.6);
+            expect(screen.getByRole('spinbutton', { name: 'Range start (%)' })).toHaveValue(25);
+            expect(screen.getByRole('spinbutton', { name: 'Range end (%)' })).toHaveValue(0);
+            expect(screen.getByLabelText('Zoom level')).toHaveTextContent('80%');
+            const contexts = (HTMLCanvasElement.prototype.getContext as jest.Mock).mock.results;
+            const [screenX, screenY] = contexts[contexts.length - 1].value.arc.mock.calls[0];
+            expect(screenX).toBeCloseTo(285.6);
+            expect(screenY).toBeCloseTo(115.6);
+        });
+
+        it('keeps both close endpoint handles reachable when their sample positions run right to left', async () => {
+            (global as any).ResizeObserver = class {
+                constructor(private callback: ResizeObserverCallback) {}
+                observe = () => this.callback([{ contentRect: { width: 100, height: 100 } }] as ResizeObserverEntry[], this as any);
+                unobserve = jest.fn();
+                disconnect = jest.fn();
+            };
+            await openTaggedMap([tag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Final corner 50.0% → 75.0%' }));
+            // Samples are only 16px apart, so the start/end handles spread to x=34/66.
+            dragCanvas(screen.getByLabelText('Centerline map'), 66, 58, 42, 42);
+            expect(screen.getByRole('spinbutton', { name: 'Range start (%)' })).toHaveValue(50);
+            expect(screen.getByRole('spinbutton', { name: 'Range end (%)' })).toHaveValue(0);
+        });
+
+        it.each(['pointercancel', 'lostpointercapture'])('stops endpoint dragging after %s and ignores other pointers', async (eventType) => {
+            await openTaggedMap([tag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Final corner 50.0% → 75.0%' }));
+            const canvas = screen.getByLabelText('Centerline map');
+            const start = screen.getByRole('spinbutton', { name: 'Range start (%)' });
+            const end = screen.getByRole('spinbutton', { name: 'Range end (%)' });
+            canvasPointer(canvas, 'pointerdown', 718, 578);
+            canvasPointer(canvas, 'pointerdown', 182, 578, 2);
+            canvasPointer(canvas, 'pointermove', 182, 42, 2);
+            canvasPointer(canvas, 'pointerup', 182, 42, 2);
+            expect(start).toHaveValue(50);
+            expect(end).toHaveValue(75);
+            canvasPointer(canvas, 'pointermove', 718, 42);
+            expect(start).toHaveValue(25);
+            canvasPointer(canvas, eventType, 718, 42);
+            canvasPointer(canvas, 'pointermove', 182, 42);
+            canvasPointer(canvas, 'pointerup', 182, 42);
+            expect(start).toHaveValue(25);
+            expect(end).toHaveValue(75);
+            expect(canvas.releasePointerCapture).toHaveBeenCalledWith(1);
+            dragCanvas(canvas, 182, 578, 182, 42);
+            expect(start).toHaveValue(25);
+            expect(end).toHaveValue(0);
+        });
+
+        it('rejects invalid range text, accepts boundary values, and clears cancelled drafts', async () => {
+            await openTaggedMap();
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            const start = screen.getByRole('spinbutton', { name: 'Range start (%)' });
+            const end = screen.getByRole('spinbutton', { name: 'Range end (%)' });
+            const add = screen.getByRole('button', { name: 'Add segment' });
+            await userEvent.click(screen.getByRole('checkbox', { name: 'corner' }));
+            for (const [startValue, endValue] of [['', '50'], ['25', ''], ['-1', '50'], ['25', '101'], ['25', '25'], ['abc', '50']]) {
+                fireEvent.change(start, { target: { value: startValue } });
+                fireEvent.change(end, { target: { value: endValue } });
+                expect(add).toBeDisabled();
+                fireEvent.submit(add.closest('form')!);
+                expect(screen.getByText('No segments yet.')).toBeInTheDocument();
+            }
+            fireEvent.change(start, { target: { value: '0' } });
+            fireEvent.change(end, { target: { value: '100' } });
+            expect(add).toBeEnabled();
+            await userEvent.click(screen.getByRole('button', { name: 'Cancel selection' }));
+            await userEvent.click(screen.getByRole('button', { name: 'Select range' }));
+            expect(screen.getByRole('spinbutton', { name: 'Range start (%)' })).toHaveValue(null);
+            expect(screen.getByRole('spinbutton', { name: 'Range end (%)' })).toHaveValue(null);
+            expect(screen.getByRole('checkbox', { name: 'corner' })).not.toBeChecked();
+            expect(screen.getByRole('button', { name: 'Add segment' })).toBeDisabled();
+        });
+
+        it('preserves exact loaded endpoints when editing only a segment name', async () => {
+            const preciseTag = { ...tag, start_position: 0.123456789012789, end_position: 0.623456789012345 };
+            await openTaggedMap([preciseTag]);
+            await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
+            await userEvent.click(screen.getByRole('button', { name: 'Final corner 12.3% → 62.3%' }));
+            await userEvent.type(screen.getByRole('textbox', { name: 'Segment name' }), 'Turn 4');
+            await userEvent.click(screen.getByRole('button', { name: 'Update segment' }));
+            await userEvent.click(screen.getByRole('button', { name: /save/i }));
+            await waitFor(() => expect(mockedApi.put).toHaveBeenCalledWith('/circuit-map/tagged-map', expect.objectContaining({
+                centerline_segments: [{ ...preciseTag, name: 'Turn 4' }],
+            })));
+            await waitFor(() => expect(screen.getByRole('button', { name: /save/i })).toBeEnabled());
+        });
+
         it('pans while selecting a range and highlights it at zoomed and panned coordinates', async () => {
             await openTaggedMap();
             await waitFor(() => expect(screen.getByRole('button', { name: 'Select range' })).toBeEnabled());
@@ -1006,7 +1244,7 @@ describe('CircuitMaps', () => {
             clickMap(182, 42);
             expect(screen.getByRole('status')).toHaveTextContent('Click a different point');
             clickMap(182, 42);
-            expect(screen.queryByRole('button', { name: 'Add segment' })).not.toBeInTheDocument();
+            expect(screen.getByRole('button', { name: 'Add segment' })).toBeDisabled();
             clickMap(718, 578);
             expect(screen.getByRole('status')).toHaveTextContent('0.0% → 50.0%');
             expect(screen.queryByText('Bin 0')).not.toBeInTheDocument();

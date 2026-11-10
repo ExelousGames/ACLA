@@ -116,20 +116,6 @@ describe('live phrase closure tree', () => {
         expect(snapshot.closures.filter((closure) => closure.status === 'Active').map((closure) => closure.id)).toEqual([defaultRule]);
         expect(snapshot.closures.find((closure) => closure.id === 'second-apex')!.status).not.toBe('Active');
     });
-
-    it.each(['session-reset', 'stream-reset'] as const)('creates a fresh state at root on %s', (type) => {
-        const engine = new PhraseEngine();
-        engine.receiveMap(map, 0);
-        update(engine, 0);
-        update(engine, 800);
-        const previous = engine.state;
-        expect(previous.current).toBeInstanceOf(Action);
-        const snapshot = engine.receiveTelemetry({ type, snapshot: createLiveTelemetryStore().getSnapshot() }, 900);
-        expect(engine.state).not.toBe(previous);
-        expect(engine.state.current).toBe(engine.root);
-        expect(snapshot.state.path).toEqual(['root']);
-        expect(snapshot.events).toEqual([]);
-    });
 });
 
 describe('condition connectors', () => {
@@ -419,21 +405,6 @@ describe('slipstream distance, motion and alignment', () => {
 });
 
 describe('vision and Live Map overtaking guides', () => {
-    it('uses the published BEV when depth-based geometry is unavailable', () => {
-        const engine = new PhraseEngine();
-        engine.receiveMap(map, 0);
-        const detection = { ...vision(0), geometry: null };
-        engine.receiveVision(detection, 0);
-        const snapshot = engine.receiveTelemetry(frame(driving), 0);
-        expect(snapshot.visionReady).toBe(true);
-        const conditions = snapshot.closures.find((rule) => rule.id === defaultRule)!.conditions;
-        for (const input of ['carAhead', 'playerCorner', 'playerPosition', 'opponentCorner', 'opponentPosition']) {
-            expect(conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
-        }
-        engine.receiveTelemetry(frame(driving), 800);
-        expect(ids(engine, 800)).toEqual([defaultRule]);
-    });
-
     it('reports individual fits even when another condition fails or has missing input', () => {
         const engine = new PhraseEngine();
         engine.receiveMap(map, 0);
@@ -502,7 +473,12 @@ describe('vision and Live Map overtaking guides', () => {
             Object.defineProperty(result, property, { get: () => { throw new Error('Phrase rules must only read the BEV'); } });
         }
         engine.receiveVision(result, 0);
-        engine.receiveTelemetry(frame(driving), 0);
+        const snapshot = engine.receiveTelemetry(frame(driving), 0);
+        expect(snapshot.visionReady).toBe(true);
+        const conditions = snapshot.closures.find((rule) => rule.id === defaultRule)!.conditions;
+        for (const input of ['carAhead', 'playerCorner', 'playerPosition', 'opponentCorner', 'opponentPosition']) {
+            expect(conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === input)).toMatchObject({ conditionFit: true, inputMissing: false });
+        }
         engine.receiveTelemetry(frame(driving), 800);
         expect(ids(engine, 800)).toEqual([defaultRule]);
     });
@@ -519,35 +495,6 @@ describe('vision and Live Map overtaking guides', () => {
             expect(rule.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === mapInput)?.description)
                 .toContain(timed ? 'Upcoming mapped consecutive-corners sequence' : standalone ? 'Corner is not inside' : 'Live Map section');
         });
-    });
-
-    it.each([
-        { shape: 's-bend', position: 0.12 },
-        { shape: 'tightening', position: 0.12 },
-        { shape: 'hairpin', position: 0.2 },
-    ] as const)('does not emit removed guidance for $shape geometry', ({ shape, position }) => {
-        const engine = new PhraseEngine();
-        engine.receiveMap(shapedCornerMap(shape), 0);
-        const sample = { ...driving, Graphics_normalized_car_position: position };
-        engine.receiveVision(vision(0, { player: 'inside', opponent: 'outside' }), 0);
-        engine.receiveTelemetry(frame(sample), 0);
-        engine.receiveTelemetry(frame(sample), 800);
-        expect(ids(engine, 800)).toEqual([]);
-    });
-
-    it.each(['opposite', 'same'] as const)('does not emit removed guidance in a %s direction sequence', (direction) => {
-        const sequence = circuitMap('slow', true);
-        if (direction === 'same') sequence.samples.middle_line!.find((point) => point.normalized_position === 0.31)!.x = 1100;
-        sequence.centerline_tags!.push({ id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.31 });
-        for (const position of [0.11, 0.18, 0.29]) {
-            const engine = new PhraseEngine();
-            engine.receiveMap(sequence, 0);
-            const sample = { ...driving, Graphics_normalized_car_position: position };
-            engine.receiveVision(vision(0, { player: 'outside', opponent: 'inside' }), 0);
-            engine.receiveTelemetry(frame(sample), 0);
-            engine.receiveTelemetry(frame(sample), 800);
-            expect(ids(engine, 800)).toEqual([]);
-        }
     });
 
     it('does not inherit a partly confirmed phrase when moving to another corner in the same area', () => {
@@ -849,12 +796,18 @@ describe('vision and Live Map overtaking guides', () => {
         expect(conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'carAhead')).toMatchObject({ conditionFit: true, inputMissing: false });
     });
 
-    it.each(['session-reset', 'stream-reset'] as const)('clears history, holds and old vision on %s', (type) => {
+    it.each(['session-reset', 'stream-reset'] as const)('returns to a fresh root and clears history, holds and old vision on %s', (type) => {
         const engine = new PhraseEngine();
         engine.receiveMap(map, 0);
         update(engine, 0);
         update(engine, 800);
+        const previous = engine.state;
+        expect(previous.current).toBeInstanceOf(Action);
         const reset = engine.receiveTelemetry({ type, snapshot: createLiveTelemetryStore().getSnapshot() }, 900);
+        expect(engine.state).not.toBe(previous);
+        expect(engine.state.current).toBe(engine.root);
+        expect(reset.state.path).toEqual(['root']);
+        expect(reset.events).toEqual([]);
         expect(reset.closures.every((rule) => rule.conditions.every((condition) => rule.status === 'Not evaluated'
             ? condition.conditionFit === null && !condition.inputMissing : !condition.conditionFit && condition.inputMissing))).toBe(true);
         engine.receiveVision(vision(800), 900);

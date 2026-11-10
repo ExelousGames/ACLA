@@ -530,12 +530,11 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
         : directionChanges.find(({ start, end }) => wrap(distance - start, reference.length) < end - start) ?? null;
     const directionActive = result.steeringRange !== undefined && cornerTurnSign !== undefined && cornerBounds
         && result.steeringRange?.turnSign === cornerTurnSign;
-    const brakingInterval = reference.pedalZones.find((zone) => zone.pedal === 'brake'
-        && wrap(distance - zone.start, reference.length) < zone.length);
-    // Before turn-in, use the first matching range ahead in this braking interval, never a later lap.
-    const exitRange = directionActive ? result.steeringRange : brakingInterval && directionChanges.find(({ start, turnSign }) =>
+    const cornerEnd = cornerBounds ? distanceAt(reference, cornerBounds.end) : undefined;
+    // Before turn-in, use the first matching range ahead in the mapped corner, even after reference braking ends.
+    const exitRange = directionActive ? result.steeringRange : cornerEnd !== undefined && directionChanges.find(({ start, turnSign }) =>
         turnSign === cornerTurnSign && wrap(start - distance, reference.length)
-            < brakingInterval.length - wrap(distance - brakingInterval.start, reference.length));
+            < wrap(cornerEnd - distance, reference.length));
     const turnInSpeed = result.steeringRange !== undefined && cornerTurnSign !== undefined && cornerBounds && exitRange
         ? targetsAt(reference, exitRange.start).speed : undefined;
     result.brakeZoneExit = result.steeringRange === undefined || cornerTurnSign === undefined || !cornerBounds

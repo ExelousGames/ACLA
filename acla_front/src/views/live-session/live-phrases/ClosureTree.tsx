@@ -51,6 +51,7 @@ export default function ClosureTree({ node }: { node: NodeSnapshot }) {
     const parent = ancestors[ancestors.length - 2];
     const currentPath = ancestors.slice(1).map((ancestor) => ancestor.id);
     const isClosure = current.kind === 'closure';
+    const exits = current.children.filter((child) => child.kind === 'action' && child.exitTarget);
     const activeTab = selectedTab ?? (isClosure ? 'Contents' : 'Details');
     const conditionLabel = isClosure ? current.name : `${parent?.name} action ${(parent?.children.findIndex((child) => child.id === current.id) ?? -1) + 1}: ${current.name}`;
     const navigate = (nextPath: string[]) => {
@@ -122,6 +123,26 @@ export default function ClosureTree({ node }: { node: NodeSnapshot }) {
                 </div>
                 {current.conditions.length > 0 ? <ConditionList conditions={current.conditions} label={`${conditionLabel} conditions`} />
                     : <p className="live-phrases__hint">No conditions.</p>}
+                {isClosure && <>
+                    <div className="live-phrases__condition-content"><strong>Exit conditions</strong></div>
+                    {exits.length > 0 ? <ul className="live-phrases__conditions" aria-label={`${current.name} exit conditions`}>
+                        {exits.map((exit, index) => {
+                            const label = `${current.name} exit ${index + 1}: ${exit.name}`;
+                            return <li key={exit.id} className="live-phrases__condition">
+                                <div className="live-phrases__condition-group" role="group" aria-label={label}>
+                                    <div className="live-phrases__condition-content">
+                                        <span className="live-phrases__condition-label">
+                                            {index > 0 && <span className="live-phrases__connector" data-connector="or">OR</span>}
+                                            <strong>{exit.name}</strong>
+                                        </span>
+                                        <span className="live-phrases__meta">{exit.conditions.filter((condition) => condition.conditionFit).length}/{exit.conditions.length} met</span>
+                                    </div>
+                                    <ConditionList conditions={exit.conditions} label={`${label} conditions`} />
+                                </div>
+                            </li>;
+                        })}
+                    </ul> : <p className="live-phrases__hint">No exit conditions.</p>}
+                </>}
             </>}
             {activeTab === 'Details' && <>
                 <p>{current.description}</p>

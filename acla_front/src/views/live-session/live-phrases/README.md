@@ -3,9 +3,10 @@
 Live Phrases copies the reference lap and centerline map published by Live Map.
 All phrase rules use these local copies, including corner geometry, straight
 membership, speed corrections, advance cues and the braking exit from movement
-guidance. The telemetry forecast is limited to a fixed **three seconds**. Each
-closure has a `preparationTimeMs` (default **1000 ms**); speech actions use the
-prepared clip duration, with no reaction allowance by default.
+guidance. The telemetry forecast is limited to a fixed **three seconds**. Generic
+closures have a `preparationTimeMs` (default **1000 ms**); phrase entry uses the
+prepared clip duration, with no reaction allowance by default. Once triggered,
+every phrase uses the same immediate playback path.
 The position model supplies lateral checks
 and never selects reference lookup progress.
 **Live Map must remain open to supply the reference and map**. Lateral predictions
@@ -76,8 +77,8 @@ only to identify replacement laps and validate position-model captures.
 
 Reference-line guidance has four root closures: **Brake zone**, **Throttle zone**,
 **Steering**, and **Turn to reference line**.
-Closures check their own conditions within `preparationTimeMs`, defaulting to one
-second. The look-ahead retains a shared buffer of **31 prediction frames**, from 0
+Generic closures check their own conditions within `preparationTimeMs`, defaulting
+to one second. The look-ahead retains a shared buffer of **31 prediction frames**, from 0
 through 3000 ms at 100 ms intervals. Every closure and phrase can inspect the full
 buffer through `context.predictionFrames`; each frame contains its `offsetMs`,
 `intendedTelemetry`, deceleration and brake-release state. `context.forPreparation(offsetMs)`
@@ -85,10 +86,11 @@ provides the guidance for a selected time, including exact times between stored 
 Telemetry updates rebuild the buffer; timer evaluations reuse it. Reference changes
 invalidate it, and stale or inactive telemetry exposes an empty buffer. Guidance and
 child measurements are still evaluated only when their parent allows them.
-Each preparation window checks its stored frames and exact endpoint. Speech actions
-use their prepared duration plus `reactionAllowanceMs`
-(default 0), capped at the fixed three-second forecast. Longer clips cannot extend
-that forecast or open their parent early. Child conditions, confirmation clocks,
+Each preparation window checks its stored frames and exact endpoint. Phrase entry
+uses the first speech action's prepared duration plus `reactionAllowanceMs`
+(default 0), capped at the fixed three-second forecast. Explicit child action
+conditions use their own action's duration. Pedal zones use the longest child lead
+so the parent does not shorten a phrase's entry window. Child conditions, confirmation clocks,
 steering comparisons and pedal measurements start only after their parent enters.
 Pedal-zone entry never forecasts child phrases. **More brake** retains its measured
 state comparison and continuous hold. The first-order prediction is
@@ -242,6 +244,8 @@ The comparison band is 10% of required deceleration, with a 0.1 m/s² minimum.
 - **Hold brake pressure**: both predicted speed and predicted deceleration are within their bands.
 - **Release the brake**: predicted speed matches or falls below the active reference
   turn-in speed at the clipped start of the upcoming or active direction-change range.
+  The upcoming range is selected within the mapped corner even when reference braking
+  ends before turn-in; already-passed ranges within that corner are skipped.
   It requires at least 10% predicted brake pressure and an active Brake-zone closure;
   the predicted position may be past the reference braking interval.
   It takes priority over the other brake corrections and finishes before the speed-based
@@ -317,7 +321,7 @@ Direction changes and interpolation wrap across start/finish, including a duplic
 endpoint; ranges join across that boundary only if the turn qualifies continuously.
 
 **Turn** speaks immediately once per Steering entry, without a reference steering
-threshold. Changes in reference steering do not cancel a queued **Turn** cue.
+threshold. Changes in reference steering do not cancel a triggered **Turn** cue.
 Steering captures the corner-limited trajectory direction-change range on entry and
 exits to root when the current measured position reaches its end: the earlier of the curvature
 boundary described above and the centerline corner end. Excluded near-straight tails
@@ -350,8 +354,8 @@ use live car speed or brake-pedal release speed. Missing speed data, constant or
 increasing deceleration, and a released brake do not trigger this instruction.
 The phrase instance selects one of four prepared timing inputs: 1 for easing up to
 0.5 m/s³, 2/3 up to 1 m/s³, 1/3 up to 2 m/s³, and 0 above 2 m/s³. The curve in
-`curves/slowly-release-brake.json` stretches slower easing more. Pending speech is
-discarded when easing stops, Steering exits, or telemetry expires.
+`curves/slowly-release-brake.json` stretches slower easing more. These conditions
+govern entry; they are not checked again before playing a triggered phrase.
 
 After **Turn**, nested **Stay right a bit** and **Stay left a bit** corrections enter only when
 **Driving aggression = 100** (**Direction guide**). **Turn** remains available at
@@ -401,8 +405,8 @@ capture's orientation; the intended orientation rotates only the intended veloci
 Missing or invalid error, orientation or local velocity,
 unknown corner direction, an unavailable remaining Steering range, zero vectors,
 and a desired tangent opposing the velocity direction
-withhold corrections. Pending correction audio is discarded if its direction no
-longer matches, required data expires, or the driver leaves Steering.
+withhold new corrections. Once triggered, correction audio uses the common playback
+path without checking the direction, input freshness or Steering scope again.
 
 Throttle demand uses the active reference's throttle and acceleration.
 For accelerating intervals, `(endSpeed² - startSpeed²) / (2 × distance)` in m/s
@@ -510,10 +514,9 @@ retain their 2 s cooldown.
 trajectory direction-change range ends or reference acceleration is positive within 200 ms;
 other cues require a 0.5 s clear period before rearming. Short
 clips prepare first. The audible clip duration plus any configured reaction allowance
-determines how early speech is scheduled. Event deadlines do not reject playback or
-release a speaking action. Pending speech is discarded if its conditions clear.
-A queued steering prompt is discarded when its
-reference phase changes or Steering exits. Live chat retains higher audio priority.
+determines the phrase entry forecast. Playback does not recheck duration, deadlines,
+entry conditions or driving scope. Event deadlines do not release a speaking action.
+Live chat retains higher audio priority.
 
 Live phrases runs a closure tree instead of a flat sentence-rule dispatcher.
 `closure.ts` defines the three building blocks:
@@ -771,14 +774,15 @@ mounted. The Speech indicator shows **Preparing** until all requests finish,
 then turns green with **Ready** only when every catalog instance has received
 its audio. Failed requests leave it **Incomplete**; disabling detection shows
 **Disabled**. Enabling again reuses cached clips and retries missing ones.
-Each new phrase event waits for the current phrase's audio to finish, then attempts playback once through `audioManager`,
-using type `voice` and priority 25, below live chat's default priority 50. Live
-chat can interrupt or suppress a phrase; discarded phrases are not queued for
+Each new phrase event immediately attempts playback once through the common
+`audioManager` path, using type `voice` and priority 25. A new phrase replaces an
+earlier phrase at that priority. Live chat's default priority 50 can interrupt
+or suppress a phrase; discarded phrases are not queued for
 replay. Speech works independently of overlay visibility.
 
-Speech scheduling and phrase occupancy use separate clocks. `setSpeechDurations`
+Entry forecasting and phrase occupancy use separate clocks. `setSpeechDurations`
 supplies audible clip durations keyed by the complete instance cache key; the
-longest prepared wording/variant determines that action's scheduling lead. No
+longest prepared wording/variant determines that action's entry forecast window. No
 telemetry callback synthesizes audio or changes the prepared clip. `reactionAllowanceMs`
 can add an allowance per speech action; the default is 0 ms.
 
@@ -787,7 +791,7 @@ can add an allowance per speech action; the default is 0 ms.
 scanning forward from the file start for the first frame above 0.01 and backward
 from the file end for the last, checking every channel. Live phrase preparation trims
 the outer silence once, keeping every PCM frame between those endpoints. The resulting
-WAV's duration is the audible duration used for earlier speech, and its bounds run from
+WAV's duration is the audible duration used for entry lookahead, and its bounds run from
 zero to that duration. `startedAt` is set once when playback reaches its first frame;
 `releaseAt` is set by actual playback completion. Pauses inside a sentence, buffering,
 the estimated duration, and event deadlines do not release it. Entirely silent clips use `speechBounds: null`
@@ -799,9 +803,10 @@ exit rules, while the released speech action allows later actions to run.
 Without a connected playback owner, the standalone engine retains immediate action
 completion for detection-only use.
 
-While the startup batch is being prepared, only the latest event can play once
-the batch finishes. Pending clips require live telemetry and matching conditions in
-their active scope. Playback has no additional age or finish-before-deadline check.
+Each completed clip immediately updates the entry forecast durations and becomes
+available for playback while the rest of the startup batch prepares. A triggered
+event waits only if its own clip is missing; the latest waiting event plays when
+that clip arrives, without rechecking duration, deadlines or entry conditions.
 Session/stream resets stop phrase speech and discard pending events. Disabling
 detection or unmounting also aborts preparation and stops owned playback. Speech
 errors appear in the panel without stopping rule detection or overlay cards.
@@ -869,14 +874,14 @@ indexed phonemes independently. The same abort signal covers both requests.
 
 Speech caching includes text, voice, language, speed, curves and input values.
 `getPhraseSpeechInstances()` enumerates all wordings and declared instance settings.
-`loadAllPhraseSpeech(instances, packs, signal)` requests that entire batch when
+`loadAllPhraseSpeech(instances, packs, signal, onPrepared?)` requests that entire batch when
 detection is enabled, deduplicates identical audio identities, serializes model work,
-and returns completion status and any errors. Playback waits until the batch finishes.
+and returns completion status and any errors. Its optional callback runs after
+each newly prepared clip is cached, making it available before the batch finishes.
 Completed clips, including all release variants, are reused across detection toggles;
 unmounting releases the cache. Failed clips can be retried on the next enable.
-Telemetry events only read prepared audio. An unprepared instance is skipped without
-requesting audio or substituting a different delivery. Pending events must still meet
-their conditions when startup preparation completes.
+Telemetry events only read prepared audio. An instance still missing when preparation
+finishes is skipped without requesting audio or substituting a different delivery.
 
 Every triggered phrase also publishes a pop-out card (eight seconds for overtaking,
 or until the reference cue's deadline) through the

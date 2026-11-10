@@ -47,7 +47,11 @@ type CircuitMapView = 'bounded' | 'centerline';
 type SelectedPoint = { mode: CircuitMapCaptureMode; bin: number } | null;
 type ProjectedPoint = { screenX: number; screenY: number; sample: CircuitMapBinSample; mode: CircuitMapCaptureMode };
 type SelectedRange = { start_position: number; end_position: number | null };
-type MapDrag = { pointerId: number; startX: number; startY: number; panX: number; panY: number; moved: boolean };
+type RangeEndpoint = 'start' | 'end';
+type RangeHandle = { endpoint: RangeEndpoint; screenX: number; screenY: number };
+type MapDrag = { pointerId: number; startX: number; startY: number; moved: boolean } & (
+    { kind: 'pan'; panX: number; panY: number } | { kind: 'range'; endpoint: RangeEndpoint }
+);
 
 const VIEW_CAPTURE_MODES = {
     bounded: CIRCUIT_MAP_CAPTURE_MODES.filter(({ value }) => value !== 'middle_line'),
@@ -85,6 +89,17 @@ const formatRange = (start: number, end: number): string => (
     `${(start * 100).toFixed(1)}% → ${(end * 100).toFixed(1)}%${start > end ? ' (across start/finish)' : ''}`
 );
 
+// Preserve picked and saved positions until edited; display rounding must not move range boundaries.
+const createRangeInput = (position: number | null) => ({
+    value: position === null ? '' : String(Number((position * 100).toFixed(10))),
+    position
+});
+
+const parseRangePosition = (value: string): number | null => {
+    const percent = Number(value);
+    return value.trim() !== '' && Number.isFinite(percent) && percent >= 0 && percent <= 100 ? percent / 100 : null;
+};
+
 const CircuitMaps = () => {
     const liveSession = useOptionalOperationComponentSnapshot<LiveSessionRuntime>(
         OPERATION_COMPONENT_NAMES.LIVE_SESSION,
@@ -96,6 +111,7 @@ const CircuitMaps = () => {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
     const projectedPointsRef = useRef<ProjectedPoint[]>([]);
+    const rangeHandlesRef = useRef<RangeHandle[]>([]);
     const mapDragRef = useRef<MapDrag | null>(null);
     const lastCaptureSignatureRef = useRef('');
     const mapLoadRequestRef = useRef(0);
@@ -112,7 +128,7 @@ const CircuitMaps = () => {
     const [samplesByMode, setSamplesByMode] = useState<CircuitMapSamplesByMode>(EMPTY_SAMPLES);
     const [centerlineSegments, setCenterlineSegments] = useState<CircuitMapCenterlineSegment[]>([]);
     const [isSelectingRange, setIsSelectingRange] = useState(false);
-    const [selectedRange, setSelectedRange] = useState<SelectedRange | null>(null);
+    const [rangeInputs, setRangeInputs] = useState({ start: createRangeInput(null), end: createRangeInput(null) });
     const [segmentName, setSegmentName] = useState('');
     const [tagLabels, setTagLabels] = useState<string[]>([]);
     const [tagOptions, setTagOptions] = useState<string[]>([]);
@@ -127,6 +143,8 @@ const CircuitMaps = () => {
     const [zoom, setZoom] = useState(1);
     const [pan, setPan] = useState({ x: 0, y: 0 });
     const [isPanning, setIsPanning] = useState(false);
+    const [isDraggingRange, setIsDraggingRange] = useState(false);
+    const [isRangeHandleHovered, setIsRangeHandleHovered] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [isMapLoading, setIsMapLoading] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -135,29 +153,46 @@ const CircuitMaps = () => {
     const [isImporting, setIsImporting] = useState(false);
     const [importStatus, setImportStatus] = useState('');
     const isTagEditingDisabled = isImporting || isMapLoading || isSaving || isDeleting;
+    const rangeStart = rangeInputs.start.position;
+    const rangeEnd = rangeInputs.end.position;
+    const rangeError = (rangeInputs.start.value !== '' && rangeStart === null) || (rangeInputs.end.value !== '' && rangeEnd === null)
+        ? 'Enter percentages between 0 and 100.'
+        : rangeStart !== null && rangeStart === rangeEnd ? 'Range start and end must be different.' : null;
+    const selectedRange = useMemo<SelectedRange | null>(() => (
+        rangeStart === null || rangeError ? null : { start_position: rangeStart, end_position: rangeEnd }
+    ), [rangeStart, rangeEnd, rangeError]);
+    const selectedSegment = centerlineSegments.find((segment) => segment.id === selectedSegmentId);
+    const handleRange = isSelectingRange ? selectedRange : selectedSegment;
 
-    const stopPanning = useCallback(() => {
+    const stopDragging = useCallback(() => {
         const drag = mapDragRef.current;
         mapDragRef.current = null;
         setIsPanning(false);
+        setIsDraggingRange(false);
+        setIsRangeHandleHovered(false);
         if (drag && canvasRef.current?.hasPointerCapture(drag.pointerId)) {
             canvasRef.current.releasePointerCapture(drag.pointerId);
         }
     }, []);
 
+    useEffect(() => {
+        if (isTagEditingDisabled) stopDragging();
+    }, [isTagEditingDisabled, stopDragging]);
+
     const resetViewport = useCallback(() => {
-        stopPanning();
+        stopDragging();
         setZoom(1);
         setPan({ x: 0, y: 0 });
-    }, [stopPanning]);
+    }, [stopDragging]);
 
     const clearRangeSelection = useCallback(() => {
+        stopDragging();
         setIsSelectingRange(false);
-        setSelectedRange(null);
+        setRangeInputs({ start: createRangeInput(null), end: createRangeInput(null) });
         setSegmentName('');
         setTagLabels([]);
         setSelectedSegmentId(null);
-    }, []);
+    }, [stopDragging]);
 
     const isAcc = game === 'acc';
     const isIRacing = game === 'iracing';
@@ -588,6 +623,7 @@ const CircuitMaps = () => {
 
         const { project } = getCanvasProjection();
         const projectedPoints: ProjectedPoint[] = [];
+        rangeHandlesRef.current = [];
 
         context.fillStyle = '#070b10';
         context.fillRect(0, 0, canvasSize.width, canvasSize.height);
@@ -683,10 +719,11 @@ const CircuitMaps = () => {
                 }
                 context.restore();
             };
-            centerlineSegments.forEach((segment) => drawRange(segment, '#ffca28', segment.name || segment.tags.join(', ')));
-            const selectedTag = centerlineSegments.find((tag) => tag.id === selectedSegmentId);
-            if (selectedTag) drawRange(selectedTag, '#4dd0e1', selectedTag.name || selectedTag.tags.join(', '));
-            if (selectedRange) drawRange(selectedRange, '#4dd0e1');
+            centerlineSegments.forEach((segment) => {
+                if (segment.id === selectedSegmentId && isSelectingRange) return;
+                drawRange(segment, segment.id === selectedSegmentId ? '#4dd0e1' : '#ffca28', segment.name || segment.tags.join(', '));
+            });
+            if (selectedRange) drawRange(selectedRange, '#4dd0e1', selectedSegment?.name || selectedSegment?.tags.join(', '));
 
             const startPoint = projectedPoints.reduce<ProjectedPoint | null>((closest, point) => (
                 !closest || point.sample.normalized_position < closest.sample.normalized_position ? point : closest
@@ -704,6 +741,40 @@ const CircuitMaps = () => {
                 context.textAlign = 'center';
                 context.fillText('START', startPoint.screenX, startPoint.screenY - 18);
                 context.restore();
+            }
+
+            if (handleRange?.end_position != null && projectedPoints.length) {
+                const handles = (['start', 'end'] as const).map((endpoint) => {
+                    const position = endpoint === 'start' ? handleRange.start_position : handleRange.end_position!;
+                    const point = projectedPoints.reduce((closest, candidate) => (
+                        Math.abs(candidate.sample.normalized_position - position) < Math.abs(closest.sample.normalized_position - position)
+                            ? candidate : closest
+                    ));
+                    return { endpoint, screenX: point.screenX, screenY: point.screenY };
+                });
+                // Keep both handles reachable when a short range maps to the same sample.
+                if (Math.hypot(handles[0].screenX - handles[1].screenX, handles[0].screenY - handles[1].screenY) < 28) {
+                    const midpointX = (handles[0].screenX + handles[1].screenX) / 2;
+                    handles[0].screenX = midpointX - 16;
+                    handles[1].screenX = midpointX + 16;
+                }
+                rangeHandlesRef.current = handles;
+                handles.forEach(({ endpoint, screenX, screenY }) => {
+                    context.save();
+                    context.fillStyle = '#070b10';
+                    context.strokeStyle = '#4dd0e1';
+                    context.lineWidth = 3;
+                    context.beginPath();
+                    context.arc(screenX, screenY, 10, 0, Math.PI * 2);
+                    context.fill();
+                    context.stroke();
+                    context.fillStyle = '#ffffff';
+                    context.font = 'bold 11px monospace';
+                    context.textAlign = 'center';
+                    context.fillText(endpoint === 'start' ? 'S' : 'E', screenX, screenY + 4);
+                    context.fillText(endpoint === 'start' ? 'Range start' : 'Range end', screenX, screenY + 26);
+                    context.restore();
+                });
             }
         }
 
@@ -730,7 +801,7 @@ const CircuitMaps = () => {
         }
 
         projectedPointsRef.current = projectedPoints;
-    }, [canvasSize, centerlineSegments, getCanvasProjection, liveCapture, mapView, visibleSampleCount, samplesByMode, selectedPoint, selectedRange, selectedSegmentId, visibleModes]);
+    }, [canvasSize, centerlineSegments, getCanvasProjection, handleRange, isSelectingRange, liveCapture, mapView, visibleSampleCount, samplesByMode, selectedPoint, selectedRange, selectedSegment, selectedSegmentId, visibleModes]);
 
     const getPointerPosition = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
         const rect = event.currentTarget.getBoundingClientRect();
@@ -740,39 +811,78 @@ const CircuitMaps = () => {
         };
     }, []);
 
+    const getRangeHandle = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+        const pointer = getPointerPosition(event);
+        return rangeHandlesRef.current.find((handle) => Math.hypot(handle.screenX - pointer.screenX, handle.screenY - pointer.screenY) <= 14);
+    }, [getPointerPosition]);
+
+    const moveRangeEndpoint = useCallback((event: React.PointerEvent<HTMLCanvasElement>, endpoint: RangeEndpoint) => {
+        const pointer = getPointerPosition(event);
+        const nearest = projectedPointsRef.current.reduce<ProjectedPoint | null>((closest, point) => {
+            if (point.mode !== 'middle_line') return closest;
+            return !closest || Math.hypot(point.screenX - pointer.screenX, point.screenY - pointer.screenY)
+                < Math.hypot(closest.screenX - pointer.screenX, closest.screenY - pointer.screenY) ? point : closest;
+        }, null);
+        if (!nearest) return;
+        const position = nearest.sample.normalized_position;
+        setRangeInputs((previous) => position === previous[endpoint].position || position === previous[endpoint === 'start' ? 'end' : 'start'].position
+            ? previous : { ...previous, [endpoint]: createRangeInput(position) });
+    }, [getPointerPosition]);
+
     const handlePointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
         if (isTagEditingDisabled || event.button !== 0 || mapDragRef.current) return;
         event.preventDefault();
+        const handle = getRangeHandle(event);
         mapDragRef.current = {
             pointerId: event.pointerId,
             startX: event.clientX,
             startY: event.clientY,
-            panX: pan.x,
-            panY: pan.y,
-            moved: false
+            moved: false,
+            ...(handle ? { kind: 'range', endpoint: handle.endpoint } : { kind: 'pan', panX: pan.x, panY: pan.y })
         };
+        if (handle && !isSelectingRange && selectedSegment) {
+            setRangeInputs({ start: createRangeInput(selectedSegment.start_position), end: createRangeInput(selectedSegment.end_position) });
+            setSegmentName(selectedSegment.name || '');
+            setTagLabels(selectedSegment.tags);
+            setIsSelectingRange(true);
+        }
         event.currentTarget.setPointerCapture(event.pointerId);
-        setIsPanning(true);
-    }, [isTagEditingDisabled, pan]);
+        setIsPanning(!handle);
+        setIsDraggingRange(Boolean(handle));
+        setIsRangeHandleHovered(Boolean(handle));
+    }, [getRangeHandle, isSelectingRange, isTagEditingDisabled, pan, selectedSegment]);
 
     const handlePointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
         const drag = mapDragRef.current;
-        if (!drag || drag.pointerId !== event.pointerId) return;
+        if (isTagEditingDisabled) return;
+        if (!drag) {
+            setIsRangeHandleHovered(Boolean(getRangeHandle(event)));
+            return;
+        }
+        if (drag.pointerId !== event.pointerId) return;
         const deltaX = event.clientX - drag.startX;
         const deltaY = event.clientY - drag.startY;
         if (!drag.moved && Math.hypot(deltaX, deltaY) < PAN_THRESHOLD) return;
         drag.moved = true;
-        setPan({ x: drag.panX + deltaX, y: drag.panY + deltaY });
-    }, []);
+        if (drag.kind === 'range') moveRangeEndpoint(event, drag.endpoint);
+        else setPan({ x: drag.panX + deltaX, y: drag.panY + deltaY });
+    }, [getRangeHandle, isTagEditingDisabled, moveRangeEndpoint]);
 
     const handlePointerCancel = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
-        if (mapDragRef.current?.pointerId === event.pointerId) stopPanning();
-    }, [stopPanning]);
+        if (mapDragRef.current?.pointerId === event.pointerId) stopDragging();
+    }, [stopDragging]);
 
     const handlePointerUp = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
         const drag = mapDragRef.current;
         if (!drag || drag.pointerId !== event.pointerId) return;
-        stopPanning();
+        if (drag.kind === 'range') {
+            if (!isTagEditingDisabled && (drag.moved || Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= PAN_THRESHOLD)) {
+                moveRangeEndpoint(event, drag.endpoint);
+            }
+            stopDragging();
+            return;
+        }
+        stopDragging();
         if (isTagEditingDisabled || drag.moved
             || Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= PAN_THRESHOLD) return;
         const pointer = getPointerPosition(event);
@@ -787,9 +897,9 @@ const CircuitMaps = () => {
         if (isSelectingRange && mapView === 'centerline') {
             if (!nearest || nearest.mode !== 'middle_line') return;
             const position = nearest.sample.normalized_position;
-            setSelectedRange((previous) => !previous || previous.end_position !== null
-                ? { start_position: position, end_position: null }
-                : { ...previous, end_position: position === previous.start_position ? null : position });
+            setRangeInputs(!selectedRange || selectedRange.end_position !== null
+                ? { start: createRangeInput(position), end: createRangeInput(null) }
+                : { ...rangeInputs, end: createRangeInput(position === selectedRange.start_position ? null : position) });
             return;
         }
 
@@ -800,7 +910,7 @@ const CircuitMaps = () => {
 
         setSelectedSegmentId(null);
         setSelectedPoint({ mode: nearest.mode, bin: nearest.sample.bin });
-    }, [getPointerPosition, isSelectingRange, isTagEditingDisabled, mapView, stopPanning]);
+    }, [getPointerPosition, isSelectingRange, isTagEditingDisabled, mapView, moveRangeEndpoint, rangeInputs, selectedRange, stopDragging]);
 
     const saveSegment = (event: React.FormEvent) => {
         event.preventDefault();
@@ -824,7 +934,6 @@ const CircuitMaps = () => {
         setSelectedSegmentId(segment.id);
     };
 
-    const selectedSegment = centerlineSegments.find((segment) => segment.id === selectedSegmentId);
     const editableTagOptions = Array.from(new Set([...tagOptions, ...(selectedSegment?.tags ?? [])]));
 
     const selectedSample = useMemo(() => {
@@ -958,100 +1067,6 @@ const CircuitMaps = () => {
                     </div>
                 </div>
 
-                {mapView === 'centerline' && (
-                    <div className="circuit-maps__section">
-                        <Text className="circuit-maps__label">Segments</Text>
-                        <Text size="2" className="circuit-maps__muted">
-                            Each segment has one range, one or more tags, and an optional name. Select its start and end in lap direction, then choose tags and add a name. Click a segment to edit it. Changes are saved with the map when you press Save.
-                        </Text>
-                        {tagOptionsState === 'loading' && <Text size="2">Loading tags...</Text>}
-                        {tagOptionsState === 'error' && (
-                            <>
-                                <Text role="alert" size="2" className="circuit-maps__error">Unable to load centerline tags.</Text>
-                                <Button variant="soft" onClick={() => setTagOptionsRetry((previous) => previous + 1)}>Retry loading tags</Button>
-                            </>
-                        )}
-                        {tagOptionsState === 'ready' && tagOptions.length === 0 && <Text size="2">No centerline tags available.</Text>}
-                        <Button
-                            variant="soft"
-                            disabled={isTagEditingDisabled || tagOptionsState !== 'ready' || tagOptions.length === 0 || getSamplesForMode(samplesByMode, 'middle_line').length < 2}
-                            onClick={() => {
-                                clearRangeSelection();
-                                setSelectedPoint(null);
-                                setIsSelectingRange(true);
-                            }}
-                        >
-                            Select range
-                        </Button>
-                        {isSelectingRange && (
-                            <form className="circuit-maps__tag-form" onSubmit={saveSegment}>
-                                <Text role="status" size="2">
-                                    {!selectedRange ? 'Click the range start on the centerline.'
-                                        : selectedRange.end_position === null ? 'Click a different point for the range end.'
-                                            : formatRange(selectedRange.start_position, selectedRange.end_position)}
-                                </Text>
-                                {selectedRange?.end_position != null && (
-                                    <>
-                                        <Button type="button" size="1" variant="outline" disabled={isTagEditingDisabled} onClick={() => {
-                                            setSelectedRange({ start_position: selectedRange.end_position!, end_position: selectedRange.start_position });
-                                        }}>Swap start/end</Button>
-                                        <Text as="label" htmlFor="circuit-map-segment-name" size="2">Segment name (optional)</Text>
-                                        <TextField.Root
-                                            id="circuit-map-segment-name"
-                                            aria-label="Segment name"
-                                            placeholder="e.g. Turn 1"
-                                            value={segmentName}
-                                            maxLength={120}
-                                            disabled={isTagEditingDisabled}
-                                            onChange={(event) => setSegmentName(event.target.value)}
-                                        />
-                                        <CheckboxGroup.Root
-                                            aria-label="Segment tags"
-                                            value={tagLabels}
-                                            disabled={isTagEditingDisabled || tagOptionsState !== 'ready'}
-                                            onValueChange={setTagLabels}
-                                        >
-                                            {editableTagOptions.map((label) => <CheckboxGroup.Item key={label} value={label}>{label}</CheckboxGroup.Item>)}
-                                        </CheckboxGroup.Root>
-                                        <Button type="submit" disabled={isTagEditingDisabled || tagOptionsState !== 'ready' || tagLabels.length === 0 || tagLabels.some((label) => !editableTagOptions.includes(label))}>{selectedSegmentId ? 'Update segment' : 'Add segment'}</Button>
-                                    </>
-                                )}
-                                <Button type="button" variant="soft" color="gray" onClick={clearRangeSelection}>Cancel selection</Button>
-                            </form>
-                        )}
-                        <div className="circuit-maps__tag-list" aria-label="Centerline segments">
-                            {centerlineSegments.length === 0 && <Text size="2" className="circuit-maps__muted">No segments yet.</Text>}
-                            {centerlineSegments.map((segment) => (
-                                <div key={segment.id} className="circuit-maps__tag-row">
-                                    <button
-                                        type="button"
-                                        className={`circuit-maps__tag-button${selectedSegmentId === segment.id ? ' circuit-maps__tag-button--active' : ''}`}
-                                        aria-pressed={selectedSegmentId === segment.id}
-                                        disabled={isTagEditingDisabled}
-                                        onClick={() => {
-                                            clearRangeSelection();
-                                            setSelectedPoint(null);
-                                            setSelectedSegmentId(segment.id);
-                                            setSelectedRange({ start_position: segment.start_position, end_position: segment.end_position });
-                                            setSegmentName(segment.name || '');
-                                            setTagLabels(segment.tags);
-                                            setIsSelectingRange(true);
-                                        }}
-                                    >
-                                        {segment.name && <span>{segment.name}</span>}
-                                        <span>{segment.tags.join(', ')}</span>
-                                        <span className="circuit-maps__muted">{formatRange(segment.start_position, segment.end_position)}</span>
-                                    </button>
-                                    <Button size="1" color="red" variant="soft" aria-label={`Remove segment ${segment.name || segment.tags.join(', ')}`} disabled={isTagEditingDisabled} onClick={() => {
-                                        setCenterlineSegments((previous) => previous.filter((item) => item.id !== segment.id));
-                                        if (selectedSegmentId === segment.id) clearRangeSelection();
-                                    }}><TrashIcon /></Button>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                )}
-
                 {error ? (
                     <div className="circuit-maps__section">
                         <Text role="alert" size="2" className="circuit-maps__error">{error}</Text>
@@ -1131,15 +1146,140 @@ const CircuitMaps = () => {
                 <Tabs.Content value={mapView} ref={canvasWrapRef} className="circuit-maps__canvas-wrap">
                     <canvas
                         ref={canvasRef}
-                        className={`circuit-maps__canvas${isPanning ? ' circuit-maps__canvas--panning' : ''}`}
+                        className={`circuit-maps__canvas${isPanning ? ' circuit-maps__canvas--panning' : ''}${isRangeHandleHovered ? ' circuit-maps__canvas--range-handle' : ''}${isDraggingRange ? ' circuit-maps__canvas--range-dragging' : ''}`}
                         aria-label={mapView === 'centerline' ? 'Centerline map' : 'Bounded map'}
-                        title="Drag to move the map. Click a point to select it."
+                        title={mapView === 'centerline' ? 'Drag a range start or end handle to adjust it. Drag elsewhere to move the map. Click a point to select it.' : 'Drag to move the map. Click a point to select it.'}
                         onPointerDown={handlePointerDown}
                         onPointerMove={handlePointerMove}
                         onPointerUp={handlePointerUp}
                         onPointerCancel={handlePointerCancel}
                         onLostPointerCapture={handlePointerCancel}
+                        onPointerLeave={() => { if (!mapDragRef.current) setIsRangeHandleHovered(false); }}
                     />
+
+                    {mapView === 'centerline' && (
+                        <details className="circuit-maps__segment-panel" open>
+                            <summary className="circuit-maps__segment-panel-heading circuit-maps__label">Segments</summary>
+                            <div className="circuit-maps__segment-panel-content">
+                                <Text size="2" className="circuit-maps__muted">
+                                    Each segment has one range, one or more tags, and an optional name. Select its start and end on the map or enter lap percentages, then choose tags and add a name. Ranges follow lap direction and can cross start/finish. Click a segment to edit it, then drag its S (start) or E (end) handle to adjust the range. Press Add segment or Update segment to apply your edits, then Save to save the map.
+                                </Text>
+                                {tagOptionsState === 'loading' && <Text size="2">Loading tags...</Text>}
+                                {tagOptionsState === 'error' && (
+                                    <>
+                                        <Text role="alert" size="2" className="circuit-maps__error">Unable to load centerline tags.</Text>
+                                        <Button variant="soft" onClick={() => setTagOptionsRetry((previous) => previous + 1)}>Retry loading tags</Button>
+                                    </>
+                                )}
+                                {tagOptionsState === 'ready' && tagOptions.length === 0 && <Text size="2">No centerline tags available.</Text>}
+                                <Button
+                                    variant="soft"
+                                    disabled={isTagEditingDisabled || tagOptionsState !== 'ready' || tagOptions.length === 0 || getSamplesForMode(samplesByMode, 'middle_line').length < 2}
+                                    onClick={() => {
+                                        clearRangeSelection();
+                                        setSelectedPoint(null);
+                                        setIsSelectingRange(true);
+                                    }}
+                                >
+                                    Select range
+                                </Button>
+                                {isSelectingRange && (
+                                    <form className="circuit-maps__tag-form" onSubmit={saveSegment}>
+                                        <Text id="circuit-map-range-status" role="status" size="2">
+                                            {rangeError || (!selectedRange ? 'Click the range start on the centerline or enter its percentage below.'
+                                                : selectedRange.end_position === null ? 'Click a different point for the range end or enter its percentage below.'
+                                                    : formatRange(selectedRange.start_position, selectedRange.end_position))}
+                                        </Text>
+                                        <Text as="label" htmlFor="circuit-map-range-start" size="2">Range start (%)</Text>
+                                        <TextField.Root
+                                            id="circuit-map-range-start"
+                                            aria-label="Range start (%)"
+                                            aria-describedby="circuit-map-range-status"
+                                            aria-invalid={Boolean(rangeError)}
+                                            type="number"
+                                            inputMode="decimal"
+                                            min={0}
+                                            max={100}
+                                            step="any"
+                                            required
+                                            value={rangeInputs.start.value}
+                                            disabled={isTagEditingDisabled}
+                                            onChange={(event) => setRangeInputs({ ...rangeInputs, start: { value: event.target.value, position: parseRangePosition(event.target.value) } })}
+                                        />
+                                        <Text as="label" htmlFor="circuit-map-range-end" size="2">Range end (%)</Text>
+                                        <TextField.Root
+                                            id="circuit-map-range-end"
+                                            aria-label="Range end (%)"
+                                            aria-describedby="circuit-map-range-status"
+                                            aria-invalid={Boolean(rangeError)}
+                                            type="number"
+                                            inputMode="decimal"
+                                            min={0}
+                                            max={100}
+                                            step="any"
+                                            required
+                                            value={rangeInputs.end.value}
+                                            disabled={isTagEditingDisabled}
+                                            onChange={(event) => setRangeInputs({ ...rangeInputs, end: { value: event.target.value, position: parseRangePosition(event.target.value) } })}
+                                        />
+                                        <Button type="button" size="1" variant="outline" disabled={isTagEditingDisabled || selectedRange?.end_position == null} onClick={() => {
+                                            setRangeInputs({ start: rangeInputs.end, end: rangeInputs.start });
+                                        }}>Swap start/end</Button>
+                                        <Text as="label" htmlFor="circuit-map-segment-name" size="2">Segment name (optional)</Text>
+                                        <TextField.Root
+                                            id="circuit-map-segment-name"
+                                            aria-label="Segment name"
+                                            placeholder="e.g. Turn 1"
+                                            value={segmentName}
+                                            maxLength={120}
+                                            disabled={isTagEditingDisabled}
+                                            onChange={(event) => setSegmentName(event.target.value)}
+                                        />
+                                        <CheckboxGroup.Root
+                                            aria-label="Segment tags"
+                                            value={tagLabels}
+                                            disabled={isTagEditingDisabled || tagOptionsState !== 'ready'}
+                                            onValueChange={setTagLabels}
+                                        >
+                                            {editableTagOptions.map((label) => <CheckboxGroup.Item key={label} value={label}>{label}</CheckboxGroup.Item>)}
+                                        </CheckboxGroup.Root>
+                                        <Button type="submit" disabled={isTagEditingDisabled || selectedRange?.end_position == null || tagOptionsState !== 'ready' || tagLabels.length === 0 || tagLabels.some((label) => !editableTagOptions.includes(label))}>{selectedSegmentId ? 'Update segment' : 'Add segment'}</Button>
+                                        <Button type="button" variant="soft" color="gray" onClick={clearRangeSelection}>Cancel selection</Button>
+                                    </form>
+                                )}
+                                <div className="circuit-maps__tag-list" aria-label="Centerline segments">
+                                    {centerlineSegments.length === 0 && <Text size="2" className="circuit-maps__muted">No segments yet.</Text>}
+                                    {centerlineSegments.map((segment) => (
+                                        <div key={segment.id} className="circuit-maps__tag-row">
+                                            <button
+                                                type="button"
+                                                className={`circuit-maps__tag-button${selectedSegmentId === segment.id ? ' circuit-maps__tag-button--active' : ''}`}
+                                                aria-pressed={selectedSegmentId === segment.id}
+                                                disabled={isTagEditingDisabled}
+                                                onClick={() => {
+                                                    clearRangeSelection();
+                                                    setSelectedPoint(null);
+                                                    setSelectedSegmentId(segment.id);
+                                                    setRangeInputs({ start: createRangeInput(segment.start_position), end: createRangeInput(segment.end_position) });
+                                                    setSegmentName(segment.name || '');
+                                                    setTagLabels(segment.tags);
+                                                    setIsSelectingRange(true);
+                                                }}
+                                            >
+                                                {segment.name && <span>{segment.name}</span>}
+                                                <span>{segment.tags.join(', ')}</span>
+                                                <span className="circuit-maps__muted">{formatRange(segment.start_position, segment.end_position)}</span>
+                                            </button>
+                                            <Button size="1" color="red" variant="soft" aria-label={`Remove segment ${segment.name || segment.tags.join(', ')}`} disabled={isTagEditingDisabled} onClick={() => {
+                                                setCenterlineSegments((previous) => previous.filter((item) => item.id !== segment.id));
+                                                if (selectedSegmentId === segment.id) clearRangeSelection();
+                                            }}><TrashIcon /></Button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </details>
+                    )}
 
                     <div className="circuit-maps__zoom" role="group" aria-label="Map zoom">
                         <Button size="1" variant="soft" aria-label="Zoom out" title="Zoom out"

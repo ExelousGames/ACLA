@@ -163,6 +163,45 @@
     cursor: grabbing;
 }
 
+.circuit-maps__canvas--range-handle {
+    cursor: pointer;
+}
+
+.circuit-maps__canvas--range-dragging {
+    cursor: grabbing;
+}
+
+.circuit-maps__segment-panel {
+    position: absolute;
+    top: 72px;
+    right: 16px;
+    width: 320px;
+    max-width: calc(100% - 32px);
+    max-height: calc(100% - 144px);
+    overflow: auto;
+    overscroll-behavior: contain;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: var(--lp-radius-sm);
+    background: rgba(6, 10, 14, 0.94);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    backdrop-filter: blur(10px);
+}
+
+.circuit-maps__segment-panel-heading {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 12px;
+    background: #0a0e14;
+    cursor: pointer;
+}
+
+.circuit-maps__segment-panel-content {
+    display: grid;
+    gap: 10px;
+    padding: 0 12px 12px;
+}
+
 .circuit-maps__selection {
     position: absolute;
     left: 16px;

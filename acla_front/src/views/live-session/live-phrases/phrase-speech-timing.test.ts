@@ -82,20 +82,71 @@ it('caps both closure and speech preparation at the fixed three-second forecast'
     expect(entered.events[0]).toMatchObject({ sentence: 'Turn', speech: { preparationTimeMs: 8000 } });
 });
 
-it('waits for the one-second Steering parent before applying the child speech preparation time', () => {
+it.each([400, 2000])('uses the %s ms audio forecast for Steering entry and speaks immediately', (durationMs) => {
     const definition = PHRASE_DEFINITIONS.find(({ referenceCue }) => referenceCue === 'steering')!;
     const { map, reference } = steeringCornerFixture();
     const sample = { Static_track: 'test', Static_car_model: 'car', Physics_speed_kmh: 36,
+        Physics_brake: 0, Physics_gas: 0 };
+    const engine = prepare(definition, durationMs);
+    engine.receiveMap(map, 0, reference);
+    const entryPosition = 0.27 - durationMs / 100000;
+    const waiting = engine.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: entryPosition - 0.0001 }), 1000);
+    expect(waiting.events).toEqual([]);
+    expect(waiting.state.path).toEqual(['root']);
+    const scheduled = engine.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: entryPosition + 0.0001 }), 1001);
+    expect(scheduled.events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1001,
+        speech: { durationMs, preparationTimeMs: durationMs, reactionAllowanceMs: 0 } })]);
+    expect(scheduled.state.path).toEqual(['root', 'Steering', 'say phrase']);
+    engine.speechStarted(1, 1100);
+    expect(engine.evaluate(1300).state.current).toBe('say phrase');
+    expect(engine.speechFinished(1, 1400).state.path).toEqual(['root', 'Steering']);
+});
+
+it.each(['brake', 'throttle'] as const)('lets the %s parent admit a phrase using its own longer audio forecast', (pedal) => {
+    const definition: PhraseDefinition = { ...phrase, id: `reference-${pedal}`, referenceCue: pedal,
+        conditions: [new PhraseCondition('referencePedalZone', '=', pedal)] };
+    const { reference } = steeringCornerFixture();
+    reference.y.forEach((row, index) => { row[pedal === 'brake' ? 4 : 5] = index >= 21 && index < 40 ? 0.8 : 0; });
+    const engine = prepare(definition, 2000);
+    engine.receiveMap(null, 0, reference);
+    const sample = { Static_track: 'test', Static_car_model: 'car', Physics_speed_kmh: 36, Physics_brake: 0.8, Physics_gas: 0.8 };
+    const waiting = engine.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: 0.1799 }), 1000);
+    expect(waiting.events).toEqual([]);
+    const entered = engine.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: 0.1801 }), 1001);
+    expect(entered.events).toEqual([expect.objectContaining({ ruleId: definition.id, timestamp: 1001 })]);
+    expect(entered.state.current).toBe('say phrase');
+});
+
+it('speaks on a brief throttle match inside the audio window before applying the active zone exit', () => {
+    const definition: PhraseDefinition = { ...phrase, id: 'reference-throttle', referenceCue: 'throttle',
+        conditions: [new PhraseCondition('referencePedalZone', '=', 'throttle')] };
+    const { reference } = steeringCornerFixture();
+    // Throttle spans 200–210 m; the 2 s forecast ends at 215 m, beyond this zone.
+    reference.y.forEach((row, index) => {
+        row[5] = index === 21 ? 0.8 : 0;
+        row[4] = index >= 22 && index < 40 ? 0.8 : 0;
+    });
+    const engine = prepare(definition, 2000);
+    engine.receiveMap(null, 0, reference);
+    const sample = { Static_track: 'test', Static_car_model: 'car', Physics_speed_kmh: 36,
+        Physics_brake: 0, Physics_gas: 0, Graphics_normalized_car_position: 0.195 };
+    const entered = engine.receiveTelemetry(frame(sample), 1000);
+    expect(entered.events).toEqual([expect.objectContaining({ ruleId: definition.id, timestamp: 1000 })]);
+    expect(entered.state.path).toEqual(['root', 'Throttle zone', definition.name, 'say phrase']);
+    expect(engine.speechFinished(entered.events[0].id, 1001).state.path).toEqual(['root']);
+});
+
+it('uses only the current frame for entry until the phrase audio duration is prepared', () => {
+    const definition = PHRASE_DEFINITIONS.find(({ referenceCue }) => referenceCue === 'steering')!;
+    const { map, reference } = steeringCornerFixture();
+    const engine = new PhraseEngine([definition]);
+    engine.setSpeechDurations(new Map());
+    engine.receiveMap(map, 0, reference);
+    const sample = { Static_track: 'test', Static_car_model: 'car', Physics_speed_kmh: 36,
         Physics_brake: 0, Physics_gas: 0, Graphics_normalized_car_position: 0.2601 };
-    const short = prepare(definition, 400), long = prepare(definition, 2000);
-    for (const engine of [short, long]) engine.receiveMap(map, 0, reference);
-    expect(long.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: 0.246 }), 500).events).toHaveLength(0);
-    expect(long.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: 0.251 }), 600).state.path).toEqual(['root']);
-    expect(short.receiveTelemetry(frame(sample), 1000).events).toHaveLength(0);
-    const scheduled = long.receiveTelemetry(frame(sample), 1000);
-    expect(scheduled.events).toEqual([expect.objectContaining({ sentence: 'Turn', expiresAt: 3000,
-        speech: { durationMs: 2000, preparationTimeMs: 2000, reactionAllowanceMs: 0 } })]);
-    long.speechStarted(1, 1100);
-    expect(long.evaluate(1300).state.current).toBe('say phrase');
-    expect(long.speechFinished(1, 1400).state.path).toEqual(['root', 'Steering']);
+    expect(engine.receiveTelemetry(frame(sample), 1000).state.path).toEqual(['root']);
+    const instance = getPhraseActions(definition)[0].phrases[0].createInstance();
+    engine.setSpeechDurations(new Map([[instance.cacheKey, 2000]]));
+    expect(engine.receiveTelemetry(frame(sample), 1001).events)
+        .toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1001 })]);
 });

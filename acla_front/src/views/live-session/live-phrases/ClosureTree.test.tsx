@@ -132,3 +132,72 @@ it('supports keyboard tabs, empty directories and returning from a removed direc
     expect(screen.getByRole('heading', { name: 'root' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Go back one level' })).toBeDisabled();
 });
+
+it('shows direct exit alternatives and live grouped conditions from serialized snapshots without inspecting predicates', () => {
+    type Context = { released: boolean; safe?: boolean };
+    const exitPredicate = jest.fn(({ released, safe }: Context) => released && safe === true);
+    const parentExit = Action.exitToParent<Context>(describeCondition(exitPredicate, ({ released, safe }) => [{
+        description: 'Release requirements', conditionFit: released && safe === true, inputMissing: safe === undefined,
+        conditions: [
+            { description: 'Speech released', conditionFit: released, inputMissing: false },
+            { description: 'Safe to leave', conditionFit: safe === true, inputMissing: safe === undefined, connector: 'and' },
+        ],
+    }]));
+    const rootExit = Action.exitToRoot<Context>(describeCondition(() => false, 'Emergency exit requested'));
+    const ordinary = new Action<Context>('exit to root', 'An ordinary action with an exit-like name.', jest.fn(),
+        describeCondition(() => false, 'Ordinary action requirement'));
+    const nested = new Closure<Context>('nested', 'Nested scope.', () => false, [
+        Action.exitToRoot(describeCondition(() => false, 'Nested exit requirement')),
+    ]);
+    const state = new State(new Closure<Context>('root', 'Root.', () => true, [
+        new Closure('guide', 'Guide.', describeCondition(() => true, 'Guide is eligible'), [parentExit, rootExit, ordinary, nested]),
+    ]));
+    state.step({ released: false, safe: false });
+    const snapshot = () => JSON.parse(JSON.stringify(state.snapshot()));
+    const view = render(<ClosureTree node={snapshot()} />);
+    fireEvent.click(screen.getByLabelText('guide closure'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+    expect(screen.getByText('Entry conditions')).toBeVisible();
+    expect(screen.getByRole('list', { name: 'guide conditions' })).toHaveTextContent('Guide is eligible');
+    expect(screen.getByText('Exit conditions')).toBeVisible();
+    const exits = within(screen.getByRole('list', { name: 'guide exit conditions' }));
+    expect(exits.getByText('OR')).toBeVisible();
+    const parent = within(exits.getByRole('group', { name: 'guide exit 1: exit to parent' }));
+    expect(parent.getByRole('list', { name: 'guide exit 1: exit to parent conditions' })).toBeVisible();
+    expect(parent.getByRole('group', { name: 'Condition group' })).toBeVisible();
+    expect(parent.getByText('AND')).toBeVisible();
+    expect(parent.getAllByText('Not met')).toHaveLength(3);
+    expect(exits.getByRole('group', { name: 'guide exit 2: exit to root' })).toHaveTextContent('Emergency exit requested');
+    expect(exits.queryByText('Ordinary action requirement')).not.toBeInTheDocument();
+    expect(exits.queryByText('Nested exit requirement')).not.toBeInTheDocument();
+    expect(exitPredicate).toHaveBeenCalledTimes(1);
+
+    state.step({ released: true, safe: false });
+    view.rerender(<ClosureTree node={snapshot()} />);
+    expect(screen.getByRole('tab', { name: 'Conditions' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('heading', { name: 'guide' })).toBeVisible();
+    expect(within(parent.getByText('Speech released').closest('li')!).getByText('Met')).toBeVisible();
+    expect(exitPredicate).toHaveBeenCalledTimes(2);
+
+    state.step({ released: true });
+    view.rerender(<ClosureTree node={snapshot()} />);
+    expect(within(parent.getByText('Safe to leave').closest('li')!).getByText('Missing input')).toBeVisible();
+    expect(exitPredicate).toHaveBeenCalledTimes(3);
+});
+
+it('shows an empty exit state for closures and keeps action conditions separate', () => {
+    const action = new Action('exit to root', 'An ordinary action.', jest.fn(), describeCondition(() => false, 'Action ready'));
+    const state = new State(new Closure('root', 'Root.', () => true, [action]));
+    render(<ClosureTree node={JSON.parse(JSON.stringify(state.snapshot()))} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+    expect(screen.getByText('Exit conditions')).toBeVisible();
+    expect(screen.getByText('No exit conditions.')).toBeVisible();
+    expect(screen.queryByRole('list', { name: 'root exit conditions' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Contents 1' }));
+    fireEvent.click(screen.getByLabelText('root action 1: exit to root'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+    expect(screen.getByText('Action conditions')).toBeVisible();
+    expect(screen.getByRole('list', { name: 'root action 1: exit to root conditions' })).toHaveTextContent('Action ready');
+    expect(screen.queryByText('Entry conditions')).not.toBeInTheDocument();
+    expect(screen.queryByText('Exit conditions')).not.toBeInTheDocument();
+});

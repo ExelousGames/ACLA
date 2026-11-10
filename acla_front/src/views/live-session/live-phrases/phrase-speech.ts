@@ -12,6 +12,7 @@ export function getPhraseSpeechInstances(phrases: readonly PhraseDefinition[] = 
 /** Request the complete speech batch at startup. Playback must only read the resulting cache. */
 export async function loadAllPhraseSpeech(
     instances: readonly PhraseInstance[], packs: Map<string, TtsPack>, signal: AbortSignal,
+    onPrepared?: () => void,
 ): Promise<{ complete: boolean; errors: unknown[] }> {
     const errors: unknown[] = [];
     // Serialize model work, but submit the full catalog through this single entry point.
@@ -22,6 +23,7 @@ export async function loadAllPhraseSpeech(
             const pack = await synthesizeProsodyTts(instance.curves, instance.inputValues, instance.speech, signal, true);
             if (signal.aborted) throw new DOMException('Speech generation was cancelled.', 'AbortError');
             packs.set(instance.cacheKey, pack);
+            onPrepared?.();
         } catch (error) {
             if (signal.aborted) throw error;
             errors.push(error);

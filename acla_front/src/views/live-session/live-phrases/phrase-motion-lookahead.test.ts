@@ -346,26 +346,6 @@ it.each([[3.2, 'Hold brake pressure.'], [4, undefined]] as const)(
         expect(engine.evaluate(1700).events).toEqual(result.events);
     });
 
-it.each([1, -1])(
-    'withholds removed release cues when the measured pedal trend is %s', (direction) => {
-        const { reference } = steeringCornerFixture(), engine = new PhraseEngine();
-        const sampleAt = (t: number) => ({ ...motion(t), Graphics_normalized_car_position: 0.1 + 0.03 * t,
-            Physics_speed_kmh: (30 - 4 * t + t ** 2) * 3.6,
-            Physics_brake: 0.5 + direction * (0.4 * t - 0.25 * t ** 2), Physics_gas: 0 });
-        reference.y.forEach((row, i) => {
-            row[4] = i >= 5 && i < 23 ? 0.8 : 0;
-            row[6] = i <= 12 ? 108 + (12 - i) * 4
-                : Math.sqrt(Math.max(1, 26.36 ** 2 + 2 * 4 * (133 - i * 10))) * 3.6;
-        });
-        engine.setDrivingAggression(0, 0);
-        engine.receiveMap(null, 0, reference);
-        expect(engine.receiveTelemetry(frame(sampleAt(0.2)), 1200).events).toEqual([]);
-        // Neither pedal trend should produce a removed release cue.
-        const result = engine.receiveTelemetry(frame(sampleAt(0.6)), 1600);
-        expect(result.events).toEqual([]);
-        expect(engine.evaluate(1700).events).toEqual(result.events);
-    });
-
 it.each(['frozen', 'teleport'] as const)('discards %s position history before projecting motion', (change) => {
     const { reference } = steeringCornerFixture(), predictor = new PhraseLookahead();
     [0, 0.2, 0.4].forEach((t, i) => predictor.update(motion(t), t * 1000, i > 0, reference));

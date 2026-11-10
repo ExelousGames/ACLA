@@ -9,7 +9,7 @@ import type { LiveSessionHandle } from '../LiveSessionView';
 import type { TtsPack } from 'components/tts';
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import { audioManager, type PlaybackHandle } from 'services/audio';
-import { PHRASE_DEFINITIONS, PhraseEngine, PhraseSnapshot, conditionsMatch, type PhraseEvent } from './phrase-engine';
+import { PHRASE_DEFINITIONS, PhraseEngine, PhraseSnapshot, type PhraseEvent } from './phrase-engine';
 import { LivePhraseOverlay } from './LivePhraseOverlay';
 import { copyPhraseMap, copyPhraseReference, MAX_DRIVING_CAUTION, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
 import { createPhraseMapContext } from './phrase-map-context';
@@ -86,7 +86,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         let playback: PlaybackHandle | null = null;
         let pendingVoice: PhraseEvent | null = null;
         let pendingInstance: PhraseInstance | null = null;
-        let speechPrepared = false;
+        let speechPreparationFinished = false;
         let lastVoiceEventId = 0;
         const discardPendingVoice = () => {
             const event = pendingVoice;
@@ -95,11 +95,10 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             if (event?.speech) engine.speechFinished(event.id, Date.now(), true);
         };
         const playReadyVoice = () => {
-            if (controller.signal.aborted || !speechPrepared || !pendingVoice || !pendingInstance) return;
-            if (playback?.isActive()) return;
+            if (controller.signal.aborted || !pendingVoice || !pendingInstance) return;
             const pack = voicePacks.current.get(pendingInstance.cacheKey);
             if (!pack) {
-                discardPendingVoice();
+                if (speechPreparationFinished) discardPendingVoice();
                 return;
             }
             // Consume the event even if live chat rejects or interrupts its audio.
@@ -124,15 +123,16 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                     setSpeechLevel(0);
                     if (outcome.status === 'failed') setVoiceError(outcome.error.message);
                     if (event.speech) publish(engine.speechFinished(event.id, Date.now(), outcome.status !== 'completed'));
-                    playReadyVoice();
                 },
             });
         };
         // All variants are requested here; telemetry and playback never request speech.
-        void loadAllPhraseSpeech(speechCatalog, voicePacks.current, controller.signal).then(({ complete, errors }) => {
-            if (controller.signal.aborted) return;
-            speechPrepared = true;
+        void loadAllPhraseSpeech(speechCatalog, voicePacks.current, controller.signal, () => {
             updateSpeechDurations();
+            playReadyVoice();
+        }).then(({ complete, errors }) => {
+            if (controller.signal.aborted) return;
+            speechPreparationFinished = true;
             setSpeechStatus(complete ? 'Ready' : 'Incomplete');
             if (errors.length) setVoiceError(errors.map((error) => error instanceof Error ? error.message : String(error)).join('; '));
             playReadyVoice();
@@ -168,21 +168,10 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 lastVoiceEventId = event.id;
                 pendingVoice = event;
                 pendingInstance = eventInstance(event);
+                // Entry conditions already passed in the engine. Playback only needs
+                // the prepared clip; the shared audio manager handles interruption.
+                playReadyVoice();
             }
-            // Turn uses the entered Steering scope; corrections also require the current direction.
-            if (!next.telemetryReady || (pendingVoice?.speech?.releaseAt !== undefined && pendingVoice.speech.startedAt === undefined)
-                || (pendingVoice?.steeringPhase !== undefined
-                && !next.state.path.includes('Steering'))
-                || (pendingVoice?.brakeRelease
-                    ? next.referenceBrakeReleaseRate === undefined || !next.state.path.includes('Steering')
-                    : pendingVoice?.steeringDirection !== undefined
-                    ? next.referenceSteeringDirection !== pendingVoice.steeringDirection || !next.state.path.includes('Steering')
-                    : !next.closures.some((rule) => rule.id === pendingVoice?.ruleId
-                        && (pendingVoice.speech ? rule.status === 'Active' && conditionsMatch(rule.conditions)
-                            : pendingVoice.expiresAt !== undefined ? conditionsMatch(rule.conditions) : rule.status === 'Active')))) {
-                discardPendingVoice();
-            }
-            playReadyVoice();
         };
         updateAggression.current = (value) => publish(engine.setDrivingAggression(value, Date.now()));
         publish(engine.evaluate(Date.now()));

@@ -622,9 +622,7 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                 describeCondition((context, state) => {
                     if (isSpeechPending(context, state)) return false;
                     const prepared = context.forPhrase?.(phrase, action.id) ?? context;
-                    return (!phrase.referenceCue || phrase.movementDirection || action.conditions
-                        || prepared.guidance[phrase.referenceCue] !== undefined)
-                    && measureAction(prepared, action.id, action.conditions)
+                    return measureAction(prepared, action.id, action.conditions)
                     && (phrase.referenceCue === 'steering' && action.sentence === SLOWLY_RELEASE_BRAKE
                         ? state.getExecution(say[0]).status === 'completed' : state.current === state.closure) && context.emit;
                 },
@@ -675,7 +673,7 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                         // Either driving exit rearms Steering; acceleration also gates re-entry.
                         if (memory) memory.armed = true;
                         state.exitToRoot();
-                    }, steeringExitCondition(), { priority: 1 })] : []), ...children, ...parentSay, ...(phrase.referenceCue === 'steering' ? [] : [(phrase.referenceCue
+                    }, steeringExitCondition(), { priority: 1, exitTarget: 'root' })] : []), ...children, ...parentSay, ...(phrase.referenceCue === 'steering' ? [] : [(phrase.referenceCue
                     ? Action.exitToParent : Action.exitToRoot)(describeCondition<PhraseContext>((context, state) =>
                     parentSay.some((action) => state.getExecution(action).status === 'completed'
                         && !context.speechPending?.(action.metadata.id!)),
@@ -1252,6 +1250,7 @@ export class PhraseEngine {
             },
         };
         const forecasts = new Map<string, PhraseContext>();
+        const activePath = this.state.path;
         const forecastAt = (timeMs: number): PhraseContext => {
             const horizon = Math.max(0, Math.min(REFERENCE_LOOKAHEAD_MS, timeMs));
             const measurements = activeMeasurements();
@@ -1299,9 +1298,12 @@ export class PhraseEngine {
             // More brake deliberately keeps its current measured-state hold.
             if (phrase.referenceCue === 'moreBrake') return forecastAt(0);
             if (phrase.movementDirection) return context;
-            const preparationTimeMs = actionId && this.speechDurations
-                ? this.speechLeadMs(actionId) : phrase.preparationTimeMs ?? CLOSURE_PREPARATION_MS;
-            if (!actionId && this.state.path.some((node) => node.metadata.id === phrase.id)) return forecastAt(preparationTimeMs);
+            // The first spoken action determines when its phrase enters. Once entered,
+            // speech is immediately eligible; only explicit child conditions may defer it.
+            const preparationTimeMs = this.speechDurations
+                ? this.speechLeadMs(actionId ?? `${phrase.id}:say:0`) : phrase.preparationTimeMs ?? CLOSURE_PREPARATION_MS;
+            // Newly admitted phrases keep their matching entry frame for the first action.
+            if (!actionId && activePath.some((node) => node.metadata.id === phrase.id)) return forecastAt(preparationTimeMs);
             const action = actionId ? this.speechActions.get(actionId) : undefined;
             return withinPreparation(preparationTimeMs, (forecast) => {
                 const conditions = action?.conditions ?? phrase.conditions;
@@ -1312,9 +1314,14 @@ export class PhraseEngine {
             });
         };
         context.forZone = (zone) => {
-            const preparationTimeMs = this.phraseClosures.get(`reference-${zone}-zone`)!.preparationTimeMs;
+            const cues = zone === 'brake' ? brakeCues : throttleCues;
+            // A fixed parent window must not hide a child's longer speech forecast.
+            const preparationTimeMs = this.speechDurations
+                ? Math.max(0, ...this.phrases.filter((phrase) => phrase.referenceCue && cues.includes(phrase.referenceCue))
+                    .map((phrase) => this.speechLeadMs(`${phrase.id}:say:0`)))
+                : this.phraseClosures.get(`reference-${zone}-zone`)!.preparationTimeMs;
             const boundary = forecastAt(preparationTimeMs);
-            if (this.state.path.some((node) => node.metadata.id === `reference-${zone}-zone`)
+            if (activePath.some((node) => node.metadata.id === `reference-${zone}-zone`)
                 || (forecastAt(0).referencePedalZone === zone && boundary.referencePedalZone !== zone)) return boundary;
             return withinPreparation(preparationTimeMs, (forecast) => forecast.referencePedalZone === zone
                 && !(zone === 'brake' && forecast.guidance.brakeZoneExit === true));

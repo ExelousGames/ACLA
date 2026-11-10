@@ -43,6 +43,8 @@ export interface NodeInspection {
 export interface NodeMetadata<Context> {
     preparationTimeMs?: number;
     id?: string;
+    /** Identifies an exit action for inspection without relying on its name. */
+    exitTarget?: 'root' | 'parent';
     inspect?: (context: Context, state: State<Context>) => NodeInspection;
     fields?: NodeInspection['fields'];
     /** Higher-priority siblings are checked first when no child closure is active. */
@@ -66,6 +68,7 @@ export interface NodeSnapshot {
     conditions: readonly ConditionSnapshot[];
     fields: NonNullable<NodeInspection['fields']>;
     execution?: ActionExecution;
+    exitTarget?: 'root' | 'parent';
     children: NodeSnapshot[];
 }
 
@@ -114,12 +117,12 @@ export class Action<Context> implements Evaluable<Context> {
 
     static exitToRoot<Context>(condition?: Condition<Context>, metadata: NodeMetadata<Context> = {}): Action<Context> {
         return new Action('exit to root', 'Return to the root closure so another guide can be selected.',
-            (_context, state) => state.exitToRoot(), condition, metadata);
+            (_context, state) => state.exitToRoot(), condition, { ...metadata, exitTarget: 'root' });
     }
 
     static exitToParent<Context>(condition?: Condition<Context>, metadata: NodeMetadata<Context> = {}): Action<Context> {
         return new Action('exit to parent', 'Return to the enclosing closure.',
-            (_context, state) => state.exitToParent(), condition, metadata);
+            (_context, state) => state.exitToParent(), condition, { ...metadata, exitTarget: 'parent' });
     }
 }
 
@@ -242,6 +245,7 @@ export class State<Context> {
                     ...node.metadata.fields, ...inspection?.fields,
                 },
                 ...(execution ? { execution } : {}),
+                ...(node instanceof Action && node.metadata.exitTarget ? { exitTarget: node.metadata.exitTarget } : {}),
                 children: node instanceof Closure ? node.children.map((child, index) => visit(child, `${nodeId}/${index}`)) : [],
             };
         };

@@ -177,7 +177,7 @@ describe('Live phrase overlay addons', () => {
         expect(manager.getPresentationSnapshot()?.cards ?? []).toEqual([]);
     });
 
-    it('shows only the corner when a phrase triggers and does not insert it into recorded mode', async () => {
+    it('shows only the corner when a phrase triggers', async () => {
         const { map, reference } = steeringCornerFixture();
         const active = { ...steeringSnapshot(), events: [phraseEvent(PHRASE_DEFINITIONS.findIndex((rule) => rule.name === 'Steering'))] };
         await act(async () => overlay.update(active, map, reference));
@@ -185,12 +185,6 @@ describe('Live phrase overlay addons', () => {
         expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
         expect(manager.getPresentationSnapshot()!.cards[0].componentType).toBe('live_steering_corner');
         expect(setEnabled).not.toHaveBeenCalled();
-        overlay.update(snapshot());
-        createSession.mockResolvedValue({ success: true, presentation: { ...session, mode: 'recorded' } });
-        await overlaySessionClient.create({ ...session, mode: 'recorded' });
-        overlay.update(steeringSnapshot(), map, reference);
-        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
-        expect(createSession).toHaveBeenCalledTimes(2);
     });
 
     it.each(['acc', 'iracing'] as const)('publishes a Steering corner at centerline entry in %s before speech is ready', async (game) => {

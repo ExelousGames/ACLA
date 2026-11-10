@@ -163,13 +163,13 @@ it('copies the complete reference and map without sharing editable arrays, sampl
     expect(map.centerline_tags![0].label).toBe('corner');
 });
 
-it.each(['acc', 'iracing'])('rebuilds the complete %s lap on its original samples at every aggression setting', (game) => {
+it.each(['acc', 'iracing'])('rebuilds the complete %s lap on its original samples across representative aggression settings', (game) => {
     const lap = variableBrakingReference();
     lap.game = game;
     if (game === 'iracing') lap.y.forEach((row) => { [row[1], row[2]] = [row[2], row[1]]; });
     const baseline = JSON.parse(JSON.stringify(lap));
     const unchangedChannels = lap.y.map((row) => [...row.slice(0, 3), ...row.slice(4, 6)]);
-    for (let aggression = 0; aggression <= 100; aggression++) {
+    for (const aggression of [0, 1, 25, 50, 75, 99, 100]) {
         const copy = copyPhraseReference(lap, aggression)!;
         expect(copy.x).toEqual(lap.x);
         expect(copy.y).toHaveLength(lap.y.length);

@@ -133,7 +133,7 @@ it('plays the additional chicane action using its own prepared sentence', async 
     }
 });
 
-it('schedules by the trimmed audible duration and waits through pauses and buffering for playback completion', async () => {
+it('uses the trimmed duration for entry forecasts and waits through pauses and buffering for playback completion', async () => {
     synthesize.mockImplementation(async (_curves, _inputs, { text }) => ({
         ...pack(text), durationMs: 1400, speechBounds: { startMs: 0, endMs: 1400 },
     }));
@@ -249,20 +249,6 @@ it('changes driving aggression without restarting detection or speech preparatio
     }
 });
 
-it('shows speech as ready only after the final TTS clip is received', async () => {
-    const lastSentence = sentences[sentences.length - 1];
-    let resolve!: (value: TtsPack) => void;
-    const pending = new Promise<TtsPack>((done) => { resolve = done; });
-    synthesize.mockImplementation(async (_curves, _inputs, { text }) => text === lastSentence ? pending : pack(text));
-    const view = mount();
-    await view.enable();
-    expect(synthesize).toHaveBeenCalledTimes(sentences.length);
-    expect(screen.getByText('Speech: Preparing')).toHaveAttribute('data-ready', 'false');
-    expect(screen.queryByText('Speech: Ready')).not.toBeInTheDocument();
-    await act(async () => { resolve(pack(lastSentence)); });
-    expect(screen.getByText('Speech: Ready')).toHaveAttribute('data-ready', 'true');
-});
-
 it.each(['left', 'right'])('prepares every variant and plays the chosen %s movement wording once', async (direction) => {
     const chosen = `Bring it to the ${direction}.`;
     synthesize.mockImplementation(async (_curves, _inputs, { text }) => ({ ...pack(text), durationMs: 500 }));
@@ -287,8 +273,8 @@ it.each(['left', 'right'])('prepares every variant and plays the chosen %s movem
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
 
-it.each(['on time', 'one millisecond late', 'expired', 'clip too long', 'condition cleared'])(
-    'plays a still-valid prepared reference cue without a deadline gate: %s', async (state) => {
+it.each(['one millisecond late', 'expired', 'clip too long', 'condition cleared', 'action released'])(
+    'plays a triggered reference cue without rechecking its duration, deadline or conditions: %s', async (state) => {
         const snapshot = new PhraseEngine().evaluate(Date.now());
         snapshot.telemetryReady = true;
         const rule = snapshot.closures.find((item) => item.id === 'reference-brake')!;
@@ -309,12 +295,16 @@ it.each(['on time', 'one millisecond late', 'expired', 'clip too long', 'conditi
                 rule.conditions = [new PhraseCondition('speed', '>=', 20, 0)];
                 await act(async () => { view.frame(); });
             }
+            if (state === 'action released') {
+                snapshot.events[0].speech = { durationMs: 1200, reactionAllowanceMs: 0, releaseAt: Date.now() };
+                await act(async () => { view.frame(); });
+            }
             await act(async () => { resolve({ ...pack('Brake.'), durationMs: state === 'clip too long' ? 1300 : 1200 }); });
-            expect(audio.play).toHaveBeenCalledTimes(state === 'condition cleared' ? 0 : 1);
+            expect(audio.play).toHaveBeenCalledTimes(1);
         } finally { receive.mockRestore(); }
     });
 
-it('waits for an earlier phrase to finish before playing the next cue', async () => {
+it('immediately submits the next triggered cue and lets the audio manager replace the earlier phrase', async () => {
     synthesize.mockImplementation(async (_curves, _inputs, { text }) => ({ ...pack(text), durationMs: text === 'Turn' ? 400 : 3000 }));
     const snapshot = new PhraseEngine().evaluate(Date.now());
     snapshot.telemetryReady = true;
@@ -337,16 +327,19 @@ it('waits for an earlier phrase to finish before playing the next cue', async ()
         snapshot.events = [...snapshot.events, { id: 2, ruleId: rule.id, sentence: 'Turn', timestamp: Date.now(),
             expiresAt: Date.now() + 1500, steeringPhase: 'prepare' }];
         await act(async () => { view.frame(); });
-        expect(play).toHaveBeenCalledTimes(1);
-        expect(play.mock.results[0].value.outcome).toBeUndefined();
-        await act(async () => { audio.media[0].dispatchEvent(new Event('ended')); });
         expect(play).toHaveBeenCalledTimes(2);
-        expect(play.mock.results[0].value.outcome).toEqual({ status: 'completed' });
+        expect(play.mock.results[0].value.outcome).toEqual({ status: 'replaced' });
+        expect(play.mock.results[1].value.isActive()).toBe(true);
         expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack('Turn').audioDataUrl }));
+        await act(async () => { audio.media[0].dispatchEvent(new Event('ended')); view.frame(); });
+        expect(play).toHaveBeenCalledTimes(2);
+        expect(play.mock.results[1].value.isActive()).toBe(true);
+        view.unmount();
+        expect(play.mock.results[1].value.outcome).toEqual({ status: 'cancelled' });
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
 
-it.each(['reference starts turn-in', 'reference leaves turn-in', 'Steering exits'])('checks a queued Turn when %s', async (state) => {
+it.each(['reference starts turn-in', 'reference leaves turn-in', 'Steering exits'])('plays an entered Turn without revalidation when %s', async (state) => {
     const snapshot = new PhraseEngine().evaluate(Date.now());
     snapshot.telemetryReady = true;
     snapshot.referenceSteeringPhase = state === 'reference starts turn-in' ? 'prepare' : 'turn';
@@ -368,12 +361,12 @@ it.each(['reference starts turn-in', 'reference leaves turn-in', 'Steering exits
         if (state === 'Steering exits') snapshot.state.path = ['root'];
         else snapshot.referenceSteeringPhase = state === 'reference starts turn-in' ? 'turn' : 'prepare';
         await act(async () => { view.frame(); resolve({ ...pack('Turn'), durationMs: 400 }); });
-        expect(audio.play).toHaveBeenCalledTimes(state === 'Steering exits' ? 0 : 1);
+        expect(audio.play).toHaveBeenCalledTimes(1);
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
 
 it.each(['still wide', 'aligned', 'opposite', 'missing direction', 'exited Steering', 'stale telemetry'])(
-    'checks a queued direction correction when %s, independently of Steering entry conditions', async (state) => {
+    'plays an entered direction correction without revalidation when %s', async (state) => {
         const snapshot = new PhraseEngine().evaluate(Date.now());
         snapshot.telemetryReady = true;
         snapshot.referenceSteeringDirection = 'right';
@@ -398,7 +391,7 @@ it.each(['still wide', 'aligned', 'opposite', 'missing direction', 'exited Steer
             if (state === 'exited Steering') snapshot.state.path = ['root'];
             if (state === 'stale telemetry') snapshot.telemetryReady = false;
             await act(async () => { view.frame(); resolve({ ...pack('Stay right a bit'), durationMs: 400 }); });
-            expect(audio.play).toHaveBeenCalledTimes(state === 'still wide' ? 1 : 0);
+            expect(audio.play).toHaveBeenCalledTimes(1);
         } finally { receive.mockRestore(); receiveVision.mockRestore(); }
     });
 
@@ -447,7 +440,7 @@ it.each(['ready', 'disable', 'reset', 'delayed', 'condition cleared', 'unmount']
         if (state === 'condition cleared') act(() => view.frame(0));
         if (state === 'unmount') view.unmount();
         await act(async () => { resolve(pack(sentence)); });
-        expect(audio.play).toHaveBeenCalledTimes(state === 'ready' || state === 'delayed' ? 1 : 0);
+        expect(audio.play).toHaveBeenCalledTimes(state === 'ready' || state === 'delayed' || state === 'condition cleared' ? 1 : 0);
         if (state === 'disable') expect(screen.getByText('Speech: Disabled')).toHaveAttribute('data-ready', 'false');
         if (state === 'ready') {
             await act(async () => { view.frame(); });
@@ -534,40 +527,77 @@ it('loads an explicit batch once, preserving different settings and reusing iden
     const variants = [phrase.createInstance({ inputs: { energy: 0.25 } }), phrase.createInstance({ inputs: { energy: 0.75 } })];
     const packs = new Map<string, TtsPack>();
     const signal = new AbortController().signal;
-    expect(await loadAllPhraseSpeech([...variants, variants[0]], packs, signal)).toEqual({ complete: true, errors: [] });
-    await loadAllPhraseSpeech(variants, packs, signal);
+    const cachedCounts: number[] = [];
+    const prepared = jest.fn(() => { cachedCounts.push(packs.size); });
+    expect(await loadAllPhraseSpeech([...variants, variants[0]], packs, signal, prepared)).toEqual({ complete: true, errors: [] });
+    await loadAllPhraseSpeech(variants, packs, signal, prepared);
     expect(synthesize).toHaveBeenCalledTimes(2);
+    expect(prepared).toHaveBeenCalledTimes(2);
+    expect(cachedCounts).toEqual([1, 2]);
     expect(packs.size).toBe(2);
     expect(synthesize).toHaveBeenCalledWith(variants[1].curves, [0, 0.75, 0], variants[1].speech, signal, true);
 });
 
-it.each(['ready', 'release ended', 'exited Steering', 'stale telemetry'])(
-    'waits for the complete startup batch and checks pending brake-release validity: %s', async (state) => {
-        const snapshot = new PhraseEngine().evaluate(Date.now());
-        snapshot.telemetryReady = true;
-        snapshot.state.path = ['root', 'Steering'];
-        snapshot.referenceBrakeReleaseRate = 0.25;
-        const rule = snapshot.closures.find((item) => item.id === 'reference-steering')!;
-        rule.conditions = [new PhraseCondition('speed', '>=', 20, 36)];
-        const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
-        const instance = instances.find((item) => item.speech.text === SLOWLY_RELEASE_BRAKE && item.inputs.timing === 1)!;
-        let resolve!: (value: TtsPack) => void;
-        const pending = new Promise<TtsPack>((done) => { resolve = done; });
-        synthesize.mockImplementation(async (_curves, _inputs, { text }) => text === sentences[sentences.length - 1] ? pending : pack(text));
-        try {
-            const view = mount();
-            await view.enable();
-            snapshot.events = [{ id: 1, ruleId: rule.id, sentence: SLOWLY_RELEASE_BRAKE, instance, timestamp: Date.now(),
-                expiresAt: Date.now() + 4000, steeringPhase: 'prepare', brakeRelease: true }];
-            await act(async () => { view.frame(); view.frame(); });
-            expect(synthesize).toHaveBeenCalledTimes(sentences.length);
-            expect(audio.play).not.toHaveBeenCalled();
-            if (state === 'release ended') snapshot.referenceBrakeReleaseRate = undefined;
-            if (state === 'exited Steering') snapshot.state.path = ['root'];
-            if (state === 'stale telemetry') snapshot.telemetryReady = false;
-            await act(async () => { view.frame(); resolve(pack(sentences[sentences.length - 1])); });
-            expect(audio.play).toHaveBeenCalledTimes(state === 'ready' ? 1 : 0);
-            expect(synthesize).toHaveBeenCalledTimes(sentences.length);
-        } finally { receive.mockRestore(); }
-    },
-);
+it('plays a waiting phrase as soon as its own clip is ready while later clips still prepare', async () => {
+    const snapshot = new PhraseEngine().evaluate(Date.now());
+    snapshot.events = [{ id: 1, ruleId: 'reference-brake', sentence: 'Brake.', timestamp: Date.now() }];
+    const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
+    const receiveVision = jest.spyOn(PhraseEngine.prototype, 'receiveVision');
+    let resolveBrake!: (value: TtsPack) => void;
+    let resolveLast!: (value: TtsPack) => void;
+    const brake = new Promise<TtsPack>((resolve) => { resolveBrake = resolve; });
+    const last = new Promise<TtsPack>((resolve) => { resolveLast = resolve; });
+    const lastSentence = sentences[sentences.length - 1];
+    synthesize.mockImplementation(async (_curves, _inputs, { text }) =>
+        text === 'Brake.' ? brake : text === lastSentence ? last : pack(text));
+    const play = jest.spyOn(audioManager, 'play');
+    const durations = jest.spyOn(PhraseEngine.prototype, 'setSpeechDurations');
+    try {
+        const view = mount();
+        await view.enable();
+        receiveVision.mockReturnValue(snapshot);
+        await act(async () => { view.frame(); });
+        expect(play).not.toHaveBeenCalled();
+        await act(async () => { resolveBrake(pack('Brake.')); });
+        expect(play).toHaveBeenCalledTimes(1);
+        expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack('Brake.').audioDataUrl }));
+        expect(synthesize).toHaveBeenCalledTimes(sentences.length);
+        expect(screen.getByText('Speech: Preparing')).toHaveAttribute('data-ready', 'false');
+        expect(screen.queryByText('Speech: Ready')).not.toBeInTheDocument();
+        const preparedDurations = durations.mock.calls[durations.mock.calls.length - 1][0];
+        expect(preparedDurations.get(instances.find((instance) => instance.speech.text === 'Brake.')!.cacheKey)).toBe(3000);
+        expect(preparedDurations.has(instances[instances.length - 1].cacheKey)).toBe(false);
+        await act(async () => { view.frame(); resolveLast(pack(lastSentence)); });
+        expect(screen.getByText('Speech: Ready')).toHaveAttribute('data-ready', 'true');
+        expect(play).toHaveBeenCalledTimes(1);
+    } finally { receive.mockRestore(); receiveVision.mockRestore(); durations.mockRestore(); }
+});
+
+it('plays cached brake-release audio during startup without replaying it when preparation completes', async () => {
+    const snapshot = new PhraseEngine().evaluate(Date.now());
+    snapshot.telemetryReady = true;
+    snapshot.state.path = ['root', 'Steering'];
+    snapshot.referenceBrakeReleaseRate = 0.25;
+    const rule = snapshot.closures.find((item) => item.id === 'reference-steering')!;
+    rule.conditions = [new PhraseCondition('speed', '>=', 20, 36)];
+    const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
+    const receiveVision = jest.spyOn(PhraseEngine.prototype, 'receiveVision');
+    const instance = instances.find((item) => item.speech.text === SLOWLY_RELEASE_BRAKE && item.inputs.timing === 1)!;
+    let resolve!: (value: TtsPack) => void;
+    const pending = new Promise<TtsPack>((done) => { resolve = done; });
+    synthesize.mockImplementation(async (_curves, _inputs, { text }) => text === sentences[sentences.length - 1] ? pending : pack(text));
+    try {
+        const view = mount();
+        await view.enable();
+        receiveVision.mockReturnValue(snapshot);
+        snapshot.events = [{ id: 1, ruleId: rule.id, sentence: SLOWLY_RELEASE_BRAKE, instance, timestamp: Date.now(),
+            expiresAt: Date.now() + 4000, steeringPhase: 'prepare', brakeRelease: true }];
+        await act(async () => { view.frame(); view.frame(); });
+        expect(synthesize).toHaveBeenCalledTimes(sentences.length);
+        expect(screen.getByText('Speech: Preparing')).toBeInTheDocument();
+        expect(audio.play).toHaveBeenCalledTimes(1);
+        await act(async () => { view.frame(); resolve(pack(sentences[sentences.length - 1])); });
+        expect(audio.play).toHaveBeenCalledTimes(1);
+        expect(synthesize).toHaveBeenCalledTimes(sentences.length);
+    } finally { receive.mockRestore(); receiveVision.mockRestore(); }
+});
