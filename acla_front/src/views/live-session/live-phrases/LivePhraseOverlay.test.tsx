@@ -138,10 +138,19 @@ describe('Live phrase overlay addons', () => {
         state: { current: 'Steering', description: '', kind: 'closure', path: ['root', 'Steering'] },
     });
 
-    it('inserts the corner immediately on closure entry without a speech event and retains it until exit', async () => {
+    it.each([0, 50, 99.9])('keeps the reference corner visible without directional speech at %s%% aggression', async (aggression) => {
         await overlaySessionClient.create(session);
         const { map, reference } = steeringCornerFixture();
-        const active = steeringSnapshot();
+        const engine = new PhraseEngine();
+        engine.setDrivingAggression(aggression, 0);
+        engine.receiveMap(map, 0, reference);
+        const sample = { Static_track: 'test', Static_car_model: 'car', Graphics_normalized_car_position: 0.28,
+            Physics_speed_kmh: 36, Physics_brake: 0, Physics_gas: 0 };
+        const active = engine.receiveTelemetry({ type: 'frame', sample, sampleIndex: 0, telemetryStatus: 2,
+            sessionGeneration: 0, streamGeneration: 0, committedSampleCount: 0,
+            update: { type: 'frame', game: 'acc', sample, sequence: 1, committedCount: 0, committedSequence: 0 } }, 1000);
+        expect(active.state.path).toContain('Steering');
+        expect(active.events).toEqual([]);
         overlay.update(active, map, reference);
         expect(manager.getPresentationSnapshot()!.cards).toEqual([expect.objectContaining({
             componentName: 'live-phrases:steering-corner', componentType: 'live_steering_corner', status: 'focus',

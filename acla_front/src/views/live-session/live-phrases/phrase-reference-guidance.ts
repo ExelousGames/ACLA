@@ -8,7 +8,7 @@ import { compareSteeringDirection, type ReferenceSteeringDirection, type Steerin
 export const REFERENCE_POSITION_MAX_AGE_MS = 500;
 export const REFERENCE_CUE_COOLDOWN_MS = 2000;
 export const REFERENCE_LOOKAHEAD_MS = 3000;
-export type ReferenceCue = 'brake' | 'moreBrake' | 'releaseBrake' | 'holdBrake' | 'steering' | 'throttle' | 'moreThrottle' | 'lessThrottle' | ReferenceMovementCue;
+export type ReferenceCue = 'brake' | 'moreBrake' | 'releaseBrake' | 'holdBrake' | 'steering' | 'cornerExit' | 'throttle' | 'moreThrottle' | 'lessThrottle' | ReferenceMovementCue;
 export type ReferencePedalZone = 'brake' | 'throttle' | 'none';
 export type ReferenceSteeringPhase = 'prepare' | 'turn';
 export interface ReferencePositionSample { capturedAt: number; lateralOffset: number }
@@ -23,6 +23,8 @@ export type ReferenceGuidance = Partial<Record<ReferenceCue, number>> & {
     /** Reference speed-profile acceleration at the evaluation position, in m/s². */
     acceleration?: number;
     steeringPhase?: ReferenceSteeringPhase;
+    /** A loaded reference arc or its final steering release, not a geometric apex estimate. */
+    cornerPhase?: 'hold' | 'unwind';
     steeringDirection?: ReferenceSteeringDirection;
     /** Current turn limited to centerline corner bounds; null means outside a turn, undefined means unavailable. */
     steeringRange?: { start: number; end: number; turnSign: -1 | 1 } | null;
@@ -44,7 +46,9 @@ interface Reference {
     directionChanges: { start: number; end: number; turnSign: -1 | 1 }[];
     brakeResponses: { distance: number; decelerationPerBrake: number }[];
     throttleResponses: { distance: number; accelerationPerThrottle: number }[];
+    cornerProfiles: Map<string, CornerSteeringProfile | null>;
 }
+interface CornerSteeringProfile { points: { distance: number; steering: number }[]; peak: number; peakEnd: number }
 interface PedalZone { pedal: 'brake' | 'throttle'; start: number; length: number; seconds?: number }
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 // Preserve in-range distances exactly so a sample boundary cannot round back into the previous interval.
@@ -195,7 +199,7 @@ function prepare(lap: TopLapReferenceEntry): Reference | null {
             steeringChanges.shift();
         }
         const reference: Reference = { points, length, brakeEvents, pedalZones, steeringChanges,
-            directionChanges: [], brakeResponses, throttleResponses };
+            directionChanges: [], brakeResponses, throttleResponses, cornerProfiles: new Map() };
         prepareTrajectoryDirections(reference);
         return reference;
     };
@@ -383,6 +387,55 @@ function steeringTrajectoryAt(reference: Reference, ranges: Reference['direction
     return { heading, remainingDistance };
 }
 
+/** Infer the loaded arc and final unwind from steering, never from map fractions or acceleration. */
+function cornerSteeringPhase(reference: Reference, range: NonNullable<ReferenceGuidance['steeringRange']>,
+    distance: number): ReferenceGuidance['cornerPhase'] {
+    const key = `${range.start}:${range.end}:${range.turnSign}`;
+    if (!reference.cornerProfiles.has(key)) {
+        const span = range.end - range.start;
+        const points = [
+            { distance: 0, steering: targetsAt(reference, range.start).steering },
+            ...reference.points.map((point) => ({ distance: wrap(point.distance - range.start, reference.length), steering: point.steering }))
+                .filter((point) => point.distance > 0 && point.distance < span).sort((a, b) => a.distance - b.distance),
+            { distance: span, steering: targetsAt(reference, range.end).steering },
+        ];
+        let profile: CornerSteeringProfile | null = null;
+        if (points.every((point) => point.steering !== undefined && point.steering * range.turnSign >= -0.01)) {
+            const signed = points.map((point) => ({ distance: point.distance, steering: point.steering! * range.turnSign }));
+            const peak = Math.max(...signed.map((point) => point.steering));
+            if (peak >= thresholds.steering) {
+                // The last near-maximum sample prevents an early release between equal apex loads.
+                const peakEnd = signed.filter((point) => point.steering >= peak - 0.01).slice(-1)[0].distance;
+                profile = { points: signed, peak, peakEnd };
+            }
+        }
+        reference.cornerProfiles.set(key, profile);
+    }
+    const profile = reference.cornerProfiles.get(key);
+    if (!profile) return undefined;
+    const at = wrap(distance - range.start, reference.length), { points, peak, peakEnd } = profile;
+    const amountAt = (position: number) => {
+        let index = 1;
+        while (index < points.length - 1 && points[index].distance < position) index++;
+        const a = points[index - 1], b = points[index];
+        return a.steering + (b.steering - a.steering) * (position - a.distance) / (b.distance - a.distance);
+    };
+    const amount = amountAt(at);
+    const before = amountAt(Math.max(0, at - 5)), after = amountAt(Math.min(range.end - range.start, at + 5));
+    if (amount >= thresholds.steering && amount >= peak - 0.02
+        && at >= 5 && range.end - range.start - at >= 5
+        && Math.abs(before - amount) <= 0.01 && Math.abs(after - amount) <= 0.01) return 'hold';
+    if (at <= peakEnd || amount < 0.04 || peak - amount < 0.02 || amount - after < 0.005) return undefined;
+    // Reject a temporary release before a later, lower peak as well as equal/higher peaks.
+    let minimum = amount;
+    for (const point of points) {
+        if (point.distance <= at) continue;
+        if (point.steering > minimum + 0.02) return undefined;
+        minimum = Math.min(minimum, point.steering);
+    }
+    return 'unwind';
+}
+
 /** Every reference steering segment from the current position to the throttle endpoint must be flat. */
 function remainingThrottleZoneIsSteady(reference: Reference, distance: number, zone: PedalZone): boolean {
     if (reference.points[0].steering === undefined) return false;
@@ -530,6 +583,12 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
         : directionChanges.find(({ start, end }) => wrap(distance - start, reference.length) < end - start) ?? null;
     const directionActive = result.steeringRange !== undefined && cornerTurnSign !== undefined && cornerBounds
         && result.steeringRange?.turnSign === cornerTurnSign;
+    if (directionActive && result.steeringRange) {
+        result.cornerPhase = cornerSteeringPhase(reference, result.steeringRange, distance);
+        const currentBrake = sample.Physics_brake;
+        if (result.cornerPhase === 'unwind' && liveSpeed >= 20 && result.braking === false
+            && finite(currentBrake) && currentBrake >= 0 && currentBrake < thresholds.brake) result.cornerExit = now + 1500;
+    }
     const cornerEnd = cornerBounds ? distanceAt(reference, cornerBounds.end) : undefined;
     // Before turn-in, use the first matching range ahead in the mapped corner, even after reference braking ends.
     const exitRange = directionActive ? result.steeringRange : cornerEnd !== undefined && directionChanges.find(({ start, turnSign }) =>

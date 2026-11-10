@@ -23,6 +23,11 @@ corner's direction-change range needs no adjustment. The reference trajectory
 geometry remains unchanged. Direction-change checks are limited
 to the start and end of each centerline corner, excluding entry-position adjustments.
 
+Directional speech is enabled only at **100% (Direction guide)**: **Turn in**,
+**Hold line**, **More left/right**, **Unwind**, and all straight-line movement
+variants. Below 100%, Steering still supplies the reference-corner overlay and
+pedal coaching, including **Ease brake**, without waiting for a silent turn cue.
+
 The map below Driving aggression previews the adjusted reference even with detection
 disabled. Orange marks decreasing-speed intervals and blue marks the same trajectory
 direction-change ranges used by guidance, including overlaps and start/finish crossings.
@@ -75,8 +80,8 @@ speed, controls, geometry and pedal responses. Missing active-reference data
 never falls back to the original lap. Live Map's source reference is retained
 only to identify replacement laps and validate position-model captures.
 
-Reference-line guidance has four root closures: **Brake zone**, **Throttle zone**,
-**Steering**, and **Turn to reference line**.
+Reference-line guidance has five root closures: **Brake zone**, **Throttle zone**,
+**Steering**, **Corner exit**, and **Turn to reference line**.
 Generic closures check their own conditions within `preparationTimeMs`, defaulting
 to one second. The look-ahead retains a shared buffer of **31 prediction frames**, from 0
 through 3000 ms at 100 ms intervals. Every closure and phrase can inspect the full
@@ -207,7 +212,7 @@ current or upcoming mapped corner direction; other reference cues do not require
 `expert_optimal_speed`, `expert_optimal_steering`, `expert_optimal_brake`, and `expert_optimal_throttle`
 channels at the decision position projected from `Graphics_normalized_car_position`. Steering becomes eligible from the start
 of a continuous trajectory direction-change range within a mapped centerline corner,
-and **Turn** speaks immediately on entry.
+and **Turn in** speaks immediately on entry when Driving aggression is 100%.
 It uses intended speed to locate reference brake rises from zero up to
 1.8 s ahead, including start/finish crossings, to suppress **Throttle** before braking.
 **Throttle** and **More throttle** compare the applied pedal with demand for the adjusted speed profile
@@ -297,7 +302,7 @@ direction-change entry condition independently of the target speed.
 **Steering** is a root closure. Direction-change ranges are clipped to the mapped
 centerline corner's start and end. The decision position must be inside that clipped
 range; turning to adjust the car's position before entry does not qualify.
-Entry becomes eligible as soon as the prepared Turn clip's decision position reaches the start of that
+Entry becomes eligible as soon as the prepared Turn in clip's decision position reaches the start of that
 direction-change range. Its head is the later of the first geometric bend and the
 centerline corner start. A shallow lead-in inside the corner can qualify before the
 turn reaches the confirmation threshold below. A decision point inside the range still qualifies if it skips
@@ -320,8 +325,8 @@ in the same direction. Uniformly near-straight bends below the minimum do not qu
 Direction changes and interpolation wrap across start/finish, including a duplicated
 endpoint; ranges join across that boundary only if the turn qualifies continuously.
 
-**Turn** speaks immediately once per Steering entry, without a reference steering
-threshold. Changes in reference steering do not cancel a triggered **Turn** cue.
+At 100% Driving aggression, **Turn in** speaks immediately once per Steering entry, without a reference steering
+threshold. Changes in reference steering do not cancel a triggered **Turn in** cue.
 Steering captures the corner-limited trajectory direction-change range on entry and
 exits to root when the current measured position reaches its end: the earlier of the curvature
 boundary described above and the centerline corner end. Excluded near-straight tails
@@ -331,7 +336,7 @@ start/finish, or the reference starts gaining speed within the next **200 ms**.
 The acceleration exit checks now and the forecast frames through 200 ms, independently
 of closure preparation and speech duration. Positive acceleration comes from the active
 reference speed profile, not live acceleration or an increase in acceleration while
-still slowing. Either exit can leave **Steering** while **Turn** finishes playing. Positive acceleration in that same
+still slowing. Either exit can leave **Steering** while **Turn in** finishes playing. Positive acceleration in that same
 window also withholds entry, preventing immediate re-entry after an early exit.
 Either exit rearms Steering for the next qualifying range,
 without a timed clear period or entry cooldown. Steering evaluates its own direction-change
@@ -340,15 +345,42 @@ speak once per continuous deviation and rearm when the car realigns.
 
 Reference steering changes, steering smoothing, live steering, orientation, velocity
 and position-model error do not determine the trajectory range. Missing reference steering
-still permits entry, **Turn**, and exit. Missing or invalid reference
+still permits entry, **Turn in** at 100%, and exit. Missing or invalid reference
 speed does not prevent entry or range exit; it only withholds the acceleration exit.
 Future reference speed does not determine direction-change range membership.
 Missing trajectory direction withholds entry and range exit. Missing or stale telemetry withholds speech;
-expired position-model captures do not prevent **Turn**.
+expired position-model captures do not prevent **Turn in**.
 
-After **Turn**, **Slowly release brake** speaks once per Steering entry when the
+At 100% Driving aggression, the spoken corner sequence uses short instructions: **Turn in** to start the turn,
+**Ease brake** when braking should taper, **Hold line** through a stable loaded
+reference arc, and **Unwind** as the reference releases steering. **Hold line**
+also requires the driver's predicted trajectory to be aligned. These are separate
+cues, so a short corner can skip an unsupported intermediate instruction.
+
+**Corner exit** speaks **Unwind** only with evidence of steering release after the
+final substantial peak in the same mapped turn. Acceleration alone does not prove
+the wheel should unwind. Missing or contradictory reference steering suppresses
+these phase cues. The map's fixed entry/middle/exit percentages do not locate an
+apex and are not used as apex calls. At 100%, an eligible exit cue releases Steering
+and prevents a new **Turn in** during that unwind. Below 100%, this exit is disabled
+so coasting through an unwind keeps the reference overlay active. **Unwind** speaks once per reference
+range, including across unloading plateaus; the next distinct corner does not
+inherit a two-second cooldown. Pedal cues also use shorter speech: **Off brake**,
+**Hold brake**, **Squeeze gas**, **More gas**, and **Ease gas**. Pedal closure names
+stay unchanged.
+
+This wording follows the concise directive style in the
+[Porsche Club of America instructor training manual](https://rmr.pca.org/files/Instructors/PCAInstTrng.pdf).
+[Driver61's racing-line guide](https://driver61.com/uni/racing-line/) organizes the
+corner around braking, turn-in, apex and exit; its
+[corner-exit guide](https://driver61.com/uni/corner-exit/) connects opening the steering
+with building throttle. The software applies those principles when supported by
+the active reference, without prescribing a fixed path through every corner.
+
+**Ease brake** speaks once per Steering entry at every aggression setting when the
 driver still applies at least 10% brake and the active phrase reference's deceleration
-is decreasing by more than 0.01 m/s³. The rate comes from the change between adjacent
+is decreasing by more than 0.01 m/s³. At 100%, it follows **Turn in**; below 100%,
+it can speak without a directional cue. The rate comes from the change between adjacent
 reference deceleration intervals divided by their reference travel time; it does not
 use live car speed or brake-pedal release speed. Missing speed data, constant or
 increasing deceleration, and a released brake do not trigger this instruction.
@@ -357,9 +389,9 @@ The phrase instance selects one of four prepared timing inputs: 1 for easing up 
 `curves/slowly-release-brake.json` stretches slower easing more. These conditions
 govern entry; they are not checked again before playing a triggered phrase.
 
-After **Turn**, nested **Stay right a bit** and **Stay left a bit** corrections enter only when
-**Driving aggression = 100** (**Direction guide**). **Turn** remains available at
-every aggression setting. These corrections use the remaining reference curve from
+After **Turn in**, nested **More right** and **More left** corrections enter only when
+**Driving aggression = 100** (**Direction guide**), as do **Turn in** and **Hold line**.
+These corrections use the remaining reference curve from
 the capture's projected reference position through the trimmed end of its continuous Steering
 direction-change range, including start/finish wraparound. Shift its starting point
 left or right using the position model's lateral reference error, then taper that
@@ -383,13 +415,13 @@ plane. ACC supplies forward velocity on Y and body X opposite the model's right
 axis; iRacing supplies forward on Z and right on X. Local vertical velocity is
 included in the rotation for pitched or banked cars. World velocity fields do not
 drive this comparison. The signed angle between normalized velocity and the adjusted
-tangent determines the required correction: **Stay right a bit** or **Stay left a bit**,
+tangent determines the required correction: **More right** or **More left**,
 accounting for ACC's and iRacing's ground-plane conventions in either corner direction.
 The separate 20° angular tolerance keeps small direction errors silent.
 First-order normalized progress determines the preparation point within the three-second forecast. Once that point is selected,
 velocity magnitude and reference speed do not change the endpoint or angular comparison.
 Steering entry and corrections have no minimum live speed.
-After **Turn**, the same direction deviation must persist continuously for **500 ms**
+After **Turn in**, the same direction deviation must persist continuously for **500 ms**
 before its correction can speak. Realignment, a change of correction direction,
 missing or expired inputs, a capture gap over 500 ms, telemetry discontinuity, or leaving
 Steering resets the hold. This hold uses elapsed live time in addition to the existing
@@ -462,7 +494,7 @@ the direction and movement size (for example, “Move to the left”, “Shift t
 left”, or “Bring it to the left”). The position model's car-local X offset selects the side: negative
 is left, positive is right. No reference steering channel is required.
 
-Movement requires the shared decision position to be inside the current
+Movement requires **Driving aggression = 100** and the shared decision position to be inside the current
 Live Map's `straight` or `long straight` centerline bounds, with no overlapping
 corner. Bounds include start/finish wraparound and remain eligible during the
 map's corner-approach phase. An untagged section is not a straight. The aligned
@@ -505,11 +537,11 @@ the thresholds and lead time still need validation during simulator driving.
 
 Only one child closure can be active at each level. An active closure keeps control
 until its own exit action runs, including while waiting for a speech condition.
-Brake zone, Throttle zone, Steering, movement and overtaking closures all wait for
+Brake zone, Throttle zone, Steering, Corner exit, movement and overtaking closures all wait for
 an active sibling to exit. A parent's exit action also waits for its active child
 to return. Pedal cues run only inside their matching zone. Reference prompts
-have no shared spacing delay. Steering entry has no cooldown; other reference closures
-retain their 2 s cooldown.
+have no shared spacing delay. Steering entry has no cooldown; Corner exit speaks once
+per range without a timed cooldown; other reference closures retain their 2 s cooldown.
 **Brake** rearms only after leaving its zone; **Steering** rearms when its captured
 trajectory direction-change range ends or reference acceleration is positive within 200 ms;
 other cues require a 0.5 s clear period before rearming. Short
@@ -675,7 +707,7 @@ lookahead for this estimate is not limited by the normal 150 m / 3% approach ran
 
 Its first child, **Inside the Long Straight**, uses the same driver-position entry,
 exit-to-parent behavior, and exit-speed advice as the child of **One Tight Slow Corner**
-described below. It offers only the “From pervious laps statistic...” phrase, with
+described below. It offers only the “Leave room. Pass on exit.” phrase, with
 the same three conditions, and speaks once per straight visit. Leaving the straight
 returns to **Chicane overtake** so its timed speech actions can run.
 
@@ -684,9 +716,9 @@ less than the prepared action's duration plus any configured reaction allowance 
 Without playback timing, the ETA threshold is 500 ms. Track Vision then selects between two speech actions:
 
 - Opponent on the left before a mapped left turn, or on the right before a mapped right turn:
-  “Go wide in the first turn. then take second apex if possible”.
+  “Go wide. Aim for second apex.”
 - Opponent on the left before a mapped right turn, or on the right before a mapped left turn:
-  “brake early, Hold inside”.
+  “Brake early. Hold inside.”
 
 The upcoming corner's direction
 comes from the same map segment used for the entry ETA. Neither car needs to be
@@ -716,11 +748,11 @@ of corner-approach labels. Missing map or fresh driver position data withholds t
 exit and speech. Inside this child, estimated opponent distance must be at most 2 m
 **and** the opponent must be outside the upcoming turn (at the left edge before a
 right turn, or at the right edge before a left turn) to trigger its **say phrase** action:
-“Opponent didnt defend, overtake from inside is possible here”. The phrase runs
+“Inside pass possible.” The phrase runs
 once per visit; the child stays selected until the driver leaves the straight.
 
 This child also offers:
-“From pervious laps statistic, you generally have better exit speed. long straight after this corner, consider back up a little bit to have space to overtake at exit.”
+“Leave room. Pass on exit.”
 It requires all three conditions: the player's average exit speed for the upcoming
 slow corner is greater than the nearest car ahead's, the estimated opponent gap
 is at most 2 m, and the corner leads onto a mapped `long straight`. The exit
@@ -749,7 +781,7 @@ position data withholds the exit. Corner bounds include start/finish wraparound.
 
 While either child is active, the parent's speech action waits. At the parent,
 opponent in the middle, with the driver at the right edge before a right turn or
-at the left edge before a left turn, triggers “Opponent is defending, Pressure is on”.
+at the left edge before a left turn, triggers “They defend. Stay close.”
 
 Speech can run as soon as its position conditions match; this guide has no extra
 arrival-time delay. The parent exits to root after its defending phrase runs. Chicane overtake
@@ -838,7 +870,7 @@ neutral controls. Set `speechSettings.inputs` for fixed settings, or supply an
 actually speaks. This callback runs once per execution, after choosing the wording;
 it is not called during inspection or catalog preparation. Declare every possible
 override in the action's `preloadSettings`; runtime playback never generates audio.
-**Slowly release brake** uses this mechanism to select its timing from the active
+**Ease brake** uses this mechanism to select its timing from the active
 reference's deceleration change rate.
 
 For explicit startup preparation:

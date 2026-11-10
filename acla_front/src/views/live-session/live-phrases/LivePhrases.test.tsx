@@ -114,7 +114,7 @@ describe('LivePhrases root connection', () => {
         expect(jest.getTimerCount()).toBe(0);
         const catalog = within(screen.getByRole('region', { name: 'Sentence catalog' }));
         PHRASE_DEFINITIONS.filter((rule) => !rule.movementDirection).forEach((rule) => {
-            const zone = rule.referenceCue && rule.referenceCue !== 'steering'
+            const zone = rule.referenceCue && rule.referenceCue !== 'steering' && rule.referenceCue !== 'cornerExit'
                 ? rule.referenceCue.toLowerCase().includes('brake') ? 'Brake zone' : 'Throttle zone' : undefined;
             if (zone) fireEvent.click(catalog.getByLabelText(`${zone} closure`));
             const summary = catalog.getByLabelText(`${rule.name} closure`);
@@ -125,7 +125,11 @@ describe('LivePhrases root connection', () => {
             fireEvent.click(catalog.getByRole('tab', { name: 'Conditions' }));
             const conditions = within(catalog.getByRole('list', { name: `${rule.name} conditions` }));
             expect(conditions.getAllByRole('listitem')).toHaveLength(rule.conditions.length);
-            expect(conditions.getAllByText(zone ? 'Not evaluated' : 'Missing input')).toHaveLength(rule.conditions.length);
+            const knownSettings = rule.conditions.filter((condition) => condition instanceof PhraseCondition
+                && condition.input === 'drivingAggression').length;
+            expect(conditions.getAllByText(zone ? 'Not evaluated' : 'Missing input'))
+                .toHaveLength(rule.conditions.length - (zone ? 0 : knownSettings));
+            if (!zone && knownSettings) expect(conditions.getAllByText('Not met')).toHaveLength(knownSettings);
             conditions.getAllByRole('listitem').forEach((condition) => zone
                 ? expect(condition).not.toHaveAttribute('data-condition-fit')
                 : expect(condition).toHaveAttribute('data-condition-fit', 'false'));
@@ -180,11 +184,12 @@ describe('LivePhrases root connection', () => {
         const exits = within(screen.getByRole('list', { name: 'Steering exit conditions' }));
         expect(exits.getByText('The continuous reference trajectory direction-change range captured on Steering entry has ended')).toBeVisible();
         expect(exits.getByText('Reference acceleration is positive within the next 200 ms')).toBeVisible();
-        expect(exits.getByText('OR')).toBeVisible();
+        expect(exits.getByText('Direction Guide is at 100% and the reference is ready for the Unwind cue')).toBeVisible();
+        expect(exits.getAllByText('OR')).toHaveLength(2);
         fireEvent.click(screen.getByRole('tab', { name: /Contents/ }));
-        expect(screen.getByLabelText('Stay right a bit closure')).toBeVisible();
-        expect(screen.getByLabelText('Stay left a bit closure')).toBeVisible();
-        for (const name of ['Stay right a bit', 'Stay left a bit']) {
+        expect(screen.getByLabelText('More right closure')).toBeVisible();
+        expect(screen.getByLabelText('More left closure')).toBeVisible();
+        for (const name of ['More right', 'More left']) {
             fireEvent.click(screen.getByLabelText(`${name} closure`));
             fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
             expect(screen.getByText('Driving aggression = 100')).toBeVisible();
@@ -196,17 +201,16 @@ describe('LivePhrases root connection', () => {
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         expect(screen.getByText('The continuous reference trajectory direction-change range captured on Steering entry has ended')).toBeVisible();
         fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
-        expect(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })).toHaveLength(2);
+        expect(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })).toHaveLength(3);
         fireEvent.click(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })[1]);
-        expect(screen.getByText('Slowly release brake')).toBeVisible();
+        expect(screen.getByText('Ease brake')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         expect(screen.getByText('Reference deceleration easing rate while braking (m/s³) >= 0.01')).toBeVisible();
         fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         fireEvent.click(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })[0]);
-        expect(screen.getByText('Turn')).toBeVisible();
+        expect(screen.getByText('Turn in')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('Always eligible')).toBeVisible();
-        expect(screen.queryByText('Driving aggression = 100')).not.toBeInTheDocument();
+        expect(screen.getByText('Driving aggression = 100')).toBeVisible();
     });
 
     it('opens small and medium reference movements on both sides, with progress phrases', () => {
@@ -284,7 +288,7 @@ describe('LivePhrases root connection', () => {
         expect(entry.getByText('Upcoming mapped consecutive-corners sequence >= 1')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Contents 4' }));
         fireEvent.click(screen.getByLabelText('Chicane overtake action 2: say phrase'));
-        expect(screen.getByText('Go wide in the first turn. then take second apex if possible')).toBeVisible();
+        expect(screen.getByText('Go wide. Aim for second apex.')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         expect(screen.getByText('Action conditions')).toBeVisible();
         const speechList = screen.getByRole('list', { name: 'Chicane overtake action 2: say phrase conditions' });
@@ -308,7 +312,7 @@ describe('LivePhrases root connection', () => {
         render(<LivePhrases name="live-phrases" />);
         fireEvent.click(screen.getByLabelText('Chicane overtake closure'));
         fireEvent.click(screen.getByLabelText('Chicane overtake action 3: say phrase'));
-        expect(screen.getByText('brake early, Hold inside')).toBeVisible();
+        expect(screen.getByText('Brake early. Hold inside.')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         const list = screen.getByRole('list', { name: 'Chicane overtake action 3: say phrase conditions' });
         expect(within(list).getByText('Opponent estimated time to corner entry (s) < 0.5')).toBeVisible();
@@ -327,7 +331,7 @@ describe('LivePhrases root connection', () => {
         fireEvent.click(screen.getByLabelText('Inside the Long Straight closure'));
         expect(screen.getByLabelText('Inside the Long Straight action 1: exit to parent')).toBeVisible();
         fireEvent.click(screen.getByLabelText('Inside the Long Straight action 2: say phrase'));
-        expect(screen.getByText('From pervious laps statistic, you generally have better exit speed. long straight after this corner, consider back up a little bit to have space to overtake at exit.')).toBeVisible();
+        expect(screen.getByText('Leave room. Pass on exit.')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         const conditions = within(screen.getByRole('list', { name: 'Inside the Long Straight action 2: say phrase conditions' }));
         expect(conditions.getByText('Previous corner exits show the player has better exit speed than the car ahead')).toBeVisible();

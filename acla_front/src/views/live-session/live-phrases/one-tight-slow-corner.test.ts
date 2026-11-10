@@ -9,8 +9,8 @@ import { summarizeDriverCorners } from '../event-log/corner-summary';
 import type { DriverCornerRecord } from '../event-log/CornerRecorder';
 
 const rule = PHRASE_DEFINITIONS.find((phrase) => phrase.id === 'one-tight-slow-corner')!;
-const slipstream = 'Opponent didnt defend, overtake from inside is possible here';
-const defending = 'Opponent is defending, Pressure is on';
+const slipstream = 'Inside pass possible.';
+const defending = 'They defend. Stay close.';
 const exitAdvice = rule.additionalActions![1].sentence;
 const exitHistory = (playerSpeeds = [0.02, 0.03, 0.04], opponentSpeeds = [0.01, 0.02, 0.03]) =>
     summarizeDriverCorners([playerSpeeds, opponentSpeeds].flatMap((speeds, carIndex) => speeds.map((exitSpeed, index): DriverCornerRecord => ({

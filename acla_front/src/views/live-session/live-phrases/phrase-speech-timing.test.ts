@@ -75,11 +75,12 @@ it('caps both closure and speech preparation at the fixed three-second forecast'
     const definition = { ...PHRASE_DEFINITIONS.find(({ referenceCue }) => referenceCue === 'steering')!, preparationTimeMs: 8000 };
     const { map, reference } = steeringCornerFixture();
     const engine = prepare(definition, 8000);
+    engine.setDrivingAggression(100, 0);
     engine.receiveMap(map, 0, reference);
     const sample = { Static_track: 'test', Static_car_model: 'car', Physics_speed_kmh: 36, Physics_brake: 0, Physics_gas: 0 };
     expect(engine.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: 0.2399 }), 1000).events).toEqual([]);
     const entered = engine.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: 0.2401 }), 1001);
-    expect(entered.events[0]).toMatchObject({ sentence: 'Turn', speech: { preparationTimeMs: 8000 } });
+    expect(entered.events[0]).toMatchObject({ sentence: 'Turn in', speech: { preparationTimeMs: 8000 } });
 });
 
 it.each([400, 2000])('uses the %s ms audio forecast for Steering entry and speaks immediately', (durationMs) => {
@@ -88,13 +89,14 @@ it.each([400, 2000])('uses the %s ms audio forecast for Steering entry and speak
     const sample = { Static_track: 'test', Static_car_model: 'car', Physics_speed_kmh: 36,
         Physics_brake: 0, Physics_gas: 0 };
     const engine = prepare(definition, durationMs);
+    engine.setDrivingAggression(100, 0);
     engine.receiveMap(map, 0, reference);
     const entryPosition = 0.27 - durationMs / 100000;
     const waiting = engine.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: entryPosition - 0.0001 }), 1000);
     expect(waiting.events).toEqual([]);
     expect(waiting.state.path).toEqual(['root']);
     const scheduled = engine.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: entryPosition + 0.0001 }), 1001);
-    expect(scheduled.events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1001,
+    expect(scheduled.events).toEqual([expect.objectContaining({ sentence: 'Turn in', timestamp: 1001,
         speech: { durationMs, preparationTimeMs: durationMs, reactionAllowanceMs: 0 } })]);
     expect(scheduled.state.path).toEqual(['root', 'Steering', 'say phrase']);
     engine.speechStarted(1, 1100);
@@ -141,6 +143,7 @@ it('uses only the current frame for entry until the phrase audio duration is pre
     const { map, reference } = steeringCornerFixture();
     const engine = new PhraseEngine([definition]);
     engine.setSpeechDurations(new Map());
+    engine.setDrivingAggression(100, 0);
     engine.receiveMap(map, 0, reference);
     const sample = { Static_track: 'test', Static_car_model: 'car', Physics_speed_kmh: 36,
         Physics_brake: 0, Physics_gas: 0, Graphics_normalized_car_position: 0.2601 };
@@ -148,5 +151,5 @@ it('uses only the current frame for entry until the phrase audio duration is pre
     const instance = getPhraseActions(definition)[0].phrases[0].createInstance();
     engine.setSpeechDurations(new Map([[instance.cacheKey, 2000]]));
     expect(engine.receiveTelemetry(frame(sample), 1001).events)
-        .toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1001 })]);
+        .toEqual([expect.objectContaining({ sentence: 'Turn in', timestamp: 1001 })]);
 });

@@ -34,7 +34,7 @@ describe('live phrase closure tree', () => {
         expect(engine.state.current).toBe(engine.root);
         expect(engine.root.children.map((child) => child.name)).toEqual([
             'Chicane overtake', 'One Tight Slow Corner', 'Slipstream', 'Pressure and a feint',
-            'Brake zone', 'Throttle zone', 'Steering', 'Turn to reference line',
+            'Brake zone', 'Throttle zone', 'Steering', 'Corner exit', 'Turn to reference line',
         ]);
         const snapshot = engine.evaluate(0);
         const brakeZone = snapshot.root.children.find((child) => child.name === 'Brake zone')!;
@@ -809,7 +809,10 @@ describe('vision and Live Map overtaking guides', () => {
         expect(reset.state.path).toEqual(['root']);
         expect(reset.events).toEqual([]);
         expect(reset.closures.every((rule) => rule.conditions.every((condition) => rule.status === 'Not evaluated'
-            ? condition.conditionFit === null && !condition.inputMissing : !condition.conditionFit && condition.inputMissing))).toBe(true);
+            ? condition.conditionFit === null && !condition.inputMissing
+            : condition instanceof PhraseCondition && condition.input === 'drivingAggression'
+                ? condition.conditionFit === false && !condition.inputMissing
+                : !condition.conditionFit && condition.inputMissing))).toBe(true);
         engine.receiveVision(vision(800), 900);
         engine.receiveTelemetry(frame(driving), 1000);
         engine.receiveTelemetry(frame(driving), 1800);

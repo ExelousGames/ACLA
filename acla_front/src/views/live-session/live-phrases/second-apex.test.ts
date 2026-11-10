@@ -7,8 +7,8 @@ import { circuitMap, vision } from './test-fixtures';
 import type { DriverCornerSummary } from '../event-log/corner-summary';
 
 const rule = PHRASE_DEFINITIONS.find((phrase) => phrase.id === 'second-apex')!;
-const sentence = 'Go wide in the first turn. then take second apex if possible';
-const holdInsideSentence = 'brake early, Hold inside';
+const sentence = 'Go wide. Aim for second apex.';
+const holdInsideSentence = 'Brake early. Hold inside.';
 const exitAdvice = PHRASE_DEFINITIONS.find((phrase) => phrase.id === 'one-tight-slow-corner')!.additionalActions![1].sentence;
 const exitHistory = (playerSpeed = 0.03): DriverCornerSummary[] => [playerSpeed, 0.02].map((averageExitSpeed, index) => ({
     carId: String(index + 1), isPlayer: index === 0, cornerId: 'first', cornerName: 'First corner',

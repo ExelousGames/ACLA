@@ -322,7 +322,7 @@ it('does not anticipate a speed reversal from curvature in engine reference comp
     expect(guidance.brake).toBeUndefined();
 });
 
-it.each([[3.2, 'Hold brake pressure.'], [4, undefined]] as const)(
+it.each([[3.2, 'Hold brake.'], [4, undefined]] as const)(
     'compares predicted deceleration with the %s m/s² target at the lookahead position', (required, sentence) => {
         const { reference } = steeringCornerFixture(), engine = new PhraseEngine();
         const sampleAt = (t: number) => ({ ...motion(t), Graphics_normalized_car_position: 0.1 + 0.03 * t,

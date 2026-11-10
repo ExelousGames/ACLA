@@ -1,6 +1,6 @@
 import type { PhraseSettings } from './phrase';
 
-export const SLOWLY_RELEASE_BRAKE = 'Slowly release brake';
+export const SLOWLY_RELEASE_BRAKE = 'Ease brake';
 // A finite set lets every possible delivery be synthesized before live playback.
 // Slower easing of deceleration stretches the release instruction more.
 export const BRAKE_RELEASE_SETTINGS: readonly PhraseSettings[] = [1, 2 / 3, 1 / 3, 0]

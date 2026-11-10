@@ -77,8 +77,8 @@ it.each([200, 2000])('uses the %s ms clip duration for Brake entry and its paren
     } finally { measure.mockRestore(); }
 });
 
-it.each([['Throttle', 0, 0.601875], ['More throttle', 0.3, 0.605625]] as const)(
-    'previews the Throttle parent and %s child using the same position', (name, pedal, boundary) => {
+it.each([['Throttle', 0, 0.601875, 'Squeeze gas.'], ['More throttle', 0.3, 0.605625, 'More gas.']] as const)(
+    'previews the Throttle parent and %s child using the same position', (name, pedal, boundary, sentence) => {
         const lap = referenceLap(), engine = new PhraseEngine();
         engine.receiveMap(null, 0, lap);
         const at = (position: number, now: number) => {
@@ -91,13 +91,13 @@ it.each([['Throttle', 0, 0.601875], ['More throttle', 0.3, 0.605625]] as const)(
         expect(at(boundary - 0.01001, 1002).events).toEqual([]);
         const result = at(boundary - 0.00999, 1003);
         expect(result.state.path).toEqual(['root', 'Throttle zone', name, 'say phrase']);
-        expect(result.events).toEqual([expect.objectContaining({ sentence: `${name}.`, timestamp: 1003 })]);
+        expect(result.events).toEqual([expect.objectContaining({ sentence, timestamp: 1003 })]);
     });
 
 it.each([
-    ['brake', 'Physics_brake', 0.215, 'Brake'],
-    ['throttle', 'Physics_gas', 0.65, 'Throttle'],
-] as const)('uses intended %s pressure to enter its phrase before the measured pedal crosses the threshold', (cue, field, start, name) => {
+    ['brake', 'Physics_brake', 0.215, 'Brake', 'Brake.'],
+    ['throttle', 'Physics_gas', 0.65, 'Throttle', 'Squeeze gas.'],
+] as const)('uses intended %s pressure to enter its phrase before the measured pedal crosses the threshold', (cue, field, start, name, sentence) => {
     const lap = referenceLap(), engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === cue));
     engine.receiveMap(null, 0, lap);
     const at = (t: number) => {
@@ -113,7 +113,7 @@ it.each([
     expect(readReferenceGuidance(measured, capture(lap, measured, 1400), lap, 'acc', 1400)[cue]).toBeUndefined();
     const result = at(0.2);
     expect(result.state.path).toEqual(['root', `${name} zone`, name, 'say phrase']);
-    expect(result.events).toEqual([expect.objectContaining({ sentence: `${name}.`, timestamp: 1200 })]);
+    expect(result.events).toEqual([expect.objectContaining({ sentence, timestamp: 1200 })]);
 });
 
 it('previews Steering and its direction child at the centerline corner start', () => {
@@ -129,12 +129,12 @@ it('previews Steering and its direction child at the centerline corner start', (
     };
     expect(at(0.24499, 1000).events).toEqual([]);
     expect(at(0.25999, 1000).events).toEqual([]);
-    expect(at(0.26001, 1001).events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1001 })]);
+    expect(at(0.26001, 1001).events).toEqual([expect.objectContaining({ sentence: 'Turn in', timestamp: 1001 })]);
     expect(at(0.26002, 1002).events).toHaveLength(1);
     expect(at(0.26002, 1500).events).toHaveLength(1);
     const correction = at(0.26002, 1501);
-    expect(correction.state.path).toEqual(['root', 'Steering', 'Stay right a bit', 'say phrase']);
-    expect(correction.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Stay right a bit']);
+    expect(correction.state.path).toEqual(['root', 'Steering', 'More right', 'say phrase']);
+    expect(correction.events.map(({ sentence }) => sentence)).toEqual(['Turn in', 'More right']);
 });
 
 describe.each([0, 0.7])('Steering exit at the current position (lap offset %s)', (offset) => {
@@ -181,6 +181,7 @@ describe('Steering exit on positive reference acceleration', () => {
         const definition = PHRASE_DEFINITIONS.find(({ referenceCue }) => referenceCue === 'steering')!;
         const engine = new PhraseEngine([definition]);
         // A longer speech lead must not extend the exit's fixed 200 ms window.
+        engine.setDrivingAggression(100, 0);
         const instance = getPhraseActions(definition)[0].phrases[0].createInstance();
         engine.setSpeechDurations(new Map([[instance.cacheKey, 2000]]));
         engine.receiveMap(map, 0, reference);
@@ -189,7 +190,7 @@ describe('Steering exit on positive reference acceleration', () => {
 
         const entered = at(0.27, 1000);
         expect(entered.state.path).toContain('Steering');
-        expect(entered.events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+        expect(entered.events.map(({ sentence }) => sentence)).toEqual(['Turn in']);
         engine.speechStarted(entered.events[0].id, 1000);
         const before = at(0.3 - lead - 0.00001, 1001);
         expect(before.state.path).toContain('Steering');
@@ -261,7 +262,7 @@ describe('Steering exit on positive reference acceleration', () => {
     });
 });
 
-it('previews the Slowly release brake child when reference deceleration is about to ease', () => {
+it('previews the Ease brake child when reference deceleration is about to ease', () => {
     const { reference, map } = steeringCornerFixture();
     reference.y.forEach((row, i) => {
         row[4] = 0.8;
@@ -270,13 +271,14 @@ it('previews the Slowly release brake child when reference deceleration is about
     const engine = new PhraseEngine();
     engine.receiveMap(map, 0, reference);
     const at = (position: number, now: number) => engine.receiveTelemetry(frame({ ...sampleAt(position), Physics_brake: 0.8 }), now);
-    expect(at(0.26001, 1000).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(at(0.26999, 1001).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(at(0.27001, 1002).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Slowly release brake']);
+    expect(at(0.26001, 1000).events).toEqual([]);
+    expect(at(0.26999, 1001).events).toEqual([]);
+    expect(at(0.27001, 1002).events.map(({ sentence }) => sentence)).toEqual(['Ease brake']);
 });
 
 it.each([-4, 8])('previews straight membership for Turn to reference line and its children (offset %s)', (lateral) => {
     const lap = referenceLap(), map = circuitMap(), engine = new PhraseEngine();
+    engine.setDrivingAggression(100, 0);
     map.centerline_segments = [{ id: 'straight', tags: ['straight'], start_position: 0.4, end_position: 0.5 }];
     engine.receiveMap(map, 0, lap);
     const at = (position: number, now: number) => {
@@ -329,7 +331,7 @@ it('keeps capture validation on actual progress and real time while previewing r
     const engine = new PhraseEngine();
     engine.receiveMap(null, 0, lap);
     engine.receiveVision(view, now);
-    expect(engine.receiveTelemetry(frame(sample), now).events.map(({ sentence }) => sentence)).toEqual(['Throttle.']);
+    expect(engine.receiveTelemetry(frame(sample), now).events.map(({ sentence }) => sentence)).toEqual(['Squeeze gas.']);
     const expired = new PhraseEngine();
     expired.receiveMap(null, 0, lap);
     expired.receiveVision(capture(lap, sample, now - 501), now);
