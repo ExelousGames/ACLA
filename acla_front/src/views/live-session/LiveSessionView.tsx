@@ -561,7 +561,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
     }, [liveSession]);
 
 
-    const { restorationError, sessionGame } = liveSession;
+    const { sessionGame } = liveSession;
 
     return (
         <SessionScreenCaptureProvider key={sessionGame ?? 'no-session'}>
@@ -583,11 +583,6 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
                 ) : (
                     <>
                         <LiveSessionGameStatus />
-                        {restorationError && (
-                            <div className="live-session-recovery-error" role="alert">
-                                {restorationError}
-                            </div>
-                        )}
                         <div className="live-session-view__workspace">
                             <LiveTelemetryWorkspace name={OPERATION_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
                         </div>

@@ -19,6 +19,16 @@ const outcome = await playback.finished;
 or `failed` (including an `Error`). `stop()` cancels just that handle. Terminal
 notifications run asynchronously, once, after resources have been released.
 
+URL and WAV callers can supply `onLevel(level, positionMs)` to receive peak output amplitude
+in [0, 1] and the media playback position. This creates a Web Audio analyser sampled every 16 ms while playback
+is running; silence reports zero, and pause/wait resets the level. The meter and
+audio context are disposed with the playback request. Prepared PCM16 TTS clips
+scan forward for the first frame above 0.01 and backward for the last, checking
+every channel. Live Phrases starts and releases when the media position crosses
+those boundaries, so internal silence and buffering cannot end a sentence.
+Silent clips and clips without scanned bounds release on natural completion;
+the latter still use the meter for onset. Callers without `onLevel` retain ordinary media playback.
+
 There is one admitted request per type (`voice`, `music`, `alert`). A higher
 priority, or a newer equal priority, replaces the incumbent. Lower priorities
 are rejected. Other types continue independently. Audible voice multiplies

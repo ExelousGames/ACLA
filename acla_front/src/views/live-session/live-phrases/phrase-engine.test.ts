@@ -41,16 +41,15 @@ describe('live phrase closure tree', () => {
         const throttleZone = snapshot.root.children.find((child) => child.name === 'Throttle zone')!;
         expect(snapshot.root.children.find((child) => child.name === 'Steering')!.fields).not.toHaveProperty('Cooldown');
         expect(brakeZone.children.filter((child) => child.kind === 'closure').map((child) => child.name))
-            .toEqual(['Brake', 'More brake', 'Release the brake', 'Release brake slower', 'Release brake faster', 'Hold brake pressure']);
+            .toEqual(['Brake', 'More brake', 'Release the brake', 'Hold brake pressure']);
         expect(throttleZone.children.filter((child) => child.kind === 'closure').map((child) => child.name))
             .toEqual(['Throttle', 'More throttle', 'Less throttle']);
         for (const [zone, pedal] of [[brakeZone, 'brake'], [throttleZone, 'throttle']] as const) {
             expect(zone.conditions).toEqual([
                 expect.objectContaining({ description: `Inside the interpolated reference ${pedal} zone`, conditionFit: false, inputMissing: true }),
                 ...(pedal === 'brake' ? [expect.objectContaining({
-                    description: 'The direction-change condition for brake-zone exit is not met', conditionFit: true,
+                    description: 'The direction-start speed condition for brake-zone exit is not met', conditionFit: true,
                 })] : []),
-                expect.objectContaining({ description: 'Steering is not active', conditionFit: true }),
             ]);
         }
         expect(snapshot.root).toMatchObject({ name: engine.root.name, description: engine.root.description });

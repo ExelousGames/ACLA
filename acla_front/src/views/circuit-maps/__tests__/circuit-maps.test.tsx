@@ -112,8 +112,6 @@ const baseContext: LiveSessionRuntime = {
     recordingActive: false,
     recordingGame: null,
     restorationStatus: 'idle',
-    restorationError: null,
-    recordingFileValidation: null,
     recorderControl: null,
     analysisResultPages: [],
     activeAnalysisResultPageId: null,

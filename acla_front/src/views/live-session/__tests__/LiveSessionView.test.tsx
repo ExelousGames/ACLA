@@ -109,8 +109,6 @@ const createRuntime = (sessionGame: DesktopGame | null = null) => ({
     recordingMetadata: null,
     recordingFileKey: null,
     restorationStatus: 'idle',
-    restorationError: null,
-    recordingFileValidation: null,
     analysisResultPages: [],
     activeAnalysisResultPageId: null,
     getNextCorner: jest.fn((): ReturnType<LiveSessionHandle['getNextCorner']> => null),
@@ -941,19 +939,18 @@ describe('LiveSessionView', () => {
         expect(runtime.recorderControl.openUploadFlow).toHaveBeenCalledTimes(1);
     });
 
-    it('shows a restored local-recording error without hiding the session workspace', () => {
+    it('shows the workspace and recording bar for a restored draft without a running simulator', () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: null, detectionStatus: 'not-detected', error: null });
         const runtime = {
             ...createRuntime('acc'),
             recordingState: RecordingState.UPLOAD_READY,
-            restorationStatus: 'error',
-            restorationError: 'The local recording file is missing or unreadable. Upload is unavailable; discard this draft to clear it.',
+            restorationStatus: 'restored',
         };
 
         renderView(runtime as any);
 
-        expect(screen.getByRole('alert')).toHaveTextContent('local recording file is missing or unreadable');
         expect(screen.getByText('Live workspace')).toBeInTheDocument();
+        expect(screen.getByTestId('live-session-recorder-host')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'New Session' })).toBeEnabled();
     });
 

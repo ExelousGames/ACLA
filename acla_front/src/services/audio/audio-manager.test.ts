@@ -20,6 +20,36 @@ const stream = (options: Partial<StreamOptions> = {}) => {
 beforeEach(() => { audio = installAudioDoubles(); handles = []; });
 afterEach(async () => { handles.forEach((handle) => handle.stop()); await flush(); audio.restore(); });
 
+it('reports measured output levels after playback starts and disposes the meter with playback', async () => {
+    jest.useFakeTimers();
+    try {
+        const onLevel = jest.fn();
+        const handle = audioManager.play({ type: 'voice', priority: 25, volume: 1, url: 'data:audio/wav;base64,c2F2ZWQ=', onLevel });
+        handles.push(handle);
+        Object.defineProperty(audio.media[0], 'paused', { configurable: true, value: false });
+        await flush();
+        const meter = TestAudioContext.instances[0];
+        jest.advanceTimersByTime(16);
+        await flush();
+        expect(onLevel).toHaveBeenLastCalledWith(0, 0);
+        meter.level = 0.25;
+        audio.media[0].currentTime = 0.75;
+        jest.advanceTimersByTime(16);
+        await flush();
+        expect(onLevel).toHaveBeenLastCalledWith(0.25, 750);
+        audio.media[0].dispatchEvent(new Event('waiting'));
+        await flush();
+        expect(onLevel).toHaveBeenLastCalledWith(0, 750);
+        handle.stop();
+        expect(meter.close).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+        const count = onLevel.mock.calls.length;
+        jest.advanceTimersByTime(100);
+        await flush();
+        expect(onLevel).toHaveBeenCalledTimes(count);
+    } finally { jest.useRealTimers(); }
+});
+
 it.each<AudioType>(['voice', 'music', 'alert'])('arbitrates replacement, rejection and newer ties within %s', async (type) => {
     const first = play(type, 50);
     const lower = play(type, 49);

@@ -70,6 +70,7 @@ export async function previewTtsPhonemes(speech: Pick<TtsRequest, 'text' | 'lang
 /** Curves and floating-point inputs correspond by array index; positions span the previewed speech. */
 export async function synthesizeProsodyTts(
     curves: readonly AmplifyCurve[], inputs: readonly number[], speech: TtsRequest, signal?: AbortSignal,
+    trimSilence = false,
 ): Promise<TtsPack> {
     checkCancelled(signal);
     const text = speechText(speech.text);
@@ -91,5 +92,5 @@ export async function synthesizeProsodyTts(
         },
     }, { responseType: 'arraybuffer', timeout: 120_000, signal });
     checkCancelled(signal);
-    return createTtsPack(text, response.data);
+    return createTtsPack(text, response.data, trimSilence);
 }

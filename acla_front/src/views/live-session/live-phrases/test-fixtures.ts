@@ -4,6 +4,21 @@ import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import type { PhraseCornerGeometry } from './phrase-corner-geometry';
 import { evaluateRoad } from '../track-vision/road-polynomial';
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
+import { Closure } from './closure';
+import { createPhraseRoot, PHRASE_DEFINITIONS, PhraseEngine, type PhraseContext } from './phrase-engine';
+
+/** Control/geometry fixtures use explicit 500 ms preparation; timing tests exercise the one-second default. */
+export function conditionTestEngine(...[phrases = PHRASE_DEFINITIONS, rootBuilder = createPhraseRoot]: ConstructorParameters<typeof PhraseEngine>) {
+    return new PhraseEngine(phrases.map((phrase) => ({ ...phrase, preparationTimeMs: 500 })), (definitions) => {
+        const root = rootBuilder(definitions);
+        const configure = (node: Closure<PhraseContext>) => {
+            node.metadata.preparationTimeMs = 500;
+            node.children.forEach((child) => { if (child instanceof Closure) configure(child); });
+        };
+        configure(root);
+        return root;
+    });
+}
 
 type CornerPosition = 'inside' | 'middle' | 'outside';
 
@@ -36,7 +51,8 @@ export function steeringCornerFixture(game: 'acc' | 'iracing' = 'acc') {
         x: Array.from({ length: 100 }, (_, index) => index / 100),
         y: Array.from({ length: 100 }, (_, index) => {
             const row = [x, game === 'acc' ? ground : 0, game === 'iracing' ? ground : 0, 0, 0, 0, 36];
-            const angle = 12 * Math.max(0, Math.min(15, index - 25)) * Math.PI / 180;
+            // The geometry itself begins bending at 250 raw coordinate units.
+            const angle = 12 * (Math.max(0, Math.min(15, index - 25)) + (index === 25 ? 0.5 : 0)) * Math.PI / 180;
             x += 10 * Math.cos(angle);
             ground += 10 * Math.sin(angle);
             return row;

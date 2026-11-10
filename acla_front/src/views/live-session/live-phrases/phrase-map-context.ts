@@ -59,6 +59,7 @@ export function createPhraseMapContext(map: CircuitMapDto | null) {
         return { area, members, shape };
     }).sort((a, b) => segmentSpan(a.area) - segmentSpan(b.area) || a.area.id.localeCompare(b.area.id));
     return {
+        cornerBounds: corners.map((corner) => ({ start: corner.start_position, end: corner.end_position })),
         ready: line.length >= 2 && tags.length > 0,
         isStraightAt(position: unknown): boolean | undefined {
             if (!this.ready || !normalized(position)) return undefined;

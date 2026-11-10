@@ -41,14 +41,12 @@ export interface NodeInspection {
 }
 
 export interface NodeMetadata<Context> {
+    preparationTimeMs?: number;
     id?: string;
     inspect?: (context: Context, state: State<Context>) => NodeInspection;
     fields?: NodeInspection['fields'];
-    /** Higher-priority siblings are checked first. Interrupts may leave an entered child. */
+    /** Higher-priority siblings are checked first when no child closure is active. */
     priority?: number;
-    interrupt?: boolean;
-    /** Let a later interrupt take over when this scope has no action to run. */
-    yieldToSiblings?: boolean;
 }
 
 export interface ActionExecution {
@@ -75,8 +73,9 @@ export interface Evaluable<Context> {
     evaluate(context: Context, state: State<Context>, onActionError?: (error: unknown) => void): unknown;
 }
 
-/** An entered scope evaluates its own children and leaves through an explicit action or interrupt. */
+/** An entered scope evaluates its own children and leaves through an explicit action. */
 export class Closure<Context> implements Evaluable<Context> {
+    get preparationTimeMs(): number { return this.metadata.preparationTimeMs ?? 1000; }
     constructor(
         readonly name: string,
         readonly description: string,
@@ -87,23 +86,14 @@ export class Closure<Context> implements Evaluable<Context> {
 
     evaluate(context: Context, state: State<Context>, onActionError?: (error: unknown) => void): unknown {
         if (!state.path.includes(this)) return;
-        let active = this.children.find((child) => child instanceof Closure && state.path.includes(child));
+        context = state.contextFor(this, context);
+        const active = this.children.find((child) => child instanceof Closure && state.path.includes(child));
+        if (active) return active.evaluate(context, state, onActionError);
         const children = [...this.children].sort((a, b) => (b.metadata.priority ?? 0) - (a.metadata.priority ?? 0));
         for (const child of children) {
-            if (child === active) {
-                const before = state.executionCount;
-                const result = child.evaluate(context, state, onActionError);
-                if (!child.metadata.yieldToSiblings || state.executionCount !== before) return result;
-                continue;
-            }
-            if (active && !child.metadata.interrupt) continue;
             if (!state.check(child, context)) continue;
-            while (state.closure !== this) state.exitToParent();
             state.enter(child);
-            const before = state.executionCount;
-            const result = child.evaluate(context, state, onActionError);
-            if (!child.metadata.yieldToSiblings || state.executionCount !== before) return result;
-            active = child;
+            return child.evaluate(context, state, onActionError);
         }
     }
 }
@@ -143,9 +133,11 @@ export class State<Context> {
     private pending = false;
     private parents = new Map<Closure<Context> | Action<Context>, Closure<Context>>();
     private results = new Map<Closure<Context> | Action<Context>, boolean>();
-    private actionCount = 0;
+    private prepared = new Map<Closure<Context>, Context>();
 
-    constructor(readonly root: Closure<Context>) {
+    constructor(readonly root: Closure<Context>, private readonly prepareContext?: (
+        node: Closure<Context>, context: Context, matches?: (candidate: Context) => boolean,
+    ) => Context) {
         this.scopes = [root];
         this.location = root;
         const register = (parent: Closure<Context>) => parent.children.forEach((child) => {
@@ -156,7 +148,13 @@ export class State<Context> {
     }
 
     get current(): Closure<Context> | Action<Context> { return this.location; }
-    get executionCount(): number { return this.actionCount; }
+    contextFor(node: Closure<Context>, context: Context): Context {
+        return this.prepared.get(node) ?? this.prepareContext?.(node, context) ?? context;
+    }
+    /** Release an action's position while retaining its execution for this scope visit. */
+    leaveAction(): void {
+        if (this.location instanceof Action) this.location = this.closure;
+    }
     get closure(): Closure<Context> { return this.scopes[this.scopes.length - 1]; }
     get path(): readonly (Closure<Context> | Action<Context>)[] {
         return this.location === this.closure ? [...this.scopes] : [...this.scopes, this.location];
@@ -186,6 +184,7 @@ export class State<Context> {
         this.checked.delete(node);
         this.results.delete(node);
         this.inspections.delete(node);
+        if (node instanceof Closure) this.prepared.delete(node);
         node.condition.reset?.(this, parentExited);
         if (node instanceof Action) this.executions.delete(node);
         else node.children.forEach((child) => this.clear(child, true));
@@ -196,7 +195,12 @@ export class State<Context> {
         if (parent && !this.scopes.includes(parent)) return false;
         if (node instanceof Action && this.executions.has(node)) return false;
         if (this.results.has(node)) return this.results.get(node)!;
-        const matches = node.condition(context, this);
+        let matches: boolean | undefined;
+        if (node instanceof Closure && this.prepareContext) {
+            context = this.prepareContext(node, context, (candidate) => (matches = node.condition(candidate, this)));
+            if (matches !== undefined) this.prepared.set(node, context);
+        }
+        matches ??= node.condition(context, this);
         this.results.set(node, matches);
         this.checked.set(node, { matches, conditions: (node.condition.describe?.(context, this, matches) ?? [{
             description: 'Custom condition (last checked)', conditionFit: matches, inputMissing: false,
@@ -233,7 +237,10 @@ export class State<Context> {
                 id: nodeId, kind: node instanceof Closure ? 'closure' : 'action',
                 name: node.name, description: node.description, current: node === this.current, onPath,
                 status,
-                conditions: conditions.map(copyCondition), fields: { ...node.metadata.fields, ...inspection?.fields },
+                conditions: conditions.map(copyCondition), fields: {
+                    ...(node instanceof Closure ? { 'Preparation time': `${node.preparationTimeMs / 1000} s` } : {}),
+                    ...node.metadata.fields, ...inspection?.fields,
+                },
                 ...(execution ? { execution } : {}),
                 children: node instanceof Closure ? node.children.map((child, index) => visit(child, `${nodeId}/${index}`)) : [],
             };
@@ -244,12 +251,12 @@ export class State<Context> {
     step(context: Context, onActionError?: (error: unknown) => void): unknown {
         if (this.pending) return;
         this.results.clear();
+        this.prepared.clear();
         return this.root.evaluate(context, this, onActionError);
     }
 
     execute(next: Action<Context>, context: Context, onActionError?: (error: unknown) => void): unknown {
         if (this.pending || this.current !== next || this.executions.has(next)) return;
-        this.actionCount++;
         // Claim the action before invoking user code, so reentrant steps cannot repeat it.
         const execution: ActionExecution = { status: 'running' };
         this.executions.set(next, execution);

@@ -16,10 +16,13 @@ describe('LivePhrases root connection', () => {
 
     it('previews adjusted ranges with detection disabled and follows reference replacement and removal', () => {
         let reference: ReturnType<typeof variableBrakingReference> | null = variableBrakingReference();
+        let map = circuitMap();
+        map.centerline_segments = [{ id: 'turn', tags: ['corner'], start_position: 0, end_position: 1 }];
         const listeners = new Set<() => void>();
         const root = {
             getComponentName: () => 'live-session',
             getLiveReferenceLap: () => reference,
+            getLiveCircuitMap: () => map,
             subscribeLiveCircuitMap: (listener: () => void) => {
                 listeners.add(listener);
                 return () => { listeners.delete(listener); };
@@ -49,6 +52,11 @@ describe('LivePhrases root connection', () => {
         });
         expect(path('Deceleration ranges')).toBe('');
         expect(path('Direction-change ranges')).toBe(direction);
+        act(() => {
+            map = { ...map, centerline_segments: [{ ...map.centerline_segments![0], start_position: 0.04 }] };
+            listeners.forEach((listener) => listener());
+        });
+        expect(path('Direction-change ranges')).not.toBe(direction);
         act(() => { reference = null; listeners.forEach((listener) => listener()); });
         expect(screen.queryByRole('img')).not.toBeInTheDocument();
         expect(screen.getByText(/Open Live Map with a reference lap/)).toBeVisible();
@@ -139,17 +147,19 @@ describe('LivePhrases root connection', () => {
 
     it('groups pedal phrases into reference zones directly under root', () => {
         render(<LivePhrases name="live-phrases" />);
-        const names = ['Brake', 'More brake', 'Release the brake', 'Release brake slower', 'Release brake faster', 'Hold brake pressure', 'Throttle', 'More throttle', 'Less throttle'];
+        const names = ['Brake', 'More brake', 'Release the brake', 'Hold brake pressure', 'Throttle', 'More throttle', 'Less throttle'];
         names.forEach((name) => expect(screen.queryByLabelText(`${name} closure`)).not.toBeInTheDocument());
         expect(screen.getByLabelText('Steering closure')).toBeVisible();
         expect(screen.queryByLabelText('Cornering closure')).not.toBeInTheDocument();
         expect(screen.getByLabelText('Brake zone closure')).toBeVisible();
         expect(screen.getByLabelText('Throttle zone closure')).toBeVisible();
-        for (const [zone, members] of [['Brake zone', names.slice(0, 6)], ['Throttle zone', names.slice(6)]] as const) {
+        for (const [zone, members] of [['Brake zone', names.slice(0, 4)], ['Throttle zone', names.slice(4)]] as const) {
             fireEvent.click(screen.getByLabelText(`${zone} closure`));
             members.forEach((name) => expect(screen.getByLabelText(`${name} closure`)).toBeVisible());
             expect(screen.queryByLabelText('Steering closure')).not.toBeInTheDocument();
             expect(screen.queryByLabelText('Release the throttle closure')).not.toBeInTheDocument();
+            expect(screen.queryByLabelText('Release brake slower closure')).not.toBeInTheDocument();
+            expect(screen.queryByLabelText('Release brake faster closure')).not.toBeInTheDocument();
             expect(screen.getByLabelText(`${zone} action 1: ${zone === 'Brake zone' ? 'exit to parent' : 'exit to root'}`)).toBeVisible();
             fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
             expect(screen.getByText(`Inside the interpolated reference ${zone === 'Brake zone' ? 'brake' : 'throttle'} zone`)).toBeVisible();
@@ -161,13 +171,13 @@ describe('LivePhrases root connection', () => {
         expect(screen.queryByLabelText('Increase throttle closure')).not.toBeInTheDocument();
     });
 
-    it('shows the direction-range check without a reference-speed requirement on brake-zone exit', () => {
+    it('shows the direction-start target speed check on brake-zone exit', () => {
         render(<LivePhrases name="live-phrases" />);
         fireEvent.click(screen.getByLabelText('Brake zone closure'));
         fireEvent.click(screen.getByRole('button', { name: 'Brake zone action 1: exit to parent' }));
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('The driver has left the interpolated reference brake zone')).toBeVisible();
-        expect(screen.getByText('The live phrase reference direction-change range has started toward an overlapping corner')).toBeVisible();
+        expect(screen.queryByText('The driver has left the interpolated reference brake zone')).not.toBeInTheDocument();
+        expect(screen.getByText('Current speed is below the live phrase reference speed at the start of the upcoming or active direction-change range within the centerline corner bounds, after any eligible Release the brake cue')).toBeVisible();
         expect(screen.queryByText(/speed is equal to or below/i)).not.toBeInTheDocument();
         expect(screen.queryByText(/500 ms/)).not.toBeInTheDocument();
         expect(screen.queryByText(/0.08/)).not.toBeInTheDocument();
@@ -177,7 +187,7 @@ describe('LivePhrases root connection', () => {
         render(<LivePhrases name="live-phrases" />);
         fireEvent.click(screen.getByLabelText('Steering closure'));
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('The live phrase reference direction-change range has started toward an overlapping corner; the remaining trajectory is partially or fully inside the corner.')).toBeVisible();
+        expect(screen.getByText('The live phrase reference direction-change range is active within the centerline corner start and end, with no positive reference acceleration in the next 200 ms.')).toBeVisible();
         expect(screen.queryByText('Speed is equal to or below the local live phrase reference speed')).not.toBeInTheDocument();
         expect(screen.queryByText(/0.6–1.8 seconds/)).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('tab', { name: /Contents/ }));

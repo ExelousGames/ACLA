@@ -12,6 +12,7 @@ import { PHRASE_DEFINITIONS, PhraseEngine, type PhraseEvent, type PhraseSnapshot
 import LivePhrases from './LivePhrases';
 import { createLiveTelemetryStore } from '../live-telemetry-store';
 import { circuitMap, steeringCornerFixture, vision } from './test-fixtures';
+import { synthesizeProsodyTts } from 'components/tts';
 
 jest.mock('components/tts', () => ({ synthesizeProsodyTts: jest.fn(() => new Promise(() => undefined)) }));
 
@@ -36,6 +37,7 @@ describe('Live phrase overlay addons', () => {
     const setEnabled = jest.fn();
 
     beforeEach(async () => {
+        (synthesizeProsodyTts as jest.Mock).mockImplementation(() => new Promise(() => undefined));
         jest.useFakeTimers();
         jest.setSystemTime(10_000);
         send.mockReset();
@@ -191,7 +193,7 @@ describe('Live phrase overlay addons', () => {
         expect(createSession).toHaveBeenCalledTimes(2);
     });
 
-    it.each(['acc', 'iracing'] as const)('publishes an approaching Steering corner from live telemetry in %s before speech is ready', async (game) => {
+    it.each(['acc', 'iracing'] as const)('publishes a Steering corner at centerline entry in %s before speech is ready', async (game) => {
         await overlaySessionClient.create(session);
         const submit = jest.fn(async (presentation) => ({
             presentationId: presentation.presentationId, presentationRevision: presentation.presentationRevision, accepted: true,
@@ -214,6 +216,13 @@ describe('Live phrase overlay addons', () => {
             telemetry.publishFrame({ type: 'frame', game, sequence: 1, committedCount: 0, committedSequence: 0,
                 sample: { Static_track: 'test', Static_car_model: 'car', Graphics_status: 2,
                     Physics_speed_kmh: 36, Graphics_normalized_car_position: 0.25 } });
+        });
+        expect(submit.mock.calls[submit.mock.calls.length - 1][0].cards
+            .some((card: any) => card.componentType === 'live_steering_corner')).toBe(false);
+        await act(async () => {
+            telemetry.publishFrame({ type: 'frame', game, sequence: 2, committedCount: 0, committedSequence: 0,
+                sample: { Static_track: 'test', Static_car_model: 'car', Graphics_status: 2,
+                    Physics_speed_kmh: 36, Graphics_normalized_car_position: 0.27 } });
         });
         const cards = submit.mock.calls[submit.mock.calls.length - 1][0].cards;
         const corner = cards.find((card: any) => card.componentType === 'live_steering_corner');

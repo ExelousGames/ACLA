@@ -19,7 +19,6 @@ import {
 } from 'views/live-session/session-intelligence/track-corners';
 import type { CornerLookahead } from 'views/session-shared/session-intelligence/types';
 import {
-    LocalTelemetryFileValidation,
     LiveRecordingMetadata,
     LiveSessionRecorderControl,
     LiveSessionRestorationStatus,
@@ -52,8 +51,6 @@ import {
 import { normalizeAnalysisResultsData } from 'views/session-shared/visualization/charts/analysisResultsModel';
 import { liveTelemetryStore } from './live-telemetry-store';
 
-const RESTORED_RECORDING_ERROR = 'The local recording file is missing or unreadable. Upload is unavailable; discard this draft to clear it.';
-
 const isAbsoluteFilePath = (filePath: string): boolean =>
     /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(filePath);
 
@@ -79,8 +76,6 @@ const defaultRuntime: LiveSessionRuntime = {
     recordingActive: false,
     recordingGame: null,
     restorationStatus: 'idle',
-    restorationError: null,
-    recordingFileValidation: null,
     recorderControl: null,
     analysisResultPages: [],
     activeAnalysisResultPageId: null,
@@ -140,8 +135,6 @@ export const LiveSessionProvider = ({
     const [restorationStatus, setRestorationStatus] = useState<LiveSessionRestorationStatus>(
         normalizedOwnerEmail ? 'restoring' : 'idle',
     );
-    const [restorationError, setRestorationError] = useState<string | null>(null);
-    const [recordingFileValidation, setRecordingFileValidation] = useState<LocalTelemetryFileValidation | null>(null);
     const [recorderControl, setRecorderControl] = useState<LiveSessionRecorderControl | null>(null);
     const [analysisResults, setAnalysisResults] = useState(() => getPersistedLiveSessionAnalysis(normalizedOwnerEmail));
     const { pages: analysisResultPages, activePageId: activeAnalysisResultPageId } = analysisResults;
@@ -312,7 +305,6 @@ export const LiveSessionProvider = ({
     const setRecordingFileKey = useCallback((fileKey: string | null) => {
         recordingFileKeyRef.current = fileKey;
         setRecordingFileKeyState(fileKey);
-        setRecordingFileValidation(null);
         persistDraftRef.current();
     }, []);
 
@@ -541,7 +533,6 @@ export const LiveSessionProvider = ({
         setRecordingMetadata(null);
         setRecordingFileKey(null);
         resetSampleCount();
-        setRestorationError(null);
     }, [resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
 
     const startLiveSession = useCallback((game: DesktopGame) => {
@@ -596,54 +587,20 @@ export const LiveSessionProvider = ({
                 return;
             }
 
-            const restoreDraft = async () => {
-                let validation: LocalTelemetryFileValidation;
-                try {
-                    const summary = await runRecordedFileRead(
-                        draft.telemetryFilePath,
-                        draft.sessionGame,
-                        'validate',
-                    );
-                    validation = {
-                        exists: true,
-                        readable: true,
-                        hasData: summary.rowCount > 0,
-                        size: summary.totalBytes,
-                    };
-                } catch (error) {
-                    validation = {
-                        exists: false,
-                        readable: false,
-                        hasData: false,
-                        size: 0,
-                        error: error instanceof Error ? error.message : String(error),
-                    };
-                }
-                if (cancelled || ownerEmailRef.current !== normalizedOwnerEmail) return;
-
-                resetLiveSession(draft.sessionGame);
-                setRecordingMetadata(draft.recordingMetadata);
-                setRecordingFileKey(draft.telemetryFilePath);
-                liveTelemetryStore.restoreCommittedSampleCount(draft.recordedSampleCount);
-                const restoredStaticData = {
-                    Static_track: draft.recordingMetadata.mapName,
-                    Static_car_model: draft.recordingMetadata.carName,
-                };
-                staticDataRef.current = restoredStaticData;
-                setStaticDataState(restoredStaticData);
-                recordingStateRef.current = RecordingState.UPLOAD_READY;
-                setRecordingState(RecordingState.UPLOAD_READY);
-                setRecordingFileValidation(validation);
-
-                if (!validation.exists || !validation.readable) {
-                    setRestorationStatus('error');
-                    setRestorationError(RESTORED_RECORDING_ERROR);
-                } else {
-                    setRestorationStatus('restored');
-                    setRestorationError(null);
-                }
+            // Restore from saved metadata immediately; the upload stream validates the file.
+            resetLiveSession(draft.sessionGame);
+            setRecordingMetadata(draft.recordingMetadata);
+            setRecordingFileKey(draft.telemetryFilePath);
+            liveTelemetryStore.restoreCommittedSampleCount(draft.recordedSampleCount);
+            const restoredStaticData = {
+                Static_track: draft.recordingMetadata.mapName,
+                Static_car_model: draft.recordingMetadata.carName,
             };
-            void restoreDraft();
+            staticDataRef.current = restoredStaticData;
+            setStaticDataState(restoredStaticData);
+            recordingStateRef.current = RecordingState.UPLOAD_READY;
+            setRecordingState(RecordingState.UPLOAD_READY);
+            setRestorationStatus('restored');
         };
 
         if (recordingActiveRef.current || recordingStopPromiseRef.current) {
@@ -654,7 +611,7 @@ export const LiveSessionProvider = ({
         return () => {
             cancelled = true;
         };
-    }, [normalizedOwnerEmail, resetLiveSession, runRecordedFileRead, setRecordingFileKey, setRecordingMetadata, stopRecordingSession]);
+    }, [normalizedOwnerEmail, resetLiveSession, setRecordingFileKey, setRecordingMetadata, stopRecordingSession]);
 
     useEffect(() => {
         persistCurrentDraft();
@@ -693,8 +650,6 @@ export const LiveSessionProvider = ({
         recordingActive,
         recordingGame,
         restorationStatus,
-        restorationError,
-        recordingFileValidation,
         recorderControl,
         analysisResultPages,
         activeAnalysisResultPageId,
@@ -720,8 +675,6 @@ export const LiveSessionProvider = ({
         getLiveSessionSnapshot,
         getNextCorner,
         restorationStatus,
-        restorationError,
-        recordingFileValidation,
         recorderControl,
         analysisResultPages,
         activeAnalysisResultPageId,

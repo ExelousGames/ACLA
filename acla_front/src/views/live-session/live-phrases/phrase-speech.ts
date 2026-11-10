@@ -19,7 +19,7 @@ export async function loadAllPhraseSpeech(
         if (signal.aborted) throw new DOMException('Speech generation was cancelled.', 'AbortError');
         if (packs.has(instance.cacheKey)) continue;
         try {
-            const pack = await synthesizeProsodyTts(instance.curves, instance.inputValues, instance.speech, signal);
+            const pack = await synthesizeProsodyTts(instance.curves, instance.inputValues, instance.speech, signal, true);
             if (signal.aborted) throw new DOMException('Speech generation was cancelled.', 'AbortError');
             packs.set(instance.cacheKey, pack);
         } catch (error) {

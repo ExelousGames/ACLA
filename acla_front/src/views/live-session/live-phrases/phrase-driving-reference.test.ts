@@ -3,7 +3,7 @@ import { copyPhraseMap, copyPhraseReference, normalizeDrivingAggression } from '
 import { readReferenceGuidance, referenceDirectionChanges } from './phrase-reference-guidance';
 import { circuitMap, variableBrakingReference } from './test-fixtures';
 
-// A 1 km loop with known 10 m sample spacing and a direction-change range at 240 m.
+// A 1000 raw-coordinate-unit loop, sampled every 10 units, with its first bend at 240.
 const reference = (): TopLapReferenceEntry => ({
     game: 'acc', track: 'test', car: 'car', avg_grip_int: 2,
     target_features: ['expert_optimal_player_pos_x', 'expert_optimal_player_pos_y', 'expert_optimal_player_pos_z',
@@ -11,7 +11,7 @@ const reference = (): TopLapReferenceEntry => ({
     x: Array.from({ length: 100 }, (_, i) => i / 100),
     y: Array.from({ length: 100 }, (_, i) => {
         const d = i * 10;
-        const xy = d < 250 ? [d, 0] : d < 500 ? [250, d - 250] : d < 750 ? [750 - d, 250] : [0, 1000 - d];
+        const xy = d < 240 ? [d, 0] : d < 500 ? [240, d - 240] : d < 740 ? [740 - d, 260] : [0, 1000 - d];
         const speed = i < 20 || i >= 70 ? 120 : i < 30 ? 120 - (i - 20) * 4 : i <= 60 ? 80 : 80 + (i - 60) * 4;
         return [...xy, 0, i >= 21 && i <= 29 ? 0.8 : 0, i >= 61 && i <= 90 ? 1 : 0, 0.2, speed];
     }),
@@ -38,11 +38,112 @@ const turnTrajectory = (lap: TopLapReferenceEntry, entry: number, sign = 1) => {
         row[0] = x;
         row[lap.game === 'acc' ? 1 : 2] = y;
         row[lap.game === 'acc' ? 2 : 1] = 0;
-        const heading = sign * Math.min(20, Math.max(0, i - entry)) * Math.PI / 60;
+        const heading = sign * (Math.min(20, Math.max(0, i - entry)) + (i === entry ? 0.5 : 0)) * Math.PI / 60;
         x += 10 * Math.cos(heading);
         y += 10 * Math.sin(heading);
     });
 };
+const interruptedBraking = (gapRate: number) => {
+    const lap = reference();
+    turnTrajectory(lap, 24);
+    const deceleration = [6, 6, 4, 2, gapRate, 3, 2, 1, 1, 1];
+    let energy = 1600;
+    lap.y.forEach((row, i) => {
+        if (i > 20 && i <= 30) energy -= 20 * deceleration[i - 21];
+        row[6] = i <= 20 || i >= 70 ? 144 : i <= 60 ? Math.sqrt(energy) * 3.6
+            : Math.sqrt(energy) * 3.6 + (144 - Math.sqrt(energy) * 3.6) * (i - 60) / 10;
+        row[3] = i >= 20 && i < 30 ? Math.max(0, deceleration[i - 20]) / 6 : 0;
+    });
+    return lap;
+};
+
+it.each([0, -0.5, 0.25])('adjusts both braking inputs in one corner across a short gap at %s m/s²', (gapRate) => {
+    const lap = interruptedBraking(gapRate), baseline = JSON.parse(JSON.stringify(lap));
+    let previous = lap;
+    for (const caution of [25, 50, 100]) {
+        const copy = copyPhraseReference(lap, caution)!;
+        // Both inputs contribute to the same fixed endpoint, including the brief acceleration.
+        const minimum = 1600 - 20 * (26 + gapRate);
+        const transition = 270 - caution / 100 * 30;
+        expect(speedAt(copy, 0.2)).toBeLessThan(speedAt(previous, 0.2));
+        if (caution === 100) expect(rowAt(copy, 0.19)[3]).toBeGreaterThan(0);
+        expect(speedAt(copy, 0.3)).toBeCloseTo(Math.sqrt(minimum) * 3.6, 8);
+        rates(copy).filter(({ start }) => start >= transition / 1000 - 1e-9 && start < 0.3)
+            .forEach(({ rate }) => expect(rate).toBeCloseTo(1, 7));
+        expect(Math.max(...rates(copy).map(({ rate }) => rate))).toBeLessThanOrEqual(6 + 1e-7);
+        lap.y.forEach((row, i) => {
+            expect(copy.y[i][6]).toBeLessThanOrEqual(row[6] + 1e-7);
+            expect(copy.y[i].filter((_, j) => j !== 3 && j !== 6)).toEqual(row.filter((_, j) => j !== 3 && j !== 6));
+            if (i >= 30) {
+                expect(copy.y[i][6]).toBeCloseTo(row[6], 8);
+                expect(copy.y[i][3]).toBe(row[3]);
+            }
+        });
+        previous = copy;
+    }
+    expect(lap).toEqual(baseline);
+    expect(copyPhraseReference(lap, 0)).toEqual(lap);
+});
+
+it.each([false, true])('joins interrupted corner braking across start/finish (duplicated endpoint: %s)', (duplicate) => {
+    const baseline = interruptedBraking(-0.5), adjusted = copyPhraseReference(baseline, 100)!;
+    const lap = { ...baseline, x: [...baseline.x], y: baseline.y.map((_, i, rows) => [...rows[(i + 25) % rows.length]]) };
+    if (duplicate) { lap.x.push(1); lap.y.push([...lap.y[0]]); }
+    const copy = copyPhraseReference(lap, 100)!;
+    for (let i = 0; i < 100; i++) {
+        expect(copy.y[i][6]).toBeCloseTo(adjusted.y[(i + 25) % 100][6], 8);
+        expect(copy.y[i][3]).toBeCloseTo(adjusted.y[(i + 25) % 100][3], 8);
+    }
+    if (duplicate) expect(rowAt(copy, 1)).toEqual(rowAt(copy, 0));
+});
+
+it.each([0, -0.5])('keeps a longer interruption at %s m/s² separate within the same turn', (gapRate) => {
+    const lap = interruptedBraking(gapRate);
+    // Lower speeds make the same 10 m gap last more than half a second.
+    lap.y.forEach((row) => { row[6] /= 2; });
+    const copy = copyPhraseReference(lap, 100)!;
+    expect(speedAt(copy, 0.2)).toBeCloseTo(speedAt(lap, 0.2), 8);
+    expect(speedAt(copy, 0.24)).toBeCloseTo(speedAt(lap, 0.24), 8);
+    expect(speedAt(copy, 0.3)).toBeCloseTo(speedAt(lap, 0.3), 8);
+});
+
+it('keeps short-gap braking for distinct direction-change ranges separate', () => {
+    const lap = interruptedBraking(-0.5);
+    let x = 0, y = 0;
+    lap.y.forEach((row, i) => {
+        row[0] = x;
+        row[1] = y;
+        const heading = (i <= 24 ? Math.max(0, i - 20) : 4 - Math.min(20, i - 24)) * Math.PI / 60;
+        x += 10 * Math.cos(heading);
+        y += 10 * Math.sin(heading);
+    });
+    const turns = referenceDirectionChanges(lap).filter(({ start }) => start >= 190 && start < 300);
+    expect(turns).toHaveLength(2);
+    expect(turns[0].end).toBeLessThanOrEqual(250);
+    expect(turns[1].start).toBeGreaterThanOrEqual(240);
+    const copy = copyPhraseReference(lap, 100)!;
+    expect(speedAt(copy, 0.24)).toBeCloseTo(speedAt(lap, 0.24), 8);
+    expect(speedAt(copy, 0.3)).toBeCloseTo(speedAt(lap, 0.3), 8);
+});
+
+it('preserves the next brake application after a long coast', () => {
+    const lap = reference();
+    turnTrajectory(lap, 21);
+    const minimum = Math.sqrt((104 / 3.6) ** 2 - 60) * 3.6;
+    lap.y.forEach((row, i) => {
+        row[6] = i < 20 || i >= 70 ? 120 : i < 24 ? 120 - (i - 20) * 4 : i < 27 ? 104
+            : i < 30 ? Math.sqrt((104 / 3.6) ** 2 - 20 * (i - 27)) * 3.6 : i <= 60 ? minimum
+                : minimum + (120 - minimum) * (i - 60) / 10;
+        row[3] = i >= 20 && i < 24 ? 0.8 : i >= 27 && i < 30 ? 0.4 : 0;
+    });
+    const copy = copyPhraseReference(lap, 100)!;
+    expect(speedAt(copy, 0.2)).toBeLessThan(speedAt(lap, 0.2));
+    expect(speedAt(copy, 0.24)).toBeCloseTo(104, 8);
+    for (const i of [27, 28, 29]) {
+        expect(copy.y[i][3]).toBe(lap.y[i][3]);
+        expect(copy.y[i][6]).toBeCloseTo(lap.y[i][6], 8);
+    }
+});
 
 it('copies the complete reference and map without sharing editable arrays, samples or tags', () => {
     const lap = reference(), map = circuitMap();

@@ -3,6 +3,16 @@ import defaultCurves from './curves/default.json';
 
 export type PhraseCurves = Readonly<Record<ProsodySetting, readonly CurvePoint[]>>;
 export type PhraseInputs = Readonly<Record<ProsodySetting, number>>;
+export const PHRASE_REACTION_ALLOWANCE_MS = 0;
+export const PHRASE_SILENCE_LEVEL = 0.01;
+export interface PhraseSpeechTiming {
+    durationMs?: number;
+    preparationTimeMs?: number;
+    reactionAllowanceMs: number;
+    /** Set when playback reaches the first audible frame, never by the trigger timestamp. */
+    startedAt?: number;
+    releaseAt?: number;
+}
 export interface PhraseSettings extends Omit<TtsRequest, 'text'> {
     inputs?: Partial<PhraseInputs>;
 }

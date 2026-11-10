@@ -12,6 +12,8 @@ export interface PlaybackOptions {
     volume?: number;
     /** Fires on each transition from idle to audible. */
     onStart?: () => void;
+    /** Peak output amplitude and media position. URL/WAV only; enables a playback level meter. */
+    onLevel?: (level: number, positionMs: number) => void;
     onIdle?: () => void;
     /** Exactly one terminal notification, including discarded requests. */
     onComplete?: (outcome: PlaybackOutcome) => void;
@@ -81,6 +83,10 @@ class PlaybackRequest implements AudioStreamHandle {
             this.admitted = true;
             const events = {
                 audible: (value: boolean) => this.setAudible(value),
+                ...(this.options?.onLevel ? { level: (value: number, positionMs: number) => {
+                    const callback = this.options?.onLevel;
+                    if (callback) notify(() => { if (!this.outcome) callback(value * this.volume, positionMs); });
+                } } : {}),
                 idle: () => {
                     if (this.outcome) return;
                     this.busy = false;

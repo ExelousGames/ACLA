@@ -88,16 +88,7 @@ export type LiveSessionRestorationStatus =
     | 'idle'
     | 'restoring'
     | 'not-found'
-    | 'restored'
-    | 'error';
-
-export interface LocalTelemetryFileValidation {
-    exists: boolean;
-    readable: boolean;
-    hasData: boolean;
-    size: number;
-    error?: string;
-}
+    | 'restored';
 
 export interface LiveVisualizationInstance {
     name: string;
@@ -133,8 +124,6 @@ export interface LiveSessionRuntime {
     recordingActive: boolean;
     recordingGame: DesktopGame | null;
     restorationStatus: LiveSessionRestorationStatus;
-    restorationError: string | null;
-    recordingFileValidation: LocalTelemetryFileValidation | null;
     recorderControl: LiveSessionRecorderControl | null;
     analysisResultPages: LiveSessionAnalysisResultPage[];
     activeAnalysisResultPageId: string | null;

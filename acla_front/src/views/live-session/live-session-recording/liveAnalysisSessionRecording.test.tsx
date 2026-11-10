@@ -52,8 +52,6 @@ const createRuntime = (overrides: Record<string, unknown> = {}) => ({
     recordingActive: false,
     recordingGame: null,
     restorationStatus: 'idle',
-    restorationError: null,
-    recordingFileValidation: null,
     recorderControl: null,
     analysisResultPages: [],
     activeAnalysisResultPageId: null,
@@ -411,11 +409,69 @@ describe('recording session controls', () => {
         view.host.remove();
     });
 
+    it.each([0, 42])('uploads a restored draft with %s saved samples only after confirmation', async (savedSampleCount) => {
+        mockApiPost.mockResolvedValue({ data: { uploadId: 'upload-1' } });
+        const runtime = createRuntime({
+            restorationStatus: 'restored',
+            recordingState: RecordingState.UPLOAD_READY,
+            recordingFileKey: 'C:\\recordings\\restored.jsonl',
+            recordingMetadata: { sessionName: 'Saved Race', mapName: 'Monza', carName: 'GT3', gameRecordedFrom: 'acc' },
+            streamRecordedTelemetry: jest.fn(async (onChunk) => {
+                await onChunk([{ Physics_speed_kmh: 100 }]);
+                return { rowCount: 1, totalBytes: 50 };
+            }),
+        });
+        const view = renderRecorder(runtime, savedSampleCount);
+        try {
+            const uploadButton = within(view.host).getByRole('button', { name: 'Upload Session' });
+            expect(uploadButton).toBeEnabled();
+            expect(within(view.host).getByText(String(savedSampleCount))).toBeInTheDocument();
+            expect(runtime.streamRecordedTelemetry).not.toHaveBeenCalled();
+            fireEvent.click(uploadButton);
+            expect(runtime.streamRecordedTelemetry).not.toHaveBeenCalled();
+            expect(mockApiPost).not.toHaveBeenCalled();
+
+            const buttons = screen.getAllByRole('button', { name: 'Upload Session' });
+            fireEvent.click(buttons[buttons.length - 1]);
+            await waitFor(() => expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1));
+            expect(runtime.streamRecordedTelemetry).toHaveBeenCalledTimes(1);
+            expect(runtime.streamRecordedTelemetry).toHaveBeenCalledWith(expect.any(Function), expect.any(Function), runtime.recordingFileKey);
+        } finally { view.unmount(); view.host.remove(); }
+    });
+
+    it.each(['No telemetry data found to upload', 'Recorded file is not an authorized regular file.', 'Malformed JSON at row 1, byte 0.'])(
+        'shows "%s" during upload and retains the restored recording', async (message) => {
+            mockApiPost.mockResolvedValue({ data: { uploadId: 'upload-1' } });
+            const runtime = createRuntime({
+                restorationStatus: 'restored',
+                recordingState: RecordingState.UPLOAD_READY,
+                recordingFileKey: 'C:\\recordings\\restored.jsonl',
+                recordingMetadata: { sessionName: 'Saved Race', mapName: 'Monza', carName: 'GT3', gameRecordedFrom: 'acc' },
+                streamRecordedTelemetry: message === 'No telemetry data found to upload'
+                    ? jest.fn().mockResolvedValue({ rowCount: 0, totalBytes: 0 })
+                    : jest.fn().mockRejectedValue(new Error(message)),
+            });
+            const view = renderRecorder(runtime);
+            try {
+                fireEvent.click(within(view.host).getByRole('button', { name: 'Upload Session' }));
+                expect(screen.queryByText(message)).not.toBeInTheDocument();
+                expect(runtime.streamRecordedTelemetry).not.toHaveBeenCalled();
+                const buttons = screen.getAllByRole('button', { name: 'Upload Session' });
+                fireEvent.click(buttons[buttons.length - 1]);
+
+                expect(await screen.findByText(message)).toBeInTheDocument();
+                expect(screen.getByRole('button', { name: 'Retry Upload' })).toBeEnabled();
+                expect(runtime.clearPersistedDraft).not.toHaveBeenCalled();
+                expect(window.electronAPI.deleteTempFile).not.toHaveBeenCalled();
+                expect(mockApiPost.mock.calls.some(([url]) => String(url).includes('/complete?'))).toBe(false);
+            } finally { view.unmount(); view.host.remove(); }
+        },
+    );
+
     it('reads all recorded fields on demand for a restored session without uploading', async () => {
         const runtime = createRuntime({
             recordingState: RecordingState.UPLOAD_READY,
             recordingFileKey: 'C:\\recordings\\restored.jsonl',
-            recordingFileValidation: { exists: true, readable: true, hasData: true, size: 100 },
             streamRecordedTelemetry: jest.fn(async (onChunk) => {
                 onChunk([{ Physics_speed_kmh: 100 }]);
                 onChunk([{ Graphics_car_coordinates: [{ x: 1, y: 2, z: 3 }], Static_track: 'Monza' }]);

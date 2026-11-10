@@ -1,5 +1,12 @@
 .reference-range-map { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--lp-border, #343b46); max-height: none; }
-.reference-range-map__track { display: block; width: 100%; height: auto; border-radius: 6px; background: var(--lp-bg, #10131a); }
+.reference-range-map__controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.reference-range-map__controls button { padding: 5px 9px; border: 1px solid var(--lp-border, #343b46); border-radius: 4px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.reference-range-map__controls button:hover:not(:disabled) { background: rgba(164, 173, 187, 0.08); }
+.reference-range-map__controls button:disabled { opacity: 0.35; cursor: default; }
+.reference-range-map__controls span { min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
+.reference-range-map__controls button:focus-visible, .reference-range-map__track:focus-visible { outline: 2px solid var(--lp-green, #37efac); outline-offset: 2px; }
+.reference-range-map__track { display: block; width: 100%; height: auto; overflow: hidden; border-radius: 6px; background: var(--lp-bg, #10131a); cursor: grab; touch-action: none; user-select: none; }
+.reference-range-map__track[data-dragging="true"] { cursor: grabbing; }
 .reference-range-map__track path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .reference-range-map__line { stroke: #687487; stroke-width: 10; }
 .reference-range-map__deceleration { stroke: #ffae66; stroke-width: 10; }

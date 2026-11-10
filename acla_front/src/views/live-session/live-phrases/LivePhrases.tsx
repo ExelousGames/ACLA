@@ -9,12 +9,14 @@ import type { LiveSessionHandle } from '../LiveSessionView';
 import type { TtsPack } from 'components/tts';
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import { audioManager, type PlaybackHandle } from 'services/audio';
-import { PHRASE_DEFINITIONS, PhraseEngine, PhraseSnapshot, type PhraseEvent } from './phrase-engine';
-import { LivePhraseOverlay, LIVE_PHRASE_DISPLAY_MS } from './LivePhraseOverlay';
-import { copyPhraseReference, MAX_DRIVING_CAUTION, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
+import { PHRASE_DEFINITIONS, PhraseEngine, PhraseSnapshot, conditionsMatch, type PhraseEvent } from './phrase-engine';
+import { LivePhraseOverlay } from './LivePhraseOverlay';
+import { copyPhraseMap, copyPhraseReference, MAX_DRIVING_CAUTION, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
+import { createPhraseMapContext } from './phrase-map-context';
+import type { ReferenceCornerBounds } from './phrase-reference-guidance';
 import ReferenceRangeMap from './graphs/ReferenceRangeMap';
 import ClosureTree from './ClosureTree';
-import { Phrase, type PhraseInstance } from './phrase';
+import { Phrase, PHRASE_SILENCE_LEVEL, type PhraseInstance } from './phrase';
 import { getPhraseSpeechInstances, loadAllPhraseSpeech } from './phrase-speech';
 import './LivePhrases.css';
 
@@ -35,7 +37,9 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
     const [enabled, setEnabled] = useState(false);
     const [drivingAggression, setDrivingAggression] = useState(REFERENCE_DRIVING_AGGRESSION);
     const [rangeBaseline, setRangeBaseline] = useState<TopLapReferenceEntry | null>(null);
-    const rangeReference = useMemo(() => copyPhraseReference(rangeBaseline, drivingAggression), [rangeBaseline, drivingAggression]);
+    const [rangeCorners, setRangeCorners] = useState<readonly ReferenceCornerBounds[]>([]);
+    const rangeReference = useMemo(() => copyPhraseReference(rangeBaseline, drivingAggression, rangeCorners),
+        [rangeBaseline, drivingAggression, rangeCorners]);
     const aggressionRef = useRef(drivingAggression);
     aggressionRef.current = drivingAggression;
     const updateAggression = useRef<((value: number) => void) | null>(null);
@@ -43,13 +47,17 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
     const [overlayError, setOverlayError] = useState<string | null>(null);
     const [voiceError, setVoiceError] = useState<string | null>(null);
     const [speechStatus, setSpeechStatus] = useState<'Disabled' | 'Preparing' | 'Ready' | 'Incomplete'>('Disabled');
+    const [speechLevel, setSpeechLevel] = useState(0);
     const voicePacks = useRef(new Map<string, TtsPack>());
     const snapshotRef = useRef(snapshot);
     snapshotRef.current = snapshot;
 
     // Keep the range preview available while detection and speech are disabled.
     useEffect(() => {
-        const update = () => setRangeBaseline(copyPhraseReference(root?.getLiveReferenceLap() ?? null));
+        const update = () => {
+            setRangeBaseline(copyPhraseReference(root?.getLiveReferenceLap() ?? null));
+            setRangeCorners(createPhraseMapContext(copyPhraseMap(root?.getLiveCircuitMap() ?? null)).cornerBounds);
+        };
         const unsubscribe = root?.subscribeLiveCircuitMap(update);
         update();
         return unsubscribe;
@@ -57,9 +65,14 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
 
     useEffect(() => {
         const engine = new PhraseEngine();
+        // Prepared WAVs contain only the first through last audible frames.
+        const updateSpeechDurations = () => engine.setSpeechDurations(new Map(Array.from(voicePacks.current,
+            ([key, pack]) => [key, pack.durationMs])));
+        updateSpeechDurations();
         engine.setDrivingAggression(aggressionRef.current, Date.now());
         setOverlayError(null);
         setVoiceError(null);
+        setSpeechLevel(0);
         if (!enabled) {
             setSpeechStatus('Disabled');
             setSnapshot(engine.evaluate(Date.now()));
@@ -75,28 +88,43 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         let pendingInstance: PhraseInstance | null = null;
         let speechPrepared = false;
         let lastVoiceEventId = 0;
+        const discardPendingVoice = () => {
+            const event = pendingVoice;
+            pendingVoice = null;
+            pendingInstance = null;
+            if (event?.speech) engine.speechFinished(event.id, Date.now(), true);
+        };
         const playReadyVoice = () => {
             if (controller.signal.aborted || !speechPrepared || !pendingVoice || !pendingInstance) return;
-            if (Date.now() >= (pendingVoice.expiresAt ?? pendingVoice.timestamp + LIVE_PHRASE_DISPLAY_MS)) {
-                pendingVoice = null;
-                return;
-            }
+            if (playback?.isActive()) return;
             const pack = voicePacks.current.get(pendingInstance.cacheKey);
             if (!pack) {
-                pendingVoice = null;
-                return;
-            }
-            if (pendingVoice.expiresAt !== undefined && Date.now() + pack.durationMs >= pendingVoice.expiresAt) {
-                pendingVoice = null;
+                discardPendingVoice();
                 return;
             }
             // Consume the event even if live chat rejects or interrupts its audio.
+            const event = pendingVoice;
             pendingVoice = null;
-            playback?.stop();
+            pendingInstance = null;
+            let started = false;
             playback = audioManager.play({
                 url: pack.audioDataUrl, type: 'voice', priority: 25, // Live chat defaults to 50.
+                onLevel: (level, positionMs) => {
+                    if (controller.signal.aborted) return;
+                    setSpeechLevel(level);
+                    const bounds = pack.speechBounds;
+                    if (!started && (bounds ? positionMs >= bounds.startMs
+                        : bounds !== null && level > PHRASE_SILENCE_LEVEL)) {
+                        started = true;
+                        publish(engine.speechStarted(event.id, Date.now()));
+                    }
+                },
                 onComplete: (outcome) => {
-                    if (!controller.signal.aborted && outcome.status === 'failed') setVoiceError(outcome.error.message);
+                    if (controller.signal.aborted) return;
+                    setSpeechLevel(0);
+                    if (outcome.status === 'failed') setVoiceError(outcome.error.message);
+                    if (event.speech) publish(engine.speechFinished(event.id, Date.now(), outcome.status !== 'completed'));
+                    playReadyVoice();
                 },
             });
         };
@@ -104,6 +132,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         void loadAllPhraseSpeech(speechCatalog, voicePacks.current, controller.signal).then(({ complete, errors }) => {
             if (controller.signal.aborted) return;
             speechPrepared = true;
+            updateSpeechDurations();
             setSpeechStatus(complete ? 'Ready' : 'Incomplete');
             if (errors.length) setVoiceError(errors.map((error) => error instanceof Error ? error.message : String(error)).join('; '));
             playReadyVoice();
@@ -128,27 +157,30 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             overlay?.update(next, root?.getLiveCircuitMap() ?? null, root?.getLiveReferenceLap() ?? null);
             if (next.events.length === 0) {
                 lastVoiceEventId = 0;
-                pendingVoice = null;
+                discardPendingVoice();
                 pendingInstance = null;
                 playback?.stop();
                 playback = null;
             }
             for (const event of next.events) {
+                if (pendingVoice?.id === event.id) pendingVoice = event;
                 if (event.id <= lastVoiceEventId) continue;
                 lastVoiceEventId = event.id;
                 pendingVoice = event;
                 pendingInstance = eventInstance(event);
             }
             // Turn uses the entered Steering scope; corrections also require the current direction.
-            if (!next.telemetryReady || (pendingVoice?.steeringPhase !== undefined
+            if (!next.telemetryReady || (pendingVoice?.speech?.releaseAt !== undefined && pendingVoice.speech.startedAt === undefined)
+                || (pendingVoice?.steeringPhase !== undefined
                 && !next.state.path.includes('Steering'))
                 || (pendingVoice?.brakeRelease
                     ? next.referenceBrakeReleaseRate === undefined || !next.state.path.includes('Steering')
                     : pendingVoice?.steeringDirection !== undefined
                     ? next.referenceSteeringDirection !== pendingVoice.steeringDirection || !next.state.path.includes('Steering')
                     : !next.closures.some((rule) => rule.id === pendingVoice?.ruleId
-                        && (pendingVoice.expiresAt !== undefined ? rule.conditions.every((condition) => condition.conditionFit) : rule.status === 'Active')))) {
-                pendingVoice = null;
+                        && (pendingVoice.speech ? rule.status === 'Active' && conditionsMatch(rule.conditions)
+                            : pendingVoice.expiresAt !== undefined ? conditionsMatch(rule.conditions) : rule.status === 'Active')))) {
+                discardPendingVoice();
             }
             playReadyVoice();
         };
@@ -208,13 +240,14 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         }} />
                 </label>
                 <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% braking adjustment</span><span>100% · Direction guide</span></div>
-                <ReferenceRangeMap reference={rangeReference} />
+                <ReferenceRangeMap reference={rangeReference} corners={rangeCorners} />
             </div>
             {overlayError && <p role="alert">Unable to display live phrase in the overlay: {overlayError}</p>}
             {voiceError && <p role="alert">Unable to prepare or play live phrase speech: {voiceError}</p>}
             <div className="live-phrases__sources" role="status">
                 <span data-ready={enabled}>Detection: {enabled ? 'Enabled' : 'Disabled'}</span>
                 <span data-ready={speechStatus === 'Ready'}>Speech: {speechStatus}</span>
+                <meter aria-label="Speech level" min={0} max={1} value={speechLevel} />
                 <span data-ready={snapshot.telemetryReady}>Telemetry: {snapshot.telemetryReady ? 'Live' : 'Waiting for live data'}</span>
                 <span data-ready={snapshot.mapReady}>Live Map: {snapshot.mapReady ? 'Ready' : 'Waiting for a tagged circuit map'}</span>
                 <span data-ready={snapshot.referenceLoaded}>Reference copy: {snapshot.referenceLoaded ? 'Loaded from Live Map' : 'Waiting for Live Map reference'}</span>

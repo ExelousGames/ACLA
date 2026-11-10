@@ -1,7 +1,7 @@
 import { PhraseInstance } from './phrase';
 import { createLiveTelemetryStore, type LiveTelemetryFrameEvent } from '../live-telemetry-store';
 import type { StandardTelemetrySample } from '../live-session-types';
-import { PHRASE_DEFINITIONS, PhraseEngine, TELEMETRY_MAX_AGE_MS } from './phrase-engine';
+import { getPhraseActions, PHRASE_DEFINITIONS, PhraseEngine, TELEMETRY_MAX_AGE_MS } from './phrase-engine';
 import { getPhrasePositions } from './phrase-positions';
 import { circuitMap, vision } from './test-fixtures';
 import type { DriverCornerSummary } from '../event-log/corner-summary';
@@ -61,6 +61,22 @@ const update = (engine: PhraseEngine, now: number, eta: number, corner: 'left' |
 };
 
 describe('second-apex closure', () => {
+    it('uses the prepared instruction duration without a default reaction allowance for corner ETA scheduling', () => {
+        const instance = getPhraseActions(rule)[0].phrases[0].createInstance();
+        const short = new PhraseEngine([rule]), long = new PhraseEngine([rule]);
+        short.setSpeechDurations(new Map([[instance.cacheKey, 250]]));
+        long.setSpeechDurations(new Map([[instance.cacheKey, 2000]]));
+        for (const engine of [short, long]) {
+            engine.receiveMap(linkedMap(), 0);
+            update(engine, 0, 3);
+        }
+        expect(update(long, 750, 2.25).events).toHaveLength(0);
+        expect(update(short, 1250, 1.75).events).toHaveLength(0);
+        const spoken = update(long, 1250, 1.75);
+        expect(spoken.events).toEqual([expect.objectContaining({ sentence, timestamp: 1250,
+            expiresAt: 3000, speech: { durationMs: 2000, preparationTimeMs: 2000, reactionAllowanceMs: 0 } })]);
+    });
+
     describe('Inside the Long Straight', () => {
         const path = ['root', rule.name, 'Inside the Long Straight'];
         const setup = () => {

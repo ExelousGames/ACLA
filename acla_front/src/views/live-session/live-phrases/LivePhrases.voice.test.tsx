@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { synthesizeProsodyTts, type TtsPack } from 'components/tts';
 import { OperationComponentRefProvider, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
 import { audioManager, type PlaybackHandle } from 'services/audio';
-import { installAudioDoubles } from 'services/audio/test-audio';
+import { installAudioDoubles, TestAudioContext } from 'services/audio/test-audio';
 import { createLiveTelemetryStore } from '../live-telemetry-store';
 import LivePhrases from './LivePhrases';
 import { PHRASE_DEFINITIONS, PhraseCondition, PhraseEngine } from './phrase-engine';
@@ -83,7 +83,9 @@ it('prepares on enable, speaks each trigger once without an overlay, and reuses 
     expect(screen.getByText('Speech: Disabled')).toHaveAttribute('data-ready', 'false');
     await view.enable();
     expect(synthesize.mock.calls.map(([, , request]) => request.text)).toEqual(sentences);
-    expect(sentences).toEqual(expect.arrayContaining(['Release brake slower.', 'Release brake faster.', 'Hold brake pressure.', 'Throttle.', 'More throttle.', 'Less throttle.']));
+    expect(sentences).toEqual(expect.arrayContaining(['Hold brake pressure.', 'Throttle.', 'More throttle.', 'Less throttle.']));
+    expect(sentences).not.toContain('Release brake slower.');
+    expect(sentences).not.toContain('Release brake faster.');
     expect(sentences).not.toContain('Less brake.');
     expect(sentences).not.toContain('Release the throttle.');
     expect(sentences).not.toContain('Throttle soon.');
@@ -119,7 +121,7 @@ it('plays the additional chicane action using its own prepared sentence', async 
     try {
         const view = mount();
         await view.enable();
-        expect(synthesize).toHaveBeenCalledWith(expect.any(Array), [0, 0, 0], { text: 'brake early, Hold inside', speed: 1.2, language: 'en-us' }, expect.any(AbortSignal));
+        expect(synthesize).toHaveBeenCalledWith(expect.any(Array), [0, 0, 0], { text: 'brake early, Hold inside', speed: 1.2, language: 'en-us' }, expect.any(AbortSignal), true);
         await act(async () => { view.frame(); });
         expect(play).toHaveBeenCalledTimes(1);
         expect(play).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -129,6 +131,81 @@ it('plays the additional chicane action using its own prepared sentence', async 
     } finally {
         receive.mockRestore();
     }
+});
+
+it('schedules by the trimmed audible duration and waits through pauses and buffering for playback completion', async () => {
+    synthesize.mockImplementation(async (_curves, _inputs, { text }) => ({
+        ...pack(text), durationMs: 1400, speechBounds: { startMs: 0, endMs: 1400 },
+    }));
+    const durations = jest.spyOn(PhraseEngine.prototype, 'setSpeechDurations');
+    const started = jest.spyOn(PhraseEngine.prototype, 'speechStarted');
+    const finished = jest.spyOn(PhraseEngine.prototype, 'speechFinished');
+    const play = jest.spyOn(audioManager, 'play');
+    const view = mount();
+    await view.enable();
+    expect(Array.from(durations.mock.calls[durations.mock.calls.length - 1][0].values())).toEqual(instances.map(() => 1400));
+    await view.trigger();
+    const media = audio.media[0];
+    const meter = TestAudioContext.instances[0];
+    await act(async () => { jest.advanceTimersByTime(500); });
+    expect(screen.getByLabelText('Closure state')).toHaveTextContent('say phrase');
+    expect(screen.getByLabelText('Speech level')).toHaveAttribute('value', '0');
+    expect(started).not.toHaveBeenCalled();
+    Object.defineProperty(media, 'paused', { configurable: true, value: false });
+    media.currentTime = 0.001;
+    meter.level = 0.2;
+    await act(async () => { jest.advanceTimersByTime(16); });
+    expect(Number(screen.getByLabelText('Speech level').getAttribute('value'))).toBeGreaterThan(0);
+    expect(started).toHaveBeenCalledTimes(1);
+    // A gap 506 ms into the clip must not release the phrase for a sibling cue.
+    media.currentTime = 0.506;
+    meter.level = 0;
+    await act(async () => { jest.advanceTimersByTime(16); });
+    expect(screen.getByLabelText('Closure state')).toHaveTextContent('say phrase');
+    await act(async () => { media.dispatchEvent(new Event('waiting')); jest.advanceTimersByTime(3500); view.frame(); });
+    expect(finished).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Closure state')).toHaveTextContent('say phrase');
+    media.currentTime = 1.399;
+    meter.level = 0.2;
+    await act(async () => { jest.advanceTimersByTime(16); });
+    expect(finished).not.toHaveBeenCalled();
+    media.currentTime = 1.4;
+    meter.level = 0;
+    await act(async () => { jest.advanceTimersByTime(16); });
+    expect(finished).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Closure state')).toHaveTextContent('say phrase');
+    expect(play.mock.results[0].value.isActive()).toBe(true);
+    expect(audio.pause).not.toHaveBeenCalled();
+    await act(async () => { media.dispatchEvent(new Event('ended')); });
+    expect(finished).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('Closure state')).toHaveTextContent(/^State: root$/);
+    expect(play.mock.results[0].value.outcome).toEqual({ status: 'completed' });
+    view.unmount();
+    expect(meter.close).toHaveBeenCalledTimes(1);
+    const reads = meter.analyser.getFloatTimeDomainData.mock.calls.length;
+    await act(async () => { jest.advanceTimersByTime(1000); });
+    expect(meter.analyser.getFloatTimeDomainData).toHaveBeenCalledTimes(reads);
+});
+
+it.each([undefined, null])('waits for natural completion when speech bounds are %s', async (speechBounds) => {
+    synthesize.mockImplementation(async (_curves, _inputs, { text }) => ({ ...pack(text), speechBounds }));
+    const started = jest.spyOn(PhraseEngine.prototype, 'speechStarted');
+    const finished = jest.spyOn(PhraseEngine.prototype, 'speechFinished');
+    const view = mount();
+    await view.enable();
+    await view.trigger();
+    const media = audio.media[0];
+    Object.defineProperty(media, 'paused', { configurable: true, value: false });
+    const meter = TestAudioContext.instances[0];
+    if (speechBounds === undefined) meter.level = 0.2;
+    await act(async () => { jest.advanceTimersByTime(16); });
+    expect(started).toHaveBeenCalledTimes(speechBounds === undefined ? 1 : 0);
+    meter.level = 0;
+    await act(async () => { jest.advanceTimersByTime(500); });
+    expect(finished).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Closure state')).toHaveTextContent('say phrase');
+    await act(async () => { media.dispatchEvent(new Event('ended')); });
+    expect(screen.getByLabelText('Closure state')).toHaveTextContent(/^State: root$/);
 });
 
 it('changes driving aggression without restarting detection or speech preparation and cancels old cues', async () => {
@@ -210,8 +287,8 @@ it.each(['left', 'right'])('prepares every variant and plays the chosen %s movem
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
 
-it.each(['on time', 'too late', 'clip too long', 'condition cleared'])(
-    'only speaks a prepared reference cue when it can finish before the action: %s', async (state) => {
+it.each(['on time', 'one millisecond late', 'expired', 'clip too long', 'condition cleared'])(
+    'plays a still-valid prepared reference cue without a deadline gate: %s', async (state) => {
         const snapshot = new PhraseEngine().evaluate(Date.now());
         snapshot.telemetryReady = true;
         const rule = snapshot.closures.find((item) => item.id === 'reference-brake')!;
@@ -226,17 +303,18 @@ it.each(['on time', 'too late', 'clip too long', 'condition cleared'])(
             await view.enable();
             await act(async () => { view.frame(); });
             expect(audio.play).not.toHaveBeenCalled();
-            if (state === 'too late') jest.setSystemTime(Date.now() + 800);
+            if (state === 'one millisecond late') jest.setSystemTime(Date.now() + 1);
+            if (state === 'expired') jest.setSystemTime(Date.now() + 2000);
             if (state === 'condition cleared') {
                 rule.conditions = [new PhraseCondition('speed', '>=', 20, 0)];
                 await act(async () => { view.frame(); });
             }
-            await act(async () => { resolve({ ...pack('Brake.'), durationMs: state === 'clip too long' ? 1300 : 500 }); });
-            expect(audio.play).toHaveBeenCalledTimes(state === 'on time' ? 1 : 0);
+            await act(async () => { resolve({ ...pack('Brake.'), durationMs: state === 'clip too long' ? 1300 : 1200 }); });
+            expect(audio.play).toHaveBeenCalledTimes(state === 'condition cleared' ? 0 : 1);
         } finally { receive.mockRestore(); }
     });
 
-it('lets Turn interrupt an earlier phrase', async () => {
+it('waits for an earlier phrase to finish before playing the next cue', async () => {
     synthesize.mockImplementation(async (_curves, _inputs, { text }) => ({ ...pack(text), durationMs: text === 'Turn' ? 400 : 3000 }));
     const snapshot = new PhraseEngine().evaluate(Date.now());
     snapshot.telemetryReady = true;
@@ -259,8 +337,11 @@ it('lets Turn interrupt an earlier phrase', async () => {
         snapshot.events = [...snapshot.events, { id: 2, ruleId: rule.id, sentence: 'Turn', timestamp: Date.now(),
             expiresAt: Date.now() + 1500, steeringPhase: 'prepare' }];
         await act(async () => { view.frame(); });
+        expect(play).toHaveBeenCalledTimes(1);
+        expect(play.mock.results[0].value.outcome).toBeUndefined();
+        await act(async () => { audio.media[0].dispatchEvent(new Event('ended')); });
         expect(play).toHaveBeenCalledTimes(2);
-        expect(play.mock.results[0].value.outcome).toEqual({ status: 'cancelled' });
+        expect(play.mock.results[0].value.outcome).toEqual({ status: 'completed' });
         expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack('Turn').audioDataUrl }));
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
@@ -328,26 +409,26 @@ it('lets live chat interrupt and suppress phrases without replaying discarded ev
     await view.trigger();
     const chat = audioManager.createStream({ type: 'voice', priority: 50, format: 'wav' });
     otherPlayback = chat;
-    chat.enqueueBase64Wav(btoa('chat'));
+    await act(async () => { chat.enqueueBase64Wav(btoa('chat')); });
     expect(play.mock.results[0].value.outcome).toEqual({ status: 'replaced' });
     // Chat retains voice priority even between spoken chunks.
     audio.media[1].dispatchEvent(new Event('ended'));
-    act(() => view.telemetry.resetSession());
+    await act(async () => { view.telemetry.resetSession(); });
     await view.trigger();
     expect(play.mock.results[1].value.outcome).toEqual({ status: 'rejected' });
     expect(chat.outcome).toBeUndefined();
     chat.stop();
     await act(async () => { view.frame(); jest.advanceTimersByTime(250); view.frame(); });
     expect(play).toHaveBeenCalledTimes(2);
-    act(() => view.telemetry.resetSession());
+    await act(async () => { view.telemetry.resetSession(); });
     await view.trigger();
     expect(play).toHaveBeenCalledTimes(3);
     expect(play.mock.results[2].value.outcome).toBeUndefined();
-    act(() => view.telemetry.resetSession());
+    await act(async () => { view.telemetry.resetSession(); });
     expect(play.mock.results[2].value.outcome).toEqual({ status: 'cancelled' });
 });
 
-it.each(['ready', 'disable', 'reset', 'expired', 'condition cleared', 'unmount'])(
+it.each(['ready', 'disable', 'reset', 'delayed', 'condition cleared', 'unmount'])(
     'handles a trigger during TTS preparation when %s', async (state) => {
         let resolve!: (value: TtsPack) => void;
         const pending = new Promise<TtsPack>((done) => { resolve = done; });
@@ -360,11 +441,13 @@ it.each(['ready', 'disable', 'reset', 'expired', 'condition cleared', 'unmount']
         expect(audio.play).not.toHaveBeenCalled();
         if (state === 'disable') fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
         if (state === 'reset') act(() => view.telemetry.resetSession());
-        if (state === 'expired') jest.setSystemTime(Date.now() + 8000);
+        if (state === 'delayed') {
+            act(() => { for (let i = 0; i < 32; i++) { jest.advanceTimersByTime(250); view.frame(); } });
+        }
         if (state === 'condition cleared') act(() => view.frame(0));
         if (state === 'unmount') view.unmount();
         await act(async () => { resolve(pack(sentence)); });
-        expect(audio.play).toHaveBeenCalledTimes(state === 'ready' ? 1 : 0);
+        expect(audio.play).toHaveBeenCalledTimes(state === 'ready' || state === 'delayed' ? 1 : 0);
         if (state === 'disable') expect(screen.getByText('Speech: Disabled')).toHaveAttribute('data-ready', 'false');
         if (state === 'ready') {
             await act(async () => { view.frame(); });
@@ -455,7 +538,7 @@ it('loads an explicit batch once, preserving different settings and reusing iden
     await loadAllPhraseSpeech(variants, packs, signal);
     expect(synthesize).toHaveBeenCalledTimes(2);
     expect(packs.size).toBe(2);
-    expect(synthesize).toHaveBeenCalledWith(variants[1].curves, [0, 0.75, 0], variants[1].speech, signal);
+    expect(synthesize).toHaveBeenCalledWith(variants[1].curves, [0, 0.75, 0], variants[1].speech, signal, true);
 });
 
 it.each(['ready', 'release ended', 'exited Steering', 'stale telemetry'])(

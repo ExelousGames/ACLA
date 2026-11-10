@@ -2,7 +2,7 @@ import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import type { StandardTelemetrySample } from '../live-session-types';
 import { createLiveTelemetryStore, type LiveTelemetryFrameEvent } from '../live-telemetry-store';
 import type { TrackVisionDetection } from '../track-vision/track-vision-types';
-import { PhraseEngine, PHRASE_DEFINITIONS } from './phrase-engine';
+import { getPhraseActions, PhraseEngine, PHRASE_DEFINITIONS } from './phrase-engine';
 import { readReferenceGuidance, referencePositionAhead } from './phrase-reference-guidance';
 import { circuitMap, steeringCornerFixture } from './test-fixtures';
 
@@ -36,10 +36,10 @@ function capture(lap: TopLapReferenceEntry, sample: StandardTelemetrySample, now
             references: { reference: { x: 0, y: 0, z: 0 } } } };
 }
 
-it.each([36, 72, 180])('enters Brake and speaks its child 500 ms early at %s km/h without an entry wait', (speed) => {
+it.each([36, 72, 180])('enters Brake and speaks its child one second early at %s km/h without an entry wait', (speed) => {
     const lap = referenceLap(), engine = new PhraseEngine();
     engine.receiveMap(null, 0, lap);
-    const lead = speed / 3.6 * 0.5 / 1000;
+    const lead = speed / 3.6 / 1000;
     const before = sampleAt(0.2 - lead - 0.00001, speed);
     expect(engine.receiveTelemetry(frame(before), 1199).state.path).toEqual(['root']);
     // Waiting while still before the predicted boundary must not manufacture an entry.
@@ -56,6 +56,33 @@ it.each([36, 72, 180])('enters Brake and speaks its child 500 ms early at %s km/
     expect(engine.receiveTelemetry(frame(speaking), 1403).events).toEqual(result.events);
 });
 
+it('keeps the parent preparation at one second regardless of the child clip length', () => {
+    const definition = PHRASE_DEFINITIONS.find(({ referenceCue }) => referenceCue === 'brake')!;
+    const measure = jest.spyOn(definition.conditions[0], 'evaluate');
+    const instance = getPhraseActions(definition)[0].phrases[0].createInstance();
+    const short = new PhraseEngine([definition]), long = new PhraseEngine([definition]);
+    short.setSpeechDurations(new Map([[instance.cacheKey, 200]]));
+    long.setSpeechDurations(new Map([[instance.cacheKey, 2000]]));
+    const lap = referenceLap();
+    for (const engine of [short, long]) engine.receiveMap(null, 0, lap);
+    measure.mockClear();
+    for (const engine of [short, long]) {
+        expect(engine.receiveTelemetry(frame(sampleAt(0.182)), 1000).state.path).toEqual(['root']);
+    }
+    expect(measure).not.toHaveBeenCalled();
+    const waiting = short.receiveTelemetry(frame(sampleAt(0.1901)), 1100);
+    expect(waiting.state.path).toEqual(['root', 'Brake zone']);
+    const entered = long.receiveTelemetry(frame(sampleAt(0.1901)), 1100);
+    expect(entered.state.path).toEqual(['root', 'Brake zone']);
+    // Brake's own closure also has a one-second preparation window.
+    const spoken = long.receiveTelemetry(frame(sampleAt(0.1913)), 1200);
+    expect(spoken.state.path).toEqual(['root', 'Brake zone', 'Brake', 'say phrase']);
+    expect(spoken.events[0].speech).toMatchObject({ durationMs: 2000, preparationTimeMs: 2000 });
+    expect(short.receiveTelemetry(frame(sampleAt(0.1913)), 1200).events).toHaveLength(0);
+    expect(short.receiveTelemetry(frame(sampleAt(0.1993)), 1300).events).toHaveLength(1);
+    measure.mockRestore();
+});
+
 it.each([['Throttle', 0, 0.601875], ['More throttle', 0.3, 0.605625]] as const)(
     'previews the Throttle parent and %s child using the same position', (name, pedal, boundary) => {
         const lap = referenceLap(), engine = new PhraseEngine();
@@ -65,10 +92,10 @@ it.each([['Throttle', 0, 0.601875], ['More throttle', 0.3, 0.605625]] as const)(
             engine.receiveVision(capture(lap, sample, now), now);
             return engine.receiveTelemetry(frame(sample), now);
         };
-        expect(at(0.59499, 1000).state.path).toEqual(['root']);
-        expect(at(0.59501, 1001).state.path).toEqual(['root', 'Throttle zone']);
-        expect(at(boundary - 0.00501, 1002).events).toEqual([]);
-        const result = at(boundary - 0.00499, 1003);
+        expect(at(0.58999, 1000).state.path).toEqual(['root']);
+        expect(at(0.59001, 1001).state.path).toEqual(['root', 'Throttle zone']);
+        expect(at(boundary - 0.01001, 1002).events).toEqual([]);
+        const result = at(boundary - 0.00999, 1003);
         expect(result.state.path).toEqual(['root', 'Throttle zone', name, 'say phrase']);
         expect(result.events).toEqual([expect.objectContaining({ sentence: `${name}.`, timestamp: 1003 })]);
     });
@@ -86,16 +113,16 @@ it.each([
         return engine.receiveTelemetry(frame(sample), now);
     };
     expect(at(0).events).toEqual([]);
-    expect(at(0.2).events).toEqual([]);
-    // Measured pressure is 30%, but it will be 5% at the shared 500 ms decision point.
-    const measured = { ...sampleAt(start + 0.004), [field]: 0.3 };
+    // The derivative becomes available at 200 ms; its one-second preparation window reaches the pedal threshold.
+    // Measured pressure is 40%, but the one-second preparation window reaches the pedal threshold.
+    const measured = { ...sampleAt(start + 0.002), [field]: 0.4 };
     expect(readReferenceGuidance(measured, capture(lap, measured, 1400), lap, 'acc', 1400)[cue]).toBeUndefined();
-    const result = at(0.4);
+    const result = at(0.2);
     expect(result.state.path).toEqual(['root', `${name} zone`, name, 'say phrase']);
-    expect(result.events).toEqual([expect.objectContaining({ sentence: `${name}.`, timestamp: 1400 })]);
+    expect(result.events).toEqual([expect.objectContaining({ sentence: `${name}.`, timestamp: 1200 })]);
 });
 
-it('previews Steering and its direction child before the actual turn starts', () => {
+it('previews Steering and its direction child at the centerline corner start', () => {
     const { reference, map } = steeringCornerFixture();
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
     engine.receiveMap(map, 0, reference);
@@ -107,26 +134,151 @@ it('previews Steering and its direction child before the actual turn starts', ()
         return engine.receiveTelemetry(frame(sample), now);
     };
     expect(at(0.24499, 1000).events).toEqual([]);
-    expect(at(0.24501, 1001).events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1001 })]);
-    expect(at(0.24502, 1002).events).toHaveLength(1);
-    expect(at(0.24502, 1500).events).toHaveLength(1);
-    const correction = at(0.24502, 1501);
+    expect(at(0.25999, 1000).events).toEqual([]);
+    expect(at(0.26001, 1001).events).toEqual([expect.objectContaining({ sentence: 'Turn', timestamp: 1001 })]);
+    expect(at(0.26002, 1002).events).toHaveLength(1);
+    expect(at(0.26002, 1500).events).toHaveLength(1);
+    const correction = at(0.26002, 1501);
     expect(correction.state.path).toEqual(['root', 'Steering', 'Stay right a bit', 'say phrase']);
     expect(correction.events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Stay right a bit']);
+});
+
+describe.each([0, 0.7])('Steering exit at the current position (lap offset %s)', (offset) => {
+    it.each([0.35, 0.45])('waits for the captured range end with corner end %s', (cornerEnd) => {
+        const { reference, map } = steeringCornerFixture();
+        const positionAt = (position: number) => (position + offset) % 1;
+        const points = reference.x.map((position, index) => ({ position: positionAt(position), row: reference.y[index] }))
+            .sort((a, b) => a.position - b.position);
+        reference.x = points.map(({ position }) => position);
+        reference.y = points.map(({ row }) => row);
+        map.samples.middle_line = map.samples.middle_line!.map((point) => ({ ...point,
+            normalized_position: positionAt(point.normalized_position) })).sort((a, b) => a.normalized_position - b.normalized_position);
+        map.centerline_segments![0].start_position = positionAt(0.27);
+        map.centerline_segments![0].end_position = positionAt(cornerEnd);
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        engine.receiveMap(map, 0, reference);
+        const at = (position: number, now: number) => engine.receiveTelemetry(frame(sampleAt(positionAt(position))), now);
+
+        expect(at(0.26001, 1000).state.path).toContain('Steering');
+        expect(at(0.26001, 1001).state.path).toContain('Steering'); // Current position is still before the corner.
+        expect(at(0.28, 1100).state.path).toContain('Steering');
+        expect(at(0.2799, 1150).state.path).toContain('Steering'); // Small backward movement stays inside the range.
+        if (offset) expect(at(0.30, 1200).state.path).toContain('Steering'); // Cross start/finish.
+        const end = Math.min(cornerEnd, 0.41);
+        expect(at(end - 0.005, 1300).state.path).toContain('Steering'); // Lookahead is already past the end.
+        expect(engine.evaluate(3000).state.path).toContain('Steering'); // Stale telemetry cannot cause an exit.
+        expect(at(end - 0.00001, 3100).state.path).toContain('Steering');
+        expect(at(end + 1e-10, 3200).state.path).toEqual(['root']);
+    });
+});
+
+it('exits an anticipated Steering range when current telemetry skips past the whole turn', () => {
+    const { reference, map } = steeringCornerFixture();
+    const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+    engine.receiveMap(map, 0, reference);
+    expect(engine.receiveTelemetry(frame(sampleAt(0.26001)), 1000).state.path).toContain('Steering');
+    expect(engine.receiveTelemetry(frame(sampleAt(0.42)), 1100).state.path).toEqual(['root']);
+});
+
+describe('Steering exit on positive reference acceleration', () => {
+    it.each([36, 72, 180])('exits 200 ms before the reference gains speed at %s km/h', (speed) => {
+        const { reference, map } = steeringCornerFixture();
+        reference.y.forEach((row, i) => { row[6] = 36 + Math.max(0, i - 30); });
+        const definition = PHRASE_DEFINITIONS.find(({ referenceCue }) => referenceCue === 'steering')!;
+        const engine = new PhraseEngine([definition]);
+        // A longer speech lead must not extend the exit's fixed 200 ms window.
+        const instance = getPhraseActions(definition)[0].phrases[0].createInstance();
+        engine.setSpeechDurations(new Map([[instance.cacheKey, 2000]]));
+        engine.receiveMap(map, 0, reference);
+        const at = (position: number, now: number) => engine.receiveTelemetry(frame(sampleAt(position, speed)), now);
+        const lead = speed / 3.6 * 0.2 / 1000;
+
+        const entered = at(0.27, 1000);
+        expect(entered.state.path).toContain('Steering');
+        expect(entered.events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+        engine.speechStarted(entered.events[0].id, 1000);
+        const before = at(0.3 - lead - 0.00001, 1001);
+        expect(before.state.path).toContain('Steering');
+        const exit = before.root.children.find(({ id }) => id === 'reference-steering')!.children
+            .find(({ name }) => name === 'exit to root')!;
+        expect(exit.conditions).toContainEqual(expect.objectContaining({
+            description: 'Reference acceleration is positive within the next 200 ms', connector: 'or', conditionFit: false,
+        }));
+        expect(at(0.3 - lead + 0.00001, 1002).state.path).toEqual(['root']);
+        const stillAccelerating = at(0.301, 1003);
+        expect(stillAccelerating.state.path).toEqual(['root']);
+        expect(stillAccelerating.events.map(({ id }) => id)).toEqual([entered.events[0].id]);
+    });
+
+    it('checks inside the 200 ms window when acceleration has ended at its endpoint', () => {
+        const { reference, map } = steeringCornerFixture();
+        reference.y.forEach((row, i) => { row[6] = i <= 30 ? 36 : 40; });
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        engine.receiveMap(map, 0, reference);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.27, 360)), 1000).state.path).toContain('Steering');
+        // At 100 m/s, the 100 ms frame is inside the rise and the 200 ms frame is on the plateau.
+        expect(readReferenceGuidance(sampleAt(0.315), null, reference, 'acc', 1001).acceleration).toBe(0);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.295, 360)), 1001).state.path).toEqual(['root']);
+    });
+
+    it('uses the shared predicted position when a measured progress rate is available', () => {
+        const { reference, map } = steeringCornerFixture();
+        reference.y.forEach((row, i) => { row[6] = 36 + Math.max(0, i - 30); });
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        engine.receiveMap(map, 0, reference);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.293)), 1000).state.path).toContain('Steering');
+        expect(engine.receiveTelemetry(frame(sampleAt(0.295)), 1100).state.path).toContain('Steering');
+        // The measured rate reaches 0.301 in 200 ms; the speed-only fallback would stop at 0.299.
+        expect(engine.receiveTelemetry(frame(sampleAt(0.297)), 1200).state.path).toEqual(['root']);
+    });
+
+    it('looks across start/finish for positive reference acceleration', () => {
+        const { reference, map } = steeringCornerFixture();
+        reference.y.forEach((row, i) => { row[6] = 36 + Math.max(0, i - 30); });
+        const positionAt = (position: number) => (position + 0.701) % 1;
+        const points = reference.x.map((position, index) => ({ position: positionAt(position), row: reference.y[index] }))
+            .sort((a, b) => a.position - b.position);
+        reference.x = points.map(({ position }) => position);
+        reference.y = points.map(({ row }) => row);
+        map.samples.middle_line = map.samples.middle_line!.map((point) => ({ ...point,
+            normalized_position: positionAt(point.normalized_position) })).sort((a, b) => a.normalized_position - b.normalized_position);
+        map.centerline_segments![0].start_position = positionAt(0.27);
+        map.centerline_segments![0].end_position = positionAt(0.45);
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        engine.receiveMap(map, 0, reference);
+        expect(engine.receiveTelemetry(frame(sampleAt(positionAt(0.27))), 1000).state.path).toContain('Steering');
+        expect(engine.receiveTelemetry(frame(sampleAt(positionAt(0.2979))), 1001).state.path).toContain('Steering');
+        expect(engine.receiveTelemetry(frame(sampleAt(positionAt(0.2985))), 1002).state.path).toEqual(['root']);
+    });
+
+    it.each(['flat', 'easing deceleration', 'missing', 'invalid'])('keeps Steering until range exit with %s reference speed', (profile) => {
+        const { reference, map } = steeringCornerFixture();
+        if (profile === 'easing deceleration') reference.y.forEach((row, i) => { row[6] = 36 + 100 / (i + 1); });
+        if (profile === 'missing') {
+            reference.target_features.pop();
+            reference.y.forEach((row) => row.pop());
+        }
+        if (profile === 'invalid') reference.y[31][6] = NaN;
+        const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'steering'));
+        engine.receiveMap(map, 0, reference);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.27)), 1000).state.path).toContain('Steering');
+        expect(engine.receiveTelemetry(frame(sampleAt(0.299)), 1001).state.path).toContain('Steering');
+        expect(engine.receiveTelemetry(frame(sampleAt(0.42)), 1002).state.path).toEqual(['root']);
+    });
 });
 
 it('previews the Slowly release brake child when reference deceleration is about to ease', () => {
     const { reference, map } = steeringCornerFixture();
     reference.y.forEach((row, i) => {
         row[4] = 0.8;
-        row[6] = Math.sqrt(i <= 25 ? 400 : Math.max(100, 320 - 40 * (i - 26))) * 3.6;
+        row[6] = Math.sqrt(i <= 27 ? 400 : Math.max(100, 320 - 40 * (i - 28))) * 3.6;
     });
     const engine = new PhraseEngine();
     engine.receiveMap(map, 0, reference);
     const at = (position: number, now: number) => engine.receiveTelemetry(frame({ ...sampleAt(position), Physics_brake: 0.8 }), now);
-    expect(at(0.24501, 1000).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(at(0.25499, 1001).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
-    expect(at(0.25501, 1002).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Slowly release brake']);
+    expect(at(0.26001, 1000).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    expect(at(0.26999, 1001).events.map(({ sentence }) => sentence)).toEqual(['Turn']);
+    expect(at(0.27001, 1002).events.map(({ sentence }) => sentence)).toEqual(['Turn', 'Slowly release brake']);
 });
 
 it.each([-4, 8])('previews straight membership for Turn to reference line and its children (offset %s)', (lateral) => {
@@ -138,8 +290,8 @@ it.each([-4, 8])('previews straight membership for Turn to reference line and it
         engine.receiveVision(capture(lap, sample, now, lateral), now);
         return engine.receiveTelemetry(frame(sample), now);
     };
-    expect(at(0.39499, 1000).state.path).toEqual(['root']);
-    const result = at(0.39501, 1001);
+    expect(at(0.38999, 1000).state.path).toEqual(['root']);
+    const result = at(0.39001, 1001);
     expect(result.state.path).toEqual(['root', 'Turn to reference line', lateral < 0 ? 'Move to the left' : 'Move to the right',
         lateral < 0 ? 'Small movement' : 'Medium movement', 'say phrase']);
     expect(result.events[0].timestamp).toBe(1001);
@@ -150,21 +302,21 @@ it.each([false, true])('advances across start/finish (duplicate endpoint: %s)', 
     const lap = referenceLap();
     lap.y.forEach((row, i) => { row[3] = i >= 1 && i < 10 ? 0.8 : 0; row[4] = 0; });
     if (duplicate) { lap.x.push(1); lap.y.push([...lap.y[0]]); }
-    expect(referencePositionAhead(sampleAt(0.999), lap)).toBeCloseTo(0.004, 10);
+    expect(referencePositionAhead(sampleAt(0.999), lap)).toBeCloseTo(0.029, 10);
     const engine = new PhraseEngine();
     engine.receiveMap(null, 0, lap);
-    expect(engine.receiveTelemetry(frame(sampleAt(0.99499)), 1000).state.path).toEqual(['root']);
-    expect(engine.receiveTelemetry(frame(sampleAt(0.99501)), 1001).state.path).toEqual(['root', 'Brake zone']);
-    expect(engine.receiveTelemetry(frame(sampleAt(0.9963)), 1002).events[0].sentence).toBe('Brake.');
+    expect(engine.receiveTelemetry(frame(sampleAt(0.98999)), 1000).state.path).toEqual(['root']);
+    expect(engine.receiveTelemetry(frame(sampleAt(0.99001)), 1001).state.path).toEqual(['root', 'Brake zone']);
+    expect(engine.receiveTelemetry(frame(sampleAt(0.9913)), 1002).events[0].sentence).toBe('Brake.');
 });
 
 it('uses physical XYZ distance on uneven normalized samples without changing telemetry or the reference', () => {
     const lap = referenceLap();
-    // A 3-4-5 incline with uneven normalized spacing; at 14.4 km/h a 500 ms lead lands 2 m along it.
+    // A 3-4-5 incline with uneven normalized spacing; at 14.4 km/h the three-second forecast travels 12 m.
     lap.x = [0, 0.1, 0.7, 0.9];
     lap.y = [[0, 0, 0, 0, 0, 0], [0, 3, 4, 0, 0, 0], [20, 3, 4, 0, 0, 0], [20, 0, 0, 0, 0, 0]];
     const sample = sampleAt(0, 14.4), before = JSON.stringify([sample, lap]);
-    expect(referencePositionAhead(sample, lap)).toBeCloseTo(0.04, 10);
+    expect(referencePositionAhead(sample, lap)).toBeCloseTo(0.31, 10);
     expect(JSON.stringify([sample, lap])).toBe(before);
     expect(referencePositionAhead(sampleAt(0.2, 0), lap)).toBe(0.2);
 });
@@ -191,7 +343,7 @@ it('keeps capture validation on actual progress and real time while previewing r
     expect(engine.evaluate(now + 1501, true).telemetryReady).toBe(false);
 });
 
-it.each([['entry', 190], ['exit', 290]] as const)('uses the first progress derivative for brake-zone %s', (transition, start) => {
+it.each([['entry', 190], ['reference end', 290]] as const)('uses predicted brake-zone entry without a reference-end exit (%s)', (transition, start) => {
     const engine = new PhraseEngine(), lap = referenceLap();
     engine.receiveMap(null, 0, lap);
     const at = (t: number) => engine.receiveTelemetry(frame(sampleAt(
@@ -199,10 +351,27 @@ it.each([['entry', 190], ['exit', 290]] as const)('uses the first progress deriv
     at(0); at(0.2);
     const before = at(0.4);
     // The latest progress rate predicts 196.4 / 296.4 m at t=0.4.
-    expect(before.state.path.includes('Brake zone')).toBe(transition === 'exit');
-    expect(at(0.43).state.path.includes('Brake zone')).toBe(transition === 'exit');
+    expect(before.state.path.includes('Brake zone')).toBe(transition !== 'entry');
+    expect(at(0.43).state.path.includes('Brake zone')).toBe(transition !== 'entry');
     // At t=0.65 the linear preview reaches 200.775 / 300.775 m.
     const crossed = at(0.65);
-    expect(crossed.state.path.includes('Brake zone')).toBe(transition === 'entry');
+    expect(crossed.state.path).toContain('Brake zone');
     if (transition === 'entry') expect(at(0.7).events.map(({ sentence }) => sentence)).toContain('Brake.');
+    else {
+        expect(at(0.9).state.path).toContain('Brake zone'); // Current position is still 299.9 m.
+        expect(at(0.91).state.path).toContain('Brake zone'); // Crossing the 300 m reference end does not exit.
+    }
+});
+
+it.each([false, true])('keeps early brake entry across the lap seam and reference end (skip interval: %s)', (skip) => {
+    const lap = referenceLap(), engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue === 'brake'));
+    lap.y.forEach((row, i) => { row[3] = i >= 99 || i < 2 ? 0.8 : 0; row[4] = 0; });
+    engine.receiveMap(null, 0, lap);
+    const at = (position: number, now: number) => engine.receiveTelemetry(frame({ ...sampleAt(position), Physics_brake: 0.8 }), now);
+    expect(at(0.9701, 1000).state.path).toEqual(['root', 'Brake zone']);
+    // Frozen measured progress must not cancel the anticipated entry or manufacture an exit.
+    expect(at(0.9701, 1100).state.path).toEqual(['root', 'Brake zone']);
+    if (!skip) expect(at(0.019999, 2000).state.path).toEqual(['root', 'Brake zone']);
+    expect(at(0.02, 2100).state.path).toEqual(['root', 'Brake zone']);
+    expect(at(0.9701, 3000).state.path).toEqual(['root', 'Brake zone']);
 });

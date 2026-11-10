@@ -85,16 +85,12 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     }, [analysisContext.sessionGame, recorderHostId]);
 
     const uploadInFlightRef = useRef(false);
-    const restoredFileIsUploadable = analysisContext.recordingFileValidation
-        ? analysisContext.recordingFileValidation.exists
-            && analysisContext.recordingFileValidation.readable
-            && analysisContext.recordingFileValidation.hasData
-        : null;
     const hasRecordedData = Boolean(analysisContext.recordingFileKey)
-        && (restoredFileIsUploadable ?? (
+        && (
             recordedSampleCount > 0
             || state === RecordingState.RECORDING
-        ));
+            || state === RecordingState.UPLOAD_READY
+        );
 
     const uploadStatusLabel = isUploading
         ? 'Uploading...'
@@ -214,15 +210,12 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     const handleUpload = useCallback(async () => {
         if (uploadInFlightRef.current) return false;
         const initialContext = analysisContextRef.current;
-        const validationAllowsUpload = initialContext.recordingFileValidation
-            ? initialContext.recordingFileValidation.exists
-                && initialContext.recordingFileValidation.readable
-                && initialContext.recordingFileValidation.hasData
-            : (
+        const canAttemptUpload = Boolean(initialContext.recordingFileKey)
+            && (
                 liveTelemetryStore.getSnapshot().committedSampleCount > 0
                 || initialContext.recordingState === RecordingState.RECORDING
+                || initialContext.recordingState === RecordingState.UPLOAD_READY
             );
-        const canAttemptUpload = Boolean(initialContext.recordingFileKey) && validationAllowsUpload;
         if (!canAttemptUpload) { setUploadError('No telemetry data available for upload'); setShowRetryButton(false); return false; }
         if (!initialContext.recordingMetadata?.sessionName || !initialContext.recordingMetadata?.mapName || !initialContext.sessionGame || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
         uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Preparing telemetry data...'); setUploadError(null); setShowRetryButton(false);
@@ -345,7 +338,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                 <AlertDialog.Description size="2">
                     Upload the telemetry and recorded video, discard them, or keep the current session open.
                 </AlertDialog.Description>
-                {(isUploading || showRetryButton || uploadError || analysisContext.restorationError) && (
+                {(isUploading || showRetryButton || uploadError) && (
                     <Box my="4">
                         {isUploading && (
                             <>
@@ -356,7 +349,6 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                             </>
                         )}
                         {uploadError && <Text size="2" color="red" mt="2">{uploadError}</Text>}
-                        {analysisContext.restorationError && <Text size="2" color="red" mt="2">{analysisContext.restorationError}</Text>}
                         {showRetryButton && !isUploading && <Flex mt="2" gap="2"><Button size="1" variant="outline" onClick={handleRetryUpload}>Retry Upload</Button></Flex>}
                     </Box>
                 )}

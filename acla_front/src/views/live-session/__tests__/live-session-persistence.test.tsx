@@ -49,8 +49,6 @@ const RuntimeProbe = () => {
             <output data-testid="samples">{recordedSampleCount}</output>
             <output data-testid="file">{runtime.recordingFileKey || 'none'}</output>
             <output data-testid="restoration">{runtime.restorationStatus}</output>
-            <output data-testid="error">{runtime.restorationError || 'none'}</output>
-            <output data-testid="has-data">{String(runtime.recordingFileValidation?.hasData)}</output>
             <output data-testid="analysis-count">{runtime.analysisResultPages.length}</output>
         </>
     );
@@ -149,7 +147,7 @@ describe('live session draft persistence', () => {
         RecordingState.HOLDING,
         RecordingState.RESUME_READY,
         RecordingState.UPLOAD_READY,
-    ])('restores a %s draft as upload-ready without restarting live processes', async (lastRuntimeState) => {
+    ])('restores a %s draft immediately without reading telemetry or restarting live processes', (lastRuntimeState) => {
         saveDraft('Driver@Example.com', lastRuntimeState);
         const page = createLiveSessionAnalysisResultPage({
             baseline: {
@@ -159,10 +157,11 @@ describe('live session draft persistence', () => {
             elements: [{ id: 'saved-result', labels: [{ label_name: 'MSP', start_index: 0, end_index: 1 }] }],
         });
         savePersistedLiveSessionAnalysis('Driver@Example.com', { pages: [page], activePageId: page.id });
+        (window.electronAPI.startRecordedFileRead as jest.Mock).mockReturnValue(new Promise(() => {}));
 
         render(<LiveSessionProvider ownerEmail=" driver@example.com "><RuntimeProbe /></LiveSessionProvider>);
 
-        await waitFor(() => expect(screen.getByTestId('restoration')).toHaveTextContent('restored'));
+        expect(screen.getByTestId('restoration')).toHaveTextContent('restored');
         expect(screen.getByTestId('game')).toHaveTextContent('acc');
         expect(screen.getByTestId('state')).toHaveTextContent('UPLOAD_READY');
         expect(screen.getByTestId('name')).toHaveTextContent('Friday Practice');
@@ -170,11 +169,8 @@ describe('live session draft persistence', () => {
         expect(screen.getByTestId('file')).toHaveTextContent(telemetryPath);
         expect(screen.getByTestId('analysis-count')).toHaveTextContent('1');
         expect(window.electronAPI.startRecordingSession).not.toHaveBeenCalled();
-        expect(window.electronAPI.startRecordedFileRead).toHaveBeenCalledWith({
-            filePath: telemetryPath,
-            game: 'acc',
-            purpose: 'validate',
-        });
+        expect(window.electronAPI.startRecordedFileRead).not.toHaveBeenCalled();
+        expect(window.electronAPI.onRecordedFileReadEvent).not.toHaveBeenCalled();
     });
 
     it('ignores another account draft without deleting it', async () => {
@@ -189,38 +185,28 @@ describe('live session draft persistence', () => {
             .toBeDefined();
     });
 
-    it('keeps a missing recording visible as a broken upload-ready draft', async () => {
+    it('restores a draft without checking whether its recording file is readable', () => {
         saveDraft('driver@example.com', RecordingState.HOLDING);
         (window.electronAPI.startRecordedFileRead as jest.Mock).mockRejectedValue(new Error('ENOENT'));
 
         render(<LiveSessionProvider ownerEmail="driver@example.com"><RuntimeProbe /></LiveSessionProvider>);
 
-        await waitFor(() => expect(screen.getByTestId('restoration')).toHaveTextContent('error'));
+        expect(screen.getByTestId('restoration')).toHaveTextContent('restored');
         expect(screen.getByTestId('game')).toHaveTextContent('acc');
         expect(screen.getByTestId('state')).toHaveTextContent('UPLOAD_READY');
-        expect(screen.getByTestId('error')).toHaveTextContent('local recording file is missing or unreadable');
+        expect(window.electronAPI.startRecordedFileRead).not.toHaveBeenCalled();
         expect(getPersistedLiveSessionDraft('driver@example.com')).not.toBeNull();
     });
 
-    it('restores a readable empty file but marks it as having no uploadable data', async () => {
+    it('restores a draft with a zero saved sample count without inspecting its telemetry', () => {
         saveDraft('driver@example.com', RecordingState.RECORDING, 0);
-        (window.electronAPI.startRecordedFileRead as jest.Mock).mockImplementation(async () => {
-            recordedFileHandler?.({
-                type: 'complete',
-                readId: 'read-empty',
-                format: 'standard-flat',
-                game: 'acc',
-                rowCount: 0,
-                totalBytes: 0,
-            });
-            return { readId: 'read-empty' };
-        });
 
         render(<LiveSessionProvider ownerEmail="driver@example.com"><RuntimeProbe /></LiveSessionProvider>);
 
-        await waitFor(() => expect(screen.getByTestId('restoration')).toHaveTextContent('restored'));
-        expect(screen.getByTestId('has-data')).toHaveTextContent('false');
-        expect(screen.getByTestId('error')).toHaveTextContent('none');
+        expect(screen.getByTestId('restoration')).toHaveTextContent('restored');
+        expect(screen.getByTestId('state')).toHaveTextContent('UPLOAD_READY');
+        expect(screen.getByTestId('samples')).toHaveTextContent('0');
+        expect(window.electronAPI.startRecordedFileRead).not.toHaveBeenCalled();
     });
 
     it('keeps analysis history while terminally clearing the recording draft', async () => {

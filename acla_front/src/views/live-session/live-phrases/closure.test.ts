@@ -37,6 +37,48 @@ it('retains a nested closure when entry conditions change or its children finish
     expect(siblingWork).not.toHaveBeenCalled();
 });
 
+it.each([false, true])('keeps the active closure when a higher-priority sibling becomes eligible (action completed: %s)', (completed) => {
+    const work = new Action<Context>('work', 'Optional work.', jest.fn(), () => completed);
+    const active = new Closure<Context>('active', 'Stay until explicitly exited.', () => true, [
+        Action.exitToParent(({ exit }) => exit), work,
+    ]);
+    const eligible = jest.fn(({ ready }: Context) => ready);
+    const sibling = new Closure<Context>('sibling', 'Wait for the active scope to exit.', eligible, [], { priority: 10 });
+    const root = new Closure<Context>('root', 'Root.', () => true, [active, sibling]);
+    const state = new State(root);
+    state.step({ ...context, ready: false });
+    eligible.mockClear();
+    state.step(context);
+    expect(state.closure).toBe(active);
+    expect(eligible).not.toHaveBeenCalled();
+    state.step({ ...context, exit: true });
+    expect(state.path).toEqual([root]);
+    expect(eligible).not.toHaveBeenCalled();
+    state.step(context);
+    expect(state.path).toEqual([root, sibling]);
+});
+
+it('waits for a nested closure to exit before evaluating its parent exit action', () => {
+    const parentExit = jest.fn(({ ready }: Context) => ready);
+    const nested = new Closure<Context>('nested', 'Own its exit.', () => true, [Action.exitToParent(({ exit }) => exit)]);
+    const parent = new Closure<Context>('parent', 'Wait for the child.', () => true, [
+        Action.exitToParent(parentExit, { priority: 10 }), nested,
+    ]);
+    const root = new Closure<Context>('root', 'Root.', () => true, [parent]);
+    const state = new State(root);
+    state.step({ ...context, ready: false });
+    parentExit.mockClear();
+    state.step(context);
+    expect(state.path).toEqual([root, parent, nested]);
+    expect(parentExit).not.toHaveBeenCalled();
+    state.step({ ...context, exit: true });
+    expect(state.path).toEqual([root, parent]);
+    expect(parentExit).not.toHaveBeenCalled();
+    state.step(context);
+    expect(state.path).toEqual([root]);
+    expect(parentExit).toHaveBeenCalledTimes(1);
+});
+
 it('evaluates action conditions inside the entered closure and runs callbacks once per visit', () => {
     const run = jest.fn(() => 42);
     const action = new Action<Context>('conditional', 'Run the callback when ready.', run, ({ ready }) => ready);

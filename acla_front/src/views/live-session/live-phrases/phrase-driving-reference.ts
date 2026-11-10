@@ -1,7 +1,7 @@
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { getLiveMapReferenceLine } from '../live-map-reference';
-import { referenceDirectionChanges } from './phrase-reference-guidance';
+import { referenceDirectionChanges, type ReferenceCornerBounds } from './phrase-reference-guidance';
 
 export const REFERENCE_DRIVING_AGGRESSION = 0;
 export const MAX_DRIVING_CAUTION = 100;
@@ -21,6 +21,7 @@ export function copyPhraseMap(map: CircuitMapDto | null): CircuitMapDto | null {
 
 interface BrakePoint { distance: number; energy: number; brake: number }
 interface BrakeZone { points: BrakePoint[]; start: number; bottom: number; exit: number }
+const MAX_BRAKING_GAP_S = 0.5;
 const wrap = (value: number, length: number) => value >= 0 && value < length ? value : ((value % length) + length) % length;
 
 function brakeAt(profile: BrakePoint[], position: number) {
@@ -37,7 +38,7 @@ function brakeAt(profile: BrakePoint[], position: number) {
 
 /** Rebuild phrase-owned speed and brake targets on the baseline's unchanged reference samples. */
 export function copyPhraseReference(lap: TopLapReferenceEntry | null,
-    aggression = REFERENCE_DRIVING_AGGRESSION): TopLapReferenceEntry | null {
+    aggression = REFERENCE_DRIVING_AGGRESSION, corners?: readonly ReferenceCornerBounds[]): TopLapReferenceEntry | null {
     if (!lap) return null;
     const copy = { ...lap, x: [...lap.x], y: lap.y.map((row) => [...row]), target_features: [...lap.target_features] };
     const caution = normalizeDrivingAggression(aggression) / 100;
@@ -64,21 +65,40 @@ export function copyPhraseReference(lap: TopLapReferenceEntry | null,
         if (points.length && at === points[points.length - 1].distance) points.pop();
         points.push({ distance: at, row, energy: (row[speed] / 3.6) ** 2 });
     }));
-    const turns = referenceDirectionChanges(lap).flatMap(({ start, end }) =>
+    const turns = referenceDirectionChanges(lap, corners).flatMap(({ start, end }) =>
         [-1, 0, 1].map((offset) => ({ start: start + offset * length, end: end + offset * length })))
         .sort((a, b) => a.start - b.start);
     const zones: BrakeZone[] = [];
     for (let start = 1; start + 1 < points.length; start++) {
         if (points[start + 1].energy >= points[start].energy) continue;
-        let bottom = start + 1, exit = bottom;
-        while (exit + 1 < points.length && points[exit + 1].energy <= points[exit].energy) {
-            exit++;
-            if (points[exit].energy < points[exit - 1].energy) bottom = exit;
+        let bottom = start + 1;
+        while (bottom + 1 < points.length && points[bottom + 1].energy < points[bottom].energy) bottom++;
+        const originalStart = points[start].distance;
+        let turn = turns.find(({ start: entry, end }) => end > originalStart && entry < points[bottom].distance);
+        // A brief coast or acceleration can separate braking inputs for the same corner.
+        // Keep their signed work together and anchor the sequence at its final minimum.
+        while (bottom + 1 < points.length) {
+            let nextStart = bottom, gapSeconds = 0;
+            while (nextStart + 1 < points.length && points[nextStart + 1].energy >= points[nextStart].energy) {
+                const a = points[nextStart], b = points[nextStart + 1];
+                gapSeconds += 2 * (b.distance - a.distance) / (Math.sqrt(a.energy) + Math.sqrt(b.energy));
+                nextStart++;
+                if (gapSeconds > MAX_BRAKING_GAP_S) break;
+            }
+            if (gapSeconds > MAX_BRAKING_GAP_S || nextStart + 1 >= points.length) break;
+            let nextBottom = nextStart + 1;
+            while (nextBottom + 1 < points.length && points[nextBottom + 1].energy < points[nextBottom].energy) nextBottom++;
+            const nextTurn = turn ?? turns.find(({ start: entry, end }) => end > originalStart && entry < points[nextBottom].distance);
+            if (!nextTurn || points[nextStart].distance < nextTurn.start - 1e-9 || points[nextStart].distance >= nextTurn.end
+                || points[nextBottom].energy >= points[bottom].energy) break;
+            bottom = nextBottom;
+            turn = nextTurn;
         }
-        const originalStart = points[start].distance, originalEnd = points[bottom].distance;
-        const turn = turns.find(({ start: entry, end }) => end > originalStart && entry < originalEnd);
-        if (originalEnd < 0 || originalEnd >= length || !turn) { start = exit; continue; }
-        const minimum = points[bottom].energy;
+        let exit = bottom;
+        while (exit + 1 < points.length && points[exit + 1].energy === points[exit].energy) exit++;
+        const originalEnd = points[bottom].distance;
+        if (originalEnd < 0 || originalEnd >= length || !turn) { start = exit - 1; continue; }
+        const minimum = points[bottom].energy, turnStart = turn.start;
         const rateAt = (i: number) => (points[i].energy - points[i + 1].energy)
             / (2 * (points[i + 1].distance - points[i].distance));
         let peak = 0, peakEnd = start + 1;
@@ -91,16 +111,15 @@ export function copyPhraseReference(lap: TopLapReferenceEntry | null,
         let floorStart = bottom - 1, peakStart = peakEnd - 1;
         while (floorStart > peakEnd && Math.abs(rateAt(floorStart - 1) - floor) <= 1e-9) floorStart--;
         while (peakStart > start && Math.abs(rateAt(peakStart - 1) - peak) <= 1e-9) peakStart--;
-        // A coast or renewed braking below the terminal rate is not a declining release tail.
+        // Include every release and reapplication, including signed work through a short gap.
         const release = points.slice(peakEnd, floorStart);
-        if (floor >= peak - 1e-9 || points[floorStart].distance <= turn.start + 1e-9
-            || release.some((_, i) => rateAt(peakEnd + i) < floor - 1e-9)) { start = exit; continue; }
+        if (floor >= peak - 1e-9 || points[floorStart].distance <= turnStart + 1e-9) { start = exit - 1; continue; }
         const releaseWork = release.reduce((sum, point, i) =>
             sum + rateAt(peakEnd + i) * (points[peakEnd + i + 1].distance - point.distance), 0);
         // Move the low-rate boundary toward turn-in, shortening release distances rather
         // than reducing their rates. Integrate backward from the unchanged speed minimum.
         const build = (amount: number) => {
-            const advance = amount * (points[floorStart].distance - turn.start);
+            const advance = amount * (points[floorStart].distance - turnStart);
             const releaseScale = Math.max(0, 1 - advance / (points[floorStart].distance - originalStart));
             const floorScale = 1 + advance / (originalEnd - points[floorStart].distance);
             const peakDistance = points[peakEnd].distance - points[peakStart].distance
@@ -136,9 +155,11 @@ export function copyPhraseReference(lap: TopLapReferenceEntry | null,
             }
             profile = build(low)!;
         }
+        // Leave the next braking input's first sample outside this sequence's release.
+        const releaseEnd = exit > bottom && exit + 1 < points.length && points[exit + 1].energy < points[exit].energy ? exit - 1 : exit;
         zones.push({ points: profile, start: Math.max(profile[0].distance, points[approach].distance),
-            bottom: originalEnd, exit: points[exit].distance });
-        start = exit;
+            bottom: originalEnd, exit: points[releaseEnd].distance });
+        start = exit - 1;
     }
     if (!zones.length) return copy;
     const cyclicZones = zones.flatMap((zone) => [-1, 0, 1].map((offset) => ({

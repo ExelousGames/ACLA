@@ -6,6 +6,7 @@ export interface PlaybackAdapter {
 
 export interface AdapterEvents {
     audible(value: boolean): void;
+    level?: (value: number, positionMs: number) => void;
     idle(): void;
     failed(error: unknown): void;
 }
@@ -15,6 +16,8 @@ export class MediaPlaybackAdapter implements PlaybackAdapter {
     private objectUrl: string | null = null;
     private pending: Array<{ url: string } | { wav: string }> = [];
     private stopped = false;
+    private meterContext: AudioContext | null = null;
+    private meterTimer?: ReturnType<typeof setInterval>;
 
     constructor(private volume: number, private readonly events: AdapterEvents) {}
 
@@ -45,9 +48,31 @@ export class MediaPlaybackAdapter implements PlaybackAdapter {
             const audio = new Audio(url);
             this.audio = audio;
             audio.volume = this.volume;
+            if (this.events.level) {
+                const context = new AudioContext();
+                this.meterContext = context;
+                const source = context.createMediaElementSource(audio);
+                const analyser = context.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                analyser.connect(context.destination);
+                const samples = new Float32Array(analyser.fftSize);
+                this.meterTimer = setInterval(() => {
+                    if (this.stopped || context.state !== 'running' || audio.paused) return;
+                    analyser.getFloatTimeDomainData(samples);
+                    let peak = 0;
+                    for (let i = 0; i < samples.length; i++) peak = Math.max(peak, Math.abs(samples[i]));
+                    this.events.level?.(Math.min(1, peak), audio.currentTime * 1000);
+                }, 16);
+                if (context.state === 'suspended') void context.resume().catch((error) => {
+                    if (!this.stopped) this.events.failed(error);
+                });
+            }
             const current = () => !this.stopped && this.audio === audio;
             audio.onplaying = () => { if (current()) this.events.audible(true); };
-            audio.onwaiting = audio.onpause = () => { if (current()) this.events.audible(false); };
+            audio.onwaiting = audio.onpause = () => {
+                if (current()) { this.events.audible(false); this.events.level?.(0, audio.currentTime * 1000); }
+            };
             audio.onended = () => {
                 if (!current()) return;
                 this.release();
@@ -68,6 +93,11 @@ export class MediaPlaybackAdapter implements PlaybackAdapter {
     }
 
     private release(): void {
+        if (this.meterTimer !== undefined) clearInterval(this.meterTimer);
+        this.meterTimer = undefined;
+        const context = this.meterContext;
+        this.meterContext = null;
+        if (context) void context.close().catch(() => undefined);
         const audio = this.audio;
         this.audio = null;
         if (audio) {
