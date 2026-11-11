@@ -133,9 +133,9 @@ describe('Live phrase overlay addons', () => {
     });
 
     const steeringSnapshot = (): PhraseSnapshot => ({
-        ...snapshot(), telemetryReady: true, mapReady: true, referenceLoaded: true,
+        ...snapshot(), telemetryReady: true, mapReady: true, referenceLoaded: true, trackGuideEnabled: true,
         steeringCorner: { sectionId: 'turn-1', cornerStartPosition: 0.27, cornerEndPosition: 0.45 },
-        state: { current: 'Steering', description: '', kind: 'closure', path: ['root', 'Steering'] },
+        state: { current: 'Track guide', description: '', kind: 'closure', path: ['root', 'Track guide'] },
     });
 
     it.each([0, 50, 99.9])('keeps the reference corner visible without directional speech at %s%% aggression', async (aggression) => {
@@ -149,7 +149,8 @@ describe('Live phrase overlay addons', () => {
         const active = engine.receiveTelemetry({ type: 'frame', sample, sampleIndex: 0, telemetryStatus: 2,
             sessionGeneration: 0, streamGeneration: 0, committedSampleCount: 0,
             update: { type: 'frame', game: 'acc', sample, sequence: 1, committedCount: 0, committedSequence: 0 } }, 1000);
-        expect(active.state.path).toContain('Steering');
+        expect(active.trackGuideEnabled).toBe(true);
+        expect(active.steeringCorner?.sectionId).toBe('turn-1');
         expect(active.events).toEqual([]);
         overlay.update(active, map, reference);
         expect(manager.getPresentationSnapshot()!.cards).toEqual([expect.objectContaining({
@@ -172,7 +173,7 @@ describe('Live phrase overlay addons', () => {
         expect(destroySession).not.toHaveBeenCalled();
     });
 
-    it.each(['exit', 'stale', 'map removed', 'unmount'] as const)('cancels a pending corner on %s', async (action) => {
+    it.each(['exit', 'stale', 'map removed', 'guide disabled', 'unmount'] as const)('cancels a pending corner on %s', async (action) => {
         let finish!: (value: unknown) => void;
         createSession.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
         const { map, reference } = steeringCornerFixture();
@@ -181,6 +182,7 @@ describe('Live phrase overlay addons', () => {
         if (action === 'exit') overlay.update(snapshot(), map, reference);
         if (action === 'stale') overlay.update({ ...active, telemetryReady: false }, map, reference);
         if (action === 'map removed') overlay.update(active, null, reference);
+        if (action === 'guide disabled') overlay.update({ ...active, trackGuideEnabled: false }, map, reference);
         if (action === 'unmount') overlay.dispose();
         await act(async () => finish({ success: true, presentation: session }));
         expect(manager.getPresentationSnapshot()?.cards ?? []).toEqual([]);
@@ -188,7 +190,7 @@ describe('Live phrase overlay addons', () => {
 
     it('shows only the corner when a phrase triggers', async () => {
         const { map, reference } = steeringCornerFixture();
-        const active = { ...steeringSnapshot(), events: [phraseEvent(PHRASE_DEFINITIONS.findIndex((rule) => rule.name === 'Steering'))] };
+        const active = { ...steeringSnapshot(), events: [phraseEvent(PHRASE_DEFINITIONS.findIndex((rule) => rule.id === 'reference-steering'))] };
         await act(async () => overlay.update(active, map, reference));
         expect(createSession).toHaveBeenCalledTimes(1);
         expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);

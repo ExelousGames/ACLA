@@ -194,6 +194,24 @@ describe('Live Map phrase context', () => {
         map.centerline_tags!.reverse();
         expect(createPhraseMapContext(map).at(0.11).linkedOpposite).toBe(1);
         expect(createPhraseMapContext(map).at(0.26).linkedOpposite).toBe(0);
+        expect(createPhraseMapContext(map).at(0.11).nextCornerStartPosition).toBeUndefined();
+        expect(createPhraseMapContext(map).at(0.11).nextCornerDirection).toBeUndefined();
+    });
+
+    it.each([
+        ['acc', false, 'left'], ['acc', true, 'right'],
+        ['iracing', false, 'left'], ['iracing', true, 'right'],
+    ] as const)('locates the next labeled sequence member in %s (same direction: %s)', (game, same, direction) => {
+        const map = circuitMap('slow', true);
+        if (same) map.samples.middle_line!.find((point) => point.normalized_position === 0.31)!.x = 1100;
+        map.game = game;
+        if (game === 'iracing') map.samples.middle_line = map.samples.middle_line!.map((point) => ({ ...point, y: 0, z: -point.y }));
+        map.centerline_tags!.push({ id: 'sequence', label: 'consecutive corners', start_position: 0.1, end_position: 0.31 });
+        const context = createPhraseMapContext(map);
+        expect(context.at(0.11)).toMatchObject({ nextCornerStartPosition: 0.21, nextCornerDirection: direction });
+        expect(context.approaching(0.05)).toMatchObject({ nextCornerStartPosition: 0.21, nextCornerDirection: direction });
+        expect(context.at(0.26).nextCornerStartPosition).toBeUndefined();
+        expect(context.at(0.26).nextCornerDirection).toBeUndefined();
     });
 
     it('withholds linked-turn guidance for the same direction, distant turns or missing geometry', () => {
@@ -254,7 +272,8 @@ describe('Live Map phrase context', () => {
         }
         const context = createPhraseMapContext(map);
         expect(context.at(wrap ? 0.91 : 0.11)).toMatchObject({ linkedSameDirection: 1, linkedOpposite: 0,
-            sequenceShape: 'same-direction', sequenceCornerIndex: 1, sequenceCornerCount: 2 });
+            sequenceShape: 'same-direction', sequenceCornerIndex: 1, sequenceCornerCount: 2, nextCornerDirection: 'right' });
+        expect(context.at(wrap ? 0.91 : 0.11).nextCornerStartPosition).toBeCloseTo(wrap ? 0.01 : 0.21);
         expect(context.at(wrap ? 0.06 : 0.26)).toMatchObject({ linkedSameDirection: 0, sequenceCornerIndex: 2, sequenceRemaining: 0 });
     });
 
@@ -282,6 +301,8 @@ describe('Live Map phrase context', () => {
         );
         expect(createPhraseMapContext(map).at(0.11)).toMatchObject({ linkedOpposite: 0, linkedSameDirection: 0, sequenceCornerCount: 2 });
         expect(createPhraseMapContext(map).at(0.11).sequenceShape).toBeUndefined();
+        expect(createPhraseMapContext(map).at(0.11).nextCornerStartPosition).toBe(0.22);
+        expect(createPhraseMapContext(map).at(0.11).nextCornerDirection).toBeUndefined();
     });
 
     it('uses the smallest containing area and does not link its final corner outside that area', () => {
@@ -292,6 +313,8 @@ describe('Live Map phrase context', () => {
         );
         const context = createPhraseMapContext(map);
         expect(context.at(0.11)).toMatchObject({ sequenceId: 'inner', sequenceCornerCount: 1, sequenceRemaining: 0, linkedOpposite: 0 });
+        expect(context.at(0.11).nextCornerStartPosition).toBeUndefined();
+        expect(context.at(0.11).nextCornerDirection).toBeUndefined();
         expect(context.at(0.26)).toMatchObject({ sequenceId: 'whole-lap', sequenceCornerCount: 2, sequenceRemaining: 0 });
     });
 });

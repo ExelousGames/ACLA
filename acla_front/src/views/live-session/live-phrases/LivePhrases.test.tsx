@@ -8,7 +8,10 @@ import { PHRASE_DEFINITIONS, PhraseCondition, PhraseEngine, conditionGroup } fro
 import { circuitMap, variableBrakingReference, vision } from './test-fixtures';
 import type { DriverCornerSummary } from '../event-log/corner-summary';
 
-jest.mock('components/tts', () => ({ synthesizeProsodyTts: jest.fn(() => new Promise(() => undefined)) }));
+jest.mock('components/tts', () => ({ synthesizeProsodyTts: async (_curves: unknown, _inputs: unknown, { text }: { text: string }) => ({
+    text, audioDataUrl: `data:audio/wav;base64,${btoa(text)}`, durationMs: 3000,
+}) }));
+jest.mock('services/audio', () => ({ audioManager: { play: () => ({ stop: () => undefined }) } }));
 
 describe('LivePhrases root connection', () => {
     beforeEach(() => { jest.useFakeTimers(); jest.setSystemTime(10000); });
@@ -38,12 +41,12 @@ describe('LivePhrases root connection', () => {
         const deceleration = path('Deceleration ranges'), direction = path('Direction-change ranges');
         expect(deceleration).not.toBe('');
         expect(direction).not.toBe('');
-        fireEvent.change(screen.getByRole('slider', { name: 'Driving aggression' }), { target: { value: '100' } });
+        fireEvent.change(screen.getByRole('slider', { name: 'Instructor aggression' }), { target: { value: '100' } });
         expect(path('Deceleration ranges')).not.toBe(deceleration);
         expect(path('Direction-change ranges')).toBe(direction);
         expect(reference.y).toEqual(original);
         expect(screen.getByText('Detection: Disabled')).toBeVisible();
-        fireEvent.change(screen.getByRole('slider', { name: 'Driving aggression' }), { target: { value: '0' } });
+        fireEvent.change(screen.getByRole('slider', { name: 'Instructor aggression' }), { target: { value: '0' } });
         expect(path('Deceleration ranges')).toBe(deceleration);
         act(() => {
             reference = variableBrakingReference();
@@ -114,29 +117,17 @@ describe('LivePhrases root connection', () => {
         expect(jest.getTimerCount()).toBe(0);
         const catalog = within(screen.getByRole('region', { name: 'Sentence catalog' }));
         PHRASE_DEFINITIONS.filter((rule) => !rule.movementDirection).forEach((rule) => {
-            const zone = rule.referenceCue && rule.referenceCue !== 'steering' && rule.referenceCue !== 'cornerExit'
-                ? rule.referenceCue.toLowerCase().includes('brake') ? 'Brake zone' : 'Throttle zone' : undefined;
-            if (zone) fireEvent.click(catalog.getByLabelText(`${zone} closure`));
+            if (rule.referenceCue) fireEvent.click(catalog.getByLabelText('Track guide closure'));
             const summary = catalog.getByLabelText(`${rule.name} closure`);
             expect(summary).toBeVisible();
-            expect(within(summary).getByText(zone ? 'Not evaluated' : 'Missing input')).toBeVisible();
-            expect(catalog.queryByText(rule.sentence)).not.toBeInTheDocument();
             fireEvent.click(summary);
             fireEvent.click(catalog.getByRole('tab', { name: 'Conditions' }));
             const conditions = within(catalog.getByRole('list', { name: `${rule.name} conditions` }));
             expect(conditions.getAllByRole('listitem')).toHaveLength(rule.conditions.length);
-            const knownSettings = rule.conditions.filter((condition) => condition instanceof PhraseCondition
-                && condition.input === 'drivingAggression').length;
-            expect(conditions.getAllByText(zone ? 'Not evaluated' : 'Missing input'))
-                .toHaveLength(rule.conditions.length - (zone ? 0 : knownSettings));
-            if (!zone && knownSettings) expect(conditions.getAllByText('Not met')).toHaveLength(knownSettings);
-            conditions.getAllByRole('listitem').forEach((condition) => zone
-                ? expect(condition).not.toHaveAttribute('data-condition-fit')
-                : expect(condition).toHaveAttribute('data-condition-fit', 'false'));
             expect(conditions.queryAllByText('AND')).toHaveLength(rule.conditions.length - 1);
             expect(within(conditions.getAllByRole('listitem')[0]).queryByText('AND')).not.toBeInTheDocument();
             fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
-            if (zone) fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
+            if (rule.referenceCue) fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
         });
         expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
         expect(screen.getByText('Live Map: Waiting for a tagged circuit map')).toBeInTheDocument();
@@ -149,95 +140,52 @@ describe('LivePhrases root connection', () => {
         }
     });
 
-    it('groups pedal phrases into reference zones directly under root', () => {
+    it('groups all reference cues directly under Track guide without the old phase closures', () => {
         render(<LivePhrases name="live-phrases" />);
-        const names = ['Brake', 'More brake', 'Release the brake', 'Hold brake pressure', 'Throttle', 'More throttle', 'Less throttle'];
-        names.forEach((name) => expect(screen.queryByLabelText(`${name} closure`)).not.toBeInTheDocument());
-        expect(screen.getByLabelText('Steering closure')).toBeVisible();
-        expect(screen.getByLabelText('Brake zone closure')).toBeVisible();
-        expect(screen.getByLabelText('Throttle zone closure')).toBeVisible();
-        for (const [zone, members] of [['Brake zone', names.slice(0, 4)], ['Throttle zone', names.slice(4)]] as const) {
-            fireEvent.click(screen.getByLabelText(`${zone} closure`));
-            members.forEach((name) => expect(screen.getByLabelText(`${name} closure`)).toBeVisible());
-            expect(screen.queryByLabelText('Steering closure')).not.toBeInTheDocument();
-            expect(screen.getByLabelText(`${zone} action 1: ${zone === 'Brake zone' ? 'exit to parent' : 'exit to root'}`)).toBeVisible();
-            fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-            expect(screen.getByText(`Inside the interpolated reference ${zone === 'Brake zone' ? 'brake' : 'throttle'} zone`)).toBeVisible();
-            fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
+        expect(screen.getByLabelText('Track guide closure')).toBeVisible();
+        expect(screen.getByLabelText('Pressure and a feint closure')).toBeVisible();
+        fireEvent.click(screen.getByLabelText('Track guide closure'));
+        for (const name of ['Brake zone', 'Throttle zone', 'Steering', 'Corner exit', 'Turn to reference line', 'More right', 'More left']) {
+            expect(screen.queryByLabelText(`${name} closure`)).not.toBeInTheDocument();
         }
+        for (const name of ['Brake', 'More brake', 'Release the brake', 'Hold brake pressure', 'Throttle',
+            'More throttle', 'Less throttle', 'Turn in', 'Ease brake', 'Hold line', 'Unwind', 'Consecutive corners']) {
+            expect(screen.getByLabelText(`${name} closure`)).toBeVisible();
+        }
+        expect(screen.queryByLabelText('Pressure and a feint closure')).not.toBeInTheDocument();
     });
 
-    it('shows the direction-start target speed check in brake-zone exit conditions', () => {
+    it('shows prepared steering speech inside Track guide', () => {
         render(<LivePhrases name="live-phrases" />);
-        fireEvent.click(screen.getByLabelText('Brake zone closure'));
-        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        const exits = within(screen.getByRole('list', { name: 'Brake zone exit conditions' }));
-        expect(exits.getByText('Current speed is below the live phrase reference speed at the start of the upcoming or active direction-change range within the centerline corner bounds, after any eligible Release the brake cue')).toBeVisible();
-        expect(exits.getByText('Not evaluated')).toBeVisible();
-    });
-
-    it('shows Turn and direction corrections inside Steering', () => {
-        render(<LivePhrases name="live-phrases" />);
-        fireEvent.click(screen.getByLabelText('Steering closure'));
-        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('The live phrase reference direction-change range is active within the centerline corner start and end, with no positive reference acceleration in the next 200 ms.')).toBeVisible();
-        const exits = within(screen.getByRole('list', { name: 'Steering exit conditions' }));
-        expect(exits.getByText('The continuous reference trajectory direction-change range captured on Steering entry has ended')).toBeVisible();
-        expect(exits.getByText('Reference acceleration is positive within the next 200 ms')).toBeVisible();
-        expect(exits.getByText('Direction Guide is at 100% and the reference is ready for the Unwind cue')).toBeVisible();
-        expect(exits.getAllByText('OR')).toHaveLength(2);
-        fireEvent.click(screen.getByRole('tab', { name: /Contents/ }));
-        expect(screen.getByLabelText('More right closure')).toBeVisible();
-        expect(screen.getByLabelText('More left closure')).toBeVisible();
-        for (const name of ['More right', 'More left']) {
+        fireEvent.click(screen.getByLabelText('Track guide closure'));
+        for (const [name, sentence] of [['Turn in', 'Turn in'], ['Ease brake', 'Ease brake'], ['Hold line', 'Hold line'],
+            ['Unwind', 'Unwind'], ['Consecutive corners', 'Set up left']]) {
             fireEvent.click(screen.getByLabelText(`${name} closure`));
-            fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-            expect(screen.getByText('Driving aggression = 100')).toBeVisible();
-            expect(screen.getByText('Same direction deviation duration (ms) >= 500')).toBeVisible();
-            expect(screen.getByText('No direction correction has been spoken during this deviation')).toBeVisible();
+            fireEvent.click(screen.getByRole('button', { name: `${name} action 1: say phrase` }));
+            expect(within(screen.getByRole('tabpanel')).getByText(sentence)).toBeVisible();
+            if (name === 'Consecutive corners') {
+                expect(screen.getByText('Driving conditions')).toBeVisible();
+                expect(screen.queryByText('Random (equal chance)')).not.toBeInTheDocument();
+                for (const side of ['left', 'center', 'right']) {
+                    expect(within(screen.getByRole('tabpanel')).getByText(`Set up ${side}`)).toBeVisible();
+                }
+            }
+            fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
             fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         }
-        fireEvent.click(screen.getByRole('button', { name: 'Steering action 1: exit to root' }));
-        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('The continuous reference trajectory direction-change range captured on Steering entry has ended')).toBeVisible();
-        fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
-        expect(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })).toHaveLength(3);
-        fireEvent.click(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })[1]);
-        expect(screen.getByText('Ease brake')).toBeVisible();
-        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('Reference deceleration easing rate while braking (m/s³) >= 0.01')).toBeVisible();
-        fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
-        fireEvent.click(screen.getAllByRole('button', { name: /^Steering action \d+: say phrase$/ })[0]);
-        expect(screen.getByText('Turn in')).toBeVisible();
-        fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('Driving aggression = 100')).toBeVisible();
     });
 
-    it('opens small and medium reference movements on both sides, with progress phrases', () => {
+    it('opens every reference movement directly under Track guide with its speech variants', () => {
         render(<LivePhrases name="live-phrases" />);
-        fireEvent.click(screen.getByLabelText('Turn to reference line closure'));
-        for (const direction of ['left', 'right']) {
-            fireEvent.click(screen.getByLabelText(`Move to the ${direction} closure`));
-            expect(within(screen.getByRole('list', { name: `Move to the ${direction} children` }))
-                .getAllByRole('listitem').map((item) => within(item).getByRole('button').getAttribute('aria-label'))).toEqual([
-                'Small movement closure', 'Medium movement closure',
-                'A little bit more closure',
-                `Move to the ${direction} action 4: exit to parent`,
-            ]);
-            for (const [name, sentence] of [
-                ['Small movement', `Move to the ${direction}.`],
-                ['Medium movement', `Further to the ${direction}.`],
-                ['A little bit more', 'A little bit more.'],
-            ]) {
-                fireEvent.click(screen.getByLabelText(`${name} closure`));
-                fireEvent.click(screen.getByLabelText(`${name} action 1: say phrase`));
-                expect(screen.getByText(sentence)).toBeVisible();
-                expect(screen.getByText('Random (equal chance)')).toBeVisible();
-                const rule = PHRASE_DEFINITIONS.find((item) => item.name === name && item.movementDirection === direction)!;
-                rule.sentenceAlternatives!.forEach((alternative) => expect(screen.getByText(alternative)).toBeVisible());
-                fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
-                fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
-            }
+        fireEvent.click(screen.getByLabelText('Track guide closure'));
+        for (const rule of PHRASE_DEFINITIONS.filter((phrase) => phrase.movementDirection)) {
+            const matchingRules = PHRASE_DEFINITIONS.filter((phrase) => phrase.name === rule.name);
+            fireEvent.click(screen.getAllByLabelText(`${rule.name} closure`)[matchingRules.indexOf(rule)]);
+            fireEvent.click(screen.getByLabelText(`${rule.name} action 1: say phrase`));
+            expect(screen.getByText(rule.sentence)).toBeVisible();
+            expect(screen.getByText('Random (equal chance)')).toBeVisible();
+            rule.sentenceAlternatives!.forEach((alternative) => expect(screen.getByText(alternative)).toBeVisible());
+            fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
             fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         }
     });
@@ -420,7 +368,7 @@ describe('LivePhrases root connection', () => {
         expect(within(firstGuide).queryByText(/Waiting for:/)).not.toBeInTheDocument();
     });
 
-    it('consumes only root events, expires stale input, resets history and releases subscriptions', () => {
+    it('consumes only root events, expires stale input, resets history and releases subscriptions', async () => {
         const telemetry = createLiveTelemetryStore();
         let detection: TrackVisionDetection | null = null;
         const listeners = new Set<() => void>();
@@ -463,7 +411,7 @@ describe('LivePhrases root connection', () => {
         expect(listeners.size).toBe(0);
         act(() => { publish(0); });
         expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
-        fireEvent.click(screen.getByRole('button', { name: 'Enable detection' }));
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enable detection' })); });
         expect(screen.getByText('Detection: Enabled')).toBeInTheDocument();
         act(() => {
             detection = { ...vision(Date.now(), { player: 'middle' }), geometry: null };
@@ -495,7 +443,7 @@ describe('LivePhrases root connection', () => {
         expect(screen.queryByRole('list', { name: 'Pressure and a feint conditions' })).not.toBeInTheDocument();
         act(() => { publish(4); });
         const closure = screen.getByLabelText('Pressure and a feint closure');
-        // Entry changes do not discard speech that is still being prepared.
+        // Entry changes do not discard speech that is still playing.
         expect(within(closure).getByText('Active')).toBeVisible();
         expect(closure).toHaveAttribute('data-on-path', 'true');
         fireEvent.click(closure);
@@ -514,7 +462,7 @@ describe('LivePhrases root connection', () => {
         expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
         expect(output.queryByText(sentence)).not.toBeInTheDocument();
         detection = { ...vision(Date.now(), { player: 'middle' }), geometry: null };
-        fireEvent.click(screen.getByRole('button', { name: 'Enable detection' }));
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enable detection' })); });
         expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
         act(() => { publish(6); });
         expect(output.queryByText(sentence)).not.toBeInTheDocument();

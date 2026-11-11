@@ -43,12 +43,10 @@ function setup(game: 'acc' | 'iracing' = 'acc', configure?: (reference: ReturnTy
 it.each([0, 50, 99, 99.9, 100])('keeps the reference corner visible and gates directional speech at %s%%', (aggression) => {
     const { engine, at } = setup('acc', undefined, aggression);
     const entry = at(0.27, 1000);
-    expect(entry.state.path).toContain('Steering');
     expect(entry.steeringCorner?.sectionId).toBe('turn-1');
     expect(entry.events.map(({ sentence }) => sentence)).toEqual(aggression === 100 ? ['Turn in'] : []);
     if (aggression === 100) engine.speechFinished(1, 1200);
     const middle = at(0.31, 1300);
-    expect(middle.state.path).toContain('Steering');
     expect(middle.steeringCorner?.sectionId).toBe('turn-1');
     expect(middle.events.map(({ sentence }) => sentence)).toEqual(aggression === 100 ? ['Turn in', 'Hold line'] : []);
     if (aggression === 100) engine.speechFinished(2, 1500);
@@ -56,7 +54,6 @@ it.each([0, 50, 99, 99.9, 100])('keeps the reference corner visible and gates di
     const exit = at(0.36, 1601);
     expect(exit.events.map(({ sentence }) => sentence)).toEqual(aggression === 100 ? ['Turn in', 'Hold line', 'Unwind'] : []);
     if (aggression < 100) {
-        expect(exit.state.path).toContain('Steering');
         expect(exit.steeringCorner?.sectionId).toBe('turn-1');
     }
 });
@@ -66,7 +63,6 @@ it('clears pending direction speech when leaving 100% without losing the referen
     expect(at(0.27, 1000).events).toHaveLength(1);
     expect(engine.setDrivingAggression(50, 1100).events).toEqual([]);
     const quiet = at(0.31, 1200);
-    expect(quiet.state.path).toContain('Steering');
     expect(quiet.steeringCorner?.sectionId).toBe('turn-1');
     expect(quiet.events).toEqual([]);
     engine.speechFinished(1, 1300);
@@ -81,7 +77,6 @@ it.each(['acc', 'iracing'] as const)('coaches turn-in, a loaded arc and coasting
     engine.speechFinished(1, 1200);
     const hold = at(0.31, 1300);
     expect(hold.events.map(({ sentence }) => sentence)).toEqual(['Turn in', 'Hold line']);
-    expect(hold.events[1].steeringDirection).toBeUndefined();
     expect(at(0.31, 1400).events).toEqual(hold.events);
     engine.speechFinished(2, 1500);
     at(0.36, 1600);
@@ -91,7 +86,7 @@ it.each(['acc', 'iracing'] as const)('coaches turn-in, a loaded arc and coasting
     expect(at(0.37, 1900).events.map(({ sentence }) => sentence)).toEqual(['Turn in', 'Hold line', 'Unwind']);
 });
 
-it('does not latch direction-correction memory when Hold line has spoken', () => {
+it('keeps direction deviations silent after Hold line has spoken', () => {
     const { engine, at } = setup();
     engine.setDrivingAggression(100, 0);
     at(0.27, 1000);
@@ -99,8 +94,9 @@ it('does not latch direction-correction memory when Hold line has spoken', () =>
     expect(at(0.31, 1300).events.map(({ sentence }) => sentence)).toEqual(['Turn in', 'Hold line']);
     engine.speechFinished(2, 1500);
     for (const now of [1600, 1800, 2000, 2100]) at(0.31, now, { errorDegrees: -40 });
-    const corrected = at(0.31, 2200, { errorDegrees: -40 });
-    expect(corrected.events.map(({ sentence }) => sentence)).toEqual(['Turn in', 'Hold line', 'More right']);
+    const snapshot = at(0.31, 2200, { errorDegrees: -40 });
+    expect(snapshot.referenceSteeringDirection).toBe('right');
+    expect(snapshot.events.map(({ sentence }) => sentence)).toEqual(['Turn in', 'Hold line']);
 });
 
 it.each([{ vision: false }, { errorDegrees: -40 }])('withholds Hold line without confirmed alignment: %j', (options) => {
@@ -162,7 +158,11 @@ it('prepares every corner cue as a short, fixed speech clip', () => {
     const cues = getPhraseSpeechInstances(PHRASE_DEFINITIONS.filter(({ referenceCue }) =>
         referenceCue === 'steering' || referenceCue === 'cornerExit'));
     expect(cues.map(({ speech }) => speech.text)).toEqual(expect.arrayContaining([
-        'Turn in', 'More right', 'More left', 'Ease brake', 'Hold line', 'Unwind',
+        'Turn in', 'Ease brake', 'Hold line', 'Unwind', 'Set up left', 'Set up right', 'Set up center',
     ]));
-    expect(cues.every(({ speech }) => speech.text.split(/\s+/).length <= 2)).toBe(true);
+    for (const sentence of ['More right', 'More left']) {
+        expect(cues.map(({ speech }) => speech.text)).not.toContain(sentence);
+    }
+    expect(cues.map(({ speech }) => speech.text)).not.toContain('Set up next corner');
+    expect(cues.every(({ speech, id }) => speech.text.split(/\s+/).length <= (id === 'reference-consecutive-corners:say:0' ? 3 : 2))).toBe(true);
 });

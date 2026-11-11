@@ -14,6 +14,8 @@ export interface PhraseMapContext {
     cornerDirection?: 'left' | 'right';
     cornerStartPosition?: number;
     cornerEndPosition?: number;
+    nextCornerStartPosition?: number;
+    nextCornerDirection?: 'left' | 'right';
     sequenceId?: string;
     sequenceShape?: 'alternating' | 'same-direction' | 'mixed';
     sequenceCornerCount?: number;
@@ -156,6 +158,11 @@ export function createPhraseMapContext(map: CircuitMapDto | null) {
                     sequenceCornerCount: sequence.members.length,
                     sequenceCornerIndex: sequenceIndex + 1,
                     sequenceRemaining: sequence.members.length - sequenceIndex - 1,
+                    ...(following && {
+                        nextCornerStartPosition: following.start_position,
+                        nextCornerDirection: followingTurn === undefined ? undefined
+                            : followingTurn * (map?.game === 'iracing' ? -1 : 1) > 0 ? 'right' : 'left',
+                    }),
                 }),
             };
         },

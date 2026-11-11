@@ -109,9 +109,9 @@ it('uses current position, pressure and deceleration even when every preview val
     const { reference, sample } = setup();
     const current = sample(0), intended = { ...current, Physics_speed_kmh: 80, Physics_brake: 1, Graphics_normalized_car_position: 0.4 };
     expect(readReferenceGuidance(current, null, reference, 'acc', 1000, reference, 20,
-        undefined, undefined, undefined, true, 0.4, intended, { deceleration: 1, releasing: false }).moreBrake).toBe(2500);
+        undefined, undefined, true, 0.4, intended, { deceleration: 1, releasing: false }).moreBrake).toBe(2500);
     expect(readReferenceGuidance(current, null, reference, 'acc', 1000, reference, 0,
-        undefined, undefined, undefined, false, 0.1, current, { deceleration: 4, releasing: false }).moreBrake).toBeUndefined();
+        undefined, undefined, false, 0.1, current, { deceleration: 4, releasing: false }).moreBrake).toBeUndefined();
     expect(readReferenceGuidance({ ...current, Graphics_normalized_car_position: 0.03 }, null, reference, 'acc', 1000, reference, 0,
-        undefined, undefined, undefined, false, 0.1, current, { deceleration: 1, releasing: false }).moreBrake).toBeUndefined();
+        undefined, undefined, false, 0.1, current, { deceleration: 1, releasing: false }).moreBrake).toBeUndefined();
 });

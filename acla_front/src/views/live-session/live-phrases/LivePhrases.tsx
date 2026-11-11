@@ -22,6 +22,7 @@ import './LivePhrases.css';
 
 // Prepare the time-sensitive, short cues first.
 const speechCatalog = getPhraseSpeechInstances();
+const trackGuideRules = new Set(PHRASE_DEFINITIONS.filter((phrase) => phrase.referenceCue).map((phrase) => phrase.id));
 const eventInstance = (event: PhraseEvent): PhraseInstance => event.instance
     ?? speechCatalog.find((instance) => instance.id.startsWith(`${event.ruleId}:say:`) && instance.speech.text === event.sentence)
     ?? new Phrase(event.ruleId, event.sentence).createInstance();
@@ -36,6 +37,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
     const root = directory?.findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)?.current ?? null;
     const [enabled, setEnabled] = useState(false);
     const [drivingAggression, setDrivingAggression] = useState(REFERENCE_DRIVING_AGGRESSION);
+    const [trackGuideEnabled, setTrackGuideEnabled] = useState(true);
     const [rangeBaseline, setRangeBaseline] = useState<TopLapReferenceEntry | null>(null);
     const [rangeCorners, setRangeCorners] = useState<readonly ReferenceCornerBounds[]>([]);
     const rangeReference = useMemo(() => copyPhraseReference(rangeBaseline, drivingAggression, rangeCorners),
@@ -43,10 +45,14 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
     const aggressionRef = useRef(drivingAggression);
     aggressionRef.current = drivingAggression;
     const updateAggression = useRef<((value: number) => void) | null>(null);
+    const trackGuideEnabledRef = useRef(trackGuideEnabled);
+    trackGuideEnabledRef.current = trackGuideEnabled;
+    const updateTrackGuide = useRef<((value: boolean) => void) | null>(null);
     const [snapshot, setSnapshot] = useState(() => new PhraseEngine().evaluate(Date.now()));
     const [overlayError, setOverlayError] = useState<string | null>(null);
     const [voiceError, setVoiceError] = useState<string | null>(null);
     const [speechStatus, setSpeechStatus] = useState<'Disabled' | 'Preparing' | 'Ready' | 'Incomplete'>('Disabled');
+    const detectionReady = enabled && speechStatus === 'Ready';
     const [speechLevel, setSpeechLevel] = useState(0);
     const voicePacks = useRef(new Map<string, TtsPack>());
     const snapshotRef = useRef(snapshot);
@@ -70,13 +76,15 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             ([key, pack]) => [key, pack.durationMs])));
         updateSpeechDurations();
         engine.setDrivingAggression(aggressionRef.current, Date.now());
+        engine.setTrackGuideEnabled(trackGuideEnabledRef.current, Date.now());
         setOverlayError(null);
         setVoiceError(null);
         setSpeechLevel(0);
         if (!enabled) {
             setSpeechStatus('Disabled');
             setSnapshot(engine.evaluate(Date.now()));
-            return;
+            updateTrackGuide.current = (value) => setSnapshot(engine.setTrackGuideEnabled(value, Date.now()));
+            return () => { updateTrackGuide.current = null; };
         }
         setSpeechStatus('Preparing');
         const overlay = directory ? new LivePhraseOverlay(directory, name, (error) => {
@@ -84,9 +92,10 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         }) : null;
         const controller = new AbortController();
         let playback: PlaybackHandle | null = null;
+        let playingEvent: PhraseEvent | null = null;
         let pendingVoice: PhraseEvent | null = null;
         let pendingInstance: PhraseInstance | null = null;
-        let speechPreparationFinished = false;
+        let stopDetection: (() => void) | undefined;
         let lastVoiceEventId = 0;
         const discardPendingVoice = () => {
             const event = pendingVoice;
@@ -98,7 +107,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             if (controller.signal.aborted || !pendingVoice || !pendingInstance) return;
             const pack = voicePacks.current.get(pendingInstance.cacheKey);
             if (!pack) {
-                if (speechPreparationFinished) discardPendingVoice();
+                discardPendingVoice();
                 return;
             }
             // Consume the event even if live chat rejects or interrupts its audio.
@@ -106,6 +115,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             pendingVoice = null;
             pendingInstance = null;
             let started = false;
+            playingEvent = event;
             playback = audioManager.play({
                 url: pack.audioDataUrl, type: 'voice', priority: 25, // Live chat defaults to 50.
                 onLevel: (level, positionMs) => {
@@ -120,31 +130,21 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 },
                 onComplete: (outcome) => {
                     if (controller.signal.aborted) return;
-                    setSpeechLevel(0);
+                    if (playingEvent === event) {
+                        playingEvent = null;
+                        playback = null;
+                        setSpeechLevel(0);
+                    }
                     if (outcome.status === 'failed') setVoiceError(outcome.error.message);
                     if (event.speech) publish(engine.speechFinished(event.id, Date.now(), outcome.status !== 'completed'));
                 },
             });
         };
-        // All variants are requested here; telemetry and playback never request speech.
-        void loadAllPhraseSpeech(speechCatalog, voicePacks.current, controller.signal, () => {
-            updateSpeechDurations();
-            playReadyVoice();
-        }).then(({ complete, errors }) => {
-            if (controller.signal.aborted) return;
-            speechPreparationFinished = true;
-            setSpeechStatus(complete ? 'Ready' : 'Incomplete');
-            if (errors.length) setVoiceError(errors.map((error) => error instanceof Error ? error.message : String(error)).join('; '));
-            playReadyVoice();
-        }).catch((error) => {
-            if (!controller.signal.aborted) {
-                setSpeechStatus('Incomplete');
-                setVoiceError(error instanceof Error ? error.message : String(error));
-            }
-        });
         const dispose = () => {
             updateAggression.current = null;
+            updateTrackGuide.current = null;
             controller.abort();
+            stopDetection?.();
             pendingVoice = null;
             pendingInstance = null;
             playback?.stop();
@@ -161,11 +161,14 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 pendingInstance = null;
                 playback?.stop();
                 playback = null;
+                playingEvent = null;
+                setSpeechLevel(0);
             }
             for (const event of next.events) {
                 if (pendingVoice?.id === event.id) pendingVoice = event;
                 if (event.id <= lastVoiceEventId) continue;
                 lastVoiceEventId = event.id;
+                if (!trackGuideEnabledRef.current && trackGuideRules.has(event.ruleId)) continue;
                 pendingVoice = event;
                 pendingInstance = eventInstance(event);
                 // Entry conditions already passed in the engine. Playback only needs
@@ -174,26 +177,54 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             }
         };
         updateAggression.current = (value) => publish(engine.setDrivingAggression(value, Date.now()));
-        publish(engine.evaluate(Date.now()));
-        if (!root) return dispose;
-        const updateVision = () => publish(engine.receiveVision(root.getTrackVisionDetection(), Date.now()));
-        const unsubscribeVision = root.subscribeTrackVision(updateVision);
-        updateVision();
-        const updateMap = () => publish(engine.receiveMap(root.getLiveCircuitMap(), Date.now(), root.getLiveReferenceLap()));
-        const unsubscribeMap = root.subscribeLiveCircuitMap(updateMap);
-        updateMap();
-        const unsubscribeTelemetry = root.subscribeTelemetry((event) => {
-            publish(engine.receiveTelemetry(event, Date.now(), root.getLiveCornerSummaries()));
-        });
-        // Expire inputs even if the simulator or screen capture stops sending events.
-        const timer = setInterval(() => publish(engine.evaluate(Date.now())), 250);
-        return () => {
-            clearInterval(timer);
-            unsubscribeVision();
-            unsubscribeMap();
-            unsubscribeTelemetry();
-            dispose();
+        updateTrackGuide.current = (value) => {
+            const next = engine.setTrackGuideEnabled(value, Date.now());
+            if (!value) {
+                if (pendingVoice && trackGuideRules.has(pendingVoice.ruleId)) discardPendingVoice();
+                if (playingEvent && trackGuideRules.has(playingEvent.ruleId)) {
+                    const guidePlayback = playback;
+                    playback = null;
+                    playingEvent = null;
+                    setSpeechLevel(0);
+                    guidePlayback?.stop();
+                }
+            }
+            publish(next);
         };
+        publish(engine.evaluate(Date.now()));
+        // Detection starts only with the complete catalog and its measured durations.
+        // Frames received during preparation are not queued for later playback.
+        void loadAllPhraseSpeech(speechCatalog, voicePacks.current, controller.signal).then(({ complete, errors }) => {
+            if (controller.signal.aborted) return;
+            setSpeechStatus(complete ? 'Ready' : 'Incomplete');
+            if (errors.length) setVoiceError(errors.map((error) => error instanceof Error ? error.message : String(error)).join('; '));
+            if (!complete) return;
+            updateSpeechDurations();
+            if (!root) return;
+            const updateVision = () => publish(engine.receiveVision(root.getTrackVisionDetection(), Date.now()));
+            const unsubscribeVision = root.subscribeTrackVision(updateVision);
+            updateVision();
+            const updateMap = () => publish(engine.receiveMap(root.getLiveCircuitMap(), Date.now(), root.getLiveReferenceLap()));
+            const unsubscribeMap = root.subscribeLiveCircuitMap(updateMap);
+            updateMap();
+            const unsubscribeTelemetry = root.subscribeTelemetry((event) => {
+                publish(engine.receiveTelemetry(event, Date.now(), root.getLiveCornerSummaries()));
+            });
+            // Expire inputs even if the simulator or screen capture stops sending events.
+            const timer = setInterval(() => publish(engine.evaluate(Date.now())), 250);
+            stopDetection = () => {
+                clearInterval(timer);
+                unsubscribeVision();
+                unsubscribeMap();
+                unsubscribeTelemetry();
+            };
+        }).catch((error) => {
+            if (!controller.signal.aborted) {
+                setSpeechStatus('Incomplete');
+                setVoiceError(error instanceof Error ? error.message : String(error));
+            }
+        });
+        return dispose;
     }, [directory, enabled, name, root]);
 
     const handle = useMemo<LivePhrasesHandle>(() => ({
@@ -218,7 +249,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             </header>
             <div className="live-phrases__aggression">
                 <label>
-                    <span>Driving aggression</span>
+                    <span>Instructor aggression</span>
                     <input type="range" min="0" max={MAX_DRIVING_CAUTION} step="1" value={drivingAggression}
                         aria-valuetext={drivingAggression === 0 ? '0% braking adjustment (Reference)' : drivingAggression === 100
                             ? '100% braking adjustment (Direction guide)' : `${drivingAggression}% braking adjustment`}
@@ -229,12 +260,21 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         }} />
                 </label>
                 <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% braking adjustment</span><span>100% · Direction guide</span></div>
+                <label className="live-phrases__track-guide">
+                    <input type="checkbox" role="switch" checked={trackGuideEnabled} onChange={(event) => {
+                        const value = event.target.checked;
+                        trackGuideEnabledRef.current = value;
+                        setTrackGuideEnabled(value);
+                        updateTrackGuide.current?.(value);
+                    }} />
+                    <span>Track guide</span>
+                </label>
                 <ReferenceRangeMap reference={rangeReference} corners={rangeCorners} />
             </div>
             {overlayError && <p role="alert">Unable to display live phrase in the overlay: {overlayError}</p>}
             {voiceError && <p role="alert">Unable to prepare or play live phrase speech: {voiceError}</p>}
             <div className="live-phrases__sources" role="status">
-                <span data-ready={enabled}>Detection: {enabled ? 'Enabled' : 'Disabled'}</span>
+                <span data-ready={detectionReady}>Detection: {!enabled ? 'Disabled' : detectionReady ? 'Enabled' : 'Waiting for speech'}</span>
                 <span data-ready={speechStatus === 'Ready'}>Speech: {speechStatus}</span>
                 <meter aria-label="Speech level" min={0} max={1} value={speechLevel} />
                 <span data-ready={snapshot.telemetryReady}>Telemetry: {snapshot.telemetryReady ? 'Live' : 'Waiting for live data'}</span>
@@ -252,7 +292,10 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             <section aria-label="Triggered sentences" className="live-phrases__output">
                 <h3>Triggered sentences</h3>
                 {snapshot.events.length === 0
-                    ? <p>{enabled ? 'No phrases yet. Waiting for live driving data and a matching reference cue or overtaking opportunity.' : 'Enable detection to start live phrase guidance.'}</p>
+                    ? <p>{!enabled ? 'Enable detection to start live phrase guidance.'
+                        : speechStatus === 'Incomplete' ? 'Speech preparation is incomplete. Disable and enable detection to retry.'
+                            : !detectionReady ? 'Preparing speech. Detection will start when all phrases are ready.'
+                                : 'No phrases yet. Waiting for live driving data and a matching reference cue or overtaking opportunity.'}</p>
                     : <ol>{snapshot.events.slice().reverse().map((event) => (
                         <li key={event.id}>
                             <time dateTime={new Date(event.timestamp).toISOString()}>

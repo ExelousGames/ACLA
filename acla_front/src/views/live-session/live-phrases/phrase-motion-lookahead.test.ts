@@ -90,60 +90,57 @@ it('seeds the preview with the first valid rate without curvature or telemetry m
 
 it.each(['Physics_steer_angle', 'Physics_brake', 'Physics_gas', 'Physics_speed_kmh', 'Physics_heading',
     'Physics_velocity_x', 'Physics_local_velocity_y', 'Graphics_normalized_car_position', 'x', 'y', 'z'] as const)(
-    'reduces oscillating %s prediction error while tracking a steady trend', (field) => {
-        const predictor = new PhraseLookahead(), smoothed: number[] = [], raw: number[] = [];
-        let previous = 0;
-        for (let i = 0; i <= 30; i++) {
-            const t = i / 10, current = 0.4 + 0.02 * t + (i % 2 === 0 ? 0.002 : -0.002);
-            const coordinate = field === 'x' || field === 'y' || field === 'z';
-            const sample: StandardTelemetrySample = coordinate
-                ? { Graphics_player_car_id: 42, Graphics_car_id: [42], Graphics_car_coordinates: [{ x: 0, y: 0, z: 0, [field]: current }] }
-                : { Physics_speed_kmh: 36, [field]: current };
-            predictor.update(sample, i * 100, i > 0);
+    'applies changes to %s derivatives on the next telemetry update', (field) => {
+        const predictor = new PhraseLookahead();
+        const coordinate = field === 'x' || field === 'y' || field === 'z';
+        const sampleAt = (current: number): StandardTelemetrySample => coordinate
+            ? { Graphics_player_car_id: 42, Graphics_car_id: [42], Graphics_car_coordinates: [{ x: 0, y: 0, z: 0, [field]: current }] }
+            : { Physics_speed_kmh: 36, [field]: current };
+        predictor.update(sampleAt(0.4), 0, false);
+        predictor.update(sampleAt(0.402), 100, true);
+        for (const [at, current, expected] of [
+            [150, 0.406, 0.426], // A new secant rate between stored anchors applies immediately.
+            [200, 0.404, 0.414], // Three anchors establish a steady rate of 0.02 per second.
+            [300, 0.408, 0.458], // The changed rate and curvature both apply immediately.
+        ]) {
+            const sample = sampleAt(current);
+            predictor.update(sample, at, true);
             const projected = predictor.project(sample, null, 500);
-            if (i >= 10) {
-                const ideal = 0.4 + 0.02 * (t + 0.5);
-                const value = coordinate ? projected.Graphics_car_coordinates![0][field] : projected[field]!;
-                smoothed.push(value - ideal);
-                raw.push(current + (current - previous) / 0.1 * 0.5 - ideal);
-            }
-            previous = current;
+            const value = coordinate ? projected.Graphics_car_coordinates![0][field] : projected[field]!;
+            expect(value).toBeCloseTo(expected, 9);
         }
-        const range = (values: number[]) => Math.max(...values) - Math.min(...values);
-        expect(range(smoothed)).toBeLessThan(range(raw) * 0.5);
-        expect(Math.abs(smoothed.reduce((sum, value) => sum + value, 0) / smoothed.length)).toBeLessThan(0.001);
     });
 
-it('settles a sustained rate change within 500 ms regardless of frame cadence or repeated reads', () => {
+it('tracks the latest rate across frame cadences and repeated reads without settling time', () => {
     const run = (step: number, read: boolean) => {
         const predictor = new PhraseLookahead();
         const sampleAt = (at: number) => ({ Physics_steer_angle: 0.2 + Math.max(0, at - 100) / 1000 * 0.2 });
         [0, 100, 200].forEach((at) => predictor.update(sampleAt(at), at, at > 0));
-        for (let at = 200 + step; at <= 600; at += step) {
+        for (let at = 200 + step; at <= 300; at += step) {
             predictor.update(sampleAt(at), at, true);
             if (read) {
                 const projected = predictor.project(sampleAt(at), null, 500);
                 for (let i = 0; i < 5; i++) expect(predictor.project(sampleAt(at), null, 500)).toEqual(projected);
             }
         }
-        return predictor.project(sampleAt(600), null, 500).Physics_steer_angle!;
+        return predictor.project(sampleAt(300), null, 500).Physics_steer_angle!;
     };
-    const result = run(100, false);
-    expect(result).toBeGreaterThan(0.395);
-    expect(result).toBeLessThan(0.4);
-    expect(run(10, true)).toBeCloseTo(result, 9);
-    expect(run(25, false)).toBeCloseTo(result, 9);
+    for (const step of [10, 25, 100]) {
+        const result = run(step, false);
+        expect(result).toBeCloseTo(0.34, 9);
+        expect(run(step, true)).toBe(result);
+    }
 });
 
-it('shares the smoothed brake trend with release detection and forgets it after invalid data', () => {
+it('shares the curved brake trend with release detection and forgets it after invalid data', () => {
     const predictor = new PhraseLookahead();
     const sampleAt = (brake: number | undefined) => ({ Physics_brake: brake });
     predictor.update(sampleAt(0.6), 0, false);
     predictor.update(sampleAt(0.58), 100, true);
-    // A brief upward tick must not immediately reverse the established release trend.
+    // The changed rate predicts rising pressure at the horizon.
     predictor.update(sampleAt(0.585), 200, true);
-    expect(predictor.project(sampleAt(0.585), null, 500).Physics_brake).toBeLessThan(0.585);
-    expect(predictor.projectBrakeReleasing(sampleAt(0.585))).toBe(true);
+    expect(predictor.project(sampleAt(0.585), null, 500).Physics_brake).toBeGreaterThan(0.585);
+    expect(predictor.projectBrakeReleasing(sampleAt(0.585), 500)).toBe(false);
     predictor.update(sampleAt(undefined), 300, true);
     expect(predictor.projectBrakeReleasing(sampleAt(undefined))).toBeUndefined();
     predictor.update(sampleAt(0.6), 400, true);
@@ -161,7 +158,7 @@ it('waits for 100 ms of history and uses the eligible anchor between stored samp
     predictor.update(motion(0.1), 100, true);
     expect(predictor.project(motion(0.1), null, 500).Physics_steer_angle).toBeCloseTo(0.226, 9);
     [0.2, 0.4, 0.45].forEach((t) => predictor.update(motion(t), t * 1000, true));
-    expect(predictor.project(motion(0.45), null, 500).Physics_steer_angle).toBeCloseTo(0.337155818, 9);
+    expect(predictor.project(motion(0.45), null, 500).Physics_steer_angle).toBeCloseTo(motion(0.95).Physics_steer_angle!, 9);
 });
 
 it('tracks the player by ID when coordinate slots change', () => {
@@ -171,22 +168,19 @@ it('tracks the player by ID when coordinate slots change', () => {
         if (i === 1) { sample.Graphics_car_id!.reverse(); sample.Graphics_car_coordinates!.reverse(); }
         predictor.update(sample, t * 1000, i > 0);
     });
-    expect(predictor.project(motion(0.4), null, 500).Graphics_car_coordinates![1].x).toBeCloseTo(109.814561145, 9);
+    expect(predictor.project(motion(0.4), null, 500).Graphics_car_coordinates![1].x)
+        .toBeCloseTo(motion(0.9).Graphics_car_coordinates![1].x, 9);
 });
 
-it.each([0, 2, -2, -6])('smooths deceleration without projecting curvature for a %s m/s³ change', (change) => {
+it.each([0, 2, -2, -6])('projects deceleration at each horizon for a %s m/s³ change', (change) => {
     const predictor = new PhraseLookahead();
     const sampleAt = (t: number) => ({ ...motion(t), Physics_speed_kmh: (30 - 4 * t - change * t ** 2 / 2) * 3.6 });
     [0, 0.13, 0.4].forEach((t, i) => predictor.update(sampleAt(t), t * 1000, i > 0));
     const deceleration = predictor.projectDeceleration(sampleAt(0.4));
-    if (change === 0) expect(deceleration).toBeCloseTo(4, 9);
-    else {
-        const rates = [4 + change * 0.065, 4 + change * 0.265];
-        expect(deceleration).toBeGreaterThan(Math.min(...rates));
-        expect(deceleration).toBeLessThan(Math.max(...rates));
-    }
+    expect(deceleration).toBeCloseTo(4 + change * 3.4, 9);
     const speed = predictor.project(sampleAt(0.4), null, 500).Physics_speed_kmh!;
-    expect(deceleration).toBeCloseTo((sampleAt(0.4).Physics_speed_kmh - speed) / 3.6 / 0.5, 9);
+    expect(speed).toBeCloseTo(sampleAt(0.9).Physics_speed_kmh, 9);
+    expect(predictor.projectDeceleration(sampleAt(0.4), 500)).toBeCloseTo(4 + change * 0.9, 9);
 });
 
 it.each([undefined, NaN, Infinity, -1])('withholds predicted deceleration with insufficient or invalid speed history: %s', (speed) => {
@@ -201,9 +195,9 @@ it.each([undefined, NaN, Infinity, -1])('withholds predicted deceleration with i
 });
 
 it.each([
-    ['still applying', 0.4, -0.8, false], ['still releasing', -0.4, 0.8, true],
+    ['anticipated release', 0.4, -0.8, true], ['anticipated application', -0.4, 0.8, false],
     ['holding', 0, 0, false], ['slow release', -0.005, 0, false], ['release', -0.02, 0, true],
-] as const)('detects %s from the first brake derivative with uneven samples', (_name, rate, acceleration, releasing) => {
+] as const)('detects %s from the projected brake derivative with uneven samples', (_name, rate, acceleration, releasing) => {
     const predictor = new PhraseLookahead();
     const sampleAt = (t: number) => ({ ...motion(t), Physics_brake: 0.5 + rate * t + acceleration * t ** 2 / 2 });
     [0, 0.13, 0.4].forEach((t, i) => predictor.update(sampleAt(t), t * 1000, i > 0));
@@ -245,7 +239,7 @@ it('bounds speed and steering and keeps position fixed when live speed is zero',
     });
     [0, 0.2, 0.4].forEach((t, i) => predictor.update(sampleAt(t), t * 1000, i > 0));
     const projected = predictor.project(sampleAt(0.4), null, 500);
-    expect(projected.Graphics_normalized_car_position).toBeCloseTo(0.104927194, 9);
+    expect(projected.Graphics_normalized_car_position).toBeCloseTo(sampleAt(0.9).Graphics_normalized_car_position, 9);
     expect(projected.Physics_speed_kmh).toBe(0);
     expect(predictor.projectDeceleration(sampleAt(0.4))).toBe(0);
     expect(projected.Physics_steer_angle).toBe(1);
@@ -263,7 +257,7 @@ it('falls back per channel when history is insufficient or a measurement is miss
     predictor.update(motion(0.4), 400, true);
     const projected = predictor.project(motion(0.4), reference, 500);
     expect(projected.Physics_velocity_x).toBe(motion(0.4).Physics_velocity_x);
-    expect(projected.Physics_velocity_y).toBeCloseTo(-0.392719428, 9);
+    expect(projected.Physics_velocity_y).toBeCloseTo(motion(0.9).Physics_velocity_y!, 9);
 });
 
 it.each(['Physics_brake', 'Physics_gas'] as const)('bounds intended %s during application and release', (field) => {
@@ -284,7 +278,7 @@ it.each(['Physics_brake', 'Physics_gas'] as const)('preserves measured %s until 
         predictor.update({ ...motion(0.2), [field]: invalid }, 200, true);
         predictor.update(sample, 400, true);
         expect(predictor.project(sample, null, 500)[field]).toBe(sample[field]);
-        expect(predictor.project(sample, null, 500).Physics_steer_angle).toBeCloseTo(0.320728057, 9);
+        expect(predictor.project(sample, null, 500).Physics_steer_angle).toBeCloseTo(motion(0.9).Physics_steer_angle!, 9);
         predictor.update({ ...motion(0.6), [field]: invalid }, 600, true);
         expect(predictor.project({ ...motion(0.6), [field]: invalid }, null, 500)[field]).toBe(invalid);
     }
@@ -303,7 +297,7 @@ it('uses predicted local velocity but preserves the captured orientation of the 
         { ...sample, Physics_heading: Math.PI / 2, Physics_local_velocity_x: 10, Physics_local_velocity_y: 4 })).toBe('aligned');
 });
 
-it('does not anticipate a speed reversal from curvature in engine reference comparisons', () => {
+it('anticipates a speed reversal from curvature in engine reference comparisons', () => {
     const { reference } = steeringCornerFixture();
     reference.y.forEach((row) => { row[4] = 0.8; });
     let guidance: ReferenceGuidance = {};
@@ -316,10 +310,10 @@ it('does not anticipate a speed reversal from curvature in engine reference comp
     engine.receiveMap(null, 0, reference);
     const sampleAt = (t: number) => ({ ...motion(t), Physics_brake: 0, Physics_speed_kmh: 36 + 24 * (t - 0.4) ** 2 });
     [0, 0.2, 0.4].forEach((t) => engine.receiveTelemetry(frame(sampleAt(t)), 1000 + t * 1000));
-    // Measured speed is 36 km/h; the smoothed downward rate still predicts slowing.
+    // Measured speed is 36 km/h; curvature predicts acceleration over the next second.
     expect(readReferenceGuidance(sampleAt(0.4), null, reference, 'acc', 1400).brake).toBeUndefined();
-    expect(intendedSpeed).toBeCloseTo(28.669467474, 9);
-    expect(guidance.brake).toBeUndefined();
+    expect(intendedSpeed).toBeCloseTo(sampleAt(1.4).Physics_speed_kmh, 9);
+    expect(guidance.brake).toBeDefined();
 });
 
 it.each([[3.2, 'Hold brake.'], [4, undefined]] as const)(
@@ -341,7 +335,7 @@ it.each([[3.2, 'Hold brake.'], [4, undefined]] as const)(
         // A predicted deficit alone cannot request More brake.
         const intended = { ...sampleAt(0.6), Physics_speed_kmh: 26.36 * 3.6, Graphics_normalized_car_position: 0.133 };
         const measured = readReferenceGuidance(sampleAt(0.6), null, reference, 'acc', 1600, reference, 1.8,
-            undefined, undefined, undefined, false, 0.133, intended);
+            undefined, undefined, false, 0.133, intended);
         expect(measured.moreBrake).toBeUndefined();
         expect(engine.evaluate(1700).events).toEqual(result.events);
     });
@@ -367,17 +361,17 @@ it.each(['Physics_steer_angle', 'Physics_brake', 'Physics_gas'] as const)(
         new Closure('prediction', '', ({ intendedTelemetry }) => {
             observed.push(intendedTelemetry);
             return (intendedTelemetry[field] ?? 0) >= 0.44;
-        }, [Action.exitToRoot(({ intendedTelemetry }) => (intendedTelemetry[field] ?? 0) >= 0.56)]),
+        }, [Action.exitToRoot(({ intendedTelemetry }) => (intendedTelemetry[field] ?? 0) >= 0.7)]),
     ]));
     engine.receiveTelemetry(frame(sampleAt(0)), 1000);
     engine.receiveTelemetry(frame(sampleAt(0.2)), 1200);
     expect(engine.receiveTelemetry(frame(sampleAt(0.4)), 1400).state.path).toEqual(['root', 'prediction']);
-    expect(observed[observed.length - 1].Physics_speed_kmh).toBeCloseTo(78.93824458, 8);
+    expect(observed[observed.length - 1].Physics_speed_kmh).toBeCloseTo(motion(1.4).Physics_speed_kmh!, 8);
     const beforeTimer = observed[observed.length - 1];
     expect(engine.evaluate(1450).state.path).toEqual(['root', 'prediction']);
     expect(observed[observed.length - 1]).toEqual(beforeTimer);
     expect(engine.receiveTelemetry(frame(sampleAt(0.6)), 1600).state.path).toEqual(['root', 'prediction']);
-    // Smoothing delays this crossing slightly, but it still precedes the measured control.
+    // The predicted control crosses 0.7 while the measured control is still below 0.4.
     expect(sampleAt(0.65)[field]).toBeLessThan(0.4);
     expect(engine.receiveTelemetry(frame(sampleAt(0.65)), 1650).state.path).toEqual(['root']);
 });
@@ -389,7 +383,7 @@ it.each(['session', 'stream', 'track', 'car', 'pause', 'gap', 'clock'] as const)
             new Closure('inspect', '', (context) => { intended = context.intendedTelemetry; return false; }, []),
         ]));
         [0, 0.2, 0.4].forEach((t) => engine.receiveTelemetry(frame(motion(t)), 1000 + t * 1000));
-        expect(intended.Physics_steer_angle).toBeCloseTo(0.445456114, 9);
+        expect(intended.Physics_steer_angle).toBeCloseTo(motion(1.4).Physics_steer_angle!, 9);
         const next = frame(motion(0.6));
         if (change === 'session') next.sessionGeneration++;
         if (change === 'stream') next.streamGeneration++;

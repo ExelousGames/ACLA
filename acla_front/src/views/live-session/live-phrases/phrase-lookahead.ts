@@ -4,7 +4,6 @@ import { referencePositionAhead, referenceTravelDistance, REFERENCE_LOOKAHEAD_MS
 
 const MIN_SAMPLE_INTERVAL_MS = 100;
 const PREDICTION_FRAME_INTERVAL_MS = 100;
-const RATE_SMOOTHING_MS = 150;
 const boundedTime = (time: number) => Math.max(0, Math.min(REFERENCE_LOOKAHEAD_MS, time));
 export const BRAKE_RELEASE_RATE_THRESHOLD = 0.01;
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
@@ -46,15 +45,16 @@ function readField(sample: StandardTelemetrySample, field: PredictionField, play
     return value;
 }
 
-/** A first-order telemetry preview shared by closure entry, children and exit. */
+/** A second-order telemetry preview shared by closure entry, children and exit. */
 export class PhraseLookahead {
     private history: TimedSample[] = [];
     private rates = new Map<PredictionField, number>();
+    private curvatures = new Map<PredictionField, number>();
     private at = 0;
     private forecast?: { sample: StandardTelemetrySample; lap: TopLapReferenceEntry | null;
         frames: readonly PhrasePredictionFrame[]; byTime: Map<number, PhrasePredictionFrame> };
 
-    reset() { this.history = []; this.rates.clear(); this.forecast = undefined; }
+    reset() { this.history = []; this.rates.clear(); this.curvatures.clear(); this.forecast = undefined; }
 
     update(sample: StandardTelemetrySample, now: number, continuous: boolean, lap: TopLapReferenceEntry | null = null) {
         this.forecast = undefined;
@@ -80,24 +80,47 @@ export class PhraseLookahead {
                 Graphics_car_id: sample.Graphics_car_id?.slice(),
                 Graphics_car_coordinates: sample.Graphics_car_coordinates?.map((point) => ({ ...point })),
             }, at: now });
-            if (this.history.length > 2) this.history.shift();
+            if (this.history.length > 3) this.history.shift();
         }
-        const [anchor] = this.history.filter(({ at }) => now - at >= MIN_SAMPLE_INTERVAL_MS).slice(-1);
-        const alpha = 1 - Math.exp(-Math.max(0, elapsed) / RATE_SMOOTHING_MS);
+        const anchors = this.history.filter(({ at }) => now - at >= MIN_SAMPLE_INTERVAL_MS);
+        const anchor = anchors[anchors.length - 1], older = anchors[anchors.length - 2];
         predictionFields.forEach((field) => {
             const current = readField(sample, field, sample.Graphics_player_car_id);
             const before = anchor && readField(anchor.sample, field, sample.Graphics_player_car_id);
             if (!anchor || !finite(current) || !finite(before)) {
                 this.rates.delete(field);
+                this.curvatures.delete(field);
+                return;
+            }
+            const atLimit = ((field === 'Physics_brake' || field === 'Physics_gas') && (current === 0 || current === 1))
+                || (field === 'Physics_steer_angle' && Math.abs(current) === 1)
+                || (field === 'Physics_speed_kmh' && current === 0);
+            if (current === before && atLimit) {
+                // A held physical limit must not turn prior curvature into an invented rebound.
+                this.rates.set(field, 0);
+                this.curvatures.set(field, 0);
                 return;
             }
             const period = field === 'Graphics_normalized_car_position' ? 1
                 : field === 'Physics_heading' || field === 'Physics_pitch' || field === 'Physics_roll' ? 2 * Math.PI : undefined;
-            const rate = difference(before, current, period) / ((now - anchor.at) / 1000);
-            if (!finite(rate)) { this.rates.delete(field); return; }
-            const previousRate = this.rates.get(field);
-            // Smooth rates once per telemetry frame; readers share the same prediction without adding lag to current values.
-            this.rates.set(field, previousRate === undefined ? rate : previousRate + alpha * (rate - previousRate));
+            const interval = (now - anchor.at) / 1000;
+            let rate = difference(before, current, period) / interval;
+            const oldest = older && readField(older.sample, field, sample.Graphics_player_car_id);
+            let curvature: number | undefined;
+            if (older && finite(oldest)) {
+                const previousInterval = (anchor.at - older.at) / 1000;
+                const previousRate = difference(oldest, before, period) / previousInterval;
+                // Secants describe interval midpoints, even when the intervals differ.
+                const secondDerivative = 2 * (rate - previousRate) / (interval + previousInterval);
+                if (finite(secondDerivative)) {
+                    curvature = secondDerivative;
+                    rate += curvature * interval / 2;
+                }
+            }
+            if (!finite(rate)) { this.rates.delete(field); this.curvatures.delete(field); return; }
+            this.rates.set(field, rate);
+            if (curvature === undefined) this.curvatures.delete(field);
+            else this.curvatures.set(field, curvature);
         });
     }
 
@@ -128,45 +151,35 @@ export class PhraseLookahead {
             deceleration: this.projectDeceleration(sample, offsetMs), brakeReleasing: this.projectBrakeReleasing(sample, offsetMs) };
     }
 
-    private derivative(sample: StandardTelemetrySample, field: PredictionField) {
+    private prediction(sample: StandardTelemetrySample, field: PredictionField, secondsAhead: number) {
         const current = readField(sample, field, sample.Graphics_player_car_id), rate = this.rates.get(field);
-        return finite(current) && rate !== undefined ? { current, rate } : undefined;
+        if (!finite(current) || rate === undefined) return undefined;
+        const curvature = this.curvatures.get(field) ?? 0;
+        const value = current + rate * secondsAhead + curvature * secondsAhead ** 2 / 2;
+        const futureRate = rate + curvature * secondsAhead;
+        return finite(value) && finite(futureRate) ? { value, rate: futureRate } : undefined;
     }
 
     /** Speed's derivative at the shared horizon, in m/s², positive while slowing. */
     projectDeceleration(sample: StandardTelemetrySample, lookaheadMs = REFERENCE_LOOKAHEAD_MS): number | undefined {
-        const motion = this.derivative(sample, 'Physics_speed_kmh');
+        const motion = this.prediction(sample, 'Physics_speed_kmh', boundedTime(lookaheadMs) / 1000);
         if (!motion) return undefined;
-        const { current, rate } = motion;
-        const speed = current + rate * boundedTime(lookaheadMs) / 1000;
-        const deceleration = -rate / 3.6;
-        if (!finite(speed) || !finite(deceleration)) return undefined;
         // Match the speed preview's zero floor: a stopped car cannot keep decelerating.
-        return speed <= 0 ? 0 : deceleration;
+        return motion.value <= 0 ? 0 : -motion.rate / 3.6;
     }
 
     /** Detect pedal release from its derivative at the same horizon as intended pressure. */
     projectBrakeReleasing(sample: StandardTelemetrySample, lookaheadMs = REFERENCE_LOOKAHEAD_MS): boolean | undefined {
-        const motion = this.derivative(sample, 'Physics_brake');
+        const motion = this.prediction(sample, 'Physics_brake', boundedTime(lookaheadMs) / 1000);
         if (!motion) return undefined;
-        const { current, rate } = motion;
-        const pressure = current + rate * boundedTime(lookaheadMs) / 1000;
-        const releaseRate = -rate;
-        if (!finite(pressure) || !finite(releaseRate)) return undefined;
         // Clamped pressure cannot keep falling below zero or change while above full pressure.
-        return pressure > 0 && pressure <= 1 && releaseRate > BRAKE_RELEASE_RATE_THRESHOLD;
+        return motion.value > 0 && motion.value <= 1 && -motion.rate > BRAKE_RELEASE_RATE_THRESHOLD;
     }
 
     project(sample: StandardTelemetrySample, lap: TopLapReferenceEntry | null, lookaheadMs = REFERENCE_LOOKAHEAD_MS): StandardTelemetrySample {
         const secondsAhead = boundedTime(lookaheadMs) / 1000;
         const intended = { ...sample };
-        const predict = (field: PredictionField): number | undefined => {
-            const motion = this.derivative(sample, field);
-            if (!motion) return undefined;
-            const { current, rate } = motion;
-            const value = current + rate * secondsAhead;
-            return finite(value) ? value : undefined;
-        };
+        const predict = (field: PredictionField) => this.prediction(sample, field, secondsAhead)?.value;
         motionFields.forEach((field) => {
             const value = predict(field);
             if (value !== undefined) intended[field] = field === 'Physics_speed_kmh' ? Math.max(0, value)

@@ -96,7 +96,7 @@ describe('second-apex closure', () => {
             const spoken = engine.receiveTelemetry(frame(sample(3)), 0, exitHistory());
             expect(spoken.state.path).toEqual([...path, 'say phrase']);
             expect(spoken.events).toEqual([{ id: 1, instance: expect.any(PhraseInstance), ruleId: rule.id, sentence: exitAdvice, timestamp: 0 }]);
-            expect(spoken.root.children[0].children[0]).toMatchObject({
+            expect(spoken.root.children.find((node) => node.id === rule.id)!.children[0]).toMatchObject({
                 id: 'second-apex:inside-long-straight', kind: 'closure', name: 'Inside the Long Straight',
                 children: [{ name: 'exit to parent' }, { name: 'say phrase', description: exitAdvice,
                     conditions: [{ conditionFit: true }, { conditionFit: true }, { conditionFit: true }] }],

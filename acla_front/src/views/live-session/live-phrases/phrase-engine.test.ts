@@ -1,6 +1,6 @@
 import { createLiveTelemetryStore, LiveTelemetryFrameEvent } from '../live-telemetry-store';
 import type { StandardTelemetrySample } from '../live-session-types';
-import { COOLDOWN_MS, PHRASE_DEFINITIONS, PhraseCondition, PhraseConditionGroup, PhraseEngine, TELEMETRY_MAX_AGE_MS, conditionGroup, getPhraseActions, type PhraseConditionConnector, type PhraseConditionNode } from './phrase-engine';
+import { COOLDOWN_MS, PHRASE_DEFINITIONS, PhraseCondition, PhraseConditionGroup, PhraseEngine, TELEMETRY_MAX_AGE_MS, conditionGroup, conditionsMatch, getPhraseActions, type PhraseConditionConnector, type PhraseConditionNode } from './phrase-engine';
 import { VISION_MAX_AGE_MS } from '../track-vision/track-vision-types';
 import { circuitMap, shapedCornerMap, vision as trackVision } from './test-fixtures';
 import { Action, Closure, State } from './closure';
@@ -27,31 +27,19 @@ const slipstreamVision = (capturedAt: number, x = 2, y = 9) => {
 };
 
 describe('live phrase closure tree', () => {
-    it('starts at a root containing independent Steering and pedal zone closures', () => {
+    it('starts at a root containing one flat Track guide and independent overtaking guides', () => {
         const engine = new PhraseEngine();
         expect(engine.root).toBeInstanceOf(Closure);
         expect(engine.state).toBeInstanceOf(State);
         expect(engine.state.current).toBe(engine.root);
         expect(engine.root.children.map((child) => child.name)).toEqual([
-            'Chicane overtake', 'One Tight Slow Corner', 'Slipstream', 'Pressure and a feint',
-            'Brake zone', 'Throttle zone', 'Steering', 'Corner exit', 'Turn to reference line',
+            'Track guide', 'Chicane overtake', 'One Tight Slow Corner', 'Slipstream', 'Pressure and a feint',
         ]);
         const snapshot = engine.evaluate(0);
-        const brakeZone = snapshot.root.children.find((child) => child.name === 'Brake zone')!;
-        const throttleZone = snapshot.root.children.find((child) => child.name === 'Throttle zone')!;
-        expect(snapshot.root.children.find((child) => child.name === 'Steering')!.fields).not.toHaveProperty('Cooldown');
-        expect(brakeZone.children.filter((child) => child.kind === 'closure').map((child) => child.name))
-            .toEqual(['Brake', 'More brake', 'Release the brake', 'Hold brake pressure']);
-        expect(throttleZone.children.filter((child) => child.kind === 'closure').map((child) => child.name))
-            .toEqual(['Throttle', 'More throttle', 'Less throttle']);
-        for (const [zone, pedal] of [[brakeZone, 'brake'], [throttleZone, 'throttle']] as const) {
-            expect(zone.conditions).toEqual([
-                expect.objectContaining({ description: `Inside the interpolated reference ${pedal} zone`, conditionFit: false, inputMissing: true }),
-                ...(pedal === 'brake' ? [expect.objectContaining({
-                    description: 'The direction-start speed condition for brake-zone exit is not met', conditionFit: true,
-                })] : []),
-            ]);
-        }
+        const guide = snapshot.root.children.find((child) => child.name === 'Track guide')!;
+        expect(guide.children.filter((child) => child.kind === 'closure').map((child) => child.name))
+            .toEqual(PHRASE_DEFINITIONS.filter((phrase) => phrase.referenceCue).map((phrase) => phrase.name));
+        expect(guide.children.find((child) => child.name === 'Turn in')!.fields).not.toHaveProperty('Cooldown');
         expect(snapshot.root).toMatchObject({ name: engine.root.name, description: engine.root.description });
         const descendants = (closure: Closure<any>): Closure<any>[] => closure.children.flatMap((node) =>
             node instanceof Closure ? [node, ...descendants(node)] : []);
@@ -63,11 +51,10 @@ describe('live phrase closure tree', () => {
             expect(child.description.trim()).not.toBe('');
             const actions = (child as Closure<unknown>).children.filter((node) => node instanceof Action);
             const speech = getPhraseActions(PHRASE_DEFINITIONS[index]);
-            const parentSpeech = phrase.referenceCue === 'steering' ? [speech[0], ...speech.slice(3)]
-                : PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2)
+            const parentSpeech = PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2)
                 : PHRASE_DEFINITIONS[index].id === 'second-apex' ? speech.slice(0, 2) : speech;
-            expect(actions.map((action) => action.name)).toEqual([...(phrase.referenceCue === 'steering' ? ['exit to root'] : []), ...parentSpeech.map(() => 'say phrase'),
-                ...(phrase.referenceCue === 'steering' ? [] : [phrase.referenceCue ? 'exit to parent' : 'exit to root'])]);
+            expect(actions.map((action) => action.name)).toEqual([...parentSpeech.map(() => 'say phrase'),
+                phrase.referenceCue ? 'exit to parent' : 'exit to root']);
             actions.forEach((action) => {
                 expect(action).toBeInstanceOf(Action);
                 expect(action.description.trim()).not.toBe('');
@@ -84,7 +71,7 @@ describe('live phrase closure tree', () => {
     it('publishes through a lambda action, records its location, and explicitly exits to root', () => {
         const engine = new PhraseEngine();
         engine.receiveMap(map, 0);
-        const child = engine.root.children[PHRASE_DEFINITIONS.findIndex((phrase) => phrase.id === defaultRule)] as Closure<unknown>;
+        const child = engine.root.children.find((node) => node.metadata.id === defaultRule) as Closure<unknown>;
         const action = child.children[0] as Action<unknown>;
         const exit = child.children[1] as Action<unknown>;
         const run = jest.spyOn(action, 'run');
@@ -458,7 +445,7 @@ describe('vision and Live Map overtaking guides', () => {
         const other = new PhraseEngine().evaluate(100);
         expect(before.closures.find((rule) => rule.id === defaultRule)!.conditions.every((condition) => condition.conditionFit)).toBe(true);
         expect(after.closures.find((rule) => rule.id === defaultRule)!.conditions.find((condition): condition is PhraseCondition => condition instanceof PhraseCondition && condition.input === 'speed')?.conditionFit).toBe(false);
-        expect(other.closures.every((rule) => rule.conditions.every((condition) => !condition.conditionFit))).toBe(true);
+        expect(other.closures.every((rule) => !conditionsMatch(rule.conditions))).toBe(true);
         for (const rule of [...PHRASE_DEFINITIONS, ...before.closures, ...after.closures]) {
             rule.conditions.forEach((condition) => expect(condition).toBeInstanceOf(PhraseCondition));
         }

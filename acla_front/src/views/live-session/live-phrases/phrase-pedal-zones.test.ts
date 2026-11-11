@@ -31,7 +31,6 @@ const frame = (sample: StandardTelemetrySample): LiveTelemetryFrameEvent => ({
 
 describe.each(['brake', 'throttle'] as const)('%s zone onsets', (pedal) => {
     const opposite = pedal === 'brake' ? 'throttle' : 'brake';
-    const name = pedal === 'brake' ? 'Brake zone' : 'Throttle zone';
 
     it.each([[90, false], [72, false], [71.99, true], [36, true]] as const)(
         'filters the entire reference interval at %s km/h (qualified: %s)', (referenceSpeed, qualified) => {
@@ -48,35 +47,30 @@ describe.each(['brake', 'throttle'] as const)('%s zone onsets', (pedal) => {
             expect(readReferenceGuidance(sampleAt(0.21), null, lap, 'acc', 1000).pedalZone).toBe(opposite);
         });
 
-    it(pedal === 'brake'
-        ? 'enters immediately below the old pressure threshold and keeps Brake active at throttle onset'
-        : 'enters immediately below the old pressure threshold and exits on the first brake rise', () => {
+    it('keeps Track guide idle when reference pressure is below every cue threshold', () => {
         const engine = conditionTestEngine();
         engine.receiveMap(null, 0, lapWithShortZone(pedal, 36));
         // At 36 km/h the decision position leads telemetry by 5 m / 0.005 of this lap.
-        expect(engine.receiveTelemetry(frame(sampleAt(0.195001)), 1000).state.path).toEqual(['root', name]);
-        expect(engine.receiveTelemetry(frame(sampleAt(0.204999)), 1001).state.path).toEqual(['root', name]);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.195001)), 1000).state.path).toEqual(['root']);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.204999)), 1001).state.path).toEqual(['root']);
         const boundary = pedal === 'brake' ? 0.21 : 0.205001;
-        if (pedal === 'brake') expect(engine.receiveTelemetry(frame(sampleAt(0.209999)), 1002).state.path).toEqual(['root', name]);
+        if (pedal === 'brake') expect(engine.receiveTelemetry(frame(sampleAt(0.209999)), 1002).state.path).toEqual(['root']);
         expect(engine.receiveTelemetry(frame(sampleAt(boundary)), 1003).state.path)
-            .toEqual(['root', 'Brake zone']);
+            .toEqual(['root']);
     });
 
-    it(opposite === 'brake'
-        ? 'keeps the previous Brake zone when the new throttle interval is filtered out'
-        : 'exits the previous Throttle zone even when the new brake interval is filtered out', () => {
+    it('does not retain a previous pedal scope when the next interval is filtered out', () => {
         const engine = conditionTestEngine();
         const lap = lapWithShortZone(pedal, 72);
         // Keep the preceding pedal pressed until the opposite onset under test.
         lap.y.forEach((row, i) => { if (i < 20 || i >= 90) row[pedal === 'brake' ? 4 : 3] = 0.001; });
         engine.receiveMap(null, 0, lap);
-        const otherName = opposite === 'brake' ? 'Brake zone' : 'Throttle zone';
-        expect(engine.receiveTelemetry(frame(sampleAt(0.1949)), 1000).state.path).toEqual(['root', otherName]);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.1949)), 1000).state.path).toEqual(['root']);
         const boundary = opposite === 'brake' ? 0.2 : 0.195001;
         expect(readReferenceGuidance(sampleAt(0.2), null, lap, 'acc', 1001).pedalZone).toBe('none');
         expect(engine.receiveTelemetry(frame(sampleAt(boundary)), 1001).state.path)
-            .toEqual(opposite === 'brake' ? ['root', 'Brake zone'] : ['root']);
-        expect(engine.receiveTelemetry(frame(sampleAt(0.210001)), 1002).state.path).toEqual(['root', otherName]);
+            .toEqual(['root']);
+        expect(engine.receiveTelemetry(frame(sampleAt(0.210001)), 1002).state.path).toEqual(['root']);
     });
 
     it('tracks zone membership through release and reapplication of the same pedal', () => {
@@ -134,20 +128,16 @@ it('integrates changing reference speed over the whole zone', () => {
     expect(readReferenceGuidance(sampleAt(0.209999, 180), null, lap, 'acc', 1000).pedalZone).toBe('brake');
 });
 
-it.each([0, 0.5, 1])('ends the reference brake interval at release to zero but keeps Brake active with live pedal %s', (pedal) => {
+it.each([0, 0.5, 1])('ends the reference brake interval at release to zero with live pedal %s', (pedal) => {
     const lap = lapWithShortZone('brake', 36);
     lap.y.forEach((row, i) => {
         row[3] = i === 21 ? 0.8 : i === 22 ? 0.4 : i === 23 ? 0.001 : 0;
         row[4] = 0;
     });
-    const engine = conditionTestEngine();
-    engine.receiveMap(null, 0, lap);
     for (const position of [0.2, 0.21, 0.22, 0.23, 0.239999, 0.24, 0.3, 0.5]) {
         const sample = { ...sampleAt(position), Physics_brake: pedal };
         const inside = position < 0.24;
         expect(readReferenceGuidance(sample, null, lap, 'acc', 1000).pedalZone).toBe(inside ? 'brake' : 'none');
-        expect(engine.receiveTelemetry(frame(sample), 1000).state.path.slice(0, 2))
-            .toEqual(['root', 'Brake zone']);
     }
 });
 
@@ -198,7 +188,7 @@ function lapReachingFullThrottle(): TopLapReferenceEntry {
     return lap;
 }
 
-it.each([0, 1])('waits for the last steering change before throttle reaches %s', (endpoint) => {
+it.each([0, 1])('allows throttle throughout steering changes before throttle reaches %s', (endpoint) => {
     for (const change of [-0.2, -0.001, 0.001, 0.2]) {
         const lap = lapReachingFullThrottle();
         lap.y.forEach((row, i) => {
@@ -209,27 +199,28 @@ it.each([0, 1])('waits for the last steering change before throttle reaches %s',
         for (const position of [0.2, 0.205, 0.21, 0.219999, 0.22, 0.239999, 0.24]) {
             const sample = { ...sampleAt(position), Physics_steer_angle: -change };
             expect(readReferenceGuidance(sample, null, lap, 'acc', 1000).pedalZone)
-                .toBe(position >= 0.22 && position < 0.24 ? 'throttle' : 'none');
+                .toBe(position < 0.24 ? 'throttle' : 'none');
         }
     }
 });
 
-it.each([0, 1])('blocks an increase followed by a reduction even with no net steering change before throttle %s', (endpoint) => {
+it.each([0, 1])('allows a steering increase followed by a reduction before throttle %s', (endpoint) => {
     const lap = lapReachingFullThrottle();
     lap.y.forEach((row) => { if (row[4] === 1) row[4] = endpoint; });
     lap.y[22][6] = 0.2;
     for (const position of [0.2, 0.21, 0.22, 0.229999]) {
-        expect(readReferenceGuidance(sampleAt(position), null, lap, 'acc', 1000).pedalZone).toBe('none');
+        expect(readReferenceGuidance(sampleAt(position), null, lap, 'acc', 1000).pedalZone).toBe('throttle');
     }
     expect(readReferenceGuidance(sampleAt(0.23), null, lap, 'acc', 1000).pedalZone).toBe('throttle');
 });
 
-it.each([0, 1])('checks steering all the way through the throttle endpoint %s', (endpoint) => {
+it.each([0, 1])('keeps throttle active when steering changes through the throttle endpoint %s', (endpoint) => {
     const lap = lapReachingFullThrottle();
     lap.y.forEach((row) => { if (row[4] === 1) row[4] = endpoint; });
     lap.y[24][6] = 0.2;
     for (const position of [0.2, 0.23, 0.239999, 0.24]) {
-        expect(readReferenceGuidance(sampleAt(position), null, lap, 'acc', 1000).pedalZone).toBe('none');
+        expect(readReferenceGuidance(sampleAt(position), null, lap, 'acc', 1000).pedalZone)
+            .toBe(position < 0.24 ? 'throttle' : 'none');
     }
 });
 
@@ -242,7 +233,7 @@ it.each([-0.2, 0, 0.2])('allows constant steering %s and ignores changes after t
 });
 
 it.each([[false, 0], [true, 0], [false, 1], [true, 1]] as const)(
-    'delays throttle across start/finish (duplicate: %s, steering settles at sample %s)', (duplicate, settledIndex) => {
+    'allows throttle across start/finish despite steering changes (duplicate: %s, steering settles at sample %s)', (duplicate, settledIndex) => {
         const lap = lapReachingFullThrottle();
         lap.y.forEach((row, i) => {
             row[4] = i >= 99 || i <= 1 ? 0.5 : i === 2 ? 1 : 0;
@@ -251,46 +242,36 @@ it.each([[false, 0], [true, 0], [false, 1], [true, 1]] as const)(
         if (duplicate) { lap.x.push(1); lap.y.push([...lap.y[0]]); }
         for (const position of [0.98, 0.99, 0.999999, 0, 1, 0.01, 0.019999]) {
             expect(readReferenceGuidance(sampleAt(position), null, lap, 'acc', 1000).pedalZone)
-                .toBe(position % 1 >= settledIndex / 100 && position % 1 < 0.02 ? 'throttle' : 'none');
+                .toBe('throttle');
         }
         expect(readReferenceGuidance(sampleAt(0.02), null, lap, 'acc', 1000).pedalZone).toBe('none');
     });
 
-it.each(['missing', 'invalid', 'out of range'])('withholds throttle with %s reference steering while preserving brake zones', (kind) => {
+it.each(['missing', 'invalid', 'out of range'])('preserves throttle and brake zones with %s reference steering', (kind) => {
     const lap = lapReachingFullThrottle();
     lap.y.forEach((row, i) => { if (i <= 20) row[3] = 0.001; });
     if (kind === 'missing') lap.target_features[6] = 'missing steering';
     else lap.y[22][6] = kind === 'invalid' ? NaN : 1.1;
-    expect(readReferenceGuidance(sampleAt(0.2), null, lap, 'acc', 1000).pedalZone).toBe('none');
+    expect(readReferenceGuidance(sampleAt(0.2), null, lap, 'acc', 1000).pedalZone).toBe('throttle');
     expect(readReferenceGuidance(sampleAt(0.6), null, lap, 'acc', 1000).pedalZone).toBe('brake');
-    const engine = conditionTestEngine();
-    engine.receiveMap(null, 0, lap);
-    expect(engine.receiveTelemetry(frame(sampleAt(0.19)), 1000).state.path).toEqual(['root', 'Brake zone']);
-    expect(engine.receiveTelemetry(frame(sampleAt(0.2)), 1100).state.path).toEqual(['root', 'Brake zone']);
 });
 
-it('uses active-reference steering rather than the source reference for throttle entry', () => {
+it('ignores both active and source reference steering for throttle entry', () => {
     const source = lapReachingFullThrottle(), active = lapReachingFullThrottle();
     active.y[22][6] = 0.2;
-    expect(readReferenceGuidance(sampleAt(0.2), null, active, 'acc', 1000, source).pedalZone).toBe('none');
+    expect(readReferenceGuidance(sampleAt(0.2), null, active, 'acc', 1000, source).pedalZone).toBe('throttle');
     expect(readReferenceGuidance(sampleAt(0.2), null, source, 'acc', 1000, active).pedalZone).toBe('throttle');
 });
 
-it('keeps Brake active at throttle onset while throttle entry still requires steady steering', () => {
+it('enters the throttle zone after braking while reference steering is still changing', () => {
     const lap = lapReachingFullThrottle();
     lap.y.forEach((row, i) => { row[6] = i < 22 ? 0 : 0.2; if (i <= 20) row[3] = 0.001; });
-    const engine = conditionTestEngine(), throttleEngine = conditionTestEngine();
-    engine.receiveMap(null, 0, lap);
-    throttleEngine.receiveMap(null, 0, lap);
-    expect(engine.receiveTelemetry(frame(sampleAt(0.19)), 1000).state.path).toEqual(['root', 'Brake zone']);
+    expect(readReferenceGuidance(sampleAt(0.19), null, lap, 'acc', 1000).pedalZone).toBe('brake');
     for (const position of [0.2, 0.21]) {
-        expect(engine.receiveTelemetry(frame(sampleAt(position)), 1100).state.path).toEqual(['root', 'Brake zone']);
-        expect(throttleEngine.receiveTelemetry(frame(sampleAt(position)), 1100).state.path).toEqual(['root']);
+        expect(readReferenceGuidance(sampleAt(position), null, lap, 'acc', 1100).pedalZone).toBe('throttle');
     }
-    expect(engine.receiveTelemetry(frame(sampleAt(0.22)), 1200).state.path).toEqual(['root', 'Brake zone']);
-    expect(engine.receiveTelemetry(frame(sampleAt(0.24)), 1300).state.path).toEqual(['root', 'Brake zone']);
-    expect(throttleEngine.receiveTelemetry(frame(sampleAt(0.22)), 1200).state.path).toEqual(['root', 'Throttle zone']);
-    expect(throttleEngine.receiveTelemetry(frame(sampleAt(0.24)), 1300).state.path).toEqual(['root']);
+    expect(readReferenceGuidance(sampleAt(0.22), null, lap, 'acc', 1200).pedalZone).toBe('throttle');
+    expect(readReferenceGuidance(sampleAt(0.24), null, lap, 'acc', 1300).pedalZone).toBe('none');
 });
 
 it.each([0, 0.5, 1])('ends throttle at reference full throttle regardless of live pedal %s', (pedal) => {

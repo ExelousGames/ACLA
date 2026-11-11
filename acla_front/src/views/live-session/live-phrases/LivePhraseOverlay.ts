@@ -65,7 +65,7 @@ export class LivePhraseOverlay {
     private updateSteering(snapshot: PhraseSnapshot, map: CircuitMapDto | null, reference: TopLapReferenceEntry | null): void {
         const corner = snapshot.steeringCorner;
         if (!snapshot.telemetryReady || !snapshot.referenceLoaded || !snapshot.mapReady
-            || !snapshot.state.path.includes('Steering') || !corner || !map || !reference) {
+            || !snapshot.trackGuideEnabled || !corner || !map || !reference) {
             this.clearSteering();
             return;
         }

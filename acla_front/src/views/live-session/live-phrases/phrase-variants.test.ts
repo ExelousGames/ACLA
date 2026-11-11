@@ -69,6 +69,22 @@ it.each([undefined, []])('keeps the original sentence without alternatives (%s)'
     expect(random).not.toHaveBeenCalled();
 });
 
+it('selects a preloaded sentence once from driving conditions without randomizing directions', () => {
+    const random = jest.spyOn(Math, 'random');
+    const selectSentence = jest.fn(() => phrase.sentenceAlternatives![1]);
+    const engine = new PhraseEngine([{ ...phrase, selectSentence }]);
+    const event = engine.receiveTelemetry(frame(100), 0).events[0];
+    expect(event.sentence).toBe('Bring it to the left.');
+    expect(event.instance!.speech.text).toBe(event.sentence);
+    expect(selectSentence).toHaveBeenCalledTimes(1);
+    expect(random).not.toHaveBeenCalled();
+});
+
+it.each([undefined, 'Unprepared direction'])('withholds an unavailable selected sentence: %s', (sentence) => {
+    const engine = new PhraseEngine([{ ...phrase, selectSentence: () => sentence }]);
+    expect(engine.receiveTelemetry(frame(100), 0).events).toEqual([]);
+});
+
 it('exposes alternatives when inspecting nested speech actions without choosing one', () => {
     const random = jest.spyOn(Math, 'random');
     const engine = new PhraseEngine([{ ...phrase, id: 'second-apex', additionalActions: [phrase, phrase] }]);

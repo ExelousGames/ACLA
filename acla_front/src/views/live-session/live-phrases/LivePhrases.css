@@ -17,6 +17,8 @@
 .live-phrases__aggression input { width: 100%; margin: 0; accent-color: var(--lp-green, #37efac); cursor: pointer; }
 .live-phrases__aggression input:focus-visible { outline: 2px solid var(--lp-green, #37efac); outline-offset: 4px; }
 .live-phrases__aggression-scale { display: flex; justify-content: space-between; margin-top: 6px; }
+.live-phrases__aggression .live-phrases__track-guide { flex-direction: row; align-items: center; margin-top: 14px; }
+.live-phrases__track-guide input { width: auto; }
 .live-phrases__sources { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 6px; background: var(--lp-bg, #10131a); }
 .live-phrases [data-ready="true"], .live-phrases [data-active="true"] { color: var(--lp-green, #37efac); }
 .live-phrases__output { margin: 16px 0; padding: 12px; border: 1px solid var(--lp-border, #343b46); border-radius: 8px; }

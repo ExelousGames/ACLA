@@ -32,7 +32,7 @@ const sample = (position: number): StandardTelemetrySample => ({
 });
 const read = (lap: TopLapReferenceEntry, position: number, sign: -1 | 1 = 1, start = 0.1,
     patch: StandardTelemetrySample = {}) => readReferenceGuidance({ ...sample(position), ...patch }, null, lap, lap.game, 1000,
-    lap, undefined, undefined, sign, { start, end: (start + 0.2) % 1 });
+    lap, undefined, sign, { start, end: (start + 0.2) % 1 });
 
 it.each(['acc', 'iracing'] as const)('follows loaded steering and final unwind in both directions in %s without vision', (game) => {
     for (const sign of [-1, 1] as const) {
