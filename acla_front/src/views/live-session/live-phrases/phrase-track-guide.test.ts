@@ -19,12 +19,16 @@ const prepare = (engine: PhraseEngine, phrases: readonly PhraseDefinition[], dur
         durations[instance.id.slice(0, instance.id.lastIndexOf(':say:'))] ?? 200])));
 };
 
-it('places every reference cue directly under Track guide without the old phase groups', () => {
+it('places every reference phrase directly inside the shared Track guide closure', () => {
     const snapshot = new PhraseEngine().evaluate(0);
     const guide = snapshot.root.children.find(({ id }) => id === 'track-guide')!;
     expect(guide.name).toBe('Track guide');
-    expect(guide.children.filter(({ kind }) => kind === 'closure').map(({ id }) => id))
-        .toEqual(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue).map(({ id }) => id));
+    expect(guide.children.filter(({ kind }) => kind === 'closure')).toEqual([]);
+    expect(guide.children.filter(({ kind }) => kind === 'phrase'))
+        .toEqual(PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue).flatMap((phrase) =>
+            getPhraseActions(phrase).map((action) => expect.objectContaining({
+                id: action.id, name: phrase.name, description: action.sentence, children: [],
+            }))));
     const names = [snapshot.root, ...snapshot.root.children, ...guide.children].map(({ name }) => name);
     for (const oldGroup of ['Brake zone', 'Throttle zone', 'Steering', 'Corner exit', 'Turn to reference line']) {
         expect(names).not.toContain(oldGroup);
@@ -32,6 +36,32 @@ it('places every reference cue directly under Track guide without the old phase 
     for (const phrase of PHRASE_DEFINITIONS.filter(({ referenceCue }) => referenceCue)) {
         expect(getPhraseActions(phrase)).toHaveLength(1);
     }
+});
+
+it('keeps OR entry conditions grouped with additional phrase conditions in snapshots', () => {
+    const phrase: PhraseDefinition = { ...definition('reference-throttle'), holdMs: 0,
+        conditions: [new PhraseCondition('speed', '>=', 100), new PhraseCondition('speed', '<=', 40, undefined, 'or')],
+        actionConditions: [new PhraseCondition('speed', '>=', 30)] };
+    const engine = new PhraseEngine([phrase]);
+    const unevaluated = engine.state.snapshot().children[0].children[0];
+    expect(unevaluated).toMatchObject({ kind: 'phrase', children: [], conditions: [
+        { connector: 'and', conditionFit: null, conditions: [
+            { conditionFit: null }, { connector: 'or', conditionFit: null },
+        ] },
+        { connector: 'and', conditionFit: null, conditions: [{ conditionFit: null }] },
+    ] });
+    [20, 36].forEach((speed, index) => {
+        const snapshot = engine.receiveTelemetry(frame(sample(0.15, { Physics_speed_kmh: speed })), 1000 + index * 100);
+        const node = snapshot.root.children[0].children[0];
+        expect(node.conditions).toMatchObject([
+            { connector: 'and', conditionFit: true, conditions: [
+                { conditionFit: false }, { connector: 'or', conditionFit: true },
+            ] },
+            { connector: 'and', conditionFit: speed >= 30, conditions: [{ conditionFit: speed >= 30 }] },
+        ]);
+        expect(snapshot.events).toHaveLength(index);
+    });
+    expect(unevaluated.conditions.every(({ conditionFit }) => conditionFit === null)).toBe(true);
 });
 
 it('uses the next cue audio forecast after Brake finishes without waiting for the old brake-zone exit', () => {
@@ -51,7 +81,7 @@ it('uses the next cue audio forecast after Brake finishes without waiting for th
     const upcoming = engine.receiveTelemetry(frame(sample(0.2501)), 1200);
     expect(upcoming.events.map(({ sentence }) => sentence)).toEqual(['Brake.', 'Turn in']);
     expect(upcoming.events[1].speech?.preparationTimeMs).toBe(2000);
-    expect(upcoming.state.path).toEqual(['root', 'Track guide', 'Turn in', 'say phrase']);
+    expect(upcoming.state.path).toEqual(['root', 'Track guide', 'Turn in']);
 });
 
 it('uses the longer Ease brake clip before the Turn in clip can reach the corner', () => {
@@ -70,7 +100,7 @@ it('uses the longer Ease brake clip before the Turn in clip can reach the corner
     const upcoming = engine.receiveTelemetry(frame(sample(0.245, { Physics_brake: 0.8 })), 1000);
     expect(upcoming.events).toEqual([expect.objectContaining({ sentence: 'Ease brake', brakeRelease: true,
         speech: expect.objectContaining({ preparationTimeMs: 2000 }) })]);
-    expect(upcoming.state.path).toEqual(['root', 'Track guide', 'Ease brake', 'say phrase']);
+    expect(upcoming.state.path).toEqual(['root', 'Track guide', 'Ease brake']);
 });
 
 it('announces an upcoming turn even while the current reference is accelerating', () => {

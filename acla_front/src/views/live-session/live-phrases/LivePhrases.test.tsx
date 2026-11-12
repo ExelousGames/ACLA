@@ -8,6 +8,10 @@ import { PHRASE_DEFINITIONS, PhraseCondition, PhraseEngine, conditionGroup } fro
 import { circuitMap, variableBrakingReference, vision } from './test-fixtures';
 import type { DriverCornerSummary } from '../event-log/corner-summary';
 
+const trackGuidePhrases = PHRASE_DEFINITIONS.filter((phrase) => phrase.referenceCue);
+const trackGuidePhraseLabel = (rule: typeof PHRASE_DEFINITIONS[number]) =>
+    `Track guide phrase ${trackGuidePhrases.indexOf(rule) + 1}: ${rule.name}`;
+
 jest.mock('components/tts', () => ({ synthesizeProsodyTts: async (_curves: unknown, _inputs: unknown, { text }: { text: string }) => ({
     text, audioDataUrl: `data:audio/wav;base64,${btoa(text)}`, durationMs: 3000,
 }) }));
@@ -118,11 +122,12 @@ describe('LivePhrases root connection', () => {
         const catalog = within(screen.getByRole('region', { name: 'Sentence catalog' }));
         PHRASE_DEFINITIONS.filter((rule) => !rule.movementDirection).forEach((rule) => {
             if (rule.referenceCue) fireEvent.click(catalog.getByLabelText('Track guide closure'));
-            const summary = catalog.getByLabelText(`${rule.name} closure`);
+            const label = rule.referenceCue ? trackGuidePhraseLabel(rule) : rule.name;
+            const summary = catalog.getByLabelText(rule.referenceCue ? label : `${rule.name} closure`);
             expect(summary).toBeVisible();
             fireEvent.click(summary);
             fireEvent.click(catalog.getByRole('tab', { name: 'Conditions' }));
-            const conditions = within(catalog.getByRole('list', { name: `${rule.name} conditions` }));
+            const conditions = within(catalog.getByRole('list', { name: `${label} conditions` }));
             expect(conditions.getAllByRole('listitem')).toHaveLength(rule.conditions.length);
             expect(conditions.queryAllByText('AND')).toHaveLength(rule.conditions.length - 1);
             expect(within(conditions.getAllByRole('listitem')[0]).queryByText('AND')).not.toBeInTheDocument();
@@ -140,7 +145,7 @@ describe('LivePhrases root connection', () => {
         }
     });
 
-    it('groups all reference cues directly under Track guide without the old phase closures', () => {
+    it('lists reference phrases directly inside Track guide without individual closures', () => {
         render(<LivePhrases name="live-phrases" />);
         expect(screen.getByLabelText('Track guide closure')).toBeVisible();
         expect(screen.getByLabelText('Pressure and a feint closure')).toBeVisible();
@@ -148,9 +153,9 @@ describe('LivePhrases root connection', () => {
         for (const name of ['Brake zone', 'Throttle zone', 'Steering', 'Corner exit', 'Turn to reference line', 'More right', 'More left']) {
             expect(screen.queryByLabelText(`${name} closure`)).not.toBeInTheDocument();
         }
-        for (const name of ['Brake', 'More brake', 'Release the brake', 'Hold brake pressure', 'Throttle',
-            'More throttle', 'Less throttle', 'Turn in', 'Ease brake', 'Hold line', 'Unwind', 'Consecutive corners']) {
-            expect(screen.getByLabelText(`${name} closure`)).toBeVisible();
+        for (const rule of trackGuidePhrases) {
+            expect(screen.getByLabelText(trackGuidePhraseLabel(rule))).toBeVisible();
+            expect(screen.queryByLabelText(`${rule.name} closure`)).not.toBeInTheDocument();
         }
         expect(screen.queryByLabelText('Pressure and a feint closure')).not.toBeInTheDocument();
     });
@@ -160,8 +165,8 @@ describe('LivePhrases root connection', () => {
         fireEvent.click(screen.getByLabelText('Track guide closure'));
         for (const [name, sentence] of [['Turn in', 'Turn in'], ['Ease brake', 'Ease brake'], ['Hold line', 'Hold line'],
             ['Unwind', 'Unwind'], ['Consecutive corners', 'Set up left']]) {
-            fireEvent.click(screen.getByLabelText(`${name} closure`));
-            fireEvent.click(screen.getByRole('button', { name: `${name} action 1: say phrase` }));
+            const rule = trackGuidePhrases.find((phrase) => phrase.name === name)!;
+            fireEvent.click(screen.getByLabelText(trackGuidePhraseLabel(rule)));
             expect(within(screen.getByRole('tabpanel')).getByText(sentence)).toBeVisible();
             if (name === 'Consecutive corners') {
                 expect(screen.getByText('Driving conditions')).toBeVisible();
@@ -171,7 +176,6 @@ describe('LivePhrases root connection', () => {
                 }
             }
             fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
-            fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         }
     });
 
@@ -179,13 +183,10 @@ describe('LivePhrases root connection', () => {
         render(<LivePhrases name="live-phrases" />);
         fireEvent.click(screen.getByLabelText('Track guide closure'));
         for (const rule of PHRASE_DEFINITIONS.filter((phrase) => phrase.movementDirection)) {
-            const matchingRules = PHRASE_DEFINITIONS.filter((phrase) => phrase.name === rule.name);
-            fireEvent.click(screen.getAllByLabelText(`${rule.name} closure`)[matchingRules.indexOf(rule)]);
-            fireEvent.click(screen.getByLabelText(`${rule.name} action 1: say phrase`));
+            fireEvent.click(screen.getByLabelText(trackGuidePhraseLabel(rule)));
             expect(screen.getByText(rule.sentence)).toBeVisible();
             expect(screen.getByText('Random (equal chance)')).toBeVisible();
             rule.sentenceAlternatives!.forEach((alternative) => expect(screen.getByText(alternative)).toBeVisible());
-            fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
             fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         }
     });
@@ -214,7 +215,7 @@ describe('LivePhrases root connection', () => {
         const actions = within(catalog.getByRole('list', { name: 'Custom guide children' }));
         expect(actions.getByText('Custom action')).toBeVisible();
         expect(actions.queryByText('Custom action purpose.')).not.toBeInTheDocument();
-        fireEvent.click(actions.getByLabelText('Custom guide action 1: Custom action'));
+        fireEvent.click(actions.getByLabelText('Custom guide phrase 1: Custom action'));
         expect(catalog.getByText('Custom action purpose.')).toBeVisible();
         expect(catalog.queryByText('Custom exit')).not.toBeInTheDocument();
         fireEvent.click(catalog.getByRole('button', { name: 'Go back one level' }));
@@ -235,11 +236,11 @@ describe('LivePhrases root connection', () => {
         const entry = within(screen.getByRole('list', { name: 'Chicane overtake conditions' }));
         expect(entry.getByText('Upcoming mapped consecutive-corners sequence >= 1')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Contents 4' }));
-        fireEvent.click(screen.getByLabelText('Chicane overtake action 2: say phrase'));
+        fireEvent.click(screen.getByLabelText('Chicane overtake phrase 2: say phrase'));
         expect(screen.getByText('Go wide. Aim for second apex.')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        expect(screen.getByText('Action conditions')).toBeVisible();
-        const speechList = screen.getByRole('list', { name: 'Chicane overtake action 2: say phrase conditions' });
+        expect(screen.getByText('Entry conditions')).toBeVisible();
+        const speechList = screen.getByRole('list', { name: 'Chicane overtake phrase 2: say phrase conditions' });
         const speech = within(speechList);
         expect(speech.getByText('Opponent estimated time to corner entry (s) < 0.5')).toBeVisible();
         expect(speech.getByText('OR')).toBeVisible();
@@ -251,7 +252,7 @@ describe('LivePhrases root connection', () => {
         expect(speech.queryByText(/(?:Player|Opponent) in a .*turn corner/)).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         expect(screen.queryByText('Action conditions')).not.toBeInTheDocument();
-        expect(screen.queryByRole('list', { name: 'Chicane overtake action 2: say phrase conditions' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('list', { name: 'Chicane overtake phrase 2: say phrase conditions' })).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
         expect(screen.getByText('Upcoming mapped consecutive-corners sequence >= 1')).toBeVisible();
     });
@@ -259,10 +260,10 @@ describe('LivePhrases root connection', () => {
     it('shows the additional chicane speech action with its opposite-side conditions', () => {
         render(<LivePhrases name="live-phrases" />);
         fireEvent.click(screen.getByLabelText('Chicane overtake closure'));
-        fireEvent.click(screen.getByLabelText('Chicane overtake action 3: say phrase'));
+        fireEvent.click(screen.getByLabelText('Chicane overtake phrase 3: say phrase'));
         expect(screen.getByText('Brake early. Hold inside.')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        const list = screen.getByRole('list', { name: 'Chicane overtake action 3: say phrase conditions' });
+        const list = screen.getByRole('list', { name: 'Chicane overtake phrase 3: say phrase conditions' });
         expect(within(list).getByText('Opponent estimated time to corner entry (s) < 0.5')).toBeVisible();
         expect(within(list).getByText('OR')).toBeVisible();
         expect(within(list).getByText('Upcoming corner turns right')).toBeVisible();
@@ -278,10 +279,10 @@ describe('LivePhrases root connection', () => {
         fireEvent.click(screen.getByLabelText('Chicane overtake closure'));
         fireEvent.click(screen.getByLabelText('Inside the Long Straight closure'));
         expect(screen.getByLabelText('Inside the Long Straight action 1: exit to parent')).toBeVisible();
-        fireEvent.click(screen.getByLabelText('Inside the Long Straight action 2: say phrase'));
+        fireEvent.click(screen.getByLabelText('Inside the Long Straight phrase 2: say phrase'));
         expect(screen.getByText('Leave room. Pass on exit.')).toBeVisible();
         fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
-        const conditions = within(screen.getByRole('list', { name: 'Inside the Long Straight action 2: say phrase conditions' }));
+        const conditions = within(screen.getByRole('list', { name: 'Inside the Long Straight phrase 2: say phrase conditions' }));
         expect(conditions.getByText('Previous corner exits show the player has better exit speed than the car ahead')).toBeVisible();
         expect(conditions.getByText('Estimated opponent distance (m) <= 2')).toBeVisible();
         expect(conditions.getByText('Upcoming slow corner is followed by a long straight')).toBeVisible();

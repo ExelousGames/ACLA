@@ -202,3 +202,22 @@ it('shows an empty exit state for closures and keeps action conditions separate'
     expect(screen.queryByText('Entry conditions')).not.toBeInTheDocument();
     expect(screen.queryByText('Exit conditions')).not.toBeInTheDocument();
 });
+
+it('shows entry and completion conditions on a phrase with audio variants as data', () => {
+    const phrase = new Action('say phrase', 'Brake.', jest.fn(), describeCondition(() => true, 'Braking required'),
+        { kind: 'phrase', fields: { 'Audio variants': 3, 'Allowed audio variants': 2 } });
+    const state = new State(new Closure('root', 'Root.', () => true, [phrase]));
+    const snapshot = state.snapshot();
+    snapshot.children[0].exitConditions = [{ description: 'The selected audio finishes', conditionFit: false, inputMissing: false }];
+    render(<ClosureTree node={snapshot} />);
+    fireEvent.click(screen.getByLabelText('root phrase 1: say phrase'));
+    expect(screen.getByText('Audio variants')).toBeVisible();
+    expect(screen.getByText('Allowed audio variants')).toBeVisible();
+    fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));
+    expect(screen.getByText('Entry conditions')).toBeVisible();
+    expect(screen.getByText('Exit conditions')).toBeVisible();
+    expect(screen.getByText('The selected audio finishes')).toBeVisible();
+    expect(screen.queryByText('Action conditions')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Contents 0' }));
+    expect(screen.getByText('No items in this phrase.')).toBeVisible();
+});

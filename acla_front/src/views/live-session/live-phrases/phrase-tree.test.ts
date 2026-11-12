@@ -71,7 +71,7 @@ it('snapshots arbitrary root actions and nested catalog closures without relying
         id: rule.id, name: rule.name, status: 'Active', onPath: true,
         fields: { 'Hold for': '0.8 s', Cooldown: '8 s' },
         children: [
-            { kind: 'action', name: 'say phrase', current: true, execution: { status: 'completed' } },
+            { kind: 'phrase', name: 'say phrase', current: true, execution: { status: 'completed' } },
             { kind: 'action', name: 'exit to root', execution: { status: 'idle' } },
         ],
     });

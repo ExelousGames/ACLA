@@ -26,7 +26,7 @@ function ConditionList({ conditions, label }: { conditions: readonly ConditionSn
 }
 
 function NodeIcon({ kind }: { kind: NodeSnapshot['kind'] }) {
-    return kind === 'action' ? <FileTextIcon className="live-phrases__node-icon" aria-hidden="true" />
+    return kind !== 'closure' ? <FileTextIcon className="live-phrases__node-icon" aria-hidden="true" />
         : <svg className="live-phrases__node-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
             <path d="M2.5 6V4.5h5l2 2h8v10h-15V6Z" strokeLinejoin="round" />
         </svg>;
@@ -51,9 +51,10 @@ export default function ClosureTree({ node }: { node: NodeSnapshot }) {
     const parent = ancestors[ancestors.length - 2];
     const currentPath = ancestors.slice(1).map((ancestor) => ancestor.id);
     const isClosure = current.kind === 'closure';
+    const isPhrase = current.kind === 'phrase';
     const exits = current.children.filter((child) => child.kind === 'action' && child.exitTarget);
     const activeTab = selectedTab ?? (isClosure ? 'Contents' : 'Details');
-    const conditionLabel = isClosure ? current.name : `${parent?.name} action ${(parent?.children.findIndex((child) => child.id === current.id) ?? -1) + 1}: ${current.name}`;
+    const conditionLabel = isClosure ? current.name : `${parent?.name} ${current.kind} ${(parent?.children.findIndex((child) => child.id === current.id) ?? -1) + 1}: ${current.name}`;
     const navigate = (nextPath: string[]) => {
         setPath(nextPath);
         setSelectedTab(null);
@@ -79,7 +80,7 @@ export default function ClosureTree({ node }: { node: NodeSnapshot }) {
             <NodeIcon kind={current.kind} />
             <div className="live-phrases__summary-text">
                 <h3 ref={heading} tabIndex={-1}>{current.name}</h3>
-                <span className="live-phrases__meta">{isClosure ? `Closure · ${current.children.length} items` : `Action · ${current.execution?.status ?? 'idle'}`}{current.current ? ' · Current' : ''}</span>
+                <span className="live-phrases__meta">{isClosure ? `Closure · ${current.children.length} items` : isPhrase ? `Phrase · ${current.status}` : `Action · ${current.execution?.status ?? 'idle'}`}{current.current ? ' · Current' : ''}</span>
             </div>
             <span className="live-phrases__status" data-status={current.status} data-active={current.onPath}>{current.status}</span>
         </div>
@@ -103,26 +104,30 @@ export default function ClosureTree({ node }: { node: NodeSnapshot }) {
                 ? <ol className="live-phrases__catalog" aria-label={`${current.name} children`}>
                     {current.children.map((child, index) => <li key={child.id}>
                         <button type="button" className="live-phrases__item" data-current={child.current} data-on-path={child.onPath}
-                            aria-label={child.kind === 'closure' ? `${child.name} closure` : `${current.name} action ${index + 1}: ${child.name}`}
+                            aria-label={child.kind === 'closure' ? `${child.name} closure` : `${current.name} ${child.kind} ${index + 1}: ${child.name}`}
                             onClick={() => navigate([...currentPath, child.id])}>
                             <span className="live-phrases__action-number" aria-hidden="true">{index + 1}</span>
                             <NodeIcon kind={child.kind} />
                             <span className="live-phrases__summary-text">
                                 <strong>{child.name}</strong>
-                                <span className="live-phrases__meta">{child.kind === 'closure' ? `${child.conditions.length} entry conditions · ${child.children.length} items` : `Action · ${child.execution?.status ?? 'idle'}`}{child.current ? ' · Current' : ''}</span>
+                                <span className="live-phrases__meta">{child.kind === 'closure' ? `${child.conditions.length} entry conditions · ${child.children.length} items` : child.kind === 'phrase' ? `Phrase · ${child.status}` : `Action · ${child.execution?.status ?? 'idle'}`}{child.current ? ' · Current' : ''}</span>
                             </span>
                             <span className="live-phrases__status" data-status={child.status} data-active={child.onPath}>{child.status}</span>
                             <ChevronRightIcon className="live-phrases__item-chevron" aria-hidden="true" />
                         </button>
                     </li>)}
-                </ol> : <p className="live-phrases__hint">No items in this {isClosure ? 'closure' : 'action'}.</p>)}
+                </ol> : <p className="live-phrases__hint">No items in this {current.kind}.</p>)}
             {activeTab === 'Conditions' && <>
                 <div className="live-phrases__condition-content">
-                    <strong>{isClosure ? 'Entry conditions' : 'Action conditions'}</strong>
+                    <strong>{isClosure || isPhrase ? 'Entry conditions' : 'Action conditions'}</strong>
                     <span className="live-phrases__meta">{current.conditions.filter((condition) => condition.conditionFit).length}/{current.conditions.length} met</span>
                 </div>
                 {current.conditions.length > 0 ? <ConditionList conditions={current.conditions} label={`${conditionLabel} conditions`} />
                     : <p className="live-phrases__hint">No conditions.</p>}
+                {isPhrase && <>
+                    <div className="live-phrases__condition-content"><strong>Exit conditions</strong></div>
+                    <ConditionList conditions={current.exitConditions ?? []} label={`${conditionLabel} exit conditions`} />
+                </>}
                 {isClosure && <>
                     <div className="live-phrases__condition-content"><strong>Exit conditions</strong></div>
                     {exits.length > 0 ? <ul className="live-phrases__conditions" aria-label={`${current.name} exit conditions`}>

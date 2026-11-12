@@ -51,7 +51,7 @@ it.each([36, 72, 180])('speaks Brake one second early at %s km/h without a paren
     const speaking = sampleAt(0.20125 - lead + 0.00001, speed);
     expect(readReferenceGuidance(speaking, null, lap, 'acc', 1203).brake).toBeUndefined();
     const result = engine.receiveTelemetry(frame(speaking), 1203);
-    expect(result.state.path).toEqual(['root', 'Track guide', 'Brake', 'say phrase']);
+    expect(result.state.path).toEqual(['root', 'Track guide', 'Brake']);
     expect(result.events).toEqual([expect.objectContaining({ sentence: 'Brake.', timestamp: 1203, expiresAt: 2703 })]);
     expect(engine.receiveTelemetry(frame(speaking), 1403).events).toEqual(result.events);
 });
@@ -71,7 +71,7 @@ it.each([200, 2000])('measures Brake independently using its %s ms clip duration
         expect(engine.receiveTelemetry(frame(sampleAt(0.2 - lead + 0.00001)), 1001).state.path).toEqual(['root']);
         expect(engine.receiveTelemetry(frame(sampleAt(0.20125 - lead - 0.00001)), 1002).events).toEqual([]);
         const spoken = engine.receiveTelemetry(frame(sampleAt(0.20125 - lead + 0.00001)), 1003);
-        expect(spoken.state.path).toEqual(['root', 'Track guide', 'Brake', 'say phrase']);
+        expect(spoken.state.path).toEqual(['root', 'Track guide', 'Brake']);
         expect(spoken.events).toEqual([expect.objectContaining({ timestamp: 1003,
             speech: { durationMs, preparationTimeMs: durationMs, reactionAllowanceMs: 0 } })]);
     } finally { measure.mockRestore(); }
@@ -90,7 +90,7 @@ it.each([['Throttle', 0, 0.601875, 'Squeeze gas.'], ['More throttle', 0.3, 0.605
         expect(at(0.59001, 1001).state.path).toEqual(['root']);
         expect(at(boundary - 0.01001, 1002).events).toEqual([]);
         const result = at(boundary - 0.00999, 1003);
-        expect(result.state.path).toEqual(['root', 'Track guide', name, 'say phrase']);
+        expect(result.state.path).toEqual(['root', 'Track guide', name]);
         expect(result.events).toEqual([expect.objectContaining({ sentence, timestamp: 1003 })]);
     });
 
@@ -112,7 +112,7 @@ it.each([
     const measured = { ...sampleAt(start + 0.002), [field]: 0.4 };
     expect(readReferenceGuidance(measured, capture(lap, measured, 1400), lap, 'acc', 1400)[cue]).toBeUndefined();
     const result = at(0.2);
-    expect(result.state.path).toEqual(['root', 'Track guide', name, 'say phrase']);
+    expect(result.state.path).toEqual(['root', 'Track guide', name]);
     expect(result.events).toEqual([expect.objectContaining({ sentence, timestamp: 1200 })]);
 });
 
@@ -163,7 +163,7 @@ it.each([-4, 8])('previews straight membership independently for movement cues (
     };
     expect(at(0.38999, 1000).state.path).toEqual(['root']);
     const result = at(0.39001, 1001);
-    expect(result.state.path).toEqual(['root', 'Track guide', lateral < 0 ? 'Small movement · left' : 'Medium movement · right', 'say phrase']);
+    expect(result.state.path).toEqual(['root', 'Track guide', lateral < 0 ? 'Small movement · left' : 'Medium movement · right']);
     expect(result.events[0].timestamp).toBe(1001);
     expect(result.mapContext.sectionId).toBeUndefined(); // Overtaking still sees the measured position.
 });

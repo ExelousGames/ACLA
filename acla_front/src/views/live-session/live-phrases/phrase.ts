@@ -18,6 +18,11 @@ export interface PhraseSettings extends Omit<TtsRequest, 'text'> {
     /** Higher values are scheduled first when several phrases are eligible. */
     priority?: number;
 }
+/** A prepared choice for the scheduler; audio variants have no entry or exit conditions. */
+export interface PhraseAudioVariant {
+    instance: PhraseInstance;
+    durationMs: number;
+}
 const settings: readonly ProsodySetting[] = ['timing', 'energy', 'pitch'];
 
 /** Speech prototype. Curves are repository assets; instances are independent, in-memory copies. */
@@ -41,6 +46,11 @@ export class Phrase {
 
     createInstance(overrides: PhraseSettings = {}): PhraseInstance {
         return new PhraseInstance(this, overrides);
+    }
+
+    createAudioInstances(overrides: readonly PhraseSettings[] = [{}]): PhraseInstance[] {
+        const instances = overrides.map((options) => this.createInstance(options));
+        return Array.from(new Map(instances.map((instance) => [instance.cacheKey, instance])).values());
     }
 
     get curves(): readonly AmplifyCurve[] {

@@ -45,8 +45,9 @@ it.each([false, true])('releases missing, silent or rejected playback without wa
     expect(engine.speechStarted(1, 1200).events[0].speech?.startedAt).toBeUndefined();
 });
 
-it('allows an explicit exit condition to release a phrase before audible onset', () => {
-    const engine = prepare({ ...phrase, exitConditions: [new PhraseCondition('speed', '<', 30)] });
+it.each([false, true])('allows an explicit exit condition to release a phrase before audible onset (track guide: %s)', (trackGuide) => {
+    const engine = prepare({ ...phrase, ...(trackGuide ? { referenceCue: 'throttle' as const } : {}),
+        exitConditions: [new PhraseCondition('speed', '<', 30)] });
     engine.receiveTelemetry(frame({ Physics_speed_kmh: 50 }), 1000);
     expect(engine.receiveTelemetry(frame({ Physics_speed_kmh: 10 }), 1050).state.path).toEqual(['root']);
 });
@@ -98,9 +99,9 @@ it.each([400, 2000])('uses the %s ms audio forecast for Turn in and speaks immed
     const scheduled = engine.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: entryPosition + 0.0001 }), 1001);
     expect(scheduled.events).toEqual([expect.objectContaining({ sentence: 'Turn in', timestamp: 1001,
         speech: { durationMs, preparationTimeMs: durationMs, reactionAllowanceMs: 0 } })]);
-    expect(scheduled.state.path).toEqual(['root', 'Track guide', 'Turn in', 'say phrase']);
+    expect(scheduled.state.path).toEqual(['root', 'Track guide', 'Turn in']);
     engine.speechStarted(1, 1100);
-    expect(engine.evaluate(1300).state.current).toBe('say phrase');
+    expect(engine.evaluate(1300).state.current).toBe('Turn in');
     expect(engine.speechFinished(1, 1400).state.path).toEqual(['root']);
 });
 
@@ -116,7 +117,7 @@ it.each(['brake', 'throttle'] as const)('admits a %s cue using its own longer au
     expect(waiting.events).toEqual([]);
     const entered = engine.receiveTelemetry(frame({ ...sample, Graphics_normalized_car_position: 0.1801 }), 1001);
     expect(entered.events).toEqual([expect.objectContaining({ ruleId: definition.id, timestamp: 1001 })]);
-    expect(entered.state.current).toBe('say phrase');
+    expect(entered.state.current).toBe(definition.name);
 });
 
 it('speaks on a brief throttle match inside the audio window', () => {
@@ -134,7 +135,7 @@ it('speaks on a brief throttle match inside the audio window', () => {
         Physics_brake: 0, Physics_gas: 0, Graphics_normalized_car_position: 0.195 };
     const entered = engine.receiveTelemetry(frame(sample), 1000);
     expect(entered.events).toEqual([expect.objectContaining({ ruleId: definition.id, timestamp: 1000 })]);
-    expect(entered.state.path).toEqual(['root', 'Track guide', definition.name, 'say phrase']);
+    expect(entered.state.path).toEqual(['root', 'Track guide', definition.name]);
     expect(engine.speechFinished(entered.events[0].id, 1001).state.path).toEqual(['root']);
 });
 

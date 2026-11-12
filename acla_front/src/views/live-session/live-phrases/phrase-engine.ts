@@ -17,7 +17,7 @@ import { BRAKE_RELEASE_RATE_THRESHOLD, PhraseLookahead, type PhrasePredictionFra
 import { ReferenceMovement, REFERENCE_MOVEMENTS, type ReferenceMovementCue, type MovementDirection } from './phrase-reference-movement';
 import { copyPhraseMap, copyPhraseReference, normalizeDrivingAggression, REFERENCE_DRIVING_AGGRESSION } from './phrase-driving-reference';
 import type { ReferenceSteeringDirection } from './phrase-steering-direction';
-import { Phrase, PHRASE_REACTION_ALLOWANCE_MS, type PhraseCurves, type PhraseInstance, type PhraseSettings, type PhraseSpeechTiming } from './phrase';
+import { Phrase, PHRASE_REACTION_ALLOWANCE_MS, type PhraseAudioVariant, type PhraseCurves, type PhraseInstance, type PhraseSettings, type PhraseSpeechTiming } from './phrase';
 import brakeCurves from './curves/reference-brake.json';
 import releaseBrakeCurves from './curves/slowly-release-brake.json';
 import { BRAKE_RELEASE_SETTINGS, brakeReleaseSettings, SLOWLY_RELEASE_BRAKE } from './phrase-brake-release';
@@ -204,6 +204,7 @@ function missingConditionInputs(conditions: readonly PhraseConditionNode[]): str
         : condition.inputMissing ? [INPUT_LABELS[condition.input]] : []);
 }
 
+/** A playable phrase leaf. Entry/exit rules belong here; audio variations are only delivery data. */
 export interface PhraseActionDefinition {
     sentence: string;
     /** Higher values are selected first when multiple predictions are eligible. */
@@ -216,10 +217,13 @@ export interface PhraseActionDefinition {
     /** All possible overrides must be included in preloadSettings; playback never synthesizes. */
     instanceSettings?: (context: PhraseContext, phrase: Phrase) => PhraseSettings;
     preloadSettings?: readonly PhraseSettings[];
+    /** Extra prepared deliveries in the random pool; audio has no entry or exit conditions. */
+    audioVariations?: readonly PhraseSettings[];
     /** Additional preloaded wordings; chosen equally unless selectSentence is provided. */
     sentenceAlternatives?: readonly string[];
     /** Choose a preloaded sentence from the driving conditions; undefined withholds speech. */
     selectSentence?: (context: PhraseContext) => string | undefined;
+    /** Phrase entry conditions within its enclosing guide (legacy field name). */
     actionConditions?: readonly PhraseConditionNode[];
 }
 export interface PhraseDefinition extends PhraseActionDefinition {
@@ -236,7 +240,7 @@ export interface PhraseDefinition extends PhraseActionDefinition {
 export function getPhraseActions(phrase: PhraseDefinition) {
     return [phrase, ...(phrase.additionalActions ?? [])].map((action, index) => {
         const id = `${phrase.id}:say:${index}`;
-        const sentences = [action.sentence, ...(action.sentenceAlternatives ?? [])];
+        const sentences = Array.from(new Set([action.sentence, ...(action.sentenceAlternatives ?? [])].map((sentence) => sentence.trim())));
         const priority = action.priority ?? getPhrasePriority(phrase);
         return {
             id, sentence: action.sentence, conditions: action.actionConditions, sentences, priority,
@@ -244,6 +248,7 @@ export function getPhraseActions(phrase: PhraseDefinition) {
             instanceSettings: action.instanceSettings,
             selectSentence: action.selectSentence,
             preloadSettings: action.preloadSettings,
+            audioVariations: action.audioVariations,
             reactionAllowanceMs: action.reactionAllowanceMs ?? PHRASE_REACTION_ALLOWANCE_MS,
             exitConditions: action.exitConditions,
         };
@@ -444,7 +449,7 @@ export interface PhraseSnapshot {
         actionConditions?: readonly PhraseConditionNode[];
         actions: Array<Pick<Action<PhraseContext>, 'name' | 'description'>>;
     }>;
-    state: { current: string; description: string; kind: 'closure' | 'action'; path: string[] };
+    state: { current: string; description: string; kind: NodeSnapshot['kind']; path: string[] };
     events: PhraseEvent[];
 }
 interface PhraseMemory {
@@ -478,6 +483,8 @@ export interface PhraseContext {
     speechPending?: (actionId: string) => boolean;
     speechLeadMs?: (actionId: string) => number;
     speechDurationMs?: (instance: PhraseInstance) => number | undefined;
+    audioVariants?: (phrase: PhraseDefinition, actionId: string, instances?: readonly PhraseInstance[]) => readonly PhraseAudioVariant[];
+    scheduleAudio?: (phrase: PhraseDefinition, actionId: string) => Partial<PhraseScheduleCandidate>;
     publish: (phrase: PhraseDefinition, instance: PhraseInstance) => void;
 }
 
@@ -516,15 +523,27 @@ class PhraseClosure extends Closure<PhraseContext> {
     }
 }
 
+/** A track cue is a playable leaf in the shared guide. */
+class TrackGuidePhrase extends Action<PhraseContext> {
+    constructor(readonly phrase: PhraseDefinition, readonly entry: ReturnType<typeof phraseEntry>,
+        ...args: ConstructorParameters<typeof Action<PhraseContext>>) { super(...args); }
+}
+
 /** Every cue measures independently, including while another cue is speaking. */
 class TrackGuideClosure extends Closure<PhraseContext> {
     readyPriority = 0;
     get priority(): number { return this.readyPriority; }
     evaluate(context: PhraseContext, state: State<PhraseContext>, onActionError?: (error: unknown) => void): unknown {
         if (!state.path.includes(this)) return;
-        this.children.forEach((child) => { if (child instanceof PhraseClosure) state.check(child, context); });
+        this.condition(context, state);
+        this.children.forEach((child) => { if (child instanceof TrackGuidePhrase) state.check(child, context); });
+        if (state.current instanceof TrackGuidePhrase) {
+            if (!isSpeechPending(context, state)) state.exitToParent();
+            return;
+        }
         if (state.closure === this && Array.from(context.scheduleCandidates?.values() ?? []).some((candidate) =>
-            candidate.priority > this.priority && !this.children.some((child) => child.metadata.id === candidate.id))) {
+            candidate.priority > this.priority && !this.children.some((child) =>
+                child instanceof TrackGuidePhrase && child.phrase.id === candidate.id))) {
             state.exitToRoot();
             return;
         }
@@ -599,13 +618,15 @@ function phraseEntry(phrase: PhraseDefinition) {
             && now - memory.since >= phrase.holdMs && !cooldown && (!phrase.movementDirection || context.movementCanSpeak());
         if (eligible) {
             context.scheduleCandidates?.set(phrase.id, {
-                id: phrase.id, kind: 'closure', label: phrase.name, priority: getPhrasePriority(phrase),
+                id: phrase.id, kind: phrase.referenceCue ? 'phrase' : 'closure', label: phrase.name, priority: getPhrasePriority(phrase),
                 category: getPhraseCategory(phrase), predictedAt: now + (context.predictionOffsetMs ?? 0),
                 durationMs: context.speechLeadMs?.(`${phrase.id}:say:0`) ?? phrase.preparationTimeMs ?? CLOSURE_PREPARATION_MS,
                 durationEstimated: context.speechLeadMs === undefined,
+                ...context.scheduleAudio?.(phrase, `${phrase.id}:say:0`),
             });
         } else context.scheduleCandidates?.delete(phrase.id);
-        return eligible && context.emit;
+        return eligible && context.emit && Boolean(phrase.additionalActions?.length || !context.audioVariants
+            || context.audioVariants(phrase, `${phrase.id}:say:0`).length > 0);
     }, (context) => snapshotConditions(context.entryConditions.get(phrase.id) ?? []), snapshotConditions(unevaluatedConditions(phrase.conditions)));
     entry.reset = (state) => {
         const memory = memories.get(state);
@@ -621,6 +642,13 @@ function snapshotConditions(conditions: readonly PhraseConditionNode[]): Conditi
         conditionFit: condition.conditionFit, inputMissing: condition.inputMissing, connector: condition.connector,
         ...(condition instanceof PhraseConditionGroup ? { conditions: snapshotConditions(condition.conditions) } : {}),
     }));
+}
+
+function trackPhraseConditions(phrase: PhraseDefinition, action: ReturnType<typeof getPhraseActions>[number], context?: PhraseContext): ConditionSnapshot[] {
+    const entry = context?.entryConditions.get(phrase.id) ?? unevaluatedConditions(phrase.conditions);
+    const conditions = context?.actionConditions.get(action.id) ?? unevaluatedConditions(action.conditions ?? []);
+    return snapshotConditions(conditions.length
+        ? [new PhraseConditionGroup(entry), new PhraseConditionGroup(conditions)] : entry);
 }
 
 function createInsideLongStraightClosure(phrase: PhraseDefinition, say: Action<PhraseContext>[]): Closure<PhraseContext> {
@@ -674,61 +702,94 @@ function createInsideCornerClosure(phrase: PhraseDefinition): Closure<PhraseCont
 }
 
 export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_DEFINITIONS): Closure<PhraseContext> {
-    const closures = phrases.map((phrase) => {
-        const say = getPhraseActions(phrase).map((action) => new Action<PhraseContext>(
-            'say phrase', action.sentence, (context) => {
+    const nodes = phrases.flatMap<PhraseClosure | TrackGuidePhrase>((phrase) => {
+        const entry = phraseEntry(phrase);
+        const oncePerRange = phrase.referenceCue === 'cornerExit' || phrase.referenceCue === 'steering';
+        const fields = { 'Hold for': `${phrase.holdMs / 1000} s`,
+            ...(oncePerRange ? {} : { Cooldown: `${(phrase.referenceCue ? REFERENCE_CUE_COOLDOWN_MS : COOLDOWN_MS) / 1000} s` }),
+            'Clear period': isTurnIn(phrase) ? 'Until the driver leaves the mapped corner'
+                : oncePerRange ? 'Until a different reference turn range'
+                : phrase.referenceCue === 'brake' ? 'Until leaving the measured brake zone' : `${REARM_MS / 1000} s` };
+        const actions = getPhraseActions(phrase);
+        const say = actions.map((action) => {
+            const readyAudio = new WeakMap<State<PhraseContext>, readonly PhraseInstance[]>();
+            const prepareAudio = (context: PhraseContext) => {
                 context = context.forPhrase?.(phrase, action.id) ?? context;
                 const sentence = action.selectSentence?.(context);
-                const selected = action.selectSentence
-                    ? action.phrases.find((candidate) => candidate.speech.text === sentence)
-                    : action.phrases[action.sentences.length > 1 ? Math.floor(Math.random() * action.sentences.length) : 0];
+                const sources = action.selectSentence
+                    ? action.phrases.filter((candidate) => candidate.speech.text === sentence) : action.phrases;
+                const instances = sources.flatMap((source) => source.createAudioInstances(action.instanceSettings
+                    ? [action.instanceSettings(context, source)] : [{}, ...(action.audioVariations ?? [])]));
+                return context.audioVariants?.(phrase, action.id, instances).map(({ instance }) => instance) ?? instances;
+            };
+            return new Action<PhraseContext>('say phrase', action.sentence, (context, state) => {
+                const allowed = readyAudio.get(state) ?? [];
+                const selected = allowed[allowed.length > 1 ? Math.floor(Math.random() * allowed.length) : 0];
                 if (!selected) return;
-                context.publish(phrase, selected.createInstance(action.instanceSettings?.(context, selected)));
-            }, describeCondition((context, state) => !isSpeechPending(context, state) && state.current === state.closure
-                && measureAction(context.forPhrase?.(phrase, action.id) ?? context, action.id, action.conditions) && context.emit,
+                context.publish(phrase, selected);
+            }, describeCondition((context, state) => {
+                readyAudio.delete(state);
+                if (isSpeechPending(context, state) || state.current !== state.closure
+                    || !measureAction(context.forPhrase?.(phrase, action.id) ?? context, action.id, action.conditions) || !context.emit
+                    || (action.exitConditions && conditionsMatch(action.exitConditions.map((condition) => condition.evaluate(context.inputs))))) return false;
+                const allowed = prepareAudio(context);
+                readyAudio.set(state, allowed);
+                return allowed.length > 0;
+            },
                 action.conditions ? (context) => snapshotConditions(context.actionConditions.get(action.id) ?? []) : 'Always eligible',
                 action.conditions ? snapshotConditions(unevaluatedConditions(action.conditions)) : undefined),
-            { id: action.id, priority: action.priority, inspect: (context) => ({ fields: {
+            { id: action.id, kind: 'phrase', priority: action.priority, inspect: (context, state) => ({ fields: {
                 'Preparation time': context.speechLeadMs ? `${context.speechLeadMs(action.id) / 1000} s` : 'Awaiting prepared speech',
+                ...(context.audioVariants ? { 'Allowed audio variants': readyAudio.get(state)?.length ?? 0 } : {}),
             } }), fields: {
+                'Audio variants': action.phrases.reduce((count, source) => count + source.createAudioInstances([
+                    {}, ...(action.preloadSettings ?? []), ...(action.audioVariations ?? []),
+                ]).length, 0),
                 'Reaction allowance': `${action.reactionAllowanceMs} ms`,
-                'Speech release': 'Playback finishes the WAV trimmed to its first and last audible frames',
+                'Phrase exit': 'The selected audio finishes, or the phrase exit condition matches',
                 ...(action.sentences.length > 1 ? { 'Phrase selection': action.selectSentence ? 'Driving conditions' : 'Random (equal chance)',
                     ...Object.fromEntries(action.sentences.slice(1).map((sentence, index) => [`Alternative ${index + 1}`, sentence])) } : {}),
-            } }));
+            } });
+        });
+        if (phrase.referenceCue) return say.map((action, index) => new TrackGuidePhrase(phrase, entry,
+            phrase.name, action.description, action.run, describeCondition((context, state) => {
+                if (!entry(context, state)) return false;
+                context = context.forPhrase?.(phrase) ?? context;
+                return !(phrase.exitConditions && conditionsMatch(phrase.exitConditions.map((condition) => condition.evaluate(context.inputs))))
+                    && action.condition(context, state);
+            },
+            (context) => trackPhraseConditions(phrase, actions[index], context), trackPhraseConditions(phrase, actions[index])), {
+                ...action.metadata, fields: { ...fields, ...action.metadata.fields },
+                inspect: (context, state) => ({ ...context.inspections.get(phrase.id), ...action.metadata.inspect?.(context, state) }),
+            }));
         const parentSay = phrase.id === 'one-tight-slow-corner' ? say.slice(1, 2)
             : phrase.id === 'second-apex' ? say.slice(0, 2) : say;
         const children = phrase.id === 'one-tight-slow-corner'
             ? [createInsideLongStraightClosure(phrase, [...say.slice(2), say[0]]), createInsideCornerClosure(phrase)]
             : phrase.id === 'second-apex' ? [createInsideLongStraightClosure(phrase, say.slice(2))] : [];
-        const oncePerRange = phrase.referenceCue === 'cornerExit' || phrase.referenceCue === 'steering';
-        return new PhraseClosure(phrase, phrase.name, phrase.description, phraseEntry(phrase), [
+        return [new PhraseClosure(phrase, phrase.name, phrase.description, entry, [
             ...(phrase.exitConditions ? [Action.exitToParent<PhraseContext>(describeCondition(
                 (context) => conditionsMatch(phrase.exitConditions!.map((condition) => condition.evaluate(context.inputs))),
                 (context) => snapshotConditions(phrase.exitConditions!.map((condition) => condition.evaluate(context.inputs))),
                 snapshotConditions(unevaluatedConditions(phrase.exitConditions))), { priority: Number.MAX_SAFE_INTEGER })] : []),
             ...children, ...parentSay,
-            (phrase.referenceCue ? Action.exitToParent : Action.exitToRoot)(describeCondition<PhraseContext>((context, state) =>
+            Action.exitToRoot(describeCondition<PhraseContext>((context, state) =>
                 parentSay.some((action) => state.getExecution(action).status === 'completed'
                     && !context.speechPending?.(action.metadata.id!)),
                 'The phrase releases after the final spoken sound, or when its exit condition matches')),
         ], { id: phrase.id, preparationTimeMs: phrase.preparationTimeMs,
             inspect: (context) => context.inspections.get(phrase.id) ?? {},
-            fields: { 'Hold for': `${phrase.holdMs / 1000} s`,
-                ...(oncePerRange ? {} : { Cooldown: `${(phrase.referenceCue ? REFERENCE_CUE_COOLDOWN_MS : COOLDOWN_MS) / 1000} s` }),
-                'Clear period': isTurnIn(phrase) ? 'Until the driver leaves the mapped corner'
-                    : oncePerRange ? 'Until a different reference turn range'
-                    : phrase.referenceCue === 'brake' ? 'Until leaving the measured brake zone' : `${REARM_MS / 1000} s` },
+            fields,
             priority: getPhrasePriority(phrase),
-        });
+        })];
     });
-    const guides = closures.filter((closure) => closure.phrase.referenceCue);
+    const guides = nodes.filter((node): node is TrackGuidePhrase => node instanceof TrackGuidePhrase);
     const trackGuide: TrackGuideClosure = new TrackGuideClosure('Track guide',
         'Evaluate every track cue independently using its prepared speech duration, then yield when no cue is ready.',
         describeCondition((context, state) => {
             if (context.trackGuideEnabled === false) { trackGuide.readyPriority = 0; return false; }
             // Evaluate every cue so confirmation holds continue independently of priority.
-            const ready = guides.filter((guide) => guide.condition(context, state));
+            const ready = guides.filter((guide) => guide.entry(context, state));
             trackGuide.readyPriority = Math.max(0, ...guides.filter((guide) =>
                 ready.includes(guide) || context.scheduleCandidates?.has(guide.phrase.id)).map((guide) => guide.priority));
             return ready.length > 0;
@@ -738,7 +799,7 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
     return new PhraseRootClosure('root',
         'Select an eligible track or overtaking cue. Track cues share a group and use independent audio lookahead.',
         describeCondition(() => true, 'Always eligible'), [
-            ...(guides.length ? [trackGuide] : []), ...closures.filter((closure) => !closure.phrase.referenceCue),
+            ...(guides.length ? [trackGuide] : []), ...nodes.filter((node) => node instanceof PhraseClosure),
         ]);
 }
 const finite = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -807,6 +868,8 @@ export class PhraseEngine {
     private phraseClosures = new Map<string, Closure<PhraseContext>>();
     private speechDurations?: ReadonlyMap<string, number>;
     private speechActions = new Map<string, ReturnType<typeof getPhraseActions>[number]>();
+    private preparedAudio = new Map<string, readonly PhraseAudioVariant[]>();
+    private randomAudioPools = new Map<string, readonly PhraseAudioVariant[]>();
     private speechLeads = new Map<string, number>();
 
     constructor(
@@ -833,6 +896,21 @@ export class PhraseEngine {
     /** Enable playback tracking; only prepared audio identities supply scheduling durations. */
     setSpeechDurations(durations: ReadonlyMap<string, number>): void {
         this.speechDurations = new Map(Array.from(durations).filter(([, duration]) => Number.isFinite(duration) && duration >= 0));
+        this.preparedAudio.clear();
+        this.randomAudioPools.clear();
+        this.speechActions.forEach((action) => {
+            const variants = action.phrases.flatMap((source) => source.createAudioInstances([
+                {}, ...(action.preloadSettings ?? []), ...(action.audioVariations ?? []),
+            ])).flatMap((instance) => {
+                const durationMs = this.speechDurations!.get(instance.cacheKey);
+                return durationMs === undefined ? [] : [{ instance, durationMs }];
+            });
+            this.preparedAudio.set(action.id, variants);
+            const randomKeys = new Set(action.phrases.flatMap((source) => source.createAudioInstances([
+                {}, ...(action.instanceSettings ? action.preloadSettings ?? [] : action.audioVariations ?? []),
+            ])).map(({ cacheKey }) => cacheKey));
+            this.randomAudioPools.set(action.id, variants.filter(({ instance }) => randomKeys.has(instance.cacheKey)));
+        });
         this.speechLeads.clear();
         this.events = this.events.map((event) => event.speech && event.instance
             ? { ...event, speech: { ...event.speech, durationMs: this.speechDurations!.get(event.instance.cacheKey),
@@ -843,10 +921,8 @@ export class PhraseEngine {
         const cached = this.speechLeads.get(actionId);
         if (cached !== undefined) return cached;
         const action = this.speechActions.get(actionId);
-        const durations = action?.phrases.flatMap((phrase) => [{}, ...(action.preloadSettings ?? [])]
-            .map((settings) => this.speechDurations?.get(phrase.createInstance(settings).cacheKey))
-            .filter((duration): duration is number => duration !== undefined && Number.isFinite(duration) && duration >= 0)) ?? [];
-        // Use the longest prepared wording so any selected variant has enough lookahead.
+        const durations = this.preparedAudio.get(actionId)?.map(({ durationMs }) => durationMs) ?? [];
+        // Search the phrase's entry window without selecting an audio variant.
         const lead = Math.max(0, ...durations) + (action?.reactionAllowanceMs ?? PHRASE_REACTION_ALLOWANCE_MS);
         this.speechLeads.set(actionId, lead);
         return lead;
@@ -1292,7 +1368,8 @@ export class PhraseEngine {
             const preparationTimeMs = this.speechDurations
                 ? this.speechLeadMs(actionId ?? `${phrase.id}:say:0`) : phrase.preparationTimeMs ?? CLOSURE_PREPARATION_MS;
             // Newly admitted phrases keep their matching entry frame for the first action.
-            if (!actionId && activePath.some((node) => node.metadata.id === phrase.id)) return forecastAt(preparationTimeMs);
+            if (!actionId && activePath.some((node) => node.metadata.id === phrase.id
+                || (node instanceof TrackGuidePhrase && node.phrase.id === phrase.id))) return forecastAt(preparationTimeMs);
             const action = actionId ? this.speechActions.get(actionId) : undefined;
             return withinPreparation(preparationTimeMs, (forecast) => {
                 const conditions = action?.conditions ?? phrase.conditions;
@@ -1306,6 +1383,60 @@ export class PhraseEngine {
         };
         context.forPreparation = (preparationTimeMs, matches) => matches
             ? withinPreparation(preparationTimeMs, matches) : forecastAt(preparationTimeMs);
+        if (this.speechDurations) {
+            const randomAudio = (action: ReturnType<typeof getPhraseActions>[number]) =>
+                (!action.selectSentence && action.phrases.length > 1)
+                || (!action.instanceSettings && Boolean(action.audioVariations?.length));
+            const deadlineAt = (phrase: PhraseDefinition, actionId: string): number | undefined => {
+                const action = this.speechActions.get(actionId)!;
+                const forecast = context.forPhrase!(phrase, actionId);
+                const deadlines: number[] = [];
+                const cueDeadline = phrase.referenceCue && forecast.guidance[phrase.referenceCue];
+                if (typeof cueDeadline === 'number') deadlines.push(cueDeadline);
+                if (action.conditions?.some((condition) => condition instanceof PhraseCondition && condition.input === 'opponentCornerEtaS')
+                    && inputs.opponentCornerEtaS !== undefined) deadlines.push(now + inputs.opponentCornerEtaS * 1000);
+                // Exit conditions belong to the phrase. Predict them only to size its random audio pool.
+                const exits = [phrase.exitConditions, action.exitConditions].filter(
+                    (conditions): conditions is readonly PhraseConditionNode[] => conditions !== undefined);
+                for (const frame of exits.length ? predictionFrames : []) {
+                    const predicted = forecastAt(frame.offsetMs);
+                    if (exits.some((conditions) => conditionsMatch(conditions.map((condition) => condition.evaluate({
+                        ...predicted.inputs, speed: finite(predicted.intendedTelemetry.Physics_speed_kmh) ?? predicted.inputs.speed,
+                    }))))) {
+                        deadlines.push(now + frame.offsetMs);
+                        break;
+                    }
+                }
+                return deadlines.length ? Math.min(...deadlines) : undefined;
+            };
+            context.scheduleAudio = (phrase, actionId) => {
+                const action = this.speechActions.get(actionId)!;
+                return randomAudio(action) ? { audioVariants: this.randomAudioPools.get(actionId) ?? [], deadlineAt: deadlineAt(phrase, actionId),
+                    reactionAllowanceMs: action.reactionAllowanceMs } : {};
+            };
+            context.audioVariants = (phrase, actionId, instances) => {
+                const action = this.speechActions.get(actionId)!;
+                const variants = instances ? instances.flatMap((instance) => {
+                    const durationMs = this.speechDurations!.get(instance.cacheKey);
+                    return durationMs === undefined ? [] : [{ instance, durationMs }];
+                }) : (randomAudio(action) ? this.randomAudioPools : this.preparedAudio).get(actionId) ?? [];
+                if (!randomAudio(action)) return variants;
+                const candidate: PhraseScheduleCandidate = {
+                    id: phrase.id, kind: 'phrase', label: action.sentence, priority: action.priority,
+                    category: getPhraseCategory(phrase), durationMs: this.speechLeadMs(actionId),
+                    audioVariants: variants, deadlineAt: deadlineAt(phrase, actionId), reactionAllowanceMs: action.reactionAllowanceMs,
+                };
+                const playing = this.events.find((event) => event.speech && event.speech.releaseAt === undefined);
+                const active: PhraseScheduleItem | undefined = playing ? {
+                    id: playing.ruleId, kind: 'phrase', label: playing.sentence, priority: playing.instance?.priority ?? 0,
+                    category: 'other', status: 'active', startAt: playing.speech!.startedAt ?? playing.timestamp,
+                    endAt: (playing.speech!.startedAt ?? playing.timestamp) + (playing.speech!.durationMs ?? 0),
+                } : undefined;
+                const candidates = new Map(context.scheduleCandidates);
+                candidates.set(phrase.id, candidate);
+                return schedulePhrases(now, Array.from(candidates.values()), active).items.find(({ id }) => id === phrase.id)?.audioVariants ?? [];
+            };
+        }
         const movementPhrases = this.phrases.filter((phrase) => phrase.movementDirection);
         const movementAvailable = movementPhrases.some((phrase) => {
             const lead = this.speechDurations ? this.speechLeadMs(`${phrase.id}:say:0`)
@@ -1322,12 +1453,13 @@ export class PhraseEngine {
         const currentAction = this.state.current;
         if (currentAction instanceof Action && this.speechDurations && currentAction.metadata.id && this.speechActions.has(currentAction.metadata.id)) {
             const action = this.speechActions.get(currentAction.metadata.id);
-            const exits = action?.exitConditions?.map((condition) => condition.evaluate(inputs));
-            if (exits && conditionsMatch(exits)) {
+            const exits = [action?.exitConditions,
+                currentAction instanceof TrackGuidePhrase ? currentAction.phrase.exitConditions : undefined];
+            if (exits.some((conditions) => conditions && conditionsMatch(conditions.map((condition) => condition.evaluate(inputs))))) {
                 this.events = this.events.map((event) => event.instance?.id === currentAction.metadata.id && event.speech
                     ? { ...event, speech: { ...event.speech, releaseAt: now } } : event);
             }
-            if (!this.speechPending(currentAction.metadata.id)) this.state.leaveAction();
+            if (!this.speechPending(currentAction.metadata.id) && !(currentAction instanceof TrackGuidePhrase)) this.state.leaveAction();
         }
         // Evaluation descends only through entered parents. Exit actions may return
         // through several levels before the next eligible phrase is selected.
@@ -1348,16 +1480,35 @@ export class PhraseEngine {
             node.children.forEach(collect);
         };
         collect(root);
+        this.speechActions.forEach((action) => {
+            const node = nodes.get(action.id);
+            if (!node) return;
+            const event = this.events.slice().reverse().find((item) => item.instance?.id === action.id);
+            node.exitConditions = [{ description: 'The selected audio finishes',
+                conditionFit: event?.speech ? event.speech.releaseAt !== undefined : null, inputMissing: false }];
+            if (action.exitConditions) {
+                const conditions = action.exitConditions.map((condition) => condition.evaluate(inputs));
+                node.exitConditions = [...node.exitConditions, { description: 'Phrase exit condition', connector: 'or',
+                    conditionFit: conditionsMatch(conditions), inputMissing: missingConditionInputs(conditions).length > 0,
+                    conditions: snapshotConditions(conditions) }];
+            }
+            if (node.current && this.speechPending(action.id)) {
+                node.status = 'Active';
+                node.execution = { status: 'running' };
+            }
+        });
         // Track guide checks its cues before entry as well as while another cue speaks.
         // Publish those measurements even when no cue is ready to enter the group.
         this.phrases.filter((phrase) => phrase.referenceCue).forEach((phrase) => {
-            const node = nodes.get(phrase.id), conditions = context.entryConditions.get(phrase.id);
-            if (!node || !conditions) return;
-            node.conditions = snapshotConditions(conditions);
-            if (!node.onPath) node.status = context.inspections.get(phrase.id)?.status ?? node.status;
+            getPhraseActions(phrase).forEach((action) => {
+                const node = nodes.get(action.id);
+                if (!node || !context.entryConditions.has(phrase.id)) return;
+                node.conditions = trackPhraseConditions(phrase, action, context);
+                if (!node.onPath) node.status = context.inspections.get(phrase.id)?.status ?? node.status;
+            });
         });
         const closures = this.phrases.flatMap((phrase) => {
-            const node = nodes.get(phrase.id);
+            const node = nodes.get(phrase.referenceCue ? `${phrase.id}:say:0` : phrase.id);
             if (!node) return [];
             const conditions = node.conditions.some((condition) => condition.conditionFit !== null)
                 ? context.entryConditions.get(phrase.id) ?? unevaluatedConditions(phrase.conditions) : unevaluatedConditions(phrase.conditions);
@@ -1365,19 +1516,21 @@ export class PhraseEngine {
             const missing = conditionsMatch(conditions) ? [] : missingConditionInputs(conditions);
             const status = node.status as ClosureStatus;
             return [{
-                id: phrase.id, name: node.name, description: node.description, holdMs: phrase.holdMs,
+                id: phrase.id, name: phrase.name, description: phrase.description, holdMs: phrase.holdMs,
                 status, missing, conditions, actionConditions,
-                actions: node.children.filter((child) => child.kind === 'action').map(({ name, description }) => ({ name, description })),
+                actions: (node.kind === 'phrase' ? [node] : node.children.filter((child) => child.kind !== 'closure'))
+                    .map(({ name, description }) => ({ name, description })),
             }];
         });
-        const activePhrase = this.phrases.find((phrase) => this.state.path.some((node) => node.metadata.id === phrase.id));
+        const activePhrase = this.phrases.find((phrase) => this.state.path.some((node) => node.metadata.id === phrase.id
+            || (node instanceof TrackGuidePhrase && node.phrase.id === phrase.id)));
         const activeGuidance = activePhrase ? context.forPhrase(activePhrase,
             this.state.current instanceof Action ? this.state.current.metadata.id : undefined).guidance : guidance;
         const activeEvent = activePhrase ? this.events.slice().reverse().find((event) => event.ruleId === activePhrase.id
             && event.speech && event.speech.releaseAt === undefined) : undefined;
         const activeStart = activeEvent?.speech?.startedAt ?? activeEvent?.timestamp ?? now;
         const active: PhraseScheduleItem | undefined = activePhrase ? {
-            id: activePhrase.id, kind: activeEvent ? 'phrase' : 'closure', label: activeEvent?.sentence ?? activePhrase.name,
+            id: activePhrase.id, kind: activeEvent || activePhrase.referenceCue ? 'phrase' : 'closure', label: activeEvent?.sentence ?? activePhrase.name,
             priority: activeEvent?.instance?.priority ?? getPhrasePriority(activePhrase), category: getPhraseCategory(activePhrase),
             status: 'active', startAt: activeStart,
             endAt: Math.max(now, activeStart + (activeEvent?.speech?.durationMs ?? activePhrase.preparationTimeMs ?? CLOSURE_PREPARATION_MS)),
@@ -1394,7 +1547,7 @@ export class PhraseEngine {
             steeringCorner: this.trackGuideEnabled && guidance.steering !== undefined ? steeringCorner : undefined,
             root,
             state: { current: this.state.current.name, description: this.state.current.description,
-                kind: this.state.current instanceof Closure ? 'closure' : 'action', path: this.state.path.map((node) => node.name) },
+                kind: this.state.current instanceof Closure ? 'closure' : this.state.current.metadata.kind ?? 'action', path: this.state.path.map((node) => node.name) },
         };
     }
 }

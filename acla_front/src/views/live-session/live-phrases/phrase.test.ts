@@ -44,3 +44,15 @@ it('inherits and overrides scheduling priority without changing prepared audio i
     expect(overridden.cacheKey).toBe(inherited.cacheKey);
     expect(new Phrase('other', 'Brake.', brakeCurves).createInstance().cacheKey).toBe(inherited.cacheKey);
 });
+
+it('builds a unique audio pool with independent timing, energy and pitch variations', () => {
+    const phrase = new Phrase('brake', 'Brake.', brakeCurves);
+    const variants = phrase.createAudioInstances([{}, { inputs: { timing: 0 } },
+        { inputs: { timing: 0.5 } }, { inputs: { energy: 0.75 } }, { inputs: { pitch: -0.25 } },
+        { inputs: { timing: 0.5 }, priority: 5 }]);
+    expect(variants.map((variant) => variant.inputValues)).toEqual([
+        [0, 0, 0], [0.5, 0, 0], [0, 0.75, 0], [0, 0, -0.25],
+    ]);
+    expect(phrase.createAudioInstances().map((variant) => variant.cacheKey)).toEqual([variants[0].cacheKey]);
+    expect(phrase.createAudioInstances([])).toEqual([]);
+});

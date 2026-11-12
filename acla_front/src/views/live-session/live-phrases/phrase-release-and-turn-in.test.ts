@@ -33,7 +33,7 @@ it.each([0.1, 0.6, 1])('prioritizes brake release over turn-in with %s brake pre
     const { at } = setup();
     const entered = at(0.27, 1000, { Physics_brake: brake });
     expect(entered.events).toEqual([expect.objectContaining({ ruleId: RELEASE, sentence: 'Off brake.' })]);
-    expect(entered.state.current).toBe('say phrase');
+    expect(entered.state.current).toBe('Release the brake');
 });
 
 it.each([0, 0.0999, undefined, NaN, -0.1, 1.1])('keeps ordinary turn-in for released or invalid brake %s', (brake) => {

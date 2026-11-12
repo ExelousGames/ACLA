@@ -37,7 +37,8 @@ describe('live phrase closure tree', () => {
         ]);
         const snapshot = engine.evaluate(0);
         const guide = snapshot.root.children.find((child) => child.name === 'Track guide')!;
-        expect(guide.children.filter((child) => child.kind === 'closure').map((child) => child.name))
+        expect(guide.children.filter((child) => child.kind === 'closure')).toEqual([]);
+        expect(guide.children.filter((child) => child.kind === 'phrase').map((child) => child.name))
             .toEqual(PHRASE_DEFINITIONS.filter((phrase) => phrase.referenceCue).map((phrase) => phrase.name));
         expect(guide.children.find((child) => child.name === 'Turn in')!.fields).not.toHaveProperty('Cooldown');
         expect(snapshot.root).toMatchObject({ name: engine.root.name, description: engine.root.description });
@@ -45,6 +46,14 @@ describe('live phrase closure tree', () => {
             node instanceof Closure ? [node, ...descendants(node)] : []);
         const catalog = descendants(engine.root);
         PHRASE_DEFINITIONS.forEach((phrase, index) => {
+            if (phrase.referenceCue) {
+                const trackGuide = engine.root.children.find((node) => node.metadata.id === 'track-guide') as Closure<unknown>;
+                const action = trackGuide.children.find((node) => node.metadata.id === `${phrase.id}:say:0`)!;
+                expect(action).toBeInstanceOf(Action);
+                expect(action).toMatchObject({ name: phrase.name, description: phrase.sentence, metadata: { kind: 'phrase' } });
+                expect(snapshot.closures[index]).toMatchObject({ id: phrase.id, name: phrase.name });
+                return;
+            }
             const child = catalog.find((node) => node.metadata.id === phrase.id)!;
             expect(child).toBeInstanceOf(Closure);
             expect(child.description).toBe(PHRASE_DEFINITIONS[index].description);
@@ -53,8 +62,7 @@ describe('live phrase closure tree', () => {
             const speech = getPhraseActions(PHRASE_DEFINITIONS[index]);
             const parentSpeech = PHRASE_DEFINITIONS[index].id === 'one-tight-slow-corner' ? speech.slice(1, 2)
                 : PHRASE_DEFINITIONS[index].id === 'second-apex' ? speech.slice(0, 2) : speech;
-            expect(actions.map((action) => action.name)).toEqual([...parentSpeech.map(() => 'say phrase'),
-                phrase.referenceCue ? 'exit to parent' : 'exit to root']);
+            expect(actions.map((action) => action.name)).toEqual([...parentSpeech.map(() => 'say phrase'), 'exit to root']);
             actions.forEach((action) => {
                 expect(action).toBeInstanceOf(Action);
                 expect(action.description.trim()).not.toBe('');
@@ -80,7 +88,7 @@ describe('live phrase closure tree', () => {
         const snapshot = update(engine, 800);
         expect(run).toHaveBeenCalledTimes(1);
         expect(snapshot.events.map((event) => event.ruleId)).toEqual([defaultRule]);
-        expect(snapshot.state).toEqual({ current: action.name, description: action.description, kind: 'action', path: ['root', child.name, action.name] });
+        expect(snapshot.state).toEqual({ current: action.name, description: action.description, kind: 'phrase', path: ['root', child.name, action.name] });
         const next = engine.evaluate(800);
         expect(leave).toHaveBeenCalledTimes(1);
         expect(next.state).toEqual({ current: 'root', description: engine.root.description, kind: 'closure', path: ['root'] });

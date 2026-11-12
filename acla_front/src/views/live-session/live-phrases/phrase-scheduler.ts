@@ -1,3 +1,5 @@
+import type { PhraseAudioVariant } from './phrase';
+
 export type PhraseScheduleCategory = 'brake' | 'turn' | 'throttle' | 'other';
 
 export const PHRASE_PRIORITIES = { brake: 3, turn: 2, throttle: 1, other: 0 } as const;
@@ -7,6 +9,16 @@ export function comparePriority(a: { priority: number }, b: { priority: number }
     return b.priority - a.priority;
 }
 
+/** Filter the random pool without choosing an audio or changing phrase conditions. */
+export function filterPhraseAudioVariants(
+    variants: readonly PhraseAudioVariant[],
+    window: { startAt: number; endAt?: number; reactionAllowanceMs?: number },
+): PhraseAudioVariant[] {
+    const availableMs = window.endAt === undefined ? Infinity : window.endAt - window.startAt;
+    return variants.filter(({ durationMs }) => Number.isFinite(durationMs) && durationMs >= 0
+        && durationMs + (window.reactionAllowanceMs ?? 0) <= availableMs);
+}
+
 export interface PhraseScheduleCandidate {
     id: string;
     kind: 'phrase' | 'closure';
@@ -14,6 +26,10 @@ export interface PhraseScheduleCandidate {
     priority: number;
     category: PhraseScheduleCategory;
     durationMs: number;
+    /** Only random alternatives are filtered; fixed deliveries keep durationMs. */
+    audioVariants?: readonly PhraseAudioVariant[];
+    deadlineAt?: number;
+    reactionAllowanceMs?: number;
     predictedAt?: number;
     durationEstimated?: boolean;
 }
@@ -35,12 +51,21 @@ export function schedulePhrases(
 ): PhraseScheduleSnapshot {
     let availableAt = Math.max(now, active?.endAt ?? now);
     const pending = [...candidates].filter(({ id }) => id !== active?.id).sort(comparePriority);
-    return { now, items: [
-        ...(active ? [{ ...active }] : []),
-        ...pending.map(({ durationMs, ...candidate }, index): PhraseScheduleItem => {
-            const startAt = availableAt;
-            availableAt += durationMs;
-            return { ...candidate, status: index === 0 ? 'next' : 'queued', startAt, endAt: availableAt };
-        }),
-    ] };
+    const items: PhraseScheduleItem[] = active ? [{ ...active,
+        ...(active.audioVariants ? { audioVariants: [...active.audioVariants] } : {}),
+    }] : [];
+    let pendingCount = 0;
+    pending.forEach(({ durationMs, audioVariants, ...candidate }) => {
+        const startAt = availableAt;
+        const allowed = audioVariants === undefined ? undefined : filterPhraseAudioVariants(audioVariants, {
+            startAt, endAt: candidate.deadlineAt, reactionAllowanceMs: candidate.reactionAllowanceMs,
+        });
+        if (allowed?.length === 0) return;
+        // Reserve enough time for every remaining choice; selection happens on entry.
+        availableAt += allowed ? Math.max(...allowed.map((variant) => variant.durationMs))
+            + (candidate.reactionAllowanceMs ?? 0) : durationMs;
+        items.push({ ...candidate, ...(allowed ? { audioVariants: allowed } : {}),
+            status: pendingCount++ === 0 ? 'next' : 'queued', startAt, endAt: availableAt });
+    });
+    return { now, items };
 }

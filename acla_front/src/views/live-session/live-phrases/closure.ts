@@ -43,6 +43,8 @@ export interface NodeInspection {
 }
 
 export interface NodeMetadata<Context> {
+    /** A playable phrase is a leaf state; its audio variants are data, not child actions. */
+    kind?: 'phrase';
     preparationTimeMs?: number;
     id?: string;
     /** Identifies an exit action for inspection without relying on its name. */
@@ -61,7 +63,7 @@ export interface ActionExecution {
 /** Plain display data: no callbacks, class instances or action-name conventions. */
 export interface NodeSnapshot {
     id: string;
-    kind: 'closure' | 'action';
+    kind: 'closure' | 'action' | 'phrase';
     name: string;
     description: string;
     current: boolean;
@@ -69,6 +71,7 @@ export interface NodeSnapshot {
     status: string;
     priority?: number;
     conditions: readonly ConditionSnapshot[];
+    exitConditions?: readonly ConditionSnapshot[];
     fields: NonNullable<NodeInspection['fields']>;
     execution?: ActionExecution;
     exitTarget?: 'root' | 'parent';
@@ -242,7 +245,7 @@ export class State<Context> {
                     : inspection?.status ?? (checked.matches ? 'Waiting' : 'Not matched');
             const nodeId = node.metadata.id ?? id;
             return {
-                id: nodeId, kind: node instanceof Closure ? 'closure' : 'action',
+                id: nodeId, kind: node instanceof Closure ? 'closure' : node.metadata.kind ?? 'action',
                 name: node.name, description: node.description, current: node === this.current, onPath,
                 status, priority: node.priority,
                 conditions: conditions.map(copyCondition), fields: {
