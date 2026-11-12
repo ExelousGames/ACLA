@@ -15,7 +15,9 @@ const trackGuidePhraseLabel = (rule: typeof PHRASE_DEFINITIONS[number]) =>
 jest.mock('components/tts', () => ({ synthesizeProsodyTts: async (_curves: unknown, _inputs: unknown, { text }: { text: string }) => ({
     text, audioDataUrl: `data:audio/wav;base64,${btoa(text)}`, durationMs: 3000,
 }) }));
-jest.mock('services/audio', () => ({ audioManager: { play: () => ({ stop: () => undefined }) } }));
+jest.mock('services/audio', () => ({ audioManager: { createPlayer: () => ({
+    prepare: async () => undefined, play: () => ({ stop: () => undefined }), dispose: () => undefined,
+}) } }));
 
 describe('LivePhrases root connection', () => {
     beforeEach(() => { jest.useFakeTimers(); jest.setSystemTime(10000); });
@@ -100,7 +102,7 @@ describe('LivePhrases root connection', () => {
                 Graphics_normalized_positions: { 1: 0.05, 2: 0.051 },
             } });
         const sentence = PHRASE_DEFINITIONS.find((rule) => rule.id === 'one-tight-slow-corner')!.additionalActions![1].sentence;
-        const output = within(screen.getByRole('region', { name: 'Triggered sentences' }));
+        const output = within(screen.getByRole('region', { name: 'Phrase history' }));
         act(() => { publish(1); });
         expect(output.queryByText(sentence)).not.toBeInTheDocument();
         summaries = [0.03, 0.02].map((averageExitSpeed, index) => ({
@@ -225,7 +227,7 @@ describe('LivePhrases root connection', () => {
         fireEvent.click(within(catalog.getByRole('navigation', { name: 'Phrase directory' })).getByRole('button', { name: 'Custom root' }));
         expect(catalog.getByLabelText('Custom guide closure')).toBeVisible();
         expect(screen.getByLabelText('Closure state')).toBeVisible();
-        expect(screen.getByRole('heading', { name: 'Triggered sentences' })).toBeVisible();
+        expect(screen.getByRole('heading', { name: 'Phrase history' })).toBeVisible();
         expect(catalog.queryByText(PHRASE_DEFINITIONS[0].name)).not.toBeInTheDocument();
     });
 
@@ -423,7 +425,7 @@ describe('LivePhrases root connection', () => {
             jest.advanceTimersByTime(800);
             publish(2);
         });
-        const output = within(screen.getByRole('region', { name: 'Triggered sentences' }));
+        const output = within(screen.getByRole('region', { name: 'Phrase history' }));
         const sentence = PHRASE_DEFINITIONS.find((rule) => rule.id === 'pressure-feint')!.sentence;
         expect(output.getByText(sentence)).toBeInTheDocument();
         expect(output.queryByText('You are accelerating.')).not.toBeInTheDocument();

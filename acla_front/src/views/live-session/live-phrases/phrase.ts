@@ -9,8 +9,15 @@ export interface PhraseSpeechTiming {
     durationMs?: number;
     preparationTimeMs?: number;
     reactionAllowanceMs: number;
+    /** The prepared clip was submitted to the audio player. */
+    requestedAt?: number;
+    /** First playback start notification; buffering resumes do not reset it. */
+    playbackStartedAt?: number;
     /** Set when playback reaches the first audible frame, never by the trigger timestamp. */
     startedAt?: number;
+    /** Terminal audio callback, including playback that was rejected or interrupted. */
+    finishedAt?: number;
+    outcome?: 'completed' | 'replaced' | 'rejected' | 'cancelled' | 'failed';
     releaseAt?: number;
 }
 export interface PhraseSettings extends Omit<TtsRequest, 'text'> {

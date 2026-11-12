@@ -32,7 +32,7 @@ const PhraseScheduler = ({ schedule, enabled }: { schedule: PhraseScheduleSnapsh
             {items.length > 0 ? <>
                 <div className="phrase-scheduler__summary">
                     {active && <span><b>Active</b> {active.label}</span>}
-                    {next && <span><b>{next.kind === 'closure' ? 'Next closure' : 'Up next'}</b> {next.label}</span>}
+                    {next && <span><b>Up next</b> {next.label}</span>}
                 </div>
                 <div className="phrase-scheduler__scroll" tabIndex={0} aria-label="Scheduled cue timeline">
                     <div className="phrase-scheduler__timeline">
@@ -47,13 +47,13 @@ const PhraseScheduler = ({ schedule, enabled }: { schedule: PhraseScheduleSnapsh
                                 const left = position(item.startAt);
                                 const width = Math.max(0, position(item.endAt) - left);
                                 const duration = `${item.durationEstimated ? '~' : ''}${seconds(Math.max(0, item.endAt - item.startAt))}`;
-                                const detail = `${item.kind === 'phrase' ? 'Phrase' : 'Closure'} · Priority ${item.priority} · ${statuses[item.status]}`;
+                                const detail = `Phrase · Priority ${item.priority} · ${statuses[item.status]}`;
                                 const timing = item.startAt <= now ? 'Starts now or already active' : `Starts in ${seconds(item.startAt - now)}`;
                                 return <li key={item.id} className="phrase-scheduler__lane"
                                     aria-label={`${item.label} · ${detail} · ${timing} · Duration ${duration}`}>
                                     <div className="phrase-scheduler__row-label">
                                         <span>{item.label}</span>
-                                        <span>{item.kind === 'closure' ? 'Closure · ' : ''}P{item.priority} · {statuses[item.status]}</span>
+                                        <span>P{item.priority} · {statuses[item.status]}</span>
                                     </div>
                                     <div className="phrase-scheduler__track">
                                         <div className="phrase-scheduler__bar" data-category={item.category} data-status={item.status}
@@ -68,10 +68,10 @@ const PhraseScheduler = ({ schedule, enabled }: { schedule: PhraseScheduleSnapsh
                         </ol>
                     </div>
                 </div>
-                <p className="phrase-scheduler__hint">Timing is estimated from prepared speech. Queued closures wait for the active closure to finish; cues are checked again before they trigger.</p>
+                <p className="phrase-scheduler__hint">Timing is estimated from prepared speech. A phrase finishes when its audio ends or its exit condition matches. Queued phrases are checked again before they trigger.</p>
             </> : <div className="phrase-scheduler__empty">
                 <span aria-hidden="true">◇</span>
-                <p>{enabled ? 'Waiting for a predicted phrase or closure.' : 'Enable detection to see the live schedule.'}</p>
+                <p>{enabled ? 'Waiting for a predicted phrase.' : 'Enable detection to see the live schedule.'}</p>
             </div>}
         </section>
     );

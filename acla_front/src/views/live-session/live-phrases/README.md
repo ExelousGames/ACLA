@@ -597,6 +597,14 @@ consecutive executions may repeat. Selection happens only when the action runs;
 checking conditions or inspecting the tree does not choose a wording. Action Details shows the alternatives.
 All wordings are prepared for speech, and the chosen sentence is published once
 for audio, history and overlays. Omitting alternatives keeps the single-sentence behavior.
+Phrase history shows a response timeline for each sentence: trigger → play request →
+playback start → audio end → phrase release. Each recorded stage shows its wall-clock
+timestamp and milliseconds since the trigger. Playback start uses the first audio-player
+start notification; buffering resumes do not replace it. Audible onset remains separate
+for scheduling. Audio completion records its outcome, including interrupted, rejected,
+cancelled or failed playback. Exit conditions can release a phrase before its audio ends;
+the timeline retains both times independently. Unreported stages stay pending until
+playback finishes, then show Not reached (or Unavailable for older untracked events).
 An optional `selectSentence(context)` instead chooses one of those preloaded wordings
 from driving conditions. An undefined or unprepared choice withholds speech.
 Consecutive-corner positioning uses this deterministic selection so left/right
@@ -790,6 +798,11 @@ mounted. The Speech indicator shows **Preparing** until all requests finish,
 then turns green with **Ready** only when every catalog instance has received
 its audio. Failed requests leave it **Incomplete**; disabling detection shows
 **Disabled**. Enabling again reuses cached clips and retries missing ones.
+Enabling also prepares and resumes one reusable audio player. Detection waits for
+both speech preparation and player readiness. Every phrase in that enabled session
+reuses the same audio element, context and analyser, including after interruption or
+session reset. Disabling detection or unmounting disposes the player; re-enabling
+creates a fresh player while retaining the prepared speech clips.
 Each new phrase event immediately attempts playback once through the common
 `audioManager` path, using type `voice` and priority 25. A new phrase replaces an
 earlier phrase at that priority. Live chat's default priority 50 can interrupt
@@ -902,24 +915,23 @@ unmounting releases the cache. Failed clips can be retried on the next enable.
 Telemetry events only read prepared audio. An instance still missing when preparation
 finishes is skipped without requesting audio or substituting a different delivery.
 
-Every triggered phrase also publishes a pop-out card (eight seconds for overtaking,
-or until the reference cue's deadline) through the
-existing overlay addon contract. Enable the overlay in the Assistant to see it.
+When **Turn in** triggers, its audio plays and a reference-line card is published
+through the existing overlay addon contract. Other phrases remain in the local
+history without publishing phrase-text cards. Enable the overlay in the Assistant to see it.
 Live phrases reuse an active live overlay presentation, or create a local live
-presentation on the first trigger when none exists; no AI conversation is needed.
+presentation on the first reference-line trigger when none exists; no AI conversation is needed.
 The shared overlay visibility setting is respected. Other session modes do not
 receive live phrase cards.
 
-`LivePhraseOverlay` owns one registered `MutableAiOverlayComponent` handle per
-catalog rule, event deduplication, presentation scoping and cleanup. Session/stream
+`LivePhraseOverlay` owns one registered `MutableAiOverlayComponent` handle for the
+reference line, event deduplication, presentation scoping and cleanup. Session/stream
 resets clear the cards, and unmounting releases all handles and any locally owned
 presentation. Expired events never replay when a presentation changes.
 All phrase display components, styles and future overlay graphs belong in
-`live-phrases/graphs/`. `graphs/LivePhraseDisplay` implements the renderer and its
-snapshot validation; the floating overlay only registers and displays it.
+`live-phrases/graphs/`; the floating overlay only registers and displays their renderers.
 
-An eligible reference turn while **Track guide** is enabled and speech is ready inserts a separate `live_steering_corner` addon,
-independently of phrase events. `PhraseSnapshot.steeringCorner`
+Each new **Turn in** event while **Track guide** is enabled and speech is ready publishes a `live_steering_corner` addon.
+An eligible reference turn alone does not display a card. `PhraseSnapshot.steeringCorner`
 identifies the same mapped corner used by the steering guidance, including an
 approaching corner before its entry. The card uses the analyst presentation's
 styling and displays the Live Map reference line plus the Circuit Map's saved left
@@ -928,8 +940,12 @@ start/finish wrapping. Missing boundaries are reported instead of synthesized.
 The trajectory uses a vehicle-height perspective from the corner entry, aligned
 with the reference's initial travel direction. Distant geometry converges toward
 the horizon; paths and the road surface are clipped behind the camera.
-The card stays visible while the reference turn remains eligible, independently of the speaking cue, without republishing on every
-telemetry frame, and clears on exit, stale input, reset or detection shutdown.
+The reference line and boundaries are captured once when the event triggers and
+remain fixed for two seconds, even if telemetry, the map or the reference changes.
+A new Turn in card immediately replaces the previous card in the same slot and
+starts its own two-second lifetime. Repeated snapshots do not refresh the card or
+extend its deadline. Reset, disabling Track guide or detection shutdown clears it;
+expired events and delayed presentation creation cannot restore an old card.
 `graphs/SteeringCornerDisplay` owns its rendering and snapshot validation.
 
 Each leaf condition is a `PhraseCondition` instance with a boolean `conditionFit`

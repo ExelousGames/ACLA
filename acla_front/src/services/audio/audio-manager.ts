@@ -1,4 +1,4 @@
-import { MediaPlaybackAdapter, PcmPlaybackAdapter, type PlaybackAdapter } from './playback-adapters';
+import { MediaPlaybackAdapter, MediaPlaybackResources, PcmPlaybackAdapter, type PlaybackAdapter } from './playback-adapters';
 
 export type AudioType = 'voice' | 'music' | 'alert';
 export type PlaybackOutcome =
@@ -30,6 +30,13 @@ export interface PlaybackHandle {
     readonly finished: Promise<PlaybackOutcome>;
     readonly outcome: PlaybackOutcome | undefined;
     isActive(): boolean;
+}
+export interface AudioPlayer {
+    /** Initialize and resume the media element and level meter before the first trigger. */
+    prepare(): Promise<void>;
+    play(options: Omit<PlayOptions, 'type'>): PlaybackHandle;
+    /** Cancel this player's playback and release its retained audio graph. */
+    dispose(): void;
 }
 export interface AudioStreamHandle extends PlaybackHandle {
     /** False means this handle is terminal, finished, or has the wrong format. */
@@ -64,6 +71,7 @@ class PlaybackRequest implements AudioStreamHandle {
         options: PlaybackOptions,
         private readonly format: 'url' | 'wav' | 'pcm16',
         private readonly sampleRate = 24000,
+        private readonly mediaResources?: MediaPlaybackResources,
     ) {
         this.options = options;
         this.type = options.type;
@@ -96,7 +104,7 @@ class PlaybackRequest implements AudioStreamHandle {
             };
             this.adapter = this.format === 'pcm16'
                 ? new PcmPlaybackAdapter(this.manager.volumeFor(this), this.sampleRate, events)
-                : new MediaPlaybackAdapter(this.manager.volumeFor(this), events);
+                : new MediaPlaybackAdapter(this.manager.volumeFor(this), events, this.mediaResources);
         }
         this.busy = true;
         return true;
@@ -160,6 +168,32 @@ class PlaybackRequest implements AudioStreamHandle {
 class AudioManager {
     private readonly admitted = new Map<AudioType, PlaybackRequest>();
 
+    createPlayer(type: AudioType): AudioPlayer {
+        const resources = new MediaPlaybackResources();
+        let current: PlaybackRequest | null = null;
+        let disposed = false;
+        return {
+            prepare: async () => {
+                resources.prepare(true);
+                await resources.resume();
+            },
+            play: ({ url, ...options }) => {
+                const request = new PlaybackRequest(this, { ...options, type }, 'url', 24000, resources);
+                if (disposed) request.terminate({ status: 'cancelled' });
+                else request.play(url);
+                // A rejected/invalid request must not orphan this player's active handle.
+                if (!request.outcome) current = request;
+                return request;
+            },
+            dispose: () => {
+                disposed = true;
+                current?.stop();
+                current = null;
+                resources.dispose();
+            },
+        };
+    }
+
     play({ url, ...options }: PlayOptions): PlaybackHandle {
         const request = new PlaybackRequest(this, options, 'url');
         request.play(url);
@@ -193,4 +227,4 @@ class AudioManager {
     updateMusicVolume(): void { this.admitted.get('music')?.updateVolume(); }
 }
 
-export const audioManager: Pick<AudioManager, 'play' | 'createStream'> = new AudioManager();
+export const audioManager: Pick<AudioManager, 'play' | 'createPlayer' | 'createStream'> = new AudioManager();

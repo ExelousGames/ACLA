@@ -21,7 +21,7 @@ export function filterPhraseAudioVariants(
 
 export interface PhraseScheduleCandidate {
     id: string;
-    kind: 'phrase' | 'closure';
+    kind: 'phrase';
     label: string;
     priority: number;
     category: PhraseScheduleCategory;

@@ -1,8 +1,8 @@
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { synthesizeProsodyTts, type TtsPack } from 'components/tts';
 import { OperationComponentRefProvider, useRegisterOperationComponentRef } from 'contexts/OperationComponentRefContext';
-import { audioManager, type PlaybackHandle } from 'services/audio';
+import { audioManager, type AudioPlayer, type PlaybackHandle } from 'services/audio';
 import { installAudioDoubles, TestAudioContext } from 'services/audio/test-audio';
 import { createLiveTelemetryStore } from '../live-telemetry-store';
 import LivePhrases from './LivePhrases';
@@ -21,6 +21,21 @@ const sentences = instances.map((instance) => instance.speech.text);
 const pack = (text: string): TtsPack => ({ text, audioDataUrl: `data:audio/wav;base64,${btoa(text)}`, durationMs: 3000 });
 let audio: ReturnType<typeof installAudioDoubles>;
 let otherPlayback: PlaybackHandle | undefined;
+
+const spyOnPlayer = () => {
+    const play = jest.fn<PlaybackHandle, Parameters<AudioPlayer['play']>>();
+    const createPlayer = audioManager.createPlayer.bind(audioManager);
+    jest.spyOn(audioManager, 'createPlayer').mockImplementation((type) => {
+        const player = createPlayer(type);
+        const originalPlay = player.play;
+        player.play = (options) => {
+            play.mockImplementationOnce(originalPlay);
+            return play(options);
+        };
+        return player;
+    });
+    return play;
+};
 
 const mount = () => {
     const telemetry = createLiveTelemetryStore();
@@ -77,11 +92,15 @@ afterEach(async () => {
 });
 
 it('prepares on enable, speaks each trigger once without an overlay, and reuses clips after toggling', async () => {
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     const view = mount();
     expect(synthesize).not.toHaveBeenCalled();
+    expect(audio.media).toHaveLength(0);
     expect(screen.getByText('Speech: Disabled')).toHaveAttribute('data-ready', 'false');
     await view.enable();
+    expect(audio.media).toHaveLength(1);
+    expect(TestAudioContext.instances).toHaveLength(1);
+    expect(audio.play).not.toHaveBeenCalled();
     expect(synthesize.mock.calls.map(([, , request]) => request.text)).toEqual(sentences);
     expect(sentences).not.toContain('More left');
     expect(sentences).not.toContain('More right');
@@ -96,7 +115,7 @@ it('prepares on enable, speaks each trigger once without an overlay, and reuses 
     expect(play).not.toHaveBeenCalled();
     await view.trigger();
     expect(play).toHaveBeenCalledTimes(1);
-    expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack(sentence).audioDataUrl, type: 'voice', priority: 25 }));
+    expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack(sentence).audioDataUrl, priority: 25 }));
     await act(async () => { view.frame(); jest.advanceTimersByTime(250); view.frame(); });
     expect(play).toHaveBeenCalledTimes(1);
     const signal = synthesize.mock.calls[0][3]!;
@@ -104,13 +123,119 @@ it('prepares on enable, speaks each trigger once without an overlay, and reuses 
     expect(screen.getByText('Speech: Disabled')).toHaveAttribute('data-ready', 'false');
     expect(signal.aborted).toBe(true);
     expect(play.mock.results[0].value.outcome).toEqual({ status: 'cancelled' });
+    expect(TestAudioContext.instances[0].close).toHaveBeenCalledTimes(1);
     await view.enable();
     expect(synthesize).toHaveBeenCalledTimes(sentences.length);
     expect(screen.getByText('Speech: Ready')).toHaveAttribute('data-ready', 'true');
     await view.trigger();
     expect(play).toHaveBeenCalledTimes(2);
+    expect(audio.media).toHaveLength(2);
+    expect(TestAudioContext.instances).toHaveLength(2);
     view.unmount();
     expect(play.mock.results[1].value.outcome).toEqual({ status: 'cancelled' });
+    expect(TestAudioContext.instances[1].close).toHaveBeenCalledTimes(1);
+});
+
+it.each(['ready', 'failed', 'disabled'])('waits for player preparation when the audio context is %s', async (state) => {
+    TestAudioContext.initialState = 'suspended';
+    const view = mount();
+    await view.enable();
+    const context = TestAudioContext.instances[0];
+    expect(context.resume).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Speech: Preparing')).toBeInTheDocument();
+    await view.trigger();
+    expect(audio.play).not.toHaveBeenCalled();
+    if (state === 'disabled') fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
+    await act(async () => {
+        if (state === 'failed') context.rejectResume(new Error('Audio blocked'));
+        else context.resolveResume();
+    });
+    if (state === 'ready') {
+        expect(screen.getByText('Speech: Ready')).toBeInTheDocument();
+        await view.trigger();
+        expect(audio.play).toHaveBeenCalledTimes(1);
+        expect(TestAudioContext.instances).toHaveLength(1);
+    } else {
+        expect(audio.play).not.toHaveBeenCalled();
+        expect(screen.getByText(state === 'failed' ? 'Speech: Incomplete' : 'Speech: Disabled')).toBeInTheDocument();
+        if (state === 'failed') expect(screen.getByRole('alert')).toHaveTextContent('Audio blocked');
+        else expect(context.close).toHaveBeenCalledTimes(1);
+    }
+});
+
+it('shows phrase response from trigger through delayed playback and audio completion', async () => {
+    let resolvePlay!: () => void;
+    audio.play.mockImplementationOnce(() => new Promise<void>((resolve) => { resolvePlay = resolve; }));
+    const view = mount();
+    await view.enable();
+    await view.trigger();
+    const timeline = within(screen.getByRole('list', { name: 'Phrase response timeline' }));
+    const stage = (label: string) => within(timeline.getByText(label).closest('li')!);
+    const time = (label: string) => stage(label).getByText(/\d+:\d+:\d+/).getAttribute('datetime');
+    expect(timeline.getAllByRole('listitem').map((item) => item.querySelector('strong')?.textContent))
+        .toEqual(['Trigger', 'Play request', 'Playback start', 'Audio end', 'Phrase release']);
+    expect(stage('Trigger').getByText('+0 ms')).toBeInTheDocument();
+    expect(stage('Play request').getByText('+0 ms')).toBeInTheDocument();
+    expect(stage('Playback start').getByText('Pending')).toBeInTheDocument();
+    const triggeredAt = Date.parse(time('Trigger')!);
+    await act(async () => { jest.advanceTimersByTime(120); resolvePlay(); });
+    const startedAt = time('Playback start');
+    expect(Date.parse(startedAt!) - triggeredAt).toBe(120);
+    expect(stage('Playback start').getByText('+120 ms')).toBeInTheDocument();
+    const media = audio.media[0];
+    await act(async () => {
+        media.dispatchEvent(new Event('waiting'));
+        jest.advanceTimersByTime(200);
+        media.dispatchEvent(new Event('playing'));
+    });
+    expect(time('Playback start')).toBe(startedAt);
+    expect(stage('Audio end').getByText('Pending')).toBeInTheDocument();
+    expect(stage('Phrase release').getByText('Pending')).toBeInTheDocument();
+    await act(async () => { jest.advanceTimersByTime(100); media.dispatchEvent(new Event('ended')); });
+    expect(stage('Audio end').getByText('+420 ms')).toBeInTheDocument();
+    expect(stage('Audio end').getByText('Completed')).toBeInTheDocument();
+    expect(stage('Phrase release').getByText('+420 ms')).toBeInTheDocument();
+    expect(time('Audio end')).toBe(time('Phrase release'));
+});
+
+it('updates history for phrase state changes without reformatting it on telemetry or timer updates', async () => {
+    const view = mount();
+    await view.enable();
+    await view.trigger();
+    const history = screen.getByRole('region', { name: 'Phrase history' });
+    const initialHistory = history.innerHTML;
+    const formatTimestamp = jest.spyOn(Date.prototype, 'toISOString');
+
+    for (let frame = 0; frame < 10; frame++) {
+        await act(async () => { jest.advanceTimersByTime(50); view.frame(100 + frame); });
+    }
+    expect(history.innerHTML).toBe(initialHistory);
+    expect(formatTimestamp).not.toHaveBeenCalled();
+    expect(audio.play).toHaveBeenCalledTimes(1);
+
+    await act(async () => { audio.media[0].dispatchEvent(new Event('ended')); });
+    expect(within(history).getByText('Completed')).toBeInTheDocument();
+    expect(formatTimestamp).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
+    expect(within(history).queryByRole('list', { name: 'Phrase response timeline' })).not.toBeInTheDocument();
+});
+
+it.each(['rejected', 'failed', 'replaced'] as const)('shows %s playback in phrase history', async (outcome) => {
+    const view = mount();
+    await view.enable();
+    if (outcome === 'rejected') otherPlayback = audioManager.play({ url: 'chat.wav', type: 'voice', priority: 50 });
+    if (outcome === 'failed') audio.play.mockRejectedValueOnce(new Error('Audio blocked'));
+    await view.trigger();
+    if (outcome === 'replaced') await act(async () => {
+        jest.advanceTimersByTime(100);
+        otherPlayback = audioManager.play({ url: 'chat.wav', type: 'voice', priority: 50 });
+    });
+    const timeline = within(screen.getByRole('list', { name: 'Phrase response timeline' }));
+    const stage = (label: string) => within(timeline.getByText(label).closest('li')!);
+    expect(stage('Audio end').getByText({ rejected: 'Rejected', failed: 'Failed', replaced: 'Interrupted' }[outcome])).toBeInTheDocument();
+    expect(stage('Phrase release').queryByText('Pending')).not.toBeInTheDocument();
+    if (outcome !== 'replaced') expect(stage('Playback start').getByText('Not reached')).toBeInTheDocument();
+    else expect(stage('Playback start').queryByText('Not reached')).not.toBeInTheDocument();
 });
 
 it('plays the additional chicane action using its own prepared sentence', async () => {
@@ -119,7 +244,7 @@ it('plays the additional chicane action using its own prepared sentence', async 
     snapshot.closures.find((rule) => rule.id === 'second-apex')!.status = 'Active';
     snapshot.events = [{ id: 1, ruleId: 'second-apex', sentence: 'Brake early. Hold inside.', timestamp: Date.now() }];
     const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     try {
         const view = mount();
         await view.enable();
@@ -127,9 +252,9 @@ it('plays the additional chicane action using its own prepared sentence', async 
         await act(async () => { view.frame(); });
         expect(play).toHaveBeenCalledTimes(1);
         expect(play).toHaveBeenLastCalledWith(expect.objectContaining({
-            url: pack('Brake early. Hold inside.').audioDataUrl, type: 'voice', priority: 25,
+            url: pack('Brake early. Hold inside.').audioDataUrl, priority: 25,
         }));
-        expect(screen.getByRole('region', { name: 'Triggered sentences' })).toHaveTextContent('Brake early. Hold inside.');
+        expect(screen.getByRole('region', { name: 'Phrase history' })).toHaveTextContent('Brake early. Hold inside.');
     } finally {
         receive.mockRestore();
     }
@@ -142,7 +267,7 @@ it('uses the trimmed duration for entry forecasts and waits through pauses and b
     const durations = jest.spyOn(PhraseEngine.prototype, 'setSpeechDurations');
     const started = jest.spyOn(PhraseEngine.prototype, 'speechStarted');
     const finished = jest.spyOn(PhraseEngine.prototype, 'speechFinished');
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     const view = mount();
     await view.enable();
     expect(Array.from(durations.mock.calls[durations.mock.calls.length - 1][0].values())).toEqual(instances.map(() => 1400));
@@ -151,13 +276,11 @@ it('uses the trimmed duration for entry forecasts and waits through pauses and b
     const meter = TestAudioContext.instances[0];
     await act(async () => { jest.advanceTimersByTime(500); });
     expect(screen.getByLabelText('Closure state')).toHaveTextContent('say phrase');
-    expect(screen.getByLabelText('Speech level')).toHaveAttribute('value', '0');
     expect(started).not.toHaveBeenCalled();
     Object.defineProperty(media, 'paused', { configurable: true, value: false });
     media.currentTime = 0.001;
     meter.level = 0.2;
     await act(async () => { jest.advanceTimersByTime(16); });
-    expect(Number(screen.getByLabelText('Speech level').getAttribute('value'))).toBeGreaterThan(0);
     expect(started).toHaveBeenCalledTimes(1);
     // A gap 506 ms into the clip must not release the phrase for a sibling cue.
     media.currentTime = 0.506;
@@ -177,10 +300,12 @@ it('uses the trimmed duration for entry forecasts and waits through pauses and b
     expect(finished).not.toHaveBeenCalled();
     expect(screen.getByLabelText('Closure state')).toHaveTextContent('say phrase');
     expect(play.mock.results[0].value.isActive()).toBe(true);
+    expect(screen.getByRole('region', { name: 'Phrase scheduler' })).toHaveTextContent(sentence);
     expect(audio.pause).not.toHaveBeenCalled();
     await act(async () => { media.dispatchEvent(new Event('ended')); });
     expect(finished).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText('Closure state')).toHaveTextContent(/^State: root$/);
+    expect(screen.getByRole('region', { name: 'Phrase scheduler' })).not.toHaveTextContent(sentence);
     expect(play.mock.results[0].value.outcome).toEqual({ status: 'completed' });
     view.unmount();
     expect(meter.close).toHaveBeenCalledTimes(1);
@@ -211,7 +336,7 @@ it.each([undefined, null])('waits for natural completion when speech bounds are 
 });
 
 it('changes instructor aggression without restarting detection or speech preparation and cancels old cues', async () => {
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     const receiveMap = jest.spyOn(PhraseEngine.prototype, 'receiveMap');
     const aggression = jest.spyOn(PhraseEngine.prototype, 'setDrivingAggression');
     try {
@@ -239,7 +364,7 @@ it('changes instructor aggression without restarting detection or speech prepara
         expect(synthesize).toHaveBeenCalledTimes(sentences.length);
         expect(screen.getByText('Speech: Ready')).toBeInTheDocument();
         expect(screen.getByText('Detection: Enabled')).toBeInTheDocument();
-        expect(screen.getByRole('region', { name: 'Triggered sentences' })).not.toHaveTextContent(sentence);
+        expect(screen.getByRole('region', { name: 'Phrase history' })).not.toHaveTextContent(sentence);
         fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
         await view.enable();
         expect(slider).toHaveValue('100');
@@ -252,7 +377,7 @@ it('changes instructor aggression without restarting detection or speech prepara
 });
 
 it('toggles track guidance independently without interrupting overtaking audio or restarting detection', async () => {
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     const receiveMap = jest.spyOn(PhraseEngine.prototype, 'receiveMap');
     const trackGuide = jest.spyOn(PhraseEngine.prototype, 'setTrackGuideEnabled');
     try {
@@ -292,7 +417,7 @@ it.each(['preparing', 'playing'])('honors disabling track guidance while speech 
     const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
     const receiveVision = jest.spyOn(PhraseEngine.prototype, 'receiveVision');
     const toggleGuide = jest.spyOn(PhraseEngine.prototype, 'setTrackGuideEnabled');
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     let resolve!: (value: TtsPack) => void;
     const pending = new Promise<TtsPack>((done) => { resolve = done; });
     synthesize.mockImplementation(async (_curves, _inputs, { text }) =>
@@ -331,7 +456,7 @@ it.each(['left', 'right'])('prepares every variant and plays the chosen %s movem
     snapshot.events = [{ id: 1, ruleId: rule.id, sentence: chosen, timestamp: Date.now(), expiresAt: Date.now() + 1500 }];
     const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
     const receiveVision = jest.spyOn(PhraseEngine.prototype, 'receiveVision');
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     try {
         const view = mount();
         await view.enable();
@@ -341,7 +466,7 @@ it.each(['left', 'right'])('prepares every variant and plays the chosen %s movem
         await act(async () => { view.frame(); });
         expect(play).toHaveBeenCalledTimes(1);
         expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack(chosen).audioDataUrl }));
-        expect(screen.getByRole('region', { name: 'Triggered sentences' })).toHaveTextContent(chosen);
+        expect(screen.getByRole('region', { name: 'Phrase history' })).toHaveTextContent(chosen);
     } finally { receive.mockRestore(); receiveVision.mockRestore(); }
 });
 
@@ -384,7 +509,7 @@ it('immediately submits the next triggered cue and lets the audio manager replac
     snapshot.events = [{ id: 1, ruleId: rule.id, sentence, timestamp: Date.now(), expiresAt: Date.now() + 5000 }];
     const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
     const receiveVision = jest.spyOn(PhraseEngine.prototype, 'receiveVision');
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     try {
         const view = mount();
         await view.enable();
@@ -393,6 +518,7 @@ it('immediately submits the next triggered cue and lets the audio manager replac
         expect(play).toHaveBeenCalledTimes(1);
         expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack(sentence).audioDataUrl }));
         jest.setSystemTime(Date.now() + 1100);
+        const staleEnded = audio.media[0].onended!;
         snapshot.events = [...snapshot.events, { id: 2, ruleId: rule.id, sentence: 'Turn in', timestamp: Date.now(),
             expiresAt: Date.now() + 1500, steeringPhase: 'prepare' }];
         await act(async () => { view.frame(); });
@@ -400,7 +526,9 @@ it('immediately submits the next triggered cue and lets the audio manager replac
         expect(play.mock.results[0].value.outcome).toEqual({ status: 'replaced' });
         expect(play.mock.results[1].value.isActive()).toBe(true);
         expect(play).toHaveBeenLastCalledWith(expect.objectContaining({ url: pack('Turn in').audioDataUrl }));
-        await act(async () => { audio.media[0].dispatchEvent(new Event('ended')); view.frame(); });
+        expect(audio.media).toHaveLength(1);
+        expect(TestAudioContext.instances).toHaveLength(1);
+        await act(async () => { staleEnded.call(audio.media[0], new Event('ended')); view.frame(); });
         expect(play).toHaveBeenCalledTimes(2);
         expect(play.mock.results[1].value.isActive()).toBe(true);
         view.unmount();
@@ -432,7 +560,7 @@ it.each(['reference starts turn-in', 'reference leaves turn-in', 'Steering exits
 });
 
 it('lets live chat interrupt and suppress phrases without replaying discarded events', async () => {
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     const view = mount();
     await view.enable();
     await view.trigger();
@@ -453,6 +581,8 @@ it('lets live chat interrupt and suppress phrases without replaying discarded ev
     await view.trigger();
     expect(play).toHaveBeenCalledTimes(3);
     expect(play.mock.results[2].value.outcome).toBeUndefined();
+    expect(audio.media).toHaveLength(2); // The phrase player and chat's separate media element.
+    expect(TestAudioContext.instances).toHaveLength(1);
     await act(async () => { view.telemetry.resetSession(); });
     expect(play.mock.results[2].value.outcome).toEqual({ status: 'cancelled' });
 });
@@ -469,7 +599,7 @@ it.each(['ready', 'disable', 'reset', 'delayed', 'condition cleared', 'unmount']
         expect(screen.getByText('Detection: Waiting for speech')).toHaveAttribute('data-ready', 'false');
         await view.trigger();
         expect(audio.play).not.toHaveBeenCalled();
-        expect(screen.getByRole('region', { name: 'Triggered sentences' })).not.toHaveTextContent(sentence);
+        expect(screen.getByRole('region', { name: 'Phrase history' })).not.toHaveTextContent(sentence);
         if (state === 'disable') fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
         if (state === 'reset') act(() => view.telemetry.resetSession());
         if (state === 'delayed') {
@@ -486,7 +616,7 @@ it.each(['ready', 'disable', 'reset', 'delayed', 'condition cleared', 'unmount']
             expect(screen.getByText('Speech: Ready')).toHaveAttribute('data-ready', 'true');
             expect(screen.getByText('Detection: Enabled')).toHaveAttribute('data-ready', 'true');
             expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
-            expect(screen.getByRole('region', { name: 'Triggered sentences' })).not.toHaveTextContent(sentence);
+            expect(screen.getByRole('region', { name: 'Phrase history' })).not.toHaveTextContent(sentence);
             await view.trigger();
             expect(audio.play).toHaveBeenCalledTimes(1);
         }
@@ -503,7 +633,7 @@ it('waits after a synthesis failure, retries only missing clips, and reports lat
     expect(screen.getByText('Detection: Waiting for speech')).toHaveAttribute('data-ready', 'false');
     await view.trigger();
     expect(audio.play).not.toHaveBeenCalled();
-    expect(screen.getByRole('region', { name: 'Triggered sentences' })).not.toHaveTextContent(sentence);
+    expect(screen.getByRole('region', { name: 'Phrase history' })).not.toHaveTextContent(sentence);
     expect(screen.getByText('Telemetry: Waiting for live data')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
     await view.enable();
@@ -514,7 +644,7 @@ it('waits after a synthesis failure, retries only missing clips, and reports lat
     audio.play.mockRejectedValueOnce(new Error('Audio blocked'));
     await view.trigger();
     expect(screen.getByRole('alert')).toHaveTextContent('Audio blocked');
-    expect(screen.getByRole('region', { name: 'Triggered sentences' })).toHaveTextContent(sentence);
+    expect(screen.getByRole('region', { name: 'Phrase history' })).toHaveTextContent(sentence);
 });
 
 it('does not restart a ready run when cancelled preparation resolves after re-enabling', async () => {
@@ -555,7 +685,7 @@ it('preloads every easing-duration delivery and only reads cached instances duri
     // Entered release speech plays its prepared instance without rechecking entry conditions.
     snapshot.closures.find((rule) => rule.id === 'reference-steering-release')!.conditions = [new PhraseCondition('referenceCue', '=', 'steering', 'none')];
     const receive = jest.spyOn(PhraseEngine.prototype, 'receiveTelemetry').mockReturnValue(snapshot);
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     synthesize.mockImplementation(async (_curves, inputs, speech) => pack(`${speech.text}:${inputs[0]}`));
     try {
         const view = mount();
@@ -629,7 +759,7 @@ it('waits for the entire catalog even after the matching clip is prepared and st
     const lastSentence = sentences[sentences.length - 1];
     synthesize.mockImplementation(async (_curves, _inputs, { text }) =>
         text === 'Brake.' ? brake : text === lastSentence ? last : pack(text));
-    const play = jest.spyOn(audioManager, 'play');
+    const play = spyOnPlayer();
     const durations = jest.spyOn(PhraseEngine.prototype, 'setSpeechDurations');
     try {
         const view = mount();
@@ -647,7 +777,7 @@ it('waits for the entire catalog even after the matching clip is prepared and st
         expect(screen.getByText('Speech: Preparing')).toHaveAttribute('data-ready', 'false');
         expect(screen.queryByText('Speech: Ready')).not.toBeInTheDocument();
         expect(screen.getByText('Detection: Waiting for speech')).toHaveAttribute('data-ready', 'false');
-        expect(screen.getByRole('region', { name: 'Triggered sentences' })).not.toHaveTextContent('Brake.');
+        expect(screen.getByRole('region', { name: 'Phrase history' })).not.toHaveTextContent('Brake.');
         await act(async () => { view.frame(); resolveLast(pack(lastSentence)); });
         expect(screen.getByText('Speech: Ready')).toHaveAttribute('data-ready', 'true');
         expect(screen.getByText('Detection: Enabled')).toHaveAttribute('data-ready', 'true');

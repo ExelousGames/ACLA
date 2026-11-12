@@ -17,6 +17,7 @@ import type { ReferenceCornerBounds } from './phrase-reference-guidance';
 import ReferenceRangeMap from './graphs/ReferenceRangeMap';
 import ClosureTree from './ClosureTree';
 import PhraseScheduler from './PhraseScheduler';
+import PhraseHistory from './PhraseHistory';
 import { Phrase, PHRASE_SILENCE_LEVEL, type PhraseInstance } from './phrase';
 import { getPhraseSpeechInstances, loadAllPhraseSpeech } from './phrase-speech';
 import './LivePhrases.css';
@@ -54,7 +55,6 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
     const [voiceError, setVoiceError] = useState<string | null>(null);
     const [speechStatus, setSpeechStatus] = useState<'Disabled' | 'Preparing' | 'Ready' | 'Incomplete'>('Disabled');
     const detectionReady = enabled && speechStatus === 'Ready';
-    const [speechLevel, setSpeechLevel] = useState(0);
     const voicePacks = useRef(new Map<string, TtsPack>());
     const snapshotRef = useRef(snapshot);
     snapshotRef.current = snapshot;
@@ -80,7 +80,6 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         engine.setTrackGuideEnabled(trackGuideEnabledRef.current, Date.now());
         setOverlayError(null);
         setVoiceError(null);
-        setSpeechLevel(0);
         if (!enabled) {
             setSpeechStatus('Disabled');
             setSnapshot(engine.evaluate(Date.now()));
@@ -92,6 +91,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             setOverlayError(error instanceof Error ? error.message : String(error));
         }) : null;
         const controller = new AbortController();
+        const player = audioManager.createPlayer('voice');
         let playback: PlaybackHandle | null = null;
         let playingEvent: PhraseEvent | null = null;
         let pendingVoice: PhraseEvent | null = null;
@@ -117,11 +117,14 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             pendingInstance = null;
             let started = false;
             playingEvent = event;
-            playback = audioManager.play({
-                url: pack.audioDataUrl, type: 'voice', priority: 25, // Live chat defaults to 50.
+            if (event.speech) publish(engine.speechRequested(event.id, Date.now()));
+            playback = player.play({
+                url: pack.audioDataUrl, priority: 25, // Live chat defaults to 50.
+                onStart: () => {
+                    if (!controller.signal.aborted && event.speech) publish(engine.playbackStarted(event.id, Date.now()));
+                },
                 onLevel: (level, positionMs) => {
                     if (controller.signal.aborted) return;
-                    setSpeechLevel(level);
                     const bounds = pack.speechBounds;
                     if (!started && (bounds ? positionMs >= bounds.startMs
                         : bounds !== null && level > PHRASE_SILENCE_LEVEL)) {
@@ -134,10 +137,9 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                     if (playingEvent === event) {
                         playingEvent = null;
                         playback = null;
-                        setSpeechLevel(0);
                     }
                     if (outcome.status === 'failed') setVoiceError(outcome.error.message);
-                    if (event.speech) publish(engine.speechFinished(event.id, Date.now(), outcome.status !== 'completed'));
+                    if (event.speech) publish(engine.speechFinished(event.id, Date.now(), outcome.status !== 'completed', outcome.status));
                 },
             });
         };
@@ -148,7 +150,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             stopDetection?.();
             pendingVoice = null;
             pendingInstance = null;
-            playback?.stop();
+            player.dispose();
             overlay?.dispose();
         };
         const publish = (next: PhraseSnapshot) => {
@@ -163,7 +165,6 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 playback?.stop();
                 playback = null;
                 playingEvent = null;
-                setSpeechLevel(0);
             }
             for (const event of next.events) {
                 if (pendingVoice?.id === event.id) pendingVoice = event;
@@ -186,7 +187,6 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                     const guidePlayback = playback;
                     playback = null;
                     playingEvent = null;
-                    setSpeechLevel(0);
                     guidePlayback?.stop();
                 }
             }
@@ -195,7 +195,10 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
         publish(engine.evaluate(Date.now()));
         // Detection starts only with the complete catalog and its measured durations.
         // Frames received during preparation are not queued for later playback.
-        void loadAllPhraseSpeech(speechCatalog, voicePacks.current, controller.signal).then(({ complete, errors }) => {
+        void Promise.all([
+            player.prepare(),
+            loadAllPhraseSpeech(speechCatalog, voicePacks.current, controller.signal),
+        ]).then(([, { complete, errors }]) => {
             if (controller.signal.aborted) return;
             setSpeechStatus(complete ? 'Ready' : 'Incomplete');
             if (errors.length) setVoiceError(errors.map((error) => error instanceof Error ? error.message : String(error)).join('; '));
@@ -277,7 +280,6 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             <div className="live-phrases__sources" role="status">
                 <span data-ready={detectionReady}>Detection: {!enabled ? 'Disabled' : detectionReady ? 'Enabled' : 'Waiting for speech'}</span>
                 <span data-ready={speechStatus === 'Ready'}>Speech: {speechStatus}</span>
-                <meter aria-label="Speech level" min={0} max={1} value={speechLevel} />
                 <span data-ready={snapshot.telemetryReady}>Telemetry: {snapshot.telemetryReady ? 'Live' : 'Waiting for live data'}</span>
                 <span data-ready={snapshot.mapReady}>Live Map: {snapshot.mapReady ? 'Ready' : 'Waiting for a tagged circuit map'}</span>
                 <span data-ready={snapshot.referenceLoaded}>Reference copy: {snapshot.referenceLoaded ? 'Loaded from Live Map' : 'Waiting for Live Map reference'}</span>
@@ -291,24 +293,10 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 <p className="live-phrases__state" aria-label="Closure state">State: {snapshot.state.path.join(' → ')}</p>
                 <ClosureTree node={snapshot.root} />
             </section>
-            <section aria-label="Triggered sentences" className="live-phrases__output">
-                <h3>Triggered sentences</h3>
-                {snapshot.events.length === 0
-                    ? <p>{!enabled ? 'Enable detection to start live phrase guidance.'
-                        : speechStatus === 'Incomplete' ? 'Speech preparation is incomplete. Disable and enable detection to retry.'
-                            : !detectionReady ? 'Preparing speech. Detection will start when all phrases are ready.'
-                                : 'No phrases yet. Waiting for live driving data and a matching reference cue or overtaking opportunity.'}</p>
-                    : <ol>{snapshot.events.slice().reverse().map((event) => (
-                        <li key={event.id}>
-                            <time dateTime={new Date(event.timestamp).toISOString()}>
-                                {new Date(event.timestamp).toLocaleTimeString(undefined, {
-                                    hour: 'numeric', minute: 'numeric', second: 'numeric', fractionalSecondDigits: 3,
-                                })}
-                            </time>
-                            <span>{event.sentence}</span>
-                        </li>
-                    ))}</ol>}
-            </section>
+            <PhraseHistory events={snapshot.events} emptyMessage={!enabled ? 'Enable detection to start live phrase guidance.'
+                : speechStatus === 'Incomplete' ? 'Speech preparation is incomplete. Disable and enable detection to retry.'
+                    : !detectionReady ? 'Preparing speech. Detection will start when all phrases are ready.'
+                        : 'No phrases yet. Waiting for live driving data and a matching reference cue or overtaking opportunity.'} />
         </section>
     );
 });

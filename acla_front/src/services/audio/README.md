@@ -29,6 +29,21 @@ those boundaries, so internal silence and buffering cannot end a sentence.
 Silent clips and clips without scanned bounds release on natural completion;
 the latter still use the meter for onset. Callers without `onLevel` retain ordinary media playback.
 
+For repeated URL playback, create a player and prepare it when enabling the feature:
+
+```ts
+const player = audioManager.createPlayer('voice');
+await player.prepare(); // Create and resume one media element, context and analyser.
+const playback = player.play({ url: savedPack.audioDataUrl, priority: 25, onLevel });
+// Later clips use player.play(...) and the same audio graph.
+player.dispose(); // Cancel this player's active handle and close its context.
+```
+
+Each clip still competes through the same type/priority arbitration. Completion,
+replacement, failure and `stop()` clear that clip's handlers and meter timer while
+retaining the player's graph. Dispose the player when its owner is disabled or
+unmounted. Ordinary `audioManager.play()` and stream resource lifetimes are unchanged.
+
 There is one admitted request per type (`voice`, `music`, `alert`). A higher
 priority, or a newer equal priority, replaces the incumbent. Lower priorities
 are rejected. Other types continue independently. Audible voice multiplies

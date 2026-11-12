@@ -38,6 +38,44 @@ it('releases on playback completion even when the clip is shorter than 200 ms', 
     expect(engine.speechFinished(1, 1180).state.path).toEqual(['root']);
 });
 
+it('retains each response timestamp and the first playback start through buffering', () => {
+    const engine = prepare();
+    const triggered = engine.receiveTelemetry(frame({ Physics_speed_kmh: 50 }), 1000);
+    engine.speechRequested(1, 1010);
+    engine.speechRequested(1, 1020);
+    engine.playbackStarted(1, 1100);
+    engine.playbackStarted(1, 1300);
+    engine.speechStarted(1, 1150);
+    const ended = engine.speechFinished(1, 1900);
+    expect(ended.events[0].speech).toMatchObject({ requestedAt: 1010, playbackStartedAt: 1100,
+        startedAt: 1150, finishedAt: 1900, releaseAt: 1900, outcome: 'completed' });
+    expect(triggered.events[0].speech).not.toHaveProperty('requestedAt');
+    expect(engine.speechFinished(1, 2000, true).events).toEqual(ended.events);
+    expect(engine.playbackStarted(1, 2100).events).toEqual(ended.events);
+});
+
+it('records audio completion after an exit condition without changing the earlier phrase release', () => {
+    const engine = prepare({ ...phrase, exitConditions: [new PhraseCondition('speed', '<', 30)] });
+    engine.receiveTelemetry(frame({ Physics_speed_kmh: 50 }), 1000);
+    engine.speechRequested(1, 1010);
+    engine.playbackStarted(1, 1020);
+    const released = engine.receiveTelemetry(frame({ Physics_speed_kmh: 10 }), 1100);
+    expect(released.events[0].speech).toMatchObject({ releaseAt: 1100 });
+    expect(released.events[0].speech?.finishedAt).toBeUndefined();
+    const ended = engine.speechFinished(1, 1900);
+    expect(ended.events[0].speech).toMatchObject({ finishedAt: 1900, releaseAt: 1100, outcome: 'completed' });
+});
+
+it('ignores response callbacks from a reset session', () => {
+    const engine = prepare();
+    engine.receiveTelemetry(frame({ Physics_speed_kmh: 50 }), 1000);
+    engine.reset(1100);
+    const current = engine.receiveTelemetry(frame({ Physics_speed_kmh: 50 }), 1200);
+    engine.speechRequested(1, 1250);
+    engine.playbackStarted(1, 1300);
+    expect(engine.speechFinished(1, 1400).events).toEqual(current.events);
+});
+
 it.each([false, true])('releases missing, silent or rejected playback without waiting for onset (cancelled: %s)', (cancelled) => {
     const engine = prepare();
     engine.receiveTelemetry(frame({ Physics_speed_kmh: 50 }), 1000);

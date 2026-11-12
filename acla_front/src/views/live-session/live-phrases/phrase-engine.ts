@@ -458,6 +458,7 @@ interface PhraseMemory {
     enteredBrakeZone?: boolean;
 }
 export interface PhraseContext {
+    entryPriorities?: Map<string, number>;
     scheduleCandidates?: Map<string, PhraseScheduleCandidate>;
     predictionOffsetMs?: number;
     trackGuideEnabled?: boolean;
@@ -541,9 +542,9 @@ class TrackGuideClosure extends Closure<PhraseContext> {
             if (!isSpeechPending(context, state)) state.exitToParent();
             return;
         }
-        if (state.closure === this && Array.from(context.scheduleCandidates?.values() ?? []).some((candidate) =>
-            candidate.priority > this.priority && !this.children.some((child) =>
-                child instanceof TrackGuidePhrase && child.phrase.id === candidate.id))) {
+        if (state.closure === this && Array.from(context.entryPriorities ?? []).some(([id, priority]) =>
+            priority > this.priority && !this.children.some((child) =>
+                child instanceof TrackGuidePhrase && child.phrase.id === id))) {
             state.exitToRoot();
             return;
         }
@@ -616,15 +617,8 @@ function phraseEntry(phrase: PhraseDefinition) {
         context.inspections.set(phrase.id, { status });
         const eligible = fits && memory.armed && memory.since !== undefined
             && now - memory.since >= phrase.holdMs && !cooldown && (!phrase.movementDirection || context.movementCanSpeak());
-        if (eligible) {
-            context.scheduleCandidates?.set(phrase.id, {
-                id: phrase.id, kind: phrase.referenceCue ? 'phrase' : 'closure', label: phrase.name, priority: getPhrasePriority(phrase),
-                category: getPhraseCategory(phrase), predictedAt: now + (context.predictionOffsetMs ?? 0),
-                durationMs: context.speechLeadMs?.(`${phrase.id}:say:0`) ?? phrase.preparationTimeMs ?? CLOSURE_PREPARATION_MS,
-                durationEstimated: context.speechLeadMs === undefined,
-                ...context.scheduleAudio?.(phrase, `${phrase.id}:say:0`),
-            });
-        } else context.scheduleCandidates?.delete(phrase.id);
+        if (eligible) context.entryPriorities?.set(phrase.id, getPhrasePriority(phrase));
+        else context.entryPriorities?.delete(phrase.id);
         return eligible && context.emit && Boolean(phrase.additionalActions?.length || !context.audioVariants
             || context.audioVariants(phrase, `${phrase.id}:say:0`).length > 0);
     }, (context) => snapshotConditions(context.entryConditions.get(phrase.id) ?? []), snapshotConditions(unevaluatedConditions(phrase.conditions)));
@@ -729,9 +723,21 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
                 context.publish(phrase, selected);
             }, describeCondition((context, state) => {
                 readyAudio.delete(state);
-                if (isSpeechPending(context, state) || state.current !== state.closure
-                    || !measureAction(context.forPhrase?.(phrase, action.id) ?? context, action.id, action.conditions) || !context.emit
-                    || (action.exitConditions && conditionsMatch(action.exitConditions.map((condition) => condition.evaluate(context.inputs))))) return false;
+                const forecast = context.forPhrase?.(phrase, action.id) ?? context;
+                if (!measureAction(forecast, action.id, action.conditions)
+                    || (action.exitConditions && conditionsMatch(action.exitConditions.map((condition) => condition.evaluate(context.inputs))))) {
+                    context.scheduleCandidates?.delete(action.id);
+                    return false;
+                }
+                // Each phrase supplies its own prediction; scheduling never inspects its enclosing scopes.
+                context.scheduleCandidates?.set(action.id, {
+                    id: action.id, kind: 'phrase', label: action.sentence, priority: action.priority,
+                    category: getPhraseCategory(phrase), predictedAt: context.now + (forecast.predictionOffsetMs ?? 0),
+                    durationMs: context.speechLeadMs?.(action.id) ?? 0,
+                    durationEstimated: context.speechLeadMs === undefined,
+                    ...context.scheduleAudio?.(phrase, action.id),
+                });
+                if (isSpeechPending(context, state) || state.current !== state.closure || !context.emit) return false;
                 const allowed = prepareAudio(context);
                 readyAudio.set(state, allowed);
                 return allowed.length > 0;
@@ -753,7 +759,8 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
         });
         if (phrase.referenceCue) return say.map((action, index) => new TrackGuidePhrase(phrase, entry,
             phrase.name, action.description, action.run, describeCondition((context, state) => {
-                if (!entry(context, state)) return false;
+                const ready = entry(context, state);
+                if (!ready && !context.entryPriorities?.has(phrase.id)) return false;
                 context = context.forPhrase?.(phrase) ?? context;
                 return !(phrase.exitConditions && conditionsMatch(phrase.exitConditions.map((condition) => condition.evaluate(context.inputs))))
                     && action.condition(context, state);
@@ -791,7 +798,7 @@ export function createPhraseRoot(phrases: readonly PhraseDefinition[] = PHRASE_D
             // Evaluate every cue so confirmation holds continue independently of priority.
             const ready = guides.filter((guide) => guide.entry(context, state));
             trackGuide.readyPriority = Math.max(0, ...guides.filter((guide) =>
-                ready.includes(guide) || context.scheduleCandidates?.has(guide.phrase.id)).map((guide) => guide.priority));
+                ready.includes(guide) || context.entryPriorities?.has(guide.phrase.id)).map((guide) => guide.priority));
             return ready.length > 0;
         }, 'Track guide is enabled and a cue is ready'), [
             ...guides, Action.exitToRoot<PhraseContext>(),
@@ -928,6 +935,20 @@ export class PhraseEngine {
         return lead;
     }
 
+    speechRequested(eventId: number, now: number): PhraseSnapshot {
+        this.events = this.events.map((event) => event.id === eventId && event.speech && event.speech.requestedAt === undefined
+            && event.speech.finishedAt === undefined
+            ? { ...event, speech: { ...event.speech, requestedAt: now } } : event);
+        return this.evaluate(now);
+    }
+
+    playbackStarted(eventId: number, now: number): PhraseSnapshot {
+        this.events = this.events.map((event) => event.id === eventId && event.speech && event.speech.playbackStartedAt === undefined
+            && event.speech.finishedAt === undefined
+            ? { ...event, speech: { ...event.speech, playbackStartedAt: now } } : event);
+        return this.evaluate(now);
+    }
+
     speechStarted(eventId: number, now: number): PhraseSnapshot {
         this.events = this.events.map((event) => event.id === eventId && event.speech && event.speech.startedAt === undefined
             && event.speech.releaseAt === undefined
@@ -935,10 +956,11 @@ export class PhraseEngine {
         return this.evaluate(now);
     }
 
-    speechFinished(eventId: number, now: number, cancelled = false): PhraseSnapshot {
+    speechFinished(eventId: number, now: number, cancelled = false, outcome?: PhraseSpeechTiming['outcome']): PhraseSnapshot {
         this.events = this.events.map((event) => event.id === eventId && event.speech
-            && event.speech.releaseAt === undefined
-            ? { ...event, speech: { ...event.speech, releaseAt: now } } : event);
+            && event.speech.finishedAt === undefined
+            ? { ...event, speech: { ...event.speech, finishedAt: now, outcome: outcome ?? (cancelled ? 'cancelled' : 'completed'),
+                releaseAt: event.speech.releaseAt ?? now } } : event);
         return this.evaluate(now);
     }
 
@@ -1252,6 +1274,7 @@ export class PhraseEngine {
             }
         }
         const context: PhraseContext = {
+            entryPriorities: new Map(),
             scheduleCandidates: new Map(),
             now, emit, telemetryReady, intendedTelemetry, predictionFrames, inputs, guidance, memory: this.memory,
             trackGuideEnabled: this.trackGuideEnabled,
@@ -1422,19 +1445,21 @@ export class PhraseEngine {
                 }) : (randomAudio(action) ? this.randomAudioPools : this.preparedAudio).get(actionId) ?? [];
                 if (!randomAudio(action)) return variants;
                 const candidate: PhraseScheduleCandidate = {
-                    id: phrase.id, kind: 'phrase', label: action.sentence, priority: action.priority,
+                    id: actionId, kind: 'phrase', label: action.sentence, priority: action.priority,
                     category: getPhraseCategory(phrase), durationMs: this.speechLeadMs(actionId),
                     audioVariants: variants, deadlineAt: deadlineAt(phrase, actionId), reactionAllowanceMs: action.reactionAllowanceMs,
                 };
-                const playing = this.events.find((event) => event.speech && event.speech.releaseAt === undefined);
+                const currentId = this.state.current instanceof Action ? this.state.current.metadata.id : undefined;
+                const playing = this.events.slice().reverse().find((event) => event.instance?.id === currentId
+                    && event.speech && event.speech.releaseAt === undefined);
                 const active: PhraseScheduleItem | undefined = playing ? {
-                    id: playing.ruleId, kind: 'phrase', label: playing.sentence, priority: playing.instance?.priority ?? 0,
+                    id: playing.instance!.id, kind: 'phrase', label: playing.sentence, priority: playing.instance?.priority ?? 0,
                     category: 'other', status: 'active', startAt: playing.speech!.startedAt ?? playing.timestamp,
                     endAt: (playing.speech!.startedAt ?? playing.timestamp) + (playing.speech!.durationMs ?? 0),
                 } : undefined;
                 const candidates = new Map(context.scheduleCandidates);
-                candidates.set(phrase.id, candidate);
-                return schedulePhrases(now, Array.from(candidates.values()), active).items.find(({ id }) => id === phrase.id)?.audioVariants ?? [];
+                candidates.set(actionId, candidate);
+                return schedulePhrases(now, Array.from(candidates.values()), active).items.find(({ id }) => id === actionId)?.audioVariants ?? [];
             };
         }
         const movementPhrases = this.phrases.filter((phrase) => phrase.movementDirection);
@@ -1456,7 +1481,7 @@ export class PhraseEngine {
             const exits = [action?.exitConditions,
                 currentAction instanceof TrackGuidePhrase ? currentAction.phrase.exitConditions : undefined];
             if (exits.some((conditions) => conditions && conditionsMatch(conditions.map((condition) => condition.evaluate(inputs))))) {
-                this.events = this.events.map((event) => event.instance?.id === currentAction.metadata.id && event.speech
+                this.events = this.events.map((event) => event.instance?.id === currentAction.metadata.id && event.speech && event.speech.releaseAt === undefined
                     ? { ...event, speech: { ...event.speech, releaseAt: now } } : event);
             }
             if (!this.speechPending(currentAction.metadata.id) && !(currentAction instanceof TrackGuidePhrase)) this.state.leaveAction();
@@ -1526,16 +1551,23 @@ export class PhraseEngine {
             || (node instanceof TrackGuidePhrase && node.phrase.id === phrase.id)));
         const activeGuidance = activePhrase ? context.forPhrase(activePhrase,
             this.state.current instanceof Action ? this.state.current.metadata.id : undefined).guidance : guidance;
-        const activeEvent = activePhrase ? this.events.slice().reverse().find((event) => event.ruleId === activePhrase.id
+        const activeAction = this.state.current instanceof Action && this.state.current.metadata.kind === 'phrase'
+            ? this.state.current : undefined;
+        const activeEvent = activeAction ? this.events.slice().reverse().find((event) => event.instance?.id === activeAction.metadata.id
             && event.speech && event.speech.releaseAt === undefined) : undefined;
         const activeStart = activeEvent?.speech?.startedAt ?? activeEvent?.timestamp ?? now;
-        const active: PhraseScheduleItem | undefined = activePhrase ? {
-            id: activePhrase.id, kind: activeEvent || activePhrase.referenceCue ? 'phrase' : 'closure', label: activeEvent?.sentence ?? activePhrase.name,
-            priority: activeEvent?.instance?.priority ?? getPhrasePriority(activePhrase), category: getPhraseCategory(activePhrase),
+        const activeDefinition = activeEvent ? this.phrases.find((phrase) => phrase.id === activeEvent.ruleId) : undefined;
+        const active: PhraseScheduleItem | undefined = activeAction && activeEvent ? {
+            id: activeAction.metadata.id!, kind: 'phrase', label: activeEvent.sentence,
+            priority: activeAction.priority, category: activeDefinition ? getPhraseCategory(activeDefinition) : 'other',
             status: 'active', startAt: activeStart,
-            endAt: Math.max(now, activeStart + (activeEvent?.speech?.durationMs ?? activePhrase.preparationTimeMs ?? CLOSURE_PREPARATION_MS)),
+            endAt: Math.max(now, activeStart + (activeEvent.speech?.durationMs ?? 0)),
             durationEstimated: activeEvent?.speech?.durationMs === undefined || activeEvent.speech.startedAt === undefined,
         } : undefined;
+        context.scheduleCandidates!.forEach((_candidate, id) => {
+            const phrase = nodes.get(id);
+            if (phrase?.execution?.status !== 'idle' || phrase.status === 'Not evaluated') context.scheduleCandidates!.delete(id);
+        });
         return {
             schedule: schedulePhrases(now, Array.from(context.scheduleCandidates!.values()), active),
             telemetryReady, visionReady, mapReady: sameMap && this.mapContext.ready, mapContext, closures, events: this.events,

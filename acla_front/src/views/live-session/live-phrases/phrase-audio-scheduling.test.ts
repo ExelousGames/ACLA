@@ -85,7 +85,7 @@ it('keeps equal-priority declaration order when filtering the phrase that is ent
     engine.receiveTelemetry(frame(40), 1000);
     const entered = engine.receiveTelemetry(frame(50), 1100);
     expect(entered.events[0].ruleId).toBe(definition.id);
-    expect(entered.schedule?.items.map(({ id }) => id)).toEqual([definition.id, fixed.id]);
+    expect(entered.schedule?.items.map(({ id }) => id)).toEqual([`${definition.id}:say:0`]);
 });
 
 it('lets another phrase enter when a higher-priority random pool cannot fit', () => {
@@ -99,7 +99,7 @@ it('lets another phrase enter when a higher-priority random pool cannot fit', ()
     engine.receiveTelemetry(frame(40), 1000);
     const entered = engine.receiveTelemetry(frame(50), 1100);
     expect(entered.events.map(({ ruleId }) => ruleId)).toEqual([fixed.id]);
-    expect(entered.schedule?.items.map(({ id }) => id)).toEqual([fixed.id]);
+    expect(entered.schedule?.items.map(({ id }) => id)).toEqual([`${fixed.id}:say:0`]);
 });
 
 it('keeps a context-selected wording eligible when only another wording has fitting audio', () => {

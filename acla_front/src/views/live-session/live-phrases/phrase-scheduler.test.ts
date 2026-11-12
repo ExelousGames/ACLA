@@ -2,7 +2,7 @@ import { Phrase, type PhraseAudioVariant } from './phrase';
 import { filterPhraseAudioVariants, schedulePhrases, type PhraseScheduleCandidate, type PhraseScheduleItem } from './phrase-scheduler';
 
 const candidate = (id: string, priority: number, durationMs = 200): PhraseScheduleCandidate => ({
-    id, kind: 'closure', label: id, priority, category: 'other', durationMs,
+    id, kind: 'phrase', label: id, priority, category: 'other', durationMs,
 });
 const audio = (durationMs: number): PhraseAudioVariant => ({
     instance: new Phrase('turn', 'Turn in.').createInstance({ speed: durationMs / 1000 }), durationMs,

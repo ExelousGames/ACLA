@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import {
     createOperationComponentRefDirectory, OperationComponentRefProvider, useRegisterOperationComponentRef,
 } from 'contexts/OperationComponentRefContext';
@@ -13,6 +13,7 @@ import LivePhrases from './LivePhrases';
 import { createLiveTelemetryStore } from '../live-telemetry-store';
 import { circuitMap, steeringCornerFixture, vision } from './test-fixtures';
 import { synthesizeProsodyTts } from 'components/tts';
+import { installAudioDoubles } from 'services/audio/test-audio';
 
 jest.mock('components/tts', () => ({ synthesizeProsodyTts: jest.fn(() => new Promise(() => undefined)) }));
 
@@ -24,12 +25,14 @@ const phraseEvent = (index = 0, id = index + 1): PhraseEvent => ({
     id, ruleId: PHRASE_DEFINITIONS[index].id, sentence: PHRASE_DEFINITIONS[index].sentence, timestamp: Date.now(),
 });
 const snapshot = (...events: PhraseEvent[]) => ({ ...new PhraseEngine().evaluate(Date.now()), events });
+const turnInEvent = (id = 1) => phraseEvent(PHRASE_DEFINITIONS.findIndex((rule) => rule.id === 'reference-steering'), id);
 
 describe('Live phrase overlay addons', () => {
     let manager: AiOverlayManagerController;
     let directory: ReturnType<typeof createOperationComponentRefDirectory>;
     let overlay: LivePhraseOverlay;
     let unsubscribe: () => void;
+    let audio: ReturnType<typeof installAudioDoubles>;
     const send = jest.fn();
     const onError = jest.fn();
     const createSession = jest.fn();
@@ -40,6 +43,7 @@ describe('Live phrase overlay addons', () => {
         (synthesizeProsodyTts as jest.Mock).mockImplementation(() => new Promise(() => undefined));
         jest.useFakeTimers();
         jest.setSystemTime(10_000);
+        audio = installAudioDoubles();
         send.mockReset();
         onError.mockReset();
         createSession.mockReset().mockResolvedValue({ success: true, presentation: session });
@@ -63,11 +67,13 @@ describe('Live phrase overlay addons', () => {
     });
 
     afterEach(async () => {
+        cleanup();
         overlay.dispose();
         unsubscribe();
         manager.dispose();
         await overlaySessionClient.destroy();
         delete (window as any).electronAPI;
+        audio.restore();
         jest.useRealTimers();
     });
 
@@ -132,13 +138,13 @@ describe('Live phrase overlay addons', () => {
         expect(livePhraseOverlayRenderer.validateSnapshot({ ...phraseEvent(), name: 'Test', eventId: 1, sentence: '' })).toBe(false);
     });
 
-    const steeringSnapshot = (): PhraseSnapshot => ({
-        ...snapshot(), telemetryReady: true, mapReady: true, referenceLoaded: true, trackGuideEnabled: true,
+    const steeringSnapshot = (id = 1): PhraseSnapshot => ({
+        ...snapshot(turnInEvent(id)), telemetryReady: true, mapReady: true, referenceLoaded: true, trackGuideEnabled: true,
         steeringCorner: { sectionId: 'turn-1', cornerStartPosition: 0.27, cornerEndPosition: 0.45 },
         state: { current: 'Track guide', description: '', kind: 'closure', path: ['root', 'Track guide'] },
     });
 
-    it.each([0, 50, 99.9])('keeps the reference corner visible without directional speech at %s%% aggression', async (aggression) => {
+    it.each([0, 50, 99.9])('does not show an eligible reference corner without Turn in at %s%% aggression', async (aggression) => {
         await overlaySessionClient.create(session);
         const { map, reference } = steeringCornerFixture();
         const engine = new PhraseEngine();
@@ -153,19 +159,36 @@ describe('Live phrase overlay addons', () => {
         expect(active.steeringCorner?.sectionId).toBe('turn-1');
         expect(active.events).toEqual([]);
         overlay.update(active, map, reference);
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
+    });
+
+    it('captures the reference line once and expires exactly two seconds after Turn in', async () => {
+        await overlaySessionClient.create(session);
+        const { map, reference } = steeringCornerFixture();
+        const active = steeringSnapshot();
+        overlay.update(active, map, reference);
         expect(manager.getPresentationSnapshot()!.cards).toEqual([expect.objectContaining({
             componentName: 'live-phrases:steering-corner', componentType: 'live_steering_corner', status: 'focus',
             snapshot: expect.objectContaining({ title: 'Steering · Turn 1' }),
         })]);
+        const card = manager.getPresentationSnapshot()!.cards[0];
         const calls = send.mock.calls.length;
-        jest.advanceTimersByTime(LIVE_PHRASE_DISPLAY_MS + 1000);
-        overlay.update(active, map, reference);
+        jest.advanceTimersByTime(1000);
+        reference.y[30][0] += 100;
+        overlay.update({ ...active, steeringCorner: { ...active.steeringCorner, cornerEndPosition: 0.4 } },
+            { ...map, circuit_name: 'Updated map' }, { ...reference });
+        // Leaving the corner or losing input does not change a captured card.
+        overlay.update({ ...active, steeringCorner: undefined, telemetryReady: false, mapReady: false }, null, null);
         expect(send).toHaveBeenCalledTimes(calls);
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([card]);
+        jest.advanceTimersByTime(999);
         expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
-        overlay.update(snapshot(), map, reference);
+        jest.advanceTimersByTime(1);
         expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
         overlay.update(active, map, reference);
-        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
+        const source = directory.getComponentRefs()[0].current;
+        expect(isAiOverlayComponentHandle(source) && source.getSnapshot()).toBeNull();
         overlay.dispose();
         expect(directory.getComponentNames()).toEqual([]);
         expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
@@ -173,16 +196,83 @@ describe('Live phrase overlay addons', () => {
         expect(destroySession).not.toHaveBeenCalled();
     });
 
-    it.each(['exit', 'stale', 'map removed', 'guide disabled', 'unmount'] as const)('cancels a pending corner on %s', async (action) => {
+    it('replaces the current card immediately and gives the new card its own two seconds', async () => {
+        await overlaySessionClient.create(session);
+        const { map, reference } = steeringCornerFixture();
+        overlay.update(steeringSnapshot(), map, reference);
+        const first = manager.getPresentationSnapshot()!.cards[0];
+        jest.advanceTimersByTime(1000);
+        const calls = send.mock.calls.length;
+        overlay.update({ ...steeringSnapshot(2), steeringCorner: {
+            sectionId: 'turn-2', cornerStartPosition: 0.3, cornerEndPosition: 0.4,
+        } }, map, reference);
+        const cards = manager.getPresentationSnapshot()!.cards;
+        expect(cards).toHaveLength(1);
+        expect(cards[0]).toMatchObject({ componentName: first.componentName, revision: first.revision + 1,
+            snapshot: { title: 'Steering · turn-2' } });
+        expect(cards[0].snapshot).not.toEqual(first.snapshot);
+        expect(send).toHaveBeenCalledTimes(calls + 1);
+        jest.advanceTimersByTime(1000); // The old card's deadline cannot remove the replacement.
+        expect(manager.getPresentationSnapshot()!.cards).toEqual(cards);
+        jest.advanceTimersByTime(1000);
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
+    });
+
+    it('keeps only the newest captured line when presentation creation is delayed', async () => {
+        let finish!: (value: unknown) => void;
+        createSession.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+        const { map, reference } = steeringCornerFixture();
+        overlay.update(steeringSnapshot(), map, reference);
+        jest.advanceTimersByTime(1000);
+        const active = { ...steeringSnapshot(2), steeringCorner: {
+            sectionId: 'turn-2', cornerStartPosition: 0.3, cornerEndPosition: 0.4,
+        } };
+        overlay.update(active, map, reference);
+        // Later input changes must not affect the snapshot waiting for the presentation.
+        const expectedLine = reference.y[30][0];
+        reference.y[30][0] += 100;
+        jest.advanceTimersByTime(500);
+        await act(async () => finish({ success: true, presentation: session }));
+        expect(createSession).toHaveBeenCalledTimes(1);
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([expect.objectContaining({
+            snapshot: expect.objectContaining({ title: 'Steering · turn-2',
+                referenceLine: expect.arrayContaining([expect.objectContaining({ x: expectedLine })]) }),
+        })]);
+        jest.advanceTimersByTime(1499);
+        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
+        jest.advanceTimersByTime(1);
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
+        overlay.update(active, map, reference);
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
+    });
+
+    it('allows a new trigger for the same corner after reset without replaying old events', async () => {
+        await overlaySessionClient.create(session);
+        const { map, reference } = steeringCornerFixture();
+        const expired = steeringSnapshot();
+        jest.advanceTimersByTime(LIVE_PHRASE_DISPLAY_MS);
+        overlay.update(expired, map, reference);
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
+        const active = steeringSnapshot(2);
+        overlay.update(active, map, reference);
+        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
+        overlay.update({ ...active, trackGuideEnabled: false }, map, reference);
+        overlay.update(active, map, reference);
+        expect(manager.getPresentationSnapshot()!.cards).toEqual([]);
+        overlay.update(snapshot(), map, reference);
+        overlay.update(steeringSnapshot(), map, reference);
+        expect(manager.getPresentationSnapshot()!.cards).toHaveLength(1);
+    });
+
+    it.each(['reset', 'guide disabled', 'expired', 'unmount'] as const)('cancels a pending corner on %s', async (action) => {
         let finish!: (value: unknown) => void;
         createSession.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
         const { map, reference } = steeringCornerFixture();
         const active = steeringSnapshot();
         overlay.update(active, map, reference);
-        if (action === 'exit') overlay.update(snapshot(), map, reference);
-        if (action === 'stale') overlay.update({ ...active, telemetryReady: false }, map, reference);
-        if (action === 'map removed') overlay.update(active, null, reference);
+        if (action === 'reset') overlay.update(snapshot(), map, reference);
         if (action === 'guide disabled') overlay.update({ ...active, trackGuideEnabled: false }, map, reference);
+        if (action === 'expired') jest.advanceTimersByTime(LIVE_PHRASE_DISPLAY_MS);
         if (action === 'unmount') overlay.dispose();
         await act(async () => finish({ success: true, presentation: session }));
         expect(manager.getPresentationSnapshot()?.cards ?? []).toEqual([]);
@@ -198,7 +288,7 @@ describe('Live phrase overlay addons', () => {
         expect(setEnabled).not.toHaveBeenCalled();
     });
 
-    it.each(['acc', 'iracing'] as const)('publishes a Steering corner at centerline entry in %s before speech is ready', async (game) => {
+    it.each(['acc', 'iracing'] as const)('plays Turn in and publishes its reference line together in %s once speech is ready', async (game) => {
         await overlaySessionClient.create(session);
         const submit = jest.fn(async (presentation) => ({
             presentationId: presentation.presentationId, presentationRevision: presentation.presentationRevision, accepted: true,
@@ -216,6 +306,7 @@ describe('Live phrase overlay addons', () => {
         const view = render(<React.StrictMode><OperationComponentRefProvider>
             <Root /><LivePhrases name="live-phrases" />
         </OperationComponentRefProvider></React.StrictMode>);
+        fireEvent.change(screen.getByRole('slider', { name: 'Instructor aggression' }), { target: { value: '100' } });
         fireEvent.click(screen.getByRole('button', { name: 'Enable detection' }));
         await act(async () => {
             telemetry.publishFrame({ type: 'frame', game, sequence: 1, committedCount: 0, committedSequence: 0,
@@ -224,6 +315,14 @@ describe('Live phrase overlay addons', () => {
         });
         expect(submit.mock.calls[submit.mock.calls.length - 1][0].cards
             .some((card: any) => card.componentType === 'live_steering_corner')).toBe(false);
+        expect(audio.play).not.toHaveBeenCalled();
+        // Retry preparation with ready clips; no frames from preparation are replayed.
+        fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
+        (synthesizeProsodyTts as jest.Mock).mockImplementation(async (_curves, _inputs, { text }) => ({
+            text, audioDataUrl: `data:audio/wav;base64,${btoa(text)}`, durationMs: 200,
+        }));
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enable detection' })); });
+        expect(audio.play).not.toHaveBeenCalled();
         await act(async () => {
             telemetry.publishFrame({ type: 'frame', game, sequence: 2, committedCount: 0, committedSequence: 0,
                 sample: { Static_track: 'test', Static_car_model: 'car', Graphics_status: 2,
@@ -235,14 +334,21 @@ describe('Live phrase overlay addons', () => {
         expect(corner.snapshot.referenceLine.length).toBeGreaterThan(2);
         expect(corner.snapshot.leftBoundary.length).toBeGreaterThan(2);
         expect(corner.snapshot.rightBoundary.length).toBeGreaterThan(2);
-        // Expire live input while retained speech history still exists.
-        await act(async () => { jest.advanceTimersByTime(1750); });
+        expect(audio.play).toHaveBeenCalledTimes(1);
+        expect(audio.media[audio.media.length - 1].src).toBe(`data:audio/wav;base64,${btoa('Turn in')}`);
+        // The card retains its full lifetime even after telemetry goes stale.
+        await act(async () => { jest.advanceTimersByTime(1999); });
+        expect(submit.mock.calls[submit.mock.calls.length - 1][0].cards).toEqual(cards);
+        await act(async () => { jest.advanceTimersByTime(1); });
         expect(submit.mock.calls[submit.mock.calls.length - 1][0].cards
             .some((card: any) => card.componentType === 'live_steering_corner')).toBe(false);
         view.unmount();
     });
 
     it('keeps a real rule trigger in the local history without an overlay card under StrictMode', async () => {
+        (synthesizeProsodyTts as jest.Mock).mockImplementation(async (_curves, _inputs, { text }) => ({
+            text, audioDataUrl: `data:audio/wav;base64,${btoa(text)}`, durationMs: 200,
+        }));
         await overlaySessionClient.create(session);
         const submit = jest.fn(async (presentation) => ({
             presentationId: presentation.presentationId,
@@ -270,7 +376,7 @@ describe('Live phrase overlay addons', () => {
         const view = render(<React.StrictMode><OperationComponentRefProvider>
             <Root /><LivePhrases name="live-phrases" />
         </OperationComponentRefProvider></React.StrictMode>);
-        fireEvent.click(screen.getByRole('button', { name: 'Enable detection' }));
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enable detection' })); });
         const publish = (sequence: number) => telemetry.publishFrame({
             type: 'frame', game: 'acc', sequence, committedCount: 0, committedSequence: 0,
             sample: { Graphics_status: 2, Physics_speed_kmh: 100, Graphics_normalized_car_position: 0.11 },
@@ -282,7 +388,7 @@ describe('Live phrase overlay addons', () => {
         });
         const cards = submit.mock.calls[submit.mock.calls.length - 1][0].cards;
         expect(cards).toEqual([]);
-        expect(within(screen.getByRole('region', { name: 'Triggered sentences' })).getByText(
+        expect(within(screen.getByRole('region', { name: 'Phrase history' })).getByText(
             PHRASE_DEFINITIONS.find((rule) => rule.id === 'pressure-feint')!.sentence,
         )).toBeVisible();
         await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Disable detection' })); });

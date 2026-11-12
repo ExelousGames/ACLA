@@ -1,4 +1,4 @@
-/** Playback resources belong to an outstanding request, never to a saved asset. */
+/** Playback requests own their callbacks; reusable players may retain their audio graph. */
 export interface PlaybackAdapter {
     setVolume(volume: number): void;
     stop(): void;
@@ -11,15 +11,60 @@ export interface AdapterEvents {
     failed(error: unknown): void;
 }
 
+export class MediaPlaybackResources {
+    audio: HTMLAudioElement | null = null;
+    context: AudioContext | null = null;
+    analyser: AnalyserNode | null = null;
+    samples: Float32Array | null = null;
+    private source: MediaElementAudioSourceNode | null = null;
+    private resuming: Promise<void> | null = null;
+    private disposed = false;
+
+    prepare(metered: boolean): HTMLAudioElement {
+        if (this.disposed) throw new Error('The audio player has been disposed.');
+        if (!this.audio) this.audio = new Audio();
+        if (metered && !this.context) {
+            this.context = new AudioContext();
+            this.source = this.context.createMediaElementSource(this.audio);
+            this.analyser = this.context.createAnalyser();
+            this.analyser.fftSize = 256;
+            this.source.connect(this.analyser);
+            this.analyser.connect(this.context.destination);
+            this.samples = new Float32Array(this.analyser.fftSize);
+        }
+        return this.audio;
+    }
+
+    resume(): Promise<void> {
+        if (this.resuming) return this.resuming;
+        if (this.context?.state !== 'suspended') return Promise.resolve();
+        this.resuming = this.context.resume().finally(() => { this.resuming = null; });
+        return this.resuming;
+    }
+
+    dispose(): void {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.source?.disconnect();
+        this.analyser?.disconnect();
+        if (this.context) void this.context.close().catch(() => undefined);
+        this.audio = this.context = this.analyser = this.source = this.samples = null;
+    }
+}
+
 export class MediaPlaybackAdapter implements PlaybackAdapter {
     private audio: HTMLAudioElement | null = null;
     private objectUrl: string | null = null;
     private pending: Array<{ url: string } | { wav: string }> = [];
     private stopped = false;
-    private meterContext: AudioContext | null = null;
     private meterTimer?: ReturnType<typeof setInterval>;
+    private generation = 0;
+    private resources: MediaPlaybackResources;
 
-    constructor(private volume: number, private readonly events: AdapterEvents) {}
+    constructor(private volume: number, private readonly events: AdapterEvents,
+        private readonly sharedResources?: MediaPlaybackResources) {
+        this.resources = sharedResources ?? new MediaPlaybackResources();
+    }
 
     enqueue(chunk: { url: string } | { wav: string }): void {
         if (this.stopped) return;
@@ -45,30 +90,25 @@ export class MediaPlaybackAdapter implements PlaybackAdapter {
             } else {
                 url = chunk.url;
             }
-            const audio = new Audio(url);
+            const audio = this.resources.prepare(Boolean(this.events.level));
             this.audio = audio;
+            const generation = ++this.generation;
+            const current = () => !this.stopped && this.audio === audio && this.generation === generation;
+            audio.src = url;
             audio.volume = this.volume;
             if (this.events.level) {
-                const context = new AudioContext();
-                this.meterContext = context;
-                const source = context.createMediaElementSource(audio);
-                const analyser = context.createAnalyser();
-                analyser.fftSize = 256;
-                source.connect(analyser);
-                analyser.connect(context.destination);
-                const samples = new Float32Array(analyser.fftSize);
+                const { context, analyser, samples } = this.resources;
                 this.meterTimer = setInterval(() => {
-                    if (this.stopped || context.state !== 'running' || audio.paused) return;
-                    analyser.getFloatTimeDomainData(samples);
+                    if (!current() || context!.state !== 'running' || audio.paused) return;
+                    analyser!.getFloatTimeDomainData(samples!);
                     let peak = 0;
-                    for (let i = 0; i < samples.length; i++) peak = Math.max(peak, Math.abs(samples[i]));
+                    for (let i = 0; i < samples!.length; i++) peak = Math.max(peak, Math.abs(samples![i]));
                     this.events.level?.(Math.min(1, peak), audio.currentTime * 1000);
                 }, 16);
-                if (context.state === 'suspended') void context.resume().catch((error) => {
-                    if (!this.stopped) this.events.failed(error);
-                });
             }
-            const current = () => !this.stopped && this.audio === audio;
+            void this.resources.resume().catch((error) => {
+                if (current()) this.events.failed(error);
+            });
             audio.onplaying = () => { if (current()) this.events.audible(true); };
             audio.onwaiting = audio.onpause = () => {
                 if (current()) { this.events.audible(false); this.events.level?.(0, audio.currentTime * 1000); }
@@ -93,11 +133,9 @@ export class MediaPlaybackAdapter implements PlaybackAdapter {
     }
 
     private release(): void {
+        this.generation++;
         if (this.meterTimer !== undefined) clearInterval(this.meterTimer);
         this.meterTimer = undefined;
-        const context = this.meterContext;
-        this.meterContext = null;
-        if (context) void context.close().catch(() => undefined);
         const audio = this.audio;
         this.audio = null;
         if (audio) {
@@ -105,6 +143,11 @@ export class MediaPlaybackAdapter implements PlaybackAdapter {
             try { audio.pause(); } catch { /* Already detached. */ }
             audio.removeAttribute('src');
             try { audio.load(); } catch { /* Already detached. */ }
+        }
+        if (!this.sharedResources) {
+            // Ordinary URL/WAV playback keeps its existing per-chunk lifetime.
+            this.resources.dispose();
+            this.resources = new MediaPlaybackResources();
         }
         if (this.objectUrl !== null) URL.revokeObjectURL(this.objectUrl);
         this.objectUrl = null;

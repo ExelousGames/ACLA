@@ -15,9 +15,9 @@ export class TestAudioContext {
     nodes: TestAudioNode[] = [];
     gain = { gain: { value: 1 }, connect: jest.fn(), disconnect: jest.fn() };
     level = 0;
-    analyser = { fftSize: 256, connect: jest.fn(),
+    analyser = { fftSize: 256, connect: jest.fn(), disconnect: jest.fn(),
         getFloatTimeDomainData: jest.fn((samples: Float32Array) => samples.fill(this.level)) };
-    createMediaElementSource = jest.fn(() => ({ connect: jest.fn() }));
+    createMediaElementSource = jest.fn(() => ({ connect: jest.fn(), disconnect: jest.fn() }));
     createAnalyser = jest.fn(() => this.analyser);
     resolveResume!: () => void;
     rejectResume!: (error: Error) => void;

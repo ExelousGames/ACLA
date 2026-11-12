@@ -1,4 +1,4 @@
-import { audioManager, type AudioType, type PlaybackHandle, type StreamOptions } from './index';
+import { audioManager, type AudioPlayer, type AudioType, type PlaybackHandle, type StreamOptions } from './index';
 import { installAudioDoubles, TestAudioContext } from './test-audio';
 
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
@@ -6,6 +6,12 @@ const wav = btoa('test wav bytes');
 const pcm = new Int16Array([0, 32767, -32768]).buffer;
 let audio: ReturnType<typeof installAudioDoubles>;
 let handles: PlaybackHandle[];
+let players: AudioPlayer[];
+const createPlayer = () => {
+    const player = audioManager.createPlayer('voice');
+    players.push(player);
+    return player;
+};
 const play = (type: AudioType = 'voice', priority = 50, volume = 0.8) => {
     const handle = audioManager.play({ type, priority, volume, url: 'data:audio/wav;base64,c2F2ZWQ=' });
     handles.push(handle);
@@ -17,8 +23,129 @@ const stream = (options: Partial<StreamOptions> = {}) => {
     return handle;
 };
 
-beforeEach(() => { audio = installAudioDoubles(); handles = []; });
-afterEach(async () => { handles.forEach((handle) => handle.stop()); await flush(); audio.restore(); });
+beforeEach(() => { audio = installAudioDoubles(); handles = []; players = []; });
+afterEach(async () => {
+    players.forEach((player) => player.dispose());
+    handles.forEach((handle) => handle.stop());
+    await flush();
+    audio.restore();
+});
+
+it('prepares one player graph and reuses it after completion, cancellation and playback failure', async () => {
+    const player = createPlayer();
+    await player.prepare();
+    await player.prepare();
+    expect(audio.media).toHaveLength(1);
+    expect(audio.play).not.toHaveBeenCalled();
+    const context = TestAudioContext.instances[0];
+    for (const status of ['completed', 'cancelled', 'failed'] as const) {
+        const handle = player.play({ url: `data:audio/wav;base64,${wav}`, priority: 25, onLevel: jest.fn() });
+        if (status === 'completed') audio.media[0].dispatchEvent(new Event('ended'));
+        else if (status === 'cancelled') handle.stop();
+        else audio.media[0].dispatchEvent(new Event('error'));
+        expect((await handle.finished).status).toBe(status);
+        expect(audio.media[0].hasAttribute('src')).toBe(false);
+        expect(context.close).not.toHaveBeenCalled();
+    }
+    expect(audio.play).toHaveBeenCalledTimes(3);
+    expect(audio.media).toHaveLength(1);
+    expect(TestAudioContext.instances).toHaveLength(1);
+    expect(context.createMediaElementSource).toHaveBeenCalledTimes(1);
+    expect(context.createAnalyser).toHaveBeenCalledTimes(1);
+    const active = player.play({ url: 'data:audio/wav;base64,bmV4dA==', priority: 25 });
+    player.dispose();
+    player.dispose();
+    expect(active.outcome).toEqual({ status: 'cancelled' });
+    expect(context.close).toHaveBeenCalledTimes(1);
+    expect(context.analyser.disconnect).toHaveBeenCalledTimes(1);
+    expect(context.createMediaElementSource.mock.results[0].value.disconnect).toHaveBeenCalledTimes(1);
+    expect(player.play({ url: 'unused', priority: 25 }).outcome).toEqual({ status: 'cancelled' });
+    await expect(player.prepare()).rejects.toThrow('disposed');
+});
+
+it('keeps player priority arbitration and does not cancel the chat that interrupted it on disposal', async () => {
+    const player = createPlayer();
+    await player.prepare();
+    const first = player.play({ url: 'data:audio/wav;base64,b25l', priority: 25 });
+    expect(player.play({ url: 'unused', priority: 24 }).outcome).toEqual({ status: 'rejected' });
+    expect(first.outcome).toBeUndefined();
+    const next = player.play({ url: 'data:audio/wav;base64,dHdv', priority: 25 });
+    expect(first.outcome).toEqual({ status: 'replaced' });
+    const chat = play();
+    expect(next.outcome).toEqual({ status: 'replaced' });
+    expect(player.play({ url: 'unused', priority: 25 }).outcome).toEqual({ status: 'rejected' });
+    player.dispose();
+    expect(chat.outcome).toBeUndefined();
+    expect(audio.media[1].hasAttribute('src')).toBe(true);
+});
+
+it('ignores callbacks and play rejection from a replaced clip on the same element', async () => {
+    const player = createPlayer();
+    await player.prepare();
+    let reject!: (error: Error) => void;
+    audio.play.mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; }));
+    const onStart = jest.fn();
+    const onComplete = jest.fn();
+    const old = player.play({ url: 'data:audio/wav;base64,b25l', priority: 25, onStart, onComplete });
+    const media = audio.media[0];
+    const ended = media.onended!;
+    const error = media.onerror!;
+    const next = player.play({ url: 'data:audio/wav;base64,dHdv', priority: 25 });
+    ended.call(media, new Event('ended'));
+    error.call(media, new Event('error'));
+    reject(new Error('stale failure'));
+    await flush();
+    expect(old.outcome).toEqual({ status: 'replaced' });
+    expect(onStart).not.toHaveBeenCalled();
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(next.isActive()).toBe(true);
+    expect(audio.media).toHaveLength(1);
+    media.dispatchEvent(new Event('ended'));
+    await expect(next.finished).resolves.toEqual({ status: 'completed' });
+});
+
+it('resumes a prepared context again if it is suspended between clips', async () => {
+    const player = createPlayer();
+    await player.prepare();
+    const context = TestAudioContext.instances[0];
+    context.state = 'suspended';
+    const first = player.play({ url: 'data:audio/wav;base64,b25l', priority: 25 });
+    const next = player.play({ url: 'data:audio/wav;base64,dHdv', priority: 25 });
+    expect(context.resume).toHaveBeenCalledTimes(1);
+    context.resolveResume();
+    await flush();
+    expect(first.outcome).toEqual({ status: 'replaced' });
+    expect(next.isActive()).toBe(true);
+    expect(TestAudioContext.instances).toHaveLength(1);
+});
+
+it('stops metering between clips and delivers new levels only to the current player request', async () => {
+    jest.useFakeTimers();
+    try {
+        const player = createPlayer();
+        await player.prepare();
+        const oldLevel = jest.fn();
+        player.play({ url: 'data:audio/wav;base64,b25l', priority: 25, volume: 1, onLevel: oldLevel });
+        const context = TestAudioContext.instances[0];
+        const media = audio.media[0];
+        Object.defineProperty(media, 'paused', { configurable: true, value: false });
+        context.level = 0.25;
+        jest.advanceTimersByTime(16);
+        await flush();
+        expect(oldLevel).toHaveBeenCalledWith(0.25, 0);
+        media.dispatchEvent(new Event('ended'));
+        expect(jest.getTimerCount()).toBe(0);
+        const onLevel = jest.fn();
+        player.play({ url: 'data:audio/wav;base64,dHdv', priority: 25, volume: 0.5, onLevel });
+        media.currentTime = 0.2;
+        jest.advanceTimersByTime(16);
+        await flush();
+        expect(onLevel).toHaveBeenCalledWith(0.125, 200);
+        expect(oldLevel).toHaveBeenCalledTimes(1);
+        player.dispose();
+        expect(jest.getTimerCount()).toBe(0);
+    } finally { jest.useRealTimers(); }
+});
 
 it('reports measured output levels after playback starts and disposes the meter with playback', async () => {
     jest.useFakeTimers();
