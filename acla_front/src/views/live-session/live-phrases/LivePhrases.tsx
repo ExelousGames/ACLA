@@ -16,6 +16,7 @@ import { createPhraseMapContext } from './phrase-map-context';
 import type { ReferenceCornerBounds } from './phrase-reference-guidance';
 import ReferenceRangeMap from './graphs/ReferenceRangeMap';
 import ClosureTree from './ClosureTree';
+import PhraseScheduler from './PhraseScheduler';
 import { Phrase, PHRASE_SILENCE_LEVEL, type PhraseInstance } from './phrase';
 import { getPhraseSpeechInstances, loadAllPhraseSpeech } from './phrase-speech';
 import './LivePhrases.css';
@@ -285,6 +286,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                 {snapshot.mapContext.sequenceId && <span>Corner sequence: {snapshot.mapContext.sequenceShape ?? 'Shape unavailable'} · {snapshot.mapContext.sequenceCornerIndex ? `${snapshot.mapContext.sequenceCornerIndex} of ` : ''}{snapshot.mapContext.sequenceCornerCount} corners</span>}
             </div>
             {!snapshot.mapReady && <p className="live-phrases__hint">Open Live Map in Add Visualization. In Circuit Maps, tag corners with corner and slow or fast, and tag straights with straight or long straight.</p>}
+            <PhraseScheduler schedule={snapshot.schedule ?? { now: 0, items: [] }} enabled={detectionReady} />
             <section aria-label="Sentence catalog">
                 <p className="live-phrases__state" aria-label="Closure state">State: {snapshot.state.path.join(' → ')}</p>
                 <ClosureTree node={snapshot.root} />

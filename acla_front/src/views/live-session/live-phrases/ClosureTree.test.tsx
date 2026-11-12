@@ -66,7 +66,8 @@ it('renders arbitrary mixed nodes, condition groups and extra fields from a seri
     const body = within(screen.getByRole('tabpanel', { name: 'Details' }));
     expect(body.getByText('Save a diagnostic sample.')).toBeVisible();
     expect(body.getByText('diagnostics')).toBeVisible();
-    expect(body.getByText('0')).toBeVisible();
+    expect(body.getByText('Retries').nextElementSibling).toHaveTextContent('0');
+    expect(body.getByText('Priority').nextElementSibling).toHaveTextContent('0');
     expect(body.getByText('false')).toBeVisible();
     expect(body.getByText('—')).toBeVisible();
     fireEvent.click(screen.getByRole('tab', { name: 'Conditions' }));

@@ -1,3 +1,5 @@
+import { comparePriority } from './phrase-scheduler';
+
 export interface ConditionSnapshot {
     description: string;
     conditionFit: boolean | null;
@@ -65,6 +67,7 @@ export interface NodeSnapshot {
     current: boolean;
     onPath: boolean;
     status: string;
+    priority?: number;
     conditions: readonly ConditionSnapshot[];
     fields: NonNullable<NodeInspection['fields']>;
     execution?: ActionExecution;
@@ -79,6 +82,7 @@ export interface Evaluable<Context> {
 /** An entered scope evaluates its own children and leaves through an explicit action. */
 export class Closure<Context> implements Evaluable<Context> {
     get preparationTimeMs(): number { return this.metadata.preparationTimeMs ?? 1000; }
+    get priority(): number { return this.metadata.priority ?? 0; }
     constructor(
         readonly name: string,
         readonly description: string,
@@ -92,7 +96,7 @@ export class Closure<Context> implements Evaluable<Context> {
         context = state.contextFor(this, context);
         const active = this.children.find((child) => child instanceof Closure && state.path.includes(child));
         if (active) return active.evaluate(context, state, onActionError);
-        const children = [...this.children].sort((a, b) => (b.metadata.priority ?? 0) - (a.metadata.priority ?? 0));
+        const children = [...this.children].sort(comparePriority);
         for (const child of children) {
             if (!state.check(child, context)) continue;
             state.enter(child);
@@ -103,6 +107,7 @@ export class Closure<Context> implements Evaluable<Context> {
 
 /** The callback may run any operation, including an asynchronous one. */
 export class Action<Context> implements Evaluable<Context> {
+    get priority(): number { return this.metadata.priority ?? 0; }
     constructor(
         readonly name: string,
         readonly description: string,
@@ -239,10 +244,11 @@ export class State<Context> {
             return {
                 id: nodeId, kind: node instanceof Closure ? 'closure' : 'action',
                 name: node.name, description: node.description, current: node === this.current, onPath,
-                status,
+                status, priority: node.priority,
                 conditions: conditions.map(copyCondition), fields: {
                     ...(node instanceof Closure ? { 'Preparation time': `${node.preparationTimeMs / 1000} s` } : {}),
                     ...node.metadata.fields, ...inspection?.fields,
+                    Priority: node.priority,
                 },
                 ...(execution ? { execution } : {}),
                 ...(node instanceof Action && node.metadata.exitTarget ? { exitTarget: node.metadata.exitTarget } : {}),

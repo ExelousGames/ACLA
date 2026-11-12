@@ -29,3 +29,18 @@ it('distinguishes settings and curves in audio identity while sharing identical 
         expect(phrase.createInstance(settings).cacheKey).not.toBe(key);
     }
 });
+
+it('inherits and overrides scheduling priority without changing prepared audio identity', () => {
+    const phrase = new Phrase('brake', 'Brake.', brakeCurves, { priority: 3 });
+    const inherited = phrase.createInstance();
+    const overridden = phrase.createInstance({ priority: 1 });
+    expect(new Phrase('ordinary', 'Instruction.').priority).toBe(0);
+    expect(phrase.priority).toBe(3);
+    expect(inherited.priority).toBe(3);
+    expect(inherited.createInstance().priority).toBe(3);
+    expect(overridden.priority).toBe(1);
+    expect(phrase.createInstance({ priority: 0 }).priority).toBe(0);
+    expect(overridden.speech).toEqual(inherited.speech);
+    expect(overridden.cacheKey).toBe(inherited.cacheKey);
+    expect(new Phrase('other', 'Brake.', brakeCurves).createInstance().cacheKey).toBe(inherited.cacheKey);
+});

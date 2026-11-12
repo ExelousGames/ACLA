@@ -15,6 +15,8 @@ export interface PhraseSpeechTiming {
 }
 export interface PhraseSettings extends Omit<TtsRequest, 'text'> {
     inputs?: Partial<PhraseInputs>;
+    /** Higher values are scheduled first when several phrases are eligible. */
+    priority?: number;
 }
 const settings: readonly ProsodySetting[] = ['timing', 'energy', 'pitch'];
 
@@ -23,8 +25,10 @@ export class Phrase {
     readonly speech: Readonly<TtsRequest>;
     readonly amplifyCurves: PhraseCurves;
     readonly inputs: PhraseInputs;
+    readonly priority: number;
 
     constructor(readonly id: string, sentence: string, curves: PhraseCurves = defaultCurves, options: PhraseSettings = {}) {
+        this.priority = options.priority ?? 0;
         this.speech = Object.freeze({ text: sentence.trim(), speed: options.speed ?? 1.2,
             language: options.language ?? 'en-us', ...(options.voice !== undefined ? { voice: options.voice } : {}) });
         this.amplifyCurves = Object.freeze({
@@ -52,7 +56,8 @@ export class PhraseInstance extends Phrase {
 
     constructor(source: Phrase, overrides: PhraseSettings = {}) {
         super(source.id, source.speech.text, source.amplifyCurves, {
-            ...source.speech, ...overrides, inputs: { ...source.inputs, ...overrides.inputs },
+            ...source.speech, ...overrides, priority: overrides.priority ?? source.priority,
+            inputs: { ...source.inputs, ...overrides.inputs },
         });
         this.cacheKey = JSON.stringify([this.speech, this.curves, this.inputValues]);
         Object.freeze(this);

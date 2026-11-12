@@ -68,13 +68,15 @@ it('can release the brake after turn-in has already spoken', () => {
     expect(braking.events.map(({ sentence }) => sentence)).toEqual(['Turn in', 'Off brake.']);
 });
 
-it('rearms turn-in after measured progress leaves the previous turn', () => {
+it('rearms turn-in only after measured progress leaves the mapped corner', () => {
     const { engine, at } = setup();
     const first = at(0.27, 1000, { Physics_brake: 0 });
     expect(first.events.map(({ sentence }) => sentence)).toEqual(['Turn in']);
     engine.speechFinished(first.events[0].id, 1200);
     at(0.43, 1300, { Physics_brake: 0 });
-    expect(at(0.27, 1400, { Physics_brake: 0 }).events.map(({ sentence }) => sentence)).toEqual(['Turn in', 'Turn in']);
+    expect(at(0.27, 1400, { Physics_brake: 0 }).events.map(({ sentence }) => sentence)).toEqual(['Turn in']);
+    at(0.46, 1500, { Physics_brake: 0 });
+    expect(at(0.27, 1600, { Physics_brake: 0 }).events.map(({ sentence }) => sentence)).toEqual(['Turn in', 'Turn in']);
 });
 
 it.each([0, 50, 99, 99.9])('keeps only standalone release below Direction guide at %s%% aggression', (aggression) => {

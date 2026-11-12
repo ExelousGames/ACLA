@@ -20,6 +20,37 @@ it('starts at root and enters the first eligible child in declaration order', ()
     expect(other.current).toBe(second);
 });
 
+it('selects the highest eligible closure priority and preserves declaration order for ties', () => {
+    const throttle = new Closure<Context>('throttle', '', () => true, [], { priority: 1 });
+    const turn = new Closure<Context>('turn', '', () => true, [], { priority: 2 });
+    const brake = new Closure<Context>('brake', '', ({ ready }) => ready, [], { priority: 3 });
+    const secondBrake = new Closure<Context>('second brake', '', ({ ready }) => ready, [], { priority: 3 });
+    const root = new Closure<Context>('root', '', () => true, [throttle, turn, brake, secondBrake]);
+    const ready = new State(root);
+    ready.step(context);
+    expect(ready.closure).toBe(brake);
+    const unavailable = new State(root);
+    unavailable.step({ ...context, ready: false });
+    expect(unavailable.closure).toBe(turn);
+    expect(root.priority).toBe(0);
+    expect(ready.snapshot().children[2]).toMatchObject({ priority: 3, fields: { Priority: 3 } });
+});
+
+it('runs eligible actions by priority and preserves declaration order for ties', () => {
+    const calls: string[] = [];
+    const action = (name: string, priority?: number) => new Action<Context>(name, '', () => calls.push(name),
+        () => true, { priority });
+    const ordinary = action('ordinary');
+    const root = new Closure<Context>('root', '', () => true, [
+        ordinary, action('throttle', 1), action('turn', 2), action('brake', 3), action('second brake', 3),
+    ]);
+    const state = new State(root);
+    root.children.forEach(() => state.step(context));
+    expect(calls).toEqual(['brake', 'second brake', 'turn', 'throttle', 'ordinary']);
+    expect(ordinary.priority).toBe(0);
+    expect(state.snapshot().children[3]).toMatchObject({ priority: 3, fields: { Priority: 3 } });
+});
+
 it('retains a nested closure when entry conditions change or its children finish', () => {
     const run = jest.fn();
     const nested = new Closure<Context>('nested', 'Run work in a nested scope.', ({ enter }) => enter, [new Action('work', 'Invoke the work callback.', run)]);
