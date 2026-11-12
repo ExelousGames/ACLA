@@ -3,6 +3,7 @@ import type { AiOverlayRenderer } from 'views/floating-chat/ai-overlay-types';
 import { isOverlayNonEmptyString, isOverlayRecord } from 'views/floating-chat/overlay-renderer-validation';
 import type { SteeringCornerOverlaySnapshot, SteeringCornerPoint } from '../steering-corner-overlay';
 import { createSteeringCornerCamera } from './steering-corner-camera';
+import { buildSteeringCornerChevrons } from './steering-corner-chevrons';
 import analystStyles from 'views/session-shared/driver-expert-comparison/DriverExpertComparisonGraph.module.css';
 import './SteeringCornerDisplay.css';
 
@@ -11,6 +12,8 @@ const WIDTH = 480, HEIGHT = 280;
 export const SteeringCornerDisplay = ({ snapshot }: { snapshot: SteeringCornerOverlaySnapshot }) => {
     const { referenceLine, leftBoundary, rightBoundary } = snapshot;
     const { project, path, horizon } = createSteeringCornerCamera(referenceLine, WIDTH, HEIGHT);
+    const referencePath = path(referenceLine);
+    const chevrons = buildSteeringCornerChevrons(referenceLine).map((points) => path(points, true));
     const entry = project(referenceLine[0]), exit = project(referenceLine[referenceLine.length - 1]);
     const visible = (point: SteeringCornerPoint | undefined): point is SteeringCornerPoint => !!point
         && point.x >= 16 && point.x <= WIDTH - 16 && point.y >= 20 && point.y <= HEIGHT - 20;
@@ -37,9 +40,16 @@ export const SteeringCornerDisplay = ({ snapshot }: { snapshot: SteeringCornerOv
                         className="steering-corner-display__road" d={path([...leftBoundary, ...rightBoundary.slice().reverse()], true)} />}
                     <path className="steering-corner-display__left" d={path(leftBoundary)} aria-label="Left boundary" />
                     <path className="steering-corner-display__right" d={path(rightBoundary)} aria-label="Right boundary" />
-                    <path className="steering-corner-display__reference" d={path(referenceLine)} aria-label="Reference line" />
+                    <path className="steering-corner-display__reference-halo" d={referencePath} aria-hidden="true" />
+                    <path className="steering-corner-display__reference" d={referencePath} aria-label="Reference line" />
+                    <path className="steering-corner-display__reference-flow" d={referencePath} pathLength="100" aria-hidden="true" />
+                    <g key={referencePath} aria-label="Reference direction indicators">
+                        {chevrons.map((chevron, index) => chevron && <path key={index}
+                            className="steering-corner-display__chevron" d={chevron}
+                            style={{ animationDelay: `${index * 1100 / Math.max(1, chevrons.length - 1)}ms` }} />)}
+                    </g>
                     {visible(entry) && <>
-                        <circle cx={entry.x} cy={entry.y} r="4" fill="#80b1ff" />
+                        <circle cx={entry.x} cy={entry.y} r="4" fill="#7fffe1" />
                         <text x={entry.x} y={entry.y + 17} textAnchor="middle">Entry</text>
                     </>}
                     {visible(exit) && <>

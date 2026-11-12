@@ -94,8 +94,30 @@ describe.each(['acc', 'iracing'] as const)('consecutive corner coaching in %s', 
 
     it.each(['left', 'middle', 'right'] as const)('uses the reference %s position instead of assuming the outside', (side) => {
         const { at } = setup({ game, sides: [side, side, side] });
-        expect(at(0.31, 1000).events.map(({ sentence }) => sentence))
+        expect(at(side === 'middle' ? 0.36 : 0.31, 1000).events.map(({ sentence }) => sentence))
             .toEqual([instruction(side)]);
+    });
+
+    it.each([false, true])('waits for each corner exit before setting up center (opposite: %s)', (opposite) => {
+        const { engine, at } = setup({ game, opposite, sides: ['middle', 'middle', 'middle'] });
+        const center = instruction('middle');
+        expect(at(0.265, 1000).events).toEqual([]);
+        expect(at(0.27, 1100).events).toEqual([]);
+        expect(at(0.31, 1200).events).toEqual([]);
+        expect(at(0.36, 1300).events.map(({ sentence }) => sentence)).toEqual([center]);
+        engine.speechFinished(1, 1500);
+        expect(at(0.37, 1600).events.map(({ sentence }) => sentence)).toEqual([center]);
+        at(0.47, 1700);
+        expect(at(0.56, 1800).events.map(({ sentence }) => sentence)).toEqual([center]);
+        expect(at(0.61, 1900).events.map(({ sentence }) => sentence)).toEqual([center, center]);
+        engine.speechFinished(2, 2100);
+        expect(at(0.86, 2200).events.map(({ sentence }) => sentence)).toEqual([center, center]);
+    });
+
+    it('does not set up center for adjacent corners outside a labeled sequence', () => {
+        const { at } = setup({ game, labeled: false, sides: ['middle', 'middle', 'middle'] });
+        expect(at(0.31, 1000).events).toEqual([]);
+        expect(at(0.36, 1100).events.map(({ sentence }) => sentence)).toEqual(['Unwind']);
     });
 
     it('keeps Unwind for an isolated corner', () => {
@@ -119,6 +141,13 @@ it('keeps sequence membership and once-per-turn behavior across start/finish', (
     expect(at(0.36, 1300).events.map(({ sentence }) => sentence)).toEqual([first]);
     at(0.47, 1400);
     expect(at(0.56, 1500).events.map(({ sentence }) => sentence)).toEqual([first, second]);
+});
+
+it('waits for the center setup exit across start/finish', () => {
+    const { at } = setup({ shift: 0.7, opposite: true, sides: ['middle', 'middle', 'middle'] });
+    expect(at(0.27, 1000).events).toEqual([]);
+    expect(at(0.31, 1100).events).toEqual([]);
+    expect(at(0.36, 1200).events.map(({ sentence }) => sentence)).toEqual([instruction('middle')]);
 });
 
 it.each([0, 50, 99])('withholds sequence direction advice at %s%% aggression', (aggression) => {
@@ -178,7 +207,8 @@ it('selects each next entry position deterministically and preloads three unique
         expect(at(0.31, 1000).events.map(({ sentence }) => sentence)).toEqual([first]);
         engine.speechFinished(1, 1200);
         at(0.47, 1300);
-        expect(at(0.56, 1400).events.map(({ sentence }) => sentence)).toEqual([first, second]);
+        expect(at(0.56, 1400).events.map(({ sentence }) => sentence)).toEqual([first]);
+        expect(at(0.61, 1500).events.map(({ sentence }) => sentence)).toEqual([first, second]);
         expect(random).not.toHaveBeenCalled();
     } finally {
         random.mockRestore();

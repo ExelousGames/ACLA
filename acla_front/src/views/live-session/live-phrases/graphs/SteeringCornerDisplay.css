@@ -31,7 +31,9 @@
 
 .steering-corner-display__left,
 .steering-corner-display__right,
-.steering-corner-display__reference {
+.steering-corner-display__reference,
+.steering-corner-display__reference-halo,
+.steering-corner-display__reference-flow {
     fill: none;
     stroke-linecap: round;
     stroke-linejoin: round;
@@ -40,7 +42,47 @@
 
 .steering-corner-display__left { stroke: #b4c2d0; }
 .steering-corner-display__right { stroke: #b4c2d0; stroke-dasharray: 4 4; }
-.steering-corner-display__map .steering-corner-display__reference { stroke: #448aff; stroke-width: 3; }
+.steering-corner-display__reference { stroke: #52dfc2; stroke-width: 2.5; stroke-opacity: 0.65; }
+.steering-corner-display__reference-halo { stroke: #45e6c4; stroke-width: 12; stroke-opacity: 0.12; filter: blur(4px); }
+
+.steering-corner-display__reference-flow {
+    stroke: #cefff2;
+    stroke-width: 4;
+    stroke-dasharray: 14 100;
+    filter: drop-shadow(0 0 4px #54ffd2) drop-shadow(0 0 9px #34dab9);
+    animation: steering-reference-flow 1.6s linear infinite;
+}
+
+.steering-corner-display__chevron {
+    fill: rgba(78, 239, 200, 0.45);
+    stroke: #8fffe1;
+    stroke-width: 1.25;
+    stroke-linejoin: round;
+    filter: drop-shadow(0 0 3px rgba(64, 255, 208, 0.7));
+    opacity: 0;
+    animation: steering-chevron-flow 1.6s ease-in-out infinite both;
+}
+
+/* Staggered delays reveal the nearest arrow first, then carry the trail forward. */
+@keyframes steering-chevron-flow {
+    0%, 32%, 100% { opacity: 0; }
+    6%, 14% { opacity: 1; }
+    22% { opacity: 0.45; }
+}
+
+/* The captured path is ordered from corner entry to exit. Decreasing the dash
+   offset carries the highlight away from the driver, including around bends. */
+@keyframes steering-reference-flow {
+    0% { stroke-dashoffset: 14; opacity: 0; }
+    8% { opacity: 1; }
+    82% { opacity: 1; }
+    100% { stroke-dashoffset: -100; opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .steering-corner-display__reference-flow { animation: none; stroke-dasharray: none; opacity: 0.45; }
+    .steering-corner-display__chevron { animation: none; opacity: 0.8; }
+}
 
 .steering-corner-display__legend {
     display: flex;
@@ -53,6 +95,6 @@
 
 .steering-corner-display__legend span { display: inline-flex; align-items: center; gap: 6px; }
 .steering-corner-display__legend span::before { content: ''; width: 18px; border-top: 2px solid #b4c2d0; }
-.steering-corner-display__legend [data-line='reference']::before { border-color: #448aff; }
+.steering-corner-display__legend [data-line='reference']::before { border-color: #52dfc2; }
 .steering-corner-display__legend [data-line='right']::before { border-top-style: dashed; }
 .steering-corner-display__missing { margin: 8px 0 0; color: #bdd0e2; font-size: 11px; }

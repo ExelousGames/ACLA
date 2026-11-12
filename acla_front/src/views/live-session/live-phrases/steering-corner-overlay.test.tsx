@@ -52,6 +52,7 @@ it('renders the vehicle view in focus and expanded states, and just the title wh
             }
             expect(screen.getByText('Entry')).toBeVisible();
             expect(screen.getByText('Vehicle view')).toBeVisible();
+            expect(screen.getByLabelText('Reference direction indicators').querySelectorAll('path').length).toBeGreaterThan(0);
         } else expect(screen.queryByRole('img')).not.toBeInTheDocument();
         view.unmount();
     }

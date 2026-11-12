@@ -384,14 +384,18 @@ export const PHRASE_DEFINITIONS: readonly PhraseDefinition[] = [
     },
     {
         id: 'reference-consecutive-corners', referenceCue: 'steering', name: 'Consecutive corners', holdMs: 0, priority: PHRASE_PRIORITIES.turn,
-        description: 'At 100% Instructor aggression, tell the driver to set up left, right or center for the next linked corner, using the reference entry position and known corner direction. Prepare that position during the current loaded arc or steering release, following the reference through the transition. Speak once per reference turn range, only with a known next corner and valid reference position between the mapped track boundaries.',
+        description: 'At 100% Instructor aggression, tell the driver to set up left, right or center for the next linked corner, using the reference entry position and known corner direction. Prepare left or right during the current loaded arc or steering release; center requires the final steering unwind toward the next corner in the same sequence. Speak once per reference turn range, only with a known next corner and valid reference position between the mapped track boundaries.',
         sentence: consecutiveCornerSentences[0],
         sentenceAlternatives: consecutiveCornerSentences.slice(1),
         selectSentence: ({ inputs }) => consecutiveCornerInstructions.find(({ setup }) => setup === inputs.referenceNextCornerSetup)?.sentence,
         conditions: [condition('drivingAggression', '=', 100), condition('speed', '>=', 20),
             condition('referenceCornerInSequence', '=', 1), condition('referenceSequenceRemaining', '>=', 1),
             condition('referenceNextCornerSetup', 'in', consecutiveCornerInstructions.map(({ setup }) => setup)),
-            condition('referenceCue', '=', 'steering'), condition('referenceCornerPhase', 'in', ['hold', 'unwind'])],
+            condition('referenceCue', '=', 'steering'), condition('referenceCornerPhase', 'in', ['hold', 'unwind']),
+            conditionGroup([
+                condition('referenceCornerPhase', '=', 'unwind'),
+                condition('referenceNextCornerSetup', 'in', ['left-for-left', 'left-for-right', 'right-for-left', 'right-for-right'], 'or'),
+            ])],
     },
     {
         id: 'reference-steering-hold', referenceCue: 'steering', name: 'Hold line', holdMs: 0, priority: PHRASE_PRIORITIES.turn,

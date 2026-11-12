@@ -365,8 +365,10 @@ an outside entry. Missing or unusable boundaries, an off-track reference target,
 or ambiguous next-turn geometry withhold the positioning cue.
 The three positioning commands are preloaded once and selected from these measurements,
 never randomly. Their longest prepared clip supplies the shared speech lookahead.
-It starts during the current reference's loaded arc or steering release, using its
-own prepared audio lookahead, and speaks once per reference turn range. Braking
+Left/right setup can start during the current reference's loaded arc or steering
+release. Center setup requires the final steering unwind out of the current corner
+toward the next corner in the same sequence. Each cue uses its own prepared audio
+lookahead and speaks once per reference turn range. Braking
 instructions retain priority. Sequence membership and remaining corners come from
 that cue's forecast corner, so crossing a sequence boundary during speech lookahead
 does not reuse the driver's earlier corner. The final or sole member receives no
@@ -940,6 +942,10 @@ start/finish wrapping. Missing boundaries are reported instead of synthesized.
 The trajectory uses a vehicle-height perspective from the corner entry, aligned
 with the reference's initial travel direction. Distant geometry converges toward
 the horizon; paths and the road surface are clipped behind the camera.
+Turquoise ground-plane chevrons follow the reference's travel direction and shrink
+with distance. The arrows appear and fade in a repeating sequence from nearest to
+farthest, alongside a glow traveling along the reference from entry to exit.
+Reduced-motion preferences keep the arrows visible and the glow static.
 The reference line and boundaries are captured once when the event triggers and
 remain fixed for two seconds, even if telemetry, the map or the reference changes.
 A new Turn in card immediately replaces the previous card in the same slot and
