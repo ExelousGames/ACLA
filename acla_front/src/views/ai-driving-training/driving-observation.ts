@@ -7,6 +7,8 @@ import { selectLiveMapReference } from 'views/live-session/live-map-reference';
 import { DrivingReference, inspectDrivingReference, normalizedAggression, ReferenceSpeedTargets, referenceSpeedTargets } from './driving-reference';
 import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
 import { detectDrivingImpact, DrivingImpact, ImpactSample, IMPACT_PENALTY_WEIGHT } from './driving-impact';
+import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
+import { detectDrivingOffTrack, OFF_TRACK_PENALTY_PER_SECOND } from './driving-off-track';
 
 export interface DrivingAction { throttle: number; brake: number; steering: number; shiftUp?: boolean; shiftDown?: boolean }
 export const NEUTRAL: DrivingAction = { throttle: 0, brake: 0, steering: 0 };
@@ -34,6 +36,7 @@ export interface DrivingObservation {
     reference: DrivingReference;
     aggression: number;
     speedTargets: ReferenceSpeedTargets;
+    offTrack: boolean | null;
 }
 export type ObservationResult = { observation: DrivingObservation; error?: never } | { error: string; observation?: never };
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
@@ -46,7 +49,8 @@ function category(value: string, bits: number): number[] {
 }
 
 export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: TrackVisionDetection | null,
-    referenceLap: TopLapReferenceEntry | null, aggression = DEFAULT_DRIVING_CONFIG.aggression, now = Date.now(), config = DEFAULT_DRIVING_CONFIG): ObservationResult {
+    referenceLap: TopLapReferenceEntry | null, aggression = DEFAULT_DRIVING_CONFIG.aggression, now = Date.now(), config = DEFAULT_DRIVING_CONFIG,
+    circuitMap: CircuitMapDto | null = null): ObservationResult {
     const o = config.observation;
     if (live.telemetryStatus !== ACC_STATUS.ACC_LIVE || !finite(live.receivedAt)
         || now - live.receivedAt > config.runtime.telemetryMaxAgeMs || now < live.receivedAt) return { error: 'Waiting for fresh, running live telemetry.' };
@@ -83,11 +87,11 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
     if (referenceLap && !selectLiveMapReference([referenceLap], game, map, car, sample.Graphics_track_grip_status)) {
         return { error: 'Live Map reference lap does not match the current game, car or circuit. Load a matching reference lap in Live Session.' };
     }
-    const prepared = inspectDrivingReference(referenceLap);
+    const prepared = inspectDrivingReference(referenceLap, circuitMap);
     if (!prepared.reference) return { error: prepared.error };
     const reference = prepared.reference;
     if (!finite(aggression) || aggression < 0 || aggression > 100) return { error: 'Driving aggression must be between 0 and 100.' };
-    const speedTargets = referenceSpeedTargets(reference, position!, aggression, config.reward.aggressionMaxRadius);
+    const speedTargets = referenceSpeedTargets(reference, position!, aggression);
     const camera = vision.camera;
     if (!camera || camera.width !== o.cameraWidth || camera.height !== o.cameraHeight
         || !(camera.rgb instanceof Uint8Array) || camera.rgb.length !== camera.width * camera.height * 3) {
@@ -117,11 +121,13 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         localVelocity: velocity as [number, number, number], yawRate: yawRate!,
         gForce: gForce as [number, number, number],
         reference, aggression, speedTargets,
+        offTrack: detectDrivingOffTrack(game, sample, circuitMap),
     } };
 }
 
 export interface DrivingReward {
-    timing: number; progress: number; impact: number; total: number;
+    timing: number; progress: number; impact: number; offTrack: number; total: number;
+    offTrackDetected: boolean | null;
     impactEstimate: DrivingImpact;
     speedComparison: ReferenceSpeedTargets & { measured: number; aggression: number;
         /** Speed error removed by the driver's speed change, against one fixed target, in km/h. */
@@ -152,8 +158,8 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
         ? -0.25 * r.progressWeight * 0.01 * measuredSeconds
         : 0.25 * r.progressWeight * signedProgress * progressPerSecond / (progressPerSecond + 0.01);
     // Keep both ends of the speed profile on the settings that produced the action.
-    const start = referenceSpeedTargets(previous.reference, previous.normalizedPosition, previous.aggression, r.aggressionMaxRadius);
-    const speeds = referenceSpeedTargets(previous.reference, current.normalizedPosition, previous.aggression, r.aggressionMaxRadius);
+    const start = referenceSpeedTargets(previous.reference, previous.normalizedPosition, previous.aggression);
+    const speeds = referenceSpeedTargets(previous.reference, current.normalizedPosition, previous.aggression);
     const measuredAcceleration = (current.speed - previous.speed) / (3.6 * measuredSeconds);
     const referenceAcceleration = (speeds.reference - start.reference) / (3.6 * measuredSeconds);
     const targetAcceleration = (speeds.target - start.target) / (3.6 * measuredSeconds);
@@ -162,15 +168,18 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     // Absolute errors also charge for overshooting, instead of rewarding all acceleration.
     const speedGoalProgress = Math.abs(previous.speed - speeds.target) - Math.abs(current.speed - speeds.target);
     const correction = clamp(speedGoalProgress / (3.6 * measuredSeconds * r.accelerationTolerance));
+    // A held but incorrect speed must still cost reward, even when no correction occurs.
+    const speedPenalty = clamp(Math.abs(current.speed - speeds.target) / r.speedTolerance, 0, 1);
     const timing = forwardProgress > 0
-        ? r.timingWeight * forwardProgress * correction : 0;
+        ? r.timingWeight * forwardProgress * (correction - speedPenalty) : 0;
     const impactSample = (observation: DrivingObservation): ImpactSample => ({ measuredAt: observation.measuredAt,
         velocity: [observation.localVelocity[0], observation.localVelocity[observation.context.game === 'iracing' ? 2 : 1]],
         steering: observation.controls.steering, brake: observation.controls.brake });
     const impactEstimate = telemetryImpact ?? detectDrivingImpact(impactSample(previous), impactSample(current));
     const impact = impactEstimate.detected ? -IMPACT_PENALTY_WEIGHT * impactEstimate.confidence * impactEstimate.severity : 0;
-    return { timing, progress, impact, impactEstimate,
+    const offTrack = current.offTrack === true ? -OFF_TRACK_PENALTY_PER_SECOND * measuredSeconds : 0;
+    return { timing, progress, impact, impactEstimate, offTrack, offTrackDetected: current.offTrack,
         speedComparison: { ...speeds, measured: current.speed, aggression: previous.aggression, speedGoalProgress,
             measuredAcceleration, referenceAcceleration, targetAcceleration },
-        total: clamp(timing + progress + impact, -r.totalLimit, r.totalLimit) };
+        total: clamp(timing + progress + impact + offTrack, -r.totalLimit, r.totalLimit) };
 }

@@ -143,13 +143,15 @@ it('uses a neutral combined pedal output in new models and rejects separate-peda
     expect(JSON.stringify(document)).toBe(original);
 });
 
-it('requires the pedal-event reward encoding and rejects earlier speed-window models without migration', () => {
+it('requires the Live Phrases reward encoding and rejects earlier aggression calculations without migration', () => {
     const document: any = emptyTrainingDocument();
-    expect(document.configuration.reward.referenceTiming).toBe('pedal-event-speed-profile');
+    expect(document.configuration.reward.referenceTiming).toBe('live-phrase-speed-profile');
     delete document.configuration.reward.referenceTiming;
     expect(() => readTrainingDocument(document)).toThrow(/configuration/);
-    document.configuration.reward.referenceTiming = 'speed-window';
-    expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+    for (const encoding of ['speed-window', 'pedal-event-speed-profile']) {
+        document.configuration.reward.referenceTiming = encoding;
+        expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+    }
 });
 
 it('omits instability settings and rejects model JSON that still includes them', () => {

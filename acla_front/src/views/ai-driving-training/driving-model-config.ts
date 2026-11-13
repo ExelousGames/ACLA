@@ -12,7 +12,7 @@ export const drivingMemorySlots = (config = DEFAULT_DRIVING_CONFIG): number =>
 export function drivingFeatureEncoding(config = DEFAULT_DRIVING_CONFIG): string {
     const observation = config.observation;
     return JSON.stringify([Object.keys(observation).sort().map((key) =>
-        [key, observation[key as keyof typeof observation]]), config.reward.referenceTiming, config.reward.aggressionMaxRadius]);
+        [key, observation[key as keyof typeof observation]]), config.reward.referenceTiming]);
 }
 
 /** Scalar feature sizes; camera bytes travel separately until learned convolution.

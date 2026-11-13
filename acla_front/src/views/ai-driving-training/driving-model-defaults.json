@@ -59,14 +59,13 @@
     "planTargetToleranceMs": 250
   },
   "reward": {
-    "referenceTiming": "pedal-event-speed-profile",
+    "referenceTiming": "live-phrase-speed-profile",
     "progressLimit": 0.02,
     "timingWeight": 100,
     "speedTolerance": 20,
     "accelerationTolerance": 3,
     "progressWeight": 100,
-    "totalLimit": 10,
-    "aggressionMaxRadius": 20
+    "totalLimit": 10
   },
   "runtime": {
     "telemetryMaxAgeMs": 500,

@@ -1,5 +1,5 @@
 import { drivingReward, NEUTRAL, readDrivingObservation } from './driving-observation';
-import { trainingFixture } from './training-fixtures';
+import { brakingFixtureSpeed, brakingReferenceFixture, trainingFixture } from './training-fixtures';
 import { referenceSpeedTargets } from './driving-reference';
 import { getLiveMapReferenceLine } from 'views/live-session/live-map-reference';
 import { DrivingMemory, drivingMemoryInputs } from './driving-memory';
@@ -37,7 +37,7 @@ it.each(['missing', 'distant', 'invalid', 'mismatched'])(
         expect(reward).toEqual(drivingReward(before, expected));
         expect(reward).not.toHaveProperty('line');
         expect(reward).not.toHaveProperty('approach');
-        expect(reward.timing).toBeCloseTo(0.2 * 2 / (3.6 * 0.2 * 3));
+        expect(reward.timing).toBeCloseTo(0.2 * (2 / (3.6 * 0.2 * 3) - 6.8 / 20));
         expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact);
     });
 
@@ -517,39 +517,40 @@ describe('speed goal progress reward', () => {
         { ...observation, speed: nextSpeed, normalizedPosition: position,
             capturedAt: 1200, measuredAt: 1200 });
 
-    it.each([[40, 42], [160, 158]])('rewards correction from %s to %s even far outside the old speed tolerance', (speed, nextSpeed) => {
+    it.each([[40, 42], [160, 158]])('credits correction from %s to %s while retaining the speed error penalty', (speed, nextSpeed) => {
         const reward = score(speed, nextSpeed);
         expect(reward.speedComparison.speedGoalProgress).toBeCloseTo(2);
-        expect(reward.timing).toBeCloseTo(0.2 * 2 / (3.6 * 0.2 * 3));
-        expect(reward.timing).toBeGreaterThan(score(99.2, 99.2).timing);
-        expect(score(nextSpeed, speed).timing).toBeCloseTo(-reward.timing);
+        expect(reward.timing).toBeCloseTo(0.2 * (2 / (3.6 * 0.2 * 3) - 1));
+        expect(reward.timing).toBeGreaterThan(score(speed, speed).timing);
+        expect(score(nextSpeed, speed).timing).toBeCloseTo(0.2 * (-2 / (3.6 * 0.2 * 3) - 1));
     });
 
     it.each([40, 99.2, 160])('gives no bonus for constant speed %s, including when the target moves toward the car', (speed) => {
         for (const position of [0.252, 0.28]) {
-            expect(score(speed, speed, position).timing).toBe(0);
+            expect(score(speed, speed, position).timing).toBeLessThanOrEqual(0);
             expect(score(speed, speed, position).speedComparison.speedGoalProgress).toBe(0);
         }
     });
 
     it('rewards more correction, caps its magnitude, and charges for overshooting', () => {
-        // At position 0.4 the goal is 80 km/h, independent of aggression.
+        // At reference aggression the goal at position 0.4 is 80 km/h.
         const before = { ...observation, speed: 79, normalizedPosition: 0.4 };
         const reward = (speed: number) => drivingReward(before,
             { ...before, speed, normalizedPosition: 0.402, capturedAt: 1200, measuredAt: 1200 });
         expect(reward(79.5).timing).toBeGreaterThan(0);
         expect(reward(80).timing).toBeGreaterThan(reward(79.5).timing);
         expect(reward(80.5).timing).toBeCloseTo(reward(79.5).timing);
-        expect(reward(81).timing).toBe(0);
+        expect(reward(81).timing).toBeCloseTo(-0.01);
         expect(reward(82).timing).toBeLessThan(0);
-        expect(score(40, 90).timing).toBeCloseTo(0.2);
-        expect(score(40, 10).timing).toBeCloseTo(-0.2);
+        expect(score(40, 90).timing).toBeCloseTo(0.2 * (1 - 9.2 / 20));
+        expect(score(40, 10).timing).toBeCloseTo(-0.4);
     });
 
     it.each([[0, 1], [100, -1]])('uses aggression %s to determine the useful speed-change direction', (aggression, sign) => {
         // 108 km/h is above the cautious goal and below the aggressive goal.
-        expect(Math.sign(score(108, 106, 0.252, aggression).timing)).toBe(sign);
-        expect(Math.sign(score(108, 110, 0.252, aggression).timing)).toBe(-sign);
+        const held = score(108, 108, 0.252, aggression).timing;
+        expect(Math.sign(score(108, 106, 0.252, aggression).timing - held)).toBe(sign);
+        expect(Math.sign(score(108, 110, 0.252, aggression).timing - held)).toBe(-sign);
     });
 
     it('keeps reward scaled by telemetry time and the configured correction rate', () => {
@@ -558,8 +559,8 @@ describe('speed goal progress reward', () => {
         const config = cloneConfig();
         config.reward.accelerationTolerance *= 2;
         const normal = drivingReward(before, after).timing;
-        expect(drivingReward(before, after, config).timing).toBeCloseTo(normal / 2);
-        expect(drivingReward(before, { ...after, capturedAt: 1400, measuredAt: 1400 }).timing).toBeCloseTo(normal / 2);
+        expect(drivingReward(before, after, config).timing).toBeCloseTo((normal + 0.2) / 2 - 0.2);
+        expect(drivingReward(before, { ...after, capturedAt: 1400, measuredAt: 1400 }).timing).toBeCloseTo((normal + 0.2) / 2 - 0.2);
     });
 
     it.each([40, 160])('caps total reward with saved settings for speed %s', (speed) => {
@@ -570,7 +571,7 @@ describe('speed goal progress reward', () => {
         const before = { ...observation, speed: 100 };
         const after = { ...before, speed, normalizedPosition: 0.28, capturedAt: 1200, measuredAt: 1200 };
         const reward = drivingReward(before, after, config);
-        expect(reward.timing).toBe(-20);
+        expect(reward.timing).toBe(-40);
         expect(reward.total).toBe(-1);
         expect(drivingReward(before, { ...after, speed: 88 }, config).total).toBe(1);
     });
@@ -601,7 +602,7 @@ it('gives the same total reward while changing throttle at different capture int
     const whole = drivingReward(before, after);
     const first = drivingReward(before, middle);
     const second = drivingReward(middle, after);
-    expect(whole.timing).toBeGreaterThan(0);
+    expect(whole.timing).toBeCloseTo(0.2 * (1 / (3.6 * 0.2 * 3) - 1));
     expect(first.timing + second.timing).toBeCloseTo(whole.timing);
     expect(first.total + second.total).toBeCloseTo(whole.total);
 });
@@ -639,7 +640,7 @@ it.each([0, 50, 100])('appends aggression and targets without changing the exist
     expect(next.features.slice(0, -3)).toEqual(observation.features.slice(0, -3));
     expect(next.features.slice(-3)[0]).toBe((aggression - 50) / 50);
     expect(next.features.slice(-2)[0]).toBeCloseTo(100 / 360);
-    expect(next.features.slice(-2)[1]).toBeCloseTo(({ 0: 90, 50: 100, 100: 120 }[aggression]!) / 360);
+    expect(next.features.slice(-2)[1]).toBeCloseTo(({ 0: 100, 50: 100, 100: 150 }[aggression]!) / 360);
     expect(next).not.toHaveProperty('pedals');
 });
 
@@ -689,8 +690,8 @@ it('scores measured speed and acceleration with capped progress regardless of pe
 });
 
 it.each([
-    [0, 0.16, 0.17, 117, 114], [100, 0.26, 0.27, 114, 108],
-    [0, 0.56, 0.57, 254 / 3, 268 / 3], [100, 0.46, 0.47, 83.5, 87],
+    [0, 0.26, 0.27, 96, 92], [100, 0.26, 0.27, 144, 138],
+    [0, 0.56, 0.57, 104, 108], [100, 0.56, 0.57, 156, 162],
 ])('rewards the requested acceleration/deceleration timing at aggression %s', (aggression, start, end, speed, nextSpeed) => {
     const { observation } = trainingFixture();
     const before = { ...observation, aggression, normalizedPosition: start, speed };
@@ -699,11 +700,11 @@ it.each([
     expect(matched.timing).toBeCloseTo(1);
     expect(matched.speedComparison.speedGoalProgress).toBeCloseTo(Math.abs(nextSpeed - speed));
     // Reaching the goal from either side is useful; holding at it earns no bonus.
-    expect(drivingReward({ ...before, speed: nextSpeed }, after).timing).toBe(0);
+    expect(drivingReward({ ...before, speed: nextSpeed }, after).timing).toBeCloseTo(0);
     expect(drivingReward({ ...before, speed: 2 * nextSpeed - speed }, after).timing).toBeCloseTo(matched.timing);
-    // Useful changes still earn credit while far from the target.
+    // Useful changes still earn correction credit, offset by the remaining speed penalty.
     const offset = nextSpeed < speed ? 40 : -40;
-    expect(drivingReward({ ...before, speed: speed + offset }, { ...after, speed: nextSpeed + offset }).timing).toBeCloseTo(matched.timing);
+    expect(drivingReward({ ...before, speed: speed + offset }, { ...after, speed: nextSpeed + offset }).timing).toBeCloseTo(0);
 });
 
 it.each([
@@ -717,15 +718,15 @@ it.each([
         const matched = drivingReward(before, after);
         expect(matched.timing).toBeCloseTo(2);
         expect(drivingReward({ ...before, speed: earlySpeed }, { ...after, speed: earlyNext }).timing).toBeLessThan(0);
-        expect(drivingReward({ ...before, speed: lateSpeed }, { ...after, speed: lateNext }).timing).toBe(0);
+        expect(drivingReward({ ...before, speed: lateSpeed }, { ...after, speed: lateNext }).timing).toBeLessThan(0);
     });
 
-it('checks higher and increasing speed before reference throttle pickup against the aggressive target', () => {
+it('rewards approaching the higher aggressive target even on a constant-speed section', () => {
     const { observation } = trainingFixture();
-    const before = { ...observation, aggression: 100, normalizedPosition: 0.46, speed: 83.5 };
-    const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.47, speed: 87 };
+    const before = { ...observation, aggression: 100, normalizedPosition: 0.46, speed: 116.5 };
+    const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.47, speed: 120 };
     const reward = drivingReward(before, after);
-    expect(reward.speedComparison).toMatchObject({ reference: 80, referenceAcceleration: 0, measured: 87 });
+    expect(reward.speedComparison).toMatchObject({ reference: 80, target: 120, referenceAcceleration: 0, targetAcceleration: 0, measured: 120 });
     expect(reward.speedComparison.measuredAcceleration).toBeGreaterThan(0);
     expect(reward.timing).toBeCloseTo(1);
     expect(drivingReward({ ...before, aggression: 50 }, after).timing).toBeLessThan(0);
@@ -737,4 +738,52 @@ it.each([
 ])('cannot farm timing reward while stationary or reversing: %j', (fields) => {
     const { observation: before } = trainingFixture();
     expect(drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200, controls: NEUTRAL, ...fields }).timing).toBe(0);
+});
+
+
+it.each([0, 50, 75, 100])('penalizes holding a speed above or below the aggression %s target', (aggression) => {
+    const { observation } = trainingFixture();
+    const position = 0.402;
+    const target = referenceSpeedTargets(observation.reference, position, aggression).target;
+    const score = (error: number) => {
+        const before = { ...observation, aggression, normalizedPosition: 0.4, speed: target + error };
+        return drivingReward(before, { ...before, normalizedPosition: position, capturedAt: 1200, measuredAt: 1200 });
+    };
+    expect(score(0).timing).toBe(0);
+    expect(score(10).timing).toBeCloseTo(-0.1);
+    expect(score(-10).timing).toBeCloseTo(score(10).timing);
+    expect(score(20).timing).toBeCloseTo(-0.2);
+    expect(score(10).total).toBeLessThan(score(0).total);
+});
+
+
+it.each([0, 25, 50])('uses Live Phrases targets in observation inputs and reward at aggression %s', (aggression) => {
+    const { lap, map } = brakingReferenceFixture();
+    const speedIndex = lap.target_features.indexOf('expert_optimal_speed');
+    const i = 20;
+    const observe = (index: number, now: number) => {
+        const { live, vision } = trainingFixture(now, aggression, lap);
+        live.currentTelemetry.Graphics_normalized_car_position = lap.x[index];
+        live.currentTelemetry.Physics_speed_kmh = brakingFixtureSpeed(lap.x[index], aggression);
+        return readDrivingObservation(live, vision, lap, aggression, now, cloneConfig(), map).observation!;
+    };
+    const before = observe(i - 1, 1000), after = observe(i, 1200);
+    expect(after.features.slice(-2)[0]).toBeCloseTo(lap.y[i][speedIndex] / 360);
+    expect(after.features.slice(-1)[0]).toBeCloseTo(brakingFixtureSpeed(lap.x[i], aggression) / 360);
+    expect(after.reference).toBe(before.reference);
+    const reward = drivingReward(before, after);
+    expect(reward.speedComparison.target).toBeCloseTo(brakingFixtureSpeed(lap.x[i], aggression));
+    expect(reward.speedComparison.targetAcceleration).toBeCloseTo((brakingFixtureSpeed(lap.x[i], aggression) - brakingFixtureSpeed(lap.x[i - 1], aggression)) / 0.72);
+    const held = { ...before, speed: after.speed };
+    expect(drivingReward(held, after).timing).toBeCloseTo(0);
+    expect(drivingReward({ ...held, speed: after.speed + 10 }, { ...after, speed: after.speed + 10 }).timing).toBeLessThan(0);
+});
+
+it('uses the configured speed tolerance to scale the speed-following penalty', () => {
+    const { observation } = trainingFixture();
+    const before = { ...observation, normalizedPosition: 0.4, speed: 90 };
+    const after = { ...before, normalizedPosition: 0.402, capturedAt: 1200, measuredAt: 1200 };
+    const config = cloneConfig();
+    config.reward.speedTolerance = 40;
+    expect(drivingReward(before, after, config).timing).toBeCloseTo(drivingReward(before, after).timing / 2);
 });

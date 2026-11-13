@@ -20,6 +20,26 @@ beforeEach(() => {
 });
 afterEach(() => { jest.restoreAllMocks(); jest.useRealTimers(); });
 
+it.each([true, false])('scores off-track time once per fresh observation and includes it in learning (training=%s)', async (train) => {
+    const run = setup();
+    const learn = jest.spyOn(run.policy, 'learnAsync');
+    await run.loop.start(run.policy, train); await flush();
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1200, offTrack: true } }, 1200);
+    jest.advanceTimersByTime(100); await flush();
+    const reward = run.loop.state.reward!;
+    expect(reward.offTrack).toBe(-1);
+    expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact - 1);
+    expect(run.loop.state.episodeReward).toBe(reward.total);
+    expect(learn).toHaveBeenCalledTimes(train ? 1 : 0);
+    expect(learn.mock.calls.slice(-1)).toEqual(train ? [[expect.anything(), reward.total, expect.anything(), 0.2, expect.any(Array)]] : []);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.episodeReward).toBe(reward.total);
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1400, offTrack: false } }, 1400);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.reward!.offTrack).toBe(0);
+    await run.loop.stop();
+});
+
 it('requires GPU initialization before applying AI controls and reports initialization failures', async () => {
     const run = setup();
     jest.spyOn(run.policy, 'initializeGpu').mockRejectedValue(new Error('GPU unavailable'));
@@ -1135,7 +1155,7 @@ it('waits for the effect of an acknowledged action and learns only once per new 
     jest.advanceTimersByTime(100); await flush();
     expect(run.policy.steps).toBe(1);
     const reward = run.loop.state.reward!;
-    expect(reward.timing).toBe(0); // The speed stayed unchanged while the car moved forward.
+    expect(reward.timing).toBeCloseTo(-0.088); // Holding 108 km/h above the 99.2 km/h target is penalized.
     expect(reward.progress).toBeGreaterThan(0);
     expect(reward.total).toBeCloseTo(reward.timing + reward.progress);
     const memory = new DrivingMemory();
@@ -1439,7 +1459,7 @@ it('does not send another action when Stop races with a paddle release', async (
 
 it.each([true, false])('attributes reward to the action’s aggression while the next policy input follows the live slider (training=%s)', async (train) => {
     const run = setup();
-    const observation = { ...run.fixture.observation, speed: 90 };
+    const observation = { ...run.fixture.observation, speed: 100 };
     const withAggression = (aggression: number, capturedAt: number, position: number) => {
         const speedTargets = referenceSpeedTargets(observation.reference, position, aggression);
         return { ...observation, aggression, capturedAt, normalizedPosition: position, speedTargets,
@@ -1462,12 +1482,12 @@ it.each([true, false])('attributes reward to the action’s aggression while the
     jest.advanceTimersByTime(100); await flush();
     expect(learn).not.toHaveBeenCalled();
     const next = withAggression(100, 1200, 0.252);
-    run.input({ observation: { ...next, speed: 89.4, controls: { ...NEUTRAL, throttle: 0, brake: 1 } } }, 1200);
+    run.input({ observation: { ...next, speed: 99.2, controls: { ...NEUTRAL, throttle: 0, brake: 1 } } }, 1200);
     jest.advanceTimersByTime(100); await flush();
     expect(run.loop.state.reward!.speedComparison).toMatchObject({ aggression: 0 });
-    expect(run.loop.state.reward!.speedComparison.target).toBeCloseTo(89.4);
-    expect(run.loop.state.reward!.speedComparison.targetAcceleration).toBeCloseTo(-0.6 / 0.72);
-    expect(run.loop.state.reward!.timing).toBeCloseTo(0.2 * 0.6 / (0.72 * 3));
+    expect(run.loop.state.reward!.speedComparison.target).toBeCloseTo(99.2);
+    expect(run.loop.state.reward!.speedComparison.targetAcceleration).toBeCloseTo(-0.8 / 0.72);
+    expect(run.loop.state.reward!.timing).toBeCloseTo(0.2 * 0.8 / (0.72 * 3));
     const memory = new DrivingMemory();
     memory.encode(withAggression(0, 1000, 0.25));
     expect(decide).toHaveBeenLastCalledWith(memory.encode(next), train, expect.anything());
@@ -1478,9 +1498,9 @@ it.each([true, false])('attributes reward to the action’s aggression while the
     run.input({ observation: last }, 1400);
     jest.advanceTimersByTime(100); await flush();
     expect(run.loop.state.reward!.speedComparison.aggression).toBe(100);
-    expect(run.loop.state.reward!.speedComparison.target).toBeCloseTo(117.6);
-    // Acceleration toward the aggressive goal earns credit while still far below it.
-    expect(run.loop.state.reward!.timing).toBeCloseTo(0.2 * 0.6 / (0.72 * 3));
+    expect(run.loop.state.reward!.speedComparison.target).toBeCloseTo(147.6);
+    // Acceleration earns correction credit, with a penalty for remaining far below the aggressive goal.
+    expect(run.loop.state.reward!.timing).toBeCloseTo(0.2 * (0.8 / (0.72 * 3) - 1));
     expect(run.policy.steps).toBe(train ? 2 : 0);
     expect((await run.policy.checkpointAsync())).toEqual(train ? expect.not.objectContaining(before) : before);
     await run.loop.stop();

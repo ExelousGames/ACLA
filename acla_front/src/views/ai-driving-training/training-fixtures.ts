@@ -4,6 +4,7 @@ import { POLICY_CAMERA_HEIGHT, POLICY_CAMERA_INPUTS, POLICY_CAMERA_WIDTH } from 
 import { createLiveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import { readDrivingObservation } from './driving-observation';
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
+import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 
 export function referenceLapFixture(): TopLapReferenceEntry {
     // A 400-coordinate-unit square, with a slow corner between deceleration and acceleration.
@@ -41,4 +42,36 @@ export function trainingFixture(now = 1000, aggression = 50, referenceLap = refe
         reconstruction: null, geometry: null };
     vision.reconstructedScene = reconstructScene(vision);
     return { live, vision, referenceLap, observation: readDrivingObservation(live, vision, referenceLap, aggression, now).observation! };
+}
+
+/** Known braking work: 50 m at 6 m/s², then 50 m at 1 m/s²; turn-in is at 240 m. */
+export function brakingReferenceFixture() {
+    const x = Array.from({ length: 100 }, (_, i) => i / 100);
+    const lap: TopLapReferenceEntry = { game: 'acc', track: 'monza', car: 'GT3', avg_grip_int: 2, x,
+        target_features: ['expert_optimal_player_pos_x', 'expert_optimal_player_pos_y', 'expert_optimal_player_pos_z',
+            'expert_optimal_brake', 'expert_optimal_throttle', 'expert_optimal_speed'],
+        y: x.map((_, i) => {
+            const d = i * 10;
+            const xy = d < 240 ? [d, 0] : d < 500 ? [240, d - 240] : d < 740 ? [740 - d, 260] : [0, 1000 - d];
+            const speed = i < 20 || i >= 70 ? 144 : i <= 25 ? Math.sqrt(1600 - 120 * (i - 20)) * 3.6
+                : i < 30 ? Math.sqrt(1000 - 20 * (i - 25)) * 3.6 : i <= 60 ? 108 : 108 + (i - 60) * 3.6;
+            return [...xy, 0, i >= 20 && i < 25 ? 1 : i >= 25 && i < 30 ? 1 / 6 : 0, i >= 60 ? 1 : 0, speed];
+        }) };
+    const map: CircuitMapDto = {
+        id: 'braking', game: 'acc', source_track_key: 'monza', circuit_name: 'Monza', resolution: 1000, samples: {},
+        centerline_tags: [{ id: 'turn', label: 'corner', start_position: 0.24, end_position: 0.5 }],
+    };
+    return { lap, map };
+}
+
+/** Analytic speed from the unchanged 30 m/s minimum and the two braking rates above. */
+export function brakingFixtureSpeed(position: number, aggression: number): number {
+    const caution = Math.max(0, 1 - aggression / 50);
+    const start = 200 - 25 * caution / 3, transition = 250 - 10 * caution;
+    const distance = position * 1000;
+    const work = 6 * Math.max(0, transition - Math.max(start, distance))
+        + Math.max(0, 300 - Math.max(transition, distance));
+    const speed = position <= 0.6 ? Math.sqrt(900 + 2 * work) * 3.6
+        : position < 0.7 ? 108 + (position - 0.6) * 360 : 144;
+    return speed * (1 + Math.max(0, aggression - 50) / 100);
 }

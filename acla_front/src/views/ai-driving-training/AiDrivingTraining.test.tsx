@@ -8,6 +8,7 @@ import { DrivingPolicy, emptyTrainingDocument } from './driving-policy';
 import { cloneConfig } from './driving-model-config';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import type { VisionTimingSnapshot } from 'views/live-session/track-vision/vision-timing';
+import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 
 let mockInput: ObservationResult;
 const mockRead = jest.fn();
@@ -62,6 +63,41 @@ beforeEach(() => {
         })) };
 });
 afterEach(async () => { await flush(); delete window.virtualController; delete window.drivingModelFiles; jest.restoreAllMocks(); jest.useRealTimers(); });
+
+it('passes Live Map boundaries to observations and displays the off-track penalty and availability', async () => {
+    const circuitMap: CircuitMapDto = { id: 'monza', game: 'acc', source_track_key: 'monza', circuit_name: 'Monza', resolution: 1000,
+        samples: Object.fromEntries(([['left_boundary', -5], ['right_boundary', 5]] as const).map(([side, x]) => [side,
+            [-10, 0, 10].map((y, i) => ({ x, y, z: 0, normalized_position: 0.24 + i * 0.01, bin: 240 + i * 10,
+                sample_count: 1, updated_at: '' }))])) };
+    const referenceLap = referenceLapFixture();
+    let fixture = trainingFixture(Date.now(), 50, referenceLap);
+    const map = { getReferenceLap: () => referenceLap, getCircuitMap: () => circuitMap };
+    const vision = { getLatestDrivingDetection: () => fixture.vision };
+    mockFindComponentRef.mockImplementation((name) => ({ current: name.endsWith('track-vision') ? vision : map }));
+    jest.spyOn(liveTelemetryStore, 'getSnapshot').mockImplementation(() => fixture.live);
+    mockRead.mockImplementation((...args) => jest.requireActual('./driving-observation').readDrivingObservation(...args));
+    await renderTraining();
+    expect(mockRead).toHaveBeenLastCalledWith(fixture.live, fixture.vision, referenceLap, 50, expect.any(Number), expect.anything(), circuitMap);
+    expect(screen.getByLabelText('Off-track detection')).toHaveTextContent('Waiting for a scored transition.');
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
+    act(() => { jest.advanceTimersByTime(200); }); await flush();
+    fixture = trainingFixture(Date.now(), 50, referenceLap);
+    ['front_left', 'front_right', 'rear_left', 'rear_right'].forEach((wheel, i) => {
+        Object.assign(fixture.live.currentTelemetry, { [`Physics_tyre_contact_point_${wheel}_x`]: 7 + i % 2,
+            [`Physics_tyre_contact_point_${wheel}_y`]: i < 2 ? 2 : -2 });
+    });
+    act(() => { jest.advanceTimersByTime(100); }); await flush();
+    expect(getDefinition('Off-track penalty')).toHaveTextContent('-1.000');
+    expect(screen.getByLabelText('Off-track detection')).toHaveTextContent('Off track');
+    expect(screen.getByText(/only when all four tyre contact points are outside/)).toBeInTheDocument();
+    act(() => { jest.advanceTimersByTime(200); }); await flush();
+    fixture = trainingFixture(Date.now(), 50, referenceLap);
+    act(() => { jest.advanceTimersByTime(100); }); await flush();
+    expect(getDefinition('Off-track penalty')).toHaveTextContent('0.000');
+    expect(screen.getByLabelText('Off-track detection')).toHaveTextContent('Off-track detection unavailable');
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+});
 
 it('shows a GPU startup failure without starting AI controls', async () => {
     mockInput = { observation: trainingFixture(Date.now()).observation };
@@ -820,7 +856,7 @@ it('persists the aggression setting, restores it on remount and resets to refere
     expect(slider).toHaveAttribute('min', '0');
     expect(slider).toHaveAttribute('max', '100');
     fireEvent.change(slider, { target: { value: '0' } }); await flush();
-    expect(screen.getByText(/Cautious spreads the slower-speed area/)).toHaveTextContent('20.0 coordinate units');
+    expect(screen.getByText(/Uses the same speed targets as Live Phrases/)).toHaveTextContent('100% braking adjustment');
     expect(JSON.parse(files.get(MODEL_PATH)!).configuration.aggression).toBe(0);
     view.unmount();
     await renderTraining();
@@ -856,17 +892,17 @@ it.each([true, false])('uses Live Map’s speed targets without position output 
     fireEvent.click(screen.getByRole('button', { name: train ? 'Start training' : 'Run trained model' })); await flush();
     expect(slider).toBeEnabled();
     fireEvent.change(slider, { target: { value: '100' } });
-    expect(mockRead).toHaveBeenLastCalledWith(expect.anything(), fixture.vision, referenceLap, 100, expect.any(Number), expect.objectContaining({ aggression: 100 }));
+    expect(mockRead).toHaveBeenLastCalledWith(expect.anything(), fixture.vision, referenceLap, 100, expect.any(Number), expect.objectContaining({ aggression: 100 }), null);
     expect(screen.queryByRole('table', { name: 'Live pedals · current aggression' })).not.toBeInTheDocument();
     expect(getDefinition('Reference speed')).toHaveTextContent('100.0 km/h');
-    expect(getDefinition('Aggression target speed')).toHaveTextContent('120.0 km/h');
-    expect(screen.getByText(/Aggressive condenses the slower-speed area/)).toBeInTheDocument();
+    expect(getDefinition('Aggression target speed')).toHaveTextContent('150.0 km/h');
+    expect(screen.getByText(/Raises reference speed by 50%/)).toBeInTheDocument();
     expect(screen.queryByText('Reference error')).not.toBeInTheDocument();
     expect(screen.queryByText('Reference pedal reward')).not.toBeInTheDocument();
     expect(screen.queryByText('Drive fast')).not.toBeInTheDocument();
     expect(screen.queryByText('Penalize instability')).not.toBeInTheDocument();
     expect(screen.getByText('Acceleration / deceleration')).toBeInTheDocument();
-    expect(screen.getByText(/holding the same speed earns no bonus/)).toBeInTheDocument();
+    expect(screen.getByText(/holding an incorrect speed is penalized/)).toBeInTheDocument();
     expect(getDefinition('Normalized position progress')).toHaveTextContent('0.000');
     expect(screen.queryByText('Drive toward the reference line')).not.toBeInTheDocument();
     act(() => { jest.advanceTimersByTime(100); }); await flush();

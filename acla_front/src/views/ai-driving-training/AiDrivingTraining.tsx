@@ -11,9 +11,9 @@ import { discardBrowserModels, drivingModelFiles, loadDrivingModel, saveDrivingM
 import { DrivingTrainingLoop, initialTrainingState } from './driving-training-loop';
 import { DrivingControlOutput } from './driving-control-output';
 import type { ControlSource } from './driving-control';
-import { aggressionRadius } from './driving-reference';
 import { IMPACT_CONFIDENCE_THRESHOLD } from './driving-impact';
 import { DrivingImpactMonitor } from './driving-impact-monitor';
+import { OFF_TRACK_PENALTY_PER_SECOND } from './driving-off-track';
 import type { AccControlPreset, ControllerAction, VirtualController } from './virtual-controller';
 import ManualDrivingControls, { ManualDrivingControlsHandle } from './ManualDrivingControls';
 import ObservationInputDelays, { ObservationDelaySnapshot } from './ObservationInputDelays';
@@ -108,7 +108,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             ? vision.getLatestDrivingDetection() : vision?.getLatestDetection() ?? null;
         const checkedAt = Date.now(), started = performance.now();
         const result = readDrivingObservation(live, detection,
-            map?.getReferenceLap() ?? null, aggressionRef.current, checkedAt, configuration.current);
+            map?.getReferenceLap() ?? null, aggressionRef.current, checkedAt, configuration.current, map?.getCircuitMap?.() ?? null);
         return { ...result, delays: { checkedAt, telemetryReceivedAt: live.receivedAt,
             capturedAt: detection?.capturedAt, pairedTelemetryReceivedAt: detection?.telemetry?.receivedAt,
             publishedTiming: detection?.timing, latestTiming: vision?.getTimingSnapshot?.(),
@@ -498,9 +498,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <input id="driving-aggression" type="range" min="0" max="100" step="1" value={aggression} disabled={fileBusy || initializingGpu}
                         aria-describedby="driving-aggression-meaning" onChange={(event) => changeAggression(Number(event.target.value))} />
                     <div className="driving-aggression-scale"><span>0 · Cautious</span><span>50 · Reference</span><span>100 · Aggressive</span></div>
-                    <p id="driving-aggression-meaning">{aggression < 50 ? 'Cautious spreads the slower-speed area to outer points and lowers speed targets through braking and throttle sections.'
-                        : aggression > 50 ? 'Aggressive condenses the slower-speed area and raises speed targets through braking and throttle sections.' : 'Reference uses the recorded speed targets through braking and throttle sections.'}
-                        {' '}Area adjustment: up to {aggressionRadius(aggression, config.reward.aggressionMaxRadius).toFixed(1)} coordinate units along the reference line (maximum {config.reward.aggressionMaxRadius}; limited between nearby pedal events).</p>
+                    <p id="driving-aggression-meaning">{aggression < 50
+                        ? `Uses the same speed targets as Live Phrases at ${100 - 2 * aggression}% braking adjustment. 0 matches Live Phrases 100%; 50 follows the recorded reference.`
+                        : aggression > 50 ? `Raises reference speed by ${aggression - 50}%. 50 follows the recorded reference; 100 targets 50% higher speed.`
+                            : 'Reference uses the recorded speed targets (Live Phrases 0% braking adjustment).'}</p>
                     <button disabled={fileBusy || initializingGpu} onClick={() => changeAggression(50)}>Reset to reference</button>
                 </div>
                 <dl className="driving-details">
@@ -517,16 +518,22 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <dt>Camera image</dt><dd>{config.observation.cameraWidth} × {config.observation.cameraHeight} RGB{observation ? '' : ' · Waiting'}</dd>
                     <dt>Model compute</dt><dd>{initializingGpu ? 'Preparing GPU…' : 'WebGPU · CNN, LSTM and training'}</dd>
                 </dl>
-                <p className="driving-note">The policy uses car-local velocity XYZ, g-force XYZ, yaw rate, speed, current gear, engine RPM, game, car, map, normalized position, current controls, camera pixels, aggression, reference speed and target speed. Acceleration and deceleration timing uses the reference lap’s throttle and brake events together with its speed profile. It generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights. Models saved with a different observation input set need to be trained again.</p>
+                <p className="driving-note">The policy uses car-local velocity XYZ, g-force XYZ, yaw rate, speed, current gear, engine RPM, game, car, map, normalized position, current controls, camera pixels, aggression, reference speed and target speed. Speed targets follow the Live Phrases calculation up to aggression 50, then increase reference speed linearly up to 50% at aggression 100. The policy generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights. Models saved with a different observation input set or aggression calculation need to be trained again.</p>
             </section>
             <section className="driving-card">
                 <h2>Reward signal</h2>
                 <dl className="driving-rewards">
                     <div><dt>Acceleration / deceleration</dt><dd>{state.reward?.timing.toFixed(3) ?? '0.000'}</dd>
-                        <p>Measured acceleration or deceleration earns reward when it moves speed toward the aggression-adjusted goal, even while far from that goal or holding the pedals steady. Moving away from the goal is penalized; holding the same speed earns no bonus. Both speed readings are compared with the same target, so a changing target alone earns no reward. Cautious driving spreads the slower-speed area outward and lowers its targets; aggressive driving condenses it and raises its targets. Overshooting reduces credit. Reward is weighted by forward progress. Stationary or reverse driving earns no acceleration/deceleration bonus.</p>
+                        <p>Measured acceleration or deceleration earns credit when it moves speed toward the aggression-adjusted goal, including while holding the pedals steady. Driving above or below that goal subtracts reward in proportion to the speed difference, capped at {config.reward.speedTolerance} km/h. Holding the correct speed has no penalty; holding an incorrect speed is penalized. Both speed readings use the same destination target, so a changing target alone earns no correction credit. Moving away and overshooting reduce reward. Reward is weighted by forward progress. Stationary or reverse driving earns no acceleration/deceleration bonus.</p>
                         {state.reward && <p>Last scored at aggression {state.reward.speedComparison.aggression}: speed {state.reward.speedComparison.measured.toFixed(1)} / reference {state.reward.speedComparison.reference.toFixed(1)} / target {state.reward.speedComparison.target.toFixed(1)} km/h; speed gap closed {state.reward.speedComparison.speedGoalProgress.toFixed(2)} km/h (negative means moving away); measured acceleration {state.reward.speedComparison.measuredAcceleration.toFixed(2)} m/s² (negative means deceleration).</p>}
                     </div>
                     <div><dt>Normalized position progress</dt><dd>{state.reward?.progress.toFixed(3) ?? '0.000'}</dd><p>Faster increases in normalized lap position per second earn more reward; backward progress is penalized. Start/finish crossings preserve the direction of progress. Zero speed or unchanged normalized position subtracts {(0.25 * config.reward.progressWeight * 0.01).toFixed(3)} reward per second.</p></div>
+                    <div><dt>Off-track penalty</dt><dd>{state.reward?.offTrack.toFixed(3) ?? '0.000'}</dd>
+                        <p>Off-track driving subtracts {OFF_TRACK_PENALTY_PER_SECOND} reward per second. iRacing uses its reported track surface. ACC applies this penalty only when all four tyre contact points are outside the Live Map’s left and right boundaries. A tyre touching a boundary is still on track.</p>
+                        <p aria-label="Off-track detection">{!state.reward ? 'Waiting for a scored transition.'
+                            : state.reward.offTrackDetected === null ? 'Off-track detection unavailable: missing telemetry or matching track boundaries.'
+                            : state.reward.offTrackDetected ? 'Off track' : 'On track'}</p>
+                    </div>
                     <div><dt>Impact penalty</dt><dd>{state.reward?.impact.toFixed(3) ?? '0.000'}</dd>
                         <p>Live telemetry checks for impacts between AI frames, including brief bounces followed by sliding. With the brake released, unexpected slowing uses a smaller coasting allowance at every speed. With steering also centered, sideways deflection adds evidence of a diagonal impact. The strongest detected impact within each training interval applies a penalty. Confidence of at least {IMPACT_CONFIDENCE_THRESHOLD * 100}% applies a penalty scaled by confidence and severity. Severity reaches 100 at 10 m/s of excess velocity change. These are heuristic estimates; spins and extreme braking can resemble impacts. Car damage telemetry is not used.</p>
                         <p aria-label="Impact estimate">{!state.reward ? 'Waiting for two fresh motion samples.'

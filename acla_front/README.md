@@ -288,18 +288,15 @@ Telemetry is paired with the image before inference;
 stale or mismatched sessions are rejected. New policies have a 128-unit LSTM,
 a three-dimensional Gaussian actor, a three-way categorical shifting head
 and a TD(0) value head. **Driving aggression** shapes the reference lap's speed goals:
-50 follows the reference. Lower settings spread the slower-speed area outward with
-earlier deceleration and later acceleration, lowering targets through the section.
-Higher settings condense that area with later deceleration and earlier acceleration,
-raising targets through the section. The shift grows linearly
-to 20 raw coordinate units along the reference at 0 and 100. Brake application or
-throttle lift anchors deceleration; throttle pickup anchors acceleration, including
-pickup during trail braking. Brake release alone does not mean acceleration.
-The speed profile is interpolated between the shifted pedal events, wrapping at
-start/finish. Each shift is limited to a quarter of the nearest event spacing so
-events cannot cross. Cautious targets never exceed the unshifted reference speed;
-aggressive targets never fall below it, including uneven speeds within a pedal phase.
-A lap with no pedal changes keeps its original speed profile.
+AI training owns its speed-profile calculation independently of Live Phrases.
+0–50 matches the braking-speed calculation and tagged corner boundaries used by Live Phrases,
+with `liveBrakingAdjustment = 100 - 2 × trainingAggression`. Training 0 corresponds to
+Live Phrases 100%, 25 to 50%, and 50 to the unchanged reference at 0%.
+Without tagged corners, both use the unchanged reference speed profile.
+Above 50, every reference speed is multiplied by `1 + (trainingAggression - 50) / 100`:
+75 targets 25% higher speed, and 100 targets 50% higher speed. Targets are interpolated
+between the original samples, including across start/finish. Lap and corner snapshots
+are retained for pending actions; changing the selected lap or map requires a fresh episode.
 The selected lap must contain raw XYZ coordinates, `expert_optimal_speed` (km/h),
 `expert_optimal_throttle` and `expert_optimal_brake` (both between 0 and 1).
 Aggression, reference speed and target speed are included in observations and memory.
@@ -307,15 +304,17 @@ The acceleration/deceleration reward credits measured speed changes toward the g
 on every fresh forward-driving transition, including held pedals. It uses one fixed
 goal at the destination position for both speed readings:
 `gapClosed = abs(previousSpeed - targetSpeed) - abs(currentSpeed - targetSpeed)`.
-This rewards useful acceleration or braking even far from the goal. Constant speed
-earns zero, including when already close to the goal or when the target itself moves
-toward the car. Moving away is penalized, and overshooting reduces credit.
+This credits useful acceleration or braking even far from the goal. Moving away is
+penalized, and overshooting reduces credit. Both faster and slower speeds also incur
+a penalty for their remaining difference from the goal, including while holding speed.
 The correction rate uses elapsed telemetry time, not camera processing time:
 `correction = clamp(gapClosed / (3.6 × telemetrySeconds × accelerationTolerance), -1, 1)`.
-With default weights, the reward is
-`100 × forwardProgress × correction`.
-`accelerationTolerance` defaults to 3 m/s². The legacy `speedTolerance` setting remains
-in model JSON for compatibility and is no longer used to score speed proximity.
+The speed-following penalty is `min(abs(currentSpeed - targetSpeed) / speedTolerance, 1)`.
+With default weights, the combined acceleration/deceleration reward is
+`100 × forwardProgress × (correction - speedPenalty)`.
+`accelerationTolerance` defaults to 3 m/s² and `speedTolerance` to 20 km/h.
+Holding the target speed has no penalty; holding an incorrect speed is penalized.
+Correction credit can be outweighed by the remaining speed penalty.
 Forward progress is capped at 0.02 per observation; stationary or reverse driving
 earns no timing bonus. Both ends of a transition use the aggression that produced
 the action, even if the slider changes before scoring. There is no separate raw-speed
@@ -323,7 +322,7 @@ or pedal-matching reward. The previous speed-window and pedal-change-gated rewar
 are removed. Reference error is not a policy or history input, and distance from the
 reference line does not affect rewards. Line-following and approach rewards and
 penalties have been removed, along with their configuration settings. Create a new
-model and retrain; earlier reference-offset checkpoints are rejected without migration.
+model and retrain; earlier reference-offset and pedal-event aggression checkpoints are rejected without migration.
 
 The normalized-position progress reward uses the signed lap-position change, corrected
 for start/finish crossings, divided by elapsed telemetry seconds. With
@@ -362,8 +361,19 @@ Missing telemetry, session changes and pauses do not create synthetic impacts.
 Detected impacts subtract `5 × confidence × severity`, with severity reaching 1 at
 10 m/s of excess velocity change. Vertical bumps and car damage telemetry are excluded;
 spins and extreme braking can still resemble impacts.
-The total reward combines acceleration/deceleration timing, normalized-position progress
-and impact penalties, clamped to the configured total limit. Yaw rate
+**Off-track penalty** subtracts `5 × telemetrySeconds` when the current image's paired
+telemetry is off track. iRacing uses `Graphics_player_track_surface === 0` (`irsdk_OffTrack`);
+pit states are not off track, and missing/invalid or not-in-world values are unavailable.
+ACC checks all four tyre contact points against the matching Live Map's left and right
+boundaries in adapter X/Y coordinates. The penalty applies only when all four tyres
+are outside; touching a boundary counts as on track. Missing tyre coordinates, missing
+or mismatched maps, and unusable boundary sections leave this penalty unavailable.
+Boundary interpolation handles start/finish wrapping but does not bridge gaps larger
+than 2% of a lap. Detection and its penalty appear separately under **Reward signal**.
+The penalty scales with elapsed telemetry time, including while stationary, and does
+not add policy inputs or change the saved model format.
+The total reward combines acceleration/deceleration timing, normalized-position progress,
+off-track and impact penalties, clamped to the configured total limit. Yaw rate
 remains a policy input but does not incur an instability penalty. The removed reward
 settings `yawWindowMs`, `yawDeadband` and `yawPenalty` are no longer accepted in model
 JSON. New policies are untrained;

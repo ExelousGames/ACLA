@@ -1,5 +1,5 @@
 import { inspectDrivingReference, prepareDrivingReference, referenceSpeedTargets } from './driving-reference';
-import { referenceLapFixture } from './training-fixtures';
+import { brakingFixtureSpeed, brakingReferenceFixture, referenceLapFixture } from './training-fixtures';
 
 function speedLap(x: number[], y: number[][]) {
     return { ...referenceLapFixture(), x, y: y.map((row) => row.length === 4 ? [...row, 1, 0] : row),
@@ -15,145 +15,73 @@ it('uses raw XYZ travel distance, interpolates speed, and caches immutable speed
     expect(referenceSpeedTargets(reference, 0.2, 50).reference).toBeCloseTo(100);
     expect(prepareDrivingReference(lap)).toBe(reference);
     expect(Object.isFrozen(reference.points[0])).toBe(true);
-    expect(Object.isFrozen(reference.pedalEvents)).toBe(true);
     lap.y[0][3] = 999;
     lap.y[0][4] = 0;
     expect(reference.points[0]).toMatchObject({ speed: 120, throttle: 1, brake: 0 });
 });
 
-it('anchors the speed profile to reference brake application and throttle pickup', () => {
-    const reference = prepareDrivingReference(referenceLapFixture())!;
-    expect(reference.pedalEvents).toEqual([
-        { distance: 80, kind: 'deceleration', shiftLimit: 30 },
-        { distance: 200, kind: 'acceleration', shiftLimit: 30 },
-    ]);
-    expect(reference.pedalEvents.every(Object.isFrozen)).toBe(true);
-});
-
-it.each([
-    [0.175, 112.5, 120, 120], [0.25, 90, 100, 120], [0.275, 82.5, 90, 105],
-    [0.4, 80, 80, 80], [0.525, 80, 90, 106.25], [0.575, 275 / 3, 110, 120], [0.625, 115, 120, 120],
-])('shifts pedal-anchored slowing and speeding up according to aggression at %s',
-    (position, cautious, neutral, aggressive) => {
-        const reference = prepareDrivingReference(referenceLapFixture())!;
-        [0, 50, 100].forEach((aggression, i) => {
-            const result = referenceSpeedTargets(reference, position, aggression);
-            expect(result.target).toBeCloseTo([cautious, neutral, aggressive][i]);
-            expect(result.radius).toBe(aggression === 50 ? 0 : 20);
-        });
+it.each([0, 12.5, 25, 49, 50])('matches Live Phrases braking adjustment at training aggression %s', (aggression) => {
+    const { lap, map } = brakingReferenceFixture();
+    const original = JSON.stringify(lap);
+    const reference = prepareDrivingReference(lap, map)!;
+    const speed = lap.target_features.indexOf('expert_optimal_speed');
+    if (aggression < 50) expect(referenceSpeedTargets(reference, 0.2, aggression).target).toBeLessThan(lap.y[20][speed]);
+    lap.x.forEach((position, i) => {
+        expect(referenceSpeedTargets(reference, position, aggression).reference).toBe(lap.y[i][speed]);
+        expect(referenceSpeedTargets(reference, position, aggression).target).toBeCloseTo(brakingFixtureSpeed(position, aggression), 8);
+        if (i + 1 < lap.x.length) {
+            const midpoint = (position + lap.x[i + 1]) / 2;
+            expect(referenceSpeedTargets(reference, midpoint, aggression).target)
+                .toBeCloseTo((brakingFixtureSpeed(position, aggression) + brakingFixtureSpeed(lap.x[i + 1], aggression)) / 2);
+        }
     });
-
-it('scales timing shifts with aggression and uses the configured maximum', () => {
-    const reference = prepareDrivingReference(referenceLapFixture())!;
-    const cautious = referenceSpeedTargets(reference, 0.24, 25);
-    expect(cautious.radius).toBe(10);
-    expect(cautious.reference).toBeCloseTo(104);
-    expect(cautious.target).toBeCloseTo(120 - 26 * 6 / 7);
-    expect(referenceSpeedTargets(reference, 0.24, 75).target).toBeCloseTo(112.8);
-    const neutral = referenceSpeedTargets(reference, 0.24, 50);
-    expect(neutral.target).toEqual(neutral.reference);
-    expect(referenceSpeedTargets(reference, 0.24, 0, 10)).toEqual(cautious);
+    expect(JSON.stringify(lap)).toBe(original);
 });
 
-it('keeps cautious targets lower and aggressive targets higher throughout uneven pedal sections', () => {
-    const lap = referenceLapFixture();
-    // A speed recovery during braking and a dip during throttle pickup must not
-    // turn cautious settings into a demand for more speed (or aggressive into less).
-    lap.y[3][5] = 90;
-    lap.y[4][5] = 110;
-    lap.y[6][5] = 100;
-    lap.y[7][5] = 85;
-    const reference = prepareDrivingReference(lap)!;
+it.each([[50, 1], [51, 1.01], [75, 1.25], [100, 1.5]])('increases every reference speed by the direct multiplier at aggression %s', (aggression, multiplier) => {
+    const reference = prepareDrivingReference(referenceLapFixture())!;
     for (let i = 0; i <= 200; i++) {
-        const position = i / 200;
-        const neutral = referenceSpeedTargets(reference, position, 50).target;
-        for (const aggression of [0, 25]) {
-            expect(referenceSpeedTargets(reference, position, aggression).target).toBeLessThanOrEqual(neutral);
-        }
-        for (const aggression of [75, 100]) {
-            expect(referenceSpeedTargets(reference, position, aggression).target).toBeGreaterThanOrEqual(neutral);
-        }
+        const result = referenceSpeedTargets(reference, i / 200, aggression);
+        expect(result.target).toBeCloseTo(result.reference * multiplier);
     }
 });
 
-it('changes timing when reference pedals move even if the speed samples stay identical', () => {
-    const lap = referenceLapFixture();
-    // Move brake/lift onset from 0.2 to 0.1 without altering any recorded speeds.
-    lap.y[2][3] = 0.75;
-    lap.y[2][4] = 0.25;
-    const original = prepareDrivingReference(referenceLapFixture())!;
-    const moved = prepareDrivingReference(lap)!;
-    expect(moved.pedalEvents[0].distance).toBe(40);
-    expect(referenceSpeedTargets(moved, 0.25, 50)).toEqual(referenceSpeedTargets(original, 0.25, 50));
-    expect(referenceSpeedTargets(moved, 0.25, 100).target).not.toBeCloseTo(referenceSpeedTargets(original, 0.25, 100).target);
+it('preserves pending target snapshots and rebuilds targets when the circuit map changes', () => {
+    const { lap, map } = brakingReferenceFixture();
+    const reference = prepareDrivingReference(lap, map)!;
+    expect(prepareDrivingReference(lap, map)).toBe(reference);
+    const withoutCorners = prepareDrivingReference(lap, { ...map, centerline_tags: [] })!;
+    expect(withoutCorners).not.toBe(reference);
+    expect(prepareDrivingReference(lap, map)).toBe(reference);
+    const speed = lap.target_features.indexOf('expert_optimal_speed');
+    const i = 20;
+    expect(referenceSpeedTargets(withoutCorners, lap.x[i], 0).target).toBe(lap.y[i][speed]);
+    // Change the source before the old reference lazily prepares its first cautious profile.
+    lap.y.forEach((row) => { row[speed] = 999; });
+    map.centerline_tags = [];
+    expect(referenceSpeedTargets(reference, lap.x[i], 0).target).toBeCloseTo(brakingFixtureSpeed(lap.x[i], 0));
 });
 
-it('uses reference pedal changes rather than speed extrema or brake release to define events', () => {
-    const lap = referenceLapFixture();
-    lap.y.forEach((row, i) => {
-        const p = lap.x[i];
-        row[3] = p <= 0.2 ? 0.8 : p <= 0.5 ? 0 : 0.8;
-        row[4] = p <= 0.25 ? 0 : p <= 0.3 ? 1 : p <= 0.5 ? 0.4 : 0;
-        row[5] = 100; // Pedal timing remains defined even before speed responds.
-    });
+it('uses the same unadjusted fallback as Live Phrases without tagged corners', () => {
+    const { lap } = brakingReferenceFixture();
     const reference = prepareDrivingReference(lap)!;
-    expect(reference.pedalEvents.map(({ distance, kind }) => ({ distance, kind }))).toEqual([
-        { distance: 80, kind: 'deceleration' }, { distance: 200, kind: 'acceleration' },
-    ]);
-    expect(referenceSpeedTargets(reference, 0.25, 0).target).toBe(100);
+    const speed = lap.target_features.indexOf('expert_optimal_speed');
+    lap.x.forEach((position, i) => expect(referenceSpeedTargets(reference, position, 0).target).toBe(lap.y[i][speed]));
 });
 
-it('uses coordinate distance, not normalized position, to shift pedal events', () => {
-    const lap = referenceLapFixture();
-    const remapped = { ...lap, x: lap.x.map((p) => p * p) };
-    const original = prepareDrivingReference(lap)!;
-    const reference = prepareDrivingReference(remapped)!;
-    expect(reference.pedalEvents).toEqual(original.pedalEvents);
-    // These positions are halfway between the same two recorded samples.
-    expect(referenceSpeedTargets(reference, (0.2 ** 2 + 0.25 ** 2) / 2, 0))
-        .toEqual(referenceSpeedTargets(original, 0.225, 0));
-});
-
-it('keeps the original speed profile when pedals never change, including across start/finish', () => {
+it('interpolates speed across start/finish even with unchanged pedals', () => {
     const reference = prepareDrivingReference(speedLap([0.1, 0.5, 0.9],
         [[0, 0, 0, 120], [100, 0, 0, 100], [100, 100, 0, 80]]))!;
-    expect(reference.pedalEvents).toEqual([]);
     for (const aggression of [0, 50, 100]) {
-        expect(referenceSpeedTargets(reference, 0, aggression).target).toBeCloseTo(100);
-        expect(referenceSpeedTargets(reference, 1, aggression).target).toBeCloseTo(100);
-        expect(referenceSpeedTargets(reference, 0.95, aggression).target).toBeCloseTo(90);
+        const multiplier = 1 + Math.max(0, aggression - 50) / 100;
+        expect(referenceSpeedTargets(reference, 0, aggression).target).toBeCloseTo(100 * multiplier);
+        expect(referenceSpeedTargets(reference, 1, aggression).target).toBeCloseTo(100 * multiplier);
+        expect(referenceSpeedTargets(reference, 0.95, aggression).target).toBeCloseTo(90 * multiplier);
     }
 });
 
-it('wraps pedal-event timing across start/finish', () => {
-    const lap = referenceLapFixture();
-    // Rotate the recorded lap so braking starts just after start/finish.
-    const points = lap.x.slice(0, -1).map((p, i) => ({ p: (p + 0.85) % 1, row: lap.y[i].slice() }))
-        .sort((a, b) => a.p - b.p);
-    const reference = prepareDrivingReference({ ...lap, x: points.map(({ p }) => p), y: points.map(({ row }) => row) })!;
-    const original = prepareDrivingReference(lap)!;
-    for (const aggression of [0, 50, 100]) {
-        expect(referenceSpeedTargets(reference, 0, aggression).target)
-            .toBeCloseTo(referenceSpeedTargets(original, 0.15, aggression).target);
-        expect(referenceSpeedTargets(reference, 1, aggression)).toEqual(referenceSpeedTargets(reference, 0, aggression));
-        expect(referenceSpeedTargets(reference, 0.025, aggression).target)
-            .toBeCloseTo(referenceSpeedTargets(original, 0.175, aggression).target);
-    }
-});
-
-it('limits shifts between close events and handles coincident coordinates without reversing event order', () => {
-    const lap = referenceLapFixture();
-    lap.y.forEach((row) => { row[0] /= 100; row[1] /= 100; });
-    lap.y[1][0] = lap.y[0][0];
-    const reference = prepareDrivingReference(lap)!;
-    expect(reference.pedalEvents.every((event) => event.shiftLimit < 1)).toBe(true);
-    for (const aggression of [0, 50, 100]) {
-        for (let i = 0; i <= 100; i++) {
-            const { target } = referenceSpeedTargets(reference, i / 100, aggression);
-            expect(target).toBeGreaterThanOrEqual(80);
-            expect(target).toBeLessThanOrEqual(120);
-        }
-    }
+it.each([-1, 101, NaN, Infinity])('rejects invalid aggression %s', (aggression) => {
+    expect(() => referenceSpeedTargets(prepareDrivingReference(referenceLapFixture())!, 0.25, aggression)).toThrow(/aggression/);
 });
 
 it('preserves different recorded start/finish speeds and includes their closing segment', () => {
