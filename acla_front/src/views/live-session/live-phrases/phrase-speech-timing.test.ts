@@ -7,11 +7,11 @@ const frame = (sample: StandardTelemetrySample) => ({
     committedSampleCount: 0,
     update: { type: 'frame' as const, game: 'acc' as const, sample, sequence: 1, committedCount: 0, committedSequence: 0 },
 });
-const phrase: PhraseDefinition = { id: 'timed', name: 'Timed instruction', description: 'Timing fixture.', holdMs: 0,
+const phrase: PhraseDefinition = { id: 'timed', name: 'Timed instruction', description: 'Timing fixture.', holdMs: 0, priority: 0,
     sentence: 'A longer instruction.', conditions: [new PhraseCondition('speed', '>=', 30)] };
 const prepare = (definition = phrase, durationMs = 2500) => {
     const engine = new PhraseEngine([definition]);
-    const instance = getPhraseActions(definition)[0].phrases[0].createInstance();
+    const instance = getPhraseActions(definition)[0].phrase.createInstance();
     engine.setSpeechDurations(new Map([[instance.cacheKey, durationMs]]));
     return engine;
 };
@@ -187,7 +187,7 @@ it('uses only the current frame for entry until the phrase audio duration is pre
     const sample = { Static_track: 'test', Static_car_model: 'car', Physics_speed_kmh: 36,
         Physics_brake: 0, Physics_gas: 0, Graphics_normalized_car_position: 0.2601 };
     expect(engine.receiveTelemetry(frame(sample), 1000).state.path).toEqual(['root']);
-    const instance = getPhraseActions(definition)[0].phrases[0].createInstance();
+    const instance = getPhraseActions(definition)[0].phrase.createInstance();
     engine.setSpeechDurations(new Map([[instance.cacheKey, 2000]]));
     expect(engine.receiveTelemetry(frame(sample), 1001).events)
         .toEqual([expect.objectContaining({ sentence: 'Turn in', timestamp: 1001 })]);

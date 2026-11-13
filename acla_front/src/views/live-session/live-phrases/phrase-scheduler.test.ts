@@ -50,6 +50,17 @@ it('retains active speech even if a more important cue is ready and avoids overl
     expect(active.endAt).toBe(1700);
 });
 
+it('orders candidates only by their numeric priorities regardless of category', () => {
+    const candidates: PhraseScheduleCandidate[] = [
+        { ...candidate('brake', 0), category: 'brake' },
+        { ...candidate('turn', 4), category: 'turn' },
+        { ...candidate('throttle', 10), category: 'throttle' },
+        candidate('other', 6),
+    ];
+    expect(schedulePhrases(1000, candidates).items.map(({ id }) => id))
+        .toEqual(['throttle', 'other', 'turn', 'brake']);
+});
+
 it('never places pending slots in the past and drops candidates absent from a new prediction', () => {
     const active: PhraseScheduleItem = { id: 'active', kind: 'phrase', label: 'Active', priority: 0,
         category: 'other', status: 'active', startAt: 500, endAt: 900 };

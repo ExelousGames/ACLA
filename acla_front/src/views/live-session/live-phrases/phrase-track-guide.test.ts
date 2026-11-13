@@ -97,7 +97,7 @@ it('uses the longer Ease brake clip before the Turn in clip can reach the corner
     const engine = new PhraseEngine(phrases);
     prepare(engine, phrases, { 'reference-steering': 300, 'reference-steering-release': 2000 });
     engine.receiveMap(map, 0, reference);
-    const upcoming = engine.receiveTelemetry(frame(sample(0.245, { Physics_brake: 0.8 })), 1000);
+    const upcoming = engine.receiveTelemetry(frame(sample(0.19, { Physics_speed_kmh: 140, Physics_brake: 0.8 })), 1000);
     expect(upcoming.events).toEqual([expect.objectContaining({ sentence: 'Ease brake', brakeRelease: true,
         speech: expect.objectContaining({ preparationTimeMs: 2000 }) })]);
     expect(upcoming.state.path).toEqual(['root', 'Track guide', 'Ease brake']);
@@ -138,7 +138,7 @@ it('disables active guide speech while other cues continue, then enables the gui
     reference.y.forEach((row, index) => { row[4] = index >= 10 && index < 20 ? 0.8 : 0; });
     const brake: PhraseDefinition = { ...definition('reference-brake'),
         conditions: [new PhraseCondition('referencePedalZone', '=', 'brake')] };
-    const other: PhraseDefinition = { id: 'other-guide', name: 'Other guide', description: 'Independent guide.',
+    const other: PhraseDefinition = { id: 'other-guide', name: 'Other guide', description: 'Independent guide.', priority: 0,
         sentence: 'Other cue.', holdMs: 0, conditions: [new PhraseCondition('speed', '>=', 30)] };
     const phrases = [other, brake], engine = new PhraseEngine(phrases);
     prepare(engine, phrases, {});

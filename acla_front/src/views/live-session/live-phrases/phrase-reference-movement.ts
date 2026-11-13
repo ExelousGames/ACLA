@@ -3,14 +3,14 @@ type MovementLevel = 'small' | 'medium' | 'more';
 export type ReferenceMovementCue = `move-${MovementDirection}-${MovementLevel}`;
 
 export const REFERENCE_MOVEMENTS = (['left', 'right'] as const).flatMap((direction) => ([
-    { level: 'small', name: 'Small movement', sentence: `Move to the ${direction}.`,
-        sentenceAlternatives: [`Shift to the ${direction}.`, `Bring it to the ${direction}.`],
+    { level: 'small', priority: 2, name: 'Small movement', sentence: `Move to the ${direction}.`,
+        randomAlternatives: [`Shift to the ${direction}.`, `Bring it to the ${direction}.`],
         description: 'The reference is 3–7 source units away laterally.' },
-    { level: 'medium', name: 'Medium movement', sentence: `Further to the ${direction}.`,
-        sentenceAlternatives: [`More to the ${direction}.`, `Move further to the ${direction}.`],
+    { level: 'medium', priority: 2, name: 'Medium movement', sentence: `Further to the ${direction}.`,
+        randomAlternatives: [`More to the ${direction}.`, `Move further to the ${direction}.`],
         description: 'The reference is 7–13 source units away laterally.' },
-    { level: 'more', name: 'A little bit more', sentence: 'A little bit more.',
-        sentenceAlternatives: ['A bit more.', 'Just a little more.'],
+    { level: 'more', priority: 2, name: 'A little bit more', sentence: 'A little bit more.',
+        randomAlternatives: ['A bit more.', 'Just a little more.'],
         description: 'The driver is moving toward the reference, but would take more than 3 seconds to reach it at this rate.' },
 ] as const).map((movement) => ({ ...movement, direction, cue: `move-${direction}-${movement.level}` as ReferenceMovementCue })));
 

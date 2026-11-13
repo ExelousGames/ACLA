@@ -9,21 +9,21 @@ const frame = (speed = 50): LiveTelemetryFrameEvent => {
         committedSampleCount: 0,
         update: { type: 'frame', game: 'acc', sample, sequence: 1, committedCount: 0, committedSequence: 0 } };
 };
-const phrase = (id: string, referenceCue: PhraseDefinition['referenceCue'], priority?: number): PhraseDefinition => ({
+const phrase = (id: string, referenceCue: PhraseDefinition['referenceCue'], priority: number): PhraseDefinition => ({
     id, referenceCue, priority, name: id, sentence: `${id}.`, description: 'Scheduling fixture.', holdMs: 0,
     conditions: [new PhraseCondition('speed', '>=', 30)],
 });
 const prepare = (phrases: PhraseDefinition[]) => {
     const engine = new PhraseEngine(phrases);
     engine.setSpeechDurations(new Map(phrases.flatMap(getPhraseActions).flatMap((action) =>
-        action.phrases.map((source) => [source.createInstance().cacheKey, 200] as const))));
+        action.phrase.createAudioInstances().map((instance) => [instance.cacheKey, 200] as const))));
     return engine;
 };
-const reversed = () => [phrase('throttle', 'throttle'), phrase('turn', 'steering'), phrase('brake', 'brake')];
+const reversed = () => [phrase('throttle', 'throttle', 1), phrase('turn', 'steering', 2), phrase('brake', 'brake', 3)];
 
 it('removes a completed phrase immediately while its enclosing straight gate stays open', () => {
-    const definition: PhraseDefinition = { ...phrase('one-tight-slow-corner', undefined),
-        additionalActions: [{ sentence: 'Later.', actionConditions: [new PhraseCondition('speed', '>=', 100)] }] };
+    const definition: PhraseDefinition = { ...phrase('one-tight-slow-corner', undefined, 0),
+        additionalActions: [{ sentence: 'Later.', priority: 0, actionConditions: [new PhraseCondition('speed', '>=', 100)] }] };
     const engine = prepare([definition]);
     engine.receiveMap(circuitMap(), 0);
     const driving = { ...frame(), sample: { ...frame().sample, Graphics_normalized_car_position: 0.5 } };
@@ -39,7 +39,7 @@ it('removes a completed phrase immediately while its enclosing straight gate sta
 });
 
 it('does not schedule an empty gate while its contained phrase condition is unmet', () => {
-    const definition: PhraseDefinition = { ...phrase('waiting', undefined),
+    const definition: PhraseDefinition = { ...phrase('waiting', undefined, 0),
         actionConditions: [new PhraseCondition('speed', '>=', 80)] };
     const engine = prepare([definition]);
     const waiting = engine.receiveTelemetry(frame(), 1000);
@@ -60,7 +60,7 @@ it('schedules phrases as they report readiness with their own priorities and dur
     ] };
     const engine = prepare([definition]);
     engine.setSpeechDurations(new Map(getPhraseActions(definition).map((action, index) =>
-        [action.phrases[0].createInstance().cacheKey, (index + 1) * 200])));
+        [action.phrase.createInstance().cacheKey, (index + 1) * 200])));
     const entered = engine.receiveTelemetry(frame(), 1000);
     expect(entered.schedule?.items).toEqual([
         expect.objectContaining({ id: 'group:say:1', kind: 'phrase', label: 'Urgent.', status: 'active', priority: 8, endAt: 1400 }),
@@ -83,7 +83,7 @@ it('keeps closure priority independent of whether a phrase is scheduled', () => 
     expect(waiting.schedule?.items).toEqual([]);
 });
 
-it('dispatches Brake, Turn, then Throttle regardless of declaration order and exposes the same schedule', () => {
+it('dispatches phrases by their explicit priorities regardless of declaration order and exposes the same schedule', () => {
     const engine = prepare(reversed());
     const first = engine.receiveTelemetry(frame(), 1000);
     expect(first.events.map(({ ruleId }) => ruleId)).toEqual(['brake']);
@@ -126,7 +126,23 @@ it('clears pending predictions with stale telemetry, guide disable, and reset', 
     expect(engine.evaluate(2700).schedule?.items).toEqual([]);
 });
 
-it('keeps declaration order for equal priorities and honors explicit numeric overrides', () => {
+it('dispatches throttle before turn and brake when its own priority is higher', () => {
+    const engine = prepare([phrase('brake', 'brake', 0), phrase('turn', 'steering', 4), phrase('throttle', 'throttle', 10)]);
+    const first = engine.receiveTelemetry(frame(), 1000);
+    expect(first.events[0].ruleId).toBe('throttle');
+    expect(first.schedule?.items.map(({ id, priority }) => ({ id, priority }))).toEqual([
+        { id: 'throttle:say:0', priority: 10 },
+        { id: 'turn:say:0', priority: 4 },
+        { id: 'brake:say:0', priority: 0 },
+    ]);
+    engine.speechFinished(first.events[0].id, 1200);
+    const second = engine.receiveTelemetry(frame(), 1300);
+    expect(second.events[1].ruleId).toBe('turn');
+    engine.speechFinished(second.events[1].id, 1500);
+    expect(engine.receiveTelemetry(frame(), 1600).events[2].ruleId).toBe('brake');
+});
+
+it('keeps declaration order for equal priorities across categories', () => {
     const engine = prepare([phrase('first', 'steering', 7), phrase('second', 'brake', 7), phrase('third', 'throttle', 5)]);
     const first = engine.receiveTelemetry(frame(), 1000);
     expect(first.events[0].ruleId).toBe('first');
@@ -135,13 +151,13 @@ it('keeps declaration order for equal priorities and honors explicit numeric ove
     expect(engine.receiveTelemetry(frame(), 1300).events[1].ruleId).toBe('second');
 });
 
-it('inherits action priorities while allowing an individual phrase action to take precedence', () => {
+it('uses each speech action’s own priority independently of its enclosing phrase', () => {
     const definition: PhraseDefinition = { ...phrase('custom', 'brake', 3), additionalActions: [
-        { sentence: 'Inherited.' }, { sentence: 'Urgent.', priority: 8 },
+        { sentence: 'Low priority.', priority: 0 }, { sentence: 'Urgent.', priority: 8 },
     ] };
     const actions = getPhraseActions(definition);
-    expect(actions.map(({ priority }) => priority)).toEqual([3, 3, 8]);
-    expect(actions.map(({ phrases }) => phrases[0].createInstance().priority)).toEqual([3, 3, 8]);
+    expect(actions.map(({ priority }) => priority)).toEqual([3, 0, 8]);
+    expect(actions.map(({ phrase }) => phrase.createInstance().priority)).toEqual([3, 0, 8]);
     const snapshot = prepare([definition]).receiveTelemetry(frame(), 1000);
     expect(snapshot.events[0]).toMatchObject({ sentence: 'Urgent.', instance: { priority: 8 } });
 });
@@ -154,12 +170,13 @@ it('lets explicit exit conditions take precedence over an eligible high-priority
     expect(snapshot.state.path).not.toContain('custom');
 });
 
-it('assigns the requested default priorities to the built-in driving instructions', () => {
-    const priorities = Object.fromEntries(PHRASE_DEFINITIONS.map(({ id, priority }) => [id, priority]));
-    expect(priorities).toMatchObject({
-        'reference-brake': 3, 'reference-releaseBrake': 3, 'reference-steering-release': 3,
-        'reference-steering': 2, 'reference-cornerExit': 2, 'reference-throttle': 1, 'reference-moreThrottle': 1,
-    });
+it('declares a finite priority on every built-in phrase and additional speech action', () => {
+    for (const definition of PHRASE_DEFINITIONS) {
+        for (const action of [definition, ...(definition.additionalActions ?? [])]) {
+            expect(action).toHaveProperty('priority', expect.any(Number));
+            expect(Number.isFinite(action.priority)).toBe(true);
+        }
+    }
 });
 
 it('schedules only evaluated phrases while retaining closure dispatch order after release', () => {
@@ -179,8 +196,8 @@ it('schedules only evaluated phrases while retaining closure dispatch order afte
 });
 
 it('compares a track group using its ready cues rather than an unmatched higher-priority cue', () => {
-    const brake: PhraseDefinition = { ...phrase('brake', 'brake'), conditions: [new PhraseCondition('speed', '>=', 80)] };
-    const engine = prepare([phrase('throttle', 'throttle'), brake, phrase('tactic', undefined, 2)]);
+    const brake: PhraseDefinition = { ...phrase('brake', 'brake', 3), conditions: [new PhraseCondition('speed', '>=', 80)] };
+    const engine = prepare([phrase('throttle', 'throttle', 1), brake, phrase('tactic', undefined, 2)]);
     const first = engine.receiveTelemetry(frame(), 1000);
     expect(first.events.map(({ ruleId }) => ruleId)).toEqual(['tactic']);
     expect(first.schedule?.items.map(({ id }) => id)).toEqual(['tactic:say:0']);
@@ -189,8 +206,8 @@ it('compares a track group using its ready cues rather than an unmatched higher-
 });
 
 it('waits for confirmation before queueing a more important cue and does not interrupt active speech', () => {
-    const brake: PhraseDefinition = { ...phrase('brake', 'brake'), holdMs: 500 };
-    const engine = prepare([phrase('throttle', 'throttle'), brake]);
+    const brake: PhraseDefinition = { ...phrase('brake', 'brake', 3), holdMs: 500 };
+    const engine = prepare([phrase('throttle', 'throttle', 1), brake]);
     const first = engine.receiveTelemetry(frame(), 1000);
     expect(first.events.map(({ ruleId }) => ruleId)).toEqual(['throttle']);
     expect(first.schedule?.items.map(({ id }) => id)).toEqual(['throttle:say:0']);
@@ -205,7 +222,7 @@ it('waits for confirmation before queueing a more important cue and does not int
 });
 
 it('keeps a rearmed cue out of the schedule until its cooldown ends', () => {
-    const engine = prepare([phrase('throttle', 'throttle')]);
+    const engine = prepare([phrase('throttle', 'throttle', 1)]);
     const first = engine.receiveTelemetry(frame(), 1000);
     engine.speechFinished(first.events[0].id, 1100);
     engine.receiveTelemetry(frame(0), 1150);
@@ -216,9 +233,9 @@ it('keeps a rearmed cue out of the schedule until its cooldown ends', () => {
 });
 
 it('ranks a track group by its ready cues and yields after playback to a more important closure', () => {
-    const brake = { ...phrase('brake', 'brake'), conditions: [new PhraseCondition('speed', '>=', 100)] };
+    const brake = { ...phrase('brake', 'brake', 3), conditions: [new PhraseCondition('speed', '>=', 100)] };
     const tactic = { ...phrase('tactic', undefined, 2), conditions: [new PhraseCondition('speed', '>=', 60)] };
-    const engine = prepare([brake, phrase('throttle', 'throttle'), tactic]);
+    const engine = prepare([brake, phrase('throttle', 'throttle', 1), tactic]);
     const first = engine.receiveTelemetry(frame(50), 1000);
     expect(first.events[0].ruleId).toBe('throttle');
     const waiting = engine.receiveTelemetry(frame(70), 1100);

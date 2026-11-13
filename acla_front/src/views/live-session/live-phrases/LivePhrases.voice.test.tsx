@@ -104,7 +104,9 @@ it('prepares on enable, speaks each trigger once without an overlay, and reuses 
     expect(synthesize.mock.calls.map(([, , request]) => request.text)).toEqual(sentences);
     expect(sentences).not.toContain('More left');
     expect(sentences).not.toContain('More right');
-    expect(sentences).toEqual(expect.arrayContaining(['Hold brake.', 'Squeeze gas.', 'More gas.', 'Ease gas.']));
+    expect(sentences).toEqual(expect.arrayContaining(['Hold brake.', 'Squeeze gas.']));
+    expect(sentences).not.toContain('More gas.');
+    expect(sentences).not.toContain('Less gas.');
     expect(sentences).not.toContain('Release brake slower.');
     expect(sentences).not.toContain('Release brake faster.');
     expect(sentences).not.toContain('Less brake.');
@@ -382,8 +384,8 @@ it('toggles track guidance independently without interrupting overtaking audio o
     const trackGuide = jest.spyOn(PhraseEngine.prototype, 'setTrackGuideEnabled');
     try {
         const view = mount();
-        const toggle = screen.getByRole('switch', { name: 'Track guide' });
-        expect(toggle).toBeChecked();
+        const toggle = screen.getByRole('button', { name: 'Track guide' });
+        expect(toggle).toHaveAttribute('aria-pressed', 'true');
         fireEvent.click(toggle);
         await view.enable();
         expect(trackGuide).toHaveBeenLastCalledWith(false, Date.now());
@@ -402,7 +404,7 @@ it('toggles track guidance independently without interrupting overtaking audio o
         expect(screen.getByText('Detection: Enabled')).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Disable detection' }));
         await view.enable();
-        expect(toggle).not.toBeChecked();
+        expect(toggle).toHaveAttribute('aria-pressed', 'false');
         expect(trackGuide).toHaveBeenLastCalledWith(false, Date.now());
     } finally {
         play.mockRestore();
@@ -429,13 +431,13 @@ it.each(['preparing', 'playing'])('honors disabling track guidance while speech 
         toggleGuide.mockReturnValue(snapshot);
         await act(async () => { view.frame(); });
         expect(play).toHaveBeenCalledTimes(state === 'preparing' ? 0 : 1);
-        fireEvent.click(screen.getByRole('switch', { name: 'Track guide' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Track guide' }));
         if (state === 'playing') expect(play.mock.results[0].value.outcome).toEqual({ status: 'cancelled' });
         await act(async () => { resolve(pack('Brake.')); view.frame(); });
         await act(async () => { view.frame(); });
         expect(play).toHaveBeenCalledTimes(state === 'preparing' ? 0 : 1);
         expect(screen.getByText('Detection: Enabled')).toBeInTheDocument();
-        fireEvent.click(screen.getByRole('switch', { name: 'Track guide' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Track guide' }));
         await act(async () => { view.frame(); });
         expect(play).toHaveBeenCalledTimes(state === 'preparing' ? 0 : 1);
     } finally {

@@ -24,11 +24,6 @@ const PhraseScheduler = ({ schedule, enabled }: { schedule: PhraseScheduleSnapsh
                 </div>
                 <span className="phrase-scheduler__count">{items.length} scheduled</span>
             </header>
-            <div className="phrase-scheduler__legend" aria-label="Default priorities">
-                <span data-category="brake">Brake <b>3</b></span>
-                <span data-category="turn">Turn <b>2</b></span>
-                <span data-category="throttle">Throttle <b>1</b></span>
-            </div>
             {items.length > 0 ? <>
                 <div className="phrase-scheduler__summary">
                     {active && <span><b>Active</b> {active.label}</span>}

@@ -10,8 +10,8 @@ const frame = (speed: number): LiveTelemetryFrameEvent => {
         update: { type: 'frame', game: 'acc', sample, sequence: 1, committedSequence: 0, committedCount: 0 } };
 };
 const phrase: PhraseDefinition = {
-    id: 'variants', name: 'Variant guide', description: 'Pick one wording for an eligible action.', holdMs: 0,
-    sentence: 'Move to the left.', sentenceAlternatives: ['Shift to the left.', 'Bring it to the left.'],
+    id: 'variants', name: 'Variant guide', description: 'Pick one wording for an eligible action.', holdMs: 0, priority: 0,
+    sentence: 'Move to the left.', randomAlternatives: ['Shift to the left.', 'Bring it to the left.'],
     conditions: [new PhraseCondition('speed', '>=', 20)],
     actionConditions: [new PhraseCondition('speed', '>=', 100)],
 };
@@ -20,7 +20,7 @@ afterEach(() => jest.restoreAllMocks());
 
 it('creates a fresh instance at execution using the action runtime settings strategy', () => {
     const instanceSettings = jest.fn(() => ({ inputs: { timing: 0.5, energy: 0.75, pitch: -0.25 }, speed: 1.4 }));
-    const engine = new PhraseEngine([{ ...phrase, sentenceAlternatives: [], amplifyCurves: brakeCurves, instanceSettings }]);
+    const engine = new PhraseEngine([{ ...phrase, randomAlternatives: [], amplifyCurves: brakeCurves, instanceSettings }]);
     engine.evaluate(0);
     expect(instanceSettings).not.toHaveBeenCalled();
     const event = engine.receiveTelemetry(frame(100), 100).events[0];
@@ -40,11 +40,11 @@ it('creates a fresh instance at execution using the action runtime settings stra
 it.each(['primary', 'additional'])('chooses once per execution of a %s action, after its conditions match', (kind) => {
     const random = jest.spyOn(Math, 'random').mockReturnValueOnce(0).mockReturnValueOnce(1 / 3).mockReturnValueOnce(0.999999);
     const engine = new PhraseEngine([kind === 'primary' ? phrase : {
-        ...phrase, sentence: 'Ineligible.', sentenceAlternatives: ['Also ineligible.'],
+        ...phrase, sentence: 'Ineligible.', randomAlternatives: ['Also ineligible.'],
         actionConditions: [new PhraseCondition('speed', '>=', 200)], additionalActions: [phrase],
     }]);
     const expected: string[] = [];
-    [phrase.sentence, ...phrase.sentenceAlternatives!].forEach((sentence, index) => {
+    [phrase.sentence, ...phrase.randomAlternatives!].forEach((sentence, index) => {
         const now = index * (COOLDOWN_MS + 1000);
         engine.receiveTelemetry(frame(50), now);
         engine.evaluate(now + 50);
@@ -62,36 +62,47 @@ it.each(['primary', 'additional'])('chooses once per execution of a %s action, a
     });
 });
 
-it.each([undefined, []])('keeps the original sentence without alternatives (%s)', (sentenceAlternatives) => {
+it.each([undefined, []])('keeps the original sentence without random alternatives (%s)', (randomAlternatives) => {
     const random = jest.spyOn(Math, 'random');
-    const engine = new PhraseEngine([{ ...phrase, sentenceAlternatives }]);
+    const engine = new PhraseEngine([{ ...phrase, randomAlternatives }]);
     expect(engine.receiveTelemetry(frame(100), 0).events[0].sentence).toBe(phrase.sentence);
     expect(random).not.toHaveBeenCalled();
 });
 
-it('selects a preloaded sentence once from driving conditions without randomizing directions', () => {
-    const random = jest.spyOn(Math, 'random');
-    const selectSentence = jest.fn(() => phrase.sentenceAlternatives![1]);
-    const engine = new PhraseEngine([{ ...phrase, selectSentence }]);
+it('applies runtime speech settings once to the whole random wording pool', () => {
+    const random = jest.spyOn(Math, 'random').mockReturnValue(0.999999);
+    const instanceSettings = jest.fn(() => ({ speed: 1.4 }));
+    const engine = new PhraseEngine([{ ...phrase, instanceSettings }]);
     const event = engine.receiveTelemetry(frame(100), 0).events[0];
     expect(event.sentence).toBe('Bring it to the left.');
     expect(event.instance!.speech.text).toBe(event.sentence);
-    expect(selectSentence).toHaveBeenCalledTimes(1);
-    expect(random).not.toHaveBeenCalled();
+    expect(event.instance!.speech.speed).toBe(1.4);
+    expect(instanceSettings).toHaveBeenCalledTimes(1);
+    expect(instanceSettings.mock.calls[0]).toEqual([expect.anything(), expect.objectContaining({
+        randomAlternatives: [phrase.sentence, ...phrase.randomAlternatives!],
+    })]);
+    expect(random).toHaveBeenCalledTimes(1);
 });
 
-it.each([undefined, 'Unprepared direction'])('withholds an unavailable selected sentence: %s', (sentence) => {
-    const engine = new PhraseEngine([{ ...phrase, selectSentence: () => sentence }]);
-    expect(engine.receiveTelemetry(frame(100), 0).events).toEqual([]);
+it.each([[50, 'left'], [100, 'right']] as const)('uses phrase conditions at %s km/h to select the %s wording pool', (speed, side) => {
+    const random = jest.spyOn(Math, 'random').mockReturnValue(0.999999);
+    const engine = new PhraseEngine((['left', 'right'] as const).map((direction) => ({
+        ...phrase, id: direction, sentence: `Move to the ${direction}.`, randomAlternatives: [`Shift to the ${direction}.`],
+        actionConditions: undefined,
+        conditions: [new PhraseCondition('speed', direction === 'left' ? '<' : '>=', 100)],
+    })));
+    const event = engine.receiveTelemetry(frame(speed), 0).events[0];
+    expect(event).toMatchObject({ ruleId: side, sentence: `Shift to the ${side}.` });
+    expect(random).toHaveBeenCalledTimes(1);
 });
 
-it('exposes alternatives when inspecting nested speech actions without choosing one', () => {
+it('exposes random alternatives when inspecting nested speech actions without choosing one', () => {
     const random = jest.spyOn(Math, 'random');
     const engine = new PhraseEngine([{ ...phrase, id: 'second-apex', additionalActions: [phrase, phrase] }]);
     const closure = engine.evaluate(0).root.children[0];
     const nestedAction = closure.children[0].children[1];
     expect(nestedAction).toMatchObject({ name: 'say phrase', description: phrase.sentence, fields: {
-        'Phrase selection': 'Random (equal chance)', 'Alternative 1': 'Shift to the left.', 'Alternative 2': 'Bring it to the left.',
+        'Phrase selection': 'Random (equal chance)', 'Random alternative 1': 'Shift to the left.', 'Random alternative 2': 'Bring it to the left.',
     } });
     expect(engine.evaluate(1).events).toEqual([]);
     expect(random).not.toHaveBeenCalled();

@@ -2,8 +2,6 @@ import type { PhraseAudioVariant } from './phrase';
 
 export type PhraseScheduleCategory = 'brake' | 'turn' | 'throttle' | 'other';
 
-export const PHRASE_PRIORITIES = { brake: 3, turn: 2, throttle: 1, other: 0 } as const;
-
 /** Stable sorting keeps declaration order when two candidates have equal importance. */
 export function comparePriority(a: { priority: number }, b: { priority: number }): number {
     return b.priority - a.priority;

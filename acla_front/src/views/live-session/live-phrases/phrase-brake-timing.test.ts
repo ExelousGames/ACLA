@@ -106,6 +106,4 @@ it('suppresses conflicting throttle cues when braking is due before the nominal 
     const result = guidance(lap, 0.12, 40, 0.8);
     expect(result).toMatchObject({ brakeRequired: true, pedalZone: 'throttle', brake: 2500 });
     expect(result.throttle).toBeUndefined();
-    expect(result.moreThrottle).toBeUndefined();
-    expect(result.lessThrottle).toBeUndefined();
 });

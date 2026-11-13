@@ -156,7 +156,7 @@ it('does not infer Unwind from acceleration on a constant-steering arc', () => {
 
 it('prepares every corner cue as a short, fixed speech clip', () => {
     const cues = getPhraseSpeechInstances(PHRASE_DEFINITIONS.filter(({ referenceCue }) =>
-        referenceCue === 'steering' || referenceCue === 'cornerExit'));
+        referenceCue === 'steering' || referenceCue === 'cornerExit' || referenceCue === 'easeBrake'));
     expect(cues.map(({ speech }) => speech.text)).toEqual(expect.arrayContaining([
         'Turn in', 'Ease brake', 'Hold line', 'Unwind', 'Set up left', 'Set up right', 'Set up center',
     ]));
@@ -164,5 +164,5 @@ it('prepares every corner cue as a short, fixed speech clip', () => {
         expect(cues.map(({ speech }) => speech.text)).not.toContain(sentence);
     }
     expect(cues.map(({ speech }) => speech.text)).not.toContain('Set up next corner');
-    expect(cues.every(({ speech, id }) => speech.text.split(/\s+/).length <= (id === 'reference-consecutive-corners:say:0' ? 3 : 2))).toBe(true);
+    expect(cues.every(({ speech, id }) => speech.text.split(/\s+/).length <= (id.startsWith('reference-consecutive-corners-') ? 3 : 2))).toBe(true);
 });

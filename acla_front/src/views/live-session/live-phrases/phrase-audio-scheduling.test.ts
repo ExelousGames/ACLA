@@ -9,7 +9,7 @@ const frame = (speed: number): LiveTelemetryFrameEvent => {
         update: { type: 'frame', game: 'acc', sample, sequence: 1, committedCount: 0, committedSequence: 0 } };
 };
 const definition: PhraseDefinition = {
-    id: 'random', name: 'Random delivery', sentence: 'Brake.', description: 'Audio pool fixture.', holdMs: 0,
+    id: 'random', name: 'Random delivery', sentence: 'Brake.', description: 'Audio pool fixture.', holdMs: 0, priority: 0,
     amplifyCurves: brakeCurves,
     audioVariations: [{ inputs: { pitch: 0.5, timing: 0.2, energy: 0.3 } }, { speed: 0.8 }],
     conditions: [new PhraseCondition('speed', '>=', 45)],
@@ -18,7 +18,7 @@ const definition: PhraseDefinition = {
 const prepare = (phrase = definition, durations = [40, 80, 500]) => {
     const engine = new PhraseEngine([phrase]);
     const action = getPhraseActions(phrase)[0];
-    const instances = action.phrases.flatMap((source) => source.createAudioInstances([{}, ...(action.audioVariations ?? [])]));
+    const instances = action.phrase.createAudioInstances([{}, ...(action.audioVariations ?? [])]);
     engine.setSpeechDurations(new Map(instances.map((instance, index) => [instance.cacheKey, durations[index]])));
     return { engine, instances };
 };
@@ -78,8 +78,8 @@ it('keeps equal-priority declaration order when filtering the phrase that is ent
     const fixed: PhraseDefinition = { ...definition, id: 'fixed', sentence: 'Fixed delivery.',
         audioVariations: undefined, exitConditions: undefined };
     const engine = new PhraseEngine([definition, fixed]);
-    const instances = getPhraseActions(definition)[0].phrases[0].createAudioInstances([{}, ...definition.audioVariations!]);
-    const fixedInstance = getPhraseActions(fixed)[0].phrases[0].createInstance();
+    const instances = getPhraseActions(definition)[0].phrase.createAudioInstances([{}, ...definition.audioVariations!]);
+    const fixedInstance = getPhraseActions(fixed)[0].phrase.createInstance();
     engine.setSpeechDurations(new Map([...instances.map((instance, index) => [instance.cacheKey, [40, 80, 500][index]] as const),
         [fixedInstance.cacheKey, 1000]]));
     engine.receiveTelemetry(frame(40), 1000);
@@ -92,8 +92,8 @@ it('lets another phrase enter when a higher-priority random pool cannot fit', ()
     const fixed: PhraseDefinition = { ...definition, id: 'fixed', sentence: 'Fixed delivery.',
         priority: 1, audioVariations: undefined, exitConditions: undefined };
     const engine = new PhraseEngine([{ ...definition, priority: 3 }, fixed]);
-    const instances = getPhraseActions(definition)[0].phrases[0].createAudioInstances([{}, ...definition.audioVariations!]);
-    const fixedInstance = getPhraseActions(fixed)[0].phrases[0].createInstance();
+    const instances = getPhraseActions(definition)[0].phrase.createAudioInstances([{}, ...definition.audioVariations!]);
+    const fixedInstance = getPhraseActions(fixed)[0].phrase.createInstance();
     engine.setSpeechDurations(new Map([...instances.map((instance) => [instance.cacheKey, 500] as const),
         [fixedInstance.cacheKey, 1000]]));
     engine.receiveTelemetry(frame(40), 1000);
@@ -102,20 +102,20 @@ it('lets another phrase enter when a higher-priority random pool cannot fit', ()
     expect(entered.schedule?.items.map(({ id }) => id)).toEqual([`${fixed.id}:say:0`]);
 });
 
-it('keeps a context-selected wording eligible when only another wording has fitting audio', () => {
-    const selectSentence = jest.fn(() => 'Turn right.');
-    const phrase: PhraseDefinition = { ...definition, sentence: 'Turn left.', sentenceAlternatives: ['Turn right.'],
-        audioVariations: [{ speed: 0.8 }], selectSentence };
-    const engine = new PhraseEngine([phrase]);
-    const instances = getPhraseActions(phrase)[0].phrases.flatMap((source) => source.createAudioInstances([{}, ...phrase.audioVariations!]));
-    engine.setSpeechDurations(new Map(instances.map((instance, index) => [instance.cacheKey, [40, 80, 500, 600][index]])));
-    engine.receiveTelemetry(frame(40), 1000);
-    const blocked = engine.receiveTelemetry(frame(50), 1100);
-    expect(blocked.events).toEqual([]);
-    expect(blocked.root.children[0].children.find(({ kind }) => kind === 'phrase'))
-        .toMatchObject({ execution: { status: 'idle' }, fields: { 'Allowed audio variants': 0 } });
-    expect(selectSentence).toHaveBeenCalledTimes(1);
-    const entered = engine.receiveTelemetry(frame(50), 2100);
-    expect(entered.events[0].sentence).toBe('Turn right.');
-    expect(selectSentence).toHaveBeenCalledTimes(2);
-});
+it.each([[0, 'Brake.'], [0.999999, 'Brake now.']] as const)(
+    'randomly selects %s from wordings that fit the phrase window', (value, sentence) => {
+        const random = jest.spyOn(Math, 'random').mockReturnValue(value);
+        const { engine } = prepare({ ...definition, audioVariations: undefined,
+            randomAlternatives: ['Brake now.', 'Apply the brakes.'] });
+        expect(engine.receiveTelemetry(frame(40), 1000).events).toEqual([]);
+        expect(random).not.toHaveBeenCalled();
+        const entered = engine.receiveTelemetry(frame(50), 1100);
+        expect(entered.events).toHaveLength(1);
+        expect(entered.events[0].sentence).toBe(sentence);
+        expect(entered.root.children[0].children.find(({ kind }) => kind === 'phrase')?.fields)
+            .toMatchObject({ 'Allowed audio variants': 2, 'Phrase selection': 'Random (equal chance)' });
+        expect(random).toHaveBeenCalledTimes(1);
+        const exited = engine.receiveTelemetry(frame(65), 1150);
+        expect(exited.events[0].speech?.releaseAt).toBe(1150);
+        expect(random).toHaveBeenCalledTimes(1);
+    });

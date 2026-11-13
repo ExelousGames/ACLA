@@ -85,7 +85,9 @@ it('speaks once for the extended approach and rearms after measured reference-zo
     engine.speechFinished(first.id, 1100);
     expect(engine.receiveTelemetry(frame(150, 40), 4000).events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
     expect(engine.receiveTelemetry(frame(210, 40), 5000).events.map(({ sentence }) => sentence)).toEqual(['Brake.']);
-    engine.receiveTelemetry(frame(320, 10, 0.8), 6000);
+    const released = engine.receiveTelemetry(frame(320, 10, 0.8), 6000).events.slice(-1)[0];
+    expect(released.sentence).toBe('Off brake.');
+    engine.speechFinished(released.id, 6100);
     expect(engine.receiveTelemetry(frame(120, 40), 9000).events.filter(({ ruleId }) => ruleId === 'reference-brake'))
         .toHaveLength(2);
 });

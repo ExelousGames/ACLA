@@ -7,8 +7,8 @@ jest.mock('components/tts', () => ({ synthesizeProsodyTts: jest.fn() }));
 
 const synthesize = synthesizeProsodyTts as jest.MockedFunction<typeof synthesizeProsodyTts>;
 const definition: PhraseDefinition = {
-    id: 'prepared-variants', name: 'Prepared variants', description: 'Audio pool fixture.', holdMs: 0,
-    sentence: 'Brake.', sentenceAlternatives: ['Apply the brake.'], amplifyCurves: brakeCurves,
+    id: 'prepared-variants', name: 'Prepared variants', description: 'Audio pool fixture.', holdMs: 0, priority: 0,
+    sentence: 'Brake.', randomAlternatives: ['Apply the brake.'], amplifyCurves: brakeCurves,
     conditions: [new PhraseCondition('speed', '>=', 30)],
     preloadSettings: [{ inputs: { timing: 0.5 } }],
     audioVariations: [{ inputs: { timing: 0.5 } }, { inputs: { energy: 0.75, pitch: -0.25 } }],
@@ -19,7 +19,7 @@ beforeEach(() => jest.clearAllMocks());
 it('prepares every wording and prosody choice once across random and contextual pools', () => {
     const instances = getPhraseSpeechInstances([definition, { ...definition, id: 'same-audio' }]);
     expect(instances).toHaveLength(6);
-    for (const sentence of [definition.sentence, ...definition.sentenceAlternatives!]) {
+    for (const sentence of [definition.sentence, ...definition.randomAlternatives!]) {
         expect(instances.filter((instance) => instance.speech.text === sentence).map((instance) => instance.inputValues))
             .toEqual([[0, 0, 0], [0.5, 0, 0], [0, 0.75, -0.25]]);
     }

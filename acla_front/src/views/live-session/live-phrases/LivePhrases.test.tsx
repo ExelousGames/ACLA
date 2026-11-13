@@ -152,6 +152,8 @@ describe('LivePhrases root connection', () => {
         expect(screen.getByLabelText('Track guide closure')).toBeVisible();
         expect(screen.getByLabelText('Pressure and a feint closure')).toBeVisible();
         fireEvent.click(screen.getByLabelText('Track guide closure'));
+        expect(screen.queryByText('More throttle', { exact: true })).not.toBeInTheDocument();
+        expect(screen.queryByText('Less throttle', { exact: true })).not.toBeInTheDocument();
         for (const name of ['Brake zone', 'Throttle zone', 'Steering', 'Corner exit', 'Turn to reference line', 'More right', 'More left']) {
             expect(screen.queryByLabelText(`${name} closure`)).not.toBeInTheDocument();
         }
@@ -166,15 +168,17 @@ describe('LivePhrases root connection', () => {
         render(<LivePhrases name="live-phrases" />);
         fireEvent.click(screen.getByLabelText('Track guide closure'));
         for (const [name, sentence] of [['Turn in', 'Turn in'], ['Ease brake', 'Ease brake'], ['Hold line', 'Hold line'],
-            ['Unwind', 'Unwind'], ['Consecutive corners', 'Set up left']]) {
+            ['Unwind', 'Unwind'], ['Set up left', 'Set up left'], ['Set up center', 'Set up center'], ['Set up right', 'Set up right']]) {
             const rule = trackGuidePhrases.find((phrase) => phrase.name === name)!;
             fireEvent.click(screen.getByLabelText(trackGuidePhraseLabel(rule)));
             expect(within(screen.getByRole('tabpanel')).getByText(sentence)).toBeVisible();
-            if (name === 'Consecutive corners') {
-                expect(screen.getByText('Driving conditions')).toBeVisible();
+            if (name.startsWith('Set up ')) {
                 expect(screen.queryByText('Random (equal chance)')).not.toBeInTheDocument();
+                expect(screen.queryByText('Random alternative 1')).not.toBeInTheDocument();
                 for (const side of ['left', 'center', 'right']) {
-                    expect(within(screen.getByRole('tabpanel')).getByText(`Set up ${side}`)).toBeVisible();
+                    if (`Set up ${side}` !== name) {
+                        expect(within(screen.getByRole('tabpanel')).queryByText(`Set up ${side}`)).not.toBeInTheDocument();
+                    }
                 }
             }
             fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
@@ -188,7 +192,7 @@ describe('LivePhrases root connection', () => {
             fireEvent.click(screen.getByLabelText(trackGuidePhraseLabel(rule)));
             expect(screen.getByText(rule.sentence)).toBeVisible();
             expect(screen.getByText('Random (equal chance)')).toBeVisible();
-            rule.sentenceAlternatives!.forEach((alternative) => expect(screen.getByText(alternative)).toBeVisible());
+            rule.randomAlternatives!.forEach((alternative) => expect(screen.getByText(alternative)).toBeVisible());
             fireEvent.click(screen.getByRole('button', { name: 'Go back one level' }));
         }
     });

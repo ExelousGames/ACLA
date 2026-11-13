@@ -59,7 +59,7 @@ it.each([36, 72, 180])('speaks Brake one second early at %s km/h without a paren
 it.each([200, 2000])('measures Brake independently using its %s ms clip duration', (durationMs) => {
     const definition = PHRASE_DEFINITIONS.find(({ referenceCue }) => referenceCue === 'brake')!;
     const measure = jest.spyOn(definition.conditions[0], 'evaluate');
-    const instance = getPhraseActions(definition)[0].phrases[0].createInstance();
+    const instance = getPhraseActions(definition)[0].phrase.createInstance();
     try {
         const engine = new PhraseEngine([definition]);
         engine.setSpeechDurations(new Map([[instance.cacheKey, durationMs]]));
@@ -77,7 +77,7 @@ it.each([200, 2000])('measures Brake independently using its %s ms clip duration
     } finally { measure.mockRestore(); }
 });
 
-it.each([['Throttle', 0, 0.601875, 'Squeeze gas.'], ['More throttle', 0.3, 0.605625, 'More gas.']] as const)(
+it.each([['Throttle', 0, 0.601875, 'Squeeze gas.']] as const)(
     'previews %s directly from its own preparation window', (name, pedal, boundary, sentence) => {
         const lap = referenceLap(), engine = new PhraseEngine();
         engine.receiveMap(null, 0, lap);
@@ -137,7 +137,7 @@ it('previews Turn in without announcing a direction correction at the centerline
     expect(snapshot.events.map(({ sentence }) => sentence)).toEqual(['Turn in']);
 });
 
-it('previews Ease brake when reference deceleration is about to ease', () => {
+it('previews Ease brake when cornering still requires slowing to the reference', () => {
     const { reference, map } = steeringCornerFixture();
     reference.y.forEach((row, i) => {
         row[4] = 0.8;
@@ -145,10 +145,10 @@ it('previews Ease brake when reference deceleration is about to ease', () => {
     });
     const engine = new PhraseEngine(PHRASE_DEFINITIONS.filter(({ id }) => id === 'reference-steering-release'));
     engine.receiveMap(map, 0, reference);
-    const at = (position: number, now: number) => engine.receiveTelemetry(frame({ ...sampleAt(position), Physics_brake: 0.8 }), now);
-    expect(at(0.26001, 1000).events).toEqual([]);
-    expect(at(0.26999, 1001).events).toEqual([]);
-    expect(at(0.27001, 1002).events.map(({ sentence }) => sentence)).toEqual(['Ease brake']);
+    const at = (position: number, now: number) => engine.receiveTelemetry(frame({ ...sampleAt(position, 72), Physics_brake: 0.8 }), now);
+    expect(at(0.24001, 1000).events).toEqual([]);
+    expect(at(0.24999, 1001).events).toEqual([]);
+    expect(at(0.25001, 1002).events.map(({ sentence }) => sentence)).toEqual(['Ease brake']);
 });
 
 it.each([-4, 8])('previews straight membership independently for movement cues (offset %s)', (lateral) => {

@@ -1,6 +1,6 @@
 import type { StandardTelemetrySample } from '../live-session-types';
 import type { LiveTelemetryFrameEvent } from '../live-telemetry-store';
-import { PHRASE_DEFINITIONS, PhraseEngine } from './phrase-engine';
+import { PHRASE_DEFINITIONS, PhraseCondition, PhraseEngine } from './phrase-engine';
 import { getPhraseSpeechInstances } from './phrase-speech';
 import { steeringCornerFixture } from './test-fixtures';
 
@@ -60,7 +60,7 @@ function setup({ game = 'acc', opposite = false, shift = 0, labeled = true, memb
     if (labeled) map.centerline_segments.push({ id: 'sequence', tags: ['consecutive corners'],
         start_position: wrap(0.27 + shift), end_position: wrap((starts[members - 1] + 20) / 100 + shift) });
     const phrases = fullCatalog ? PHRASE_DEFINITIONS : PHRASE_DEFINITIONS.filter(({ id }) =>
-        id === 'reference-consecutive-corners' || id === 'reference-cornerExit');
+        id.startsWith('reference-consecutive-corners-') || id === 'reference-cornerExit');
     const engine = new PhraseEngine(phrases);
     engine.setDrivingAggression(aggression, 0);
     engine.setSpeechDurations(new Map(getPhraseSpeechInstances(phrases).map((instance) => [instance.cacheKey, duration])));
@@ -94,8 +94,10 @@ describe.each(['acc', 'iracing'] as const)('consecutive corner coaching in %s', 
 
     it.each(['left', 'middle', 'right'] as const)('uses the reference %s position instead of assuming the outside', (side) => {
         const { at } = setup({ game, sides: [side, side, side] });
-        expect(at(side === 'middle' ? 0.36 : 0.31, 1000).events.map(({ sentence }) => sentence))
-            .toEqual([instruction(side)]);
+        expect(at(side === 'middle' ? 0.36 : 0.31, 1000).events).toEqual([
+            expect.objectContaining({ sentence: instruction(side),
+                ruleId: `reference-consecutive-corners-${side === 'middle' ? 'center' : side}` }),
+        ]);
     });
 
     it.each([false, true])('waits for each corner exit before setting up center (opposite: %s)', (opposite) => {
@@ -174,17 +176,20 @@ it('withholds sequence setup while stationary and when telemetry has expired', (
     expect(engine.evaluate(2600, true).events).toEqual([]);
 });
 
-it('uses the longest prepared positioning clip to enter a sequence before measured membership', () => {
+it.each(['left', 'right'] as const)('uses only its own clip duration when the long positioning clip is %s', (longSide) => {
     const { engine, at, map, reference } = setup();
     engine.setSpeechDurations(new Map(getPhraseSpeechInstances().map((instance) => [instance.cacheKey,
-        instance.speech.text === instruction('right') ? 3000 : 200])));
+        instance.speech.text === instruction(longSide) ? 3000 : 200])));
     map.centerline_segments!.push({ id: 'preceding-corner', tags: ['corner'], start_position: 0.24, end_position: 0.269 });
     engine.receiveMap({ ...map }, 0, reference);
     const snapshot = at(0.265, 1000);
     expect(snapshot.mapContext.sectionId).toBe('preceding-corner');
     expect(snapshot.mapContext.sequenceId).toBeUndefined();
-    expect(snapshot.events.map(({ sentence }) => sentence)).toEqual([instruction('left')]);
-    expect(snapshot.events[0].speech).toMatchObject({ durationMs: 200, preparationTimeMs: 3000 });
+    expect(snapshot.events.map(({ sentence }) => sentence)).toEqual(longSide === 'left' ? [instruction('left')] : []);
+    const event = longSide === 'left' ? snapshot.events[0] : at(0.31, 1100).events[0];
+    const durationMs = longSide === 'left' ? 3000 : 200;
+    expect(event).toMatchObject({ ruleId: 'reference-consecutive-corners-left', sentence: instruction('left'),
+        speech: { durationMs, preparationTimeMs: durationMs } });
 });
 
 it('integrates the new cue after Turn in without issuing Unwind on the same exit', () => {
@@ -196,19 +201,39 @@ it('integrates the new cue after Turn in without issuing Unwind on the same exit
     expect(at(0.36, 1600).events.map(({ sentence }) => sentence)).toEqual(['Turn in', instruction('left')]);
 });
 
-it('selects each next entry position deterministically and preloads three unique positioning commands', () => {
+it('exposes three independently conditioned setup phrases and preloads their fixed commands', () => {
+    const definitions = PHRASE_DEFINITIONS.filter(({ id }) => id.startsWith('reference-consecutive-corners-'));
+    expect(definitions).toHaveLength(3);
+    expect(getPhraseSpeechInstances(definitions).map(({ speech }) => speech.text).sort())
+        .toEqual(['Set up center', 'Set up left', 'Set up right']);
+    const guide = new PhraseEngine(definitions).evaluate(0).root.children.find(({ id }) => id === 'track-guide')!;
+    for (const side of ['left', 'center', 'right']) {
+        const definition = definitions.find(({ id }) => id === `reference-consecutive-corners-${side}`)!;
+        expect(definition.randomAlternatives).toBeUndefined();
+        expect(definition.conditions.find((condition) => condition instanceof PhraseCondition
+            && condition.input === 'referenceNextCornerSetup')).toMatchObject({
+            value: [`${side === 'center' ? 'middle' : side}-for-left`, `${side === 'center' ? 'middle' : side}-for-right`],
+        });
+        expect(definition.conditions.find((condition) => condition instanceof PhraseCondition
+            && condition.input === 'referenceCornerPhase')).toMatchObject({ value: side === 'center' ? ['unwind'] : ['hold', 'unwind'] });
+        expect(guide.children).toContainEqual(expect.objectContaining({
+            id: `${definition.id}:say:0`, name: `Set up ${side}`, kind: 'phrase',
+        }));
+    }
+});
+
+it('enters the phrase for each next entry position without randomizing directions', () => {
     const random = jest.spyOn(Math, 'random').mockReturnValue(0.99);
     try {
-        const definition = PHRASE_DEFINITIONS.find(({ id }) => id === 'reference-consecutive-corners')!;
-        const clips = getPhraseSpeechInstances([definition]);
-        expect(clips.map(({ speech }) => speech.text).sort()).toEqual(['Set up center', 'Set up left', 'Set up right']);
         const { engine, at } = setup({ opposite: true, sides: ['left', 'right', 'middle'] });
         const first = instruction('right'), second = instruction('middle');
         expect(at(0.31, 1000).events.map(({ sentence }) => sentence)).toEqual([first]);
         engine.speechFinished(1, 1200);
         at(0.47, 1300);
         expect(at(0.56, 1400).events.map(({ sentence }) => sentence)).toEqual([first]);
-        expect(at(0.61, 1500).events.map(({ sentence }) => sentence)).toEqual([first, second]);
+        const events = at(0.61, 1500).events;
+        expect(events.map(({ sentence }) => sentence)).toEqual([first, second]);
+        expect(events.map(({ ruleId }) => ruleId)).toEqual(['reference-consecutive-corners-right', 'reference-consecutive-corners-center']);
         expect(random).not.toHaveBeenCalled();
     } finally {
         random.mockRestore();

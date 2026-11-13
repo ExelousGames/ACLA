@@ -142,7 +142,7 @@ guidance. Session/stream/car/track changes, pauses, stale or non-increasing time
 frozen progress and implausible position jumps clear derivative history. Timer evaluations
 reuse the current prediction. Overtaking guides retain live progress.
 Track guide contains **Brake**, **More brake**, **Release the brake**, **Hold brake
-pressure**, **Throttle**, **More throttle**, and **Less throttle** as siblings.
+pressure**, and **Throttle** as siblings.
 Reference pedal intervals remain inputs to the individual cue conditions.
 
 A brake interval starts where reference brake begins rising from zero and ends where reference
@@ -198,9 +198,9 @@ of a continuous trajectory direction-change range within a mapped centerline cor
 and **Turn in** speaks immediately on entry when Instructor aggression is 100%.
 It uses intended speed to locate reference brake rises from zero up to
 1.8 s ahead, including start/finish crossings, to suppress **Throttle** before braking.
-**Throttle** and **More throttle** compare the applied pedal with demand for the adjusted speed profile
-and never request more throttle at full pedal. Missing or invalid control channels disable their
-cues rather than being treated as zero.
+**Throttle** compares the applied pedal with demand for the adjusted speed profile
+and requests pickup only when the pedal is below 15%. Missing or invalid control channels disable the
+cue rather than being treated as zero.
 
 **Brake** and **Hold brake pressure** first compare intended speed with the active, aggression-adjusted
 reference speed interpolated at the shared decision position. At least
@@ -338,7 +338,7 @@ Turn in during the same exit. The reference corner overlay is independent of cue
 ownership and remains available below 100%. Unwind speaks once per reference
 range, including across unloading plateaus; the next distinct corner does not
 inherit a two-second cooldown. Pedal cues also use shorter speech: **Off brake**,
-**Hold brake**, **Squeeze gas**, **More gas**, and **Ease gas**. Pedal closure names
+**Hold brake**, and **Squeeze gas**. Pedal closure names
 stay unchanged.
 
 This wording follows the concise directive style in the
@@ -349,9 +349,9 @@ corner around braking, turn-in, apex and exit; its
 with building throttle. The software applies those principles when supported by
 the active reference, without prescribing a fixed path through every corner.
 
-**Consecutive corners** gives a direct positioning command:
-**Set up left**, **Set up right**, or
-**Set up center**, at 100% Instructor aggression and at least
+Consecutive-corner positioning uses three independent phrases:
+**Set up left**, **Set up center**, and
+**Set up right**, at 100% Instructor aggression and at least
 20 km/h when another mapped corner remains in the same labeled sequence.
 Each three-word cue names the track position to prepare for the next corner,
 without assuming the driver is already in that position. The next turn's direction
@@ -363,8 +363,8 @@ direction with the appropriate ACC/iRacing orientation. A reference that sets up
 on the inside still selects that side: the cue does not assume every corner needs
 an outside entry. Missing or unusable boundaries, an off-track reference target,
 or ambiguous next-turn geometry withhold the positioning cue.
-The three positioning commands are preloaded once and selected from these measurements,
-never randomly. Their longest prepared clip supplies the shared speech lookahead.
+Each positioning phrase has its own entry conditions for these measurements and
+its own prepared audio lookahead. The directions are not random alternatives.
 Left/right setup can start during the current reference's loaded arc or steering
 release. Center setup requires the final steering unwind out of the current corner
 toward the next corner in the same sequence. Each cue uses its own prepared audio
@@ -459,24 +459,13 @@ maintenance throttle on flat-speed sections and accepts matching speed and
 throttle at every caution setting.
 The response is an estimate from the reference, not measured live acceleration.
 
-- **Throttle**: demand is at least 15% and the driver is below 15% pedal.
-- **More throttle**: the applied pedal is at least 15% and at least 15 percentage points below demand.
-  Required braking and reference braking within the next 1.8 s do not suppress this cue.
-- **Less throttle**: speed is at least 5 km/h above the interpolated local reference,
-  with at least 15% throttle applied and brake below 10%. It uses the local speed profile
-  adjusted by Instructor aggression, independently of calculated throttle demand.
-
-Only one throttle cue can match at a time, and all three require brake below 10%.
-Throttle cues use live telemetry and the reference lap without lateral-position,
+**Throttle** requires demand of at least 15%, a throttle pedal below 15%, and brake below 10%.
+The cue uses live telemetry and the reference lap without lateral-position,
 outward-motion or curvature checks. Missing, stale or invalid position-model captures
-do not suppress them. **Throttle** additionally requires no braking required or imminent.
-**More throttle** uses the calculated throttle demand
-even when braking is required or imminent, but remains withheld at speeds at least
-5 km/h above the local reference. **Less throttle** applies during overspeed regardless
-of the driver's lateral position or direction of movement.
-Throttle corrections are spoken only inside the reference throttle zone.
-Overspeed can request less throttle there, but cannot switch to a brake correction.
-Demand below 15% withholds **Throttle** and **More throttle**.
+do not suppress it. **Throttle** additionally requires no braking required or imminent.
+Throttle pickup is spoken only inside the reference throttle zone.
+Overspeed withholds throttle pickup there and cannot switch to a brake correction.
+Demand below 15% withholds **Throttle**.
 Without usable speed or acceleration response, demand falls back to reference
 throttle, or zero when usable speed shows the driver at least 5 km/h above target.
 Missing reference throttle/brake or live pedal data withholds throttle instructions.
@@ -484,7 +473,7 @@ Missing reference throttle/brake or live pedal data withholds throttle instructi
 Reference-line movement cues are direct children of Track guide. Left and right
 each have **Small movement**, **Medium movement**, and **A little bit more** cues
 with their own speech actions and inspectable conditions. Each speech action
-randomly picks from three short wordings, preserving
+picks from three short random alternatives, preserving
 the direction and movement size (for example, “Move to the left”, “Shift to the
 left”, or “Bring it to the left”). The position model's car-local X offset selects the side: negative
 is left, positive is right. No reference steering channel is required.
@@ -592,13 +581,13 @@ Optional `exitConditions` use the same AND/OR condition structure. On a phrase d
 they leave its scope, including while its own speech is waiting, once any active child
 closure has returned; on an additional speech action
 they release that action. They do not require its entry conditions to become false.
-Any speech action can keep its existing `sentence` and add `sentenceAlternatives`,
-for example `{ sentence: 'Move to the left.', sentenceAlternatives: ['Shift to the left.'] }`.
-By default, each execution chooses one wording with equal probability, including the original;
+Any speech action can keep its existing `sentence` and add `randomAlternatives`,
+for example `{ sentence: 'Move to the left.', randomAlternatives: ['Shift to the left.'] }`.
+Each execution chooses randomly from the scheduler's allowed audio pool, including the original;
 consecutive executions may repeat. Selection happens only when the action runs;
-checking conditions or inspecting the tree does not choose a wording. Action Details shows the alternatives.
-All wordings are prepared for speech, and the chosen sentence is published once
-for audio, history and overlays. Omitting alternatives keeps the single-sentence behavior.
+checking conditions or inspecting the tree does not choose a wording. Action Details shows the random alternatives.
+All random alternatives are prepared for speech, and the chosen sentence is published once
+for audio, history and overlays. Omitting random alternatives keeps the single-sentence behavior.
 Phrase history shows a response timeline for each sentence: trigger → play request →
 playback start → audio end → phrase release. Each recorded stage shows its wall-clock
 timestamp and milliseconds since the trigger. Playback start uses the first audio-player
@@ -607,10 +596,13 @@ for scheduling. Audio completion records its outcome, including interrupted, rej
 cancelled or failed playback. Exit conditions can release a phrase before its audio ends;
 the timeline retains both times independently. Unreported stages stay pending until
 playback finishes, then show Not reached (or Unavailable for older untracked events).
-An optional `selectSentence(context)` instead chooses one of those preloaded wordings
-from driving conditions. An undefined or unprepared choice withholds speech.
-Consecutive-corner positioning uses this deterministic selection so left/right
-instructions cannot be randomized; Action Details identifies it as **Driving conditions**.
+`Phrase` owns an immutable `randomAlternatives` pool of interchangeable wordings,
+including the original sentence. Preparing or filtering the pool never selects a
+wording; `selectAudioInstance` picks uniformly from the
+scheduler's allowed instances when the phrase executes. Random alternatives have no
+condition callbacks. Different driving instructions require separate phrases with
+their own entry/exit conditions, as with **Set up left**, **Set up center**, and
+**Set up right**. Center requires steering unwind; left/right also allow the loaded arc.
 Each speech action runs once per scope visit. Its lambda publishes the event used by speech, history
 and overlays; there is no parallel sentence dispatcher. Hold, cooldown, clear
 period and fresh-frame checks gate entry into these sentence closures. The first
@@ -850,8 +842,8 @@ enable. Playback errors appear in the panel without stopping ready detection.
 Every executed speech action creates a `PhraseInstance` with independent, immutable
 copies of its text, voice settings, float inputs and three amplify curves. Instances
 live only in memory and are attached to their phrase events; no instance is saved
-to local storage, project files or the backend. Alternative wordings and additional
-actions each have their own speech prototype. Rule conditions and closure state
+to local storage, project files or the backend. Each speech action has its own
+prototype containing its random alternatives. Rule conditions and closure state
 stay in the engine.
 
 Curve points are edited in project JSON files, with no curve controls in the UI.
@@ -868,7 +860,7 @@ An action's optional `speechSettings` sets its default voice, language, speed an
 named `inputs`. Inputs default to zero, so even the Brake example initially applies
 neutral controls. Set `speechSettings.inputs` for fixed settings, or supply an
 `instanceSettings(context, phrase)` strategy on the action to compute overrides when it
-actually speaks. This callback runs once per execution, after choosing the wording;
+actually speaks. This callback supplies the same overrides to every wording before random selection;
 it is not called during inspection or catalog preparation. Declare every possible
 override in the action's `preloadSettings`; runtime playback never generates audio.
 **Ease brake** uses this mechanism to match the active reference's remaining
@@ -907,7 +899,7 @@ with its measured duration. `previewTtsPhonemes` is also exported for inspecting
 indexed phonemes independently. The same abort signal covers both requests.
 
 Speech caching includes text, voice, language, speed, curves and input values.
-`getPhraseSpeechInstances()` enumerates all wordings and declared instance settings.
+`getPhraseSpeechInstances()` enumerates all random alternatives and declared instance settings.
 `loadAllPhraseSpeech(instances, packs, signal, onPrepared?)` requests that entire batch when
 detection is enabled, deduplicates identical audio identities, serializes model work,
 and returns completion status and any errors. Its optional callback runs after

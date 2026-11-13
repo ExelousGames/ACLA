@@ -7,10 +7,6 @@
 .phrase-scheduler [data-category="turn"] { --schedule-color: #ac94fb; }
 .phrase-scheduler [data-category="throttle"] { --schedule-color: #f1d66b; }
 .phrase-scheduler [data-category="other"] { --schedule-color: #80cbf0; }
-.phrase-scheduler__legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; font-size: 11px; }
-.phrase-scheduler__legend span { display: inline-flex; align-items: center; gap: 6px; }
-.phrase-scheduler__legend span::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--schedule-color); }
-.phrase-scheduler__legend b { font-variant-numeric: tabular-nums; color: var(--schedule-color); }
 .phrase-scheduler__summary { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--lp-border, #343b46); font-size: 11px; }
 .phrase-scheduler__summary b { margin-right: 5px; color: var(--lp-green, #37efac); font-weight: 500; }
 .phrase-scheduler__scroll { overflow-x: auto; margin-top: 12px; padding: 0 8px 6px; scrollbar-width: thin; }

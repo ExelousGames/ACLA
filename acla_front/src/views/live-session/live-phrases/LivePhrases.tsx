@@ -246,7 +246,7 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
             <header>
                 <div className="live-phrases__heading">
                     <h2>Live phrases <span>Closures</span></h2>
-                    <button type="button" className="live-phrases__toggle" onClick={() => setEnabled((current) => !current)}>
+                    <button type="button" className="live-phrases__toggle" aria-pressed={enabled} onClick={() => setEnabled((current) => !current)}>
                         {enabled ? 'Disable' : 'Enable'} detection
                     </button>
                 </div>
@@ -264,15 +264,16 @@ const LivePhrases = forwardRef<LivePhrasesHandle, { name: string }>(({ name }, f
                         }} />
                 </label>
                 <div className="live-phrases__aggression-scale"><span>0% · Reference</span><span>{drivingAggression}% braking adjustment</span><span>100% · Direction guide</span></div>
-                <label className="live-phrases__track-guide">
-                    <input type="checkbox" role="switch" checked={trackGuideEnabled} onChange={(event) => {
-                        const value = event.target.checked;
+                <button type="button" className="live-phrases__toggle live-phrases__track-guide"
+                    aria-label="Track guide" aria-pressed={trackGuideEnabled} onClick={() => {
+                        const value = !trackGuideEnabled;
                         trackGuideEnabledRef.current = value;
                         setTrackGuideEnabled(value);
                         updateTrackGuide.current?.(value);
-                    }} />
+                    }}>
                     <span>Track guide</span>
-                </label>
+                    <strong>{trackGuideEnabled ? 'On' : 'Off'}</strong>
+                </button>
                 <ReferenceRangeMap reference={rangeReference} corners={rangeCorners} />
             </div>
             {overlayError && <p role="alert">Unable to display live phrase in the overlay: {overlayError}</p>}

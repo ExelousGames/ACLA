@@ -34,9 +34,10 @@ function releaseEvent(endIndex: number, drop = 0.2) {
     const durations = new Map(instances.map((instance) => [instance.cacheKey, 600 + instance.inputs.timing * 300]));
     engine.setSpeechDurations(durations);
     engine.receiveMap(map, 0, reference);
-    // The 900 ms prepared-audio horizon places the decision at 261 m, inside the easing interval.
-    const sample = { Static_track: 'test', Static_car_model: 'car', Graphics_normalized_car_position: 0.252,
-        Physics_speed_kmh: 36, Physics_brake: 0.8, Physics_gas: 0 };
+    // Match the reference speed at 261 m; 36 km/h would already need full release.
+    const speed = Math.sqrt(reference.y[26][6] ** 2 * 0.9 + reference.y[27][6] ** 2 * 0.1);
+    const sample = { Static_track: 'test', Static_car_model: 'car', Graphics_normalized_car_position: 0.261 - speed / 3.6 * 0.9 / 1000,
+        Physics_speed_kmh: speed, Physics_brake: 0.8, Physics_gas: 0 };
     const frame: LiveTelemetryFrameEvent = { type: 'frame', sample, sampleIndex: 0, telemetryStatus: 2,
         sessionGeneration: 0, streamGeneration: 0, committedSampleCount: 0,
         update: { type: 'frame', game: 'acc', sample, sequence: 1, committedCount: 0, committedSequence: 0 } };

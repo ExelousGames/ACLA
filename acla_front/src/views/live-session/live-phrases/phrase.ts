@@ -25,6 +25,10 @@ export interface PhraseSettings extends Omit<TtsRequest, 'text'> {
     /** Higher values are scheduled first when several phrases are eligible. */
     priority?: number;
 }
+export interface PhraseOptions extends PhraseSettings {
+    /** Interchangeable wordings in the random pool; entry/exit conditions belong to the phrase. */
+    randomAlternatives?: readonly string[];
+}
 /** A prepared choice for the scheduler; audio variants have no entry or exit conditions. */
 export interface PhraseAudioVariant {
     instance: PhraseInstance;
@@ -35,12 +39,16 @@ const settings: readonly ProsodySetting[] = ['timing', 'energy', 'pitch'];
 /** Speech prototype. Curves are repository assets; instances are independent, in-memory copies. */
 export class Phrase {
     readonly speech: Readonly<TtsRequest>;
+    /** Complete random wording pool, including the original sentence. */
+    readonly randomAlternatives: readonly string[];
     readonly amplifyCurves: PhraseCurves;
     readonly inputs: PhraseInputs;
     readonly priority: number;
 
-    constructor(readonly id: string, sentence: string, curves: PhraseCurves = defaultCurves, options: PhraseSettings = {}) {
+    constructor(readonly id: string, sentence: string, curves: PhraseCurves = defaultCurves, options: PhraseOptions = {}) {
         this.priority = options.priority ?? 0;
+        this.randomAlternatives = Object.freeze(Array.from(new Set([sentence, ...(options.randomAlternatives ?? [])]
+            .map((wording) => wording.trim()))));
         this.speech = Object.freeze({ text: sentence.trim(), speed: options.speed ?? 1.2,
             language: options.language ?? 'en-us', ...(options.voice !== undefined ? { voice: options.voice } : {}) });
         this.amplifyCurves = Object.freeze({
@@ -56,8 +64,13 @@ export class Phrase {
     }
 
     createAudioInstances(overrides: readonly PhraseSettings[] = [{}]): PhraseInstance[] {
-        const instances = overrides.map((options) => this.createInstance(options));
+        const instances = this.randomAlternatives.flatMap((sentence) => overrides.map((options) => new PhraseInstance(this, options, sentence)));
         return Array.from(new Map(instances.map((instance) => [instance.cacheKey, instance])).values());
+    }
+
+    /** Choose only at execution, after the scheduler has narrowed the prepared pool. */
+    selectAudioInstance(allowed: readonly PhraseInstance[]): PhraseInstance | undefined {
+        return allowed[allowed.length > 1 ? Math.floor(Math.random() * allowed.length) : 0];
     }
 
     get curves(): readonly AmplifyCurve[] {
@@ -71,9 +84,10 @@ export class Phrase {
 export class PhraseInstance extends Phrase {
     readonly cacheKey: string;
 
-    constructor(source: Phrase, overrides: PhraseSettings = {}) {
-        super(source.id, source.speech.text, source.amplifyCurves, {
+    constructor(source: Phrase, overrides: PhraseSettings = {}, sentence = source.speech.text) {
+        super(source.id, sentence, source.amplifyCurves, {
             ...source.speech, ...overrides, priority: overrides.priority ?? source.priority,
+            randomAlternatives: undefined,
             inputs: { ...source.inputs, ...overrides.inputs },
         });
         this.cacheKey = JSON.stringify([this.speech, this.curves, this.inputValues]);

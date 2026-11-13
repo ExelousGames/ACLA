@@ -62,7 +62,7 @@ const update = (engine: PhraseEngine, now: number, eta: number, corner: 'left' |
 
 describe('second-apex closure', () => {
     it('uses the prepared instruction duration without a default reaction allowance for corner ETA scheduling', () => {
-        const instance = getPhraseActions(rule)[0].phrases[0].createInstance();
+        const instance = getPhraseActions(rule)[0].phrase.createInstance();
         const short = new PhraseEngine([rule]), long = new PhraseEngine([rule]);
         short.setSpeechDurations(new Map([[instance.cacheKey, 250]]));
         long.setSpeechDurations(new Map([[instance.cacheKey, 2000]]));

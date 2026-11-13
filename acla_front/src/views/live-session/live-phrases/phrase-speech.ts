@@ -4,8 +4,8 @@ import type { PhraseInstance } from './phrase';
 
 export function getPhraseSpeechInstances(phrases: readonly PhraseDefinition[] = PHRASE_DEFINITIONS): PhraseInstance[] {
     const instances = [...phrases.filter((phrase) => phrase.referenceCue), ...phrases.filter((phrase) => !phrase.referenceCue)]
-        .flatMap(getPhraseActions).flatMap((action) => action.phrases.flatMap((phrase) =>
-            phrase.createAudioInstances([{}, ...(action.preloadSettings ?? []), ...(action.audioVariations ?? [])])));
+        .flatMap(getPhraseActions).flatMap((action) =>
+            action.phrase.createAudioInstances([{}, ...(action.preloadSettings ?? []), ...(action.audioVariations ?? [])]));
     return Array.from(new Map(instances.map((instance) => [instance.cacheKey, instance])).values());
 }
 

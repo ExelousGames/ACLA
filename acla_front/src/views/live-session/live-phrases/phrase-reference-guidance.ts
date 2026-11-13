@@ -4,11 +4,12 @@ import type { TrackVisionDetection } from '../track-vision/track-vision-types';
 import { selectLiveMapReference } from '../live-map-reference';
 import type { ReferenceMovementCue } from './phrase-reference-movement';
 import { compareSteeringDirection, type ReferenceSteeringDirection, type SteeringTrajectory } from './phrase-steering-direction';
+import { buildReferenceCarPerformance, carDecelerationAt, type ReferenceCarPerformance } from './phrase-car-performance';
 
 export const REFERENCE_POSITION_MAX_AGE_MS = 500;
 export const REFERENCE_CUE_COOLDOWN_MS = 2000;
 export const REFERENCE_LOOKAHEAD_MS = 3000;
-export type ReferenceCue = 'brake' | 'moreBrake' | 'releaseBrake' | 'holdBrake' | 'steering' | 'cornerExit' | 'throttle' | 'moreThrottle' | 'lessThrottle' | ReferenceMovementCue;
+export type ReferenceCue = 'brake' | 'moreBrake' | 'releaseBrake' | 'easeBrake' | 'holdBrake' | 'steering' | 'cornerExit' | 'throttle' | ReferenceMovementCue;
 export type ReferencePedalZone = 'brake' | 'throttle' | 'none';
 export type ReferenceSteeringPhase = 'prepare' | 'turn';
 export interface ReferenceCornerBounds { start: number; end: number }
@@ -43,7 +44,8 @@ type Control = 'steering' | 'brake' | 'throttle';
 type Channel = Control | 'speed';
 interface Point {
     position: number; distance: number; steering?: number; brake?: number; throttle?: number; speed?: number;
-    x: number; ground: number;
+    x: number; ground: number; elevation: number;
+    curvature?: number; grade?: number;
     deceleration?: number;
     brakeReleaseRate?: number;
     heading?: number;
@@ -53,6 +55,7 @@ interface Reference {
     directionChanges: { start: number; end: number; turnSign: -1 | 1 }[];
     brakeResponses: { distance: number; decelerationPerBrake: number }[];
     possibleBrakingDeceleration?: number;
+    carPerformance: ReferenceCarPerformance;
     throttleResponses: { distance: number; accelerationPerThrottle: number }[];
     cornerProfiles: Map<string, CornerSteeringProfile | null>;
 }
@@ -70,7 +73,6 @@ const thresholds = { steering: 0.08, brake: 0.1, throttle: 0.15 };
 const MIN_PEDAL_ZONE_SECONDS = 0.5;
 const SPEED_TOLERANCE_KMH = 5;
 const DECELERATION_TOLERANCE_RATIO = 0.1;
-const THROTTLE_TOLERANCE = 0.15;
 const SPEED_CORRECTION_SECONDS = 1.5;
 const MIN_TRAJECTORY_CURVATURE = Math.PI / 180 / 10; // Confirms a turn and trims its tail; does not locate its onset.
 const CURVATURE_EPSILON = 1e-12;
@@ -93,7 +95,8 @@ function prepare(lap: TopLapReferenceEntry): Reference | null {
         let cumulative = 0;
         const points = lap.x.map((position, i) => {
             if (i) cumulative += distance(positions[i - 1], positions[i]);
-            const point: Point = { position, distance: cumulative, x: positions[i][0], ground: positions[i][lap.game === 'acc' ? 1 : 2] };
+            const point: Point = { position, distance: cumulative, x: positions[i][0], ground: positions[i][lap.game === 'acc' ? 1 : 2],
+                elevation: positions[i][lap.game === 'acc' ? 2 : 1] };
             channels.forEach((channel, j) => { if (valid[j]) point[channel] = lap.y[i][indices[j]]; });
             return point;
         });
@@ -204,8 +207,24 @@ function prepare(lap: TopLapReferenceEntry): Reference | null {
             });
         }
         const reference: Reference = { points, length, brakeEvents, pedalZones,
-            directionChanges: [], brakeResponses, possibleBrakingDeceleration, throttleResponses, cornerProfiles: new Map() };
+            directionChanges: [], brakeResponses, possibleBrakingDeceleration, throttleResponses, cornerProfiles: new Map(),
+            carPerformance: buildReferenceCarPerformance([]) };
         prepareTrajectoryDirections(reference);
+        reference.carPerformance = buildReferenceCarPerformance(points.flatMap((point, i) => {
+            const next = points[(i + 1) % points.length];
+            const span = (i + 1 === points.length ? length : next.distance) - point.distance;
+            if (span <= 0) return [];
+            point.grade = (next.elevation - point.elevation) / span;
+            const horizontal = Math.hypot(next.x - point.x, next.ground - point.ground);
+            point.curvature = horizontal > 1e-9 && point.heading !== undefined && next.heading !== undefined
+                ? angleDifference(point.heading, next.heading) / horizontal : 0;
+            if (point.speed === undefined || next.speed === undefined || point.deceleration === undefined
+                || point.brake === undefined || next.brake === undefined || point.throttle === undefined || next.throttle === undefined) return [];
+            return [{ distance: (point.distance + span / 2), speed: Math.sqrt((point.speed ** 2 + next.speed ** 2) / 2) / 3.6,
+                curvature: point.curvature, elevation: (point.elevation + next.elevation) / 2, grade: point.grade,
+                deceleration: point.deceleration, brake: (point.brake + next.brake) / 2, throttle: (point.throttle + next.throttle) / 2,
+                coasting: point.brake <= 0.01 && next.brake <= 0.01 && point.throttle <= 0.01 && next.throttle <= 0.01 }];
+        }));
         return reference;
     };
     const result = build();
@@ -216,6 +235,11 @@ function prepare(lap: TopLapReferenceEntry): Reference | null {
 /** Capture the strongest observed braking rate once, before rebuilding the driving reference. */
 export function referenceBrakingDeceleration(lap: TopLapReferenceEntry | null): number | undefined {
     return lap ? prepare(lap)?.possibleBrakingDeceleration : undefined;
+}
+
+/** Retain speed, turn radius, elevation, slope and pedal response from the original car/lap. */
+export function referenceCarPerformance(lap: TopLapReferenceEntry | null): ReferenceCarPerformance | undefined {
+    return lap ? prepare(lap)?.carPerformance : undefined;
 }
 
 /** Limit each continuous turn to the corner, excluding entry positioning and exit adjustments. */
@@ -531,14 +555,56 @@ function brakingDecelerationTarget(reference: Reference, distance: number, targe
     return Math.max(0, profileDeceleration + (speed - targetSpeed) / (3.6 * SPEED_CORRECTION_SECONDS));
 }
 
+function carMotionAt(reference: Reference, distance: number, speed: number) {
+    const { a } = bracket(reference, wrap(distance, reference.length), 'distance');
+    return { speed: speed / 3.6, curvature: a.curvature ?? 0, grade: a.grade ?? 0 };
+}
+
+/** Additional brake work needed after allowing for coasting along the remaining corner.
+ * Check every speed target, including a second slowdown after a brief plateau. A
+ * matching entry speed does not justify release while a lower target still needs braking.
+ */
+function remainingBrakeDemand(reference: Reference, performance: ReferenceCarPerformance, distance: number,
+    speed: number, targetSpeed: number, range?: { start: number; end: number } | null, brakeDue = false): number {
+    const motion = carDecelerationAt(performance, carMotionAt(reference, distance, speed));
+    const signedDemand = Math.max(0, -speed / 3.6 * speedSlope(reference, distance))
+        + (speed - targetSpeed) / (3.6 * SPEED_CORRECTION_SECONDS);
+    let demand = Math.max(0, signedDemand - motion.coastingDeceleration);
+    let zone = reference.pedalZones.find((zone) => zone.pedal === 'brake'
+        && wrap(distance - zone.start, reference.length) < zone.length);
+    if (!zone) zone = reference.pedalZones.filter((zone) => zone.pedal === 'brake'
+        && (brakeDue || wrap(zone.start - distance, reference.length) <= speed / 3.6 * BRAKE_LOOKAHEAD_SECONDS))
+        .sort((a, b) => wrap(a.start - distance, reference.length) - wrap(b.start - distance, reference.length))[0];
+    const remaining = range ? wrap(range.end - distance, reference.length) || (range.end - range.start >= reference.length ? reference.length : 0)
+        : zone ? wrap(zone.start + zone.length - distance, reference.length) || (zone.length === reference.length ? reference.length : 0) : 0;
+    if (!remaining) return demand;
+    let energy = (speed / 3.6) ** 2, travelled = 0;
+    const { index } = bracket(reference, distance, 'distance');
+    for (let offset = 0; offset < reference.points.length && travelled < remaining; offset++) {
+        const point = reference.points[(index + offset) % reference.points.length];
+        const ahead = wrap(point.distance - distance, reference.length);
+        if (ahead <= travelled) continue; // Duplicated lap endpoint.
+        const end = Math.min(ahead, remaining), span = end - travelled;
+        const coast = carDecelerationAt(performance, carMotionAt(reference, distance + travelled, Math.sqrt(energy) * 3.6)).coastingDeceleration;
+        energy = Math.max(0, energy - 2 * coast * span);
+        const futureSpeed = end === ahead ? point.speed : targetsAt(reference, distance + end).speed;
+        if (futureSpeed === undefined) return Infinity; // Missing data cannot authorize full release.
+        demand = Math.max(demand, (energy - (futureSpeed / 3.6) ** 2) / (2 * end));
+        travelled = end;
+    }
+    return demand;
+}
+
 /** Estimate brake demand using only the active phrase reference's speed and pedal response. */
 function brakeTarget(reference: Reference, distance: number,
-    target: Partial<Record<Channel, number>>, speed: number): number | undefined {
+    target: Partial<Record<Channel, number>>, speed: number, performance: ReferenceCarPerformance): number | undefined {
     if (target.brake === undefined) return undefined;
     if (target.speed === undefined) return target.brake;
     if (target.speed - speed >= SPEED_TOLERANCE_KMH) return 0;
-    const deceleration = brakingDecelerationTarget(reference, distance, target.speed, speed);
+    const capability = carDecelerationAt(performance, carMotionAt(reference, distance, speed));
+    const deceleration = Math.max(0, brakingDecelerationTarget(reference, distance, target.speed, speed) - capability.coastingDeceleration);
     if (deceleration === 0) return 0;
+    if (capability.decelerationPerBrake !== undefined) return Math.min(1, deceleration / capability.decelerationPerBrake);
     const response = nearestResponse(reference.brakeResponses, distance, reference.length);
     // Without a measured reference response, keep pedal comparisons; never invent braking strength.
     if (!response) return target.brake;
@@ -577,7 +643,8 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
     intendedTelemetry?: StandardTelemetrySample,
     currentBraking = { deceleration: intendedTelemetry ? undefined : intendedDeceleration, releasing: brakeReleasing },
     measure = { brake: true, throttle: true, steering: true },
-    possibleBrakingDeceleration = referenceBrakingDeceleration(lap)): ReferenceGuidance {
+    possibleBrakingDeceleration = referenceBrakingDeceleration(lap),
+    carPerformance = referenceCarPerformance(lap)): ReferenceGuidance {
     const prediction = vision?.position, position = sample.Graphics_normalized_car_position;
     const intended = intendedTelemetry ?? sample;
     const speed = intended.Physics_speed_kmh, liveSpeed = sample.Physics_speed_kmh;
@@ -587,6 +654,7 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
         || !selectLiveMapReference([lap], game ?? null, sample.Static_track, sample.Static_car_model, sample.Graphics_track_grip_status)) return {};
     const reference = prepare(lap);
     if (!reference) return {};
+    const performance = carPerformance ?? reference.carPerformance;
     // All reference conditions share the decision position; capture validation uses actual progress.
     const liveDistance = distanceAt(reference, position);
     const distance = distanceAt(reference, evaluationPosition);
@@ -610,10 +678,13 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
     const valid = (control: keyof typeof actual) => finite(actual[control]) && actual[control]! >= 0 && actual[control]! <= 1;
     const tooFast = target.speed !== undefined && speed - target.speed >= SPEED_TOLERANCE_KMH;
     const tooSlow = target.speed !== undefined && target.speed - speed >= SPEED_TOLERANCE_KMH;
-    const desiredBrake = brakeTarget(reference, distance, target, speed);
+    const desiredBrake = brakeTarget(reference, distance, target, speed, performance);
     const pedalZone = pedalZoneAt(reference, distance, speed);
     const brakeZone = pedalZone === undefined ? undefined : pedalZone === 'brake';
-    const timing = measure.brake ? brakeTiming(reference, distance, speed, possibleBrakingDeceleration) : {};
+    const capability = carDecelerationAt(performance, carMotionAt(reference, distance, speed));
+    const inTurn = reference.directionChanges.some(({ start, end }) => wrap(distance - start, reference.length) < end - start);
+    const timing = measure.brake ? brakeTiming(reference, distance, speed,
+        inTurn && brakeZone ? capability.possibleDeceleration ?? possibleBrakingDeceleration : possibleBrakingDeceleration) : {};
     const brakeDue = timing.brakeInMs !== undefined && timing.brakeInMs <= 1e-6;
     const brakeReleaseRate = measure.steering && valid('brake') && actual.brake! >= thresholds.brake
         ? bracket(reference, distance, 'distance').a.brakeReleaseRate : undefined;
@@ -660,22 +731,29 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
     }
     if (measure.brake && valid('brake')) {
         const pedal = actual.brake!;
+        const remainingRange = cornerEnd !== undefined && exitRange ? { start: exitRange.start, end: cornerEnd }
+            : result.steeringRange;
+        const demand = target.speed === undefined ? undefined
+            : remainingBrakeDemand(reference, performance, distance, speed, target.speed, remainingRange, brakeDue);
         let cue: ReferenceCue | undefined;
         if (pedal >= thresholds.brake && target.speed !== undefined) {
             const requiredDeceleration = brakingDecelerationTarget(reference, distance, target.speed, speed);
-            if (turnInSpeed !== undefined && speed <= turnInSpeed) cue = 'releaseBrake';
+            if (speed <= target.speed + 1e-9 && demand! <= 1e-9) cue = 'releaseBrake';
+            else if (directionActive && demand! > 1e-9) cue = 'easeBrake';
             else if (brakeZone && requiredDeceleration > 0 && !tooSlow && !tooFast && finite(intendedDeceleration)) {
                 const tolerance = Math.max(0.1, requiredDeceleration * DECELERATION_TOLERANCE_RATIO);
                 if (intendedDeceleration >= requiredDeceleration - tolerance
                     && intendedDeceleration <= requiredDeceleration + tolerance) cue = 'holdBrake';
             }
         }
-        if (!cue && pedal < thresholds.brake) {
+        // A nominal reference brake zone must not contradict a justified full release.
+        if (!cue && pedal < thresholds.brake && (demand === undefined || demand > 1e-9)) {
             if (brakeDue || (desiredBrake !== undefined && desiredBrake >= thresholds.brake)) cue = 'brake';
         }
         if (cue) {
             result[cue] = now + 1500;
             result.braking = true;
+            if (cue === 'easeBrake') result.brakeReleaseDurationMs = brakeReleaseDurationMs(reference, distance);
         }
     }
     // More brake compares measured motion with the reference at the current position only.
@@ -683,7 +761,8 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
     // The 1e-9 margin only absorbs floating-point roundoff at equal rates.
     const currentBrake = sample.Physics_brake;
     const referenceDeceleration = bracket(reference, liveDistance, 'distance').a.deceleration;
-    if (measure.brake && result.currentPedalZone === 'brake' && finite(currentBrake) && currentBrake >= thresholds.brake && currentBrake < 1
+    if (measure.brake && result.releaseBrake === undefined && result.easeBrake === undefined
+        && result.currentPedalZone === 'brake' && finite(currentBrake) && currentBrake >= thresholds.brake && currentBrake < 1
         && !currentBraking.releasing && finite(currentBraking.deceleration) && finite(referenceDeceleration)
         && referenceDeceleration > 0 && currentBraking.deceleration < referenceDeceleration - 1e-9) {
         result.moreBrake = now + 1500;
@@ -699,18 +778,10 @@ export function readReferenceGuidance(sample: StandardTelemetrySample,
     }
     const braking = result.braking !== false || brakeAhead;
     const desiredThrottle = measure.throttle ? throttleTarget(reference, distance, target, speed) : undefined;
-    if (measure.throttle && !brakeDue && valid('throttle') && valid('brake') && target.brake !== undefined && desiredThrottle !== undefined) {
-        const pedal = actual.throttle!;
-        let cue: ReferenceCue | undefined;
-        if (tooFast && result.pedalZone === 'throttle' && pedal >= thresholds.throttle && actual.brake! < thresholds.brake) {
-            cue = 'lessThrottle';
-        }
-        if (!cue && actual.brake! < thresholds.brake) {
-            if (!braking && desiredThrottle >= thresholds.throttle && pedal < thresholds.throttle) cue = 'throttle';
-            else if (result.pedalZone === 'throttle' && !tooFast && pedal >= thresholds.throttle
-                && desiredThrottle - pedal >= THROTTLE_TOLERANCE) cue = 'moreThrottle';
-        }
-        if (cue) result[cue] = now + 1500;
+    if (measure.throttle && !brakeDue && !braking && valid('throttle') && valid('brake')
+        && target.brake !== undefined && desiredThrottle !== undefined && desiredThrottle >= thresholds.throttle
+        && actual.throttle! < thresholds.throttle && actual.brake! < thresholds.brake) {
+        result.throttle = now + 1500;
     }
     return result;
 }
