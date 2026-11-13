@@ -42,8 +42,8 @@ car positions expire after two seconds without an update.
 The sidebar's **AI Self-Driving Training** page trains a local, mixed-action
 actor–critic neural policy against the running simulator. Start live telemetry,
 add **Live Map** with a matching reference lap, and add **Track Vision** with
-the position model and screen capture enabled. The training page
-reports any missing inputs. Live Session stays mounted when switching tabs.
+screen capture enabled. Self-driving does not require a position model. The training
+page reports any missing inputs. Live Session stays mounted when switching tabs.
 
 Track Vision supports temporal GRU position exports: it reads the model's saved
 window length and keeps aligned image, reference-lap and telemetry history automatically.
@@ -194,7 +194,7 @@ during either human or AI driving.
 
 Once the simulator responds to the virtual wheel, start a
 practice session with manual gears configured and both shift buttons bound,
-position the car near the reference line, and choose **New model** to select a save
+position the car on track, and choose **New model** to select a save
 location (or **Open model** to resume a file). Then select **Start training**. The policy
 outputs one continuous throttle/brake value from −1 (full brake), through 0 (both
 pedals released), to 1 (full throttle), plus steering and the choice to hold gear,
@@ -229,13 +229,13 @@ The observation includes car-local velocity XYZ (m/s), speed (km/h), game/car/ma
 category encodings, cyclic normalized lap position,
 yaw rate (rad/s, normalized by π and clamped to ±1), g-force XYZ
 (in g, divided by `gForceScale`, default 5, and clamped to ±1), current
-steering/pedals, current gear, engine RPM, the position model's reference XYZ delta (m),
+steering/pedals, current gear, engine RPM,
 and a **384 × 216 RGB camera image** from the same Track Vision capture.
 G-force retains the telemetry adapter's axis order, signs and gravity contribution,
 and is included in both the current observation and the five-second history.
 The camera is the only visual input: segmentation labels, depth grids, reconstructed
 track ribbons and traffic boxes are not policy inputs or checkpoint matching keys.
-Camera/position observations remain available if the segmentation or depth models are
+Camera observations remain available if the segmentation, depth or position models are
 missing or fail; the driving page does not request CPU depth downloads.
 The camera is copied before asynchronous inference or overlays, preserving the full
 capture's aspect ratio with centered black letterboxing when it is not 16:9.
@@ -313,50 +313,30 @@ toward the car. Moving away is penalized, and overshooting reduces credit.
 The correction rate uses elapsed telemetry time, not camera processing time:
 `correction = clamp(gapClosed / (3.6 × telemetrySeconds × accelerationTolerance), -1, 1)`.
 With default weights, the reward is
-`100 × forwardProgress × exp(-referenceDistance / 3) × correction`.
+`100 × forwardProgress × correction`.
 `accelerationTolerance` defaults to 3 m/s². The legacy `speedTolerance` setting remains
 in model JSON for compatibility and is no longer used to score speed proximity.
 Forward progress is capped at 0.02 per observation; stationary or reverse driving
 earns no timing bonus. Both ends of a transition use the aggression that produced
 the action, even if the slider changes before scoring. There is no separate raw-speed
 or pedal-matching reward. The previous speed-window and pedal-change-gated reward
-are removed. Model JSON retains the `pedal-event-speed-profile` encoding, so existing
-models with this configuration can continue training under the new reward.
-**Follow the reference line** rewards staying near a reference error of 3 raw source
-coordinate units, measured as the magnitude of the position model's car-local XYZ
-offset. Its reward is
-`lineWeight × forwardProgress × exp(-abs(referenceDistance - 3) / proximityScale)`.
-It peaks at 3 and decreases for errors above or below 3. Holding the same error
-continues to earn reward while making forward progress. Weighting by lap progress
-avoids earning extra reward just by increasing the capture rate. Stationary driving,
-reverse gear or backward lap progress earns no line reward.
-**Drive toward the reference line** separately compares each pair of fresh frames:
-`correctionDistance = max(previousDistance - 3, 0) - max(currentDistance - 3, 0)`.
-Closing the gap beyond 3 raw units earns reward; widening it incurs a penalty.
-Crossing the boundary scores only the part outside 3, so entering and leaving the
-band are symmetric. Changes entirely within 3 units and unchanged distance earn zero.
-There is no minimum frame-to-frame change or accumulated distance anchor.
-The approach reward is
-`lineWeight × clamp(correctionDistance / referenceLength, -progressLimit, progressLimit)`.
-Normalizing to reference lap length puts correction in the same units as lap progress;
-the existing progress and total caps bound large prediction jumps. A moving car can
-earn approach reward even when its normalized lap position stays unchanged.
-Zero speed, reverse gear or backward lap progress earns no approach reward. No
-transition crosses an episode, control handover or input interruption boundary.
-The legacy `lineDistanceTolerance` and `lineSmoothingMs` settings remain in model JSON
-for compatibility but no longer affect line reward.
+are removed. Reference error is not a policy or history input, and distance from the
+reference line does not affect rewards. Line-following and approach rewards and
+penalties have been removed, along with their configuration settings. Create a new
+model and retrain; earlier reference-offset checkpoints are rejected without migration.
+
 The normalized-position progress reward uses the signed lap-position change, corrected
 for start/finish crossings, divided by elapsed telemetry seconds. With
 `rate = abs(positionChange / telemetrySeconds)`, it adds
-`0.25 × lineWeight × cappedSignedProgress × rate / (rate + 0.01)`.
+`0.25 × progressWeight × cappedSignedProgress × rate / (rate + 0.01)`.
 Faster forward progress earns more and negative progress incurs a penalty. Zero speed
-or unchanged normalized position instead incurs `-0.25 × lineWeight × 0.01 × telemetrySeconds`,
+or unchanged normalized position instead incurs `-0.25 × progressWeight × 0.01 × telemetrySeconds`,
 or -0.25 reward per second with default weights. This stationary penalty scales with
 elapsed telemetry time so its accumulated value is independent of sampling frequency.
 Positive rewards also require nonzero speed and a non-reverse
 gear. Signed progress uses the existing 0.02-per-observation cap. At 0.01 lap/second
 the rate factor is one half; it approaches 1 as the rate increases, keeping the
-bonus below `0.25 × lineWeight × cappedForwardProgress`.
+bonus below `0.25 × progressWeight × cappedForwardProgress`.
 Distance weighting keeps accumulated reward independent of sampling frequency
 at a constant rate below the existing progress cap. Camera processing delays do
 not affect the measured rate. The reward appears separately under **Reward signal**
@@ -382,11 +362,11 @@ Missing telemetry, session changes and pauses do not create synthetic impacts.
 Detected impacts subtract `5 × confidence × severity`, with severity reaching 1 at
 10 m/s of excess velocity change. Vertical bumps and car damage telemetry are excluded;
 spins and extreme braking can still resemble impacts.
-The total reward combines acceleration/deceleration timing, reference-line proximity,
-reference-line approach, normalized-position progress and impact penalties, clamped to the configured total limit. Yaw rate
+The total reward combines acceleration/deceleration timing, normalized-position progress
+and impact penalties, clamped to the configured total limit. Yaw rate
 remains a policy input but does not incur an instability penalty. The removed reward
 settings `yawWindowMs`, `yawDeadband` and `yawPenalty` are no longer accepted in model
-JSON; remove these three settings from existing files before loading them. New policies are untrained;
+JSON. New policies are untrained;
 successful driving is an empirical training outcome, not a built-in capability.
 
 Only observations captured after a controller acknowledgement can train that

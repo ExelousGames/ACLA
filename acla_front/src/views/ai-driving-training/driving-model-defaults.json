@@ -16,15 +16,13 @@
     "initialOutputWeightScale": 0.01
   },
   "observation": {
-    "features": ["localVelocity", "speed", "game", "car", "map", "position", "controls", "referenceOffset", "gear", "rpm", "yawRate", "gForce", "camera", "aggression", "referenceSpeed", "targetSpeed"],
+    "features": ["localVelocity", "speed", "game", "car", "map", "position", "controls", "gear", "rpm", "yawRate", "gForce", "camera", "aggression", "referenceSpeed", "targetSpeed"],
     "velocityFrame": "adapter-local-xyz",
-    "referenceFrame": "car-local-right-forward-up",
     "rotation": "signed-game-yaw-radians-per-second",
     "categoryEncoding": "fnv1a-bits",
     "categoryBits": 16,
     "velocityScale": 100,
     "speedScale": 360,
-    "referenceOffsetScale": 20,
     "gearScale": 8,
     "rpmScale": 20000,
     "yawRateScale": 3.141592653589793,
@@ -38,7 +36,7 @@
     "windowMs": 5000,
     "intervalMs": 300,
     "encoding": "newest-per-bin-presence-age",
-    "features": ["localVelocity", "speed", "game", "car", "map", "position", "controls", "referenceOffset", "gear", "rpm", "yawRate", "gForce", "camera", "aggression", "referenceSpeed", "targetSpeed"]
+    "features": ["localVelocity", "speed", "game", "car", "map", "position", "controls", "gear", "rpm", "yawRate", "gForce", "camera", "aggression", "referenceSpeed", "targetSpeed"]
   },
   "actions": {
     "planTimesSeconds": [0, 0.5, 1, 1.5, 2, 2.5, 3],
@@ -62,14 +60,11 @@
   },
   "reward": {
     "referenceTiming": "pedal-event-speed-profile",
-    "proximityScale": 3,
     "progressLimit": 0.02,
     "timingWeight": 100,
     "speedTolerance": 20,
     "accelerationTolerance": 3,
-    "lineWeight": 100,
-    "lineDistanceTolerance": 10,
-    "lineSmoothingMs": 500,
+    "progressWeight": 100,
     "totalLimit": 10,
     "aggressionMaxRadius": 20
   },

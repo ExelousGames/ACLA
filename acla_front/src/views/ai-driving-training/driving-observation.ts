@@ -20,9 +20,6 @@ export interface DrivingObservation {
     features: number[];
     camera: PolicyCameraImage;
     normalizedPosition: number;
-    /** Signed driver-to-reference offsets in car-local X (right) and Y (forward), in source units. */
-    referenceError: [number, number];
-    referenceDistance: number;
     speed: number;
     /** Adapter-local X/Y/Z velocity in m/s: ACC right/forward/up; iRacing right/up/forward. */
     localVelocity: [number, number, number];
@@ -83,19 +80,12 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
     }
     if (position! < 0 || position! > 1 || speed! < 0 || controls[0]! < 0 || controls[0]! > 1
         || controls[1]! < 0 || controls[1]! > 1 || Math.abs(controls[2]!) > 1) return { error: 'Telemetry inputs are outside their valid ranges.' };
-    const prediction = vision.position;
-    if (!prediction || prediction.coordinateFrame !== 'car_local'
-        || prediction.referenceDelta.length !== 3 || !prediction.referenceDelta.every(finite)
-        || !finite(prediction.normalizedPosition) || Math.abs(prediction.normalizedPosition - position!) > 0.0001) {
-        return { error: 'Track Vision needs car-local position-model output and a matching Live Map reference line.' };
-    }
     if (referenceLap && !selectLiveMapReference([referenceLap], game, map, car, sample.Graphics_track_grip_status)) {
         return { error: 'Live Map reference lap does not match the current game, car or circuit. Load a matching reference lap in Live Session.' };
     }
     const prepared = inspectDrivingReference(referenceLap);
     if (!prepared.reference) return { error: prepared.error };
     const reference = prepared.reference;
-    if (prediction.referenceLap !== referenceLap) return { error: 'Live Map reference changed. Waiting for matching Track Vision inputs.' };
     if (!finite(aggression) || aggression < 0 || aggression > 100) return { error: 'Driving aggression must be between 0 and 100.' };
     const speedTargets = referenceSpeedTargets(reference, position!, aggression, config.reward.aggressionMaxRadius);
     const camera = vision.camera;
@@ -108,7 +98,6 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         localVelocity: (velocity as number[]).map((v) => clamp(v / o.velocityScale)), speed: [clamp(speed! / o.speedScale, 0, 1)],
         game: category(game, o.categoryBits), car: category(car, o.categoryBits), map: category(map, o.categoryBits),
         position: [Math.sin(2 * Math.PI * position!), Math.cos(2 * Math.PI * position!)], controls: controls as number[],
-        referenceOffset: prediction.referenceDelta.map((v) => clamp(v / o.referenceOffsetScale)),
         gear: [clamp((gear - 1) / o.gearScale)], rpm: [clamp(rpm / o.rpmScale, 0, 1)], yawRate: [clamp(yawRate! / o.yawRateScale)],
         gForce: (gForce as number[]).map((v) => clamp(v / o.gForceScale)),
         camera: [],
@@ -123,9 +112,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         featureEncoding: drivingFeatureEncoding(config),
         features: o.features.flatMap((name) => groups[name]),
         camera,
-        // Rotation preserves the distance magnitude used to measure reference correction.
-        normalizedPosition: position!, referenceDistance: Math.hypot(...prediction.referenceDelta),
-        referenceError: [prediction.referenceDelta[0], prediction.referenceDelta[1]],
+        normalizedPosition: position!,
         speed: speed!, gear: gear - 1, rpm, controls: action,
         localVelocity: velocity as [number, number, number], yawRate: yawRate!,
         gForce: gForce as [number, number, number],
@@ -134,7 +121,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
 }
 
 export interface DrivingReward {
-    timing: number; line: number; approach: number; progress: number; impact: number; total: number;
+    timing: number; progress: number; impact: number; total: number;
     impactEstimate: DrivingImpact;
     speedComparison: ReferenceSpeedTargets & { measured: number; aggression: number;
         /** Speed error removed by the driver's speed change, against one fixed target, in km/h. */
@@ -142,8 +129,6 @@ export interface DrivingReward {
         /** Change in speed over this transition, in m/s². */
         measuredAcceleration: number; referenceAcceleration: number; targetAcceleration: number };
 }
-
-export const REFERENCE_LINE_TARGET_DISTANCE = 3;
 
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
     config = DEFAULT_DRIVING_CONFIG, telemetryImpact?: DrivingImpact): DrivingReward {
@@ -157,16 +142,15 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     if (positionChange > 0.5) positionChange -= 1;
     if (Math.abs(positionChange) > config.runtime.maxPositionJump) throw new Error('Lap position jumped. Reposition the car and start a new episode.');
     if (previous.reference !== current.reference) throw new Error('Live Map reference changed. Start a new episode.');
-    const proximity = Math.exp(-current.referenceDistance / r.proximityScale);
     const forwardProgress = current.speed > 0 && current.gear >= 0 ? clamp(positionChange, 0, r.progressLimit) : 0;
     const progressPerSecond = Math.abs(positionChange / measuredSeconds);
-    // Half strength at 0.01 lap/second; faster progress approaches 0.25 * lineWeight per lap.
+    // Half strength at 0.01 lap/second; faster progress approaches 0.25 * progressWeight per lap.
     // Weight by signed distance so extra samples do not earn extra reward at the same rate.
     const signedProgress = positionChange < 0 ? clamp(positionChange, -r.progressLimit, 0) : forwardProgress;
     // No movement incurs a time-based penalty: -0.25 per second with default weights.
     const progress = current.speed === 0 || positionChange === 0
-        ? -0.25 * r.lineWeight * 0.01 * measuredSeconds
-        : 0.25 * r.lineWeight * signedProgress * progressPerSecond / (progressPerSecond + 0.01);
+        ? -0.25 * r.progressWeight * 0.01 * measuredSeconds
+        : 0.25 * r.progressWeight * signedProgress * progressPerSecond / (progressPerSecond + 0.01);
     // Keep both ends of the speed profile on the settings that produced the action.
     const start = referenceSpeedTargets(previous.reference, previous.normalizedPosition, previous.aggression, r.aggressionMaxRadius);
     const speeds = referenceSpeedTargets(previous.reference, current.normalizedPosition, previous.aggression, r.aggressionMaxRadius);
@@ -179,23 +163,14 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     const speedGoalProgress = Math.abs(previous.speed - speeds.target) - Math.abs(current.speed - speeds.target);
     const correction = clamp(speedGoalProgress / (3.6 * measuredSeconds * r.accelerationTolerance));
     const timing = forwardProgress > 0
-        ? r.timingWeight * forwardProgress * proximity * correction : 0;
-    // Staying at the target error earns reward even when the distance is unchanged.
-    const line = r.lineWeight * forwardProgress
-        * Math.exp(-Math.abs(current.referenceDistance - REFERENCE_LINE_TARGET_DISTANCE) / r.proximityScale);
-    // Compare adjacent frames, counting only the portion of the gap outside the target.
-    // Clipping both distances keeps entering and leaving the band symmetric.
-    const correctionDistance = Math.max(0, previous.referenceDistance - REFERENCE_LINE_TARGET_DISTANCE)
-        - Math.max(0, current.referenceDistance - REFERENCE_LINE_TARGET_DISTANCE);
-    const approach = current.speed > 0 && current.gear >= 0 && positionChange >= 0
-        ? r.lineWeight * clamp(correctionDistance / previous.reference.length, -r.progressLimit, r.progressLimit) : 0;
+        ? r.timingWeight * forwardProgress * correction : 0;
     const impactSample = (observation: DrivingObservation): ImpactSample => ({ measuredAt: observation.measuredAt,
         velocity: [observation.localVelocity[0], observation.localVelocity[observation.context.game === 'iracing' ? 2 : 1]],
         steering: observation.controls.steering, brake: observation.controls.brake });
     const impactEstimate = telemetryImpact ?? detectDrivingImpact(impactSample(previous), impactSample(current));
     const impact = impactEstimate.detected ? -IMPACT_PENALTY_WEIGHT * impactEstimate.confidence * impactEstimate.severity : 0;
-    return { timing, line, approach, progress, impact, impactEstimate,
+    return { timing, progress, impact, impactEstimate,
         speedComparison: { ...speeds, measured: current.speed, aggression: previous.aggression, speedGoalProgress,
             measuredAcceleration, referenceAcceleration, targetAcceleration },
-        total: clamp(timing + line + approach + progress + impact, -r.totalLimit, r.totalLimit) };
+        total: clamp(timing + progress + impact, -r.totalLimit, r.totalLimit) };
 }

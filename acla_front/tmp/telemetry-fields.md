@@ -35,6 +35,7 @@ renderer or recorded-file reader. See the SDK channel units in the
 
 | Fields | Meaning and validity rules in the iRacing reader |
 | --- | --- |
+| `Graphics_player_track_surface` | Native `PlayerTrackSurface` integer using the [SDK `irsdk_TrkLoc` enum](https://github.com/vipoo/irsdk/blob/master/irsdk_defines.h): -1 = not in world, 0 = off track, 1 = in pit stall, 2 = approaching pits, 3 = on track. Preserved in live telemetry and `.ibt` imports; missing/non-integer values and stale cockpit data are omitted. |
 | `Graphics_tyre_compound` | Fitted `PlayerTireCompound` resolved by `DriverInfo.DriverTires[].TireIndex` to `TireCompoundType`; never the pending pit selection. Unknown/missing indices are omitted. |
 | `Graphics_rain_tyres` | Integer 1 for Wet/Rain, 0 for explicitly dry compound types (Dry/Slick/Soft/Medium/Hard/Qualifying). Other types, including All-Purpose, leave the Boolean interpretation unknown. |
 | `Graphics_distance_traveled` | Meters in the observed stint, integrated from `Speed` with the trapezoidal rule. Starts at zero only on an observed stationary pit stall or refuel. Reversing adds traveled distance, rather than subtracting lap progress. |
@@ -60,9 +61,9 @@ Native `.ibt` files use [IRacingIBTAdapter](../electron/recording/readers/iracin
 and an independent channel allowlist. The adapter reuses the common iRacing
 conversions and adds 36 mappings: four existing brake-pressure fields, 30 new
 shared Physics fields, and two existing coordinate/identity arrays.
-Its coverage table accounts for all 273 registered fields,
-with 136 supported conditionally on source availability. The live adapter
-maps 100 fields; disk-only values never enter the live capture allowlist.
+Its coverage table accounts for all 274 registered fields,
+with 137 supported conditionally on source availability. The live adapter
+maps 101 fields; disk-only values never enter the live capture allowlist.
 
 | Standard fields | Source and units |
 | --- | --- |
@@ -142,7 +143,7 @@ This is the application-wide telemetry standard shared by all supported simulato
 - Standard field names remain stable across readers. A reader uses the semantically equivalent standard field or omits it; it does not introduce a replacement name.
 - A successful recorded row is one flat JSON object containing only keys from this catalog, regardless of the source game.
 - Before forwarding the standard object, the live reader supplies `Graphics_analyst_session_time` from its own recording clock. ACC passes elapsed milliseconds into its adapter to populate this field; iRacing adds it after adaptation. The writer, saved-file reader, renderer, and upload path preserve all telemetry keys and values unchanged. They must not rename fields, add aliases, convert units, or wrap the row in another persisted object.
-- The authoritative field table is [live-telemetry-dataset.js](../src/data/live-telemetry-dataset.js), currently containing 273 keys: 163 Physics, 87 Graphics, and 23 Static. Every reader and adapter must emit rows accepted by this dataset. Register new fields in that table and document their units and meanings here before use; do not introduce game-specific aliases.
+- The authoritative field table is [live-telemetry-dataset.js](../src/data/live-telemetry-dataset.js), currently containing 274 keys: 163 Physics, 88 Graphics, and 23 Static. Every reader and adapter must emit rows accepted by this dataset. Register new fields in that table and document their units and meanings here before use; do not introduce game-specific aliases.
 - `Graphics_status`, `Graphics_session_type`, `Graphics_flag`, `Graphics_penalty`, `Graphics_track_grip_status`, and the three `Graphics_rain_intensity*` fields contain the standard integers defined below. Readers map native enum values to these integers.
 - `Graphics_last_sector_time_str` has type integer despite its suffix, and `Graphics_rain_tyres` is an integer `0`/`1`. Readers must emit these declared types, and downstream components preserve them unchanged.
 - `Graphics_car_coordinates` is an array of 60 `{ "x": number, "y": number, "z": number }` objects. `Graphics_car_id` is an array of 60 integers. `Graphics_normalized_positions` is a car-ID-keyed object described below. All other field values are scalar; readers flatten native objects into the exact keys below.
@@ -406,6 +407,7 @@ Graphics_active_cars                                    integer
 Graphics_car_coordinates                                array<{x: number, y: number, z: number}>[60]
 Graphics_car_id                                         integer[60]
 Graphics_player_car_id                                  integer
+Graphics_player_track_surface                           integer (irsdk_TrkLoc)
 Graphics_penalty_time                                   number
 Graphics_flag                                           integer (standard flag value)
 Graphics_penalty                                        integer (standard penalty value)

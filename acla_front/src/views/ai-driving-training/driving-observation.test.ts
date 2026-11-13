@@ -8,6 +8,39 @@ import { IMPACT_PENALTY_WEIGHT } from './driving-impact';
 
 const { AccAdapter } = require('../../../electron/recording/readers/acc/acc-adapter');
 
+it.each(['missing', 'distant', 'invalid', 'mismatched'])(
+    'ignores %s position-model output in observations, memory and rewards', (kind) => {
+        const { live, vision, referenceLap, observation: before } = trainingFixture();
+        const next = trainingFixture(1200, 50, referenceLap);
+        next.live.currentTelemetry.Graphics_normalized_car_position = 0.252;
+        next.live.currentTelemetry.Physics_speed_kmh = 106;
+        next.vision.position!.normalizedPosition = 0.252;
+        const expected = readDrivingObservation(next.live, next.vision, referenceLap, 50, 1200).observation!;
+        for (const frame of [vision, next.vision]) {
+            if (kind === 'missing') delete frame.position;
+            if (kind === 'distant') frame.position!.referenceDelta = frame === vision ? [30, 40, 0] : [-90, 0, 0];
+            if (kind === 'invalid') frame.position!.referenceDelta = [NaN, Infinity, -Infinity];
+            if (kind === 'mismatched') Object.assign(frame.position!, { coordinateFrame: 'world', normalizedPosition: 0.75, referenceLap: null });
+        }
+        const start = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
+        const after = readDrivingObservation(next.live, next.vision, referenceLap, 50, 1200).observation!;
+        expect(start).toEqual(before);
+        expect(after).toEqual(expected);
+        expect(after).not.toHaveProperty('referenceError');
+        expect(after).not.toHaveProperty('referenceDistance');
+        const memory = new DrivingMemory();
+        const expectedMemory = new DrivingMemory();
+        memory.encode(start);
+        expectedMemory.encode(before);
+        expect(memory.encode(after)).toEqual(expectedMemory.encode(expected));
+        const reward = drivingReward(start, after);
+        expect(reward).toEqual(drivingReward(before, expected));
+        expect(reward).not.toHaveProperty('line');
+        expect(reward).not.toHaveProperty('approach');
+        expect(reward.timing).toBeCloseTo(0.2 * 2 / (3.6 * 0.2 * 3));
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact);
+    });
+
 describe('impact reward', () => {
     it.each(['acc', 'iracing'])('penalizes diagonal impacts in all four directions for %s', (game) => {
         const { observation } = trainingFixture();
@@ -22,7 +55,7 @@ describe('impact reward', () => {
                 const reward = drivingReward(before, after);
                 expect(reward.impactEstimate.detected).toBe(true);
                 expect(reward.impact).toBeLessThan(0);
-                expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress + reward.impact);
+                expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact);
                 expect(drivingReward(after, { ...after, capturedAt: 1200, measuredAt: 1200 }).impact).toBe(0);
             }
         }
@@ -38,7 +71,7 @@ describe('impact reward', () => {
         expect(reward.impactEstimate.detected).toBe(true);
         expect(reward.impact).toBeLessThan(-0.25);
         expect(reward.impact).toBeGreaterThan(-1);
-        expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress + reward.impact);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact);
         expect(drivingReward(before, { ...after, controls: { ...after.controls, brake: 0.5 } }).impact).toBe(0);
         expect(drivingReward(after, { ...after, capturedAt: 1700, measuredAt: 1700 }).impact).toBe(0);
     });
@@ -54,7 +87,7 @@ describe('impact reward', () => {
         expect(small.impact).toBeLessThan(-0.3);
         expect(larger.impact).toBeLessThan(-1.5);
         expect(larger.impact).toBeLessThan(small.impact);
-        expect(small.total).toBeCloseTo(small.timing + small.line + small.approach + small.progress + small.impact);
+        expect(small.total).toBeCloseTo(small.timing + small.progress + small.impact);
         expect(drivingReward(after, { ...after, capturedAt: 1200, measuredAt: 1200 }).impact).toBe(0);
     });
 
@@ -67,7 +100,7 @@ describe('impact reward', () => {
         const reward = drivingReward(before, after);
         expect(reward.impactEstimate).toMatchObject({ available: true, detected: true, confidence: 1, severity: 1 });
         expect(reward.impact).toBe(-IMPACT_PENALTY_WEIGHT);
-        expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress + reward.impact);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact);
         const bump = { ...after, localVelocity: (game === 'iracing' ? [0, 20, 30] : [0, 30, 20]) as [number, number, number] };
         expect(drivingReward(before, bump).impact).toBe(0);
         // The same collision with different image timing has the same impact estimate.
@@ -88,7 +121,7 @@ describe('impact reward', () => {
         const after = { ...before, capturedAt: 1200, measuredAt: 1200, localVelocity: [0, 0, 0] as [number, number, number] };
         const impact = drivingReward(before, after).impactEstimate;
         expect(impact.detected).toBe(true);
-        expect(drivingReward(before, { ...after, yawRate: 100, speed: 300, gear: -1, referenceDistance: 99,
+        expect(drivingReward(before, { ...after, yawRate: 100, speed: 300, gear: -1,
             controls: { ...after.controls, throttle: 1 } }).impactEstimate).toEqual(impact);
         expect(drivingReward(before, { ...after, measuredAt: 1600, capturedAt: 1600 }))
             .toMatchObject({ impact: 0, impactEstimate: { available: false } });
@@ -99,9 +132,9 @@ describe('impact reward', () => {
 
 it('uses telemetry and the full-resolution camera from the capture time', () => {
     const { live, vision, referenceLap, observation } = trainingFixture();
-    expect(observation.features).toHaveLength(69);
+    expect(observation.features).toHaveLength(66);
     expect(observation).toMatchObject({ gear: 3, rpm: 6000 });
-    expect(observation.features.slice(60, 62)).toEqual([3 / 8, 6000 / 20000]);
+    expect(observation.features.slice(57, 59)).toEqual([3 / 8, 6000 / 20000]);
     expect(observation.camera).toBe(vision.camera);
     expect(observation.camera).toMatchObject({ width: 384, height: 216 });
     expect(observation.context).not.toHaveProperty('classes');
@@ -154,14 +187,14 @@ it('preserves adapted ACC axes and signs in capture-time policy inputs and drivi
     expect(observation).toMatchObject({ localVelocity: [-12, 40, 2.5], gForce: [-1.5, 2.5, 1],
         yawRate: Math.PI / 8 });
     expect(observation.features.slice(0, 3)).toEqual([-0.12, 0.4, 0.025]);
-    expect(observation.features[62]).toBe(0.125);
-    expect(observation.features.slice(63, 66)).toEqual([-0.3, 0.5, 0.2]);
+    expect(observation.features[59]).toBe(0.125);
+    expect(observation.features.slice(60, 63)).toEqual([-0.3, 0.5, 0.2]);
     const memory = new DrivingMemory();
     memory.encode(observation);
     const encoded = memory.encode({ ...observation, capturedAt: 1200, measuredAt: 1200 }).features;
     expect(encoded.slice(2, 5)).toEqual([-0.12, 0.4, 0.025]);
-    expect(encoded[2 + 62]).toBe(0.125);
-    expect(encoded.slice(2 + 63, 2 + 66)).toEqual([-0.3, 0.5, 0.2]);
+    expect(encoded[2 + 59]).toBe(0.125);
+    expect(encoded.slice(2 + 60, 2 + 63)).toEqual([-0.3, 0.5, 0.2]);
     expect(encoded.slice(drivingMemoryInputs())).toEqual(observation.features);
 });
 
@@ -176,7 +209,7 @@ it.each(['acc', 'iracing'] as const)('normalizes g-force in adapter XYZ order fo
     config.observation.gForceScale = 4;
     const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000, config).observation!;
     expect(observation.gForce).toEqual([-8, 1, 6]);
-    expect(observation.features.slice(63, 66)).toEqual([-1, 0.25, 1]);
+    expect(observation.features.slice(60, 63)).toEqual([-1, 0.25, 1]);
 });
 
 describe.each(['x', 'y', 'z'])('g-force %s validation', (axis) => {
@@ -240,7 +273,7 @@ describe.each(['acc', 'iracing'] as const)('%s yaw-only rotation inputs', (game)
         });
         const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
         expect(observation.yawRate).toBe(rate);
-        expect(observation.features[62]).toBe(Math.sign(rate));
+        expect(observation.features[59]).toBe(Math.sign(rate));
         expect(observation).not.toHaveProperty('rotationRates');
     });
 
@@ -263,36 +296,14 @@ describe.each(['acc', 'iracing'] as const)('%s yaw-only rotation inputs', (game)
     });
 });
 
-it.each([0, Math.PI / 2, -Math.PI / 2, Math.PI])('uses local offsets directly at heading %s', (heading) => {
-    const { live, vision, referenceLap, observation: before } = trainingFixture();
-    Object.assign(vision.telemetry!.currentTelemetry, { Physics_heading: heading, Physics_pitch: 0.2, Physics_roll: -0.1 });
-    vision.position!.referenceDelta = [-3, 4, -12];
-    const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
-    // These feature slots retain right/forward/up signs, without a second rotation or world translation.
-    expect(observation.features.slice(57, 60)).toEqual([-3 / 20, 4 / 20, -12 / 20]);
-    expect(observation.referenceError).toEqual([-3, 4]);
-    expect(observation.referenceDistance).toBe(13);
-    const after = { ...observation, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252, controls: NEUTRAL };
-    const reward = drivingReward(before, after);
-    expect(reward.timing).toBeCloseTo(drivingReward(before, { ...after, referenceDistance: 0 }).timing * Math.exp(-13 / 3));
-    expect(reward.approach).toBe(-2); // The departure beyond 3 units reaches the per-transition cap.
-});
-
-it.each([undefined, 'world'])('rejects a position result without car-local semantics (%s)', (coordinateFrame) => {
-    const { live, vision, referenceLap } = trainingFixture();
-    Object.assign(vision.position!, { coordinateFrame });
-    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/car-local/);
-});
-
-it.each(['telemetry', 'capture', 'session', 'position', 'velocity', 'nonfinite'])(
+it.each(['telemetry', 'capture', 'session', 'velocity', 'nonfinite'])(
     'rejects unusable %s instead of training on fabricated defaults', (fault) => {
         const { live, vision, referenceLap } = trainingFixture();
         if (fault === 'telemetry') live.receivedAt = 0;
         if (fault === 'capture') vision.capturedAt = -1000;
         if (fault === 'session') live.streamGeneration++;
-        if (fault === 'position') delete vision.position;
         if (fault === 'velocity') delete live.currentTelemetry.Physics_local_velocity_x;
-        if (fault === 'nonfinite') vision.position!.referenceDelta[0] = NaN;
+        if (fault === 'nonfinite') live.currentTelemetry.Graphics_normalized_car_position = NaN;
         expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toBeTruthy();
     },
 );
@@ -326,7 +337,7 @@ describe.each(['Physics_gear', 'Physics_rpm'])('unavailable %s telemetry', (fiel
         const gear = field === 'Physics_gear' ? 0 : 3;
         const rpm = field === 'Physics_rpm' ? 0 : 6000;
         expect(result.observation).toMatchObject({ gear, rpm });
-        expect(result.observation!.features.slice(60, 62)).toEqual([gear / 8, rpm / 20000]);
+        expect(result.observation!.features.slice(57, 59)).toEqual([gear / 8, rpm / 20000]);
         expect(new DrivingMemory().encode(result.observation!).features.every(Number.isFinite)).toBe(true);
     });
 });
@@ -337,23 +348,6 @@ it('requires automatic shifting to be disabled when reported by the simulator', 
     expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/Disable automatic gear shifting/);
     live.currentTelemetry.Physics_autoshifter_on = false;
     expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).observation).toBeDefined();
-});
-
-it('rejects mismatched position estimates', () => {
-    const { live, vision, referenceLap } = trainingFixture();
-    vision.position!.normalizedPosition = 0.3;
-    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/matching/);
-});
-
-it('rewards forward reference tracking', () => {
-    const { observation: before } = trainingFixture();
-    const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252, speed: 106, referenceDistance: 1, controls: NEUTRAL };
-    const smooth = drivingReward(before, after);
-    expect(smooth.timing).toBeGreaterThan(0);
-    expect(smooth.line).toBeGreaterThan(0);
-    const distant = drivingReward(before, { ...after, referenceDistance: 8 });
-    expect(distant.timing).toBeLessThan(smooth.timing);
-    expect(distant.total).toBeLessThan(smooth.total);
 });
 
 describe('normalized position progress reward', () => {
@@ -388,23 +382,17 @@ describe('normalized position progress reward', () => {
             .toBeCloseTo(drivingReward(before, after).progress, 12);
     });
 
-    it.each([20, 100, 500])('scales the progress bonus independently of reference distance with line weight %s', (lineWeight) => {
+    it.each([20, 100, 500])('scales and caps the progress bonus with progress weight %s', (progressWeight) => {
         const config = cloneConfig();
-        config.reward.lineWeight = lineWeight;
-        const before = { ...trainingFixture().observation, referenceDistance: 0 };
+        config.reward.progressWeight = progressWeight;
+        const before = trainingFixture().observation;
         for (const elapsed of [1, 100, 1000]) {
             for (const change of [0.0001, 0.002, 0.05]) {
                 const after = { ...before, capturedAt: 1000 + elapsed, measuredAt: 1000 + elapsed,
                     normalizedPosition: before.normalizedPosition + change };
                 const reward = drivingReward(before, after, config);
                 expect(reward.progress).toBeGreaterThan(0);
-                expect(reward.progress).toBeLessThan(0.25 * lineWeight * Math.min(change, config.reward.progressLimit));
-                expect(reward.approach).toBe(0);
-                const distant = drivingReward({ ...before, referenceDistance: 100 },
-                    { ...after, referenceDistance: 100 }, config);
-                expect(distant.progress).toBe(reward.progress);
-                expect(distant.approach).toBe(0); // Steady distance has no correction to score.
-                expect(distant.line).toBeLessThan(reward.line);
+                expect(reward.progress).toBeLessThan(0.25 * progressWeight * Math.min(change, config.reward.progressLimit));
             }
         }
     });
@@ -438,112 +426,6 @@ describe('normalized position progress reward', () => {
     });
 });
 
-describe('reference proximity reward', () => {
-    it('peaks at 3 raw units and rewards holding the same error while driving forward', () => {
-        const before = { ...trainingFixture().observation, referenceDistance: 3 };
-        const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252 };
-        const target = drivingReward(before, after);
-        expect(target.line).toBeCloseTo(0.2);
-        expect(target.approach).toBe(0);
-        for (const referenceDistance of [0, 1, 2, 2.9, 3.1, 4, 6, 30]) {
-            const reward = drivingReward(before, { ...after, referenceDistance });
-            expect(reward.line).toBeGreaterThan(0);
-            expect(reward.line).toBeLessThan(target.line);
-        }
-        expect(drivingReward(before, { ...after, referenceDistance: 2 }).line)
-            .toBeCloseTo(drivingReward(before, { ...after, referenceDistance: 4 }).line);
-    });
-
-    it('preserves reward for a steady error across capture rates and uses saved weights and caps', () => {
-        const before = { ...trainingFixture().observation, referenceDistance: 3 };
-        const middle = { ...before, capturedAt: 1100, measuredAt: 1100, normalizedPosition: 0.251 };
-        const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252 };
-        expect(drivingReward(before, middle).line + drivingReward(middle, after).line)
-            .toBeCloseTo(drivingReward(before, after).line, 12);
-        const config = cloneConfig();
-        config.reward.lineWeight = 200;
-        config.reward.progressLimit = 0.001;
-        expect(drivingReward(before, after, config).line).toBeCloseTo(0.2);
-    });
-});
-
-describe('reference approach reward', () => {
-    it.each([[30, 28, 0.5], [2, 3, 0], [10, 9, 0.25], [10, 11, -0.25],
-        [10, 9.75, 0.0625], [10, 10.25, -0.0625], [0, 0, 0], [100, 100, 0],
-        [4, 3, 0.25], [3, 4, -0.25], [4, 2, 0.25], [2, 4, -0.25],
-        [3, 2, 0], [2, 1, 0], [1, 2, 0]])(
-        'scores adjacent-frame distance from %s to %s only beyond 3 units', (from, to, expected) => {
-            const before = { ...trainingFixture().observation, referenceDistance: from };
-            const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252, referenceDistance: to };
-            expect(drivingReward(before, after).approach).toBeCloseTo(expected, 12);
-        });
-
-    const sequence = (distances: number[], interval = 200) => {
-        let previous = { ...trainingFixture().observation, referenceDistance: distances[0] };
-        return distances.slice(1).map((referenceDistance) => {
-            const current = { ...previous, capturedAt: previous.capturedAt + interval, measuredAt: previous.measuredAt + interval,
-                normalizedPosition: previous.normalizedPosition + interval / 100000, referenceDistance };
-            const reward = drivingReward(previous, current);
-            previous = current;
-            return reward.approach;
-        });
-    };
-
-    it('scores small corrections on every frame and stops when distance is unchanged', () => {
-        expect(sequence([30, 29.75, 29.5, 29.25, 29, 29, 28.75, 28.5, 28.25, 28]))
-            .toEqual([0.0625, 0.0625, 0.0625, 0.0625, 0, 0.0625, 0.0625, 0.0625, 0.0625]);
-        expect(sequence([2, 2.25, 2.5, 2.75, 3, 3])).toEqual([0, 0, 0, 0, 0]);
-    });
-
-    it('does not earn net credit for moving away and returning', () => {
-        expect(sequence([10, 12, 10, 10])).toEqual([-0.5, 0.5, 0]);
-        expect(sequence([2, 4, 2, 2])).toEqual([-0.25, 0.25, 0]);
-        expect(sequence([4, 2, 4, 4])).toEqual([0.25, -0.25, 0]);
-    });
-
-    it('has the same accumulated correction at different capture rates', () => {
-        const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
-        expect(sum(sequence([30, 29, 28], 200))).toBe(0.5);
-        expect(sum(sequence([30, 29.75, 29.5, 29.25, 29, 28.75, 28.5, 28.25, 28], 50))).toBe(0.5);
-        expect(sum(sequence([30, 28], 400))).toBe(0.5);
-        expect(sum(sequence([4, 3.5, 3, 2.5, 2], 100))).toBe(0.25);
-        expect(sum(sequence([4, 2], 400))).toBe(0.25);
-    });
-
-    it('discards distance changes during stationary or reverse driving', () => {
-        const before = { ...trainingFixture().observation, referenceDistance: 100 };
-        for (const fields of [{ normalizedPosition: 0.25, speed: 0 }, { normalizedPosition: 0.249 },
-            { normalizedPosition: 0.252, speed: 0 }, { normalizedPosition: 0.252, gear: -1 }]) {
-            const after = { ...before, capturedAt: 1200, measuredAt: 1200, referenceDistance: 99.25, ...fields };
-            expect(drivingReward(before, after).approach).toBe(0);
-            const resumed = { ...before, capturedAt: 1400, measuredAt: 1400, referenceDistance: 98.75,
-                normalizedPosition: after.normalizedPosition + 0.002 };
-            expect(drivingReward(after, resumed).approach).toBe(0.125);
-        }
-    });
-
-    it('uses the saved line weight and caps correction and total reward', () => {
-        const config = cloneConfig();
-        config.reward.lineWeight = 200;
-        config.reward.progressLimit = 0.01;
-        config.reward.totalLimit = 1;
-        const before = { ...trainingFixture().observation, referenceDistance: 30 };
-        const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252, referenceDistance: 29 };
-        expect(drivingReward(before, after, config).approach).toBe(0.5);
-        expect(drivingReward(before, { ...after, referenceDistance: 0 }, config)).toMatchObject({ approach: 2, total: 1 });
-        expect(drivingReward(before, { ...after, referenceDistance: 60 }, config)).toMatchObject({ approach: -2, total: -1 });
-    });
-
-    it('does not let legacy proximity settings suppress correction or change its sign', () => {
-        const config = cloneConfig();
-        config.reward.lineDistanceTolerance = 1;
-        config.reward.lineSmoothingMs = 10000;
-        const before = { ...trainingFixture().observation, referenceDistance: 30 };
-        const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252, referenceDistance: 28 };
-        expect(drivingReward(before, after, config)).toEqual(drivingReward(before, after));
-    });
-});
-
 it('does not reduce reward for repeated yaw-rate reversals', () => {
     const { observation } = trainingFixture();
     const frames = [0.3, -0.3, 0.3, -0.3].map((yawRate, i) => ({ ...observation,
@@ -554,31 +436,20 @@ it('does not reduce reward for repeated yaw-rate reversals', () => {
         const steady = drivingReward({ ...frames[i - 1], yawRate: 0.3 }, { ...frames[i], yawRate: 0.3 });
         expect(reward).toEqual(steady);
         expect(reward).not.toHaveProperty('instability');
-        expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress);
     }
 });
 
-it.each([[0, 0], [2, 0], [4, 0.25], [30, 2]])('scores approach from distance %s while moving at unchanged lap position', (referenceDistance, approach) => {
-    const { observation: before } = trainingFixture();
-    const after = { ...before, capturedAt: 1200, measuredAt: 1200, referenceDistance: 1 };
-    const changedDistance = drivingReward({ ...before, referenceDistance }, after);
-    expect(changedDistance.line).toBe(0);
-    expect(changedDistance.approach).toBe(approach);
-    expect(changedDistance.timing).toBe(0);
-    expect(changedDistance.progress).toBeCloseTo(-0.05);
-    expect(changedDistance.total).toBeCloseTo(approach - 0.05);
-});
-
-it.each(['throttle', 'brake', 'steering'] as const)('retains line reward for abrupt %s changes', (control) => {
+it.each(['throttle', 'brake', 'steering'] as const)('retains progress reward for abrupt %s changes', (control) => {
     const { observation } = trainingFixture();
     const before = { ...observation, controls: NEUTRAL };
     const action = { ...NEUTRAL, [control]: 1 };
     const stationary = { ...before, capturedAt: 1200, measuredAt: 1200, speed: 0 };
-    const converging = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252, referenceDistance: 1 };
-    for (const after of [stationary, converging]) {
+    const moving = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252 };
+    for (const after of [stationary, moving]) {
         const unchanged = drivingReward(before, after);
         const changed = drivingReward(before, { ...after, controls: action });
-        expect(changed.line).toEqual(unchanged.line);
+        expect(changed.progress).toEqual(unchanged.progress);
     }
 });
 
@@ -602,14 +473,13 @@ it.each([
     ['shifting only', { ...NEUTRAL, throttle: 0.7 }, { ...NEUTRAL, throttle: 0.7, shiftUp: true }],
 ] as const)('scores measured speed and speed changes while %s', (_label, previousControls, controls) => {
     const { observation } = trainingFixture();
-    const before = { ...observation, speed: 100, referenceDistance: 0, controls: previousControls };
+    const before = { ...observation, speed: 100, controls: previousControls };
     for (const speed of [99.2, 200]) {
         const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252, speed, controls };
         const reward = drivingReward(before, after);
         if (speed === 99.2) expect(reward.timing).toBeCloseTo(0.2 * 0.8 / (3.6 * 0.2 * 3));
         else expect(reward.timing).toBeLessThan(0);
-        expect(reward.approach).toBe(0); // Constant reference distance has no correction to score.
-        expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress);
     }
 });
 
@@ -621,7 +491,7 @@ it.each([
     ['changing both pedals', { ...NEUTRAL, throttle: 0.7 }, { ...NEUTRAL, brake: 0.4 }],
 ] as const)('scores timing when %s', (_label, previousControls, controls) => {
     const { observation } = trainingFixture();
-    const before = { ...observation, speed: 100, referenceDistance: 0, controls: previousControls };
+    const before = { ...observation, speed: 100, controls: previousControls };
     const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252, speed: 99.2, controls };
     expect(drivingReward(before, after).timing).toBeCloseTo(0.2 * 0.8 / (3.6 * 0.2 * 3));
     expect(drivingReward(before, { ...after, speed: 200 }).timing).toBeLessThan(0);
@@ -629,7 +499,7 @@ it.each([
 
 it('rewards the reference speed profile instead of simply driving faster', () => {
     const { observation } = trainingFixture();
-    const before = { ...observation, referenceDistance: 0, speed: 100 };
+    const before = { ...observation, speed: 100 };
     const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.252, controls: NEUTRAL };
     const matched = drivingReward(before, { ...after, speed: 99.2 });
     const fast = drivingReward(before, { ...after, speed: 200 });
@@ -643,8 +513,8 @@ it('rewards the reference speed profile instead of simply driving faster', () =>
 describe('speed goal progress reward', () => {
     const observation = trainingFixture().observation;
     const score = (speed: number, nextSpeed: number, position = 0.252, aggression = 50) => drivingReward(
-        { ...observation, speed, aggression, referenceDistance: 0 },
-        { ...observation, speed: nextSpeed, normalizedPosition: position, referenceDistance: 0,
+        { ...observation, speed, aggression },
+        { ...observation, speed: nextSpeed, normalizedPosition: position,
             capturedAt: 1200, measuredAt: 1200 });
 
     it.each([[40, 42], [160, 158]])('rewards correction from %s to %s even far outside the old speed tolerance', (speed, nextSpeed) => {
@@ -664,7 +534,7 @@ describe('speed goal progress reward', () => {
 
     it('rewards more correction, caps its magnitude, and charges for overshooting', () => {
         // At position 0.4 the goal is 80 km/h, independent of aggression.
-        const before = { ...observation, speed: 79, normalizedPosition: 0.4, referenceDistance: 0 };
+        const before = { ...observation, speed: 79, normalizedPosition: 0.4 };
         const reward = (speed: number) => drivingReward(before,
             { ...before, speed, normalizedPosition: 0.402, capturedAt: 1200, measuredAt: 1200 });
         expect(reward(79.5).timing).toBeGreaterThan(0);
@@ -683,13 +553,26 @@ describe('speed goal progress reward', () => {
     });
 
     it('keeps reward scaled by telemetry time and the configured correction rate', () => {
-        const before = { ...observation, speed: 40, referenceDistance: 0 };
+        const before = { ...observation, speed: 40 };
         const after = { ...before, speed: 41, normalizedPosition: 0.252, capturedAt: 1200, measuredAt: 1200 };
         const config = cloneConfig();
         config.reward.accelerationTolerance *= 2;
         const normal = drivingReward(before, after).timing;
         expect(drivingReward(before, after, config).timing).toBeCloseTo(normal / 2);
         expect(drivingReward(before, { ...after, capturedAt: 1400, measuredAt: 1400 }).timing).toBeCloseTo(normal / 2);
+    });
+
+    it.each([40, 160])('caps total reward with saved settings for speed %s', (speed) => {
+        const config = cloneConfig();
+        config.reward.timingWeight = 1000;
+        config.reward.progressWeight = 200;
+        config.reward.totalLimit = 1;
+        const before = { ...observation, speed: 100 };
+        const after = { ...before, speed, normalizedPosition: 0.28, capturedAt: 1200, measuredAt: 1200 };
+        const reward = drivingReward(before, after, config);
+        expect(reward.timing).toBe(-20);
+        expect(reward.total).toBe(-1);
+        expect(drivingReward(before, { ...after, speed: 88 }, config).total).toBe(1);
     });
 });
 
@@ -712,7 +595,7 @@ it.each([900, 1000, NaN])('rejects repeated, reversed or invalid speed timestamp
 
 it('gives the same total reward while changing throttle at different capture intervals', () => {
     const { observation } = trainingFixture();
-    const before = { ...observation, normalizedPosition: 0.05, referenceDistance: 0, speed: 80 };
+    const before = { ...observation, normalizedPosition: 0.05, speed: 80 };
     const middle = { ...before, capturedAt: 1100, measuredAt: 1100, normalizedPosition: 0.051, speed: 80.5, controls: { ...before.controls, throttle: 0.4 } };
     const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.052, speed: 81, controls: { ...before.controls, throttle: 0.5 } };
     const whole = drivingReward(before, after);
@@ -728,26 +611,22 @@ it.each([
     { speed: 200, normalizedPosition: 0.25 },
     { speed: 200, normalizedPosition: 0.249 },
     { speed: 200, normalizedPosition: 0.252, gear: -1 },
-])('withholds timing and line rewards without forward driving: %j', (current) => {
+])('withholds timing rewards without forward driving: %j', (current) => {
     const { observation: before } = trainingFixture();
     const reward = drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200, controls: NEUTRAL, ...current });
     expect(reward.timing).toBe(0);
-    expect(reward.line).toBe(0);
 });
 
 it('does not reward parking or reverse progress and handles the lap boundary', () => {
     const { observation: before } = trainingFixture();
     expect(drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200, speed: 0 }).total).toBeLessThan(0);
-    expect(drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.249 }).line).toBe(0);
-    const wrapped = drivingReward({ ...before, normalizedPosition: 0.999, referenceDistance: 1 },
-        { ...before, normalizedPosition: 0.001, capturedAt: 1200, measuredAt: 1200, referenceDistance: 0, controls: NEUTRAL });
-    expect(wrapped.line).toBeCloseTo(0.2 * Math.exp(-1));
-    expect(wrapped.approach).toBe(0);
+    expect(drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.249 }).total).toBeLessThan(0);
+    const wrapped = drivingReward({ ...before, normalizedPosition: 0.999 },
+        { ...before, normalizedPosition: 0.001, capturedAt: 1200, measuredAt: 1200, controls: NEUTRAL });
     expect(Number.isFinite(wrapped.timing)).toBe(true);
-    const reverseWrapped = drivingReward({ ...before, normalizedPosition: 0.001, referenceDistance: 0 },
-        { ...before, normalizedPosition: 0.999, capturedAt: 1200, measuredAt: 1200, referenceDistance: 0, controls: NEUTRAL });
+    const reverseWrapped = drivingReward({ ...before, normalizedPosition: 0.001 },
+        { ...before, normalizedPosition: 0.999, capturedAt: 1200, measuredAt: 1200, controls: NEUTRAL });
     expect(reverseWrapped.timing).toBe(0);
-    expect(reverseWrapped.line).toBe(0);
     expect(wrapped.progress).toBeGreaterThan(0);
     expect(reverseWrapped.progress).toBeCloseTo(-wrapped.progress);
     expect(reverseWrapped.total).toBe(reverseWrapped.progress);
@@ -764,14 +643,14 @@ it.each([0, 50, 100])('appends aggression and targets without changing the exist
     expect(next).not.toHaveProperty('pedals');
 });
 
-it('requires a usable selected reference and the exact lap paired with Track Vision', () => {
+it('requires a usable selected reference for speed targets without a paired position estimate', () => {
     const { live, vision, referenceLap } = trainingFixture();
     expect(readDrivingObservation(live, vision, null, 50, 1000).error).toMatch(/reference lap/);
     expect(readDrivingObservation(live, vision, { ...referenceLap, target_features: [] }, 50, 1000).error).toMatch(/missing raw X coordinates, raw Y coordinates, raw Z coordinates, speed/);
     expect(readDrivingObservation(live, vision, { ...referenceLap, car: 'other' }, 50, 1000).error).toMatch(/does not match the current game, car or circuit/);
-    expect(readDrivingObservation(live, vision, { ...referenceLap }, 50, 1000).error).toMatch(/reference changed/);
+    expect(readDrivingObservation(live, vision, { ...referenceLap }, 50, 1000).observation).toBeDefined();
     delete vision.position!.referenceLap;
-    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/reference changed/);
+    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).observation).toBeDefined();
 });
 
 it('explains missing speed even when Live Map can draw the reference line', () => {
@@ -792,7 +671,7 @@ it('allows a drawable reference lap with different recorded start and finish coo
     expect(readDrivingObservation(live, vision, lap, 50, 1000).observation).toBeDefined();
 });
 
-it('scores measured speed and acceleration with capped progress and proximity regardless of pedals', () => {
+it('scores measured speed and acceleration with capped progress regardless of pedals', () => {
     const { observation } = trainingFixture();
     const before = { ...observation, speed: 100 };
     const position = 0.28;
@@ -800,14 +679,13 @@ it('scores measured speed and acceleration with capped progress and proximity re
     const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: position, speed: target, controls: NEUTRAL };
     const matched = drivingReward(before, after);
     const mismatched = drivingReward(before, { ...after, speed: before.speed });
-    expect(matched.timing).toBeCloseTo(100 * 0.02 * Math.exp(-after.referenceDistance / 3));
+    expect(matched.timing).toBeCloseTo(100 * 0.02);
     expect(matched.timing).toBeGreaterThan(mismatched.timing);
     expect(matched.speedComparison.target).toEqual(target);
     expect(matched.speedComparison.measured).toEqual(target);
     expect(matched.speedComparison.measuredAcceleration).toBeCloseTo(-12 / (3.6 * 0.2));
     expect(matched.speedComparison.targetAcceleration).toBeCloseTo(matched.speedComparison.measuredAcceleration);
     expect(drivingReward(before, { ...after, controls: { ...NEUTRAL, throttle: 1, brake: 1 } })).toEqual(matched);
-    expect(drivingReward(before, { ...after, referenceDistance: 10 }).timing).toBeLessThan(matched.timing);
 });
 
 it.each([
@@ -815,7 +693,7 @@ it.each([
     [0, 0.56, 0.57, 254 / 3, 268 / 3], [100, 0.46, 0.47, 83.5, 87],
 ])('rewards the requested acceleration/deceleration timing at aggression %s', (aggression, start, end, speed, nextSpeed) => {
     const { observation } = trainingFixture();
-    const before = { ...observation, aggression, normalizedPosition: start, speed, referenceDistance: 0 };
+    const before = { ...observation, aggression, normalizedPosition: start, speed };
     const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: end, speed: nextSpeed, controls: NEUTRAL };
     const matched = drivingReward(before, after);
     expect(matched.timing).toBeCloseTo(1);
@@ -834,7 +712,7 @@ it.each([
 ])('distinguishes early, matching and late speed responses at reference pedal event %s',
     (start, end, speed, nextSpeed, earlySpeed, earlyNext, lateSpeed, lateNext) => {
         const { observation } = trainingFixture();
-        const before = { ...observation, normalizedPosition: start, speed, referenceDistance: 0 };
+        const before = { ...observation, normalizedPosition: start, speed };
         const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: end, speed: nextSpeed };
         const matched = drivingReward(before, after);
         expect(matched.timing).toBeCloseTo(2);
@@ -844,7 +722,7 @@ it.each([
 
 it('checks higher and increasing speed before reference throttle pickup against the aggressive target', () => {
     const { observation } = trainingFixture();
-    const before = { ...observation, aggression: 100, normalizedPosition: 0.46, speed: 83.5, referenceDistance: 0 };
+    const before = { ...observation, aggression: 100, normalizedPosition: 0.46, speed: 83.5 };
     const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.47, speed: 87 };
     const reward = drivingReward(before, after);
     expect(reward.speedComparison).toMatchObject({ reference: 80, referenceAcceleration: 0, measured: 87 });

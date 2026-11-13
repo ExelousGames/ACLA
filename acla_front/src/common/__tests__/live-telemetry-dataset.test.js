@@ -87,7 +87,8 @@ describe('live telemetry dataset boundary', () => {
                     }));
                 } else {
                     child.stdout.write(`${JSON.stringify({ type: 'sample', tick,
-                        values: { IsOnTrack: status !== 0, IsReplayPlaying: false, SessionTime: time } })}\n`);
+                        values: { IsOnTrack: status !== 0, IsReplayPlaying: false, SessionTime: time,
+                            PlayerTrackSurface: tick === 0 ? 0 : -1 } })}\n`);
                 }
                 await Promise.resolve();
                 if (tick === 1) {
@@ -113,6 +114,10 @@ describe('live telemetry dataset boundary', () => {
                     Physics_velocity_x: -4, Physics_velocity_y: -9, Physics_velocity_z: 2,
                     Graphics_car_coordinates: Array(60).fill({ x: 10, y: -30, z: 20 }),
                 });
+            } else {
+                expect(rows[0].Graphics_player_track_surface).toBe(0);
+                expect(rows[2]).not.toHaveProperty('Graphics_player_track_surface');
+                expect(rows[3].Graphics_player_track_surface).toBe(-1);
             }
             expect(rows[0].Graphics_game_time).toBe(12.125);
             expect(rows[1].Graphics_game_time).toBe(game === 'acc' ? undefined : 12.125);

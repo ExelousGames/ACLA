@@ -38,8 +38,7 @@ it('rebuilds the whole observation, memory, network and plan from a non-default 
     config.network.hiddenUnits = 7;
     config.actions.planTimesSeconds = [0, 0.3, 1.2];
     config.aggression = 75;
-    config.reward.lineDistanceTolerance = 8;
-    config.reward.lineSmoothingMs = 400;
+    config.reward.progressWeight = 200;
     const fixture = trainingFixture();
     const observation = readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, config.aggression, 1000, config).observation!;
     expect(observation.features).toHaveLength(drivingObservationInputs(config));
@@ -163,6 +162,25 @@ it('omits instability settings and rejects model JSON that still includes them',
 });
 
 it.each([
+    (c: any) => { c.observation.features.push('referenceOffset'); },
+    (c: any) => { c.memory.features.push('referenceOffset'); },
+    (c: any) => { c.observation.referenceFrame = 'car-local-right-forward-up'; },
+    (c: any) => { c.observation.referenceOffsetScale = 20; },
+    (c: any) => { c.reward.proximityScale = 3; },
+    (c: any) => { c.reward.lineWeight = c.reward.progressWeight; delete c.reward.progressWeight; },
+    (c: any) => { c.reward.lineDistanceTolerance = 10; },
+    (c: any) => { c.reward.lineSmoothingMs = 500; },
+])('rejects removed reference-error model settings without migration %#', (change) => {
+    const document = emptyTrainingDocument();
+    expect(document.configuration.observation.features).not.toContain('referenceOffset');
+    expect(document.configuration.memory.features).not.toContain('referenceOffset');
+    change(document.configuration);
+    const original = JSON.stringify(document);
+    expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+    expect(JSON.stringify(document)).toBe(original);
+});
+
+it.each([
     (c: any) => { delete c.learning.discount; },
     (c: any) => { c.network.activation = 'relu'; },
     (c: any) => { c.observation.categoryEncoding = 'unknown'; },
@@ -197,8 +215,7 @@ it.each([
     (c: any) => { c.learning.explorationSigma = 0; },
     (c: any) => { c.reward.speedTolerance = 0; },
     (c: any) => { c.reward.accelerationTolerance = 0; },
-    (c: any) => { c.reward.lineDistanceTolerance = 0; },
-    (c: any) => { c.reward.lineSmoothingMs = 0; },
+    (c: any) => { c.reward.progressWeight = -1; },
     (c: any) => { c.learning.explorationSigma = Number.MIN_VALUE; },
     (c: any) => { c.learning.actorRate = NaN; },
     (c: any) => { c.aggression = 101; },

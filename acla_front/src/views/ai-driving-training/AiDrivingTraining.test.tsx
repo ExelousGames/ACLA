@@ -363,26 +363,25 @@ it('reports the saved history scope when a model selects only some observation i
     expect(screen.getByText(/observation history covers the observation inputs selected in this saved model/)).toBeInTheDocument();
 });
 
-it('shows motion and reference inputs with axes and units, and clears them when observations are unavailable', async () => {
+it('shows motion inputs with axes and units, and clears them when observations are unavailable', async () => {
     await renderTraining();
-    const labels = ['Local velocity', 'G-force', 'Yaw rate', 'Reference error'];
+    const labels = ['Local velocity', 'G-force', 'Yaw rate'];
     labels.forEach((label) => expect(getDefinition(label)).toHaveTextContent('—'));
-    mockInput = { observation: { ...trainingFixture(Date.now()).observation,
-        referenceError: [-23.25, 4.5] } };
+    mockInput = { observation: trainingFixture(Date.now()).observation };
     act(() => { jest.advanceTimersByTime(250); });
     expect(getDefinition('Local velocity')).toHaveTextContent('X 1.00 · Y 30.00 · Z 0.00 m/s');
     expect(getDefinition('G-force')).toHaveTextContent('X 0.50 · Y -1.00 · Z 1.00 g');
-    expect(getDefinition('Reference error')).toHaveTextContent('X (right) -23.25 · Y (forward) 4.50 coordinate units');
+    expect(screen.queryByText('Reference error')).not.toBeInTheDocument();
     expect(screen.queryByText('World-space velocity')).not.toBeInTheDocument();
     expect(screen.queryByText('Orientation')).not.toBeInTheDocument();
     expect(getDefinition('Yaw rate')).toHaveTextContent('-0.200 rad/s');
     const observation = trainingFixture(Date.now()).observation;
     mockInput = { observation: { ...observation, context: { ...observation.context, game: 'iracing' },
-        localVelocity: [1, 0, 30], gForce: [-0.5, 1, 2], yawRate: -0.2, referenceError: [12.34, -26.75] } };
+        localVelocity: [1, 0, 30], gForce: [-0.5, 1, 2], yawRate: -0.2 } };
     act(() => { jest.advanceTimersByTime(250); });
     expect(getDefinition('Local velocity')).toHaveTextContent('X 1.00 · Y 0.00 · Z 30.00 m/s');
     expect(getDefinition('G-force')).toHaveTextContent('X -0.50 · Y 1.00 · Z 2.00 g');
-    expect(getDefinition('Reference error')).toHaveTextContent('X (right) 12.34 · Y (forward) -26.75 coordinate units');
+    expect(screen.queryByText('Reference error')).not.toBeInTheDocument();
     expect(getDefinition('Yaw rate')).toHaveTextContent('-0.200 rad/s');
     mockInput = { error: 'Waiting for fresh, running live telemetry.' };
     act(() => { jest.advanceTimersByTime(250); });
@@ -837,9 +836,10 @@ it.each(['null', '"100"', '-1', '101', 'invalid'])('uses reference aggression wh
     expect(screen.getByRole('slider', { name: 'Driving aggression' })).toHaveValue('50');
 });
 
-it.each([true, false])('uses Live Map’s selected lap and applies slider changes during training=%s', async (train) => {
+it.each([true, false])('uses Live Map’s speed targets without position output and applies slider changes during training=%s', async (train) => {
     const referenceLap = referenceLapFixture();
     let fixture = trainingFixture(Date.now(), 50, referenceLap);
+    delete fixture.vision.position;
     const map = { getReferenceLap: () => referenceLap };
     const vision = { getLatestDetection: () => fixture.vision };
     mockFindComponentRef.mockImplementation((name) => ({ current: name.endsWith('track-vision') ? vision : map }));
@@ -861,30 +861,28 @@ it.each([true, false])('uses Live Map’s selected lap and applies slider change
     expect(getDefinition('Reference speed')).toHaveTextContent('100.0 km/h');
     expect(getDefinition('Aggression target speed')).toHaveTextContent('120.0 km/h');
     expect(screen.getByText(/Aggressive condenses the slower-speed area/)).toBeInTheDocument();
-    expect(screen.getByText('X (right) 2.00 · Y (forward) 0.00 coordinate units')).toBeInTheDocument();
+    expect(screen.queryByText('Reference error')).not.toBeInTheDocument();
     expect(screen.queryByText('Reference pedal reward')).not.toBeInTheDocument();
     expect(screen.queryByText('Drive fast')).not.toBeInTheDocument();
     expect(screen.queryByText('Penalize instability')).not.toBeInTheDocument();
     expect(screen.getByText('Acceleration / deceleration')).toBeInTheDocument();
     expect(screen.getByText(/holding the same speed earns no bonus/)).toBeInTheDocument();
     expect(getDefinition('Normalized position progress')).toHaveTextContent('0.000');
-    expect(getDefinition('Drive toward the reference line')).toHaveTextContent('0.000');
+    expect(screen.queryByText('Drive toward the reference line')).not.toBeInTheDocument();
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     fixture = trainingFixture(Date.now(), 50, referenceLap);
     fixture.live.currentTelemetry.Graphics_normalized_car_position = 0.252;
-    fixture.vision.position!.normalizedPosition = 0.252;
+    delete fixture.vision.position;
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     expect(screen.getByText(/Last scored at aggression 0/)).toBeInTheDocument();
     const progress = Number(getDefinition('Normalized position progress').textContent);
     expect(progress).toBeGreaterThan(0);
-    expect(Number(getDefinition('Follow the reference line').textContent)).toBeGreaterThan(0);
-    expect(getDefinition('Drive toward the reference line')).toHaveTextContent('0.000');
-    expect(screen.getByText(/most reward when reference error is 3 raw coordinate units/)).toBeInTheDocument();
-    expect(screen.getByText(/Each frame is compared with the previous frame/)).toBeInTheDocument();
+    expect(screen.queryByText('Follow the reference line')).not.toBeInTheDocument();
+    expect(screen.queryByText('Drive toward the reference line')).not.toBeInTheDocument();
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     fixture = trainingFixture(Date.now(), 50, referenceLap);
     fixture.live.currentTelemetry.Graphics_normalized_car_position = 0.252;
-    fixture.vision.position!.normalizedPosition = 0.252;
+    delete fixture.vision.position;
     fixture.live.currentTelemetry.Physics_speed_kmh = 0;
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     expect(Number(getDefinition('Normalized position progress').textContent)).toBeLessThan(0);

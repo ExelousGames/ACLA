@@ -49,6 +49,7 @@ rule('Physics_roll', 'Roll', (value) => finite(value) ? -value : undefined);
 rule('Graphics_completed_lap', 'LapCompleted', positive);
 rule('Graphics_position', 'PlayerCarPosition', (value) => value > 0 ? value : undefined);
 rule('Graphics_player_car_id', 'PlayerCarIdx', positive);
+rule('Graphics_player_track_surface', 'PlayerTrackSurface');
 rule('Graphics_normalized_car_position', 'LapDistPct', fraction);
 rule('Graphics_session_index', 'SessionNum', positive);
 rule('Graphics_game_time', 'SessionTime', positive);

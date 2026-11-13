@@ -50,6 +50,7 @@ function fixture({ track = 'spa', sessionId = 42, speeds = [50, 60], encoding = 
       const [, type, offset] = variables[10 + channelIndex];
       (Array.isArray(value) ? value : [value]).forEach((entry, i) => {
         if (type === 1) buffer[start + offset + i] = Number(entry);
+        else if (type === 2) buffer.writeInt32LE(entry, start + offset + i * 4);
         else if (type === 5) buffer.writeDoubleLE(entry, start + offset + i * 8);
         else buffer.writeFloatLE(entry, start + offset + i * 4);
       });
@@ -112,6 +113,17 @@ describe('iRacing .ibt import', () => {
       expect(rows[0].Graphics_game_time).toBe(10);
       expect(rows[1].Graphics_game_time).toBe(10 + 1 / 60);
       expect(rows[0]).not.toHaveProperty('Physics_fuel');
+    } finally { await ibt.close(); }
+  });
+
+  it.each([-1, 0, 1, 2, 3])('imports player track surface %i from a native integer channel', async (surface) => {
+    const ibt = await IBTFile.open(writeFixture('surface.ibt', { channels: [
+      { name: 'PlayerTrackSurface', unit: 'irsdk_TrkLoc', type: 2, value: surface },
+    ] }));
+    try {
+      const { value: row } = await ibt.rows().next();
+      expect(row.Graphics_player_track_surface).toBe(surface);
+      expect(validateLiveTelemetryRow(row).ok).toBe(true);
     } finally { await ibt.close(); }
   });
 
@@ -305,7 +317,7 @@ describe('iRacing .ibt import', () => {
 
   it('keeps disk capabilities separate from live capture and never carries measurements into later rows', () => {
     expect(Object.keys(IRACING_IBT_FIELD_COVERAGE)).toEqual(LIVE_TELEMETRY_FIELDS);
-    expect(Object.values(IRACING_IBT_FIELD_COVERAGE).filter(({ supported }) => supported)).toHaveLength(136);
+    expect(Object.values(IRACING_IBT_FIELD_COVERAGE).filter(({ supported }) => supported)).toHaveLength(137);
     const channels = [...diskChannels(), ...positionChannels()];
     const values = Object.fromEntries(channels.map(({ name, value }) => [name, value]));
     const packet = { type: 'sample', tick: 1, values: { IsOnTrack: true, ...values } };

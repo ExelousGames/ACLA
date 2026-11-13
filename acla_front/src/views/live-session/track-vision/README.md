@@ -158,13 +158,13 @@ map/reference during inference discards the pending position prediction.
 The browser loads segmentation predictions and prototypes from its separate
 segmentation graph. The standalone `train-position` export supplies car-local position deltas.
 
-Self-driving training consumes the signed right/forward/up values directly as policy
-features and uses their Euclidean distance for reference proximity rewards. The
-distance reward is unchanged by rotation. Self-driving model JSON declares the
-car-local reference frame and input encoding alongside its weights and training
-configuration. The complete model is saved to a user-selected JSON file. Browser
-model saves, including numbered legacy checkpoints, are deleted without migration;
-choose **New model** on the training page to select a file and retrain.
+Self-driving training uses camera pixels and paired telemetry, including normalized lap
+position, plus reference speed targets. Position-model offsets are not policy inputs
+and do not affect self-driving rewards. A position model is not required for self-driving.
+Earlier self-driving checkpoints with reference-offset inputs are incompatible; choose
+**New model** on the training page to select a file and retrain.
+The complete model is saved to a user-selected JSON file. Browser model saves,
+including numbered legacy checkpoints, are deleted without migration.
 
 ### Detector results
 

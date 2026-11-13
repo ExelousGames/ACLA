@@ -28,7 +28,7 @@ it.each(['acc', 'iracing'])('retains a brief bounce between slow AI frames for %
         expect(impact.severity).toBeGreaterThan(0);
         const reward = drivingReward(observation(1000), observation(1800), undefined, impact);
         expect(reward.impact).toBeLessThan(0);
-        expect(reward.total).toBeCloseTo(reward.timing + reward.line + reward.approach + reward.progress + reward.impact);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact);
         expect(monitor.between(observation(1800), observation(2000))).toMatchObject({ available: true, detected: false });
     }
 });

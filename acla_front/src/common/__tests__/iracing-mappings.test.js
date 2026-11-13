@@ -37,10 +37,32 @@ describe('additional iRacing mappings', () => {
     expect(IRACING_VARIABLES).toEqual(expect.arrayContaining([
       'BrakeRaw', 'LatAccel', 'LongAccel', 'VertAccel', 'Yaw', 'Pitch', 'Roll', 'VelocityX', 'VelocityY', 'VelocityZ',
       'YawRate', 'PitchRate', 'RollRate', 'SessionTime', 'PlayerTireCompound',
-      'CarIdxLapDistPct', 'CarIdxOnPitRoad', 'PlayerCarTowTime', 'IsInGarage',
+      'CarIdxLapDistPct', 'CarIdxOnPitRoad', 'PlayerCarTowTime', 'IsInGarage', 'PlayerTrackSurface',
     ]));
-    expect(Object.values(IRACING_FIELD_COVERAGE).filter((entry) => entry.supported)).toHaveLength(100);
+    expect(Object.values(IRACING_FIELD_COVERAGE).filter((entry) => entry.supported)).toHaveLength(101);
     for (const axis of ['x', 'y', 'z']) expect(IRACING_FIELD_COVERAGE[`Physics_velocity_${axis}`].supported).toBe(true);
+  });
+
+  it.each([-1, 0, 1, 2, 3])('preserves player track surface %i independently of pit state', (surface) => {
+    const row = new IRacingAdapter().adapt(packet(0, { PlayerTrackSurface: surface }));
+    expect(row.Graphics_player_track_surface).toBe(surface);
+    expect(row.Graphics_is_in_pit).toBe(surface === 1);
+    expect(validateLiveTelemetryRow(row).ok).toBe(true);
+  });
+
+  it('omits missing, invalid and stale player track surfaces', () => {
+    const adapter = new IRacingAdapter();
+    expect(adapter.adapt(packet(0)).Graphics_player_track_surface).toBe(3);
+    for (const surface of [undefined, null, NaN, Infinity, 1.5, '3', false]) {
+      expect(adapter.adapt(packet(0.5, { PlayerTrackSurface: surface })))
+        .not.toHaveProperty('Graphics_player_track_surface');
+    }
+    const missing = packet(1);
+    delete missing.values.PlayerTrackSurface;
+    expect(adapter.adapt(missing)).not.toHaveProperty('Graphics_player_track_surface');
+    for (const status of [{ IsOnTrack: false }, { IsReplayPlaying: true }]) {
+      expect(adapter.adapt(packet(1.5, status))).not.toHaveProperty('Graphics_player_track_surface');
+    }
   });
 
   it('converts polar and axial vectors separately and uses radians and g', () => {
