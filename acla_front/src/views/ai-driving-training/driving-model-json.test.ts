@@ -6,7 +6,7 @@ import { drivingReward, readDrivingObservation, NEUTRAL } from './driving-observ
 import { DrivingPlanTraining } from './driving-plan-training';
 import { DrivingTrainingLoop } from './driving-training-loop';
 import { DrivingControlOutput } from './driving-control-output';
-import { trainingFixture } from './training-fixtures';
+import { circuitMapFixture, trainingFixture } from './training-fixtures';
 
 
 beforeEach(() => { mockDrivingGpu(); });
@@ -40,7 +40,7 @@ it('rebuilds the whole observation, memory, network and plan from a non-default 
     config.aggression = 75;
     config.reward.progressWeight = 200;
     const fixture = trainingFixture();
-    const observation = readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, config.aggression, 1000, config).observation!;
+    const observation = readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, config.aggression, 1000, config, circuitMapFixture(fixture.referenceLap)).observation!;
     expect(observation.features).toHaveLength(drivingObservationInputs(config));
     expect(observation.features.slice(-3)).toEqual([0.02, 0.6, 0]);
     const memory = new DrivingMemory(config);
@@ -66,7 +66,7 @@ it('detects different feature meaning or ordering even when the vector length is
         const config = cloneConfig();
         if (change === 'order') config.observation.features.reverse();
         else config.observation.yawRateScale = 10;
-        const observation = readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1000, config).observation!;
+        const observation = readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1000, config, circuitMapFixture(fixture.referenceLap)).observation!;
         expect(observation.features).toHaveLength(fixture.observation.features.length);
         expect(policy.matches(observation)).toBe(false);
         expect(policy.inputMismatches(observation)).toContain('Input encoding differs from the model JSON. Read live inputs using this model’s configuration.');
@@ -102,8 +102,8 @@ it('uses configured reward coefficients and freshness instead of current default
     const changed = drivingReward(before, after, config);
     expect(normal.timing).not.toBe(0);
     expect(changed.timing).toBeCloseTo(normal.timing * 3);
-    expect(readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1100, config).error).toMatch(/fresh image/);
-    expect(readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1100).observation).toBeDefined();
+    expect(readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1100, config, circuitMapFixture(fixture.referenceLap)).error).toMatch(/fresh image/);
+    expect(readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1100, undefined, circuitMapFixture(fixture.referenceLap)).observation).toBeDefined();
 });
 
 it('supports a configuration-only JSON and isolates exported values from the running model', () => {

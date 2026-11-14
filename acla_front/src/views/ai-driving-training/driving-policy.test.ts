@@ -2,7 +2,7 @@ import { DrivingPolicy } from './driving-policy';
 import { DrivingGpuModel } from './driving-gpu-model';
 import { mockDrivingGpu } from './driving-gpu-test-model';
 import { DrivingMemory } from './driving-memory';
-import { trainingFixture } from './training-fixtures';
+import { circuitMapFixture, trainingFixture } from './training-fixtures';
 import { cloneConfig } from './driving-model-config';
 import { readDrivingObservation } from './driving-observation';
 
@@ -248,7 +248,7 @@ it.each([
     const live = { ...fixture.live, game: context.game, currentTelemetry: { ...fixture.live.currentTelemetry,
         Static_car_model: context.car, Static_track: context.map } };
     const lap = { ...fixture.referenceLap, game: context.game, car: context.car, track: context.map };
-    const result = readDrivingObservation(live, { ...fixture.vision, telemetry: live }, lap, 50, 1000, restored.configuration);
+    const result = readDrivingObservation(live, { ...fixture.vision, telemetry: live }, lap, 50, 1000, restored.configuration, circuitMapFixture(lap));
     expect(result.error).toBeUndefined();
     expect(result.observation!.context).toEqual(context);
     expect(result.observation!.features).not.toEqual(fixture.observation.features);

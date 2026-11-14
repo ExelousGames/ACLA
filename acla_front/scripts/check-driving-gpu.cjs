@@ -155,7 +155,7 @@ async function checks(soakIterations) {
         const config = cloneConfig();
         if (layout !== 'default') {
             config.network.cameraLayers.forEach(layer => { layer.channels = 3; });
-            config.observation.features = ['camera', 'speed', 'controls'];
+            config.observation.features = ['camera', 'speed', 'controls', 'centerline'];
             config.memory.features = ['controls', 'speed'];
             config.memory.windowMs = 400;
             config.network.hiddenUnits = 7;
@@ -283,7 +283,7 @@ async function checks(soakIterations) {
     // Check backpropagation against finite differences of an objective evaluated
     // by real GPU forward passes. No second model or CPU training algorithm.
     const config = cloneConfig();
-    config.observation.features = ['camera', 'speed']; config.memory.features = ['camera', 'speed'];
+    config.observation.features = ['camera', 'speed', 'centerline']; config.memory.features = ['camera', 'speed', 'centerline'];
     config.memory.windowMs = 400; config.network.hiddenUnits = 2;
     config.network.cameraLayers.forEach(layer => { layer.channels = 1; });
     config.network.cameraProjectionUnits = 32;
@@ -540,7 +540,7 @@ async function checks(soakIterations) {
         if (variant === 'saturated-long-history') {
             c.network.cameraLayers.forEach(layer => { layer.channels = 1; });
             c.network.cameraProjectionUnits = 32; c.network.hiddenUnits = 2;
-            c.observation.features = ['camera', 'speed']; c.memory.features = ['camera', 'speed'];
+            c.observation.features = ['camera', 'speed', 'centerline']; c.memory.features = ['camera', 'speed', 'centerline'];
             c.memory.windowMs = 30000;
         }
         let policy = await create(c);

@@ -35,7 +35,7 @@ export function drivingFeatureSizes(config = DEFAULT_DRIVING_CONFIG): Record<str
     const o = config.observation;
     return { localVelocity: 3, speed: 1, game: o.categoryBits, car: o.categoryBits, map: o.categoryBits,
         position: 2, controls: 3, gear: 1, rpm: 1, yawRate: 1, gForce: 3,
-        camera: 0, aggression: 1, referenceSpeed: 1, targetSpeed: 1 };
+        camera: 0, centerline: o.centerlineStepsPerSide * 2 * 3, aggression: 1, referenceSpeed: 1, targetSpeed: 1 };
 }
 
 export function drivingCameraInputs(config = DEFAULT_DRIVING_CONFIG): number {
@@ -109,8 +109,9 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
     if (!integer(c.network.hiddenUnits, 1, 256) || !integer(o.categoryBits, 1, 32)
         || o.cameraWidth !== POLICY_CAMERA_WIDTH || o.cameraHeight !== POLICY_CAMERA_HEIGHT
         || 4 * c.network.hiddenUnits * (drivingPolicyInputs(c) + c.network.hiddenUnits + 1) > 2000000
-        || !o.features.includes('camera')
-        || ![o.velocityScale, o.speedScale, o.gearScale, o.rpmScale, o.yawRateScale, o.gForceScale,
+        || !o.features.includes('camera') || !o.features.includes('centerline')
+        || o.centerlineStepsPerSide !== defaults.observation.centerlineStepsPerSide
+        || ![o.velocityScale, o.speedScale, o.gearScale, o.rpmScale, o.yawRateScale, o.gForceScale, o.centerlineScale,
             l.explorationSigma, l.discountIntervalSeconds, l.weightLimit, l.advantageLimit, l.policyGradientLimit,
             l.demonstrationGradientLimit, c.reward.totalLimit,
             c.reward.speedTolerance, c.reward.accelerationTolerance].every((n) => n > 0)

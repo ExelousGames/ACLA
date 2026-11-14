@@ -6,6 +6,24 @@ import { readDrivingObservation } from './driving-observation';
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 
+const circuitMaps = new WeakMap<TopLapReferenceEntry, CircuitMapDto>();
+
+export function circuitMapFixture(lap = referenceLapFixture()): CircuitMapDto {
+    const cached = circuitMaps.get(lap);
+    if (cached && cached.game === lap.game && cached.source_track_key === lap.track) return cached;
+    const map: CircuitMapDto = { id: 'training-map', game: lap.game as CircuitMapDto['game'],
+        circuit_name: lap.track, source_track_key: lap.track, resolution: 1000,
+        samples: { middle_line: Array.from({ length: 1000 }, (_, bin) => {
+            const p = bin / 1000;
+            return { bin, normalized_position: p, sample_count: 1, updated_at: '',
+                x: p <= 0.25 ? p * 400 : p <= 0.5 ? 100 : p <= 0.75 ? (0.75 - p) * 400 : 0,
+                y: p <= 0.25 ? 0 : p <= 0.5 ? (p - 0.25) * 400 : p <= 0.75 ? 100 : (1 - p) * 400,
+                z: 0 };
+        }) } };
+    circuitMaps.set(lap, map);
+    return map;
+}
+
 export function referenceLapFixture(): TopLapReferenceEntry {
     // A 400-coordinate-unit square, with a slow corner between deceleration and acceleration.
     const x = [0, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1];
@@ -41,7 +59,9 @@ export function trainingFixture(now = 1000, aggression = 50, referenceLap = refe
                 values: Float32Array.from({ length: 64 }, (_, i) => (i + 1) / 64) } },
         reconstruction: null, geometry: null };
     vision.reconstructedScene = reconstructScene(vision);
-    return { live, vision, referenceLap, observation: readDrivingObservation(live, vision, referenceLap, aggression, now).observation! };
+    const circuitMap = circuitMapFixture(referenceLap);
+    return { live, vision, referenceLap, circuitMap,
+        observation: readDrivingObservation(live, vision, referenceLap, aggression, now, undefined, circuitMap).observation! };
 }
 
 /** Known braking work: 50 m at 6 m/s², then 50 m at 1 m/s²; turn-in is at 240 m. */
@@ -58,7 +78,7 @@ export function brakingReferenceFixture() {
             return [...xy, 0, i >= 20 && i < 25 ? 1 : i >= 25 && i < 30 ? 1 / 6 : 0, i >= 60 ? 1 : 0, speed];
         }) };
     const map: CircuitMapDto = {
-        id: 'braking', game: 'acc', source_track_key: 'monza', circuit_name: 'Monza', resolution: 1000, samples: {},
+        ...circuitMapFixture(lap), id: 'braking',
         centerline_tags: [{ id: 'turn', label: 'corner', start_position: 0.24, end_position: 0.5 }],
     };
     return { lap, map };

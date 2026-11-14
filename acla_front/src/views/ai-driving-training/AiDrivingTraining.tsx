@@ -492,7 +492,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             </section>
             <section className="driving-card driving-live-inputs" aria-label="AI observation inputs">
                 <h2>AI observation inputs</h2>
-                <p>Start live telemetry, add Live Map and Track Vision, then start screen capture in Live Session. The camera image is the only visual input.</p>
+                <p>Start live telemetry, load a circuit map with a centerline in Live Map, add Track Vision, then start screen capture in Live Session.</p>
                 <div className="driving-input-status" data-ready={Boolean(observation)}>{observation ? 'All model inputs ready' : inputs.error}</div>
                 <div className="driving-aggression">
                     <div><label htmlFor="driving-aggression">Driving aggression</label><output htmlFor="driving-aggression">{aggression}</output></div>
@@ -508,6 +508,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <dl className="driving-details">
                     <dt>Game / car</dt><dd>{observation ? `${observation.context.game} / ${observation.context.car}` : 'Waiting'}</dd>
                     <dt>Map</dt><dd>{observation?.context.map ?? 'Waiting'}</dd>
+                    <dt>Centerline</dt><dd>{observation ? '50 steps behind · 50 steps ahead' : 'Waiting'}</dd>
                     <dt>Speed</dt><dd>{observation ? `${observation.speed.toFixed(1)} km/h` : '—'}</dd>
                     <dt>Reference speed</dt><dd>{observation ? `${observation.speedTargets.reference.toFixed(1)} km/h` : '—'}</dd>
                     <dt>Aggression target speed</dt><dd>{observation ? `${observation.speedTargets.target.toFixed(1)} km/h` : '—'}</dd>
@@ -519,7 +520,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <dt>Camera image</dt><dd>{config.observation.cameraWidth} × {config.observation.cameraHeight} RGB{observation ? '' : ' · Waiting'}</dd>
                     <dt>Model compute</dt><dd>{initializingGpu ? 'Preparing GPU…' : 'WebGPU · CNN, LSTM and training'}</dd>
                 </dl>
-                <p className="driving-note">The policy uses car-local velocity XYZ, g-force XYZ, yaw rate, speed, current gear, engine RPM, game, car, map, normalized position, current controls, camera pixels, aggression, reference speed and target speed. Speed targets follow the Live Phrases calculation up to aggression 50, then increase reference speed linearly up to 50% at aggression 100. The policy generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights. Models saved with a different observation input set or aggression calculation need to be trained again.</p>
+                <p className="driving-note">The policy uses car-local velocity XYZ, g-force XYZ, yaw rate, speed, current gear, engine RPM, game, car, map, normalized position, current controls, camera pixels, relative centerline XYZ, aggression, reference speed and target speed. Centerline input covers 50 map steps behind and 50 ahead, relative to the centerline at the current lap position, wrapping at start/finish. Speed targets follow the Live Phrases calculation up to aggression 50, then increase reference speed linearly up to 50% at aggression 100. The policy generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights. Models saved with a different observation input set or aggression calculation need to be trained again.</p>
             </section>
             <section className="driving-card">
                 <h2>Reward signal</h2>

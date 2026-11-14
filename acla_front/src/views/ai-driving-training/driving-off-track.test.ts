@@ -3,14 +3,14 @@ import type { StandardTelemetrySample } from 'views/live-session/live-session-ty
 import { detectDrivingOffTrack } from './driving-off-track';
 import { drivingReward, readDrivingObservation } from './driving-observation';
 import { cloneConfig } from './driving-model-config';
-import { trainingFixture } from './training-fixtures';
+import { circuitMapFixture, trainingFixture } from './training-fixtures';
 
 const wheels = ['front_left', 'front_right', 'rear_left', 'rear_right'] as const;
 const point = (x: number, y: number, position: number): CircuitMapBinSample => ({
     x, y, z: 100, normalized_position: position, bin: Math.floor(position * 1000), sample_count: 1, updated_at: '',
 });
 const mapFixture = (): CircuitMapDto => ({ id: 'monza', game: 'acc', source_track_key: 'monza', circuit_name: 'Monza', resolution: 1000,
-    samples: { left_boundary: [-10, 0, 10].map((y, i) => point(-5, y, 0.24 + i * 0.01)),
+    samples: { ...circuitMapFixture().samples, left_boundary: [-10, 0, 10].map((y, i) => point(-5, y, 0.24 + i * 0.01)),
         right_boundary: [-10, 0, 10].map((y, i) => point(5, y, 0.24 + i * 0.01)) } });
 const tyreSample = (points: [number, number][] = [[-1, 2], [1, 2], [-1, -2], [1, -2]]):
     { -readonly [K in keyof StandardTelemetrySample]: StandardTelemetrySample[K] } => ({
@@ -104,7 +104,7 @@ it.each(['acc', 'iracing'] as const)('reads %s off-track data from the image-pai
     fixture.vision.telemetry!.currentTelemetry = { ...fixture.live.currentTelemetry,
         ...tyreSample(wheels.map((_, i) => [7, i < 2 ? 2 : -2])), Graphics_player_track_surface: 0 };
     fixture.live.currentTelemetry = { ...fixture.live.currentTelemetry, ...tyreSample(), Graphics_player_track_surface: 3 };
-    const result = readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1000, undefined, mapFixture());
+    const result = readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1000, undefined, { ...mapFixture(), game });
     expect(result.error).toBeUndefined();
     expect(result.observation?.offTrack).toBe(true);
     expect(result.observation?.features).toHaveLength(fixture.observation.features.length);

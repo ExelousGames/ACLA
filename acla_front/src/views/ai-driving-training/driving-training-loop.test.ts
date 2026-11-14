@@ -3,7 +3,7 @@ import { DrivingGpuModel } from './driving-gpu-model';
 import { DrivingTrainingLoop } from './driving-training-loop';
 import { DrivingPolicy } from './driving-policy';
 import { NEUTRAL, ObservationResult, readDrivingObservation } from './driving-observation';
-import { trainingFixture } from './training-fixtures';
+import { circuitMapFixture, trainingFixture } from './training-fixtures';
 import { normalizedAggression, referenceSpeedTargets } from './driving-reference';
 import { ManualControls } from './driving-control';
 import { DrivingControlOutput } from './driving-control-output';
@@ -285,7 +285,7 @@ it.each([true, false])('reuses learned weights in a new game, car and map after 
     const live = { ...fixture.live, game: 'iracing' as const, currentTelemetry: { ...fixture.live.currentTelemetry,
         Static_car_model: 'MX5', Static_track: 'spa' } };
     const lap = { ...fixture.referenceLap, game: 'iracing', car: 'MX5', track: 'spa' };
-    const input = readDrivingObservation(live, { ...fixture.vision, telemetry: live }, lap, 50, 2000, run.policy.configuration);
+    const input = readDrivingObservation(live, { ...fixture.vision, telemetry: live }, lap, 50, 2000, run.policy.configuration, circuitMapFixture(lap));
     expect(input.error).toBeUndefined();
     run.input(input, 2000);
     await run.loop.start(run.policy, train); await flush();
@@ -1147,7 +1147,7 @@ it.each([true, false])('skips delayed transitions and resumes from fresh data ac
         const paired = { ...run.fixture.live, receivedAt: capturedAt,
             currentTelemetry: { ...run.fixture.live.currentTelemetry, Physics_speed_kmh: 100 + capturedAt / 1000 } };
         const input = readDrivingObservation({ ...paired, receivedAt: time },
-            { ...run.fixture.vision, capturedAt, telemetry: paired }, run.fixture.referenceLap, 50, time);
+            { ...run.fixture.vision, capturedAt, telemetry: paired }, run.fixture.referenceLap, 50, time, undefined, circuitMapFixture(run.fixture.referenceLap));
         expect(input.error).toBeUndefined();
         run.input(input, time);
         jest.advanceTimersByTime(50); await flush();
@@ -1223,7 +1223,7 @@ it.each((['ai', 'manual'] as const).flatMap((source) =>
     if (fault === 'range') next.vision.telemetry = { ...next.vision.telemetry!,
         currentTelemetry: { ...next.vision.telemetry!.currentTelemetry, Physics_gas: 2 } };
     if (fault === 'camera') delete next.vision.camera;
-    const input = readDrivingObservation(next.live, next.vision, next.referenceLap, 50, 2800);
+    const input = readDrivingObservation(next.live, next.vision, next.referenceLap, 50, 2800, undefined, circuitMapFixture(next.referenceLap));
     if (fault === 'context') input.observation!.context = { ...input.observation!.context, car: 'different' };
     if (fault === 'features') input.observation!.features[0] = NaN;
     run.input(input, 2800);
@@ -1581,7 +1581,7 @@ it.each([true, false])('starts and continues without position-model output (trai
         const { live, vision } = trainingFixture(capturedAt, 50, referenceLap);
         live.currentTelemetry.Graphics_normalized_car_position = 0.25 + (capturedAt - 1000) / 100000;
         delete vision.position;
-        return readDrivingObservation(live, vision, referenceLap, 50, capturedAt);
+        return readDrivingObservation(live, vision, referenceLap, 50, capturedAt, undefined, circuitMapFixture(referenceLap));
     };
     const learn = jest.spyOn(run.policy, 'learnAsync');
     run.input(observationAt(1000), 1000);

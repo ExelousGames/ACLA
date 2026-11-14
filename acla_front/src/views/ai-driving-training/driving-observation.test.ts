@@ -1,5 +1,5 @@
 import { drivingReward, NEUTRAL, readDrivingObservation } from './driving-observation';
-import { brakingFixtureSpeed, brakingReferenceFixture, trainingFixture } from './training-fixtures';
+import { circuitMapFixture, brakingFixtureSpeed, brakingReferenceFixture, trainingFixture } from './training-fixtures';
 import { referenceSpeedTargets } from './driving-reference';
 import { getLiveMapReferenceLine } from 'views/live-session/live-map-reference';
 import { DrivingMemory, drivingMemoryInputs } from './driving-memory';
@@ -15,15 +15,15 @@ it.each(['missing', 'distant', 'invalid', 'mismatched'])(
         next.live.currentTelemetry.Graphics_normalized_car_position = 0.252;
         next.live.currentTelemetry.Physics_speed_kmh = 106;
         next.vision.position!.normalizedPosition = 0.252;
-        const expected = readDrivingObservation(next.live, next.vision, referenceLap, 50, 1200).observation!;
+        const expected = readDrivingObservation(next.live, next.vision, referenceLap, 50, 1200, undefined, circuitMapFixture(referenceLap)).observation!;
         for (const frame of [vision, next.vision]) {
             if (kind === 'missing') delete frame.position;
             if (kind === 'distant') frame.position!.referenceDelta = frame === vision ? [30, 40, 0] : [-90, 0, 0];
             if (kind === 'invalid') frame.position!.referenceDelta = [NaN, Infinity, -Infinity];
             if (kind === 'mismatched') Object.assign(frame.position!, { coordinateFrame: 'world', normalizedPosition: 0.75, referenceLap: null });
         }
-        const start = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
-        const after = readDrivingObservation(next.live, next.vision, referenceLap, 50, 1200).observation!;
+        const start = readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).observation!;
+        const after = readDrivingObservation(next.live, next.vision, referenceLap, 50, 1200, undefined, circuitMapFixture(referenceLap)).observation!;
         expect(start).toEqual(before);
         expect(after).toEqual(expected);
         expect(after).not.toHaveProperty('referenceError');
@@ -117,7 +117,7 @@ describe('impact reward', () => {
             Object.defineProperty(fixture.vision.telemetry!.currentTelemetry, `Physics_car_damage_${side}`,
                 { get: () => { throw new Error('Damage telemetry must not be read.'); } });
         }
-        const before = readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1000).observation!;
+        const before = readDrivingObservation(fixture.live, fixture.vision, fixture.referenceLap, 50, 1000, undefined, circuitMapFixture(fixture.referenceLap)).observation!;
         const after = { ...before, capturedAt: 1200, measuredAt: 1200, localVelocity: [0, 0, 0] as [number, number, number] };
         const impact = drivingReward(before, after).impactEstimate;
         expect(impact.detected).toBe(true);
@@ -132,14 +132,14 @@ describe('impact reward', () => {
 
 it('uses telemetry and the full-resolution camera from the capture time', () => {
     const { live, vision, referenceLap, observation } = trainingFixture();
-    expect(observation.features).toHaveLength(66);
+    expect(observation.features).toHaveLength(366);
     expect(observation).toMatchObject({ gear: 3, rpm: 6000 });
     expect(observation.features.slice(57, 59)).toEqual([3 / 8, 6000 / 20000]);
     expect(observation.camera).toBe(vision.camera);
     expect(observation.camera).toMatchObject({ width: 384, height: 216 });
     expect(observation.context).not.toHaveProperty('classes');
     // Later telemetry must not replace the sample paired with the image.
-    expect(readDrivingObservation({ ...live, currentTelemetry: { ...live.currentTelemetry, Physics_speed_kmh: 200 } }, vision, referenceLap, 50, 1000)
+    expect(readDrivingObservation({ ...live, currentTelemetry: { ...live.currentTelemetry, Physics_speed_kmh: 200 } }, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap))
         .observation?.speed).toBe(108);
 });
 
@@ -155,7 +155,7 @@ it.each(['missing', 'invalid', 'changed'])('ignores %s segmentation, depth and r
         vision.reconstructedScene = null;
         delete vision.detections.depth;
     }
-    const result = readDrivingObservation(live, vision, referenceLap, 50, 1000);
+    const result = readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap));
     expect(result.observation!.features).toEqual(observation.features);
     expect(result.observation!.context).toEqual(observation.context);
 });
@@ -167,7 +167,7 @@ it.each(['missing', 'width', 'height', 'length', 'type'])('rejects %s camera dat
     if (fault === 'height') vision.camera!.height = 4;
     if (fault === 'length') vision.camera!.rgb = new Uint8Array(191);
     if (fault === 'type') Object.assign(vision.camera!, { rgb: new Array(192).fill(NaN) });
-    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/camera pixels/);
+    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).error).toMatch(/camera pixels/);
 });
 
 it('preserves adapted ACC axes and signs in capture-time policy inputs and driving memory', () => {
@@ -183,7 +183,7 @@ it('preserves adapted ACC axes and signs in capture-time policy inputs and drivi
     const later = { ...live, currentTelemetry: { ...live.currentTelemetry,
         Physics_local_velocity_x: 90, Physics_heading: 0, Physics_local_angular_vel_z: 1,
         Physics_g_force_x: 4, Physics_g_force_y: 3, Physics_g_force_z: -2 } };
-    const observation = readDrivingObservation(later, vision, referenceLap, 50, 1000).observation!;
+    const observation = readDrivingObservation(later, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).observation!;
     expect(observation).toMatchObject({ localVelocity: [-12, 40, 2.5], gForce: [-1.5, 2.5, 1],
         yawRate: Math.PI / 8 });
     expect(observation.features.slice(0, 3)).toEqual([-0.12, 0.4, 0.025]);
@@ -207,7 +207,7 @@ it.each(['acc', 'iracing'] as const)('normalizes g-force in adapter XYZ order fo
     });
     const config = cloneConfig();
     config.observation.gForceScale = 4;
-    const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000, config).observation!;
+    const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000, config, circuitMapFixture(referenceLap)).observation!;
     expect(observation.gForce).toEqual([-8, 1, 6]);
     expect(observation.features.slice(60, 63)).toEqual([-1, 0.25, 1]);
 });
@@ -216,7 +216,7 @@ describe.each(['x', 'y', 'z'])('g-force %s validation', (axis) => {
     it.each([undefined, NaN, Infinity, -Infinity, '0'])('rejects invalid g-force %s', (value) => {
         const { live, vision, referenceLap } = trainingFixture();
         Object.assign(vision.telemetry!.currentTelemetry, { [`Physics_g_force_${axis}`]: value });
-        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/g-force XYZ/);
+        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).error).toMatch(/g-force XYZ/);
     });
 });
 
@@ -227,7 +227,7 @@ it('ignores world-space velocity when building policy inputs', () => {
     Object.assign(vision.telemetry!.currentTelemetry, {
         Physics_velocity_x: -30, Physics_velocity_y: NaN, Physics_velocity_z: Infinity,
     });
-    const after = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
+    const after = readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).observation!;
     expect(after.localVelocity).toEqual(before.localVelocity);
     expect(after.features).toEqual(before.features);
 });
@@ -239,20 +239,20 @@ describe.each(['x', 'y', 'z'])('local velocity %s validation', (axis) => {
             [`Physics_local_velocity_${axis}`]: velocity,
             Physics_velocity_x: 1, Physics_velocity_y: 30, Physics_velocity_z: 0,
         });
-        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/Local velocity/);
+        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).error).toMatch(/Local velocity/);
     });
 });
 
 it('ignores orientation angles in both policy inputs and the reward', () => {
     const { live, vision, referenceLap, observation: before } = trainingFixture();
     Object.assign(vision.telemetry!.currentTelemetry, { Physics_heading: 1.2, Physics_pitch: -0.2, Physics_roll: 0.3 });
-    const after = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
+    const after = readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).observation!;
     expect(after.features).toEqual(before.features);
     const stable = drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200 });
     const rotated = drivingReward(before, { ...after, capturedAt: 1200, measuredAt: 1200 });
     expect(rotated).toEqual(stable);
     Object.assign(vision.telemetry!.currentTelemetry, { Physics_heading: undefined, Physics_pitch: NaN, Physics_roll: undefined });
-    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).observation).toEqual(after);
+    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).observation).toEqual(after);
 });
 
 describe.each(['acc', 'iracing'] as const)('%s yaw-only rotation inputs', (game) => {
@@ -271,7 +271,7 @@ describe.each(['acc', 'iracing'] as const)('%s yaw-only rotation inputs', (game)
             Physics_local_angular_vel_y: game === 'iracing' ? rate : 8,
             Physics_local_angular_vel_z: game === 'iracing' ? 8 : rate,
         });
-        const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
+        const observation = readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).observation!;
         expect(observation.yawRate).toBe(rate);
         expect(observation.features[59]).toBe(Math.sign(rate));
         expect(observation).not.toHaveProperty('rotationRates');
@@ -280,17 +280,17 @@ describe.each(['acc', 'iracing'] as const)('%s yaw-only rotation inputs', (game)
     it.each([undefined, NaN, Infinity, -Infinity, '0'])('rejects invalid yaw rate %s', (rate) => {
         const { live, vision, referenceLap } = fixture();
         Object.assign(vision.telemetry!.currentTelemetry, { [`Physics_local_angular_vel_${game === 'iracing' ? 'y' : 'z'}`]: rate });
-        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/yaw rate/);
+        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).error).toMatch(/yaw rate/);
     });
 
     it.each([undefined, NaN, Infinity, -4, 4])('omits pitch and roll rates even when they are %s', (rate) => {
         const { live, vision, referenceLap } = fixture();
-        const before = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
+        const before = readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).observation!;
         Object.assign(vision.telemetry!.currentTelemetry, {
             Physics_local_angular_vel_x: rate,
             [`Physics_local_angular_vel_${game === 'iracing' ? 'z' : 'y'}`]: rate,
         });
-        const after = readDrivingObservation(live, vision, referenceLap, 50, 1000).observation!;
+        const after = readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).observation!;
         expect(after).toEqual(before);
         expect(new DrivingMemory().encode(after).features).toEqual(new DrivingMemory().encode(before).features);
     });
@@ -304,14 +304,14 @@ it.each(['telemetry', 'capture', 'session', 'velocity', 'nonfinite'])(
         if (fault === 'session') live.streamGeneration++;
         if (fault === 'velocity') delete live.currentTelemetry.Physics_local_velocity_x;
         if (fault === 'nonfinite') live.currentTelemetry.Graphics_normalized_car_position = NaN;
-        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toBeTruthy();
+        expect(readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).error).toBeTruthy();
     },
 );
 
 it.each([0, 1, 2, 4])('normalizes standard gear %s and keeps RPM paired with the image', (gear) => {
     const { live, vision, referenceLap } = trainingFixture();
     vision.telemetry!.currentTelemetry = { ...live.currentTelemetry, Physics_gear: gear, Physics_rpm: 4500 };
-    const result = readDrivingObservation({ ...live, currentTelemetry: { ...live.currentTelemetry, Physics_gear: 6, Physics_rpm: 8000 } }, vision, referenceLap, 50, 1000);
+    const result = readDrivingObservation({ ...live, currentTelemetry: { ...live.currentTelemetry, Physics_gear: 6, Physics_rpm: 8000 } }, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap));
     expect(result.observation).toMatchObject({ gear: gear - 1, rpm: 4500 });
 });
 
@@ -322,7 +322,7 @@ it.each([
 ])('accepts stalled and nonstandard gear/RPM telemetry %j', (fields) => {
     const { live, vision, referenceLap } = trainingFixture();
     Object.assign(live.currentTelemetry, fields);
-    const result = readDrivingObservation(live, vision, referenceLap, 50, 1000);
+    const result = readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap));
     expect(result.error).toBeUndefined();
     expect(result.observation).toMatchObject({ gear: fields.Physics_gear - 1, rpm: fields.Physics_rpm });
     expect(new DrivingMemory().encode(result.observation!).features.every(Number.isFinite)).toBe(true);
@@ -332,7 +332,7 @@ describe.each(['Physics_gear', 'Physics_rpm'])('unavailable %s telemetry', (fiel
     it.each([undefined, null, NaN, Infinity, -Infinity])('keeps policy inputs usable when the reading is %s', (value) => {
         const { live, vision, referenceLap } = trainingFixture();
         Object.assign(live.currentTelemetry, { [field]: value });
-        const result = readDrivingObservation(live, vision, referenceLap, 50, 1000);
+        const result = readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap));
         expect(result.error).toBeUndefined();
         const gear = field === 'Physics_gear' ? 0 : 3;
         const rpm = field === 'Physics_rpm' ? 0 : 6000;
@@ -345,9 +345,9 @@ describe.each(['Physics_gear', 'Physics_rpm'])('unavailable %s telemetry', (fiel
 it('requires automatic shifting to be disabled when reported by the simulator', () => {
     const { live, vision, referenceLap } = trainingFixture();
     live.currentTelemetry.Physics_autoshifter_on = true;
-    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).error).toMatch(/Disable automatic gear shifting/);
+    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).error).toMatch(/Disable automatic gear shifting/);
     live.currentTelemetry.Physics_autoshifter_on = false;
-    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).observation).toBeDefined();
+    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).observation).toBeDefined();
 });
 
 describe('normalized position progress reward', () => {
@@ -647,7 +647,7 @@ it('does not reward parking or reverse progress and handles the lap boundary', (
 
 it.each([0, 50, 100])('appends aggression and targets without changing the existing features at %s', (aggression) => {
     const { live, vision, referenceLap, observation } = trainingFixture();
-    const next = readDrivingObservation(live, vision, referenceLap, aggression, 1000).observation!;
+    const next = readDrivingObservation(live, vision, referenceLap, aggression, 1000, undefined, circuitMapFixture(referenceLap)).observation!;
     expect(next.features.slice(0, -3)).toEqual(observation.features.slice(0, -3));
     expect(next.features.slice(-3)[0]).toBe((aggression - 50) / 50);
     expect(next.features.slice(-2)[0]).toBeCloseTo(100 / 360);
@@ -658,11 +658,11 @@ it.each([0, 50, 100])('appends aggression and targets without changing the exist
 it('requires a usable selected reference for speed targets without a paired position estimate', () => {
     const { live, vision, referenceLap } = trainingFixture();
     expect(readDrivingObservation(live, vision, null, 50, 1000).error).toMatch(/reference lap/);
-    expect(readDrivingObservation(live, vision, { ...referenceLap, target_features: [] }, 50, 1000).error).toMatch(/missing raw X coordinates, raw Y coordinates, raw Z coordinates, speed/);
-    expect(readDrivingObservation(live, vision, { ...referenceLap, car: 'other' }, 50, 1000).error).toMatch(/does not match the current game, car or circuit/);
-    expect(readDrivingObservation(live, vision, { ...referenceLap }, 50, 1000).observation).toBeDefined();
+    expect(readDrivingObservation(live, vision, { ...referenceLap, target_features: [] }, 50, 1000, undefined, circuitMapFixture({ ...referenceLap, target_features: [] })).error).toMatch(/missing raw X coordinates, raw Y coordinates, raw Z coordinates, speed/);
+    expect(readDrivingObservation(live, vision, { ...referenceLap, car: 'other' }, 50, 1000, undefined, circuitMapFixture({ ...referenceLap, car: 'other' })).error).toMatch(/does not match the current game, car or circuit/);
+    expect(readDrivingObservation(live, vision, { ...referenceLap }, 50, 1000, undefined, circuitMapFixture({ ...referenceLap })).observation).toBeDefined();
     delete vision.position!.referenceLap;
-    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000).observation).toBeDefined();
+    expect(readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap)).observation).toBeDefined();
 });
 
 it('explains missing speed even when Live Map can draw the reference line', () => {
@@ -671,7 +671,7 @@ it('explains missing speed even when Live Map can draw the reference line', () =
         name === 'expert_optimal_speed' ? 'unrelated' : name) };
     vision.position!.referenceLap = lap;
     expect(getLiveMapReferenceLine(lap)).toHaveLength(lap.x.length);
-    expect(readDrivingObservation(live, vision, lap, 50, 1000).error).toContain('missing speed data');
+    expect(readDrivingObservation(live, vision, lap, 50, 1000, undefined, circuitMapFixture(lap)).error).toContain('missing speed data');
 });
 
 it('allows a drawable reference lap with different recorded start and finish coordinates', () => {
@@ -680,7 +680,7 @@ it('allows a drawable reference lap with different recorded start and finish coo
     lap.y[lap.y.length - 1][0] = 0.5;
     vision.position!.referenceLap = lap;
     expect(getLiveMapReferenceLine(lap)).toHaveLength(lap.x.length);
-    expect(readDrivingObservation(live, vision, lap, 50, 1000).observation).toBeDefined();
+    expect(readDrivingObservation(live, vision, lap, 50, 1000, undefined, circuitMapFixture(lap)).observation).toBeDefined();
 });
 
 it('scores measured speed and acceleration with capped progress regardless of pedals', () => {

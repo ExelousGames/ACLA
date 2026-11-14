@@ -40,7 +40,7 @@ async function setup() {
     config.network.hiddenUnits = 2;
     config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
     config.network.cameraProjectionUnits = 32;
-    config.observation.features = ['camera', 'speed']; config.memory.features = ['camera', 'speed'];
+    config.observation.features = ['camera', 'speed', 'centerline']; config.memory.features = ['camera', 'speed', 'centerline'];
     config.memory.windowMs = 400;
     const state = new DrivingPolicy({ game: 'acc', car: 'GT3', map: 'monza' }, drivingObservationInputs(config), () => 0.6, config).checkpoint().model;
     const model = await DrivingGpuModel.create(config, state);

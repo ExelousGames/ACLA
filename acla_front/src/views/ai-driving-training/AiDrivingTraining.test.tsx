@@ -3,7 +3,7 @@ import React from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import AiDrivingTraining from './AiDrivingTraining';
 import type { ObservationResult } from './driving-observation';
-import { referenceLapFixture, trainingFixture } from './training-fixtures';
+import { circuitMapFixture, referenceLapFixture, trainingFixture } from './training-fixtures';
 import { DrivingPolicy, emptyTrainingDocument } from './driving-policy';
 import { cloneConfig } from './driving-model-config';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
@@ -18,7 +18,7 @@ jest.mock('contexts/OperationComponentRefContext', () => ({
 }));
 jest.mock('./driving-observation', () => ({
     ...jest.requireActual('./driving-observation'),
-    readDrivingObservation: (...args: unknown[]) => args.length === 5
+    readDrivingObservation: (...args: unknown[]) => args[5] === undefined
         ? jest.requireActual('./driving-observation').readDrivingObservation(...args) : mockRead(...args),
 }));
 // Match definition-list values to their terms through semantic queries.
@@ -66,11 +66,11 @@ beforeEach(() => {
 });
 afterEach(async () => { await flush(); delete window.virtualController; delete window.drivingModelFiles; jest.restoreAllMocks(); jest.useRealTimers(); });
 
-it('passes Live Map boundaries to observations and displays track rewards, penalties and availability', async () => {
+it('passes the Live Map centerline and boundaries to observations and displays track rewards', async () => {
     const circuitMap: CircuitMapDto = { id: 'monza', game: 'acc', source_track_key: 'monza', circuit_name: 'Monza', resolution: 1000,
-        samples: Object.fromEntries(([['left_boundary', -5], ['right_boundary', 5]] as const).map(([side, x]) => [side,
+        samples: { ...circuitMapFixture().samples, ...Object.fromEntries(([['left_boundary', -5], ['right_boundary', 5]] as const).map(([side, x]) => [side,
             [-10, 0, 10].map((y, i) => ({ x, y, z: 0, normalized_position: 0.24 + i * 0.01, bin: 240 + i * 10,
-                sample_count: 1, updated_at: '' }))])) };
+                sample_count: 1, updated_at: '' }))])) } };
     const referenceLap = referenceLapFixture();
     let fixture = trainingFixture(Date.now(), 50, referenceLap);
     const map = { getReferenceLap: () => referenceLap, getCircuitMap: () => circuitMap };
@@ -80,6 +80,7 @@ it('passes Live Map boundaries to observations and displays track rewards, penal
     mockRead.mockImplementation((...args) => jest.requireActual('./driving-observation').readDrivingObservation(...args));
     await renderTraining();
     expect(mockRead).toHaveBeenLastCalledWith(fixture.live, fixture.vision, referenceLap, 50, expect.any(Number), expect.anything(), circuitMap);
+    expect(getDefinition('Centerline')).toHaveTextContent('50 steps behind · 50 steps ahead');
     expect(screen.getByLabelText('Off-track detection')).toHaveTextContent('Waiting for a scored transition.');
     expect(getDefinition('On-track reward')).toHaveTextContent('0.000');
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
@@ -925,7 +926,7 @@ it.each([true, false])('uses Live Map’s speed targets without position output 
     const vision = { getLatestDetection: () => fixture.vision };
     mockFindComponentRef.mockImplementation((name) => ({ current: name.endsWith('track-vision') ? vision : map }));
     mockRead.mockImplementation((_live, detected, lap, aggression) =>
-        jest.requireActual('./driving-observation').readDrivingObservation(fixture.live, detected, lap, aggression, Date.now()));
+        jest.requireActual('./driving-observation').readDrivingObservation(fixture.live, detected, lap, aggression, Date.now(), undefined, fixture.circuitMap));
     const config = cloneConfig();
     config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
     config.network.cameraProjectionUnits = 8;

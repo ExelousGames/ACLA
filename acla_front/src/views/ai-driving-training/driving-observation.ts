@@ -9,6 +9,7 @@ import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-c
 import { detectDrivingImpact, DrivingImpact, ImpactSample, IMPACT_PENALTY_WEIGHT } from './driving-impact';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { detectDrivingOffTrack, OFF_TRACK_PENALTY_PER_SECOND, ON_TRACK_REWARD_PER_SECOND } from './driving-off-track';
+import { drivingCenterlineInput } from './driving-centerline';
 
 export interface DrivingAction { throttle: number; brake: number; steering: number; shiftUp?: boolean; shiftDown?: boolean }
 export const NEUTRAL: DrivingAction = { throttle: 0, brake: 0, steering: 0 };
@@ -97,6 +98,8 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         || !(camera.rgb instanceof Uint8Array) || camera.rgb.length !== camera.width * camera.height * 3) {
         return { error: `Track Vision camera pixels must be ${o.cameraWidth} × ${o.cameraHeight} RGB. Restart screen capture in Live Session.` };
     }
+    const centerline = drivingCenterlineInput(circuitMap, game, map, position!, config);
+    if (!centerline) return { error: 'Live Map needs a valid centerline for the current game and circuit. Load a matching circuit map in Live Session.' };
     const action = { throttle: controls[0]!, brake: controls[1]!, steering: controls[2]! };
     const groups: Record<string, number[]> = {
         localVelocity: (velocity as number[]).map((v) => clamp(v / o.velocityScale)), speed: [clamp(speed! / o.speedScale, 0, 1)],
@@ -105,6 +108,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         gear: [clamp((gear - 1) / o.gearScale)], rpm: [clamp(rpm / o.rpmScale, 0, 1)], yawRate: [clamp(yawRate! / o.yawRateScale)],
         gForce: (gForce as number[]).map((v) => clamp(v / o.gForceScale)),
         camera: [],
+        centerline,
         aggression: [normalizedAggression(aggression)], referenceSpeed: [clamp(speedTargets.reference / o.speedScale, 0, 1)],
         targetSpeed: [clamp(speedTargets.target / o.speedScale, 0, 1)],
     };
