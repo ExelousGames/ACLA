@@ -5,6 +5,20 @@ export type DrivingModelConfig = typeof defaults;
 export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = defaults;
 export const cloneConfig = (config = DEFAULT_DRIVING_CONFIG): DrivingModelConfig => JSON.parse(JSON.stringify(config));
 
+/** These runtime/training changes do not change saved inputs or weight dimensions. */
+export function upgradeDrivingConfig(value: unknown): unknown {
+    let config = value as DrivingModelConfig | undefined;
+    if (config?.learning && !Object.prototype.hasOwnProperty.call(config.learning, 'sequenceSeconds')) {
+        config = { ...config, learning: { ...config.learning, sequenceSeconds: 4 } };
+    }
+    if (config?.actions && Object.prototype.hasOwnProperty.call(config.actions, 'shiftCooldownMs')) {
+        const actions = { ...config.actions };
+        delete (actions as typeof actions & { shiftCooldownMs?: unknown }).shiftCooldownMs;
+        config = { ...config, actions };
+    }
+    return config;
+}
+
 /** Include the oldest partial bin when the window is not an interval multiple. */
 export const drivingMemorySlots = (config = DEFAULT_DRIVING_CONFIG): number =>
     Math.ceil(config.memory.windowMs / config.memory.intervalMs);
@@ -101,12 +115,13 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
             l.demonstrationGradientLimit, c.reward.totalLimit,
             c.reward.speedTolerance, c.reward.accelerationTolerance].every((n) => n > 0)
         || c.aggression > 100 || l.discount > 1 || l.explorationSigma < 1e-6 || l.actionEpsilon < 1e-9 || l.actionEpsilon >= 0.5
+        || l.sequenceSeconds <= 0 || l.sequenceSeconds > 30
         || !integer(c.memory.intervalMs, 1, 30000) || !integer(c.memory.windowMs, 1, 30000)
         || c.memory.intervalMs > c.memory.windowMs || !integer(drivingMemorySlots(c), 1, 100)
         || c.memory.features.some((name) => !o.features.includes(name))
         || c.network.initialActionBias.some((n) => Math.abs(n) > l.weightLimit)
         || c.network.initialOutputWeightScale > l.weightLimit
-        || !integer(c.actions.shiftPulseMs, 1, 1000) || c.actions.shiftCooldownMs < c.actions.shiftPulseMs
+        || !integer(c.actions.shiftPulseMs, 1, 1000)
         || !integer(c.runtime.saveEverySteps, 1, 1000000)
         || ![c.runtime.telemetryMaxAgeMs, c.runtime.visionMaxAgeMs, c.runtime.maxTransitionSeconds,
             c.runtime.controlIntervalMs, c.runtime.manualControlIntervalMs].every((n) => n > 0)

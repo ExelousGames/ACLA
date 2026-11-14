@@ -81,6 +81,14 @@
 .driving-manual input { accent-color: #00e676; }
 .driving-manual-invert { display: flex; align-items: center; gap: 8px; }
 .driving-manual output { font-variant-numeric: tabular-nums; }
+.driving-manual h3 { font-size: 14px; margin: 18px 0 8px; }
+.driving-device-list { display: grid; gap: 8px; list-style: none; padding: 0; margin: 12px 0; font-size: 12px; }
+.driving-device-list li { display: grid; gap: 6px; padding: 12px; border: 1px solid #3a414d; border-radius: 6px; overflow-wrap: anywhere; }
+.driving-device-list span { color: #a3adb7; }
+.driving-device-list summary { cursor: pointer; padding: 4px 0; }
+.driving-device-list label { display: grid; grid-template-columns: 65px minmax(0, 1fr) 40px; align-items: center; gap: 8px; margin-top: 6px; }
+.driving-device-list meter { width: 100%; }
+.driving-device-list output { text-align: right; }
 .driving-rewards { margin-bottom: 0; }
 .driving-rewards > div { display: grid; grid-template-columns: 1fr auto; border-bottom: 1px solid #ffffff0d; padding: 15px 0; gap: 8px; }
 .driving-rewards dt { font-size: 13px; color: #dbebe2; }

@@ -58,7 +58,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }`,
         transitionGradient: constants + `
 @group(0) @binding(1) var<storage, read> nextOutputs: array<f32>;
-// Reward, elapsed seconds, terminal; then weight, latent axes, shift and mask per slot.
+// Reward, elapsed seconds, terminal; then axis weight, latent axes, shift, mask and shift weight per slot.
 @group(0) @binding(2) var<storage, read> transition: array<f32>;
 @group(0) @binding(3) var<storage, read_write> gradients: array<f32>;
 @compute @workgroup_size(64)
@@ -72,8 +72,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let advantage = clamp(transition[0] + bootstrap - outputs[CRITIC],
         -ADVANTAGE_LIMIT, ADVANTAGE_LIMIT);
     if (id.x == CRITIC) { gradients[id.x] = CRITIC_RATE * advantage; return; }
-    let slot = id.x / ACTIONS; let axis = id.x % ACTIONS; let base = 3u + slot * 6u;
-    let weight = transition[base];
+    let slot = id.x / ACTIONS; let axis = id.x % ACTIONS; let base = 3u + slot * 7u;
+    let weight = select(transition[base + 6u], transition[base], axis < AXES);
     if (weight == 0.0) { return; }
     if (axis < AXES) {
         gradients[id.x] = weight * ACTOR_RATE * advantage * clamp((transition[base + 1u + axis] - outputs[id.x]) / VARIANCE, -POLICY_LIMIT, POLICY_LIMIT);

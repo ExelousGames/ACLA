@@ -40,9 +40,16 @@ it('maps separate pedals, axis inversion and calibrated steering without changin
     const result = mapManualControls(devices, mapping);
     expect(result.action.throttle).toBeCloseTo(0.8);
     expect(result.action.brake).toBeCloseTo(0.3);
-    expect(result.action.steering).toBeCloseTo(0.48 / 0.98);
+    expect(result.action.steering).toBeCloseTo(0.5);
     expect(result).toMatchObject({ toggleControl: false, action: { shiftUp: false, shiftDown: false } });
-    expect(mapManualControls([{ ...devices[0], axes: { axis0: 0.501 } }, devices[1]], mapping).action.steering).toBe(0);
+});
+
+it.each([false, true])('passes steering through linearly, including tiny center movements (inverted=%s)', (inverted) => {
+    const binding = { ...mapping, steering: { ...mapping.steering!, inverted } };
+    for (const [raw, expected] of [[0, -1], [0.25, -0.5], [0.499, -0.002], [0.5, 0], [0.501, 0.002], [0.75, 0.5], [1, 1]]) {
+        const input = [{ ...devices[0], axes: { axis0: raw } }, devices[1]];
+        expect(mapManualControls(input, binding).action.steering).toBeCloseTo(inverted ? -expected : expected, 10);
+    }
 });
 
 it('rejects unplugged devices, unavailable axes/buttons and conflicting handover buttons', () => {

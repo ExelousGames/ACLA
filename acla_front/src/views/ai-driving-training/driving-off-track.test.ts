@@ -117,10 +117,51 @@ it.each([0.1, 0.2, 0.5, 1])('charges 5 reward per second at %s-second telemetry 
     for (let i = 0; i < Math.round(1 / seconds); i++) {
         const reward = drivingReward(before, { ...before, capturedAt: 2000, measuredAt: 1000 + seconds * 1000 });
         expect(reward.offTrack).toBeCloseTo(-5 * seconds);
+        expect(reward.onTrack).toBe(0);
         expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact + reward.offTrack);
         sum += reward.offTrack;
     }
     expect(sum).toBeCloseTo(-5);
+});
+
+it.each([0.1, 0.2, 0.5, 1])('earns 1 on-track reward per second at %s-second telemetry intervals', (seconds) => {
+    const { observation } = trainingFixture();
+    let before = { ...observation, offTrack: false };
+    let sum = 0;
+    for (let i = 0; i < Math.round(1 / seconds); i++) {
+        const after = { ...before, capturedAt: before.capturedAt + seconds * 500,
+            measuredAt: before.measuredAt + seconds * 1000, normalizedPosition: before.normalizedPosition + seconds * 0.01 };
+        const reward = drivingReward(before, after);
+        expect(reward.onTrack).toBeCloseTo(seconds);
+        expect(reward.offTrack).toBe(0);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact + reward.onTrack);
+        sum += reward.onTrack;
+        before = after;
+    }
+    expect(sum).toBeCloseTo(1);
+});
+
+it.each([
+    { offTrack: true, speed: 108, gear: 3, normalizedPosition: 0.252 },
+    { offTrack: null, speed: 108, gear: 3, normalizedPosition: 0.252 },
+    { offTrack: false, speed: 0, gear: 3, normalizedPosition: 0.252 },
+    { offTrack: false, speed: 108, gear: 3, normalizedPosition: 0.25 },
+    { offTrack: false, speed: 108, gear: 3, normalizedPosition: 0.248 },
+    { offTrack: false, speed: 108, gear: -1, normalizedPosition: 0.252 },
+])('does not award on-track credit without confirmed forward driving: %j', (state) => {
+    const { observation } = trainingFixture();
+    const reward = drivingReward(observation, { ...observation, capturedAt: 1200, measuredAt: 1200, ...state });
+    expect(reward.onTrack).toBe(0);
+});
+
+it('awards on-track lap crossings and clamps the combined positive reward', () => {
+    const { observation } = trainingFixture();
+    const before = { ...observation, normalizedPosition: 0.999, offTrack: false };
+    const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.001 };
+    expect(drivingReward(before, after).onTrack).toBeCloseTo(0.2);
+    const config = cloneConfig();
+    config.reward.totalLimit = 0.1;
+    expect(drivingReward(before, after, config).total).toBe(0.1);
 });
 
 it('stops charging on re-entry or unavailable detection, and respects the total reward limit', () => {

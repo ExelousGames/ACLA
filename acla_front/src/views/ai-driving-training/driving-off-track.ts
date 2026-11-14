@@ -4,6 +4,7 @@ import { getLiveMapPosition } from 'views/live-session/live-map-data';
 import { getAccTelemetryTrackKey } from 'views/session-shared/visualization/charts/circuitTrackLayout';
 
 export const OFF_TRACK_PENALTY_PER_SECOND = 5;
+export const ON_TRACK_REWARD_PER_SECOND = 1;
 const wheels = ['front_left', 'front_right', 'rear_left', 'rear_right'] as const;
 type Point = { x: number; y: number };
 type Strip = { start: number; end: number; polygon: Point[]; a: Point; b: Point };

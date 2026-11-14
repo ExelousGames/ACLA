@@ -36,6 +36,8 @@ const renderTraining = async (onOpenLiveSession = () => undefined) => {
 
 beforeEach(() => {
     jest.useFakeTimers();
+    // Keep interpolated UI controls deterministic; policy tests cover exploration.
+    jest.spyOn(Math, 'random').mockReturnValue(0.5);
     mockDrivingGpu();
     jest.spyOn(DrivingPolicy.prototype, 'initializeGpu');
     localStorage.clear();
@@ -64,7 +66,7 @@ beforeEach(() => {
 });
 afterEach(async () => { await flush(); delete window.virtualController; delete window.drivingModelFiles; jest.restoreAllMocks(); jest.useRealTimers(); });
 
-it('passes Live Map boundaries to observations and displays the off-track penalty and availability', async () => {
+it('passes Live Map boundaries to observations and displays track rewards, penalties and availability', async () => {
     const circuitMap: CircuitMapDto = { id: 'monza', game: 'acc', source_track_key: 'monza', circuit_name: 'Monza', resolution: 1000,
         samples: Object.fromEntries(([['left_boundary', -5], ['right_boundary', 5]] as const).map(([side, x]) => [side,
             [-10, 0, 10].map((y, i) => ({ x, y, z: 0, normalized_position: 0.24 + i * 0.01, bin: 240 + i * 10,
@@ -79,6 +81,7 @@ it('passes Live Map boundaries to observations and displays the off-track penalt
     await renderTraining();
     expect(mockRead).toHaveBeenLastCalledWith(fixture.live, fixture.vision, referenceLap, 50, expect.any(Number), expect.anything(), circuitMap);
     expect(screen.getByLabelText('Off-track detection')).toHaveTextContent('Waiting for a scored transition.');
+    expect(getDefinition('On-track reward')).toHaveTextContent('0.000');
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
     act(() => { jest.advanceTimersByTime(200); }); await flush();
@@ -89,13 +92,25 @@ it('passes Live Map boundaries to observations and displays the off-track penalt
     });
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     expect(getDefinition('Off-track penalty')).toHaveTextContent('-1.000');
+    expect(getDefinition('On-track reward')).toHaveTextContent('0.000');
     expect(screen.getByLabelText('Off-track detection')).toHaveTextContent('Off track');
-    expect(screen.getByText(/only when all four tyre contact points are outside/)).toBeInTheDocument();
+    act(() => { jest.advanceTimersByTime(200); }); await flush();
+    fixture = trainingFixture(Date.now(), 50, referenceLap);
+    Object.assign(fixture.live.currentTelemetry, { Graphics_normalized_car_position: 0.252 });
+    ['front_left', 'front_right', 'rear_left', 'rear_right'].forEach((wheel, i) => {
+        Object.assign(fixture.live.currentTelemetry, { [`Physics_tyre_contact_point_${wheel}_x`]: i % 2 ? 1 : -1,
+            [`Physics_tyre_contact_point_${wheel}_y`]: i < 2 ? 4 : 0 });
+    });
+    act(() => { jest.advanceTimersByTime(100); }); await flush();
+    expect(getDefinition('On-track reward')).toHaveTextContent('0.300');
+    expect(getDefinition('Off-track penalty')).toHaveTextContent('0.000');
+    expect(screen.getByLabelText('Off-track detection')).toHaveTextContent('On track');
     act(() => { jest.advanceTimersByTime(200); }); await flush();
     fixture = trainingFixture(Date.now(), 50, referenceLap);
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     expect(getDefinition('Off-track penalty')).toHaveTextContent('0.000');
     expect(screen.getByLabelText('Off-track detection')).toHaveTextContent('Off-track detection unavailable');
+    expect(getDefinition('On-track reward')).toHaveTextContent('0.000');
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
 });
 
@@ -119,7 +134,6 @@ it.each([[30, 0, 0, 0], [30, 23, 0, 0], [10 / 3.6, 0, 0, 0], [30, 24, -6, 0.4], 
     mockInput = { observation };
     await renderTraining();
     expect(screen.getByLabelText('Impact estimate')).toHaveTextContent('Waiting for two fresh motion samples.');
-    expect(screen.getByText(/Confidence of at least 50%/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
     act(() => { jest.advanceTimersByTime(200); }); await flush();
@@ -139,7 +153,6 @@ it.each([[30, 0, 0, 0], [30, 23, 0, 0], [10 / 3.6, 0, 0, 0], [30, 24, -6, 0.4], 
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     expect(getDefinition('Impact penalty')).toHaveTextContent('0.000');
     expect(screen.getByLabelText('Impact estimate')).toHaveTextContent('Impact estimate unavailable');
-    expect(screen.getByText(/Car damage telemetry is not used/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
 });
 
@@ -209,7 +222,37 @@ it('enables a restored model with unchanged inputs even when its context keys we
     expect(JSON.parse(files.get(MODEL_PATH)!)).toEqual(checkpoint);
 });
 
-it('shows saved and live mismatch values and recovers without replacing the saved model', async () => {
+it.each(['Start training', 'Run trained model'])('allows %s with a saved model from another game, car and map', async (button) => {
+    const { observation } = trainingFixture(Date.now());
+    const config = cloneConfig();
+    config.network.hiddenUnits = 3;
+    config.network.cameraProjectionUnits = 8;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
+    checkpoint.model.steps = 10;
+    files.set(MODEL_PATH, JSON.stringify(checkpoint));
+    mockInput = { observation: { ...observation, context: { game: 'iracing', car: 'MX5', map: 'spa' }, session: 'another-session' } };
+    const view = await renderTraining();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: button })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: button })); await flush();
+    expect(screen.getByLabelText('Current control owner')).toHaveTextContent('AI');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+    expect(JSON.parse(files.get(MODEL_PATH)!)).toEqual(checkpoint);
+    view.unmount(); await flush();
+    mockInput = { observation };
+    await renderTraining();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: button })); await flush();
+    expect(screen.getByLabelText('Current control owner')).toHaveTextContent('AI');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(window.drivingModelFiles!.choose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+});
+
+it('shows input layout mismatches and recovers on another combination without replacing the saved model', async () => {
     const { observation } = trainingFixture(Date.now());
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
     checkpoint.model.steps = 10;
@@ -220,14 +263,14 @@ it('shows saved and live mismatch values and recovers without replacing the save
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     act(() => { jest.advanceTimersByTime(250); });
     const warning = screen.getByRole('alert');
-    expect(warning).toHaveTextContent('Game: saved “acc”; live “iracing”.');
-    expect(warning).toHaveTextContent('Car: saved “GT3”; live “MX5”.');
-    expect(warning).toHaveTextContent('Track: saved “monza”; live “spa”.');
+    expect(warning).not.toHaveTextContent('Game:');
+    expect(warning).not.toHaveTextContent('Car:');
+    expect(warning).not.toHaveTextContent('Track:');
     expect(warning).not.toHaveTextContent('Segmentation labels');
     expect(warning).toHaveTextContent(`Input count: saved ${observation.features.length}; live ${observation.features.length - 16}.`);
     expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Run trained model' })).toBeDisabled();
-    mockInput = { observation };
+    mockInput = { observation: { ...mockInput.observation!, features: observation.features } };
     act(() => { jest.advanceTimersByTime(250); });
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start training' })).toBeEnabled();
@@ -247,9 +290,10 @@ it('displays the complete action plan in one table and clears it on Stop', async
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     act(() => { jest.advanceTimersByTime(250); });
     fireEvent.click(screen.getByRole('button', { name: 'Run trained model' })); await flush();
-    expect(within(table).getAllByRole('row')).toHaveLength(8);
+    expect(screen.getByText(/One action plan predicts 31 control steps from 0 to 3 seconds/)).toBeInTheDocument();
+    expect(within(table).getAllByRole('row')).toHaveLength(32);
     expect(within(table).getAllByRole('rowheader').map((cell) => cell.textContent))
-        .toEqual(['0.0 s', '0.5 s', '1.0 s', '1.5 s', '2.0 s', '2.5 s', '3.0 s']);
+        .toEqual(Array.from({ length: 31 }, (_, step) => `${(step / 10).toFixed(1)} s`));
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
     expect(within(table).getByText('Waiting for AI control and fresh inputs.')).toBeInTheDocument();
 });
@@ -510,12 +554,12 @@ it.each([true, false])('keeps the session active through invalid inputs and resu
     expect(within(screen.getByRole('region', { name: 'AI driver' })).getByText('10', { selector: 'strong' })).toBeInTheDocument();
     expect(window.virtualController!.apply).not.toHaveBeenLastCalledWith({ throttle: 0, brake: 0, steering: 0 });
     await recover();
-    expect(within(screen.getByRole('region', { name: 'AI driver' })).getByText(train ? '11' : '10', { selector: 'strong' })).toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'AI driver' })).getByText('10', { selector: 'strong' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
     expect(screen.getByLabelText('Current control owner')).toHaveTextContent('No driver');
     const saved = JSON.parse(files.get(MODEL_PATH)!);
-    expect(saved.model.steps).toBe(train ? 11 : 10);
-    expect(saved).toEqual(train ? expect.not.objectContaining(checkpoint) : checkpoint);
+    expect(saved.model.steps).toBe(10); // Recovery has not collected a complete training sequence yet.
+    expect(saved).toEqual(checkpoint);
 });
 
 it('removes retired saves and starts a new JSON model', async () => {
@@ -552,9 +596,10 @@ it.each([1, 2])('shows and releases a saved model’s learned shift choice %s', 
     expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: shift === 1, shiftDown: shift === 2 }));
     const label = shift === 1 ? 'Shift up output' : 'Shift down output';
     expect(screen.getByLabelText(label)).toHaveTextContent('Pressed');
-    // Allow each asynchronous 50 ms control tick to settle before the next tick.
-    act(() => { jest.advanceTimersByTime(50); }); await flush();
-    act(() => { jest.advanceTimersByTime(50); }); await flush();
+    // Let each 20 ms control tick settle throughout the 100 ms paddle pulse.
+    for (let elapsed = 0; elapsed < 100; elapsed += 20) {
+        act(() => { jest.advanceTimersByTime(20); }); await flush();
+    }
     expect(screen.getByLabelText(label)).toHaveTextContent('Released');
     expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: false, shiftDown: false }));
     fireEvent.keyDown(window, { key: 'Escape' }); await flush();
@@ -588,7 +633,7 @@ it('maps physical controls and switches vJoy ownership with one UI button or one
     act(() => { jest.advanceTimersByTime(50); }); await flush();
     expect(screen.getByText('You are driving')).toBeInTheDocument();
     expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({
-        throttle: expect.closeTo(0.2), brake: 0.1, steering: expect.closeTo(0.48 / 0.98),
+        throttle: expect.closeTo(0.2), brake: 0.1, steering: expect.closeTo(0.5),
     }));
     expect(screen.getByRole('button', { name: 'Return to AI' })).toBe(handoverButton);
     expect(screen.queryByRole('button', { name: 'Take over' })).not.toBeInTheDocument();
@@ -881,7 +926,10 @@ it.each([true, false])('uses Live Map’s speed targets without position output 
     mockFindComponentRef.mockImplementation((name) => ({ current: name.endsWith('track-vision') ? vision : map }));
     mockRead.mockImplementation((_live, detected, lap, aggression) =>
         jest.requireActual('./driving-observation').readDrivingObservation(fixture.live, detected, lap, aggression, Date.now()));
-    const checkpoint = new DrivingPolicy(fixture.observation.context, fixture.observation.features.length).checkpoint();
+    const config = cloneConfig();
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
+    config.network.cameraProjectionUnits = 8;
+    const checkpoint = new DrivingPolicy(fixture.observation.context, fixture.observation.features.length, Math.random, config).checkpoint();
     checkpoint.model.steps = 10;
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     await renderTraining();
@@ -902,7 +950,6 @@ it.each([true, false])('uses Live Map’s speed targets without position output 
     expect(screen.queryByText('Drive fast')).not.toBeInTheDocument();
     expect(screen.queryByText('Penalize instability')).not.toBeInTheDocument();
     expect(screen.getByText('Acceleration / deceleration')).toBeInTheDocument();
-    expect(screen.getByText(/holding an incorrect speed is penalized/)).toBeInTheDocument();
     expect(getDefinition('Normalized position progress')).toHaveTextContent('0.000');
     expect(screen.queryByText('Drive toward the reference line')).not.toBeInTheDocument();
     act(() => { jest.advanceTimersByTime(100); }); await flush();
@@ -928,9 +975,9 @@ it.each([true, false])('uses Live Map’s speed targets without position output 
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
     const saved = JSON.parse(files.get(MODEL_PATH)!);
-    // The delayed image spans the outgoing plan's tail and its replacement.
-    expect(saved.model.steps).toBe(train ? 13 : 10);
-    expect(saved).toEqual(train ? expect.not.objectContaining(checkpoint) : checkpoint);
+    // Rewards update immediately; this short session has not completed a sequence.
+    expect(saved.model.steps).toBe(10);
+    expect(saved.model).toEqual(checkpoint.model);
 });
 
 it('restores a saved model after remount', async () => {
@@ -1153,14 +1200,16 @@ it('honors Stop while reading the model before starting', async () => {
     expect(screen.getByLabelText('Current control owner')).toHaveTextContent('No driver');
 });
 
-it('automatically saves trained weights to the selected file at the configured interval', async () => {
+it.each([0, 49])('automatically saves when a sequence crosses the configured save interval (initial steps=%s)', async (initialSteps) => {
     jest.spyOn(Math, 'random').mockReturnValue(0.1);
     const observation = trainingFixture(Date.now()).observation;
     const config = cloneConfig();
     config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
     config.network.cameraProjectionUnits = 8;
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
-    checkpoint.configuration.runtime.saveEverySteps = 1;
+    checkpoint.model.steps = initialSteps;
+    checkpoint.configuration.runtime.saveEverySteps = initialSteps ? 50 : 1;
+    checkpoint.configuration.learning.sequenceSeconds = 0.3;
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     mockInput = { observation };
     await renderTraining();
@@ -1174,9 +1223,10 @@ it('automatically saves trained weights to the selected file at the configured i
         });
         await flush();
     };
-    await advance(); await advance();
+    await advance(); await advance(); await advance(); await advance();
     const saved = JSON.parse(files.get(MODEL_PATH)!);
-    expect(saved.model.steps).toBeGreaterThan(0);
+    expect(saved.model.steps).toBeGreaterThan(initialSteps);
+    if (initialSteps) expect(saved.model.steps % 50).not.toBe(0);
     expect(saved.model.lstmWeights).not.toEqual(checkpoint.model.lstmWeights);
     expect(window.drivingModelFiles!.write).toHaveBeenCalledWith(MODEL_PATH, expect.any(String));
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();

@@ -1,4 +1,4 @@
-"""JSON-lines vJoy steering wheel bridge with cleanup on disconnect or failure."""
+"""JSON-lines controller bridge, with input-only discovery independent of vJoy."""
 import argparse
 import json
 import math
@@ -26,7 +26,8 @@ def emit(message):
 
 def serve(controller, commands, emit_message=emit, physical=None):
     try:
-        controller.reset()
+        if controller is not None:
+            controller.reset()
         emit_message({"type": "ready"})
         while True:
             try:
@@ -41,16 +42,20 @@ def serve(controller, commands, emit_message=emit, physical=None):
                 emit_message({"type": "physical", "id": command.get("id"), "devices": physical.read()})
                 continue
             action = command.get("action") if isinstance(command, dict) else None
+            if controller is None:
+                raise ValueError("Physical controller detection cannot apply driving inputs.")
             if not valid_action(action):
                 raise ValueError("Invalid controller action. Inputs released.")
             controller.apply(action)
             emit_message({"type": "applied", "id": command.get("id")})
     finally:
         try:
-            controller.reset()
+            if controller is not None:
+                controller.reset()
         finally:
             try:
-                controller.close()
+                if controller is not None:
+                    controller.close()
             finally:
                 if physical is not None:
                     physical.close()
@@ -59,11 +64,14 @@ def serve(controller, commands, emit_message=emit, physical=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device-id", type=int, choices=range(1, 17), default=1)
+    parser.add_argument("--physical-only", action="store_true")
     args = parser.parse_args()
     try:
-        controller = VJoyController(args.device_id)
+        controller = None if args.physical_only else VJoyController(args.device_id)
+        physical = PhysicalControllers() if args.physical_only else None
     except Exception as error:
-        message = ("Virtual wheel unavailable. Install vJoy and enable X, Y and Z axes and at least 2 buttons on device "
+        message = ("Physical controller detection unavailable. " if args.physical_only else
+                   "Virtual wheel unavailable. Install vJoy and enable X, Y and Z axes and at least 2 buttons on device "
                    f"{args.device_id} in Configure vJoy. See README for setup. ")
         emit({"type": "error", "error": message + str(error)})
         return 1
@@ -80,7 +88,7 @@ def main():
 
     threading.Thread(target=read_commands, daemon=True).start()
     try:
-        serve(controller, commands)
+        serve(controller, commands, physical=physical)
     except Exception as error:
         emit({"type": "error", "error": str(error)})
         return 1

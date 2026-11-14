@@ -8,7 +8,7 @@ import { DrivingReference, inspectDrivingReference, normalizedAggression, Refere
 import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
 import { detectDrivingImpact, DrivingImpact, ImpactSample, IMPACT_PENALTY_WEIGHT } from './driving-impact';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
-import { detectDrivingOffTrack, OFF_TRACK_PENALTY_PER_SECOND } from './driving-off-track';
+import { detectDrivingOffTrack, OFF_TRACK_PENALTY_PER_SECOND, ON_TRACK_REWARD_PER_SECOND } from './driving-off-track';
 
 export interface DrivingAction { throttle: number; brake: number; steering: number; shiftUp?: boolean; shiftDown?: boolean }
 export const NEUTRAL: DrivingAction = { throttle: 0, brake: 0, steering: 0 };
@@ -126,7 +126,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
 }
 
 export interface DrivingReward {
-    timing: number; progress: number; impact: number; offTrack: number; total: number;
+    timing: number; progress: number; impact: number; onTrack: number; offTrack: number; total: number;
     offTrackDetected: boolean | null;
     impactEstimate: DrivingImpact;
     speedComparison: ReferenceSpeedTargets & { measured: number; aggression: number;
@@ -168,18 +168,19 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     // Absolute errors also charge for overshooting, instead of rewarding all acceleration.
     const speedGoalProgress = Math.abs(previous.speed - speeds.target) - Math.abs(current.speed - speeds.target);
     const correction = clamp(speedGoalProgress / (3.6 * measuredSeconds * r.accelerationTolerance));
-    // A held but incorrect speed must still cost reward, even when no correction occurs.
-    const speedPenalty = clamp(Math.abs(current.speed - speeds.target) / r.speedTolerance, 0, 1);
+    // Score the direction of the speed change immediately, even far from the goal.
     const timing = forwardProgress > 0
-        ? r.timingWeight * forwardProgress * (correction - speedPenalty) : 0;
+        ? r.timingWeight * forwardProgress * correction : 0;
     const impactSample = (observation: DrivingObservation): ImpactSample => ({ measuredAt: observation.measuredAt,
         velocity: [observation.localVelocity[0], observation.localVelocity[observation.context.game === 'iracing' ? 2 : 1]],
         steering: observation.controls.steering, brake: observation.controls.brake });
     const impactEstimate = telemetryImpact ?? detectDrivingImpact(impactSample(previous), impactSample(current));
     const impact = impactEstimate.detected ? -IMPACT_PENALTY_WEIGHT * impactEstimate.confidence * impactEstimate.severity : 0;
     const offTrack = current.offTrack === true ? -OFF_TRACK_PENALTY_PER_SECOND * measuredSeconds : 0;
-    return { timing, progress, impact, impactEstimate, offTrack, offTrackDetected: current.offTrack,
+    // Reward confirmed on-track driving without paying the policy to park or reverse.
+    const onTrack = current.offTrack === false && forwardProgress > 0 ? ON_TRACK_REWARD_PER_SECOND * measuredSeconds : 0;
+    return { timing, progress, impact, impactEstimate, onTrack, offTrack, offTrackDetected: current.offTrack,
         speedComparison: { ...speeds, measured: current.speed, aggression: previous.aggression, speedGoalProgress,
             measuredAcceleration, referenceAcceleration, targetAcceleration },
-        total: clamp(timing + progress + impact + offTrack, -r.totalLimit, r.totalLimit) };
+        total: clamp(timing + progress + impact + onTrack + offTrack, -r.totalLimit, r.totalLimit) };
 }

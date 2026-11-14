@@ -13,35 +13,108 @@ function setup(platform = 'win32') {
     contents.isDestroyed = () => false;
     contents.getBackgroundThrottling = () => true;
     contents.setBackgroundThrottling = jest.fn();
-    const child = new EventEmitter();
-    const writes = [];
-    child.stdin = new Writable({ write(chunk, _encoding, callback) { writes.push(JSON.parse(chunk.toString())); callback(); } });
-    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = jest.fn();
-    const spawnProcess = jest.fn(() => child);
+    const writes = [], children = [];
+    const spawnProcess = jest.fn(() => {
+        const child = new EventEmitter();
+        child.writes = [];
+        child.stdin = new Writable({ write(chunk, _encoding, callback) {
+            const command = JSON.parse(chunk.toString());
+            writes.push(command); child.writes.push(command); callback();
+        } });
+        child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = jest.fn();
+        children.push(child);
+        return child;
+    });
     registerVirtualController({ app, ipcMain: { handle: (key, handler) => { handlers[key] = handler; } },
         getMainWindow: () => ({ isDestroyed: () => false, webContents: contents }), getPythonExecutable: () => 'python',
         spawnProcess, installAccPreset, platform });
     const event = { sender: contents, senderFrame: contents.mainFrame };
-    return { handlers, event, contents, child, writes, spawnProcess, installAccPreset, app,
+    return { handlers, event, contents, get child() { return children[0]; }, children, writes, spawnProcess, installAccPreset, app,
         connect: async (options) => {
             const connected = handlers['virtual-controller-connect'](event, options);
-            child.stdout.write(JSON.stringify({ type: 'ready' }) + '\n');
+            children[children.length - 1].stdout.write(JSON.stringify({ type: 'ready' }) + '\n');
             await connected;
         } };
 }
 
-it('reads physical controllers through the owned bridge without writing a wheel action', async () => {
+it('detects physical devices before vJoy and keeps the same reader when output connects', async () => {
     const run = setup();
     const read = run.handlers['virtual-controller-read-physical'];
     await expect(read({ sender: {} })).rejects.toThrow(/main workspace/);
-    await expect(read(run.event)).rejects.toThrow(/Connect/);
-    await run.connect();
     const pending = read(run.event);
+    expect(run.spawnProcess).toHaveBeenCalledWith('python',
+        ['-u', expect.stringContaining('virtual_controller.py'), '--physical-only'],
+        expect.objectContaining({ windowsHide: true }));
+    expect(run.writes).toEqual([]);
+    run.child.stdout.write(JSON.stringify({ type: 'ready' }) + '\n');
+    await Promise.resolve();
     expect(run.writes).toEqual([{ id: 1, type: 'read-physical' }]);
     const devices = [{ id: 'wheel', name: 'Wheel', axes: { axis0: 0.5 }, buttons: [false] }];
     run.child.stdout.write(JSON.stringify({ type: 'physical', id: 1, devices }) + '\n');
     await expect(pending).resolves.toEqual(devices);
+    expect(run.contents.setBackgroundThrottling).not.toHaveBeenCalled();
+    await expect(run.handlers['virtual-controller-apply'](run.event,
+        { steering: 0, throttle: 0, brake: 0 })).rejects.toThrow(/Connect/);
+    await run.connect();
+    const next = read(run.event);
+    await Promise.resolve();
+    expect(run.spawnProcess).toHaveBeenCalledTimes(2);
+    expect(run.children[1].writes).toEqual([]);
+    run.child.stdout.write(JSON.stringify({ type: 'physical', id: 2, devices }) + '\n');
+    await expect(next).resolves.toEqual(devices);
     run.handlers['virtual-controller-disconnect'](run.event);
+    expect(run.children.every((child) => child.stdin.writableEnded)).toBe(true);
+});
+
+it('shares physical reader startup and rejects unsupported platforms and foreign frames', async () => {
+    const run = setup();
+    const read = run.handlers['virtual-controller-read-physical'];
+    await expect(read({ ...run.event, senderFrame: {} })).rejects.toThrow(/main workspace/);
+    const first = read(run.event), second = read(run.event);
+    expect(run.spawnProcess).toHaveBeenCalledTimes(1);
+    run.child.stdout.write(JSON.stringify({ type: 'ready' }) + '\n');
+    await Promise.resolve();
+    for (const { id } of run.writes) run.child.stdout.write(JSON.stringify({ type: 'physical', id, devices: [] }) + '\n');
+    await expect(first).resolves.toEqual([]);
+    await expect(second).resolves.toEqual([]);
+    run.handlers['virtual-controller-disconnect'](run.event);
+    const other = setup('linux');
+    await expect(other.handlers['virtual-controller-read-physical'](other.event)).rejects.toThrow(/Windows/);
+    expect(other.spawnProcess).not.toHaveBeenCalled();
+});
+
+it('keeps physical detection available after vJoy startup fails', async () => {
+    const run = setup();
+    const read = run.handlers['virtual-controller-read-physical'];
+    const first = read(run.event);
+    run.child.stdout.write(JSON.stringify({ type: 'ready' }) + '\n');
+    await Promise.resolve();
+    run.child.stdout.write(JSON.stringify({ type: 'physical', id: 1, devices: [] }) + '\n');
+    await first;
+    const connected = run.handlers['virtual-controller-connect'](run.event);
+    run.children[1].stdout.write(JSON.stringify({ type: 'error', error: 'Install vJoy.' }) + '\n');
+    await expect(connected).rejects.toThrow('Install vJoy');
+    expect(run.child.stdin.writableEnded).toBe(false);
+    const next = read(run.event);
+    await Promise.resolve();
+    run.child.stdout.write(JSON.stringify({ type: 'physical', id: 2, devices: [] }) + '\n');
+    await expect(next).resolves.toEqual([]);
+    expect(run.spawnProcess).toHaveBeenCalledTimes(2);
+    run.handlers['virtual-controller-disconnect'](run.event);
+});
+
+it.each(['render-process-gone', 'navigation', 'quit', 'timeout'])('cleans up pending physical detection on %s', async (boundary) => {
+    const run = setup();
+    const pending = run.handlers['virtual-controller-read-physical'](run.event);
+    const rejection = expect(pending).rejects.toThrow();
+    run.child.stdout.write(JSON.stringify({ type: 'ready' }) + '\n');
+    await Promise.resolve();
+    if (boundary === 'navigation') run.contents.emit('did-start-navigation', {}, '', false, true);
+    else if (boundary === 'quit') run.app.emit('before-quit');
+    else if (boundary === 'timeout') jest.advanceTimersByTime(1000);
+    else run.contents.emit(boundary);
+    await rejection;
+    expect(run.child.stdin.writableEnded).toBe(true);
 });
 
 beforeEach(() => jest.useFakeTimers());

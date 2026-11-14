@@ -36,6 +36,8 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
     const [error, setError] = useState('');
     const [detecting, setDetecting] = useState<keyof ManualMapping | null>(null);
     const [detectionMessage, setDetectionMessage] = useState('');
+    const [scan, setScan] = useState(0);
+    const [scanning, setScanning] = useState(true);
     const mounted = useRef(false);
     useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
@@ -60,12 +62,16 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
     }, [mapping]);
 
     useEffect(() => {
-        if (!connected || running) {
-            if (!connected) setDevices([]);
+        if (running || testing) {
             setDetecting(null); setDetectionMessage('');
+            setScanning(false);
             return;
         }
-        if (!window.virtualController?.readPhysicalControls) return;
+        if (!window.virtualController?.readPhysicalControls) {
+            setScanning(false);
+            setError('Controller detection requires the updated Windows desktop app.');
+            return;
+        }
         let cancelled = false, busy = false;
         let baseline: PhysicalController[] | undefined, previous: PhysicalController[] | undefined;
         const finishDetection = (message: string) => {
@@ -78,7 +84,7 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
             try {
                 const result = await window.virtualController!.readPhysicalControls!();
                 if (cancelled) return;
-                setDevices(result); setError('');
+                setDevices(result); setError(''); setScanning(false);
                 if (detecting) {
                     if (!result.length || baseline?.some((device) => !result.some((current) => current.id === device.id))) {
                         finishDetection('Controller disconnected. Reconnect and try Detect again.');
@@ -100,7 +106,7 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
                 }
             } catch (reason) {
                 if (!cancelled) {
-                    setDevices([]); setError(reason instanceof Error ? reason.message : 'Cannot read the controller.');
+                    setDevices([]); setScanning(false); setError(reason instanceof Error ? reason.message : 'Cannot read the controller.');
                     if (detecting) finishDetection('Detection stopped. Check the controller connection and try again.');
                 }
             } finally { busy = false; }
@@ -111,7 +117,7 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
             finishDetection('No clear input detected. Center the wheel or stick, release pedals, triggers and buttons, then try Detect again.');
         }, 15000) : undefined;
         return () => { cancelled = true; clearInterval(timer); clearTimeout(timeout); };
-    }, [connected, running, detecting, changeMapping]);
+    }, [connected, running, testing, detecting, scan, changeMapping]);
 
     const detectButton = (key: keyof ManualMapping) => <button type="button" aria-label={`Detect ${LABELS[key].toLowerCase()}`}
         disabled={!devices.length || detecting !== null} onClick={() => {
@@ -121,6 +127,7 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
     try { preview = mapManualControls(devices, mapping); }
     catch (reason) { mappingError = reason instanceof Error ? reason.message : 'Check the controller mapping.'; }
     const humanDriving = source === 'manual';
+    const liveDevices = !testing && (!running || enabled);
 
     return <section className="driving-card driving-manual" aria-label="Human takeover">
         <div className="driving-card-title"><h2>Human takeover</h2><span>{running ? source === 'manual' ? 'You are driving' : 'AI is driving' : enabled && preview ? 'Ready' : 'Set up your controls'}</span></div>
@@ -135,12 +142,32 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
                 onClick={() => onSourceChange(humanDriving ? 'ai' : 'manual')}>
                 {humanDriving ? 'Return to AI' : running ? 'Take over' : 'Start human driving'}</button>
         </div>
-        <p>Connect your physical gamepad, wheel, joystick or pedals by USB or Bluetooth. Center steering and release pedals and buttons, then click Detect and follow the prompt. Check the live preview and enable controller takeover.</p>
-        <fieldset disabled={running || testing || !connected}>
+        <p>Connect your wheelbase and pedals, then map each control below. Pedals can use the wheelbase’s axes or a separate USB device. Center steering and release pedals and buttons before clicking Detect.</p>
+        <div className="driving-card-title"><h3>Wheelbase &amp; pedals</h3>
+            <button type="button" disabled={running || testing || detecting !== null || scanning || !window.virtualController?.readPhysicalControls}
+                onClick={() => { setScanning(true); setScan((current) => current + 1); }}>Detect devices</button></div>
+        <p role="status" aria-label="Physical device detection">{scanning ? 'Detecting wheelbase and pedals…'
+            : devices.length ? `${devices.length} physical device${devices.length === 1 ? '' : 's'} detected. ${liveDevices ? 'Device connections refresh automatically.' : 'Stop driving to refresh devices.'}`
+                : 'No physical controllers detected. Check power, USB connections and Windows game controller settings.'}</p>
+        {devices.length > 0 && <ul className="driving-device-list" aria-label="Detected physical devices">
+            {devices.map((device) => <li key={device.id}>
+                <strong>{device.name}</strong>
+                <span>{Object.keys(device.axes).length} axes · {device.buttons.length} buttons</span>
+                <span>{AXES.filter((key) => mapping[key]?.deviceId === device.id).map((key) => LABELS[key]).join(' · ') || 'No driving axes mapped yet'}</span>
+                <details><summary>{liveDevices ? 'Live axes' : 'Last axis readings'}</summary>
+                    {Object.entries(device.axes).map(([axis, value]) => <label key={axis}>{axis.toUpperCase()}
+                        <meter min={0} max={1} value={value} aria-label={`${device.name} ${axis} input`} />
+                        <output>{(value * 100).toFixed(0)}%</output>
+                    </label>)}
+                </details>
+            </li>)}
+        </ul>}
+        <p className="driving-note">For MOZA, check that the wheelbase and pedals respond in Pit House. Pedals connected through the base may appear under the wheelbase name. Detect steering, throttle and brake individually to identify their axes.</p>
+        {!connected && <p className="driving-note">You can detect and map controls now. Connect the shared vJoy output before enabling takeover.</p>}
+        <fieldset disabled={running || testing}>
             <legend>Physical controller mapping</legend>
             {(detecting || detectionMessage) && <p role="status" aria-label="Controller detection">{detecting ? `${LABELS[detecting]}: ${DETECTION_PROMPTS[detecting]} Move only this control; keep a button pressed until detected.` : detectionMessage}</p>}
             {detecting && <button type="button" onClick={() => { setDetecting(null); setDetectionMessage('Detection cancelled.'); }}>Cancel detection</button>}
-            {!devices.length && <p>{connected ? 'No physical controllers detected. Connect or pair your controller and check that Windows recognizes it. Detection refreshes automatically; vJoy outputs are excluded.' : 'Connect the vJoy output above to start physical controller detection.'}</p>}
             {AXES.map((key) => <div className="driving-manual-axis" key={key}>
                 <label htmlFor={`manual-${key}`}>{LABELS[key]}</label>
                 <div className="driving-manual-binding"><select id={`manual-${key}`} disabled={detecting !== null}
@@ -175,9 +202,9 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
                 </select>{detectButton(key)}</div>
             </React.Fragment>)}</div>
         </fieldset>
-        {(error || (connected && !detecting && mappingError)) && <p className="driving-error">{error || mappingError}</p>}
+        {(error || (devices.length > 0 && !detecting && mappingError)) && <p className="driving-error">{error || mappingError}</p>}
         <p className="driving-note">Takeover stays active until you return control to AI. Map the Take over / Return to AI button to switch while the simulator has focus. Each press switches control once; release before pressing again. Returning to AI requires an active AI session with ready inputs. Steering, pedals and mapped shift buttons all pass through the same vJoy device; keep the simulator bound to vJoy. Invert pedals if their preview is 1 at rest. Calibrate axis ranges in Windows controller settings.</p>
-        <p className="driving-note">During training, your applied controls teach the model. Missing AI observations pause learning while you keep driving. Evaluation and standalone human driving never update weights. A mapped controller disconnect releases controls. Manual shifts use one press per paddle pull and the same cooldown as AI.</p>
+        <p className="driving-note">During training, your applied controls teach the model. Missing AI observations pause learning while you keep driving. Evaluation and standalone human driving never update weights. A mapped controller disconnect releases controls. Manual shifts use one press per paddle pull with no cooldown. Steering passes through without a dead zone.</p>
     </section>;
 });
 

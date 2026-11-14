@@ -121,6 +121,29 @@ it('supports a configuration-only JSON and isolates exported values from the run
     expect(policy.checkpoint().model.lstmWeights[0][0]).not.toBe(4);
 });
 
+it.each([false, true])('adds the sequence setting to existing model files without changing weights (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.learning.sequenceSeconds = 5;
+    const current = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    expect(readTrainingDocument(current).configuration.learning.sequenceSeconds).toBe(5);
+    const legacy = JSON.parse(JSON.stringify(current));
+    delete legacy.configuration.learning.sequenceSeconds;
+    const before = JSON.stringify(legacy);
+    const restored = readTrainingDocument(legacy);
+    expect(restored.configuration.learning.sequenceSeconds).toBe(4);
+    expect(restored.model).toEqual(current.model);
+    expect(JSON.stringify(legacy)).toBe(before);
+    delete legacy.configuration.learning.discount;
+    expect(() => readTrainingDocument(legacy)).toThrow(/configuration/);
+});
+
+it.each([0, -1, 30.1, Infinity, NaN, '4', null])('rejects an invalid sequence duration %s', (seconds) => {
+    const config: any = cloneConfig();
+    config.learning.sequenceSeconds = seconds;
+    expect(() => validateDrivingConfig(config)).toThrow(/configuration/);
+});
+
 it('rejects old pedal-target models even though the number of inputs is unchanged', () => {
     const legacy: any = emptyTrainingDocument();
     legacy.configuration.observation.features.splice(-2, 2, 'targetPedals');
@@ -247,24 +270,26 @@ it('initializes weights within a small JSON weight limit', () => {
     expect(() => DrivingPolicy.restore(policy.checkpoint())).not.toThrow();
 });
 
-it('runs the control loop with saved memory dimensions, shift pulse and cooldown', async () => {
+it('runs the control loop with saved memory dimensions and pulse duration while removing legacy cooldowns', async () => {
     jest.useFakeTimers();
     const config = cloneConfig();
     config.memory.windowMs = 400;
     config.memory.intervalMs = 100;
     config.actions.shiftPulseMs = 50;
-    config.actions.shiftCooldownMs = 300;
     config.runtime.controlIntervalMs = 50;
     let now = 1000;
     let observation = trainingFixture(now).observation;
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
+    Object.assign(checkpoint.configuration.actions, { shiftCooldownMs: 300 });
     checkpoint.model.outputWeights.slice(2, 5).forEach((row, i) => { row.fill(0); row[config.network.hiddenUnits] = i === 1 ? 4 : 0; });
     const policy = DrivingPolicy.restore(checkpoint);
+    expect(policy.configuration.actions).not.toHaveProperty('shiftCooldownMs');
+    expect(policy.checkpoint().configuration.actions).not.toHaveProperty('shiftCooldownMs');
     const decide = jest.spyOn(policy, 'decideAsync');
     const initialize = jest.spyOn(policy, 'initializeGpu');
     const controller = { connect: jest.fn(), disconnect: jest.fn(), apply: jest.fn().mockResolvedValue(undefined) };
     const loop = new DrivingTrainingLoop(new DrivingControlOutput(controller), () => ({ observation }), () => undefined, () => now);
-    const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+    const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
     try {
         await loop.start(policy, false); await flush();
         expect(loop.state.action.shiftUp).toBe(true);
@@ -275,7 +300,7 @@ it('runs the control loop with saved memory dimensions, shift pulse and cooldown
         now = 1200;
         observation = { ...observation, capturedAt: now, measuredAt: now };
         jest.advanceTimersByTime(150); await flush();
-        expect(loop.state.action.shiftUp).toBe(false);
+        expect(loop.state.action.shiftUp).toBe(true);
         now = 1400;
         observation = { ...observation, capturedAt: now, measuredAt: now };
         jest.advanceTimersByTime(200); await flush();

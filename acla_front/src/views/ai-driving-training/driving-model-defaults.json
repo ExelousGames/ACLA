@@ -39,12 +39,12 @@
     "features": ["localVelocity", "speed", "game", "car", "map", "position", "controls", "gear", "rpm", "yawRate", "gForce", "camera", "aggression", "referenceSpeed", "targetSpeed"]
   },
   "actions": {
-    "planTimesSeconds": [0, 0.5, 1, 1.5, 2, 2.5, 3],
+    "planTimesSeconds": [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3],
     "outputs": ["throttle-brake-tanh", "steering-tanh", "hold-logit", "up-logit", "down-logit"],
-    "shiftPulseMs": 100,
-    "shiftCooldownMs": 500
+    "shiftPulseMs": 100
   },
   "learning": {
+    "sequenceSeconds": 4,
     "explorationSigma": 0.25,
     "discount": 0.99,
     "discountIntervalSeconds": 0.2,
@@ -56,7 +56,7 @@
     "demonstrationGradientLimit": 5,
     "actionEpsilon": 0.001,
     "weightLimit": 5,
-    "planTargetToleranceMs": 250
+    "planTargetToleranceMs": 50
   },
   "reward": {
     "referenceTiming": "live-phrase-speed-profile",

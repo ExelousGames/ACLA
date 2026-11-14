@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import ManualDrivingControls from './ManualDrivingControls';
 import type { PhysicalController } from './driving-control';
 
@@ -29,6 +29,64 @@ beforeEach(() => {
 });
 
 afterEach(() => { delete window.virtualController; jest.useRealTimers(); });
+
+it.each([false, true])('detects and maps MOZA controls before vJoy connects (separate pedals=%s)', async (separate) => {
+    devices = [{ id: 'moza-base', name: 'MOZA Wheelbase', axes: { axis0: 0.5, axis6: 1, axis7: 0 }, buttons: [false] }];
+    if (separate) devices.push({ id: 'moza-pedals', name: 'MOZA Pedals', axes: { axis6: 1, axis7: 0 }, buttons: [] });
+    const view = render(<ManualDrivingControls {...props} connected={false} />);
+    await flush();
+    const list = screen.getByRole('list', { name: 'Detected physical devices' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(separate ? 2 : 1);
+    expect(within(list).getByText('MOZA Wheelbase')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Detect steering' })).toBeEnabled();
+    await detect('steering');
+    devices[0].axes.axis0 = 0.9;
+    await poll();
+    devices[0].axes.axis0 = 0.5;
+    const pedalDevice = devices[separate ? 1 : 0];
+    await detect('throttle');
+    pedalDevice.axes.axis6 = 0;
+    await poll();
+    pedalDevice.axes.axis6 = 1;
+    await detect('brake');
+    pedalDevice.axes.axis7 = 0.8;
+    await poll();
+    expect(screen.getByRole('combobox', { name: 'Throttle' })).toHaveValue(JSON.stringify([pedalDevice.id, 'axis6']));
+    expect(screen.getByRole('checkbox', { name: 'Invert throttle' })).toBeChecked();
+    expect(screen.getByLabelText(`${pedalDevice.name} axis7 input`)).toHaveAttribute('value', '0.8');
+    expect(screen.getByLabelText('Manual throttle preview')).toHaveTextContent('0.000');
+    expect(screen.getByLabelText('Manual brake preview')).toHaveTextContent('0.800');
+    expect(screen.getByRole('button', { name: 'Enable controller takeover' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Start human driving' })).toBeDisabled();
+    expect(window.virtualController!.connect).not.toHaveBeenCalled();
+    expect(window.virtualController!.apply).not.toHaveBeenCalled();
+    view.rerender(<ManualDrivingControls {...props} />);
+    await flush();
+    expect(screen.getByRole('button', { name: 'Enable controller takeover' })).toBeEnabled();
+});
+
+it('refreshes the detected device list on demand and automatically on unplug', async () => {
+    devices = [];
+    render(<ManualDrivingControls {...props} connected={false} />);
+    await flush();
+    devices = [{ id: 'moza', name: 'MOZA Wheelbase', axes: { axis0: 0.5 }, buttons: [false] }];
+    fireEvent.click(screen.getByRole('button', { name: 'Detect devices' }));
+    await flush();
+    expect(screen.getByRole('status', { name: 'Physical device detection' })).toHaveTextContent('1 physical device detected');
+    expect(screen.getByRole('list', { name: 'Detected physical devices' })).toHaveTextContent('MOZA Wheelbase');
+    devices = [];
+    await poll(250);
+    expect(screen.queryByRole('list', { name: 'Detected physical devices' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Detect steering' })).toBeDisabled();
+});
+
+it('reports missing desktop input support even before connecting vJoy', async () => {
+    delete window.virtualController;
+    render(<ManualDrivingControls {...props} connected={false} />);
+    await flush();
+    expect(screen.getByText(/Controller detection requires the updated Windows desktop app/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Detect devices' })).toBeDisabled();
+});
 
 it('detects and saves axes, pedal inversion and every button across separate devices', async () => {
     const view = render(<ManualDrivingControls {...props} />);
@@ -189,7 +247,7 @@ it.each(['cancel', 'timeout', 'running', 'disconnect', 'unmount'])('ignores an i
     await act(async () => { resolve([{ ...devices[0], axes: { axis0: 1 } }, devices[1]]); });
     expect(JSON.parse(localStorage.getItem(MAPPING_KEY)!)).toEqual(saved);
     const calls = read.mock.calls.length;
-    if (['running', 'disconnect', 'unmount'].includes(stop)) await poll(500);
+    if (['running', 'unmount'].includes(stop)) await poll(500);
     expect(read).toHaveBeenCalledTimes(calls);
 });
 

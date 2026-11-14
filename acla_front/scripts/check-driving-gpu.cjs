@@ -1,4 +1,5 @@
 // Run: npx electron scripts/check-driving-gpu.cjs
+// Add --soak for 1,000 training cycles each on default and saturated long-history models.
 // Real hardware WGSL gradients, training, checkpoint and latency checks. No simulator controls.
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
@@ -30,7 +31,7 @@ const bundle = `const modules = {${Array.from(modules, ([id, code]) => `${JSON.s
 function require(id) { if (!cache[id]) { const module = cache[id] = { exports: {} }; modules[id](require, module, module.exports); } return cache[id].exports; }`;
 const server = http.createServer((_req, res) => res.end('<!doctype html><title>Driving GPU checks</title>'));
 
-async function checks() {
+async function checks(soakIterations) {
     const { DrivingPolicy } = require('views/ai-driving-training/driving-policy');
     const { cloneConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingObservationInputs, drivingPolicyInputs } = require('views/ai-driving-training/driving-model-config');
     const { drivingMemoryInputs, drivingMemorySlotInputs } = require('views/ai-driving-training/driving-memory');
@@ -110,6 +111,45 @@ async function checks() {
     const shifts = { up: true, down: false }, action = { throttle: 0.7, brake: 0.12, steering: -0.3, shiftUp: true };
     const credits = (decision, steps = decision.plan.map((_, step) => step)) => steps.map(step =>
         ({ step, weight: 1 / steps.length, shift: decision.plan[step].shift, shifts: decision.plan[step].shifts }));
+
+    // Exercise the production forward/backward kernels against independent CPU
+    // expectations. Finite gate sums can exceed the GPU tanh overflow threshold;
+    // cell states can also exceed it with the supported 101-observation history.
+    const activationConfig = cloneConfig();
+    activationConfig.network.hiddenUnits = 1;
+    activationConfig.network.cameraLayers.forEach(layer => { layer.channels = 1; });
+    activationConfig.network.cameraProjectionUnits = 1;
+    const activationPolicy = await create(activationConfig), activationGpu = activationPolicy.gpu;
+    const activationInputs = drivingPolicyInputs(activationConfig), columns = activationInputs + 2;
+    const gateWeights = new Array(4 * columns).fill(0);
+    for (let gate = 0; gate < 4; gate++) gateWeights[gate * columns] = 1;
+    const weights = activationGpu.upload(gateWeights), features = activationGpu.buffer(activationInputs * 4);
+    const states = activationGpu.buffer(12 * 4), upstream = activationGpu.buffer(2 * 4), deltas = activationGpu.buffer(4 * 4);
+    const activationValues = [-1e30, -1000, -100, -89, -88, -50, -10, -1, -0.001, 0, 0.001, 1, 10, 50, 88, 89, 100, 1000, 1e30];
+    let activationCases = 0;
+    for (const value of activationValues) {
+        for (const previousCell of [-100, 0, 100]) {
+            const initial = new Float32Array(12); initial[1] = previousCell;
+            activationGpu.device.queue.writeBuffer(features, 0, new Float32Array([value]));
+            activationGpu.device.queue.writeBuffer(states, 0, initial);
+            activationGpu.device.queue.writeBuffer(upstream, 0, new Float32Array([0.125, 0.25]));
+            const commands = activationGpu.device.createCommandEncoder();
+            activationGpu.dispatch(commands, 'forward', [weights, features, states, activationGpu.times[0]], 1);
+            activationGpu.dispatch(commands, 'gateGradient', [states, upstream, deltas, activationGpu.times[0]], 1);
+            activationGpu.device.queue.submit([commands.finish()]);
+            const actual = await activationGpu.download([states, deltas]);
+            const x = Math.fround(value), sigmoid = 1 / (1 + Math.exp(-x)), candidate = Math.tanh(x);
+            const cell = sigmoid * previousCell + sigmoid * candidate, activatedCell = Math.tanh(cell);
+            close(Array.from(actual.slice(6, 12)), [sigmoid * activatedCell, cell, sigmoid, sigmoid, candidate, sigmoid],
+                `Finite LSTM activations at input ${value}, cell ${previousCell}`);
+            const dc = 0.25 + 0.125 * sigmoid * (1 - activatedCell * activatedCell);
+            close(Array.from(actual.slice(12)), [dc * candidate * sigmoid * (1 - sigmoid),
+                dc * previousCell * sigmoid * (1 - sigmoid), dc * sigmoid * (1 - candidate * candidate),
+                0.125 * activatedCell * sigmoid * (1 - sigmoid)], `Finite LSTM gradients at input ${value}, cell ${previousCell}`);
+            activationCases++;
+        }
+    }
+    activationPolicy.dispose();
     const results = [];
     for (const layout of ['default', 'custom', 'boundary']) {
         const config = cloneConfig();
@@ -248,6 +288,69 @@ async function checks() {
     config.network.cameraLayers.forEach(layer => { layer.channels = 1; });
     config.network.cameraProjectionUnits = 32;
     config.learning.demonstrationRate = 0.05;
+
+    // Interpolation credits may revisit a slot before and after its discrete
+    // gear choice. Their accumulation must match one combined GPU target.
+    const blended = await create(config), blendedSeed = await blended.checkpointAsync();
+    const combined = await create(config, blendedSeed), blendedInput = makeInput(config);
+    const blendedDecision = await blended.decideAsync(blendedInput, true, shifts);
+    const combinedDecision = await combined.decideAsync(blendedInput, false, shifts);
+    combinedDecision.plan = blendedDecision.plan;
+    const analog = { step: 1, weight: 0.25, shiftWeight: 0, shift: 0, shifts: { up: false, down: false } };
+    const due = { ...analog, weight: 0.5, shiftWeight: 0.5, shift: 1, shifts };
+    await blended.learnAsync(blendedDecision, 1, blendedInput, 0.2, [analog, due, analog], true);
+    await combined.learnAsync(combinedDecision, 1, blendedInput, 0.2, [{ ...due, weight: 1 }], true);
+    compare(await blended.checkpointAsync(), await combined.checkpointAsync(), 'Repeated interpolation credits accumulate');
+    const beforeAnalogOnly = await blended.checkpointAsync();
+    await blended.learnAsync(blendedDecision, 1, blendedInput, 0.2, [analog], true);
+    const afterAnalogOnly = await blended.checkpointAsync();
+    assert(changed(beforeAnalogOnly.model.outputWeights.slice(5, 7), afterAnalogOnly.model.outputWeights.slice(5, 7)),
+        'Interpolated future analog controls receive reward');
+    close(beforeAnalogOnly.model.outputWeights.slice(7, 10).flat(), afterAnalogOnly.model.outputWeights.slice(7, 10).flat(),
+        'Interpolation gives no gradient to an unexecuted future gear choice');
+    blended.releaseDecision(blendedDecision); combined.releaseDecision(combinedDecision);
+    blended.dispose(); combined.dispose();
+
+    // A rollout must equal the sum of independent gradients on its frozen
+    // collection weights, with a single frozen endpoint bootstrap. Replay
+    // released decisions to exercise bounded activation storage as well.
+    const sequencePolicy = await create(config), sequenceSeed = await sequencePolicy.checkpointAsync();
+    const sequenceInputs = [0, 1, 2, 3].map(frame => makeInput(config, frame));
+    const sequenceTimes = [1000, 1500, 3000, 4500], sequenceRewards = [0.2, 0.4, -2];
+    const sequence = [];
+    for (let i = 0; i < 3; i++) {
+        const decision = await sequencePolicy.decideAsync(sequenceInputs[i], true, shifts);
+        sequencePolicy.releaseDecision(decision);
+        sequence.push({ startedAt: sequenceTimes[i], endedAt: sequenceTimes[i + 1], reward: sequenceRewards[i],
+            samples: [{ decision, credits: credits(decision, [0, 2, 6]), rewardShare: 1 }] });
+    }
+    compare(await sequencePolicy.checkpointAsync(), sequenceSeed, 'Collection keeps every layer fixed');
+    const weightKeys = ['cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights'];
+    const expectedSequence = Object.fromEntries(weightKeys.map(key => [key, sequenceSeed.model[key].flat(2)]));
+    let returnReward = 0;
+    for (let i = sequence.length - 1; i >= 0; i--) {
+        returnReward = sequenceRewards[i] + config.learning.discount ** ((sequenceTimes[i + 1] - sequenceTimes[i]) / 1000 / config.learning.discountIntervalSeconds) * returnReward;
+        const independent = await create(config, sequenceSeed);
+        const retained = await independent.decideAsync(sequenceInputs[i], false, shifts);
+        retained.plan = sequence[i].samples[0].decision.plan;
+        await independent.learnAsync(retained, returnReward, sequenceInputs[3], (4500 - sequenceTimes[i]) / 1000, sequence[i].samples[0].credits);
+        const after = await independent.checkpointAsync();
+        for (const key of weightKeys) {
+            const initial = sequenceSeed.model[key].flat(2), result = after.model[key].flat(2);
+            expectedSequence[key] = expectedSequence[key].map((value, j) => value + result[j] - initial[j]);
+        }
+        independent.releaseDecision(retained); independent.dispose();
+    }
+    await withoutReadbacks('Multi-step sequence', () => sequencePolicy.trainBatchAsync(() => sequencePolicy.learnSequenceAsync(sequence, sequenceInputs[3])));
+    const sequenceResult = await sequencePolicy.checkpointAsync();
+    assert(sequenceResult.model.steps === 3, 'Sequence counts committed learning samples');
+    for (const key of weightKeys) close(sequenceResult.model[key].flat(2), expectedSequence[key], `Frozen sequence gradients/${key}`);
+    const beforeCancel = await sequencePolicy.checkpointAsync();
+    let activeChecks = 0;
+    await sequencePolicy.trainBatchAsync(() => sequencePolicy.learnSequenceAsync(sequence, sequenceInputs[3], () => ++activeChecks < 3));
+    compare(await sequencePolicy.checkpointAsync(), beforeCancel, 'Interrupted sequence commits no weights or steps');
+    sequencePolicy.dispose();
+
     // Verify signed pedal targets, including overlapping human pedals and coast,
     // against independently calculated output-bias updates on the real GPU.
     const pedalSeed = new DrivingPolicy({ game: 'acc', car: 'GT3', map: 'monza' }, drivingObservationInputs(config), () => 0.6, config).checkpoint();
@@ -431,10 +534,86 @@ async function checks() {
         } else close(start.model.outputWeights.slice(2, 5).flat(), finish.model.outputWeights.slice(2, 5).flat(), 'Masked large logits');
         policy.dispose();
     }
+    const soak = [];
+    if (soakIterations) for (const variant of ['default', 'saturated-long-history']) {
+        const c = cloneConfig();
+        if (variant === 'saturated-long-history') {
+            c.network.cameraLayers.forEach(layer => { layer.channels = 1; });
+            c.network.cameraProjectionUnits = 32; c.network.hiddenUnits = 2;
+            c.observation.features = ['camera', 'speed']; c.memory.features = ['camera', 'speed'];
+            c.memory.windowMs = 30000;
+        }
+        let policy = await create(c);
+        if (variant === 'saturated-long-history') {
+            const saturated = await policy.checkpointAsync(); policy.dispose();
+            // Legal, finite weights amplify camera features beyond the tanh
+            // overflow range and accumulate cells near +/-101 across history.
+            saturated.model.cameraWeights.forEach(rows => rows.forEach(row => row.fill(0.25)));
+            saturated.model.cameraProjectionWeights.forEach(row => row.fill(1));
+            saturated.model.lstmWeights.forEach((row, index) => {
+                row.fill(0); row[2] = index === 5 ? -1 : 1;
+            });
+            policy = await create(c, saturated);
+        }
+        const samples = Array.from({ length: 6 }, (_, i) => makeInput(c, i, true, i % 2 === 1 && variant === 'default'));
+        const initial = await policy.checkpointAsync(), started = performance.now();
+        let checkpointReloads = 0, checkedDecisions = 0, maxCameraFeature = 0, maxCell = 0;
+        const checkDecision = async (sample) => {
+            const decision = await policy.decideAsync(sample, true);
+            assert([decision.value, ...decision.plan.flatMap(step => [...step.means, ...step.latent, ...step.shiftProbabilities,
+                step.action.throttle, step.action.brake, step.action.steering])].every(Number.isFinite), `${variant}: finite decision`);
+            checkedDecisions++;
+            return decision;
+        };
+        for (let iteration = 0; iteration < soakIterations; iteration++) {
+            const sample = samples[iteration % samples.length], next = samples[(iteration + 1) % samples.length];
+            const decision = await checkDecision(sample);
+            if (iteration === 0 && variant === 'saturated-long-history') {
+                const features = await policy.gpu.download([decision.gpu.features]);
+                const states = await policy.gpu.download([decision.gpu.states]);
+                maxCameraFeature = Math.max(...features.map(Math.abs));
+                for (let t = 1; t <= decision.gpu.steps; t++) {
+                    for (let unit = 0; unit < c.network.hiddenUnits; unit++) {
+                        maxCell = Math.max(maxCell, Math.abs(states[t * 6 * c.network.hiddenUnits + c.network.hiddenUnits + unit]));
+                    }
+                }
+                assert(maxCameraFeature > 100 && maxCell > 89, 'Stress fixture must reach large camera features and cell states');
+            }
+            const target = { throttle: iteration % 3 ? 1 : 0, brake: iteration % 3 ? 0 : 1,
+                steering: Math.sin(iteration * 0.1), shiftUp: iteration % 3 === 0, shiftDown: iteration % 3 === 1 };
+            const available = { up: true, down: true };
+            try {
+                await withoutReadbacks('Soak training', () => policy.trainBatchAsync(async () => {
+                    await policy.learnAsync(decision, (iteration % 21) - 10, next, 0.2, credits(decision), iteration % 17 === 0);
+                    await policy.learnDemonstrationAsync(sample, target, available);
+                    await policy.learnPlannedActionsAsync(sample, [{ step: c.actions.planTimesSeconds.length - 1, action: target, shifts: available }]);
+                }));
+            } finally { policy.releaseDecision(decision); }
+            if ((iteration + 1) % 100 === 0) {
+                const checkpoint = await policy.checkpointAsync(); finite(checkpoint);
+                assert(checkpoint.model.steps === (iteration + 1) * 2, 'Every soak cycle records both learning steps');
+                if ((iteration + 1) % 500 === 0) {
+                    const restored = await create(c, JSON.parse(JSON.stringify(checkpoint)));
+                    close((await predict(policy, next)).plan.flatMap(step => step.means),
+                        (await predict(restored, next)).plan.flatMap(step => step.means), 'Soak checkpoint reload');
+                    policy.dispose(); policy = restored; checkpointReloads++;
+                }
+                console.log(`Training soak ${variant}: ${iteration + 1}/${soakIterations} cycles, finite predictions and weights`);
+            }
+        }
+        policy.releaseDecision(await checkDecision(samples[0]));
+        const final = await policy.checkpointAsync(); finite(final);
+        if (variant === 'default') assertTrained(initial, final, 'Default soak trains every layer');
+        else assert(changed(initial.model.outputWeights, final.model.outputWeights), 'Saturated model continues learning');
+        soak.push({ variant, cycles: soakIterations, trainingUpdates: soakIterations * 3, checkedDecisions, checkpointReloads,
+            maxCameraFeature, maxCell, seconds: (performance.now() - started) / 1000 });
+        policy.dispose();
+    }
     assert(errors.length === 0, errors.join('\n'));
     return { adapter: { vendor: adapter.info.vendor, architecture: adapter.info.architecture },
         checks: 'GPU-only prediction and learning, zero intermediate readbacks, CNN/projection/LSTM/output finite differences, padded borders, spatial ordering and adaptive pooling gradients, all layers and gates train, historical camera gradients, masks, terminal/clipped transitions, delayed plans, checkpoint reload/synchronization, custom layouts/rates, allocation-free warmed ticks, reused versus fresh workspaces, bounded buffers and device loss passed',
-        finiteDifferences: { weightsChecked: coordinates.length, maxDerivativeError }, results };
+        activationCases, sequenceChecks: 'Frozen collection, time-discounted returns, all-layer gradient accumulation, replay without readbacks, and interrupted-batch rollback passed',
+        soak, finiteDifferences: { weightsChecked: coordinates.length, maxDerivativeError }, results };
 }
 
 app.whenReady().then(async () => {
@@ -444,7 +623,7 @@ app.whenReady().then(async () => {
         window = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
         window.webContents.on('console-message', (_event, _level, message) => process.stderr.write(message + '\n'));
         await window.loadURL(`http://127.0.0.1:${server.address().port}/`);
-        const result = await window.webContents.executeJavaScript(`(async () => { ${bundle}\nreturn await (${checks.toString()})(); })()`);
+        const result = await window.webContents.executeJavaScript(`(async () => { ${bundle}\nreturn await (${checks.toString()})(${process.argv.includes('--soak') ? 1000 : 0}); })()`);
         process.stdout.write(JSON.stringify(result, null, 2) + '\n');
         app.exit(0);
     } catch (error) { process.stderr.write(String(error.stack || error) + '\n'); app.exit(1); }

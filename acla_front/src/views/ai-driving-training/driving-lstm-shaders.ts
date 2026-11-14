@@ -7,6 +7,16 @@ const H = ${config.network.hiddenUnits}u;
 const COLS = INPUTS + H + 1u;
 const OUTPUTS = ${config.actions.planTimesSeconds.length * config.actions.outputs.length + 1}u;
 const LIMIT = ${Number(config.learning.weightLimit).toExponential()}f;
+
+// GPU tanh may evaluate sinh/cosh and overflow for large finite inputs.
+// At |x| >= 10, tanh rounds to +/-1 in f32, so 1 - tanh(x)^2 is already zero.
+fn stableTanh(value: f32) -> f32 {
+    return tanh(clamp(value, -10.0, 10.0));
+}
+fn stableSigmoid(value: f32) -> f32 {
+    let exponential = exp(-abs(value));
+    return select(exponential / (1.0 + exponential), 1.0 / (1.0 + exponential), value >= 0.0);
+}
 `;
     const shaders = {
         forward: `
@@ -35,8 +45,8 @@ fn main(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) lo
         }
         if (local == 0u) {
             let value = sums[0] + weights[row + COLS - 1u];
-            if (gate == 2u) { gates[gate] = tanh(value); }
-            else { gates[gate] = 1.0 / (1.0 + exp(-value)); }
+            if (gate == 2u) { gates[gate] = stableTanh(value); }
+            else { gates[gate] = stableSigmoid(value); }
             states[current + (gate + 2u) * H + group.x] = gates[gate];
         }
         workgroupBarrier();
@@ -44,7 +54,7 @@ fn main(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) lo
     if (local == 0u) {
         let cell = gates[1] * states[previous + H + group.x] + gates[0] * gates[2];
         states[current + H + group.x] = cell;
-        states[current + group.x] = gates[3] * tanh(cell);
+        states[current + group.x] = gates[3] * stableTanh(cell);
     }
 }`,
         output: `
@@ -81,7 +91,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let previous = time[0] * 6u * H + id.x; let current = previous + 6u * H;
     let i = states[current + 2u * H]; let f = states[current + 3u * H];
     let g = states[current + 4u * H]; let o = states[current + 5u * H];
-    let cell = tanh(states[current + H]); let dh = upstream[id.x];
+    let cell = stableTanh(states[current + H]); let dh = upstream[id.x];
     let dc = upstream[H + id.x] + dh * o * (1.0 - cell * cell);
     let offset = time[0] * 4u * H + id.x;
     deltas[offset] = dc * g * i * (1.0 - i);

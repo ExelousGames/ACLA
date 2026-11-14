@@ -70,10 +70,25 @@ it('uploads sparse execution credits at their plan slots and clears unexecuted s
     model.learnTransition(pass, input(), { ...transition, terminal: true });
     const data = device.queue.writeBuffer.mock.calls[0][2] as Float32Array;
     expect(Array.from(data.slice(0, 3))).toEqual(Array.from(new Float32Array([1, 0.2, 1])));
-    expect(Array.from(data.slice(3, 9))).toEqual(Array.from(new Float32Array([0.25, 0.1, -0.2, 0, 1, 1])));
-    expect(Array.from(data.slice(9, 15))).toEqual([0, 0, 0, 0, 0, 0]);
-    expect(Array.from(data.slice(15, 21))).toEqual(Array.from(new Float32Array([0.75, 0.3, -0.4, 1, 1, 0])));
-    expect(Array.from(data.slice(21)).every((value) => value === 0)).toBe(true);
+    expect(Array.from(data.slice(3, 10))).toEqual(Array.from(new Float32Array([0.25, 0.1, -0.2, 0, 1, 1, 0.25])));
+    expect(Array.from(data.slice(10, 17))).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(Array.from(data.slice(17, 24))).toEqual(Array.from(new Float32Array([0.75, 0.3, -0.4, 1, 1, 0, 0.75])));
+    expect(Array.from(data.slice(24)).every((value) => value === 0)).toBe(true);
+    model.release(pass);
+});
+
+it('accumulates repeated interpolation credits while keeping categorical weight and masks separate', async () => {
+    const { model, input, device } = await setup();
+    const { pass } = await model.forward(input());
+    const analog = { step: 1, weight: 0.25, shiftWeight: 0, latent: [0.3, -0.4], shift: 0, shifts: { up: false, down: false } };
+    device.queue.writeBuffer.mockClear();
+    model.learnTransition(pass, input(), { ...transition, terminal: true, actions: [analog,
+        { ...analog, weight: 0.5, shiftWeight: 0.5, shift: 1, shifts: { up: true, down: true } }, analog] });
+    const data = device.queue.writeBuffer.mock.calls[0][2] as Float32Array;
+    expect(Array.from(data.slice(10, 17))).toEqual(Array.from(new Float32Array([1, 0.3, -0.4, 1, 1, 1, 0.5])));
+    model.learnTransition(pass, input(), { ...transition, terminal: true, actions: [analog] });
+    const next = device.queue.writeBuffer.mock.calls[1][2] as Float32Array;
+    expect(Array.from(next.slice(10, 17))).toEqual(Array.from(new Float32Array([0.25, 0.3, -0.4, 0, 0, 0, 0])));
     model.release(pass);
 });
 

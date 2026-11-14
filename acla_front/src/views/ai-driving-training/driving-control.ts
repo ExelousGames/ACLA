@@ -1,4 +1,4 @@
-import { clamp, DrivingAction } from './driving-observation';
+import { DrivingAction } from './driving-observation';
 
 export interface PhysicalController {
     id: string;
@@ -66,8 +66,7 @@ export function mapManualControls(devices: PhysicalController[], mapping: Manual
         if (!Number.isFinite(raw) || raw < 0 || raw > 1) throw new Error(`Mapped ${key} axis is unavailable.`);
         const value = binding.inverted ? 1 - raw : raw;
         if (key !== 'steering') return value;
-        const centered = value * 2 - 1;
-        return Math.sign(centered) * clamp((Math.abs(centered) - 0.02) / 0.98, 0, 1);
+        return value * 2 - 1;
     };
     const button = (key: 'shiftUp' | 'shiftDown' | 'toggleControl') => {
         const binding = mapping[key];

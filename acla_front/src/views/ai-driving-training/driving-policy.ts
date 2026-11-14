@@ -1,7 +1,8 @@
 import { DrivingAction, DrivingObservation } from './driving-observation';
 import { DrivingPolicyInput } from './driving-memory';
-import { cloneConfig, DEFAULT_DRIVING_CONFIG, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingFeatureEncoding, drivingObservationInputs, drivingPolicyInputs, validateDrivingConfig } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingFeatureEncoding, drivingObservationInputs, drivingPolicyInputs, upgradeDrivingConfig, validateDrivingConfig } from './driving-model-config';
 import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
+import { DrivingRolloutInterval, drivingSequenceTargets } from './driving-rollout';
 
 /** Categorical order: hold gear, shift up, shift down. */
 export type ShiftChoice = 0 | 1 | 2;
@@ -31,10 +32,15 @@ export interface PlannedActionTarget {
 export interface PlanStepCredit {
     step: number;
     weight: number;
+    /** Interpolated analog endpoints can contribute without executing a gear choice. */
+    shiftWeight?: number;
     shift: ShiftChoice;
     shifts: ShiftAvailability;
+    action?: DrivingAction;
+    appliedAt?: number;
 }
 export interface PolicyModelState {
+    /** Creation context retained for checkpoint compatibility; not a restriction on live inputs. */
     context: DrivingObservation['context'];
     inputs: number;
     steps: number;
@@ -61,12 +67,13 @@ export function readTrainingDocument(value: unknown): DrivingTrainingDocument {
     if (!data || data.format !== 'kestrel-self-driving-model' || data.algorithm !== 'online-actor-critic'
         || Object.keys(data).some((key) => !['format', 'algorithm', 'configuration', 'model'].includes(key))
         || !Object.prototype.hasOwnProperty.call(data, 'model')) throw new Error('Invalid or incompatible self-driving model checkpoint.');
-    validateDrivingConfig(data.configuration);
+    const configuration = upgradeDrivingConfig(data.configuration);
+    validateDrivingConfig(configuration);
     if (data.model !== null) return DrivingPolicy.restore(data).checkpoint();
-    return emptyTrainingDocument(data.configuration);
+    return emptyTrainingDocument(configuration);
 }
 
-/** Gaussian axes, categorical shifting and a TD(0) critic share a CNN and temporal LSTM. */
+/** Gaussian axes, categorical shifting and a multi-step critic share a CNN and temporal LSTM. */
 export class DrivingPolicy {
     private initialWeights?: Pick<PolicyModelState, 'cameraWeights' | 'cameraProjectionWeights' | 'lstmWeights' | 'outputWeights'>;
     private gpu?: DrivingGpuModel;
@@ -117,12 +124,7 @@ export class DrivingPolicy {
 
     inputMismatches(observation: DrivingObservation): string[] {
         const differences: string[] = [];
-        // Compare values, not JSON object key order.
-        for (const [key, label] of [['game', 'Game'], ['car', 'Car'], ['map', 'Track']] as const) {
-            if (this.context[key] !== observation.context[key]) {
-                differences.push(`${label}: saved “${this.context[key]}”; live “${observation.context[key]}”.`);
-            }
-        }
+        // Game, car and map are observation features, not model compatibility constraints.
         if (this.observationInputs !== observation.features.length) {
             differences.push(`Input count: saved ${this.observationInputs}; live ${observation.features.length}.`);
         }
@@ -197,9 +199,32 @@ export class DrivingPolicy {
         const gpu = this.requireGpu();
         if (!Number.isFinite(reward) || !Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) throw new Error('Invalid training transition.');
         if (!decision.gpu) throw new Error('Missing GPU training sample.');
-        gpu.learnTransition(decision.gpu, next, { reward, elapsedSeconds, terminal,
-            actions: credits.map((credit) => ({ ...credit, latent: decision.plan[credit.step].latent })) });
+        const pass = decision.gpu.released ? gpu.replay(decision.input) : decision.gpu;
+        try {
+            gpu.learnTransition(pass, next, { reward, elapsedSeconds, terminal,
+                actions: credits.map((credit) => ({ ...credit, latent: decision.plan[credit.step].latent })) });
+        } finally { if (pass !== decision.gpu) gpu.release(pass); }
         this.steps++;
+    }
+
+    /** One pass over a rollout, with all gradients and bootstrap values evaluated
+     * on its collection policy. Publish weights only after the whole sequence. */
+    async learnSequenceAsync(sequence: DrivingRolloutInterval[], next: DrivingPolicyInput, active = () => true): Promise<void> {
+        const gpu = this.requireGpu(), steps = this.steps;
+        const targets = drivingSequenceTargets(sequence, this.configuration.learning);
+        if (!targets.length || !active()) return;
+        gpu.beginSequence(next);
+        let commit = false;
+        try {
+            for (const target of targets) {
+                if (!active()) return;
+                await this.learnAsync(target.decision, target.reward, next, target.elapsedSeconds, target.credits);
+            }
+            commit = active();
+        } finally {
+            gpu.endSequence(commit);
+            if (!commit) this.steps = steps;
+        }
     }
 
     async learnDemonstrationAsync(input: DrivingPolicyInput, action: DrivingAction, shifts: ShiftAvailability): Promise<void> {
@@ -267,8 +292,8 @@ export class DrivingPolicy {
         const invalid = () => { throw new Error('Invalid or incompatible self-driving model checkpoint.'); };
         if (!document || document.format !== 'kestrel-self-driving-model' || document.algorithm !== 'online-actor-critic'
             || Object.keys(document).some((key) => !['format', 'algorithm', 'configuration', 'model'].includes(key))) return invalid();
-        validateDrivingConfig(document.configuration);
-        const config = document.configuration, data = document.model;
+        const config = upgradeDrivingConfig(document.configuration), data = document.model;
+        validateDrivingConfig(config);
         const matrix = (rows: unknown, height: number, width: number) => Array.isArray(rows) && rows.length === height
             && rows.every((row) => Array.isArray(row) && row.length === width && row.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= config.learning.weightLimit));
         if (!data || Object.keys(data).some((key) => !['context', 'inputs', 'steps', 'cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights'].includes(key))

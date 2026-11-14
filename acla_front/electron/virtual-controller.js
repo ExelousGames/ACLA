@@ -16,7 +16,7 @@ function validAction(action) {
 
 function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecutable, spawnProcess = spawn,
   installAccPreset = installAccControlPreset, platform = process.platform }) {
-  let active = null;
+  let active = null, physical = null;
   const owner = (event) => {
     const window = getMainWindow();
     if (!window || window.isDestroyed() || event.sender !== window.webContents
@@ -27,6 +27,7 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
     if (!connection || connection.closed) return;
     connection.closed = true;
     if (active === connection) active = null;
+    if (physical === connection) physical = null;
     clearTimeout(connection.startTimer);
     connection.rejectReady(new Error(reason));
     connection.pending.forEach(({ reject, timer }) => { clearTimeout(timer); reject(new Error(reason)); });
@@ -34,7 +35,9 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
     connection.contents.removeListener('destroyed', connection.onClose);
     connection.contents.removeListener('render-process-gone', connection.onClose);
     connection.contents.removeListener('did-start-navigation', connection.onNavigate);
-    if (!connection.contents.isDestroyed()) connection.contents.setBackgroundThrottling(connection.backgroundThrottling);
+    if (connection.deviceId !== null && !connection.contents.isDestroyed()) {
+      connection.contents.setBackgroundThrottling(connection.backgroundThrottling);
+    }
     connection.lines?.close();
     // EOF makes Python reset and destroy the device.
     connection.child.stdin.end();
@@ -42,27 +45,16 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
     timer.unref?.();
     connection.child.once('exit', () => clearTimeout(timer));
   };
-  ipcMain.handle('virtual-controller-connect', async (event, options = {}) => {
-    const contents = owner(event);
-    if (platform !== 'win32') throw new Error('Virtual controllers currently require Windows.');
-    const deviceId = options?.deviceId ?? 1;
-    if (!options || typeof options !== 'object' || Array.isArray(options)
-      || !Number.isInteger(deviceId) || deviceId < 1 || deviceId > 16) {
-      throw new Error('Invalid controller output. Use a vJoy steering wheel with a device ID from 1 to 16.');
-    }
-    if (active) {
-      if (active.deviceId !== deviceId) throw new Error('Disconnect before changing controller output.');
-      return active.ready;
-    }
+  const start = (contents, deviceId = null) => {
     const script = app.isPackaged ? path.join(process.resourcesPath, 'py-scripts', 'virtual_controller.py')
       : path.join(app.getAppPath(), 'src', 'py-scripts', 'virtual_controller.py');
-    const child = spawnProcess(getPythonExecutable(), ['-u', script, '--device-id', String(deviceId)],
+    const child = spawnProcess(getPythonExecutable(), ['-u', script,
+      ...(deviceId === null ? ['--physical-only'] : ['--device-id', String(deviceId)])],
       { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const connection = { child, contents, deviceId, pending: new Map(), sequence: 0, closed: false, started: false,
       backgroundThrottling: contents.getBackgroundThrottling() };
     // The simulator owns foreground focus while the controller is active.
-    contents.setBackgroundThrottling(false);
-    active = connection;
+    if (deviceId !== null) contents.setBackgroundThrottling(false);
     connection.ready = new Promise((resolve, reject) => { connection.resolveReady = resolve; connection.rejectReady = reject; });
     connection.onClose = () => close(connection);
     connection.onNavigate = (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) close(connection); };
@@ -90,10 +82,24 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
     child.on('error', (error) => close(connection, error.message));
     child.stdin.on('error', (error) => close(connection, error.message));
     child.on('exit', () => close(connection, stderr.trim() || 'Virtual controller process ended. Reconnect to continue.'));
-    return connection.ready;
+    return connection;
+  };
+  ipcMain.handle('virtual-controller-connect', async (event, options = {}) => {
+    const contents = owner(event);
+    if (platform !== 'win32') throw new Error('Virtual controllers currently require Windows.');
+    const deviceId = options?.deviceId ?? 1;
+    if (!options || typeof options !== 'object' || Array.isArray(options)
+      || !Number.isInteger(deviceId) || deviceId < 1 || deviceId > 16) {
+      throw new Error('Invalid controller output. Use a vJoy steering wheel with a device ID from 1 to 16.');
+    }
+    if (active) {
+      if (active.deviceId !== deviceId) throw new Error('Disconnect before changing controller output.');
+      return active.ready;
+    }
+    active = start(contents, deviceId);
+    return active.ready;
   });
-  const request = (command) => {
-    const connection = active;
+  const request = (connection, command) => {
     if (!connection?.started || connection.closed) throw new Error('Connect the virtual controller first.');
     if (connection.pending.size >= 4) { close(connection, 'Controller command queue overflow.'); throw new Error('Controller is not responding.'); }
     const id = ++connection.sequence;
@@ -109,13 +115,18 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
       close(active, 'Invalid controller inputs.');
       throw new Error('Controller inputs must be finite: pedals 0–1 and steering −1–1; shift buttons must be booleans with only one pressed at a time.');
     }
-    return request({ action });
+    return request(active, { action });
   });
   ipcMain.handle('virtual-controller-read-physical', async (event) => {
-    owner(event);
-    return request({ type: 'read-physical' });
+    const contents = owner(event);
+    if (platform !== 'win32') throw new Error('Physical controller detection currently requires Windows.');
+    // Keep one input reader alive across output connections so device identities
+    // and saved bindings do not change when vJoy is connected or unavailable.
+    const connection = physical || (physical = start(contents));
+    await connection.ready;
+    return request(connection, { type: 'read-physical' });
   });
-  ipcMain.handle('virtual-controller-disconnect', (event) => { owner(event); close(active); });
+  ipcMain.handle('virtual-controller-disconnect', (event) => { owner(event); close(active); close(physical); });
   ipcMain.handle('virtual-controller-install-acc-preset', async (event, deviceId) => {
     owner(event);
     if (platform !== 'win32') throw new Error('ACC control presets currently require Windows.');
@@ -123,7 +134,7 @@ function registerVirtualController({ app, ipcMain, getMainWindow, getPythonExecu
     if (active && active.deviceId !== deviceId) throw new Error('Select the connected vJoy device for the ACC preset.');
     return installAccPreset(app.getPath('documents'), deviceId);
   });
-  app.on('before-quit', () => close(active));
+  app.on('before-quit', () => { close(active); close(physical); });
 }
 
 module.exports = { registerVirtualController, validAction };

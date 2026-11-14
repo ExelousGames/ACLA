@@ -119,7 +119,9 @@ The control panel has two input sources, **Human takeover** and **AI driver**, f
 one shared vJoy output. The control owner indicator shows which source currently
 owns steering, pedals and shifts. Both sources use the same simulator bindings.
 
-After connecting vJoy, use **Human takeover** to map physical steering,
+Use **Human takeover → Wheelbase & pedals → Detect devices** to find connected
+controllers and inspect their live axes, even before connecting vJoy. The device list
+refreshes automatically when hardware is connected or removed. Map physical steering,
 throttle and brake axes from a physical gamepad, wheel, joystick or separate pedals.
 USB and Bluetooth controllers recognized by SDL are supported without a brand-specific
 mapping preset. Center the wheel or stick and release pedals, triggers and buttons,
@@ -128,16 +130,24 @@ or trigger, or press and hold a button until
 detected. The device, axis/button and axis direction are filled in automatically.
 Detection ignores small axis jitter and already-held buttons, and can be cancelled
 or retried after its 15-second timeout. Manual selections remain available.
+For MOZA wheelbases and pedals, first confirm their inputs in Pit House and Windows
+game controller settings. Pedals connected through the wheelbase may share its device
+entry; separately connected USB pedals appear as another device. Detect steering,
+throttle and brake individually instead of assuming fixed axis numbers. The live-axis
+meters work before any bindings are saved.
 Map shift paddles and one **Take over / Return to AI** button to switch while the simulator
 has focus. Each press switches control once; release before pressing again. The UI offers
 one button that changes between **Take over** and **Return to AI**. Existing mappings use
 the previous Take over binding, or the Return to AI binding if no Take over binding was saved.
 Check the live axis values,
 invert pedals if they read 1 at rest, and calibrate ranges in Windows controller
-settings. Enable controller takeover, then choose **Start human driving** to drive
+settings. Connect the shared vJoy output, enable controller takeover, then choose **Start human driving** to drive
 without a model, telemetry or screen capture. You can also enable takeover before
 starting AI training or evaluation. Mappings save
 locally; enabling takeover is explicit each time the page opens.
+
+Steering passes through linearly with no dead zone. Each fresh paddle pull produces
+a separate shift press with no cooldown, including rapid repeated or alternating shifts.
 
 Takeover is latched and owns steering, both pedals and shifts until an explicit
 return to AI. Starting training or evaluation while you are driving arms the AI
@@ -145,7 +155,8 @@ and keeps human ownership; use **Return to AI** when ready. A return requires an
 active AI session with matching, valid observations. A blocked return press is consumed;
 release and press again when AI is ready. Recovery of missing observations never
 transfers ownership automatically.
-The native bridge polls SDL joystick input (HID, DirectInput and XInput) while the
+An input-only native bridge discovers physical controllers without opening vJoy.
+It polls SDL joystick input (HID, DirectInput and XInput) while the
 simulator has focus, and excludes vJoy input devices to prevent feedback. It exposes
 all reported axes and buttons, plus hat/D-pad directions as extra buttons (up, right,
 down, left). Connecting or disconnecting devices refreshes detection automatically.
@@ -205,24 +216,53 @@ this output layout; older separate-pedal checkpoints are not converted.
 Repositioning and restarting laps are not automated.
 **Run trained model** uses deterministic inference without updating weights.
 
-The AI executes its action plan on the control timer: by default, steps start at
-0, 0.5, 1, 1.5, 2, 2.5 and 3 seconds after the first control acknowledgement.
+The AI executes its action plan on the control timer: by default, 31 samples span
+0 through 3 seconds at 100 ms spacing after the first control acknowledgement.
+Between samples, steering and signed throttle/brake are linearly interpolated
+every 20 ms (or faster if the configured control interval is shorter). Pedal
+transitions pass through zero, so throttle and brake never overlap. Gear choices
+remain discrete and execute only when their sample becomes due.
+New models use 155 action outputs (five per step) plus one critic output. Create
+and train a new model for this denser plan; existing weights are not migrated.
 The current plan continues during learning and inference. A new output replaces
 the entire plan immediately and starts its own clock. A late control tick skips
 expired steps; after the final step, the AI holds its pedals and steering until
 the next output or input interruption. Each planned shift is pulsed only once.
 Training explores every plan slot. Observed reward is shared among the steps
-that actually controlled the car, weighted by their acknowledged execution time.
+that actually controlled the car, weighted by their acknowledged execution time
+and contribution to each interpolated command. Gear credit follows only the due
+step's executed choice and mask, independently of the analog blend.
 This includes the outgoing plan's actions while a replacement was computing;
-skipped and superseded steps receive no actor gradient. Human demonstrations
-continue to teach future plan slots from later acknowledged human actions.
+steps that neither execute nor contribute to a blend receive no actor gradient. Human demonstrations
+continue to teach future plan slots from later acknowledged human actions within
+50 ms of each slot's due time; missing targets are skipped.
+
+AI actor–critic training collects a sequence before updating weights. Set
+`configuration.learning.sequenceSeconds` in the model JSON (default **4 seconds**;
+3–5 seconds is an initial experiment, not an established optimum). The five-second
+observation history supplies past context independently of this training window.
+Collection keeps the policy fixed and retains observation inputs, acknowledged
+actions and shift masks, rewards, and capture/execution timestamps. Rewards are
+calculated backward: `G[t] = r[t] + discount^(dt / discountIntervalSeconds) * G[t+1]`.
+The final value bootstraps from the last valid observation under the collection
+policy; reaching the collection duration is not an episode terminal. Immediate
+reward still follows acknowledged execution duration, and later rewards propagate
+to earlier executed decisions. Plan slots that never contribute controls receive
+no actor gradient.
+All batch gradients use the collection weights, and accumulated updates commit
+together. Older CNN activations are released and their saved inputs replayed on
+the GPU, so retaining the sequence does not retain every decision's GPU workspace.
+Plans may keep driving during the update, but their remaining actions are excluded
+from the next policy's training sequence. Stop, handoff, invalid inputs and long
+telemetry gaps discard incomplete sequences. Human demonstration learning retains
+its per-observation updates.
 
 Gear choices learn from the same driving reward as the continuous controls.
-Each shift presses one paddle for 100 ms (released on the next control tick)
-with at least 500 ms between shifts. Downshifts are allowed in every gear,
-including neutral and reverse. Both shift directions are masked during cooldown
-before sampling the immediate action and again when executing later plan steps.
-Training retains the execution mask, so a suppressed shift receives no gradient.
+Human and AI shifts have no cooldown. Each shift presses one paddle for 100 ms
+(released on the next control tick); a new shift immediately releases the previous
+press before pressing again. Downshifts are allowed in every gear, including neutral
+and reverse. Both shift directions remain available for every AI decision and plan step.
+Older models' saved `shiftCooldownMs` settings are discarded when loaded.
 Button releases continue even while waiting for a new camera frame.
 
 The observation includes car-local velocity XYZ (m/s), speed (km/h), game/car/map
@@ -262,13 +302,21 @@ decisions read the small action/value output. Each training tick waits once for 
 completion, without copying results, to keep queued work bounded during human driving.
 Repeated images share convolution activations within a decision;
 each later decision re-encodes images with the current learned weights. Pending
-decisions retain their own activations until training and release.
+decisions retain their own activations while active; sequence training replays
+released decisions from their stored inputs.
 Saving the model reads the current trained weights back after the entire training tick.
 Training and evaluation require GPU acceleration and report an error if unavailable;
 the CPU inference/training implementation has been removed. Human driving remains
 available without WebGPU. Run `npx electron scripts/check-driving-gpu.cjs` for real-GPU
 gradient checks using finite differences, readback checks and a full training-tick
 benchmark, without connecting to simulator controls.
+
+One model can train and run across multiple games, cars and maps. Game/car/map values
+are observation features; the checkpoint's `model.context` records where the model was
+created and does not restrict reuse. Existing compatible model files keep their learned
+weights. Stop the current episode after switching combinations, prepare fresh telemetry,
+camera inputs and a matching Live Map reference lap, then restart training or evaluation
+with the same model file. Input layout and encoding must still match the saved configuration.
 
 New models receive up to five seconds of observations, including game/car/map, telemetry,
 controls, reference targets and full-resolution camera frames, in 17 elapsed-time bins
@@ -304,17 +352,16 @@ The acceleration/deceleration reward credits measured speed changes toward the g
 on every fresh forward-driving transition, including held pedals. It uses one fixed
 goal at the destination position for both speed readings:
 `gapClosed = abs(previousSpeed - targetSpeed) - abs(currentSpeed - targetSpeed)`.
-This credits useful acceleration or braking even far from the goal. Moving away is
-penalized, and overshooting reduces credit. Both faster and slower speeds also incur
-a penalty for their remaining difference from the goal, including while holding speed.
+Closing the gap immediately earns positive reward, even far from the goal. Moving
+away earns negative reward, and overshooting reduces credit according to the remaining
+gap. Unchanged speed earns zero acceleration/deceleration reward. Throttle and brake
+inputs do not affect this signal.
 The correction rate uses elapsed telemetry time, not camera processing time:
 `correction = clamp(gapClosed / (3.6 × telemetrySeconds × accelerationTolerance), -1, 1)`.
-The speed-following penalty is `min(abs(currentSpeed - targetSpeed) / speedTolerance, 1)`.
-With default weights, the combined acceleration/deceleration reward is
-`100 × forwardProgress × (correction - speedPenalty)`.
-`accelerationTolerance` defaults to 3 m/s² and `speedTolerance` to 20 km/h.
-Holding the target speed has no penalty; holding an incorrect speed is penalized.
-Correction credit can be outweighed by the remaining speed penalty.
+With default weights, the acceleration/deceleration reward is
+`100 × forwardProgress × correction`.
+`accelerationTolerance` defaults to 3 m/s². The legacy `speedTolerance` setting remains
+in the saved model format for compatibility but no longer affects reward.
 Forward progress is capped at 0.02 per observation; stationary or reverse driving
 earns no timing bonus. Both ends of a transition use the aggression that produced
 the action, even if the slider changes before scoring. There is no separate raw-speed
@@ -372,8 +419,14 @@ Boundary interpolation handles start/finish wrapping but does not bridge gaps la
 than 2% of a lap. Detection and its penalty appear separately under **Reward signal**.
 The penalty scales with elapsed telemetry time, including while stationary, and does
 not add policy inputs or change the saved model format.
+**On-track reward** adds `1 × telemetrySeconds` when the same detection confirms the
+car is on track and it makes forward lap-position progress with nonzero speed in a
+non-reverse gear. Off-track or unavailable detection, stationary driving, and backward
+progress earn no on-track reward. It appears separately under **Reward signal** and
+scales with telemetry time so additional samples do not earn extra credit.
+
 The total reward combines acceleration/deceleration timing, normalized-position progress,
-off-track and impact penalties, clamped to the configured total limit. Yaw rate
+on-track reward, off-track and impact penalties, clamped to the configured total limit. Yaw rate
 remains a policy input but does not incur an instability penalty. The removed reward
 settings `yawWindowMs`, `yawDeadband` and `yawPenalty` are no longer accepted in model
 JSON. New policies are untrained;
@@ -424,7 +477,9 @@ The app remembers the selected path while it is running; after restarting, use
 **Open model** to select it again. Model files require the desktop app.
 Validation checks supported encodings, finite values, resource limits, timing,
 feature names/order and the matrix dimensions derived from the configuration.
-Missing settings are rejected rather than filled with current defaults.
+Missing settings are rejected rather than filled with current defaults, except
+older otherwise-compatible files missing `learning.sequenceSeconds`: these receive
+the explicit four-second setting while preserving their weights and input layout.
 
 Models are never saved in browser local storage. The old `acla.self-driving.model`,
 numbered checkpoints and separate aggression setting are deleted when the training

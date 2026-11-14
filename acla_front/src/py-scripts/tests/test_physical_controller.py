@@ -82,6 +82,26 @@ class PhysicalControllerTests(unittest.TestCase):
         self.attach(name=b'Test wheel')
         self.assertEqual([device['name'] for device in self.devices()], ['Test wheel'])
 
+    def test_moza_wheel_and_separate_or_base_connected_pedal_axes(self):
+        wheel, _ = self.attach(name=b'Test MOZA R5', vendor=0x346E, product=0x0004, axes=8, buttons=64)
+        pedals, pedal_instance = self.attach(name=b'Test MOZA pedals', axes=3, buttons=0)
+        self.api.SDL_JoystickSetVirtualAxis(wheel, 0, 0)
+        self.api.SDL_JoystickSetVirtualAxis(wheel, 6, -32768)
+        self.api.SDL_JoystickSetVirtualAxis(wheel, 7, 32767)
+        self.api.SDL_JoystickSetVirtualAxis(pedals, 0, -32768)
+        self.api.SDL_JoystickSetVirtualAxis(pedals, 1, 32767)
+        base, separate = self.devices()
+        self.assertNotEqual(base['id'], separate['id'])
+        self.assertEqual(base['axes']['axis0'], 0.5)
+        self.assertEqual(base['axes']['axis6'], 0)
+        self.assertEqual(base['axes']['axis7'], 1)
+        self.assertEqual(separate['axes']['axis0'], 0)
+        self.assertEqual(separate['axes']['axis1'], 1)
+        self.assertEqual(separate['buttons'], [])
+        self.detach(pedal_instance)
+        remaining, = self.devices()
+        self.assertEqual(remaining['id'], base['id'])
+
     def test_hotplug_and_identical_devices_do_not_reassign_another_devices_mapping(self):
         self.assertEqual(self.devices(), [])
         _, first = self.attach()

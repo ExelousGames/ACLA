@@ -12,6 +12,38 @@ from virtual_wheel import AXES, VJoyController
 
 
 class ControllerTests(unittest.TestCase):
+    def test_physical_only_startup_never_opens_vjoy(self):
+        with patch.object(sys, "argv", ["virtual_controller.py", "--physical-only"]), \
+                patch.object(sys, "stdin", StringIO('{"id": 1, "type": "read-physical"}\n')), \
+                patch("virtual_controller.VJoyController") as wheel, \
+                patch("virtual_controller.PhysicalControllers") as physical, \
+                patch.object(sys, "stdout", StringIO()) as output:
+            physical.return_value.read.return_value = []
+            self.assertEqual(main(), 0)
+            wheel.assert_not_called()
+            physical.return_value.read.assert_called_once()
+            physical.return_value.close.assert_called_once()
+            self.assertEqual(output.getvalue().splitlines(), ['{"type": "ready"}',
+                '{"type": "physical", "id": 1, "devices": []}'])
+
+    def test_physical_only_bridge_rejects_output_and_closes_on_read_failure(self):
+        for command in [{"action": {"throttle": 0, "brake": 0, "steering": 0}}, {"type": "read-physical"}]:
+            physical, commands = Mock(), queue.Queue()
+            physical.read.side_effect = RuntimeError('Input disconnected')
+            commands.put(command)
+            with self.assertRaises((ValueError, RuntimeError)):
+                serve(None, commands, lambda _: None, physical=physical)
+            physical.close.assert_called_once()
+
+    def test_reports_physical_setup_failure_without_requiring_vjoy(self):
+        with patch.object(sys, "argv", ["virtual_controller.py", "--physical-only"]), \
+                patch("virtual_controller.PhysicalControllers", side_effect=RuntimeError('SDL missing')), \
+                patch("virtual_controller.VJoyController") as wheel, patch("virtual_controller.emit") as emit:
+            self.assertEqual(main(), 1)
+            wheel.assert_not_called()
+            self.assertEqual(emit.call_args.args[0], {
+                'type': 'error', 'error': 'Physical controller detection unavailable. SDL missing'})
+
     def test_physical_reads_do_not_change_output(self):
         controller, physical = Mock(), Mock()
         physical.read.return_value = [{"id": "wheel", "axes": {"axis0": 0.5}, "buttons": []}]

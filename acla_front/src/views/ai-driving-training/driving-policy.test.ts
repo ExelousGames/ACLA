@@ -4,6 +4,7 @@ import { mockDrivingGpu } from './driving-gpu-test-model';
 import { DrivingMemory } from './driving-memory';
 import { trainingFixture } from './training-fixtures';
 import { cloneConfig } from './driving-model-config';
+import { readDrivingObservation } from './driving-observation';
 
 beforeEach(() => { mockDrivingGpu(); });
 afterEach(() => { jest.restoreAllMocks(); });
@@ -41,6 +42,21 @@ it('uploads initialized weights once and releases the CPU seed after GPU initial
     expect(policy).toHaveProperty('initialWeights', undefined);
     expect(() => policy.checkpoint()).toThrow(/awaited/);
     expect(await policy.checkpointAsync()).toEqual(seed);
+});
+
+it('creates and restores 31 action slots spanning three seconds at 100 ms intervals', async () => {
+    const { policy, input } = setup();
+    const checkpoint = policy.checkpoint();
+    expect(checkpoint.configuration.actions.planTimesSeconds).toEqual(Array.from({ length: 31 }, (_, step) => step / 10));
+    expect(checkpoint.model.outputWeights).toHaveLength(156); // 31 × five action outputs + critic.
+    const restored = DrivingPolicy.restore(JSON.parse(JSON.stringify(checkpoint)));
+    await restored.initializeGpu();
+    const decision = await restored.decideAsync(input, false);
+    expect(decision.plan.map(({ timeSeconds }) => timeSeconds)).toEqual(Array.from({ length: 31 }, (_, step) => step / 10));
+    expect(Number.isFinite(decision.value)).toBe(true);
+    restored.releaseDecision(decision);
+    restored.dispose();
+    policy.dispose();
 });
 
 it('fails without a GPU and permits an explicit initialization retry', async () => {
@@ -219,9 +235,32 @@ it('matches checkpoint context regardless of key order and isolates exported see
     expect(restored.checkpoint().model.lstmWeights[0][0]).not.toBe(4);
 });
 
-it.each(['game', 'car', 'map'] as const)('rejects a different %s and invalid checkpoint dimensions', (key) => {
+it.each([
+    { game: 'iracing', car: 'GT3', map: 'monza' },
+    { game: 'acc', car: 'MX5', map: 'monza' },
+    { game: 'acc', car: 'GT3', map: 'spa' },
+    { game: 'iracing', car: 'MX5', map: 'spa' },
+] as const)('accepts live inputs for $game / $car / $map after restoring an existing checkpoint', (context) => {
+    const { policy } = setup(), fixture = trainingFixture();
+    const saved = policy.checkpoint();
+    saved.model.steps = 10;
+    const restored = DrivingPolicy.restore(JSON.parse(JSON.stringify(saved)));
+    const live = { ...fixture.live, game: context.game, currentTelemetry: { ...fixture.live.currentTelemetry,
+        Static_car_model: context.car, Static_track: context.map } };
+    const lap = { ...fixture.referenceLap, game: context.game, car: context.car, track: context.map };
+    const result = readDrivingObservation(live, { ...fixture.vision, telemetry: live }, lap, 50, 1000, restored.configuration);
+    expect(result.error).toBeUndefined();
+    expect(result.observation!.context).toEqual(context);
+    expect(result.observation!.features).not.toEqual(fixture.observation.features);
+    expect(restored.inputMismatches(result.observation!)).toEqual([]);
+    expect(restored.matches(result.observation!)).toBe(true);
+    expect(restored.checkpoint()).toEqual(saved);
+});
+
+it('rejects incompatible input layouts and invalid checkpoint dimensions', () => {
     const { policy, observation } = setup();
-    expect(policy.matches({ ...observation, context: { ...observation.context, [key]: 'different' } })).toBe(false);
+    expect(policy.matches({ ...observation, features: observation.features.slice(1) })).toBe(false);
+    expect(policy.matches({ ...observation, featureEncoding: 'different' })).toBe(false);
     const saved = policy.checkpoint();
     saved.model.outputWeights.pop();
     expect(() => DrivingPolicy.restore(saved)).toThrow(/checkpoint/);
