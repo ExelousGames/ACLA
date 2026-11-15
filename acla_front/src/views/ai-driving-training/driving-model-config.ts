@@ -11,10 +11,27 @@ export function upgradeDrivingConfig(value: unknown): unknown {
     if (config?.learning && !Object.prototype.hasOwnProperty.call(config.learning, 'sequenceSeconds')) {
         config = { ...config, learning: { ...config.learning, sequenceSeconds: 4 } };
     }
+    if (config?.learning && !Object.prototype.hasOwnProperty.call(config.learning, 'shiftTemperature')) {
+        // Upgrade the old exploration default once; retain explicitly tuned noise and all learned weights.
+        config = { ...config, learning: { ...config.learning,
+            explorationSigma: config.learning.explorationSigma === 0.25 ? defaults.learning.explorationSigma : config.learning.explorationSigma,
+            shiftTemperature: defaults.learning.shiftTemperature } };
+    }
     if (config?.actions && Object.prototype.hasOwnProperty.call(config.actions, 'shiftCooldownMs')) {
         const actions = { ...config.actions };
         delete (actions as typeof actions & { shiftCooldownMs?: unknown }).shiftCooldownMs;
         config = { ...config, actions };
+    }
+    const legacyLearning = config?.learning as (DrivingModelConfig['learning'] & { steeringSmoothnessWeight?: number }) | undefined;
+    if (config?.reward && !Object.prototype.hasOwnProperty.call(config.reward, 'steeringChangeWeight')) {
+        config = { ...config, reward: { ...config.reward, steeringChangeWeight:
+            legacyLearning && Object.prototype.hasOwnProperty.call(legacyLearning, 'steeringSmoothnessWeight')
+                ? legacyLearning.steeringSmoothnessWeight! : defaults.reward.steeringChangeWeight } };
+    }
+    if (config?.learning && Object.prototype.hasOwnProperty.call(config.learning, 'steeringSmoothnessWeight')) {
+        const learning = { ...legacyLearning! };
+        delete learning.steeringSmoothnessWeight;
+        config = { ...config, learning };
     }
     return config;
 }
@@ -116,6 +133,8 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
             l.demonstrationGradientLimit, c.reward.totalLimit,
             c.reward.speedTolerance, c.reward.accelerationTolerance].every((n) => n > 0)
         || c.aggression > 100 || l.discount > 1 || l.explorationSigma < 1e-6 || l.actionEpsilon < 1e-9 || l.actionEpsilon >= 0.5
+        || l.shiftTemperature < 0.001 || l.shiftTemperature > 1
+        || c.reward.steeringChangeWeight > 1
         || l.sequenceSeconds <= 0 || l.sequenceSeconds > 30
         || !integer(c.memory.intervalMs, 1, 30000) || !integer(c.memory.windowMs, 1, 30000)
         || c.memory.intervalMs > c.memory.windowMs || !integer(drivingMemorySlots(c), 1, 100)

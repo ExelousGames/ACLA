@@ -39,7 +39,11 @@ export interface DrivingObservation {
     speedTargets: ReferenceSpeedTargets;
     offTrack: boolean | null;
 }
-export type ObservationResult = { observation: DrivingObservation; error?: never } | { error: string; observation?: never };
+export type ObservationResult = {
+    observation: DrivingObservation; error?: never;
+    /** Latest telemetry speed for control limits, separate from capture-time learning inputs. */
+    liveSpeedKmh?: number;
+} | { error: string; observation?: never };
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
 // A deterministic encoding preserves categorical inputs across saved policies.
@@ -112,7 +116,8 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         aggression: [normalizedAggression(aggression)], referenceSpeed: [clamp(speedTargets.reference / o.speedScale, 0, 1)],
         targetSpeed: [clamp(speedTargets.target / o.speedScale, 0, 1)],
     };
-    return { observation: {
+    const liveSpeed = live.currentTelemetry.Physics_speed_kmh;
+    return { liveSpeedKmh: finite(liveSpeed) && liveSpeed >= 0 ? liveSpeed : speed!, observation: {
         capturedAt: vision.capturedAt,
         measuredAt: paired.receivedAt,
         session: JSON.stringify([paired.sessionGeneration, paired.streamGeneration, game, car, map]),
@@ -130,7 +135,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
 }
 
 export interface DrivingReward {
-    timing: number; progress: number; impact: number; onTrack: number; offTrack: number; total: number;
+    timing: number; progress: number; impact: number; onTrack: number; offTrack: number; steeringChange: number; total: number;
     offTrackDetected: boolean | null;
     impactEstimate: DrivingImpact;
     speedComparison: ReferenceSpeedTargets & { measured: number; aggression: number;
@@ -141,7 +146,8 @@ export interface DrivingReward {
 }
 
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
-    config = DEFAULT_DRIVING_CONFIG, telemetryImpact?: DrivingImpact): DrivingReward {
+    config = DEFAULT_DRIVING_CONFIG, telemetryImpact?: DrivingImpact,
+    steeringChangeSquared = (current.controls.steering - previous.controls.steering) ** 2): DrivingReward {
     const r = config.reward;
     const dt = (current.capturedAt - previous.capturedAt) / 1000;
     if (dt <= 0 || dt > config.runtime.maxTransitionSeconds || previous.session !== current.session) throw new Error('Training transition crossed a session boundary or data gap.');
@@ -183,8 +189,11 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     const offTrack = current.offTrack === true ? -OFF_TRACK_PENALTY_PER_SECOND * measuredSeconds : 0;
     // Reward confirmed on-track driving without paying the policy to park or reverse.
     const onTrack = current.offTrack === false && forwardProgress > 0 ? ON_TRACK_REWARD_PER_SECOND * measuredSeconds : 0;
-    return { timing, progress, impact, impactEstimate, onTrack, offTrack, offTrackDetected: current.offTrack,
+    // AI supplies replacement jumps and neighboring-plan changes between images.
+    // Human driving uses measured steering changes. Holding any angle costs zero.
+    const steeringChange = r.steeringChangeWeight > 0 && steeringChangeSquared > 0 ? -r.steeringChangeWeight * steeringChangeSquared : 0;
+    return { timing, progress, impact, impactEstimate, onTrack, offTrack, steeringChange, offTrackDetected: current.offTrack,
         speedComparison: { ...speeds, measured: current.speed, aggression: previous.aggression, speedGoalProgress,
             measuredAcceleration, referenceAcceleration, targetAcceleration },
-        total: clamp(timing + progress + impact + onTrack + offTrack, -r.totalLimit, r.totalLimit) };
+        total: clamp(timing + progress + impact + onTrack + offTrack + steeringChange, -r.totalLimit, r.totalLimit) };
 }

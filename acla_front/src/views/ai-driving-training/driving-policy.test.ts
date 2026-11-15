@@ -9,12 +9,12 @@ import { readDrivingObservation } from './driving-observation';
 beforeEach(() => { mockDrivingGpu(); });
 afterEach(() => { jest.restoreAllMocks(); });
 
-function setup(draw = 0.7) {
+function setup(draw: number | (() => number) = 0.7) {
     const { observation } = trainingFixture(), config = cloneConfig();
     config.network.hiddenUnits = 3;
     config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
     return { observation, input: new DrivingMemory(config).encode(observation),
-        policy: new DrivingPolicy(observation.context, observation.features.length, () => draw, config) };
+        policy: new DrivingPolicy(observation.context, observation.features.length, typeof draw === 'number' ? () => draw : draw, config) };
 }
 const shifts = { up: true, down: false };
 const action = { throttle: 0.7, brake: 0.1, steering: -0.3, shiftUp: true };
@@ -113,6 +113,49 @@ it.each([-100, -0.7, 0, 0.4, 100])('decodes a signed pedal output for every plan
         expect(latent).toHaveLength(2);
     }
     policy.releaseDecision(decision);
+});
+
+it('keeps fresh-model exploration small across consecutive plans and rarely changes gear', async () => {
+    let seed = 42;
+    const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+    const { policy, input } = setup(random);
+    await policy.initializeGpu();
+    const pedals: number[] = [], steering: number[] = [], choices = [0, 0, 0];
+    for (let i = 0; i < 100; i++) {
+        const decision = await policy.decideAsync(input, true);
+        for (const { action, shift } of decision.plan) {
+            pedals.push(action.throttle - action.brake);
+            steering.push(action.steering);
+            choices[shift]++;
+        }
+        policy.releaseDecision(decision);
+    }
+    for (const axis of [pedals, steering]) {
+        const rms = Math.sqrt(axis.reduce((sum, value) => sum + value * value, 0) / axis.length);
+        const changes = axis.slice(1).map((value, i) => value - axis[i]);
+        const movement = Math.sqrt(changes.reduce((sum, value) => sum + value * value, 0) / changes.length);
+        expect(rms).toBeGreaterThan(0.04);
+        expect(rms).toBeLessThan(0.06);
+        expect(movement).toBeLessThan(0.09);
+        expect(axis.some((value) => value > 0)).toBe(true);
+        expect(axis.some((value) => value < 0)).toBe(true);
+    }
+    expect((choices[1] + choices[2]) / pedals.length).toBeLessThan(0.05);
+    expect(choices[1]).toBeGreaterThan(0);
+    expect(choices[2]).toBeGreaterThan(0);
+    policy.dispose();
+});
+
+it.each([[0.5, 0], [0.98, 1], [0.999, 2]])('still explores each gear choice with a small shift probability (draw=%s)', async (draw, choice) => {
+    const { policy, input } = setup(draw);
+    await policy.initializeGpu();
+    const decision = await policy.decideAsync(input, true);
+    for (const step of decision.plan) {
+        expect(step.shiftProbabilities[0]).toBeGreaterThan(0.96);
+        expect(step.shift).toBe(choice);
+    }
+    policy.releaseDecision(decision);
+    policy.dispose();
 });
 
 it('sends raw demonstration and delayed targets straight to GPU learning without inference readback', async () => {

@@ -150,6 +150,7 @@ async function checks(soakIterations) {
         }
     }
     activationPolicy.dispose();
+
     const results = [];
     for (const layout of ['default', 'custom', 'boundary']) {
         const config = cloneConfig();
@@ -168,6 +169,7 @@ async function checks(soakIterations) {
             config.learning.actorRate = 0.002;
             config.learning.criticRate = 0.003;
             config.learning.demonstrationRate = 0.004;
+            config.learning.shiftTemperature = 0.5;
         }
         if (layout === 'boundary') {
             config.actions.planTimesSeconds = Array.from({ length: 32 }, (_, i) => i * 0.5);
@@ -200,6 +202,17 @@ async function checks(soakIterations) {
             gpu.releaseDecision(decision);
             const after = await gpu.checkpointAsync();
             assertTrained(before, after, 'actor-critic');
+            if (terminal) {
+                const l = config.learning, h = config.network.hiddenUnits;
+                const advantage = Math.max(-l.advantageLimit, Math.min(l.advantageLimit, reward - decision.value));
+                for (const step of executed) for (let choice = 0; choice < 3; choice++) {
+                    const selected = decision.plan[step], row = step * 5 + 2 + choice;
+                    const score = (Number(selected.shift === choice) - selected.shiftProbabilities[choice]) / l.shiftTemperature;
+                    const delta = l.actorRate * advantage * Math.max(-l.policyGradientLimit, Math.min(l.policyGradientLimit, score)) / executed.length;
+                    close([after.model.outputWeights[row][h]], [before.model.outputWeights[row][h] + delta],
+                        `Shift sampling matches GPU actor gradient (${layout}/${step}/${choice})`, 0.0000002);
+                }
+            }
             for (let step = 0; step < decision.plan.length; step++) {
                 const from = before.model.outputWeights.slice(step * 5, (step + 1) * 5);
                 const to = after.model.outputWeights.slice(step * 5, (step + 1) * 5);
@@ -288,6 +301,18 @@ async function checks(soakIterations) {
     config.network.cameraLayers.forEach(layer => { layer.channels = 1; });
     config.network.cameraProjectionUnits = 32;
     config.learning.demonstrationRate = 0.05;
+
+    // Steering changes are part of the scalar reward. With zero advantage, an
+    // uneven plan must receive no independent smoothing update on any layer.
+    const neutral = await create(config), neutralInput = makeInput(config);
+    const neutralBefore = await neutral.checkpointAsync(), neutralDecision = await neutral.decideAsync(neutralInput, true, shifts);
+    assert(neutralDecision.plan.some(point => point.means[1] !== neutralDecision.plan[0].means[1]), 'Zero-advantage fixture has uneven steering');
+    await withoutReadbacks('Zero-advantage reward', () => neutral.learnAsync(neutralDecision, neutralDecision.value, neutralInput, 0.2, credits(neutralDecision), true));
+    const neutralAfter = await neutral.checkpointAsync();
+    for (const key of ['cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights']) {
+        assert(!changed(neutralBefore.model[key], neutralAfter.model[key]), `Zero advantage leaves ${key} unchanged`);
+    }
+    neutral.releaseDecision(neutralDecision); neutral.dispose();
 
     // Interpolation credits may revisit a slot before and after its discrete
     // gear choice. Their accumulation must match one combined GPU target.
@@ -416,8 +441,9 @@ async function checks(soakIterations) {
         for (const column of [0, inputs, inputs + h]) coordinates.push({ key: 'lstmWeights', row, column,
             buffer: gpu.gpu.lstmWeights, index: row * (inputs + h + 1) + column, value: before.model.lstmWeights[row][column] });
     }
-    for (const column of [0, h]) coordinates.push({ key: 'outputWeights', row: 0, column,
-        buffer: gpu.gpu.outputWeights, index: column, value: before.model.outputWeights[0][column] });
+    // Include all gear logits so the temperature's chain-rule factor is checked directly.
+    for (const row of [0, 2, 3, 4]) for (const column of [0, h]) coordinates.push({ key: 'outputWeights', row, column,
+        buffer: gpu.gpu.outputWeights, index: row * (h + 1) + column, value: before.model.outputWeights[row][column] });
     for (const coordinate of coordinates) {
         const epsilon = 0.01;
         gpu.gpu.device.queue.writeBuffer(coordinate.buffer, coordinate.index * 4, new Float32Array([coordinate.value + epsilon]));

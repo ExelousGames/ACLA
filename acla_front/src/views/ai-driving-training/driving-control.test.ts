@@ -1,4 +1,12 @@
-import { detectAxisBinding, detectButtonBinding, DrivingControlSelector, ManualMapping, mapManualControls, PhysicalController } from './driving-control';
+import { detectAxisBinding, detectButtonBinding, DrivingControlSelector, limitAiSteering, ManualMapping, mapManualControls, PhysicalController } from './driving-control';
+
+it.each([-1, 1])('tightens AI steering limits with speed in direction %s while preserving small corrections', (direction) => {
+    for (const [speed, limit] of [[0, 1], [50, 0.8], [100, 0.5], [200, 0.2], [300, 0.1]]) {
+        expect(limitAiSteering(direction, speed)).toBeCloseTo(direction * limit);
+        expect(limitAiSteering(direction * 0.025, speed)).toBe(direction * 0.025);
+        expect(limitAiSteering(0, speed)).toBe(0);
+    }
+});
 
 const devices: PhysicalController[] = [
     { id: 'wheel', name: 'Wheel', axes: { axis0: 0.75 }, buttons: [false, false, false, false] },

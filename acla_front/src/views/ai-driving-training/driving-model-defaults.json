@@ -48,7 +48,8 @@
   },
   "learning": {
     "sequenceSeconds": 4,
-    "explorationSigma": 0.25,
+    "explorationSigma": 0.05,
+    "shiftTemperature": 0.25,
     "discount": 0.99,
     "discountIntervalSeconds": 0.2,
     "actorRate": 0.0003,
@@ -68,6 +69,7 @@
     "speedTolerance": 20,
     "accelerationTolerance": 3,
     "progressWeight": 100,
+    "steeringChangeWeight": 0.05,
     "totalLimit": 10
   },
   "runtime": {

@@ -144,6 +144,43 @@ it.each([0, -1, 30.1, Infinity, NaN, '4', null])('rejects an invalid sequence du
     expect(() => validateDrivingConfig(config)).toThrow(/configuration/);
 });
 
+it.each([false, true])('reduces legacy default exploration without changing saved weights (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.network.hiddenUnits = 3;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    config.network.cameraProjectionUnits = 2;
+    const legacy: any = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    legacy.configuration.learning.explorationSigma = 0.25;
+    delete legacy.configuration.learning.shiftTemperature;
+    const before = JSON.stringify(legacy);
+    const restored = readTrainingDocument(legacy);
+    expect(restored.configuration.learning.explorationSigma).toBe(0.05);
+    expect(restored.configuration.learning.shiftTemperature).toBe(0.25);
+    expect(restored.model).toEqual(legacy.model);
+    expect(JSON.stringify(legacy)).toBe(before);
+    expect(readTrainingDocument(restored)).toEqual(restored);
+});
+
+it('preserves custom exploration and only upgrades the old default once', () => {
+    const legacy: any = emptyTrainingDocument();
+    legacy.configuration.learning.explorationSigma = 0.12;
+    delete legacy.configuration.learning.shiftTemperature;
+    expect(readTrainingDocument(legacy).configuration.learning.explorationSigma).toBe(0.12);
+    const current: any = emptyTrainingDocument();
+    current.configuration.learning.explorationSigma = 0.25;
+    current.configuration.learning.shiftTemperature = 0.5;
+    expect(readTrainingDocument(current)).toEqual(current);
+    delete legacy.configuration.learning.explorationSigma;
+    expect(() => readTrainingDocument(legacy)).toThrow(/configuration/);
+});
+
+it.each([0, -1, 0.0001, 1.1, Infinity, NaN, '0.25', null])('rejects an invalid shift temperature %s', (temperature) => {
+    const config: any = cloneConfig();
+    config.learning.shiftTemperature = temperature;
+    expect(() => validateDrivingConfig(config)).toThrow(/configuration/);
+});
+
 it('rejects old pedal-target models even though the number of inputs is unchanged', () => {
     const legacy: any = emptyTrainingDocument();
     legacy.configuration.observation.features.splice(-2, 2, 'targetPedals');
@@ -153,6 +190,38 @@ it('rejects old pedal-target models even though the number of inputs is unchange
     oldReward.configuration.reward.speedWeight = 1;
     oldReward.configuration.reward.pedalWeight = 100;
     expect(() => readTrainingDocument(oldReward)).toThrow(/unsupported/);
+});
+
+it.each([false, true])('upgrades steering penalties into the reward configuration without changing weights (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.network.hiddenUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    config.network.cameraProjectionUnits = 2;
+    const legacy: any = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    delete legacy.configuration.reward.steeringChangeWeight;
+    const before = JSON.stringify(legacy);
+    const restored = readTrainingDocument(legacy);
+    expect(restored.configuration.reward.steeringChangeWeight).toBe(0.05);
+    expect(restored.configuration.learning).not.toHaveProperty('steeringSmoothnessWeight');
+    expect(restored.model).toEqual(legacy.model);
+    expect(JSON.stringify(legacy)).toBe(before);
+    for (const weight of [0, 0.1]) {
+        restored.configuration.reward.steeringChangeWeight = weight;
+        expect(readTrainingDocument(restored)).toEqual(restored);
+        legacy.configuration.learning.steeringSmoothnessWeight = weight;
+        const upgraded = readTrainingDocument(legacy);
+        expect(upgraded.configuration.reward.steeringChangeWeight).toBe(weight);
+        expect(upgraded.configuration.learning).not.toHaveProperty('steeringSmoothnessWeight');
+        expect(upgraded.model).toEqual(legacy.model);
+        expect(legacy.configuration.learning.steeringSmoothnessWeight).toBe(weight);
+    }
+});
+
+it.each([-1, 1.01, Infinity, NaN, '0.05', null])('rejects an invalid steering-change reward weight %s', (weight) => {
+    const config: any = cloneConfig();
+    config.reward.steeringChangeWeight = weight;
+    expect(() => validateDrivingConfig(config)).toThrow(/configuration/);
 });
 
 it('uses a neutral combined pedal output in new models and rejects separate-pedal model layouts', () => {

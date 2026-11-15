@@ -188,7 +188,8 @@ export class DrivingPolicy {
     private shiftProbabilities(values: number[], shifts: ShiftAvailability): number[] {
         const logits = values.map((logit, i) => [true, shifts.up, shifts.down][i] ? logit : -Infinity);
         const maximum = Math.max(...logits);
-        const weights = logits.map((logit) => Math.exp(logit - maximum));
+        // Concentrate exploration around the learned gear choice without changing its argmax.
+        const weights = logits.map((logit) => Math.exp((logit - maximum) / this.configuration.learning.shiftTemperature));
         const total = weights.reduce((sum, weight) => sum + weight, 0);
         return weights.map((weight) => weight / total);
     }

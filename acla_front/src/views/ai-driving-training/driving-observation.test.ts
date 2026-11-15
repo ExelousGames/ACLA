@@ -41,6 +41,43 @@ it.each(['missing', 'distant', 'invalid', 'mismatched'])(
         expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact);
     });
 
+describe('steering-change reward', () => {
+    it.each([-0.8, 0, 0.8])('does not penalize holding steering at %s', (steering) => {
+        const { observation } = trainingFixture();
+        const before = { ...observation, controls: { ...NEUTRAL, steering } };
+        const reward = drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200 });
+        expect(reward.steeringChange).toBe(0);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact + reward.onTrack + reward.offTrack);
+    });
+
+    it.each([[-0.4, 0.4], [0.4, -0.4], [0, 0.8]])('subtracts squared steering changes from %s to %s from total reward', (from, to) => {
+        const { observation } = trainingFixture();
+        const before = { ...observation, controls: { ...NEUTRAL, steering: from } };
+        const after = { ...before, capturedAt: 1200, measuredAt: 1200, controls: { ...NEUTRAL, steering: to } };
+        const reward = drivingReward(before, after);
+        expect(reward.steeringChange).toBeCloseTo(-0.05 * 0.8 ** 2);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact + reward.onTrack + reward.offTrack + reward.steeringChange);
+        const smaller = drivingReward(before, { ...after, controls: { ...NEUTRAL, steering: (from + to) / 2 } });
+        expect(reward.steeringChange).toBeCloseTo(smaller.steeringChange * 4);
+    });
+
+    it('includes intermediate command reversals even when telemetry endpoints match, and honors weight and total limits', () => {
+        const { observation: before } = trainingFixture();
+        const after = { ...before, capturedAt: 1200, measuredAt: 1200 };
+        const changes = 0.8 ** 2 + 0.8 ** 2;
+        const config = cloneConfig();
+        const reward = drivingReward(before, after, config, undefined, changes);
+        expect(drivingReward(before, after).steeringChange).toBe(0);
+        expect(reward.steeringChange).toBeCloseTo(-0.064);
+        config.reward.steeringChangeWeight = 0.1;
+        expect(drivingReward(before, after, config, undefined, changes).steeringChange).toBeCloseTo(reward.steeringChange * 2);
+        config.reward.totalLimit = 0.01;
+        expect(drivingReward(before, after, config, undefined, changes).total).toBe(-0.01);
+        config.reward.steeringChangeWeight = 0;
+        expect(drivingReward(before, after, config, undefined, changes).steeringChange).toBe(0);
+    });
+});
+
 describe('impact reward', () => {
     it.each(['acc', 'iracing'])('penalizes diagonal impacts in all four directions for %s', (game) => {
         const { observation } = trainingFixture();
@@ -138,9 +175,11 @@ it('uses telemetry and the full-resolution camera from the capture time', () => 
     expect(observation.camera).toBe(vision.camera);
     expect(observation.camera).toMatchObject({ width: 384, height: 216 });
     expect(observation.context).not.toHaveProperty('classes');
-    // Later telemetry must not replace the sample paired with the image.
-    expect(readDrivingObservation({ ...live, currentTelemetry: { ...live.currentTelemetry, Physics_speed_kmh: 200 } }, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap))
-        .observation?.speed).toBe(108);
+    // Control limits use live speed; learning keeps the sample paired with the image.
+    const latest = readDrivingObservation({ ...live, currentTelemetry: { ...live.currentTelemetry, Physics_speed_kmh: 200 } },
+        vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap));
+    expect(latest).toMatchObject({ liveSpeedKmh: 200, observation });
+    expect(latest.observation?.speed).toBe(108);
 });
 
 it.each(['missing', 'invalid', 'changed'])('ignores %s segmentation, depth and reconstructed scene', (fault) => {
@@ -479,7 +518,8 @@ it.each([
         const reward = drivingReward(before, after);
         if (speed === 99.2) expect(reward.timing).toBeCloseTo(0.2 * 0.8 / (3.6 * 0.2 * 3));
         else expect(reward.timing).toBeLessThan(0);
-        expect(reward.total).toBeCloseTo(reward.timing + reward.progress);
+        expect(reward.steeringChange).toBe(_label === 'steering only' ? -0.0125 : 0);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.steeringChange);
     }
 });
 

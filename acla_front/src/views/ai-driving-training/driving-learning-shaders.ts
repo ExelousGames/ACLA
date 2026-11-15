@@ -15,6 +15,7 @@ const CRITIC_RATE = ${l.criticRate.toExponential()}f;
 const ADVANTAGE_LIMIT = ${l.advantageLimit.toExponential()}f;
 const POLICY_LIMIT = ${l.policyGradientLimit.toExponential()}f;
 const VARIANCE = ${(l.explorationSigma ** 2).toExponential()}f;
+const SHIFT_TEMPERATURE = ${l.shiftTemperature.toExponential()}f;
 const DISCOUNT = ${l.discount.toExponential()}f;
 const DISCOUNT_INTERVAL = ${l.discountIntervalSeconds.toExponential()}f;
 @group(0) @binding(0) var<storage, read> outputs: array<f32>;
@@ -28,9 +29,9 @@ fn shiftProbability(offset: u32, choice: u32, up: f32, down: f32) -> f32 {
     }
     var total = 0.0;
     for (var i = 0u; i < 3u; i++) {
-        if (allowed[i]) { total += exp(outputs[offset + i] - maximum); }
+        if (allowed[i]) { total += exp((outputs[offset + i] - maximum) / SHIFT_TEMPERATURE); }
     }
-    return exp(outputs[offset + choice] - maximum) / total;
+    return exp((outputs[offset + choice] - maximum) / SHIFT_TEMPERATURE) / total;
 }
 `;
     return {
@@ -53,7 +54,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     } else {
         let choice = axis - AXES;
         let probability = shiftProbability(slot * ACTIONS + AXES, choice, targets[base + 5u], targets[base + 6u]);
-        gradients[id.x] = DEMONSTRATION_RATE * (select(0.0, 1.0, choice == u32(targets[base + 4u])) - probability);
+        let score = (select(0.0, 1.0, choice == u32(targets[base + 4u])) - probability) / SHIFT_TEMPERATURE;
+        gradients[id.x] = DEMONSTRATION_RATE * clamp(score, -DEMONSTRATION_LIMIT, DEMONSTRATION_LIMIT);
     }
 }`,
         transitionGradient: constants + `
@@ -80,7 +82,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     } else {
         let choice = axis - AXES;
         let probability = shiftProbability(slot * ACTIONS + AXES, choice, transition[base + 4u], transition[base + 5u]);
-        gradients[id.x] = weight * ACTOR_RATE * advantage * (select(0.0, 1.0, choice == u32(transition[base + 3u])) - probability);
+        let score = (select(0.0, 1.0, choice == u32(transition[base + 3u])) - probability) / SHIFT_TEMPERATURE;
+        gradients[id.x] = weight * ACTOR_RATE * advantage * clamp(score, -POLICY_LIMIT, POLICY_LIMIT);
     }
 }`,
     };

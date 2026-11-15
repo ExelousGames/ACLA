@@ -127,6 +127,43 @@ it('shows a GPU startup failure without starting AI controls', async () => {
     expect(window.virtualController!.apply).not.toHaveBeenCalled();
 });
 
+it('shows the steering-change penalty alongside other rewards and sends the penalized total to learning', async () => {
+    const { observation } = trainingFixture(Date.now()), config = cloneConfig();
+    config.learning.sequenceSeconds = 0.001;
+    config.network.hiddenUnits = 2;
+    config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length, () => 0.5, config).checkpoint();
+    files.set(MODEL_PATH, JSON.stringify(checkpoint));
+    mockInput = { observation };
+    const infer = DrivingPolicy.prototype.decideAsync;
+    jest.spyOn(DrivingPolicy.prototype, 'decideAsync').mockImplementation(async function (this: DrivingPolicy, ...args) {
+        const decision = await infer.apply(this, args);
+        decision.plan.forEach((point, step) => {
+            point.action.steering = step === 1 ? -0.4 : 0.4;
+            point.latent[1] = Math.atanh(point.action.steering);
+        });
+        return decision;
+    });
+    const learn = jest.spyOn(DrivingPolicy.prototype, 'learnAsync');
+    await renderTraining();
+    expect(getDefinition('Steering-change penalty')).toHaveTextContent('0.0000');
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
+    for (let i = 0; i < 3; i++) {
+        act(() => { jest.advanceTimersByTime(100); }); await flush();
+    }
+    mockInput = { observation: { ...observation, capturedAt: Date.now(), measuredAt: Date.now() } };
+    act(() => { jest.advanceTimersByTime(20); }); await flush();
+    expect(getDefinition('Steering-change penalty')).toHaveTextContent('-0.0640');
+    expect(learn).toHaveBeenCalledTimes(1);
+    const total = learn.mock.calls[0][1];
+    expect(total).toBeCloseTo(-0.075 - 0.064);
+    expect(screen.getByText('Episode reward').parentElement).toHaveTextContent(total.toFixed(2));
+    expect(screen.getByText(/Holding a steering angle has no penalty/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+});
+
 it.each([[30, 0, 0, 0], [30, 23, 0, 0], [10 / 3.6, 0, 0, 0], [30, 24, -6, 0.4], [30, 36, 6, 0.4]])(
     'shows impact confidence, severity, penalty and unavailable timing after a jolt (from=%s, forward=%s, right=%s, steering=%s)', async (initial, forward, right, steering) => {
     const observation = { ...trainingFixture(Date.now()).observation, speed: initial * 3.6,

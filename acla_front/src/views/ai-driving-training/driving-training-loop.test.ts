@@ -5,7 +5,7 @@ import { DrivingPolicy } from './driving-policy';
 import { NEUTRAL, ObservationResult, readDrivingObservation } from './driving-observation';
 import { circuitMapFixture, trainingFixture } from './training-fixtures';
 import { normalizedAggression, referenceSpeedTargets } from './driving-reference';
-import { ManualControls } from './driving-control';
+import { limitAiSteering, ManualControls } from './driving-control';
 import { DrivingControlOutput } from './driving-control-output';
 import { DrivingMemory, drivingMemoryInputs, drivingMemorySlotInputs } from './driving-memory';
 import { cloneConfig } from './driving-model-config';
@@ -261,12 +261,13 @@ function setup(withManual = false, readImpact?: ConstructorParameters<typeof Dri
     let now = 1000;
     const controller = { connect: jest.fn(), disconnect: jest.fn(), apply: jest.fn().mockResolvedValue(undefined) };
     const publish = jest.fn();
-    const policy = new DrivingPolicy(fixture.observation.context, fixture.observation.features.length, () => 0.7);
+    // Force an exploratory upshift so pulse and handoff tests exercise pressed paddles.
+    const policy = new DrivingPolicy(fixture.observation.context, fixture.observation.features.length, () => 0.98);
     const manual = jest.fn<Promise<ManualControls | null>, []>().mockResolvedValue(null);
     const loop = new DrivingTrainingLoop(new DrivingControlOutput(controller), () => input, publish, () => now, withManual ? manual : undefined, readImpact);
     return { fixture, controller, policy, loop, publish, manual,
         input: (next: ObservationResult, time: number, measuredAt = next.observation?.capturedAt) => {
-            input = next.observation ? { observation: { ...next.observation, measuredAt: measuredAt! } } : next;
+            input = next.observation ? { ...next, observation: { ...next.observation, measuredAt: measuredAt! } } : next;
             now = time;
         } };
 }
@@ -317,6 +318,57 @@ async function plannedDecision(run: ReturnType<typeof setup>, direction = 1) {
     return decision;
 }
 
+it.each([true, false].flatMap((train) => [-1, 1].map((direction) => ({ train, direction }))))(
+    'updates steering limits from live speed during pending inference (training=$train, direction=$direction)', async ({ train, direction }) => {
+        const run = setup();
+        const decision = await plannedDecision(run);
+        const requested = { throttle: 0.7, brake: 0, steering: direction, shiftUp: false, shiftDown: false };
+        decision.plan.forEach((slot) => { slot.action = { ...requested }; });
+        let finish!: (value: typeof decision) => void;
+        const decide = jest.spyOn(run.policy, 'decideAsync').mockResolvedValueOnce(decision)
+            .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+        run.input({ observation: run.fixture.observation, liveSpeedKmh: 0 }, 1000);
+        await run.loop.start(run.policy, train); await flush();
+        expect(run.controller.apply).toHaveBeenLastCalledWith(requested);
+        run.input({ observation: { ...run.fixture.observation, capturedAt: 1100, speed: 100 } }, 1100);
+        jest.advanceTimersByTime(20); await flush();
+        expect(decide).toHaveBeenCalledTimes(2);
+        expect(run.loop.state.action).toEqual({ ...requested, steering: direction * 0.5 });
+        for (const [at, speed, limit] of [[1120, 200, 0.2], [1140, 300, 0.1], [1160, 50, 0.8], [1180, 0, 1]]) {
+            // Telemetry changes while the camera frame and inference remain pending.
+            run.input({ observation: { ...run.fixture.observation, capturedAt: 1100, speed: 100 }, liveSpeedKmh: speed }, at);
+            jest.advanceTimersByTime(20); await flush();
+            expect(run.loop.state.action).toEqual({ ...requested, steering: direction * limit });
+            expect(run.controller.apply).toHaveBeenLastCalledWith(run.loop.state.action);
+        }
+        expect(decision.plan.every(({ action }) => action.steering === direction)).toBe(true);
+        run.input({ observation: { ...run.fixture.observation, capturedAt: 1100, speed: 100 }, liveSpeedKmh: 200 }, 1200);
+        jest.advanceTimersByTime(20); await flush();
+        finish(decision); await flush();
+        expect(run.controller.apply).toHaveBeenLastCalledWith({ ...requested, steering: direction * 0.2 });
+        await run.loop.stop();
+    });
+
+it('records capped controls for reward credit while retaining the sampled policy actions', async () => {
+    const run = setup();
+    const decision = await plannedDecision(run);
+    decision.plan.forEach((slot) => {
+        slot.action.steering = 0.8;
+        slot.latent[1] = Math.atanh(0.8);
+    });
+    jest.spyOn(run.policy, 'decideAsync').mockResolvedValueOnce(decision);
+    const learn = jest.spyOn(run.policy, 'learnAsync');
+    run.input({ observation: { ...run.fixture.observation, speed: 200 } }, 1000);
+    await run.loop.start(run.policy, true); await flush();
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1100, speed: 200 } }, 1100);
+    jest.advanceTimersByTime(20); await flush();
+    expect(learn).toHaveBeenCalled();
+    expect(learn.mock.calls[0][4].every(({ action }) => action?.steering === 0.2)).toBe(true);
+    expect(decision.plan[0].action.steering).toBe(0.8);
+    expect(decision.plan[0].latent[1]).toBe(Math.atanh(0.8));
+    await run.loop.stop();
+});
+
 it.each([true, false])('interpolates due slots, skips missed slots and holds the final controls (training=%s)', async (train) => {
     const run = setup();
     const decision = await plannedDecision(run);
@@ -326,7 +378,7 @@ it.each([true, false])('interpolates due slots, skips missed slots and holds the
         run.input({ observation: run.fixture.observation }, at);
         jest.advanceTimersByTime(100); await flush();
         expect(run.loop.state.action.throttle).toBeCloseTo(0.2 + position * 0.02);
-        expect(run.loop.state.action.steering).toBeCloseTo((position + 1) * 0.02);
+        expect(run.loop.state.action.steering).toBeCloseTo(limitAiSteering((position + 1) * 0.02, run.fixture.observation.speed));
         expect(run.controller.apply).toHaveBeenLastCalledWith(run.loop.state.action);
     }
     expect(decide).toHaveBeenCalledTimes(1);
@@ -350,7 +402,7 @@ it.each([true, false])('smooths pedal reversals and steering every 20 ms with ma
         expect(action.throttle).toBeCloseTo(Math.max(0, pedal));
         expect(action.brake).toBeCloseTo(Math.max(0, -pedal));
         expect(action.throttle * action.brake).toBe(0);
-        expect(action.steering).toBeCloseTo(-pedal);
+        expect(action.steering).toBeCloseTo(limitAiSteering(-pedal, run.fixture.observation.speed));
         expect(action.shiftUp).toBe(elapsed === 100);
         expect(action.shiftDown).toBe(false);
         expect(run.controller.apply).toHaveBeenLastCalledWith(action);
@@ -374,7 +426,7 @@ it('uses configured knot times and never repeats a shift while interpolating wit
         [1600, 0, false], [1800, -0.5, false], [2200, -1, false]] as const) {
         run.input({ observation: run.fixture.observation }, at);
         jest.advanceTimersByTime(20); await flush();
-        expect(run.loop.state.action.steering).toBeCloseTo(steering);
+        expect(run.loop.state.action.steering).toBeCloseTo(limitAiSteering(steering, run.fixture.observation.speed));
         expect(run.loop.state.action.shiftUp).toBe(shiftUp);
     }
     await run.loop.stop();
@@ -484,6 +536,61 @@ it('rewards every executed slot by acknowledged duration and excludes a skipped 
     expect(reward).toBe(run.loop.state.reward!.total);
     expect(elapsed).toBe(0.8);
     expect(credits.map(({ step, weight }) => [step, weight])).toEqual([[0, 0.125], [1, 0.125], [2, 0.25], [4, 0.125], [5, 0.125], [6, 0.25]]);
+    await run.loop.stop();
+});
+
+it.each([true, false].flatMap((train) => [20, 100].map((pollMs) => ({ train, pollMs }))))(
+    'scores neighboring steering reversals once without dilution by interpolation (training=$train, poll=$pollMs ms)', async ({ train, pollMs }) => {
+    const run = setup(), first = await plannedDecision(run), second = await plannedDecision(run);
+    first.plan.forEach((slot, step) => { slot.action = { ...NEUTRAL, steering: step === 1 ? -0.4 : 0.4 }; });
+    second.plan.forEach((slot) => { slot.action = { ...NEUTRAL, steering: 0.4 }; });
+    const decide = jest.spyOn(run.policy, 'decideAsync').mockResolvedValueOnce(first).mockResolvedValue(second);
+    const learn = jest.spyOn(run.policy, 'learnAsync');
+    await run.loop.start(run.policy, train); await flush();
+    for (let at = 1000 + pollMs; at < 1400; at += pollMs) {
+        run.input({ observation: run.fixture.observation }, at);
+        jest.advanceTimersByTime(pollMs); await flush();
+        const steering = at < 1100 ? 0.4 - 0.8 * (at - 1000) / 100
+            : at < 1200 ? -0.4 + 0.8 * (at - 1100) / 100 : 0.4;
+        expect(run.loop.state.action.steering).toBeCloseTo(steering);
+    }
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1400 } }, 1400);
+    jest.advanceTimersByTime(100); await flush();
+    const reward = run.loop.state.reward!;
+    expect(reward.steeringChange).toBeCloseTo(-0.064);
+    expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact + reward.onTrack + reward.offTrack - 0.064);
+    expect(run.loop.state.episodeReward).toBe(reward.total);
+    expect(learn).toHaveBeenCalledTimes(train ? 1 : 0);
+    if (train) expect(learn.mock.calls[0][1]).toBe(reward.total);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.reward).toBe(reward);
+    expect(run.loop.state.episodeReward).toBe(reward.total);
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1600 } }, 1600);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.reward!.steeringChange).toBe(0);
+    expect(run.loop.state.action.steering).toBe(0.4);
+    expect(decide).toHaveBeenCalledTimes(3);
+    await run.loop.stop();
+});
+
+it('charges a replacement plan for the change from the last acknowledged outgoing steering', async () => {
+    const run = setup(), first = await plannedDecision(run), second = await plannedDecision(run);
+    first.plan.forEach((slot) => { slot.action = { ...NEUTRAL, steering: 0.4 }; });
+    second.plan.forEach((slot) => { slot.action = { ...NEUTRAL, steering: -0.4 }; });
+    const decide = jest.spyOn(run.policy, 'decideAsync').mockResolvedValueOnce(first);
+    await run.loop.start(run.policy, true); await flush();
+    let finish!: () => void;
+    decide.mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(second); }));
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1200 } }, 1200);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.reward!.steeringChange).toBe(0);
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1200 } }, 1300);
+    jest.advanceTimersByTime(100); await flush();
+    finish(); await flush();
+    expect(run.loop.state.action.steering).toBe(-0.4);
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1500 } }, 1500);
+    jest.advanceTimersByTime(100); await flush();
+    expect(run.loop.state.reward!.steeringChange).toBeCloseTo(-0.032);
     await run.loop.stop();
 });
 
@@ -773,9 +880,16 @@ it.each([true, false])('scores progress once per fresh frame without reference-l
     await run.loop.stop();
 });
 
-it.each(['stop', 'handoff', 'invalid', 'gap'] as const)('does not score progress across %s', async (boundary) => {
+it.each(['stop', 'handoff', 'invalid', 'gap'] as const)('does not score progress or steering changes across %s', async (boundary) => {
     const run = setup();
     run.policy = new DrivingPolicy(run.fixture.observation.context, run.fixture.observation.features.length, () => 0.1);
+    let steering = 0.4;
+    const infer = run.policy.decideAsync.bind(run.policy);
+    jest.spyOn(run.policy, 'decideAsync').mockImplementation(async (...args) => {
+        const decision = await infer(...args);
+        decision.plan.forEach((point) => { point.action.steering = steering; });
+        return decision;
+    });
     run.input({ observation: run.fixture.observation }, 1000);
     run.loop.start(run.policy, false); await flush();
     run.input({ observation: { ...run.fixture.observation, capturedAt: 1200,
@@ -790,6 +904,7 @@ it.each(['stop', 'handoff', 'invalid', 'gap'] as const)('does not score progress
         jest.advanceTimersByTime(100); await flush();
     }
     const restartAt = boundary === 'gap' ? 2800 : 1400;
+    steering = -0.4;
     run.input({ observation: { ...run.fixture.observation, capturedAt: restartAt } }, restartAt);
     if (boundary === 'stop') run.loop.start(run.policy, false);
     jest.advanceTimersByTime(200); await flush();
@@ -798,6 +913,7 @@ it.each(['stop', 'handoff', 'invalid', 'gap'] as const)('does not score progress
         normalizedPosition: 0.252 } }, restartAt + 200);
     jest.advanceTimersByTime(200); await flush();
     expect(run.loop.state.reward?.progress).toBeCloseTo(0.025);
+    expect(run.loop.state.reward?.steeringChange).toBe(0);
     await run.loop.stop();
 });
 
@@ -983,7 +1099,7 @@ it.each(['inference', 'learning'] as const)('accepts the physical takeover butto
     await run.loop.stop();
 });
 
-it.each(['stop', 'disconnect', 'observations', 'handoff'] as const)('invalidates pending human learning on %s without delaying control', async (boundary) => {
+it.each(['stop', 'disconnect', 'observations'] as const)('invalidates pending human learning on %s without delaying control', async (boundary) => {
     const run = setup(true);
     const action = { throttle: 0.4, brake: 0, steering: 0.2 };
     run.manual.mockResolvedValue({ action, toggleControl: false });
@@ -998,7 +1114,6 @@ it.each(['stop', 'disconnect', 'observations', 'handoff'] as const)('invalidates
     if (boundary === 'stop') await run.loop.stop();
     if (boundary === 'disconnect') run.manual.mockRejectedValue(new Error('Mapped controller disconnected.'));
     if (boundary === 'observations') run.input({ error: 'Camera disconnected.' }, 1250);
-    if (boundary === 'handoff') run.manual.mockResolvedValue({ action, toggleControl: true });
     jest.advanceTimersByTime(50); await flush();
     expect(run.controller.apply).toHaveBeenLastCalledWith(boundary === 'observations' ? expect.objectContaining(action) : NEUTRAL);
     const state = run.loop.state;
@@ -1159,6 +1274,7 @@ it.each([true, false])('skips delayed transitions and resumes from fresh data ac
     for (const source of ['manual', 'ai', 'manual', 'ai'] as const) {
         run.input({ observation: { ...run.fixture.observation, capturedAt: time } }, time);
         run.loop.setControlSource(source);
+        await flush(); // Finish the outgoing owner's samples before the new transition.
         const steps = run.policy.steps;
         await frame(time + 100);
         expect(run.policy.steps).toBe(steps); // Never learn across the ownership change.
@@ -1188,7 +1304,7 @@ it.each([true, false])('skips delayed transitions and resumes from fresh data ac
     }
     expect((await run.policy.checkpointAsync())).toEqual(train ? expect.not.objectContaining(initial) : initial);
     expect(learn).toHaveBeenCalledTimes(train ? 4 : 0);
-    expect(demonstrate).toHaveBeenCalledTimes(train ? 4 : 0);
+    expect(demonstrate).toHaveBeenCalledTimes(train ? 6 : 0);
     await run.loop.stop();
 });
 
@@ -1607,7 +1723,7 @@ it('stops cleanly on hardware failure', async () => {
     expect(run.loop.state.status).toContain('Driver disconnected');
 });
 
-it.each([['shiftUp', 0.7], ['shiftDown', 0.95]] as const)('releases a learned %s pulse without a fresh image and never repeats it within the same plan slot', async (key, draw) => {
+it.each([['shiftUp', 0.98], ['shiftDown', 0.999]] as const)('releases a learned %s pulse without a fresh image and never repeats it within the same plan slot', async (key, draw) => {
     const run = setup(), config = cloneConfig();
     config.actions.planTimesSeconds = [0];
     run.policy = new DrivingPolicy(run.fixture.observation.context, run.fixture.observation.features.length, () => draw, config);
@@ -1651,7 +1767,7 @@ it.each([true, false].flatMap((train) => [-1, 0, 1, 2].map((gear) => ({ train, g
     const checkpoint = (await run.policy.checkpointAsync());
     checkpoint.model.outputWeights.slice(2, 5).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === 2 ? 4 : 0; });
     run.policy = train
-        ? new DrivingPolicy(run.fixture.observation.context, run.fixture.observation.features.length, () => 0.95)
+        ? new DrivingPolicy(run.fixture.observation.context, run.fixture.observation.features.length, () => 0.999)
         : DrivingPolicy.restore(checkpoint);
     const learn = jest.spyOn(run.policy, 'learnAsync');
     run.input({ observation: { ...run.fixture.observation, gear } }, 1000);

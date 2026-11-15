@@ -399,6 +399,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <p>{config.memory.windowMs / 1000}-second observation history covers {fullObservationHistory ? 'all AI observation inputs' : 'the observation inputs selected in this saved model'} during training and evaluation, sampled in {config.memory.intervalMs} ms bins. Memory starts fresh after stopping, changing drivers or interrupted inputs.</p>
                 <p>AI training collects {config.learning.sequenceSeconds} seconds of driving before updating the model. Each decision learns from its immediate reward and discounted later consequences. Adjust learning.sequenceSeconds in the model JSON to experiment with the collection duration.</p>
                 <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends steering and throttle/brake between steps while computing; gear shifts occur at their scheduled steps. A new output replaces the whole plan as soon as it is ready. Reward trains the steps contributing to each control command; human driving teaches future steps from demonstrated actions.</p>
+                <p>AI steering limits tighten with live speed: full range at rest, 50% at 100 km/h and 20% at 200 km/h. The plan shows requested steering; the current controls show the applied steering.</p>
                 <p className="driving-note">Each model JSON contains its inputs, memory, network, training settings and weights. Training and evaluation load that JSON each time they start.</p>
                 <p className="driving-note">Use the same model across games, cars and maps. After switching, stop and restart training or evaluation with fresh live inputs and a matching Live Map reference lap. Learned weights are preserved.</p>
                 <table className="driving-pedals" aria-label="Planned driving actions">
@@ -529,6 +530,9 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                         {state.reward && <p>Last scored at aggression {state.reward.speedComparison.aggression}: speed {state.reward.speedComparison.measured.toFixed(1)} / reference {state.reward.speedComparison.reference.toFixed(1)} / target {state.reward.speedComparison.target.toFixed(1)} km/h; speed gap closed {state.reward.speedComparison.speedGoalProgress.toFixed(2)} km/h (negative means moving away); measured acceleration {state.reward.speedComparison.measuredAcceleration.toFixed(2)} m/s² (negative means deceleration).</p>}
                     </div>
                     <div><dt>Normalized position progress</dt><dd>{state.reward?.progress.toFixed(3) ?? '0.000'}</dd></div>
+                    <div><dt>Steering-change penalty</dt><dd>{state.reward?.steeringChange.toFixed(4) ?? '0.0000'}</dd>
+                        <p>Penalizes changes between steering commands, including neighboring plan steps. Holding a steering angle has no penalty.</p>
+                    </div>
                     <div><dt>On-track reward</dt><dd>{state.reward?.onTrack.toFixed(3) ?? '0.000'}</dd>
                         <p>Earns 1 point per second while moving forward on a confirmed track surface.</p>
                     </div>
